@@ -1,0 +1,41 @@
+name: Build Debug APK
+
+# Runs on every push to main and can also be triggered manually from the
+# Actions tab. Uses GitHub's own Gradle setup action rather than this
+# project's gradlew — gradle-wrapper.jar is a compiled binary that can't be
+# generated outside a real Gradle/Android Studio environment (see the repo's
+# README), so this workflow installs Gradle directly on the runner instead
+# of depending on the wrapper.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: dalab-agent-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

@@ -1,0 +1,126 @@
+package com.dalab.internet.ussd
+
+import android.content.Context
+import android.os.Build
+import android.telephony.SubscriptionManager
+import android.telephony.TelephonyManager
+import androidx.annotation.RequiresApi
+import androidx.core.content.ContextCompat
+import android.Manifest
+import android.content.pm.PackageManager
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
+
+/**
+ * Real dual-SIM USSD execution using Android's actual public API for this —
+ * TelephonyManager.sendUssdRequest() (API 26+). This is not a workaround or
+ * an accessibility-service hack; it's the documented, non-root mechanism
+ * Android provides for an app to send a USSD request and receive the
+ * response programmatically.
+ *
+ * HONEST LIMITATION, stated here rather than left implicit: this API
+ * genuinely works on stock/AOSP-close Android, but several major OEMs
+ * (Samsung, Xiaomi, Huawei, and others at various points) apply carrier/
+ * manufacturer customizations that force a visible system USSD dialog or
+ * silently drop the callback, regardless of what this app does. This is a
+ * widely-documented constraint in mobile-money-automation apps across East
+ * Africa specifically — not something unique to this implementation, and
+ * not something any app can bypass without root. Test on your actual target
+ * devices before assuming silent execution; build UI (see
+ * SmsPermissionScreen-style screens) that tells the agent to check the
+ * phone if a dial attempt times out, rather than promising it never will.
+ */
+class UssdDialer(private val context: Context) {
+
+    fun hasRequiredPermissions(): Boolean {
+        val callPhone = ContextCompat.checkSelfPermission(context, Manifest.permission.CALL_PHONE)
+        val readPhoneState = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE)
+        return callPhone == PackageManager.PERMISSION_GRANTED && readPhoneState == PackageManager.PERMISSION_GRANTED
+    }
+
+    /** Lists the SIMs actually inserted right now, for the SIM Routing Setup screen to show real carrier names. */
+    fun listActiveSims(): List<DeviceSimSlot> {
+        if (!hasRequiredPermissions()) return emptyList()
+        val subscriptionManager = context.getSystemService(SubscriptionManager::class.java) ?: return emptyList()
+        val infos = try {
+            subscriptionManager.activeSubscriptionInfoList
+        } catch (_: SecurityException) {
+            null
+        } ?: return emptyList()
+
+        return infos.map {
+            DeviceSimSlot(
+                subscriptionId = it.subscriptionId,
+                simSlotIndex = it.simSlotIndex,
+                carrierName = it.carrierName?.toString() ?: it.displayName?.toString() ?: "SIM ${it.simSlotIndex + 1}",
+            )
+        }
+    }
+
+    /**
+     * Resolves the Super Admin's 1-based "SIM 1 / SIM 2" configuration to an
+     * actual device subscription id. Returns null if that slot has no SIM
+     * physically present right now (e.g. configured for SIM 2 but the agent
+     * only has one SIM inserted) — callers must treat that as
+     * DialOutcome.NO_SIM_PRESENT, not silently fall back to the wrong SIM.
+     */
+    fun subscriptionIdForSlot(oneBasedSlot: Int): Int? {
+        val targetIndex = oneBasedSlot - 1 // Android's simSlotIndex is 0-based
+        return listActiveSims().firstOrNull { it.simSlotIndex == targetIndex }?.subscriptionId
+    }
+
+    /**
+     * Sends the USSD request on the given SIM and suspends until a response,
+     * error, or timeout. Requires API 26+ (sendUssdRequest itself requires
+     * it); callers on lower API levels should treat this feature as
+     * unavailable rather than crash — see MainActivity's Build.VERSION check.
+     */
+    @RequiresApi(Build.VERSION_CODES.O)
+    suspend fun dial(subscriptionId: Int, ussdCode: String, timeoutMs: Long = 30_000): DialResult {
+        if (!hasRequiredPermissions()) return DialResult(DialOutcome.PERMISSION_DENIED)
+
+        val baseManager = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+        val simManager = baseManager.createForSubscriptionId(subscriptionId)
+
+        return suspendCancellableCoroutine { continuation ->
+            var resumed = false
+            val handler = android.os.Handler(context.mainLooper)
+
+            val timeoutRunnable = Runnable {
+                if (!resumed) {
+                    resumed = true
+                    continuation.resume(DialResult(DialOutcome.TIMEOUT))
+                }
+            }
+            handler.postDelayed(timeoutRunnable, timeoutMs)
+
+            val callback = object : TelephonyManager.UssdResponseCallback() {
+                override fun onReceiveUssdResponse(telephonyManager: TelephonyManager, request: String, response: CharSequence) {
+                    if (resumed) return
+                    resumed = true
+                    handler.removeCallbacks(timeoutRunnable)
+                    continuation.resume(DialResult(DialOutcome.SUCCESS, response.toString()))
+                }
+
+                override fun onReceiveUssdResponseFailed(telephonyManager: TelephonyManager, request: String, failureCode: Int) {
+                    if (resumed) return
+                    resumed = true
+                    handler.removeCallbacks(timeoutRunnable)
+                    continuation.resume(DialResult(DialOutcome.FAILED, "USSD failure code: $failureCode"))
+                }
+            }
+
+            try {
+                simManager.sendUssdRequest(ussdCode, callback, handler)
+            } catch (e: SecurityException) {
+                if (!resumed) {
+                    resumed = true
+                    handler.removeCallbacks(timeoutRunnable)
+                    continuation.resume(DialResult(DialOutcome.PERMISSION_DENIED, e.message))
+                }
+            }
+
+            continuation.invokeOnCancellation { handler.removeCallbacks(timeoutRunnable) }
+        }
+    }
+}

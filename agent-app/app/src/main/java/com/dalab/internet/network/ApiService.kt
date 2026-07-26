@@ -1,0 +1,71 @@
+package com.dalab.internet.network
+
+import com.dalab.internet.data.AgentProfile
+import com.dalab.internet.data.Order
+import com.dalab.internet.data.SmsLogEntry
+import com.dalab.internet.data.Transaction
+import com.dalab.internet.data.AgentNotification
+import com.dalab.internet.ussd.SimRoutingEntry
+import retrofit2.Response
+import retrofit2.http.*
+
+data class LoginRequest(val phone: String, val password: String)
+data class LoginResponse(val accessToken: String, val refreshToken: String, val agent: AgentProfile)
+data class RefreshRequest(val refreshToken: String)
+data class RefreshResponse(val accessToken: String, val refreshToken: String)
+data class VerifyPaymentRequest(val smsLogId: String? = null)
+data class SmsLogUploadResponse(val id: String, val matchedOrderId: String?)
+data class DialAttemptStartRequest(val simSlot: Int?, val ussdString: String, val attemptNumber: Int)
+data class DialAttemptStartResponse(val id: String)
+data class DialAttemptResultRequest(val status: String, val responseMessage: String?)
+data class DialAttemptResultResponse(val id: String, val status: String)
+
+/**
+ * Mirrors the backend architecture doc, §4 "Agent-facing", and the real
+ * implementation in dalab-backend.zip (src/routes/*.js) — every path and body
+ * shape here matches what that server actually returns, verified against its
+ * test suite. Base URL and auth header (Authorization: Bearer <token>) are
+ * attached in ApiClient's OkHttp interceptor, not here — this interface only
+ * describes the routes/shapes.
+ */
+interface ApiService {
+
+    @POST("agent/auth/login")
+    suspend fun login(@Body body: LoginRequest): Response<LoginResponse>
+
+    @POST("auth/refresh")
+    suspend fun refresh(@Body body: RefreshRequest): Response<RefreshResponse>
+
+    @GET("agent/orders")
+    suspend fun getOrders(@Query("status") status: String? = null): Response<List<Order>>
+
+    @GET("agent/orders/{id}")
+    suspend fun getOrder(@Path("id") id: String): Response<Order>
+
+    @POST("agent/orders/{id}/verify-payment")
+    suspend fun verifyPayment(
+        @Path("id") id: String,
+        @Body body: VerifyPaymentRequest,
+    ): Response<Order>
+
+    @POST("agent/orders/{id}/complete")
+    suspend fun completeOrder(@Path("id") id: String): Response<Order>
+
+    @GET("agent/transactions")
+    suspend fun getTransactions(@Query("range") range: String? = null): Response<List<Transaction>>
+
+    @POST("agent/sms-logs")
+    suspend fun uploadSmsLog(@Body body: SmsLogEntry): Response<SmsLogUploadResponse>
+
+    @GET("agent/notifications")
+    suspend fun getNotifications(): Response<List<AgentNotification>>
+
+    @GET("agent/sim-routing")
+    suspend fun getSimRouting(): Response<List<SimRoutingEntry>>
+
+    @POST("agent/orders/{id}/dial-attempts")
+    suspend fun startDialAttempt(@Path("id") orderId: String, @Body body: DialAttemptStartRequest): Response<DialAttemptStartResponse>
+
+    @PUT("agent/dial-attempts/{attemptId}")
+    suspend fun reportDialResult(@Path("attemptId") attemptId: String, @Body body: DialAttemptResultRequest): Response<DialAttemptResultResponse>
+}

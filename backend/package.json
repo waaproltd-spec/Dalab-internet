@@ -1,0 +1,14 @@
+{
+  "name": "com.dalab.internet",
+  "version": "1.0.0",
+  "description": "DALAB INTERNET backend API — customer, agent, and super admin clients share this one service and database.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test --test-concurrency=1"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}

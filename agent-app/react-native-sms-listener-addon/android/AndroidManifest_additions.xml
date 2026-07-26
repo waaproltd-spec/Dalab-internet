@@ -1,0 +1,18 @@
+<!--
+  MERGE into android/app/src/main/AndroidManifest.xml — same permissions as
+  the native Kotlin Agent App (dalab-agent-app.zip), since this is the same
+  underlying capability, just accessed through the RN bridge module instead
+  of a Kotlin-only receiver.
+-->
+<uses-permission android:name="android.permission.RECEIVE_SMS" />
+<uses-permission android:name="android.permission.READ_SMS" />
+<uses-permission android:name="android.permission.INTERNET" />
+
+<!--
+  Also register SmsListenerPackage in MainApplication.kt's getPackages():
+
+    override fun getPackages(): List<ReactPackage> =
+        PackageList(this).packages.apply {
+            add(SmsListenerPackage())
+        }
+-->
