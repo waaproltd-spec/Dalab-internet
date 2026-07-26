@@ -1,4 +1,4 @@
-package com.dalab.internet.ui
+package com.dalab.internet.customer.ui
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -12,15 +12,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.dalab.internet.data.Order
-import com.dalab.internet.data.OrderStatus
-import com.dalab.internet.network.ApiClient
+import com.dalab.internet.customer.data.CustomerOrder
+import com.dalab.internet.customer.data.OrderStatus
+import com.dalab.internet.customer.network.ApiClient
 import kotlinx.coroutines.launch
 
+/** The customer's own order history / tracking — GET /orders. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun OrdersListScreen(onOpenOrder: (Order) -> Unit) {
-    var orders by remember { mutableStateOf<List<Order>>(emptyList()) }
+fun OrdersScreen(onOpenOrder: (CustomerOrder) -> Unit) {
+    var orders by remember { mutableStateOf<List<CustomerOrder>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     val scope = rememberCoroutineScope()
 
@@ -28,11 +29,9 @@ fun OrdersListScreen(onOpenOrder: (Order) -> Unit) {
         loading = true
         scope.launch {
             try {
-                val response = ApiClient.service.getOrders(status = "pending")
-                orders = response.body().orEmpty()
+                orders = ApiClient.service.getOrders().body().orEmpty()
             } catch (_: Exception) {
-                // Leave the previous list in place; a banner/snackbar in a full
-                // implementation would say "couldn't refresh" here.
+                // Leave the previous list in place.
             }
             loading = false
         }
@@ -43,7 +42,7 @@ fun OrdersListScreen(onOpenOrder: (Order) -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("New Orders") },
+                title = { Text("My Orders") },
                 actions = {
                     IconButton(onClick = { refresh() }) {
                         Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
@@ -57,8 +56,8 @@ fun OrdersListScreen(onOpenOrder: (Order) -> Unit) {
                 CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
             } else if (orders.isEmpty()) {
                 Text(
-                    "No pending orders right now.",
-                    modifier = Modifier.align(Alignment.Center),
+                    "No orders yet — buy your first package from the Home tab.",
+                    modifier = Modifier.align(Alignment.Center).padding(24.dp),
                     style = MaterialTheme.typography.bodyMedium,
                 )
             } else {
@@ -74,17 +73,13 @@ fun OrdersListScreen(onOpenOrder: (Order) -> Unit) {
 }
 
 @Composable
-private fun OrderRow(order: Order, onClick: () -> Unit) {
+private fun OrderRow(order: CustomerOrder, onClick: () -> Unit) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(16.dp),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Column {
-            Text(order.customerName ?: "Unknown customer", fontWeight = FontWeight.Bold)
-            Text("${order.companyName} · ${order.packageName}", style = MaterialTheme.typography.bodySmall)
+            Text("${order.companyName} · ${order.packageName}", fontWeight = FontWeight.Bold)
             Text(order.id, style = MaterialTheme.typography.labelSmall)
         }
         Column(horizontalAlignment = Alignment.End) {
@@ -97,8 +92,8 @@ private fun OrderRow(order: Order, onClick: () -> Unit) {
 @Composable
 fun StatusChip(status: OrderStatus) {
     val label = when (status) {
-        OrderStatus.PENDING -> "Pending"
-        OrderStatus.IN_PROGRESS -> "In Progress"
+        OrderStatus.PENDING -> "Awaiting Payment"
+        OrderStatus.IN_PROGRESS -> "Payment Confirmed"
         OrderStatus.COMPLETED -> "Completed"
         OrderStatus.FAILED -> "Failed"
         OrderStatus.CANCELLED -> "Cancelled"

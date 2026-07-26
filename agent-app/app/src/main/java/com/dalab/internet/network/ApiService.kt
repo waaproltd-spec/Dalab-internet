@@ -1,7 +1,11 @@
 package com.dalab.internet.network
 
 import com.dalab.internet.data.AgentProfile
+import com.dalab.internet.data.AgentReport
+import com.dalab.internet.data.Company
+import com.dalab.internet.data.CustomerSummary
 import com.dalab.internet.data.Order
+import com.dalab.internet.data.PackageItem
 import com.dalab.internet.data.SmsLogEntry
 import com.dalab.internet.data.Transaction
 import com.dalab.internet.data.AgentNotification
@@ -19,6 +23,14 @@ data class DialAttemptStartRequest(val simSlot: Int?, val ussdString: String, va
 data class DialAttemptStartResponse(val id: String)
 data class DialAttemptResultRequest(val status: String, val responseMessage: String?)
 data class DialAttemptResultResponse(val id: String, val status: String)
+data class CreateCustomerRequest(val phone: String, val name: String? = null)
+data class CreateSaleRequest(
+    val customerPhone: String,
+    val companyId: String,
+    val packageId: String,
+    val receiverPhone: String? = null,
+    val paymentMethod: String? = null,
+)
 
 /**
  * Mirrors the backend architecture doc, §4 "Agent-facing", and the real
@@ -68,4 +80,30 @@ interface ApiService {
 
     @PUT("agent/dial-attempts/{attemptId}")
     suspend fun reportDialResult(@Path("attemptId") attemptId: String, @Body body: DialAttemptResultRequest): Response<DialAttemptResultResponse>
+
+    // ---------------- Customer management (walk-in sales) ----------------
+
+    @GET("agent/customers")
+    suspend fun getCustomers(@Query("search") search: String? = null): Response<List<CustomerSummary>>
+
+    @POST("agent/customers")
+    suspend fun createCustomer(@Body body: CreateCustomerRequest): Response<CustomerSummary>
+
+    // ---------------- Packages catalog (for sales + browsing) ----------------
+
+    @GET("companies")
+    suspend fun getCompanies(): Response<List<Company>>
+
+    @GET("companies/{id}/packages")
+    suspend fun getPackages(@Path("id") companyId: String): Response<List<PackageItem>>
+
+    // ---------------- Sales ----------------
+
+    @POST("agent/orders")
+    suspend fun createSale(@Body body: CreateSaleRequest): Response<Order>
+
+    // ---------------- Reports ----------------
+
+    @GET("agent/reports")
+    suspend fun getReports(@Query("range") range: String? = null): Response<AgentReport>
 }

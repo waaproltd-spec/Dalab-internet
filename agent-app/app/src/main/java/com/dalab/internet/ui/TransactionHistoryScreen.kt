@@ -3,6 +3,8 @@ package com.dalab.internet.ui
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -15,7 +17,7 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TransactionHistoryScreen() {
+fun TransactionHistoryScreen(onBack: () -> Unit) {
     var transactions by remember { mutableStateOf<List<Transaction>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     val scope = rememberCoroutineScope()
@@ -31,7 +33,18 @@ fun TransactionHistoryScreen() {
         }
     }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("Transaction History") }) }) { padding ->
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Transaction History") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+            )
+        }
+    ) { padding ->
         Box(modifier = Modifier.padding(padding).fillMaxSize()) {
             if (loading) {
                 CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
