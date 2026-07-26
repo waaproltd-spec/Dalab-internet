@@ -23,7 +23,7 @@ data class CreateOrderRequest(
 )
 
 /**
- * Mirrors admin-backend-ts's routes exactly (src/routes/*.routes.ts) — the
+ * Mirrors admin-backend-ts's routes exactly (src/routes/ *.routes.ts) — the
  * production backend for this whole project. Base URL and auth header
  * (Authorization: Bearer <token>) are attached in ApiClient's OkHttp
  * interceptor, not here.
