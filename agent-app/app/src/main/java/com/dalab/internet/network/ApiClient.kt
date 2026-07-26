@@ -18,7 +18,7 @@ object ApiClient {
     // Android emulator, use "http://10.0.2.2:4000/" (the emulator's alias
     // for the host's localhost); from a physical device on the same LAN,
     // use the host machine's LAN IP instead.
-    private const val BASE_URL = "https://dalab-admin-backend.onrender.com/"
+    const val BASE_URL = "https://dalab-admin-backend.onrender.com/"
 
     private val authInterceptor = Interceptor { chain ->
         val token = SessionManager.accessToken()
