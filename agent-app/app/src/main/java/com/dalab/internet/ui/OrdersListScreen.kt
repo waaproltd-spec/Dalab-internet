@@ -15,13 +15,18 @@ import androidx.compose.ui.unit.dp
 import com.dalab.internet.data.Order
 import com.dalab.internet.data.OrderStatus
 import com.dalab.internet.network.ApiClient
+import com.dalab.internet.network.RealtimeClient
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OrdersListScreen(onOpenOrder: (Order) -> Unit) {
     var orders by remember { mutableStateOf<List<Order>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
+    var lastSyncedAt by remember { mutableStateOf<Date?>(null) }
     val scope = rememberCoroutineScope()
 
     fun refresh() {
@@ -30,6 +35,7 @@ fun OrdersListScreen(onOpenOrder: (Order) -> Unit) {
             try {
                 val response = ApiClient.service.getOrders(status = "pending")
                 orders = response.body().orEmpty()
+                lastSyncedAt = Date()
             } catch (_: Exception) {
                 // Leave the previous list in place; a banner/snackbar in a full
                 // implementation would say "couldn't refresh" here.
@@ -40,10 +46,29 @@ fun OrdersListScreen(onOpenOrder: (Order) -> Unit) {
 
     LaunchedEffect(Unit) { refresh() }
 
+    // Real-time push: any order change anywhere (customer app, another agent,
+    // the dashboard) re-fetches this pending list instead of waiting for the
+    // agent to pull down manually.
+    DisposableEffect(Unit) {
+        val realtime = RealtimeClient(path = "agent/orders/stream") { refresh() }
+        realtime.connect()
+        onDispose { realtime.disconnect() }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("New Orders") },
+                title = {
+                    Column {
+                        Text("New Orders")
+                        lastSyncedAt?.let {
+                            Text(
+                                "Synced ${SimpleDateFormat("HH:mm:ss", Locale.US).format(it)}",
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
+                    }
+                },
                 actions = {
                     IconButton(onClick = { refresh() }) {
                         Icon(Icons.Filled.Refresh, contentDescription = "Refresh")

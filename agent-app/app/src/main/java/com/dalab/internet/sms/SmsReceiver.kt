@@ -53,8 +53,13 @@ class SmsReceiver : BroadcastReceiver() {
                 val uploadResponse = ApiClient.service.uploadSmsLog(parsed)
                 val smsLogId = uploadResponse.body()?.id
                 val matchedOrderId = uploadResponse.body()?.matchedOrderId
+                val requiresManualApproval = uploadResponse.body()?.requiresManualApproval ?: false
 
-                if (matchedOrderId != null) {
+                if (matchedOrderId != null && requiresManualApproval) {
+                    // A Super Admin has turned off automation for this order's
+                    // provider — don't auto-dial, just point the agent at it.
+                    notifyManualApprovalNeeded(context, matchedOrderId, parsed.parsedAmount)
+                } else if (matchedOrderId != null) {
                     val orchestrator = UssdOrchestrator(context)
                     val result = orchestrator.processMatchedOrder(matchedOrderId, smsLogId)
                     notifyAgent(context, matchedOrderId, parsed.parsedAmount, result.outcome, result.responseMessage)
@@ -67,6 +72,24 @@ class SmsReceiver : BroadcastReceiver() {
                 pendingResult.finish()
             }
         }
+    }
+
+    private fun notifyManualApprovalNeeded(context: Context, orderId: String, amount: Double?) {
+        val openIntent = Intent(context, MainActivity::class.java).apply {
+            putExtra("orderId", orderId)
+        }
+        val pendingIntent = android.app.PendingIntent.getActivity(
+            context, 0, openIntent,
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(context, "payment_channel")
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("Payment received — order $orderId")
+            .setContentText("\$${amount ?: "?"} matched. Automation is off for this provider — verify manually.")
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+        NotificationManagerCompat.from(context).notify(orderId.hashCode(), notification)
     }
 
     private fun notifyAgent(context: Context, orderId: String, amount: Double?, outcome: DialOutcome, detail: String?) {

@@ -18,7 +18,7 @@ data class LoginResponse(val accessToken: String, val refreshToken: String, val 
 data class RefreshRequest(val refreshToken: String)
 data class RefreshResponse(val accessToken: String, val refreshToken: String)
 data class VerifyPaymentRequest(val smsLogId: String? = null)
-data class SmsLogUploadResponse(val id: String, val matchedOrderId: String?)
+data class SmsLogUploadResponse(val id: String, val matchedOrderId: String?, val requiresManualApproval: Boolean = false)
 data class DialAttemptStartRequest(val simSlot: Int?, val ussdString: String, val attemptNumber: Int)
 data class DialAttemptStartResponse(val id: String)
 data class DialAttemptResultRequest(val status: String, val responseMessage: String?)

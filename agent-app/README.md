@@ -45,8 +45,10 @@ need it since it installs the SDK itself).
   incoming Hormuud/EVC Plus confirmation SMS (same pattern used in the Super Admin
   SMS listener built earlier), uploads matches to `POST /agent/sms-logs`, and
   notifies the agent when the server matches it to a pending order.
-- **Real-time sync** (`RealtimeClient`) — a WebSocket connection so order updates
-  from the Customer App or Super Admin Web show up without polling.
+- **Real-time sync** (`RealtimeClient`) — a Server-Sent Events connection
+  (`GET /agent/orders/stream`) with reconnect-with-backoff, wired into
+  `OrdersListScreen`, so order updates from the Customer App or Super Admin
+  Web show up without polling.
 - **Boot persistence** (`BootReceiver`) — listening state survives a device restart.
 
 ## What's intentionally left as TODOs
@@ -61,8 +63,6 @@ need it since it installs the SDK itself).
 - `SessionManager` uses plain `SharedPreferences` for brevity; swap in
   `EncryptedSharedPreferences` (dependency already listed in the Gradle snippet)
   before shipping, since it's holding JWTs.
-- `RealtimeClient` doesn't reconnect automatically on failure — add exponential
-  backoff before relying on it in production.
 - Visual polish is minimal — app icon, `ic_notification`, `strings.xml`, and
   theme colors exist (reusing the DALAB brand colors — indigo `#1D2E8C`,
   green `#16A34A` — established by the Customer App and Admin Dashboard

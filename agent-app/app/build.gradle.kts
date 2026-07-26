@@ -68,6 +68,7 @@ dependencies {
     implementation("com.squareup.retrofit2:retrofit:2.11.0")
     implementation("com.squareup.retrofit2:converter-gson:2.11.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
 
     // Recommended upgrade over plain SharedPreferences for SessionManager's tokens:
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
