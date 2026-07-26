@@ -77,3 +77,57 @@ data class AgentNotification(
     val receivedAt: String,
     val read: Boolean = false,
 )
+
+/** Mirrors GET /companies (admin-backend-ts, companies.routes.ts) — public, no auth required. */
+data class Company(
+    val id: String,
+    val name: String,
+    val groupNumber: Int,
+    val colorHex: String,
+    val logoUrl: String? = null,
+    val status: String, // "online" | "offline"
+    val gateway: String? = null,
+)
+
+/** Mirrors GET /companies/{id}/packages. */
+data class PackageItem(
+    val id: String,
+    val companyId: String,
+    val categoryId: String,
+    val name: String,
+    val oldPrice: Double? = null,
+    val price: Double,
+    val mb: Int = 0,
+    val minutes: Int = 0,
+    val sms: Int = 0,
+    val validity: String? = null,
+    val active: Boolean = true,
+)
+
+/** Mirrors GET/POST /agent/customers — a lighter view than the admin customer record. */
+data class CustomerSummary(
+    val id: String,
+    val phone: String,
+    val name: String?,
+    val status: String, // "active" | "blocked"
+    val macaashPoints: Int = 0,
+    val createdAt: String,
+)
+
+/** One day's worth of an agent's completed sales, from GET /agent/reports. */
+data class ReportPoint(
+    val day: String,
+    val sales: Double,
+    val orders: Int,
+)
+
+data class ReportTotals(
+    val totalSales: Double,
+    val totalOrders: Int,
+)
+
+data class AgentReport(
+    val range: String,
+    val series: List<ReportPoint>,
+    val totals: ReportTotals,
+)

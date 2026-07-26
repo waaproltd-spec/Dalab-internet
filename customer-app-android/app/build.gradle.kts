@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.dalab.internet"
+    namespace = "com.dalab.internet.customer"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.dalab.internet"
+        applicationId = "com.dalab.internet.customer"
         minSdk = 26
         targetSdk = 34
         versionCode = 1
@@ -20,12 +20,12 @@ android {
         // release signing is skipped locally if these aren't set, which just
         // falls back to an unsigned release build.
         create("release") {
-            val storeFilePath = System.getenv("AGENT_KEYSTORE_PATH")
+            val storeFilePath = System.getenv("CUSTOMER_KEYSTORE_PATH")
             if (!storeFilePath.isNullOrBlank()) {
                 storeFile = file(storeFilePath)
-                storePassword = System.getenv("AGENT_KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("AGENT_KEY_ALIAS")
-                keyPassword = System.getenv("AGENT_KEY_PASSWORD")
+                storePassword = System.getenv("CUSTOMER_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("CUSTOMER_KEY_ALIAS")
+                keyPassword = System.getenv("CUSTOMER_KEY_PASSWORD")
             }
         }
     }
@@ -35,7 +35,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            if (!System.getenv("AGENT_KEYSTORE_PATH").isNullOrBlank()) {
+            if (!System.getenv("CUSTOMER_KEYSTORE_PATH").isNullOrBlank()) {
                 signingConfig = signingConfigs.getByName("release")
             }
         }

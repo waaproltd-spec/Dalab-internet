@@ -9,20 +9,31 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.Logout
+import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.PointOfSale
+import androidx.compose.material.icons.filled.Sell
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import com.dalab.internet.auth.AuthRepository
 import com.dalab.internet.auth.SessionManager
 import com.dalab.internet.data.Order
 import com.dalab.internet.sms.SmsListenerState
+import com.dalab.internet.ui.CustomersScreen
 import com.dalab.internet.ui.LoginScreen
+import com.dalab.internet.ui.NewSaleScreen
 import com.dalab.internet.ui.OrderDetailScreen
 import com.dalab.internet.ui.OrdersListScreen
+import com.dalab.internet.ui.PackagesScreen
+import com.dalab.internet.ui.ReportsScreen
 import com.dalab.internet.ui.SmsPermissionScreen
 import com.dalab.internet.ui.TransactionHistoryScreen
 
@@ -53,7 +64,8 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, LOGIN, ORDERS, ORDER_DETAIL, TRANSACTIONS }
+private enum class Screen { PERMISSIONS, LOGIN, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS }
+private enum class HomeTab { ORDERS, SALES, CUSTOMERS, REPORTS, MORE }
 
 @Composable
 private fun AgentApp() {
@@ -70,7 +82,7 @@ private fun AgentApp() {
         mutableStateOf(
             if (!hasSmsPermission) Screen.PERMISSIONS
             else if (!SessionManager.isLoggedIn()) Screen.LOGIN
-            else Screen.ORDERS
+            else Screen.HOME
         )
     }
     var selectedOrder by remember { mutableStateOf<Order?>(null) }
@@ -80,7 +92,7 @@ private fun AgentApp() {
             hasSmsPermission = grantedMap.values.all { it }
             if (hasSmsPermission) {
                 SmsListenerState.setListening(true)
-                screen = if (SessionManager.isLoggedIn()) Screen.ORDERS else Screen.LOGIN
+                screen = if (SessionManager.isLoggedIn()) Screen.HOME else Screen.LOGIN
             } else {
                 // If the user denied without checking "don't ask again", Android will
                 // still show the rationale next time; shouldShowRequestPermissionRationale
@@ -98,22 +110,26 @@ private fun AgentApp() {
             onRequestPermissions = { permissionLauncher.launch(SMS_PERMISSIONS) },
         )
 
-        Screen.LOGIN -> LoginScreen(onLoggedIn = { screen = Screen.ORDERS })
+        Screen.LOGIN -> LoginScreen(onLoggedIn = { screen = Screen.HOME })
 
-        Screen.ORDERS -> AgentHome(
+        Screen.HOME -> AgentHome(
             onOpenOrder = { order -> selectedOrder = order; screen = Screen.ORDER_DETAIL },
+            onOpenPackages = { screen = Screen.PACKAGES },
             onOpenTransactions = { screen = Screen.TRANSACTIONS },
+            onLogout = { AuthRepository.logout(); screen = Screen.LOGIN },
         )
 
         Screen.ORDER_DETAIL -> selectedOrder?.let { order ->
             OrderDetailScreen(
                 order = order,
-                onBack = { screen = Screen.ORDERS },
+                onBack = { screen = Screen.HOME },
                 onOrderUpdated = { selectedOrder = it },
             )
         }
 
-        Screen.TRANSACTIONS -> TransactionHistoryScreen()
+        Screen.PACKAGES -> PackagesScreen(onBack = { screen = Screen.HOME })
+
+        Screen.TRANSACTIONS -> TransactionHistoryScreen(onBack = { screen = Screen.HOME })
     }
 }
 
@@ -124,32 +140,89 @@ private fun rememberLauncherForSmsPermissions(
     ActivityResultContracts.RequestMultiplePermissions(), onResult
 )
 
-/** Simple bottom-nav shell around Orders / Transactions for the logged-in agent. */
+/** Bottom-nav shell for the logged-in agent: Orders, Sales, Customers, Reports, More. */
 @Composable
-private fun AgentHome(onOpenOrder: (Order) -> Unit, onOpenTransactions: () -> Unit) {
-    var tab by remember { mutableStateOf(0) }
+private fun AgentHome(
+    onOpenOrder: (Order) -> Unit,
+    onOpenPackages: () -> Unit,
+    onOpenTransactions: () -> Unit,
+    onLogout: () -> Unit,
+) {
+    var tab by remember { mutableStateOf(HomeTab.ORDERS) }
 
     Scaffold(
         bottomBar = {
             NavigationBar {
                 NavigationBarItem(
-                    selected = tab == 0,
-                    onClick = { tab = 0 },
+                    selected = tab == HomeTab.ORDERS,
+                    onClick = { tab = HomeTab.ORDERS },
                     icon = { Icon(Icons.Filled.List, contentDescription = "Orders") },
                     label = { Text("Orders") },
                 )
                 NavigationBarItem(
-                    selected = tab == 1,
-                    onClick = { tab = 1; onOpenTransactions() },
-                    icon = { Icon(Icons.Filled.History, contentDescription = "History") },
-                    label = { Text("History") },
+                    selected = tab == HomeTab.SALES,
+                    onClick = { tab = HomeTab.SALES },
+                    icon = { Icon(Icons.Filled.Sell, contentDescription = "New Sale") },
+                    label = { Text("Sales") },
+                )
+                NavigationBarItem(
+                    selected = tab == HomeTab.CUSTOMERS,
+                    onClick = { tab = HomeTab.CUSTOMERS },
+                    icon = { Icon(Icons.Filled.People, contentDescription = "Customers") },
+                    label = { Text("Customers") },
+                )
+                NavigationBarItem(
+                    selected = tab == HomeTab.REPORTS,
+                    onClick = { tab = HomeTab.REPORTS },
+                    icon = { Icon(Icons.Filled.Assessment, contentDescription = "Reports") },
+                    label = { Text("Reports") },
+                )
+                NavigationBarItem(
+                    selected = tab == HomeTab.MORE,
+                    onClick = { tab = HomeTab.MORE },
+                    icon = { Icon(Icons.Filled.PointOfSale, contentDescription = "More") },
+                    label = { Text("More") },
                 )
             }
         }
     ) { padding ->
         Box(modifier = Modifier.padding(padding)) {
-            if (tab == 0) OrdersListScreen(onOpenOrder = onOpenOrder)
-            else TransactionHistoryScreen()
+            when (tab) {
+                HomeTab.ORDERS -> OrdersListScreen(onOpenOrder = onOpenOrder)
+                HomeTab.SALES -> NewSaleScreen()
+                HomeTab.CUSTOMERS -> CustomersScreen()
+                HomeTab.REPORTS -> ReportsScreen()
+                HomeTab.MORE -> MoreScreen(
+                    onOpenPackages = onOpenPackages,
+                    onOpenTransactions = onOpenTransactions,
+                    onLogout = onLogout,
+                )
+            }
         }
+    }
+}
+
+@Composable
+private fun MoreScreen(onOpenPackages: () -> Unit, onOpenTransactions: () -> Unit, onLogout: () -> Unit) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        ListItem(
+            headlineContent = { Text("Packages") },
+            supportingContent = { Text("Browse the full catalog and pricing") },
+            leadingContent = { Icon(Icons.Filled.List, contentDescription = null) },
+            modifier = Modifier.clickable(onClick = onOpenPackages),
+        )
+        Divider()
+        ListItem(
+            headlineContent = { Text("Transaction History") },
+            supportingContent = { Text("Orders you've completed") },
+            leadingContent = { Icon(Icons.Filled.History, contentDescription = null) },
+            modifier = Modifier.clickable(onClick = onOpenTransactions),
+        )
+        Divider()
+        ListItem(
+            headlineContent = { Text("Log out") },
+            leadingContent = { Icon(Icons.Filled.Logout, contentDescription = null) },
+            modifier = Modifier.clickable(onClick = onLogout),
+        )
     }
 }

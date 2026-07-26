@@ -1,25 +1,24 @@
 # DALAB Agent App — Android module
 
+A real Kotlin + Jetpack Compose Android app, wired to the deployed production
+backend (`admin-backend-ts`, at `https://dalab-admin-backend.onrender.com/` —
+see `ApiClient.kt`). It's a standalone Gradle project (own `gradlew`,
+`settings.gradle.kts`) — open `agent-app/` directly in Android Studio, or build
+it headlessly via the GitHub Actions workflow below.
+
 **Want an installable APK without setting up Android Studio?** Push this repo
-to GitHub and the included `.github/workflows/build-apk.yml` builds a real
-debug APK automatically on GitHub's own servers (which have the Android SDK
-— this sandbox doesn't). After the push, go to the repo's **Actions** tab,
-open the latest run, and download the `dalab-agent-debug-apk` artifact —
-that's a real, installable APK, not a placeholder.
+to GitHub and the root-level `.github/workflows/agent-app-build-apk.yml`
+builds a real debug APK automatically on GitHub's own servers (which have the
+Android SDK).
+After the push, go to the repo's **Actions** tab, open the latest run, and
+download the `dalab-agent-debug-apk` artifact — that's a real, installable
+APK, not a placeholder. See "Release APK" below for a signed build.
 
-**Two things you must do before this builds, and why they can't be pre-filled:**
-1. `gradle/wrapper/gradle-wrapper.jar` is missing — it's a compiled binary, not
-   text, so it can't be generated in this environment. Run `gradle wrapper`
-   once (any local Gradle install) or open the project in Android Studio,
-   which regenerates it automatically.
-2. Copy `local.properties.example` → `local.properties` and set `sdk.dir` to
-   your Android SDK path (Android Studio also does this automatically).
-
-This is a real Kotlin/Jetpack Compose Android app skeleton, not a mockup — it's meant
-to be dropped into a new Android Studio project (or a module in an existing
-multi-app repo) and built against the backend described in
-`dalab-backend-architecture.md`. Nothing here runs in the browser; it needs the
-Android SDK and a real API server to actually function.
+**One thing you may still need to do locally:** copy
+`local.properties.example` → `local.properties` and set `sdk.dir` to your
+Android SDK path if building from Android Studio/a local Gradle install
+(Android Studio does this automatically; the GitHub Actions workflow doesn't
+need it since it installs the SDK itself).
 
 ## What's implemented
 
@@ -28,14 +27,24 @@ Android SDK and a real API server to actually function.
   back to an **Open App Settings** button if the agent denies permanently.
 - **Agent login** (`LoginScreen`, `AuthRepository`, `SessionManager`) — phone +
   password against `POST /agent/auth/login`, JWT stored locally.
-- **SMS listener** (`SmsReceiver`, `PaymentSmsParsers`, `SmsListenerState`) — parses
-  incoming Hormuud/EVC Plus confirmation SMS (same pattern used in the Super Admin
-  SMS listener built earlier), uploads matches to `POST /agent/sms-logs`, and
-  notifies the agent when the server matches it to a pending order.
+- **Customer management** (`CustomersScreen`) — search existing customers by
+  name/phone, or register a new walk-in customer (`GET`/`POST /agent/customers`).
+- **Sales** (`NewSaleScreen`) — pick a provider, pick a package, enter the
+  customer's phone and payment method, submit (`POST /agent/orders`) — creates
+  the order and the customer record if they don't have one yet, same as the
+  Customer App's OTP signup does.
+- **Packages** (`PackagesScreen`) — browse the full catalog and live pricing
+  per provider (`GET /companies`, `GET /companies/{id}/packages`).
 - **Orders list + detail** (`OrdersListScreen`, `OrderDetailScreen`) — view pending
   orders, see customer + package detail, **Verify Payment**, then **Mark as
   Completed**.
 - **Transaction history** (`TransactionHistoryScreen`).
+- **Reports** (`ReportsScreen`) — the agent's own completed-sales totals and
+  daily/weekly/monthly/yearly breakdown (`GET /agent/reports`).
+- **SMS listener** (`SmsReceiver`, `PaymentSmsParsers`, `SmsListenerState`) — parses
+  incoming Hormuud/EVC Plus confirmation SMS (same pattern used in the Super Admin
+  SMS listener built earlier), uploads matches to `POST /agent/sms-logs`, and
+  notifies the agent when the server matches it to a pending order.
 - **Real-time sync** (`RealtimeClient`) — a WebSocket connection so order updates
   from the Customer App or Super Admin Web show up without polling.
 - **Boot persistence** (`BootReceiver`) — listening state survives a device restart.
@@ -59,15 +68,25 @@ Android SDK and a real API server to actually function.
   Customer App and Admin Dashboard prototypes already establish the DALAB brand
   colors — indigo `#1D2E8C`, green `#16A34A` — reuse those here for consistency).
 
-## Integration checklist
+## Release APK
 
-1. Create a new Android Studio project (or module) targeting package
-   `com.dalab.internet`.
-2. Copy `app/src/main/java/com/dalab/internet/**` in as-is.
-3. Merge `AndroidManifest_additions.xml` into your manifest.
-4. Merge `app/build.gradle.kts.snippet` into your `dependencies { }` block.
-5. Point `ApiClient.BASE_URL` and `RealtimeClient`'s WebSocket URL at your real
-   API host once it exists.
-6. Build the backend routes this expects — see `dalab-backend-architecture.md`
-   §4 "Agent-facing" and §3 for the `agents` / `sms_logs` table additions, and
-   §5a for the role-based access control this app's JWT relies on.
+`build-apk.yml` builds and uploads a signed **release** APK on every push to
+`main` that touches `agent-app/`, alongside the existing debug build. Signing
+needs four repository secrets (Settings → Secrets and variables → Actions):
+
+- `AGENT_KEYSTORE_BASE64` — your release keystore (`.jks`/`.keystore`), base64-encoded
+- `AGENT_KEYSTORE_PASSWORD`
+- `AGENT_KEY_ALIAS`
+- `AGENT_KEY_PASSWORD`
+
+Generate a keystore yourself (never share or commit it):
+
+```bash
+keytool -genkeypair -v -keystore agent-release.jks -alias dalab-agent \
+  -keyalg RSA -keysize 2048 -validity 10000
+base64 -w0 agent-release.jks   # paste the output into AGENT_KEYSTORE_BASE64
+```
+
+Without those secrets set, the release build step is skipped automatically —
+the debug APK still builds either way, so CI never fails for a fork/PR that
+doesn't have signing configured.

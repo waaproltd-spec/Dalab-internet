@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { query } from "../db/pool.js";
-import { requireStaff } from "../auth/middleware.js";
+import { query, queryOne } from "../db/pool.js";
+import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
 
 export const reportsRouter = Router();
@@ -11,6 +11,27 @@ const RANGE_TO_INTERVAL: Record<string, string> = {
   monthly: "1 month",
   yearly: "1 year",
 };
+
+// Agent's own sales report — same shape as /admin/reports, scoped to orders
+// this agent personally completed, plus running totals for a dashboard tile.
+reportsRouter.get("/agent/reports", requireAuth("agent"), async (req, res) => {
+  const range = String(req.query.range ?? "weekly");
+  const interval = RANGE_TO_INTERVAL[range] ?? RANGE_TO_INTERVAL.weekly;
+  const series = await query(
+    `SELECT date(completed_at) AS day, SUM(amount) AS sales, COUNT(*) AS orders
+     FROM orders
+     WHERE status='completed' AND agent_id=$1 AND completed_at >= now() - $2::interval
+     GROUP BY date(completed_at)
+     ORDER BY day`,
+    [req.auth!.sub, interval]
+  );
+  const totals = await queryOne(
+    `SELECT COALESCE(SUM(amount),0) AS total_sales, COUNT(*) AS total_orders
+     FROM orders WHERE status='completed' AND agent_id=$1`,
+    [req.auth!.sub]
+  );
+  sendJson(res, 200, { range, series, totals });
+});
 
 reportsRouter.get("/admin/reports", requireStaff(), async (req, res) => {
   const range = String(req.query.range ?? "weekly");

@@ -69,6 +69,45 @@ ordersRouter.get("/orders/:id", requireAuth("customer"), async (req, res) => {
 });
 
 // ---------------- Agent ----------------
+
+// Agent-initiated sale — same validation/pricing/Macaash logic as the
+// customer-initiated POST /orders above, but the customer is identified by
+// phone (looked up or created on the spot, same as OTP verify does) since
+// the agent — not the customer — is the one authenticated here.
+ordersRouter.post("/agent/orders", requireAuth("agent"), async (req, res) => {
+  const { customerPhone, companyId, packageId, receiverPhone, paymentMethod } = req.body;
+  const phone = String(customerPhone ?? "").trim();
+  if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid customer phone number" });
+
+  const company = await queryOne(`SELECT * FROM companies WHERE id=$1`, [companyId]);
+  if (!company) return sendJson(res, 404, { error: "Company not found" });
+  if (company.status === "offline") return sendJson(res, 409, { error: `${company.name} is currently offline` });
+
+  const pkg = await queryOne(`SELECT * FROM packages WHERE id=$1 AND active=true`, [packageId]);
+  if (!pkg) return sendJson(res, 404, { error: "Package not found" });
+
+  let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
+  if (!customer) {
+    customer = await queryOne(`INSERT INTO customers (id, phone) VALUES ($1,$2) RETURNING *`, [randomUUID(), phone]);
+  }
+  if (customer!.status === "blocked") return sendJson(res, 403, { error: "This customer's account has been blocked" });
+
+  const id = orderRef();
+  await query(
+    `INSERT INTO orders (id, customer_id, company_id, package_id, amount, status, sender_phone, receiver_phone, payment_method, channel, agent_id, macaash_earned)
+     VALUES ($1,$2,$3,$4,$5,'pending',$6,$7,$8,'agent',$9,$10)`,
+    [
+      id, customer!.id, companyId, packageId, pkg.price,
+      phone,
+      receiverPhone || phone,
+      paymentMethod || company.gateway || null,
+      req.auth!.sub,
+      Math.round(pkg.price * MACAASH_POINTS_PER_DOLLAR),
+    ]
+  );
+  sendJson(res, 201, await loadOrder(id));
+});
+
 ordersRouter.get("/agent/orders", requireAuth("agent"), async (req, res) => {
   const { status } = req.query;
   const rows = status

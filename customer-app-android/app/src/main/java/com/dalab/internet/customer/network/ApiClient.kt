@@ -1,6 +1,6 @@
-package com.dalab.internet.network
+package com.dalab.internet.customer.network
 
-import com.dalab.internet.auth.SessionManager
+import com.dalab.internet.customer.auth.SessionManager
 import kotlinx.coroutines.runBlocking
 import okhttp3.Authenticator
 import okhttp3.Interceptor
