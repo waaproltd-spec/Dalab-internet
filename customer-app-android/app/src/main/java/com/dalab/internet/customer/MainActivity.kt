@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CardGiftcard
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Receipt
@@ -17,7 +18,9 @@ import com.dalab.internet.customer.data.Company
 import com.dalab.internet.customer.data.CustomerOrder
 import com.dalab.internet.customer.data.PackageItem
 import com.dalab.internet.customer.ui.CheckoutScreen
+import com.dalab.internet.customer.ui.CompanyPackagesScreen
 import com.dalab.internet.customer.ui.HomeScreen
+import com.dalab.internet.customer.ui.MacaashScreen
 import com.dalab.internet.customer.ui.OrderDetailScreen
 import com.dalab.internet.customer.ui.OrdersScreen
 import com.dalab.internet.customer.ui.OtpLoginScreen
@@ -36,12 +39,13 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { LOGIN, HOME, CHECKOUT, ORDER_DETAIL }
-private enum class HomeTab { BUY, ORDERS, PROFILE }
+private enum class Screen { LOGIN, HOME, COMPANY_PACKAGES, CHECKOUT, ORDER_DETAIL }
+private enum class HomeTab { HOME, MACAASH, ORDERS, PROFILE }
 
 @Composable
 private fun CustomerApp() {
     var screen by remember { mutableStateOf(if (SessionManager.isLoggedIn()) Screen.HOME else Screen.LOGIN) }
+    var selectedCompany by remember { mutableStateOf<Company?>(null) }
     var checkoutSelection by remember { mutableStateOf<Pair<Company, PackageItem>?>(null) }
     var selectedOrder by remember { mutableStateOf<CustomerOrder?>(null) }
 
@@ -49,10 +53,18 @@ private fun CustomerApp() {
         Screen.LOGIN -> OtpLoginScreen(onLoggedIn = { screen = Screen.HOME })
 
         Screen.HOME -> CustomerHome(
-            onBuy = { company, pkg -> checkoutSelection = company to pkg; screen = Screen.CHECKOUT },
+            onOpenCompany = { company -> selectedCompany = company; screen = Screen.COMPANY_PACKAGES },
             onOpenOrder = { order -> selectedOrder = order; screen = Screen.ORDER_DETAIL },
             onLogout = { AuthRepository.logout(); screen = Screen.LOGIN },
         )
+
+        Screen.COMPANY_PACKAGES -> selectedCompany?.let { company ->
+            CompanyPackagesScreen(
+                company = company,
+                onBack = { screen = Screen.HOME },
+                onBuy = { pkg -> checkoutSelection = company to pkg; screen = Screen.CHECKOUT },
+            )
+        }
 
         Screen.CHECKOUT -> checkoutSelection?.let { (company, pkg) ->
             CheckoutScreen(
@@ -69,23 +81,29 @@ private fun CustomerApp() {
     }
 }
 
-/** Bottom-nav shell for the logged-in customer: Buy, Orders, Profile. */
+/** Bottom-nav shell for the logged-in customer: Home, Macaash, Orders, Profile. */
 @Composable
 private fun CustomerHome(
-    onBuy: (Company, PackageItem) -> Unit,
+    onOpenCompany: (Company) -> Unit,
     onOpenOrder: (CustomerOrder) -> Unit,
     onLogout: () -> Unit,
 ) {
-    var tab by remember { mutableStateOf(HomeTab.BUY) }
+    var tab by remember { mutableStateOf(HomeTab.HOME) }
 
     Scaffold(
         bottomBar = {
             NavigationBar {
                 NavigationBarItem(
-                    selected = tab == HomeTab.BUY,
-                    onClick = { tab = HomeTab.BUY },
-                    icon = { Icon(Icons.Filled.Home, contentDescription = "Buy") },
+                    selected = tab == HomeTab.HOME,
+                    onClick = { tab = HomeTab.HOME },
+                    icon = { Icon(Icons.Filled.Home, contentDescription = "Home") },
                     label = { Text("Home") },
+                )
+                NavigationBarItem(
+                    selected = tab == HomeTab.MACAASH,
+                    onClick = { tab = HomeTab.MACAASH },
+                    icon = { Icon(Icons.Filled.CardGiftcard, contentDescription = "Macaash") },
+                    label = { Text("Macaash") },
                 )
                 NavigationBarItem(
                     selected = tab == HomeTab.ORDERS,
@@ -104,7 +122,8 @@ private fun CustomerHome(
     ) { padding ->
         Box(modifier = Modifier.padding(padding)) {
             when (tab) {
-                HomeTab.BUY -> HomeScreen(onBuy = onBuy)
+                HomeTab.HOME -> HomeScreen(onOpenCompany = onOpenCompany, onOpenMacaash = { tab = HomeTab.MACAASH })
+                HomeTab.MACAASH -> MacaashScreen()
                 HomeTab.ORDERS -> OrdersScreen(onOpenOrder = onOpenOrder)
                 HomeTab.PROFILE -> ProfileScreen(onLogout = onLogout)
             }
