@@ -63,3 +63,18 @@ data class CustomerOrder(
 )
 
 data class MacaashBalance(val balance: Int)
+
+/** Mirrors GET /macaash/rewards — a static rewards catalog. */
+data class MacaashReward(
+    val id: String,
+    val title: String,
+    val cost: Int,
+)
+
+/** Mirrors GET /macaash/history — one row from macaash_transactions. */
+data class MacaashHistoryEntry(
+    val id: String,
+    val points: Int,
+    val reason: String?,
+    val createdAt: String,
+)

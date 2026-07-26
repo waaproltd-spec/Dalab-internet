@@ -1,132 +1,170 @@
 package com.dalab.internet.customer.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.SupportAgent
+import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.dalab.internet.customer.auth.SessionManager
 import com.dalab.internet.customer.data.Company
-import com.dalab.internet.customer.data.PackageItem
 import com.dalab.internet.customer.network.ApiClient
-import kotlinx.coroutines.launch
+import java.util.Calendar
 
-/** Browse providers and packages, then start a purchase. */
-@OptIn(ExperimentalMaterial3Api::class)
+private fun greeting(): String {
+    val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+    return when {
+        hour < 12 -> "Good Morning"
+        hour < 18 -> "Good Afternoon"
+        else -> "Good Evening"
+    }
+}
+
+/** Home: greeting, Macaash promo, and the provider grid — tap a provider to see its packages. */
 @Composable
-fun HomeScreen(onBuy: (Company, PackageItem) -> Unit) {
+fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenMacaash: () -> Unit) {
     var companies by remember { mutableStateOf<List<Company>>(emptyList()) }
-    var selectedCompany by remember { mutableStateOf<Company?>(null) }
-    var packages by remember { mutableStateOf<List<PackageItem>>(emptyList()) }
-    var loadingCompanies by remember { mutableStateOf(true) }
-    var loadingPackages by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
+    var loading by remember { mutableStateOf(true) }
+    var showSupport by remember { mutableStateOf(false) }
+    val customer = SessionManager.currentCustomer()
 
     LaunchedEffect(Unit) {
         try {
             companies = ApiClient.service.getCompanies().body().orEmpty()
-            selectedCompany = companies.firstOrNull { it.status == "online" } ?: companies.firstOrNull()
         } catch (_: Exception) {
-            // Leave the list empty; the screen shows "no providers" below.
+            // Leave the list empty; the grid shows "no providers" below.
         }
-        loadingCompanies = false
+        loading = false
     }
 
-    LaunchedEffect(selectedCompany) {
-        val company = selectedCompany ?: return@LaunchedEffect
-        loadingPackages = true
-        scope.launch {
-            try {
-                packages = ApiClient.service.getPackages(company.id).body().orEmpty()
-            } catch (_: Exception) {
-                packages = emptyList()
-            }
-            loadingPackages = false
-        }
-    }
-
-    Scaffold(topBar = { TopAppBar(title = { Text("Buy a package") }) }) { padding ->
-        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
-            if (loadingCompanies) {
-                CircularProgressIndicator(modifier = Modifier.padding(16.dp))
-            } else if (companies.isEmpty()) {
-                Text("No providers available.", modifier = Modifier.padding(16.dp))
-            } else {
-                LazyRow(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(companies, key = { it.id }) { company ->
-                        FilterChip(
-                            selected = company.id == selectedCompany?.id,
-                            onClick = { selectedCompany = company },
-                            label = { Text(if (company.status == "offline") "${company.name} (offline)" else company.name) },
-                        )
-                    }
-                }
-            }
-
-            val offline = selectedCompany?.status == "offline"
-            if (offline) {
-                Text(
-                    "${selectedCompany?.name} is currently offline — try another provider.",
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(horizontal = 16.dp),
-                )
-            }
-
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                if (loadingPackages) {
-                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                } else if (packages.isEmpty()) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(2),
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            item(span = { GridItemSpan(2) }) {
+                Column {
+                    Text(greeting(), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(
-                        "No packages found for this provider.",
-                        modifier = Modifier.align(Alignment.Center),
-                        style = MaterialTheme.typography.bodyMedium,
+                        customer?.name?.takeIf { it.isNotBlank() } ?: customer?.phone ?: "there",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
                     )
-                } else {
-                    LazyColumn {
-                        items(packages, key = { it.id }) { pkg ->
-                            PackageCard(
-                                pkg = pkg,
-                                enabled = !offline,
-                                onBuy = { selectedCompany?.let { onBuy(it, pkg) } },
-                            )
-                        }
+                    Spacer(Modifier.height(16.dp))
+                    MacaashBanner(onClick = onOpenMacaash)
+                    Spacer(Modifier.height(20.dp))
+                    if (loading) {
+                        CircularProgressIndicator(modifier = Modifier.padding(vertical = 16.dp))
+                    } else if (companies.isEmpty()) {
+                        Text("No providers available.", style = MaterialTheme.typography.bodyMedium)
                     }
                 }
             }
+
+            items(companies, key = { it.id }) { company ->
+                CompanyCard(company = company, onClick = { onOpenCompany(company) })
+            }
+
+            item(span = { GridItemSpan(2) }) { Spacer(Modifier.height(72.dp)) }
+        }
+
+        FloatingActionButton(
+            onClick = { showSupport = true },
+            modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp),
+        ) {
+            Icon(Icons.Filled.SupportAgent, contentDescription = "Support")
+        }
+    }
+
+    if (showSupport) {
+        AlertDialog(
+            onDismissRequest = { showSupport = false },
+            title = { Text("Need help?") },
+            text = { Text("Contact DALAB Internet support at +252 61 000 0000 or support@dalabinternet.so") },
+            confirmButton = { TextButton(onClick = { showSupport = false }) { Text("OK") } },
+        )
+    }
+}
+
+@Composable
+private fun MacaashBanner(onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(Brush.linearGradient(listOf(Color(0xFF16A34A), Color(0xFF0E7A38))))
+            .clickable(onClick = onClick)
+            .padding(24.dp),
+    ) {
+        Column {
+            Text("Macaash Rewards", color = Color.White, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(6.dp))
+            Text("Buy packages and earn points", color = Color.White, style = MaterialTheme.typography.bodyMedium)
         }
     }
 }
 
 @Composable
-private fun PackageCard(pkg: PackageItem, enabled: Boolean, onBuy: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
+private fun CompanyCard(company: Company, onClick: () -> Unit) {
+    val offline = company.status == "offline"
+    val brandColor = remember(company.colorHex) {
+        try {
+            Color(android.graphics.Color.parseColor(company.colorHex))
+        } catch (_: Exception) {
+            Color(0xFF1D2E8C)
+        }
+    }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = !offline, onClick = onClick),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(pkg.name, fontWeight = FontWeight.Bold)
-                val details = buildList {
-                    if (pkg.mb > 0) add("${pkg.mb} MB")
-                    if (pkg.minutes > 0) add("${pkg.minutes} min")
-                    if (pkg.sms > 0) add("${pkg.sms} SMS")
-                    pkg.validity?.takeIf { it.isNotBlank() }?.let { add(it) }
+            Box(
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(CircleShape)
+                    .background(if (offline) Color.LightGray else brandColor),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (offline) {
+                    Icon(Icons.Filled.WifiOff, contentDescription = "Offline", tint = Color.DarkGray)
+                } else {
+                    Text(
+                        company.name.take(1).uppercase(),
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                    )
                 }
-                if (details.isNotEmpty()) {
-                    Text(details.joinToString(" · "), style = MaterialTheme.typography.bodySmall)
-                }
-                Spacer(Modifier.height(4.dp))
-                Text("$${"%.2f".format(pkg.price)}", fontWeight = FontWeight.Bold)
             }
-            Button(onClick = onBuy, enabled = enabled) { Text("Buy") }
+            Spacer(Modifier.height(10.dp))
+            Text(company.name, fontWeight = FontWeight.Bold)
+            if (offline) {
+                Text("Offline", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+            }
         }
     }
 }

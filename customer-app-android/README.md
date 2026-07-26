@@ -24,10 +24,10 @@ Android SDK path if building from Android Studio/a local Gradle install.
   customer record on first use (same as the backend does for the web app),
   and if it's a brand-new account (no name on file yet) the screen prompts
   for one via `PUT /customer/profile` before entering the app.
-- **Buy internet packages** (`HomeScreen`) — browse providers (Hormuud,
-  Somnet, Somtel, Amtel) and their live package catalog
-  (`GET /companies`, `GET /companies/{id}/packages`); offline providers are
-  shown but disabled, matching the web app's behavior.
+- **Home** (`HomeScreen`) — greeting header, a Macaash promo banner, and a
+  grid of providers (Hormuud, Somnet, Somtel, Amtel) — tap one to see its live
+  package catalog (`CompanyPackagesScreen`, `GET /companies`,
+  `GET /companies/{id}/packages`); offline providers are shown but disabled.
 - **Payment options** (`CheckoutScreen`) — confirms the order against the
   provider's real gateway (EVC Plus / JEEB / eDahab / Manual — from
   `company.gateway`) and a receiver number, then places the order
@@ -36,18 +36,18 @@ Android SDK path if building from Android Studio/a local Gradle install.
   order the customer has placed (`GET /orders`, `GET /orders/{id}`), status
   (awaiting payment / confirmed / completed / failed / cancelled), and
   Macaash points earned once completed.
-- **Profile** (`ProfileScreen`) — name, phone, live Macaash points balance
-  (`GET /macaash/balance`), log out.
+- **Macaash Rewards** (`MacaashScreen`) — live points balance
+  (`GET /macaash/balance`), a redeemable rewards catalog
+  (`GET /macaash/rewards`, `POST /macaash/redeem`), and points history
+  (`GET /macaash/history`) — its own bottom-nav tab.
+- **Profile** (`ProfileScreen`) — name, phone, live Macaash points balance,
+  log out.
 - **Session handling** (`SessionManager`, `ApiClient`) — JWT access/refresh
   tokens with automatic one-shot refresh-and-retry on a 401, same pattern as
   the Agent App.
 
 ## What's intentionally out of scope here
 
-- Macaash **rewards redemption** (the catalog/redeem flow) — the balance is
-  shown on Profile, but redeeming points for rewards isn't built into this
-  app; the backend already supports it (`GET /macaash/rewards`,
-  `POST /macaash/redeem`) if you want to add a screen for it later.
 - Push notifications / banners — the backend has endpoints for both
   (`notifications`, `banners`) but no UI consumes them here yet.
 - `SessionManager` uses plain `SharedPreferences` for brevity; swap in
