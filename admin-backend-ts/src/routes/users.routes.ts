@@ -2,6 +2,7 @@ import { Router } from "express";
 import { randomUUID } from "node:crypto";
 import { query, queryOne } from "../db/pool.js";
 import { requireAuth } from "../auth/middleware.js";
+import { PERMISSIONS, isPermission } from "../auth/permissions.js";
 import { hashPassword, isValidEmail, isStrongPassword } from "../auth/crypto.js";
 import { sendJson } from "../utils/camelCase.js";
 
@@ -57,4 +58,22 @@ usersRouter.delete("/admin/users/:id", requireAuth("super_admin"), async (req, r
   }
   await query(`DELETE FROM admin_users WHERE id=$1`, [req.params.id]);
   sendJson(res, 200, { deleted: true });
+});
+
+// Only the Super Admin can view or change another admin's permissions — a
+// regular Admin never manages this, even for themselves.
+usersRouter.get("/admin/users/:id/permissions", requireAuth("super_admin"), async (req, res) => {
+  const user = await queryOne<{ permissions: string[] }>(`SELECT permissions FROM admin_users WHERE id=$1`, [req.params.id]);
+  if (!user) return sendJson(res, 404, { error: "User not found" });
+  sendJson(res, 200, { permissions: user.permissions ?? [] });
+});
+
+usersRouter.put("/admin/users/:id/permissions", requireAuth("super_admin"), async (req, res) => {
+  const { permissions } = req.body;
+  if (!Array.isArray(permissions) || !permissions.every(isPermission)) {
+    return sendJson(res, 400, { error: `permissions must be an array drawn from: ${PERMISSIONS.join(", ")}` });
+  }
+  const result = await query(`UPDATE admin_users SET permissions=$1 WHERE id=$2 RETURNING id`, [permissions, req.params.id]);
+  if (result.length === 0) return sendJson(res, 404, { error: "User not found" });
+  sendJson(res, 200, { id: req.params.id, permissions });
 });

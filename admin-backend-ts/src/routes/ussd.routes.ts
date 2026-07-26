@@ -2,22 +2,24 @@ import { Router } from "express";
 import { randomUUID } from "node:crypto";
 import { query, queryOne } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
+import { requirePermission } from "../auth/permissions.js";
 import { encrypt, decrypt, isValidPin } from "../auth/crypto.js";
 import { sendJson } from "../utils/camelCase.js";
 
 export const ussdRouter = Router();
 
 // ---------------- Per-Provider PIN Management ----------------
-// Each provider has its own PIN — Super Admin only, since it's more
-// sensitive than general company edits (which Admin can also do).
+// Each provider has its own PIN — super_admin always, plus any admin the
+// Super Admin has explicitly granted 'devices.manage' to (the PIN itself
+// never leaves the server unencrypted regardless of who can set it).
 
-ussdRouter.get("/admin/companies/:id/pin-status", requireAuth("super_admin"), async (req, res) => {
+ussdRouter.get("/admin/companies/:id/pin-status", requireStaff(), async (req, res) => {
   const company = await queryOne(`SELECT pin_encrypted FROM companies WHERE id=$1`, [req.params.id]);
   if (!company) return sendJson(res, 404, { error: "Company not found" });
   sendJson(res, 200, { isSet: Boolean(company.pin_encrypted) });
 });
 
-ussdRouter.put("/admin/companies/:id/pin", requireAuth("super_admin"), async (req, res) => {
+ussdRouter.put("/admin/companies/:id/pin", requirePermission("devices.manage"), async (req, res) => {
   const { pin } = req.body;
   if (!isValidPin(String(pin ?? ""))) return sendJson(res, 400, { error: "PIN must be 3-8 digits" });
   const result = await query(
@@ -51,7 +53,7 @@ function hasRequiredPlaceholders(code: string): boolean {
   return code.includes("{number}") && code.includes("{amount}") && code.includes("{pin}");
 }
 
-ussdRouter.post("/admin/ussd-templates", requireStaff(), async (req, res) => {
+ussdRouter.post("/admin/ussd-templates", requirePermission("devices.manage"), async (req, res) => {
   const { companyId, serviceName, ussdCode, notes } = req.body;
   if (!companyId || !serviceName || !ussdCode) {
     return sendJson(res, 400, { error: "companyId, serviceName, and ussdCode are required" });
@@ -70,7 +72,7 @@ ussdRouter.post("/admin/ussd-templates", requireStaff(), async (req, res) => {
   sendJson(res, 201, await queryOne(`SELECT * FROM ussd_templates WHERE id=$1`, [id]));
 });
 
-ussdRouter.put("/admin/ussd-templates/:id", requireStaff(), async (req, res) => {
+ussdRouter.put("/admin/ussd-templates/:id", requirePermission("devices.manage"), async (req, res) => {
   const existing = await queryOne(`SELECT * FROM ussd_templates WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Template not found" });
   const merged = { ...existing, ...req.body };
@@ -93,7 +95,7 @@ ussdRouter.put("/admin/ussd-templates/:id", requireStaff(), async (req, res) => 
   sendJson(res, 200, await queryOne(`SELECT * FROM ussd_templates WHERE id=$1`, [req.params.id]));
 });
 
-ussdRouter.put("/admin/ussd-templates/:id/status", requireStaff(), async (req, res) => {
+ussdRouter.put("/admin/ussd-templates/:id/status", requirePermission("devices.manage"), async (req, res) => {
   const { status } = req.body;
   if (!["enabled", "disabled"].includes(status)) return sendJson(res, 400, { error: "status must be 'enabled' or 'disabled'" });
   const result = await query(`UPDATE ussd_templates SET status=$1, updated_at=now() WHERE id=$2 RETURNING id`, [status, req.params.id]);
@@ -101,7 +103,7 @@ ussdRouter.put("/admin/ussd-templates/:id/status", requireStaff(), async (req, r
   sendJson(res, 200, await queryOne(`SELECT * FROM ussd_templates WHERE id=$1`, [req.params.id]));
 });
 
-ussdRouter.delete("/admin/ussd-templates/:id", requireStaff(), async (req, res) => {
+ussdRouter.delete("/admin/ussd-templates/:id", requirePermission("devices.manage"), async (req, res) => {
   const result = await query(`DELETE FROM ussd_templates WHERE id=$1 RETURNING id`, [req.params.id]);
   if (result.length === 0) return sendJson(res, 404, { error: "Template not found" });
   sendJson(res, 200, { deleted: true });
@@ -184,7 +186,7 @@ ussdRouter.get("/admin/agent-devices", requireStaff(), async (_req, res) => {
   sendJson(res, 200, withSims);
 });
 
-ussdRouter.post("/admin/agent-devices", requireStaff(), async (req, res) => {
+ussdRouter.post("/admin/agent-devices", requirePermission("devices.manage"), async (req, res) => {
   const { name, description } = req.body;
   if (!name) return sendJson(res, 400, { error: "name is required" });
   if (await queryOne(`SELECT id FROM agent_devices WHERE name=$1`, [name])) {
@@ -195,7 +197,7 @@ ussdRouter.post("/admin/agent-devices", requireStaff(), async (req, res) => {
   sendJson(res, 201, await queryOne(`SELECT * FROM agent_devices WHERE id=$1`, [id]));
 });
 
-ussdRouter.put("/admin/agent-devices/:id", requireStaff(), async (req, res) => {
+ussdRouter.put("/admin/agent-devices/:id", requirePermission("devices.manage"), async (req, res) => {
   const existing = await queryOne(`SELECT * FROM agent_devices WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Device not found" });
   await query(`UPDATE agent_devices SET name=$1, description=$2 WHERE id=$3`, [
@@ -204,7 +206,7 @@ ussdRouter.put("/admin/agent-devices/:id", requireStaff(), async (req, res) => {
   sendJson(res, 200, await queryOne(`SELECT * FROM agent_devices WHERE id=$1`, [req.params.id]));
 });
 
-ussdRouter.delete("/admin/agent-devices/:id", requireStaff(), async (req, res) => {
+ussdRouter.delete("/admin/agent-devices/:id", requirePermission("devices.manage"), async (req, res) => {
   const result = await query(`DELETE FROM agent_devices WHERE id=$1 RETURNING id`, [req.params.id]);
   if (result.length === 0) return sendJson(res, 404, { error: "Device not found" });
   sendJson(res, 200, { deleted: true });
@@ -223,7 +225,7 @@ ussdRouter.get("/admin/sim-routing", requireStaff(), async (_req, res) => {
   );
 });
 
-ussdRouter.put("/admin/sim-routing/:companyId", requireStaff(), async (req, res) => {
+ussdRouter.put("/admin/sim-routing/:companyId", requirePermission("devices.manage"), async (req, res) => {
   const { simSlot, deviceId } = req.body;
   if (![1, 2].includes(simSlot)) return sendJson(res, 400, { error: "simSlot must be 1 or 2" });
   const company = await queryOne(`SELECT id FROM companies WHERE id=$1`, [req.params.companyId]);
