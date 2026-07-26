@@ -10,6 +10,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import com.dalab.internet.util.formatApiDateTime
 import com.dalab.internet.data.Transaction
 import com.dalab.internet.network.ApiClient

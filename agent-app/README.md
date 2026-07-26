@@ -63,10 +63,10 @@ need it since it installs the SDK itself).
   before shipping, since it's holding JWTs.
 - `RealtimeClient` doesn't reconnect automatically on failure — add exponential
   backoff before relying on it in production.
-- App icon / `ic_notification` drawable, `strings.xml`, and theme colors aren't
-  included — this skeleton focuses on structure and logic, not visual polish (the
-  Customer App and Admin Dashboard prototypes already establish the DALAB brand
-  colors — indigo `#1D2E8C`, green `#16A34A` — reuse those here for consistency).
+- Visual polish is minimal — app icon, `ic_notification`, `strings.xml`, and
+  theme colors exist (reusing the DALAB brand colors — indigo `#1D2E8C`,
+  green `#16A34A` — established by the Customer App and Admin Dashboard
+  prototypes) but this skeleton focuses on structure and logic, not design.
 
 ## Release APK
 
