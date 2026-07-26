@@ -46,10 +46,13 @@ jobs:
 
       - name: Decode release keystore
         id: keystore
-        if: ${{ secrets.CUSTOMER_KEYSTORE_BASE64 != '' }}
         env:
           CUSTOMER_KEYSTORE_BASE64: ${{ secrets.CUSTOMER_KEYSTORE_BASE64 }}
         run: |
+          if [ -z "$CUSTOMER_KEYSTORE_BASE64" ]; then
+            echo "No CUSTOMER_KEYSTORE_BASE64 secret set — skipping release signing."
+            exit 0
+          fi
           echo "$CUSTOMER_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/customer-release.jks"
           echo "path=$RUNNER_TEMP/customer-release.jks" >> "$GITHUB_OUTPUT"
 
