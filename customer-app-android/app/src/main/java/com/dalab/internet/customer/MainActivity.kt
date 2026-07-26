@@ -18,6 +18,7 @@ import com.dalab.internet.customer.data.Company
 import com.dalab.internet.customer.data.CustomerOrder
 import com.dalab.internet.customer.data.PackageItem
 import com.dalab.internet.customer.ui.CheckoutScreen
+import com.dalab.internet.customer.ui.CompanyCategoriesScreen
 import com.dalab.internet.customer.ui.CompanyPackagesScreen
 import com.dalab.internet.customer.ui.HomeScreen
 import com.dalab.internet.customer.ui.MacaashScreen
@@ -39,13 +40,16 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { LOGIN, HOME, COMPANY_PACKAGES, CHECKOUT, ORDER_DETAIL }
+private enum class Screen { LOGIN, HOME, COMPANY_CATEGORIES, CATEGORY_PACKAGES, CHECKOUT, ORDER_DETAIL }
 private enum class HomeTab { HOME, MACAASH, ORDERS, PROFILE }
+
+private data class CategorySelection(val id: String, val label: String, val packages: List<PackageItem>)
 
 @Composable
 private fun CustomerApp() {
     var screen by remember { mutableStateOf(if (SessionManager.isLoggedIn()) Screen.HOME else Screen.LOGIN) }
     var selectedCompany by remember { mutableStateOf<Company?>(null) }
+    var selectedCategory by remember { mutableStateOf<CategorySelection?>(null) }
     var checkoutSelection by remember { mutableStateOf<Pair<Company, PackageItem>?>(null) }
     var selectedOrder by remember { mutableStateOf<CustomerOrder?>(null) }
 
@@ -53,17 +57,32 @@ private fun CustomerApp() {
         Screen.LOGIN -> OtpLoginScreen(onLoggedIn = { screen = Screen.HOME })
 
         Screen.HOME -> CustomerHome(
-            onOpenCompany = { company -> selectedCompany = company; screen = Screen.COMPANY_PACKAGES },
+            onOpenCompany = { company -> selectedCompany = company; screen = Screen.COMPANY_CATEGORIES },
             onOpenOrder = { order -> selectedOrder = order; screen = Screen.ORDER_DETAIL },
             onLogout = { AuthRepository.logout(); screen = Screen.LOGIN },
         )
 
-        Screen.COMPANY_PACKAGES -> selectedCompany?.let { company ->
-            CompanyPackagesScreen(
+        Screen.COMPANY_CATEGORIES -> selectedCompany?.let { company ->
+            CompanyCategoriesScreen(
                 company = company,
                 onBack = { screen = Screen.HOME },
-                onBuy = { pkg -> checkoutSelection = company to pkg; screen = Screen.CHECKOUT },
+                onSelectCategory = { id, label, packages ->
+                    selectedCategory = CategorySelection(id, label, packages)
+                    screen = Screen.CATEGORY_PACKAGES
+                },
             )
+        }
+
+        Screen.CATEGORY_PACKAGES -> selectedCompany?.let { company ->
+            selectedCategory?.let { category ->
+                CompanyPackagesScreen(
+                    company = company,
+                    categoryLabel = category.label,
+                    packages = category.packages,
+                    onBack = { screen = Screen.COMPANY_CATEGORIES },
+                    onBuy = { pkg -> checkoutSelection = company to pkg; screen = Screen.CHECKOUT },
+                )
+            }
         }
 
         Screen.CHECKOUT -> checkoutSelection?.let { (company, pkg) ->
