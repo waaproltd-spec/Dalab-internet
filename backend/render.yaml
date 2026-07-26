@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: dalab-internet-api
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 4000
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ENCRYPTION_KEY
+        generateValue: true
+    healthCheckPath: /health
+    disk:
+      name: dalab-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
