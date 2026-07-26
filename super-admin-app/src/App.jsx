@@ -5,7 +5,7 @@ import {
   X, Check, TrendingUp, Wifi, DollarSign,
   Clock3, CheckCircle2, XCircle, Download, ShieldCheck, Menu, RefreshCw, Loader2,
   GalleryHorizontalEnd, ArrowUp, ArrowDown, Eye, EyeOff, Lock, Mail, LogOut, ArrowLeft, KeyRound, Copy, Terminal, SmartphoneNfc,
-  Smartphone, Radio, ChevronDown, ChevronRight, AlertTriangle, RotateCcw
+  Smartphone, Radio, ChevronDown, ChevronRight, AlertTriangle, RotateCcw, UserCog
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 
@@ -64,7 +64,11 @@ const DalabAdminApi = {
   changePassword: (currentPassword, newPassword) => dalabAdminApiRequest("/admin/auth/change-password", { method: "POST", body: { currentPassword, newPassword } }),
   getDashboardStats: () => dalabAdminApiRequest("/admin/dashboard/stats"),
   getCompanies: () => dalabAdminApiRequest("/admin/companies"),
+  createCompany: (body) => dalabAdminApiRequest("/admin/companies", { method: "POST", body }),
+  updateCompany: (id, body) => dalabAdminApiRequest(`/admin/companies/${id}`, { method: "PUT", body }),
+  deleteCompany: (id) => dalabAdminApiRequest(`/admin/companies/${id}`, { method: "DELETE" }),
   updateCompanyStatus: (id, status) => dalabAdminApiRequest(`/admin/companies/${id}/status`, { method: "PUT", body: { status } }),
+  updateCompanyVisibility: (id, visibleCustomerApp, visibleAgentApp) => dalabAdminApiRequest(`/admin/companies/${id}/visibility`, { method: "PUT", body: { visibleCustomerApp, visibleAgentApp } }),
   updatePaymentNumber: (id, paymentNumber) => dalabAdminApiRequest(`/admin/companies/${id}/payment-number`, { method: "PUT", body: { paymentNumber } }),
   getPackages: (companyId) => dalabAdminApiRequest(`/admin/packages${companyId ? `?companyId=${companyId}` : ""}`),
   getOrders: (status, search, companyId) => {
@@ -78,6 +82,8 @@ const DalabAdminApi = {
   getOrderCounts: (companyId) => dalabAdminApiRequest(`/admin/orders/counts${companyId ? `?companyId=${companyId}` : ""}`),
   updateOrderStatus: (id, status) => dalabAdminApiRequest(`/admin/orders/${id}/status`, { method: "PUT", body: { status } }),
   getCustomers: (search) => dalabAdminApiRequest(`/admin/customers${search ? `?search=${search}` : ""}`),
+  updateCustomer: (id, body) => dalabAdminApiRequest(`/admin/customers/${id}`, { method: "PUT", body }),
+  deleteCustomer: (id) => dalabAdminApiRequest(`/admin/customers/${id}`, { method: "DELETE" }),
   toggleCustomerBlock: (id) => dalabAdminApiRequest(`/admin/customers/${id}/block`, { method: "PUT" }),
   getBanners: () => dalabAdminApiRequest("/admin/banners"),
   sendNotification: (type, title, body) => dalabAdminApiRequest("/admin/notifications/send", { method: "POST", body: { type, title, body } }),
@@ -104,12 +110,53 @@ const DalabAdminApi = {
   deleteAgentDevice: (id) => dalabAdminApiRequest(`/admin/agent-devices/${id}`, { method: "DELETE" }),
   setCompanyAutoProcess: (companyId, enabled) => dalabAdminApiRequest(`/admin/companies/${companyId}/auto-process`, { method: "PUT", body: { enabled } }),
   getAgentsList: () => dalabAdminApiRequest("/admin/agents"),
+  createAgent: (body) => dalabAdminApiRequest("/admin/agents", { method: "POST", body }),
+  updateAgent: (id, body) => dalabAdminApiRequest(`/admin/agents/${id}`, { method: "PUT", body }),
+  suspendAgent: (id) => dalabAdminApiRequest(`/admin/agents/${id}/suspend`, { method: "PUT" }),
+  deleteAgent: (id) => dalabAdminApiRequest(`/admin/agents/${id}`, { method: "DELETE" }),
+  getAgentCompanies: (id) => dalabAdminApiRequest(`/admin/agents/${id}/companies`),
+  setAgentCompanies: (id, companyIds) => dalabAdminApiRequest(`/admin/agents/${id}/companies`, { method: "PUT", body: { companyIds } }),
   assignAgentDevice: (agentId, deviceId) => dalabAdminApiRequest(`/admin/agents/${agentId}/device`, { method: "PUT", body: { deviceId } }),
   getExecutionLogs: (filters = {}) => {
     const qs = new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([, v]) => v))).toString();
     return dalabAdminApiRequest(`/admin/execution-logs${qs ? `?${qs}` : ""}`);
   },
 };
+
+// Normalizes a GET /admin/companies row into the shape every section of this
+// app already expects (color/group/status/payNumber, established by the
+// original mock data) so the live company list is a drop-in replacement —
+// no other component needs to know field names changed.
+function normalizeCompany(c) {
+  return {
+    id: c.id,
+    name: c.name,
+    group: c.groupNumber,
+    color: c.colorHex || "#1D2E8C",
+    status: c.status === "online" ? "enabled" : "disabled",
+    payNumber: c.paymentNumber || "Not set",
+    paymentUssdTemplate: c.paymentUssdTemplate || "",
+    gateway: c.gateway || "Manual",
+    visibleCustomerApp: c.visibleCustomerApp !== false,
+    visibleAgentApp: c.visibleAgentApp !== false,
+    autoProcessEnabled: c.autoProcessEnabled !== false,
+  };
+}
+
+// Same idea for GET /admin/customers — the mock shape has `points`/`joined`,
+// the live API returns `macaashPoints`/`createdAt`; it also has no per-
+// customer order count (a separate, more expensive query), so that field is
+// left undefined rather than faked as zero.
+function normalizeCustomer(c) {
+  return {
+    id: c.id,
+    name: c.name,
+    phone: c.phone,
+    status: c.status,
+    points: c.macaashPoints ?? 0,
+    joined: c.createdAt ? new Date(c.createdAt).toLocaleDateString() : "",
+  };
+}
 
 // A regular Admin only has whatever the Super Admin has explicitly granted
 // (see admin_users.permissions[] / requirePermission() server-side); the
@@ -252,6 +299,7 @@ const NAV = [
   { id: "packages", label: "Packages & Pricing", icon: Package },
   { id: "orders", label: "Orders", icon: ShoppingCart },
   { id: "customers", label: "Customers", icon: Users },
+  { id: "agents", label: "Agents", icon: UserCog },
   { id: "macaash", label: "Macaash (Rewards)", icon: Gift },
   { id: "notifications", label: "Notifications", icon: Bell },
   { id: "banners", label: "Banner Management", icon: GalleryHorizontalEnd },
@@ -496,15 +544,32 @@ function Overview({ companies, orders }) {
   );
 }
 
-function Companies({ companies, setCompanies }) {
+function Companies({ companies, setCompanies, refreshCompanies, admin }) {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({ name: "", group: 1, color: "#1D2E8C" });
+  const [error, setError] = useState("");
+  const canManage = hasPermission(admin, "companies.manage");
 
   const openNew = () => { setForm({ name: "", group: 1, color: "#1D2E8C" }); setEditing("new"); };
   const openEdit = (c) => { setForm(c); setEditing(c.id); };
 
-  const save = () => {
-    if (editing === "new") {
+  const save = async () => {
+    setError("");
+    if (!form.name) return;
+    if (DALAB_API_ENABLED) {
+      try {
+        if (editing === "new") {
+          const id = (form.name || "").toLowerCase().replace(/\s+/g, "-");
+          await DalabAdminApi.createCompany({ id, name: form.name, groupNumber: form.group, colorHex: form.color, gateway: form.gateway || "Manual" });
+        } else {
+          await DalabAdminApi.updateCompany(editing, { name: form.name, groupNumber: form.group, colorHex: form.color, gateway: form.gateway });
+        }
+        await refreshCompanies();
+      } catch (err) {
+        setError(err.message || "Could not save company.");
+        return;
+      }
+    } else if (editing === "new") {
       setCompanies((prev) => [...prev, { ...form, id: (form.name || "").toLowerCase().replace(/\s+/g, "-"), status: "enabled", payNumber: "Not set", gateway: "Manual" }]);
     } else {
       setCompanies((prev) => prev.map((c) => (c.id === editing ? { ...c, ...form } : c)));
@@ -512,8 +577,45 @@ function Companies({ companies, setCompanies }) {
     setEditing(null);
   };
 
-  const toggle = (id) => setCompanies((prev) => prev.map((c) => (c.id === id ? { ...c, status: c.status === "enabled" ? "disabled" : "enabled" } : c)));
-  const remove = (id) => setCompanies((prev) => prev.filter((c) => c.id !== id));
+  const toggle = async (c) => {
+    const nextStatus = c.status === "enabled" ? "disabled" : "enabled";
+    setCompanies((prev) => prev.map((x) => (x.id === c.id ? { ...x, status: nextStatus } : x))); // optimistic
+    if (DALAB_API_ENABLED) {
+      try {
+        await DalabAdminApi.updateCompanyStatus(c.id, nextStatus === "enabled" ? "online" : "offline");
+      } catch (err) {
+        setError(err.message || "Could not update company status.");
+        refreshCompanies();
+      }
+    }
+  };
+
+  const toggleVisibility = async (c, field) => {
+    const next = { visibleCustomerApp: c.visibleCustomerApp, visibleAgentApp: c.visibleAgentApp, [field]: !c[field] };
+    setCompanies((prev) => prev.map((x) => (x.id === c.id ? { ...x, ...next } : x))); // optimistic
+    if (DALAB_API_ENABLED) {
+      try {
+        await DalabAdminApi.updateCompanyVisibility(c.id, next.visibleCustomerApp, next.visibleAgentApp);
+      } catch (err) {
+        setError(err.message || "Could not update app visibility.");
+        refreshCompanies();
+      }
+    }
+  };
+
+  const remove = async (c) => {
+    if (!window.confirm(`Delete ${c.name}? This can't be undone.`)) return;
+    if (DALAB_API_ENABLED) {
+      try {
+        await DalabAdminApi.deleteCompany(c.id);
+        await refreshCompanies();
+      } catch (err) {
+        alert(err.message || "Could not delete company.");
+      }
+    } else {
+      setCompanies((prev) => prev.filter((x) => x.id !== c.id));
+    }
+  };
 
   return (
     <div>
@@ -522,8 +624,10 @@ function Companies({ companies, setCompanies }) {
           <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Companies</div>
           <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>2+2 structure — Group 1: Hormuud, Somnet · Group 2: Somtel, Amtel</div>
         </div>
-        <Button icon={Plus} onClick={openNew}>Add company</Button>
+        {canManage && <Button icon={Plus} onClick={openNew}>Add company</Button>}
       </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 14 }}>
         {[1, 2].map((g) => (
@@ -543,15 +647,22 @@ function Companies({ companies, setCompanies }) {
                   <div style={{ fontSize: 11.5, color: MUTE }}>{c.gateway}</div>
                 </div>
                 <Badge tone={c.status === "enabled" ? "green" : "red"}>{c.status === "enabled" ? "Enabled" : "Disabled"}</Badge>
-                <button onClick={() => toggle(c.id)} title="Enable / disable" style={{ background: "none", border: "none", cursor: "pointer" }}>
-                  <Power size={16} color={c.status === "enabled" ? GREEN : "#C81E2C"} />
-                </button>
-                <button onClick={() => openEdit(c)} style={{ background: "none", border: "none", cursor: "pointer" }}>
-                  <Pencil size={15} color={INDIGO} />
-                </button>
-                <button onClick={() => remove(c.id)} style={{ background: "none", border: "none", cursor: "pointer" }}>
-                  <Trash2 size={15} color="#C81E2C" />
-                </button>
+                {canManage && (
+                  <>
+                    <button onClick={() => toggleVisibility(c, "visibleCustomerApp")} title={c.visibleCustomerApp ? "Visible in Customer App — click to hide" : "Hidden from Customer App — click to show"} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                      {c.visibleCustomerApp ? <Eye size={15} color={INDIGO} /> : <EyeOff size={15} color={MUTE} />}
+                    </button>
+                    <button onClick={() => toggle(c)} title="Enable / disable" style={{ background: "none", border: "none", cursor: "pointer" }}>
+                      <Power size={16} color={c.status === "enabled" ? GREEN : "#C81E2C"} />
+                    </button>
+                    <button onClick={() => openEdit(c)} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                      <Pencil size={15} color={INDIGO} />
+                    </button>
+                    <button onClick={() => remove(c)} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                      <Trash2 size={15} color="#C81E2C" />
+                    </button>
+                  </>
+                )}
               </div>
             ))}
           </Card>
@@ -582,14 +693,31 @@ function Companies({ companies, setCompanies }) {
   );
 }
 
-function PaymentNumbers({ companies, setCompanies }) {
+function PaymentNumbers({ companies, setCompanies, refreshCompanies, admin }) {
   const [editing, setEditing] = useState(null);
   const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const canManage = hasPermission(admin, "companies.manage");
 
-  const openEdit = (c) => { setEditing(c.id); setValue(c.payNumber); };
-  const save = () => {
-    setCompanies((prev) => prev.map((c) => (c.id === editing ? { ...c, payNumber: value } : c)));
-    setEditing(null);
+  const openEdit = (c) => { setEditing(c.id); setValue(c.payNumber === "Not set" ? "" : c.payNumber); setError(""); };
+
+  const save = async () => {
+    if (DALAB_API_ENABLED) {
+      setSaving(true);
+      try {
+        await DalabAdminApi.updatePaymentNumber(editing, value);
+        await refreshCompanies();
+        setEditing(null);
+      } catch (err) {
+        setError(err.message || "Could not save payment number.");
+      } finally {
+        setSaving(false);
+      }
+    } else {
+      setCompanies((prev) => prev.map((c) => (c.id === editing ? { ...c, payNumber: value } : c)));
+      setEditing(null);
+    }
   };
 
   return (
@@ -617,7 +745,7 @@ function PaymentNumbers({ companies, setCompanies }) {
                 <td style={{ padding: "12px 16px", fontSize: 13, color: SLATE }}>{c.gateway}</td>
                 <td style={{ padding: "12px 16px", fontSize: 13, color: INK, fontFamily: "monospace" }}>{c.payNumber}</td>
                 <td style={{ padding: "12px 16px", textAlign: "right" }}>
-                  <Button variant="ghost" icon={Pencil} onClick={() => openEdit(c)}>Edit</Button>
+                  {canManage && <Button variant="ghost" icon={Pencil} onClick={() => openEdit(c)}>Edit</Button>}
                 </td>
               </tr>
             ))}
@@ -630,8 +758,9 @@ function PaymentNumbers({ companies, setCompanies }) {
           <Field label="Payment number / merchant code">
             <input style={inputStyle} value={value} onChange={(e) => setValue(e.target.value)} />
           </Field>
+          {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
           <div style={{ display: "flex", gap: 10 }}>
-            <Button onClick={save} icon={Check}>Save</Button>
+            <Button onClick={save} icon={Check} disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
             <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
           </div>
         </Modal>
@@ -1142,10 +1271,57 @@ function Orders({ orders, setOrders, companies, admin }) {
   );
 }
 
-function Customers({ customers, setCustomers }) {
+function Customers({ customers, setCustomers, refreshCustomers, admin }) {
   const [search, setSearch] = useState("");
-  const shown = customers.filter((c) => (c?.name || "").toLowerCase().includes(search.toLowerCase()) || (c?.phone || "").includes(search));
-  const toggleBlock = (id) => setCustomers((prev) => prev.map((c) => (c.id === id ? { ...c, status: c.status === "active" ? "blocked" : "active" } : c)));
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({});
+  const [error, setError] = useState("");
+  const canManage = hasPermission(admin, "customers.manage");
+
+  useEffect(() => { refreshCustomers?.(search || undefined); }, [search]);
+
+  const shown = DALAB_API_ENABLED
+    ? customers
+    : customers.filter((c) => (c?.name || "").toLowerCase().includes(search.toLowerCase()) || (c?.phone || "").includes(search));
+
+  const toggleBlock = async (c) => {
+    const nextStatus = c.status === "active" ? "blocked" : "active";
+    setCustomers((prev) => prev.map((x) => (x.id === c.id ? { ...x, status: nextStatus } : x))); // optimistic
+    if (DALAB_API_ENABLED) {
+      try { await DalabAdminApi.toggleCustomerBlock(c.id); } catch (err) { setError(err.message || "Could not update status."); refreshCustomers(search || undefined); }
+    }
+  };
+
+  const openEdit = (c) => { setForm(c); setEditing(c.id); setError(""); };
+
+  const saveEdit = async () => {
+    if (!DALAB_API_ENABLED) {
+      setCustomers((prev) => prev.map((c) => (c.id === editing ? { ...c, ...form } : c)));
+      setEditing(null);
+      return;
+    }
+    try {
+      await DalabAdminApi.updateCustomer(editing, { name: form.name, phone: form.phone });
+      await refreshCustomers(search || undefined);
+      setEditing(null);
+    } catch (err) {
+      setError(err.message || "Could not save customer.");
+    }
+  };
+
+  const remove = async (c) => {
+    if (!window.confirm(`Delete ${c.name || c.phone}? This can't be undone.`)) return;
+    if (!DALAB_API_ENABLED) {
+      setCustomers((prev) => prev.filter((x) => x.id !== c.id));
+      return;
+    }
+    try {
+      await DalabAdminApi.deleteCustomer(c.id);
+      await refreshCustomers(search || undefined);
+    } catch (err) {
+      alert(err.message || "Could not delete customer.");
+    }
+  };
 
   return (
     <div>
@@ -1156,6 +1332,9 @@ function Customers({ customers, setCustomers }) {
           <input style={{ ...inputStyle, paddingLeft: 30, width: 220 }} placeholder="Search name or phone" value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
       </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
@@ -1174,16 +1353,226 @@ function Customers({ customers, setCustomers }) {
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{c.points}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE }}>{c.joined}</td>
                 <td style={{ padding: "10px 14px" }}><Badge tone={c.status === "active" ? "green" : "red"}>{c.status === "active" ? "Active" : "Blocked"}</Badge></td>
-                <td style={{ padding: "10px 14px" }}>
-                  <Button variant={c.status === "active" ? "danger" : "ghost"} onClick={() => toggleBlock(c.id)}>
-                    {c.status === "active" ? "Block" : "Unblock"}
-                  </Button>
+                <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
+                  {canManage && (
+                    <>
+                      <Button variant={c.status === "active" ? "danger" : "ghost"} onClick={() => toggleBlock(c)}>
+                        {c.status === "active" ? "Block" : "Unblock"}
+                      </Button>
+                      <button onClick={() => openEdit(c)} style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
+                        <Pencil size={14} color={INDIGO} />
+                      </button>
+                      <button onClick={() => remove(c)} style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
+                        <Trash2 size={14} color="#C81E2C" />
+                      </button>
+                    </>
+                  )}
                 </td>
               </tr>
             ))}
+            {shown.length === 0 && (
+              <tr><td colSpan={7} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No customers found.</td></tr>
+            )}
           </tbody>
         </table>
       </Card>
+
+      {editing && (
+        <Modal title="Edit customer" onClose={() => setEditing(null)}>
+          <Field label="Name">
+            <input style={inputStyle} value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          </Field>
+          <Field label="Phone">
+            <input style={inputStyle} value={form.phone || ""} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+          </Field>
+          {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            <Button onClick={saveEdit} icon={Check}>Save</Button>
+            <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function AgentsSection({ companies, admin }) {
+  const [agents, setAgents] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [editing, setEditing] = useState(null); // 'new' | agent object | null
+  const [form, setForm] = useState({});
+  const [assigning, setAssigning] = useState(null); // agent object | null
+  const [assignedCompanyIds, setAssignedCompanyIds] = useState([]);
+  const canManage = hasPermission(admin, "agents.manage");
+
+  const fetchAgents = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setLoading(true);
+    setError("");
+    try {
+      setAgents(await DalabAdminApi.getAgentsList());
+    } catch (err) {
+      setError(err.message || "Could not load agents.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { fetchAgents(); }, []);
+
+  const openNew = () => { setForm({ phone: "", name: "", password: "" }); setEditing("new"); };
+  const openEdit = (a) => { setForm(a); setEditing(a.id); };
+
+  const save = async () => {
+    if (!form.phone || !form.name || (editing === "new" && !form.password)) return;
+    try {
+      if (editing === "new") await DalabAdminApi.createAgent({ phone: form.phone, name: form.name, password: form.password });
+      else await DalabAdminApi.updateAgent(editing, { phone: form.phone, name: form.name });
+      setEditing(null);
+      await fetchAgents();
+    } catch (err) {
+      alert(err.message || "Could not save agent.");
+    }
+  };
+
+  const toggleSuspend = async (a) => {
+    const nextStatus = a.status === "active" ? "suspended" : "active";
+    setAgents((prev) => prev.map((x) => (x.id === a.id ? { ...x, status: nextStatus } : x))); // optimistic
+    try {
+      await DalabAdminApi.suspendAgent(a.id);
+    } catch (err) {
+      setError(err.message || "Could not update agent status.");
+      fetchAgents();
+    }
+  };
+
+  const remove = async (a) => {
+    if (!window.confirm(`Delete agent ${a.name}? This can't be undone.`)) return;
+    try {
+      await DalabAdminApi.deleteAgent(a.id);
+      fetchAgents();
+    } catch (err) {
+      alert(err.message || "Could not delete agent.");
+    }
+  };
+
+  const openAssign = async (a) => {
+    setAssigning(a);
+    try {
+      setAssignedCompanyIds(await DalabAdminApi.getAgentCompanies(a.id));
+    } catch (err) {
+      setAssignedCompanyIds([]);
+    }
+  };
+
+  const saveAssign = async () => {
+    try {
+      await DalabAdminApi.setAgentCompanies(assigning.id, assignedCompanyIds);
+      setAssigning(null);
+    } catch (err) {
+      alert(err.message || "Could not save company assignment.");
+    }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage agents.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Agents</div>
+          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Field agents who process walk-in sales and payment verification. Manage which companies each agent is scoped to under Device & USSD → Devices.</div>
+        </div>
+        {canManage && <Button icon={Plus} onClick={openNew}>Add agent</Button>}
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              {["Name", "Phone", "Status", "Last login", ""].map((h) => (
+                <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {agents.map((a) => (
+              <tr key={a.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{a.name}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE, fontFamily: "monospace" }}>{a.phone}</td>
+                <td style={{ padding: "10px 14px" }}><Badge tone={a.status === "active" ? "green" : "red"}>{a.status === "active" ? "Active" : "Suspended"}</Badge></td>
+                <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE }}>{a.lastLoginAt ? formatDateTime(a.lastLoginAt) : "Never"}</td>
+                <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
+                  {canManage && (
+                    <>
+                      <Button variant="ghost" onClick={() => openAssign(a)}>Companies</Button>
+                      <button onClick={() => toggleSuspend(a)} title={a.status === "active" ? "Suspend" : "Activate"} style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
+                        <Power size={14} color={a.status === "active" ? GREEN : "#C81E2C"} />
+                      </button>
+                      <button onClick={() => openEdit(a)} style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
+                        <Pencil size={14} color={INDIGO} />
+                      </button>
+                      <button onClick={() => remove(a)} style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
+                        <Trash2 size={14} color="#C81E2C" />
+                      </button>
+                    </>
+                  )}
+                </td>
+              </tr>
+            ))}
+            {agents.length === 0 && !loading && (
+              <tr><td colSpan={5} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No agents yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+
+      {editing && (
+        <Modal title={editing === "new" ? "Add agent" : "Edit agent"} onClose={() => setEditing(null)} width={400}>
+          <Field label="Full name">
+            <input style={inputStyle} value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Cabdi Rashiid" />
+          </Field>
+          <Field label="Phone">
+            <input style={inputStyle} value={form.phone || ""} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="252..." />
+          </Field>
+          {editing === "new" && (
+            <Field label="Password">
+              <input type="password" style={inputStyle} value={form.password || ""} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+            </Field>
+          )}
+          <div style={{ display: "flex", gap: 10 }}>
+            <Button onClick={save} icon={Check}>Save</Button>
+            <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
+          </div>
+        </Modal>
+      )}
+
+      {assigning && (
+        <Modal title={`Assign companies — ${assigning.name}`} onClose={() => setAssigning(null)} width={380}>
+          <div style={{ fontSize: 11.5, color: MUTE, marginBottom: 12 }}>No companies checked = unrestricted (this agent can sell for any provider). Check specific companies to scope this agent to only those.</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
+            {companies.map((c) => (
+              <label key={c.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: INK, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={assignedCompanyIds.includes(c.id)}
+                  onChange={(e) => setAssignedCompanyIds((prev) => (e.target.checked ? [...prev, c.id] : prev.filter((id) => id !== c.id)))}
+                />
+                <div style={{ width: 8, height: 8, borderRadius: 4, background: c.color }} />
+                {c.name}
+              </label>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <Button onClick={saveAssign} icon={Check}>Save</Button>
+            <Button variant="ghost" onClick={() => setAssigning(null)}>Cancel</Button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -1384,39 +1773,9 @@ function Banners({ banners, setBanners, companies }) {
   );
 }
 
-// The `companies` prop threaded through most of this app is still the
-// hard-coded 4-provider mock (Companies section was never wired to
-// GET /admin/companies — a pre-existing gap outside this module's scope).
-// The Device & USSD module needs real ids/colors/auto-process flags, so it
-// fetches its own authoritative list rather than trusting that prop; demo
-// mode falls back to the mock so the module still renders without a backend.
-function useLiveCompanies(fallbackCompanies) {
-  const [companies, setCompanies] = useState(fallbackCompanies);
-  const [error, setError] = useState("");
-
-  const refresh = async () => {
-    if (!DALAB_API_ENABLED) return;
-    try {
-      const rows = await DalabAdminApi.getCompanies();
-      setCompanies(rows.map((c) => ({
-        id: c.id,
-        name: c.name,
-        color: c.colorHex || "#1D2E8C",
-        autoProcessEnabled: c.autoProcessEnabled !== false,
-      })));
-      setError("");
-    } catch (err) {
-      setError(err.message || "Could not load companies.");
-    }
-  };
-  useEffect(() => { refresh(); }, []);
-  return { companies, error, refresh };
-}
-
-function DeviceUssdModule({ companies: fallbackCompanies, admin }) {
+function DeviceUssdModule({ companies, admin }) {
   const [tab, setTab] = useState("devices");
   const canManage = hasPermission(admin, "devices.manage");
-  const { companies, error: companiesError } = useLiveCompanies(fallbackCompanies);
 
   const tabs = [
     { id: "devices", label: "Devices" },
@@ -1434,8 +1793,6 @@ function DeviceUssdModule({ companies: fallbackCompanies, admin }) {
         </div>
         {!canManage && <Badge tone="amber">View only — ask a Super Admin for the "devices.manage" permission to make changes</Badge>}
       </div>
-
-      {companiesError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{companiesError}</div>}
 
       <div style={{ display: "flex", gap: 6, marginBottom: 18, borderBottom: `1px solid ${BORDER}` }}>
         {tabs.map((t) => (
@@ -2043,8 +2400,7 @@ function ProviderPinsPanel({ companies, canManage }) {
   );
 }
 
-function ExecutionLogs({ companies: fallbackCompanies }) {
-  const { companies } = useLiveCompanies(fallbackCompanies);
+function ExecutionLogs({ companies }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -2557,6 +2913,31 @@ function AdminDashboardShell({ admin, onLogout }) {
   const [customers, setCustomers] = useState(initialCustomers);
   const [banners, setBanners] = useState(initialBanners);
 
+  // Companies used to be mock-only everywhere (Companies/PaymentNumbers never
+  // called GET /admin/companies) — this is now the single source of truth,
+  // normalized once and shared by every section via the `companies` prop.
+  const refreshCompanies = async () => {
+    if (!DALAB_API_ENABLED) return;
+    try {
+      const rows = await DalabAdminApi.getCompanies();
+      setCompanies(rows.map(normalizeCompany));
+    } catch (err) {
+      console.error("Failed to load companies:", err.message);
+    }
+  };
+  useEffect(() => { refreshCompanies(); }, []);
+
+  const refreshCustomers = async (search) => {
+    if (!DALAB_API_ENABLED) return;
+    try {
+      const rows = await DalabAdminApi.getCustomers(search);
+      setCustomers(rows.map(normalizeCustomer));
+    } catch (err) {
+      console.error("Failed to load customers:", err.message);
+    }
+  };
+  useEffect(() => { refreshCustomers(); }, []);
+
   const activeLabel = NAV.find((n) => n.id === active)?.label;
 
   return (
@@ -2625,11 +3006,12 @@ function AdminDashboardShell({ admin, onLogout }) {
         </div>
         <div style={{ padding: 22 }}>
           {active === "overview" && <Overview companies={companies} orders={orders} />}
-          {active === "companies" && <Companies companies={companies} setCompanies={setCompanies} />}
-          {active === "payment-numbers" && <PaymentNumbers companies={companies} setCompanies={setCompanies} />}
+          {active === "companies" && <Companies companies={companies} setCompanies={setCompanies} refreshCompanies={refreshCompanies} admin={admin} />}
+          {active === "payment-numbers" && <PaymentNumbers companies={companies} setCompanies={setCompanies} refreshCompanies={refreshCompanies} admin={admin} />}
           {active === "packages" && <Packages packages={packages} setPackages={setPackages} companies={companies} />}
           {active === "orders" && <Orders orders={orders} setOrders={setOrders} companies={companies} admin={admin} />}
-          {active === "customers" && <Customers customers={customers} setCustomers={setCustomers} />}
+          {active === "customers" && <Customers customers={customers} setCustomers={setCustomers} refreshCustomers={refreshCustomers} admin={admin} />}
+          {active === "agents" && <AgentsSection companies={companies} admin={admin} />}
           {active === "macaash" && <Macaash customers={customers} />}
           {active === "notifications" && <Notifications />}
           {active === "banners" && <Banners banners={banners} setBanners={setBanners} companies={companies} />}
