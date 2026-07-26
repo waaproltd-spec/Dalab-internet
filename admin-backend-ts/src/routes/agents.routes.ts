@@ -72,3 +72,18 @@ agentsRouter.put("/admin/agents/:id/companies", requirePermission("agents.manage
   }
   sendJson(res, 200, { companyIds });
 });
+
+// Assigns (or clears, with deviceId: null) which physical device this agent
+// dials USSD from. A disabled device is still assignable — the block on
+// using it happens at dial-attempt time, not here.
+agentsRouter.put("/admin/agents/:id/device", requirePermission("agents.manage"), async (req, res) => {
+  const { deviceId } = req.body;
+  if (!(await queryOne(`SELECT id FROM agents WHERE id=$1`, [req.params.id]))) {
+    return sendJson(res, 404, { error: "Agent not found" });
+  }
+  if (deviceId != null && !(await queryOne(`SELECT id FROM agent_devices WHERE id=$1`, [deviceId]))) {
+    return sendJson(res, 404, { error: "Device not found" });
+  }
+  await query(`UPDATE agents SET device_id=$1 WHERE id=$2`, [deviceId ?? null, req.params.id]);
+  sendJson(res, 200, { id: req.params.id, deviceId: deviceId ?? null });
+});

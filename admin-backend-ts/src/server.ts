@@ -14,6 +14,7 @@ import { ussdRouter } from "./routes/ussd.routes.js";
 import { macaashRouter } from "./routes/macaash.routes.js";
 import { bannersRouter } from "./routes/banners.routes.js";
 import { notificationsRouter } from "./routes/notifications.routes.js";
+import { executionLogsRouter } from "./routes/executionLogs.routes.js";
 import { pool } from "./db/pool.js";
 import { seedAll } from "./db/seed.js";
 
@@ -60,6 +61,7 @@ app.use(ussdRouter);
 app.use(macaashRouter);
 app.use(bannersRouter);
 app.use(notificationsRouter);
+app.use(executionLogsRouter);
 
 app.use((_req: Request, res: Response) => {
   res.status(404).json({ error: "Not found" });

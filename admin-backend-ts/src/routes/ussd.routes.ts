@@ -5,6 +5,7 @@ import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { encrypt, decrypt, isValidPin } from "../auth/crypto.js";
 import { sendJson } from "../utils/camelCase.js";
+import { broadcast } from "../realtime/orderEvents.js";
 
 export const ussdRouter = Router();
 
@@ -212,6 +213,16 @@ ussdRouter.delete("/admin/agent-devices/:id", requirePermission("devices.manage"
   sendJson(res, 200, { deleted: true });
 });
 
+// A disabled device is rejected at dial-attempt time (see below) — this just
+// flips the flag an admin toggles from the dashboard.
+ussdRouter.put("/admin/agent-devices/:id/status", requirePermission("devices.manage"), async (req, res) => {
+  const { enabled } = req.body;
+  if (typeof enabled !== "boolean") return sendJson(res, 400, { error: "enabled must be a boolean" });
+  const result = await query(`UPDATE agent_devices SET enabled=$1 WHERE id=$2 RETURNING id`, [enabled, req.params.id]);
+  if (result.length === 0) return sendJson(res, 404, { error: "Device not found" });
+  sendJson(res, 200, await queryOne(`SELECT * FROM agent_devices WHERE id=$1`, [req.params.id]));
+});
+
 // ---------------- SIM Routing ----------------
 
 ussdRouter.get("/admin/sim-routing", requireStaff(), async (_req, res) => {
@@ -277,6 +288,14 @@ ussdRouter.post("/agent/orders/:id/dial-attempts", requireAuth("agent"), async (
   const order = await queryOne(`SELECT id FROM orders WHERE id=$1`, [req.params.id]);
   if (!order) return sendJson(res, 404, { error: "Order not found" });
 
+  const agent = await queryOne<{ device_id: string | null }>(`SELECT device_id FROM agents WHERE id=$1`, [req.auth!.sub]);
+  if (agent?.device_id) {
+    const device = await queryOne<{ enabled: boolean }>(`SELECT enabled FROM agent_devices WHERE id=$1`, [agent.device_id]);
+    if (device && !device.enabled) {
+      return sendJson(res, 403, { error: "Your assigned device has been disabled by an admin." });
+    }
+  }
+
   const id = randomUUID();
   await query(
     `INSERT INTO ussd_dial_attempts (id, order_id, agent_id, sim_slot, ussd_string, attempt_number, status)
@@ -313,5 +332,6 @@ ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (r
   } else {
     await query(`UPDATE orders SET status='failed', updated_at=now() WHERE id=$1 AND status != 'completed'`, [attempt.order_id]);
   }
+  broadcast({ type: "order.updated", orderId: attempt.order_id });
   sendJson(res, 200, await queryOne(`SELECT * FROM ussd_dial_attempts WHERE id=$1`, [req.params.attemptId]));
 });

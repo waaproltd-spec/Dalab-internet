@@ -7,12 +7,15 @@ declare module "express" {
     socket: { remoteAddress?: string };
     /** Set by requireAuth() (src/auth/middleware.ts) after verifying the bearer token. */
     auth?: { sub: string; role: string; type?: string; jti?: string; iat?: number; exp?: number };
+    on(event: "close", listener: () => void): void;
   }
   export interface Response {
     status(code: number): Response;
     json(body: unknown): Response;
     send(body?: unknown): Response;
     end(body?: string): Response;
+    write(chunk: string): boolean;
+    flushHeaders(): void;
     setHeader(name: string, value: string): void;
   }
   export type NextFunction = (err?: unknown) => void;

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
-import { query } from "../db/pool.js";
+import { query, queryOne } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
 
@@ -42,7 +42,20 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8, COALESCE($9, now()))`,
     [id, req.auth!.sub, sender, body, parsedProvider ?? null, parsedAmount ?? null, parsedPhone ?? null, match?.id ?? null, receivedAt ?? null]
   );
-  sendJson(res, 201, { id, matchedOrderId: match?.id ?? null });
+
+  // A company with automation off means the agent must tap through the
+  // existing manual verify-payment flow instead of the app auto-dialing.
+  let requiresManualApproval = false;
+  if (match) {
+    const order = await queryOne<{ company_id: string }>(`SELECT company_id FROM orders WHERE id=$1`, [match.id]);
+    const company = order && (await queryOne<{ auto_process_enabled: boolean }>(
+      `SELECT auto_process_enabled FROM companies WHERE id=$1`,
+      [order.company_id]
+    ));
+    requiresManualApproval = company ? !company.auto_process_enabled : false;
+  }
+
+  sendJson(res, 201, { id, matchedOrderId: match?.id ?? null, requiresManualApproval });
 });
 
 smsLogsRouter.get("/admin/sms-logs", requireStaff(), async (req, res) => {
