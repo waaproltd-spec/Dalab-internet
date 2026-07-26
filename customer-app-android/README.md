@@ -25,9 +25,12 @@ Android SDK path if building from Android Studio/a local Gradle install.
   and if it's a brand-new account (no name on file yet) the screen prompts
   for one via `PUT /customer/profile` before entering the app.
 - **Home** (`HomeScreen`) — greeting header, a Macaash promo banner, and a
-  grid of providers (Hormuud, Somnet, Somtel, Amtel) — tap one to see its live
-  package catalog (`CompanyPackagesScreen`, `GET /companies`,
-  `GET /companies/{id}/packages`); offline providers are shown but disabled.
+  grid of providers (Hormuud, Somnet, Somtel, Amtel) — tap one to drill into
+  its categories (`CompanyCategoriesScreen`, packages grouped by
+  `categoryId`) and then that category's packages (`CompanyPackagesScreen`,
+  with old-price-strikethrough / new-price styling), via
+  `GET /companies` and `GET /companies/{id}/packages`. Offline providers are
+  shown but disabled.
 - **Payment options** (`CheckoutScreen`) — confirms the order against the
   provider's real gateway (EVC Plus / JEEB / eDahab / Manual — from
   `company.gateway`) and a receiver number, then places the order

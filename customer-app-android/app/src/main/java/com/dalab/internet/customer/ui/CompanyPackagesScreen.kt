@@ -9,33 +9,29 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.dalab.internet.customer.data.Company
 import com.dalab.internet.customer.data.PackageItem
-import com.dalab.internet.customer.network.ApiClient
 
-/** Packages for a single provider, reached by tapping its card on Home. */
+/** Packages within one category of a provider — reached from CompanyCategoriesScreen. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CompanyPackagesScreen(company: Company, onBack: () -> Unit, onBuy: (PackageItem) -> Unit) {
-    var packages by remember { mutableStateOf<List<PackageItem>>(emptyList()) }
-    var loading by remember { mutableStateOf(true) }
+fun CompanyPackagesScreen(
+    company: Company,
+    categoryLabel: String,
+    packages: List<PackageItem>,
+    onBack: () -> Unit,
+    onBuy: (PackageItem) -> Unit,
+) {
     val offline = company.status == "offline"
-
-    LaunchedEffect(company.id) {
-        try {
-            packages = ApiClient.service.getPackages(company.id).body().orEmpty()
-        } catch (_: Exception) {
-            packages = emptyList()
-        }
-        loading = false
-    }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(company.name) },
+                title = { Text(categoryLabel) },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back") }
                 },
@@ -50,20 +46,18 @@ fun CompanyPackagesScreen(company: Company, onBack: () -> Unit, onBuy: (PackageI
                     modifier = Modifier.padding(16.dp),
                 )
             }
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                if (loading) {
-                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                } else if (packages.isEmpty()) {
+            if (packages.isEmpty()) {
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                     Text(
-                        "No packages found for this provider.",
+                        "No packages found for this category.",
                         modifier = Modifier.align(Alignment.Center),
                         style = MaterialTheme.typography.bodyMedium,
                     )
-                } else {
-                    LazyColumn {
-                        items(packages, key = { it.id }) { pkg ->
-                            PackageCard(pkg = pkg, enabled = !offline, onBuy = { onBuy(pkg) })
-                        }
+                }
+            } else {
+                LazyColumn(modifier = Modifier.weight(1f)) {
+                    items(packages, key = { it.id }) { pkg ->
+                        PackageCard(pkg = pkg, enabled = !offline, onBuy = { onBuy(pkg) })
                     }
                 }
             }
@@ -81,6 +75,23 @@ private fun PackageCard(pkg: PackageItem, enabled: Boolean, onBuy: () -> Unit) {
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(pkg.name, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (pkg.oldPrice != null && pkg.oldPrice > pkg.price) {
+                        Text(
+                            "$${"%.2f".format(pkg.oldPrice)}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            textDecoration = TextDecoration.LineThrough,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text(
+                        "$${"%.2f".format(pkg.price)}",
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF16A34A),
+                    )
+                }
                 val details = buildList {
                     if (pkg.mb > 0) add("${pkg.mb} MB")
                     if (pkg.minutes > 0) add("${pkg.minutes} min")
@@ -88,11 +99,11 @@ private fun PackageCard(pkg: PackageItem, enabled: Boolean, onBuy: () -> Unit) {
                     pkg.validity?.takeIf { it.isNotBlank() }?.let { add(it) }
                 }
                 if (details.isNotEmpty()) {
+                    Spacer(Modifier.height(4.dp))
                     Text(details.joinToString(" · "), style = MaterialTheme.typography.bodySmall)
                 }
-                Spacer(Modifier.height(4.dp))
-                Text("$${"%.2f".format(pkg.price)}", fontWeight = FontWeight.Bold)
             }
+            Spacer(Modifier.width(12.dp))
             Button(onClick = onBuy, enabled = enabled) { Text("Buy") }
         }
     }
