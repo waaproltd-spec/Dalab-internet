@@ -5,6 +5,7 @@ import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { generateUssdForOrder } from "./ussd.routes.js";
+import { subscribe, broadcast } from "../realtime/orderEvents.js";
 
 export const ordersRouter = Router();
 
@@ -50,6 +51,7 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
       Math.round(pkg.price * MACAASH_POINTS_PER_DOLLAR),
     ]
   );
+  broadcast({ type: "order.created", orderId: id });
   sendJson(res, 201, await loadOrder(id));
 });
 
@@ -106,6 +108,7 @@ ordersRouter.post("/agent/orders", requireAuth("agent"), async (req, res) => {
       Math.round(pkg.price * MACAASH_POINTS_PER_DOLLAR),
     ]
   );
+  broadcast({ type: "order.created", orderId: id });
   sendJson(res, 201, await loadOrder(id));
 });
 
@@ -115,6 +118,14 @@ ordersRouter.get("/agent/orders", requireAuth("agent"), async (req, res) => {
     ? await query(`${ORDER_LIST_SELECT} WHERE o.status=$1 ORDER BY o.created_at DESC`, [status])
     : await query(`${ORDER_LIST_SELECT} ORDER BY o.created_at DESC`);
   sendJson(res, 200, rows);
+});
+
+// Real-time order feed for the Agent App — replaces the old dead-code
+// WebSocket client. Registered before "/agent/orders/:id" so "stream" isn't
+// swallowed as an :id param.
+ordersRouter.get("/agent/orders/stream", requireAuth("agent"), async (req, res) => {
+  const unsubscribe = subscribe(res);
+  req.on("close", unsubscribe);
 });
 
 ordersRouter.get("/agent/orders/:id", requireAuth("agent"), async (req, res) => {
@@ -136,6 +147,7 @@ ordersRouter.post("/agent/orders/:id/verify-payment", requireAuth("agent"), asyn
   // template isn't fatal to the approval itself; ussd_generated just stays
   // null until an admin sets one up, visible on the order detail either way.
   await generateUssdForOrder(order);
+  broadcast({ type: "order.updated", orderId: order.id });
   sendJson(res, 200, await loadOrder(order.id));
 });
 
@@ -159,6 +171,7 @@ ordersRouter.post("/agent/orders/:id/complete", requireAuth("agent"), async (req
 
   await query(`UPDATE orders SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1`, [order.id]);
   await creditMacaashIfNeeded(order);
+  broadcast({ type: "order.updated", orderId: order.id });
   sendJson(res, 200, await loadOrder(order.id));
 });
 
@@ -207,6 +220,14 @@ ordersRouter.get("/admin/orders/counts", requireStaff(), async (req, res) => {
   sendJson(res, 200, counts);
 });
 
+// Real-time order feed for the Super Admin dashboard — replaces its 8s
+// setInterval poll. Registered before "/admin/orders/:id" so "stream" isn't
+// swallowed as an :id param.
+ordersRouter.get("/admin/orders/stream", requireStaff(), async (req, res) => {
+  const unsubscribe = subscribe(res);
+  req.on("close", unsubscribe);
+});
+
 ordersRouter.get("/admin/orders/:id", requireStaff(), async (req, res) => {
   const order = await loadOrder(req.params.id);
   if (!order) return sendJson(res, 404, { error: "Order not found" });
@@ -228,6 +249,7 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
       await generateUssdForOrder(order, req.auth!.sub);
     }
   }
+  broadcast({ type: "order.updated", orderId: req.params.id });
   sendJson(res, 200, await loadOrder(req.params.id));
 });
 
@@ -254,6 +276,7 @@ ordersRouter.post("/admin/orders/:id/reverse", requirePermission("orders.reverse
     await query(`UPDATE customers SET macaash_points = GREATEST(0, macaash_points - $1) WHERE id=$2`, [credited.points, order.customer_id]);
   }
 
+  broadcast({ type: "order.updated", orderId: order.id });
   sendJson(res, 200, await loadOrder(order.id));
 });
 
