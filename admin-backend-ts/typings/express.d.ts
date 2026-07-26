@@ -11,6 +11,8 @@ declare module "express" {
   export interface Response {
     status(code: number): Response;
     json(body: unknown): Response;
+    send(body?: unknown): Response;
+    end(body?: string): Response;
     setHeader(name: string, value: string): void;
   }
   export type NextFunction = (err?: unknown) => void;

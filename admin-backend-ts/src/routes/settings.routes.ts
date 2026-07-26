@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { query, queryOne } from "../db/pool.js";
-import { requireAuth, requireStaff } from "../auth/middleware.js";
+import { requireStaff } from "../auth/middleware.js";
+import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 
 export const settingsRouter = Router();
@@ -29,7 +30,7 @@ settingsRouter.get("/admin/settings", requireStaff(), async (_req, res) => {
   sendJson(res, 200, merged);
 });
 
-settingsRouter.put("/admin/settings/:key", requireAuth("super_admin"), async (req, res) => {
+settingsRouter.put("/admin/settings/:key", requirePermission("settings.manage"), async (req, res) => {
   const { key } = req.params;
   const { value } = req.body;
   if (typeof value !== "string") return sendJson(res, 400, { error: "value must be a string" });

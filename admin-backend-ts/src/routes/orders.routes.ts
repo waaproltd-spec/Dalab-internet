@@ -2,6 +2,7 @@ import { Router } from "express";
 import { randomUUID } from "node:crypto";
 import { query, queryOne } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
+import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { generateUssdForOrder } from "./ussd.routes.js";
 
@@ -212,7 +213,7 @@ ordersRouter.get("/admin/orders/:id", requireStaff(), async (req, res) => {
   sendJson(res, 200, order);
 });
 
-ordersRouter.put("/admin/orders/:id/status", requireStaff(), async (req, res) => {
+ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"), async (req, res) => {
   const { status } = req.body;
   if (!ORDER_STATUSES.includes(status)) return sendJson(res, 400, { error: `status must be one of ${ORDER_STATUSES.join(", ")}` });
   const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
@@ -228,6 +229,32 @@ ordersRouter.put("/admin/orders/:id/status", requireStaff(), async (req, res) =>
     }
   }
   sendJson(res, 200, await loadOrder(req.params.id));
+});
+
+// Internal bookkeeping reversal only — there is no payment gateway here to
+// call for a real refund. Cancels the order and claws back any Macaash
+// points already credited via an offsetting negative ledger row (never
+// mutates/deletes the original credit row, so history stays intact).
+ordersRouter.post("/admin/orders/:id/reverse", requirePermission("orders.reverse"), async (req, res) => {
+  const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
+  if (!order) return sendJson(res, 404, { error: "Order not found" });
+  if (order.reversed_at) return sendJson(res, 409, { error: "Order has already been reversed" });
+
+  await query(`UPDATE orders SET status='cancelled', reversed_at=now(), updated_at=now() WHERE id=$1`, [order.id]);
+
+  const credited = await queryOne<{ id: string; points: number }>(
+    `SELECT id, points FROM macaash_transactions WHERE order_id=$1 AND points > 0`,
+    [order.id]
+  );
+  if (credited) {
+    await query(
+      `INSERT INTO macaash_transactions (id, customer_id, order_id, points, reason) VALUES ($1,$2,$3,$4,$5)`,
+      [randomUUID(), order.customer_id, order.id, -credited.points, `Reversed order ${order.id}`]
+    );
+    await query(`UPDATE customers SET macaash_points = GREATEST(0, macaash_points - $1) WHERE id=$2`, [credited.points, order.customer_id]);
+  }
+
+  sendJson(res, 200, await loadOrder(order.id));
 });
 
 ordersRouter.get("/admin/dashboard/stats", requireStaff(), async (_req, res) => {
