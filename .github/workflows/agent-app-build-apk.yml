@@ -47,10 +47,13 @@ jobs:
 
       - name: Decode release keystore
         id: keystore
-        if: ${{ secrets.AGENT_KEYSTORE_BASE64 != '' }}
         env:
           AGENT_KEYSTORE_BASE64: ${{ secrets.AGENT_KEYSTORE_BASE64 }}
         run: |
+          if [ -z "$AGENT_KEYSTORE_BASE64" ]; then
+            echo "No AGENT_KEYSTORE_BASE64 secret set — skipping release signing."
+            exit 0
+          fi
           echo "$AGENT_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/agent-release.jks"
           echo "path=$RUNNER_TEMP/agent-release.jks" >> "$GITHUB_OUTPUT"
 
