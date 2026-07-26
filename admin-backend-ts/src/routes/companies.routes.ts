@@ -10,7 +10,7 @@ export const packagesRouter = Router();
 
 // pin_encrypted must never reach any client, including the public endpoint —
 // explicit column list rather than SELECT *.
-const COMPANY_COLUMNS = `id, name, group_number, color_hex, logo_url, status, gateway, payment_number, payment_ussd_template, ussd_code, visible_customer_app, visible_agent_app, created_at, updated_at`;
+const COMPANY_COLUMNS = `id, name, group_number, color_hex, logo_url, status, gateway, payment_number, payment_ussd_template, ussd_code, visible_customer_app, visible_agent_app, auto_process_enabled, created_at, updated_at`;
 
 companiesRouter.get("/companies", async (_req, res) => {
   const rows = await query(`SELECT ${COMPANY_COLUMNS} FROM companies ORDER BY group_number, name`);
@@ -81,6 +81,20 @@ companiesRouter.put("/admin/companies/:id/visibility", requirePermission("compan
     `UPDATE companies SET visible_customer_app=$1, visible_agent_app=$2, updated_at=now() WHERE id=$3`,
     [Boolean(visibleCustomerApp), Boolean(visibleAgentApp), req.params.id]
   );
+  sendJson(res, 200, await queryOne(`SELECT ${COMPANY_COLUMNS} FROM companies WHERE id=$1`, [req.params.id]));
+});
+
+// "Configure the automatic processing pipeline" — when off, the matched-SMS
+// endpoint tells the Agent App to require manual verification instead of
+// auto-dialing (see requiresManualApproval in smsLogs.routes.ts).
+companiesRouter.put("/admin/companies/:id/auto-process", requirePermission("devices.manage"), async (req, res) => {
+  const { enabled } = req.body;
+  if (typeof enabled !== "boolean") return sendJson(res, 400, { error: "enabled must be a boolean" });
+  const result = await query(
+    `UPDATE companies SET auto_process_enabled=$1, updated_at=now() WHERE id=$2 RETURNING id`,
+    [enabled, req.params.id]
+  );
+  if (result.length === 0) return sendJson(res, 404, { error: "Company not found" });
   sendJson(res, 200, await queryOne(`SELECT ${COMPANY_COLUMNS} FROM companies WHERE id=$1`, [req.params.id]));
 });
 

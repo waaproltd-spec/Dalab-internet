@@ -9,7 +9,7 @@ import { sendJson } from "../utils/camelCase.js";
 export const agentsRouter = Router();
 
 agentsRouter.get("/admin/agents", requireStaff(), async (_req, res) => {
-  sendJson(res, 200, await query(`SELECT id, phone, name, status, last_login_at, created_at FROM agents ORDER BY created_at DESC`));
+  sendJson(res, 200, await query(`SELECT id, phone, name, status, device_id, last_login_at, created_at FROM agents ORDER BY created_at DESC`));
 });
 
 agentsRouter.post("/admin/agents", requirePermission("agents.manage"), async (req, res) => {
@@ -32,7 +32,7 @@ agentsRouter.put("/admin/agents/:id", requirePermission("agents.manage"), async 
     return sendJson(res, 409, { error: "An agent with this phone already exists" });
   }
   await query(`UPDATE agents SET name=$1, phone=$2 WHERE id=$3`, [name, phone, req.params.id]);
-  sendJson(res, 200, await queryOne(`SELECT id, phone, name, status, last_login_at, created_at FROM agents WHERE id=$1`, [req.params.id]));
+  sendJson(res, 200, await queryOne(`SELECT id, phone, name, status, device_id, last_login_at, created_at FROM agents WHERE id=$1`, [req.params.id]));
 });
 
 agentsRouter.put("/admin/agents/:id/suspend", requirePermission("agents.manage"), async (req, res) => {
