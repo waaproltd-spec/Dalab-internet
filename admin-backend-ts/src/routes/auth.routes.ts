@@ -96,7 +96,10 @@ authRouter.post("/admin/auth/login", rateLimit("admin-login", 5, 15 * 60 * 1000)
   }
   await query(`UPDATE admin_users SET last_login_at = now() WHERE id=$1`, [admin.id]);
   const tokens = await issueTokens(admin.id, admin.role as Role);
-  sendJson(res, 200, { ...tokens, admin: { id: admin.id, email: admin.email, role: admin.role } });
+  sendJson(res, 200, {
+    ...tokens,
+    admin: { id: admin.id, email: admin.email, role: admin.role, permissions: admin.permissions ?? [] },
+  });
 });
 
 authRouter.post("/admin/auth/change-password", requireAuth("super_admin", "admin"), async (req, res) => {

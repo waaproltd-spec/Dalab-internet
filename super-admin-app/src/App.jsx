@@ -1,10 +1,11 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   LayoutGrid, Building2, Wallet, Package, ShoppingCart, Users, Gift,
   Bell, FileBarChart2, Settings, Search, Plus, Pencil, Trash2, Power,
   X, Check, TrendingUp, Wifi, DollarSign,
   Clock3, CheckCircle2, XCircle, Download, ShieldCheck, Menu, RefreshCw, Loader2,
-  GalleryHorizontalEnd, ArrowUp, ArrowDown, Eye, EyeOff, Lock, Mail, LogOut, ArrowLeft, Send, KeyRound, Copy, Terminal, SmartphoneNfc
+  GalleryHorizontalEnd, ArrowUp, ArrowDown, Eye, EyeOff, Lock, Mail, LogOut, ArrowLeft, KeyRound, Copy, Terminal, SmartphoneNfc,
+  Smartphone, Radio, ChevronDown, ChevronRight, AlertTriangle, RotateCcw
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 
@@ -87,13 +88,95 @@ const DalabAdminApi = {
   updateUssdTemplate: (id, body) => dalabAdminApiRequest(`/admin/ussd-templates/${id}`, { method: "PUT", body }),
   toggleUssdTemplateStatus: (id, status) => dalabAdminApiRequest(`/admin/ussd-templates/${id}/status`, { method: "PUT", body: { status } }),
   deleteUssdTemplate: (id) => dalabAdminApiRequest(`/admin/ussd-templates/${id}`, { method: "DELETE" }),
-  getUssdPinStatus: () => dalabAdminApiRequest("/admin/settings/ussd-pin"),
+  // PINs are per-provider, not a single global secret — see admin-backend-ts/src/routes/ussd.routes.ts.
+  getUssdPinStatus: (companyId) => dalabAdminApiRequest(`/admin/companies/${companyId}/pin-status`),
+  setUssdPin: (companyId, pin) => dalabAdminApiRequest(`/admin/companies/${companyId}/pin`, { method: "PUT", body: { pin } }),
   getSimRouting: () => dalabAdminApiRequest("/admin/sim-routing"),
   setSimRouting: (companyId, simSlot) => dalabAdminApiRequest(`/admin/sim-routing/${companyId}`, { method: "PUT", body: { simSlot } }),
-  setUssdPin: (pin) => dalabAdminApiRequest("/admin/settings/ussd-pin", { method: "PUT", body: { pin } }),
   getUssdLogs: (orderId) => dalabAdminApiRequest(`/admin/ussd-logs${orderId ? `?orderId=${orderId}` : ""}`),
   regenerateUssd: (orderId) => dalabAdminApiRequest(`/admin/orders/${orderId}/generate-ussd`, { method: "POST" }),
+  reverseOrder: (id) => dalabAdminApiRequest(`/admin/orders/${id}/reverse`, { method: "POST" }),
+  // Device & USSD module
+  getAgentDevices: () => dalabAdminApiRequest("/admin/agent-devices"),
+  createAgentDevice: (body) => dalabAdminApiRequest("/admin/agent-devices", { method: "POST", body }),
+  updateAgentDevice: (id, body) => dalabAdminApiRequest(`/admin/agent-devices/${id}`, { method: "PUT", body }),
+  setAgentDeviceStatus: (id, enabled) => dalabAdminApiRequest(`/admin/agent-devices/${id}/status`, { method: "PUT", body: { enabled } }),
+  deleteAgentDevice: (id) => dalabAdminApiRequest(`/admin/agent-devices/${id}`, { method: "DELETE" }),
+  setCompanyAutoProcess: (companyId, enabled) => dalabAdminApiRequest(`/admin/companies/${companyId}/auto-process`, { method: "PUT", body: { enabled } }),
+  getAgentsList: () => dalabAdminApiRequest("/admin/agents"),
+  assignAgentDevice: (agentId, deviceId) => dalabAdminApiRequest(`/admin/agents/${agentId}/device`, { method: "PUT", body: { deviceId } }),
+  getExecutionLogs: (filters = {}) => {
+    const qs = new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([, v]) => v))).toString();
+    return dalabAdminApiRequest(`/admin/execution-logs${qs ? `?${qs}` : ""}`);
+  },
 };
+
+// A regular Admin only has whatever the Super Admin has explicitly granted
+// (see admin_users.permissions[] / requirePermission() server-side); the
+// Super Admin always passes without consulting the array.
+function hasPermission(admin, key) {
+  if (!admin) return false;
+  if (admin.role === "super_admin") return true;
+  return Array.isArray(admin.permissions) && admin.permissions.includes(key);
+}
+
+// Browser EventSource can't attach an Authorization header, so real-time
+// order sync uses fetch()'s streaming body instead, parsing the same
+// `data: {...}\n\n` framing the Agent App's OkHttp SSE client consumes.
+// Reconnects with exponential backoff on any drop; the caller decides what
+// "disconnected" means for its own UI (e.g. Orders falls back to polling).
+function subscribeOrderEvents(path, { onEvent, onOpen, onClose } = {}) {
+  let stopped = false;
+  let controller = null;
+  let retryDelayMs = 2000;
+  let retryTimer = null;
+
+  async function connectOnce() {
+    if (stopped || !DALAB_API_ENABLED) return;
+    controller = new AbortController();
+    try {
+      const res = await fetch(`${DALAB_API_BASE_URL}${path}`, {
+        headers: {
+          Accept: "text/event-stream",
+          ...(dalabAdminAccessToken ? { Authorization: `Bearer ${dalabAdminAccessToken}` } : {}),
+        },
+        signal: controller.signal,
+      });
+      if (!res.ok || !res.body) throw new Error(`SSE connection failed (${res.status})`);
+      retryDelayMs = 2000;
+      onOpen?.();
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (!stopped) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const frames = buffer.split("\n\n");
+        buffer = frames.pop() ?? "";
+        for (const frame of frames) {
+          const dataLine = frame.split("\n").find((l) => l.startsWith("data:"));
+          if (dataLine) onEvent?.(dataLine.slice(5).trim());
+        }
+      }
+    } catch (err) {
+      if (stopped || err.name === "AbortError") return;
+    }
+    onClose?.();
+    if (!stopped) {
+      retryTimer = setTimeout(connectOnce, retryDelayMs);
+      retryDelayMs = Math.min(retryDelayMs * 2, 30000);
+    }
+  }
+
+  connectOnce();
+  return () => {
+    stopped = true;
+    controller?.abort();
+    if (retryTimer) clearTimeout(retryTimer);
+  };
+}
 
 const initialCompanies = [
   { id: "hormuud", name: "Hormuud", group: 1, color: "#16A34A", status: "enabled", payNumber: "252-61-XXXXXXX (EVC Plus)", gateway: "EVC Plus" },
@@ -172,8 +255,8 @@ const NAV = [
   { id: "macaash", label: "Macaash (Rewards)", icon: Gift },
   { id: "notifications", label: "Notifications", icon: Bell },
   { id: "banners", label: "Banner Management", icon: GalleryHorizontalEnd },
-  { id: "ussd", label: "USSD Services", icon: Send },
-  { id: "sim-routing", label: "SIM Routing Setup", icon: SmartphoneNfc },
+  { id: "devices", label: "Device & USSD", icon: SmartphoneNfc },
+  { id: "execution-logs", label: "Execution Logs", icon: Terminal },
   { id: "reports", label: "Reports", icon: FileBarChart2 },
   { id: "settings", label: "Settings", icon: Settings },
 ];
@@ -658,7 +741,22 @@ function Packages({ packages, setPackages, companies }) {
   );
 }
 
-function OrderDetailDrawer({ order, onClose, onStatus }) {
+function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
+  const [attempts, setAttempts] = useState([]);
+  const [attemptsError, setAttemptsError] = useState("");
+  const [reversing, setReversing] = useState(false);
+  const [reverseError, setReverseError] = useState("");
+  const [localOrder, setLocalOrder] = useState(order);
+
+  useEffect(() => { setLocalOrder(order); setReverseError(""); }, [order?.id]);
+
+  useEffect(() => {
+    if (!order || !DALAB_API_ENABLED) return;
+    DalabAdminApi.getExecutionLogs({ orderId: order.id })
+      .then(setAttempts)
+      .catch((err) => setAttemptsError(err.message || "Could not load USSD execution history."));
+  }, [order?.id]);
+
   if (!order) return null;
   const row = (label, value, mono) => (
     <div style={{ display: "flex", justifyContent: "space-between", padding: "9px 0", borderTop: `1px solid ${BORDER}`, gap: 12 }}>
@@ -672,6 +770,23 @@ function OrderDetailDrawer({ order, onClose, onStatus }) {
     completed: [],
     failed: [{ label: "Retry (Set Pending)", status: "pending", icon: RefreshCw, variant: "ghost" }],
     cancelled: [{ label: "Reopen (Set Pending)", status: "pending", icon: RefreshCw, variant: "ghost" }],
+  };
+
+  const canReverse = hasPermission(admin, "orders.reverse") && !localOrder.reversedAt && localOrder.status !== "pending";
+
+  const doReverse = async () => {
+    if (!window.confirm("Reverse this order? This cancels it and claws back any Macaash points earned — it does not move real money, since there is no payment gateway to call.")) return;
+    setReversing(true);
+    setReverseError("");
+    try {
+      const updated = await DalabAdminApi.reverseOrder(order.id);
+      setLocalOrder(updated);
+      onStatus(order.id, "cancelled");
+    } catch (err) {
+      setReverseError(err.message || "Could not reverse this order.");
+    } finally {
+      setReversing(false);
+    }
   };
 
   return (
@@ -695,8 +810,13 @@ function OrderDetailDrawer({ order, onClose, onStatus }) {
             <div style={{ fontWeight: 700, fontSize: 14, color: INK }}>{order.packageName}</div>
             <div style={{ fontSize: 11.5, color: MUTE }}>{order.companyName}</div>
           </div>
-          <div style={{ marginLeft: "auto" }}><Badge tone={orderTone(order.status)}>{orderStatusLabel(order.status)}</Badge></div>
+          <div style={{ marginLeft: "auto" }}><Badge tone={orderTone(localOrder.status)}>{orderStatusLabel(localOrder.status)}</Badge></div>
         </div>
+        {localOrder.reversedAt && (
+          <div style={{ marginTop: 10, fontSize: 11.5, color: "#A9720A", background: "#FFF8E8", border: "1px solid #F4E3B0", borderRadius: 8, padding: "6px 10px" }}>
+            Reversed {formatDateTime(localOrder.reversedAt)} — internal bookkeeping only, no real money moved.
+          </div>
+        )}
 
         <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>CUSTOMER</div>
         {row("Name", order.customerName || "Not provided")}
@@ -723,7 +843,7 @@ function OrderDetailDrawer({ order, onClose, onStatus }) {
           </div>
         ) : (
           <div style={{ marginTop: 8, fontSize: 12, color: MUTE }}>
-            Not generated yet — this happens automatically once the order is approved (moved to In Progress), provided a matching template and a Super Admin PIN are set up in USSD Services.
+            Not generated yet — this happens automatically once the order is approved (moved to In Progress), provided a matching template and a provider PIN are set up in Device & USSD.
           </div>
         )}
 
@@ -731,11 +851,36 @@ function OrderDetailDrawer({ order, onClose, onStatus }) {
         {row("Created", formatDateTime(order.createdAt), true)}
         {order.completedAt && row("Completed", formatDateTime(order.completedAt), true)}
 
-        {nextActions[order.status]?.length > 0 && (
+        <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>USSD EXECUTION HISTORY</div>
+        {attemptsError ? (
+          <div style={{ marginTop: 8, fontSize: 12, color: "#C81E2C" }}>{attemptsError}</div>
+        ) : attempts.length === 0 ? (
+          <div style={{ marginTop: 8, fontSize: 12, color: MUTE }}>No dial attempts recorded for this order yet.</div>
+        ) : (
+          <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+            {attempts.map((a) => (
+              <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: `1px solid ${BORDER}`, fontSize: 11.5 }}>
+                <Badge tone={a.status === "success" ? "green" : a.status === "failed" ? "red" : "amber"}>{a.status}</Badge>
+                <span style={{ color: MUTE }}>SIM {a.simSlot ?? "—"}</span>
+                <span style={{ color: MUTE }}>attempt #{a.attemptNumber}</span>
+                <span style={{ color: MUTE, marginLeft: "auto" }}>{formatDateTime(a.createdAt)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {reverseError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginTop: 14 }}>{reverseError}</div>}
+
+        {(nextActions[localOrder.status]?.length > 0 || canReverse) && (
           <div style={{ display: "flex", gap: 10, marginTop: 22, flexWrap: "wrap" }}>
-            {nextActions[order.status].map((a) => (
+            {nextActions[localOrder.status]?.map((a) => (
               <Button key={a.status} variant={a.variant} onClick={() => onStatus(order.id, a.status)} icon={a.icon}>{a.label}</Button>
             ))}
+            {canReverse && (
+              <Button variant="danger" icon={RotateCcw} onClick={doReverse} disabled={reversing}>
+                {reversing ? "Reversing..." : "Reverse (internal)"}
+              </Button>
+            )}
           </div>
         )}
       </div>
@@ -763,7 +908,7 @@ function StatusCountTile({ label, count, tone, active, onClick }) {
 
 const ORDERS_POLL_INTERVAL_MS = 8000;
 
-function Orders({ orders, setOrders, companies }) {
+function Orders({ orders, setOrders, companies, admin }) {
   const [filter, setFilter] = useState("all");
   const [companyFilter, setCompanyFilter] = useState("all");
   const [search, setSearch] = useState("");
@@ -771,6 +916,7 @@ function Orders({ orders, setOrders, companies }) {
   const [refreshing, setRefreshing] = useState(false);
   const [lastSynced, setLastSynced] = useState(new Date());
   const [liveCounts, setLiveCounts] = useState(null);
+  const [live, setLive] = useState(false);
 
   // Live data: replaces the mock `orders` prop with real API results once
   // configured. Falls back to the mock list (still fully filterable/
@@ -792,16 +938,37 @@ function Orders({ orders, setOrders, companies }) {
     }
   };
 
-  // Auto-refresh so status changes made elsewhere (an agent completing an
-  // order, another admin tab) show up without a manual page reload. This is
-  // polling, not a WebSocket push — honest about that rather than claiming
-  // true push-based real-time the backend doesn't implement.
+  // Keeps fetchOrders' identity fresh for the SSE subscription below without
+  // re-subscribing (and dropping the connection) on every filter/search
+  // keystroke — the subscription itself doesn't care what's currently shown,
+  // it just triggers a refetch of whatever's currently filtered.
+  const fetchOrdersRef = useRef(fetchOrders);
+  fetchOrdersRef.current = fetchOrders;
+
   useEffect(() => {
     if (!DALAB_API_ENABLED) return;
     fetchOrders();
-    const interval = setInterval(fetchOrders, ORDERS_POLL_INTERVAL_MS);
-    return () => clearInterval(interval);
   }, [filter, companyFilter, search]);
+
+  // Real-time push via SSE — falls back to polling automatically whenever
+  // the stream isn't currently connected (first load, a drop mid-session,
+  // or the backend being briefly unreachable), so orders never silently go
+  // stale even if the live connection misbehaves.
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    const unsubscribe = subscribeOrderEvents("/admin/orders/stream", {
+      onEvent: () => fetchOrdersRef.current(),
+      onOpen: () => setLive(true),
+      onClose: () => setLive(false),
+    });
+    return () => { unsubscribe(); setLive(false); };
+  }, []);
+
+  useEffect(() => {
+    if (!DALAB_API_ENABLED || live) return;
+    const interval = setInterval(() => fetchOrdersRef.current(), ORDERS_POLL_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [live]);
 
   const manualRefresh = async () => {
     setRefreshing(true);
@@ -876,9 +1043,12 @@ function Orders({ orders, setOrders, companies }) {
           <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>View, search, filter, and manage every customer telecom order in real time</div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-          <span style={{ fontSize: 11, color: MUTE }}>
-            {DALAB_API_ENABLED ? `Auto-refreshing every ${ORDERS_POLL_INTERVAL_MS / 1000}s · synced ${lastSynced.toLocaleTimeString()}` : `Synced ${lastSynced.toLocaleTimeString()}`}
-          </span>
+          {DALAB_API_ENABLED && (
+            <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 700, color: live ? GREEN : "#A9720A" }}>
+              <Radio size={12} /> {live ? "Live" : `Polling every ${ORDERS_POLL_INTERVAL_MS / 1000}s`}
+            </span>
+          )}
+          <span style={{ fontSize: 11, color: MUTE }}>Synced {lastSynced.toLocaleTimeString()}</span>
           <Button variant="ghost" icon={refreshing ? Loader2 : RefreshCw} spin={refreshing} onClick={manualRefresh} disabled={refreshing}>
             {refreshing ? "Refreshing..." : "Refresh"}
           </Button>
@@ -967,7 +1137,7 @@ function Orders({ orders, setOrders, companies }) {
         )}
       </div>
 
-      {selected && <OrderDetailDrawer order={selected} onClose={() => setSelected(null)} onStatus={setStatus} />}
+      {selected && <OrderDetailDrawer order={selected} onClose={() => setSelected(null)} onStatus={setStatus} admin={admin} />}
     </div>
   );
 }
@@ -1214,70 +1384,273 @@ function Banners({ banners, setBanners, companies }) {
   );
 }
 
-function UssdPinCard() {
-  const [isSet, setIsSet] = useState(false);
-  const [pin, setPin] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState("");
+// The `companies` prop threaded through most of this app is still the
+// hard-coded 4-provider mock (Companies section was never wired to
+// GET /admin/companies — a pre-existing gap outside this module's scope).
+// The Device & USSD module needs real ids/colors/auto-process flags, so it
+// fetches its own authoritative list rather than trusting that prop; demo
+// mode falls back to the mock so the module still renders without a backend.
+function useLiveCompanies(fallbackCompanies) {
+  const [companies, setCompanies] = useState(fallbackCompanies);
   const [error, setError] = useState("");
 
-  useEffect(() => {
+  const refresh = async () => {
     if (!DALAB_API_ENABLED) return;
-    DalabAdminApi.getUssdPinStatus().then((r) => setIsSet(r.isSet)).catch(() => {});
-  }, []);
-
-  const save = async () => {
-    setError(""); setMessage("");
-    if (!/^\d{3,8}$/.test(pin)) return setError("PIN must be 3-8 digits.");
-    if (!DALAB_API_ENABLED) return setError("Connect DALAB_API_BASE_URL to a deployed backend to save the real PIN.");
-    setSaving(true);
     try {
-      await DalabAdminApi.setUssdPin(pin);
-      setIsSet(true);
-      setPin("");
-      setMessage("PIN saved. It's encrypted at rest and only ever used server-side to build USSD strings.");
+      const rows = await DalabAdminApi.getCompanies();
+      setCompanies(rows.map((c) => ({
+        id: c.id,
+        name: c.name,
+        color: c.colorHex || "#1D2E8C",
+        autoProcessEnabled: c.autoProcessEnabled !== false,
+      })));
+      setError("");
     } catch (err) {
-      setError(err.message || "Could not save PIN.");
-    } finally {
-      setSaving(false);
+      setError(err.message || "Could not load companies.");
     }
   };
+  useEffect(() => { refresh(); }, []);
+  return { companies, error, refresh };
+}
+
+function DeviceUssdModule({ companies: fallbackCompanies, admin }) {
+  const [tab, setTab] = useState("devices");
+  const canManage = hasPermission(admin, "devices.manage");
+  const { companies, error: companiesError } = useLiveCompanies(fallbackCompanies);
+
+  const tabs = [
+    { id: "devices", label: "Devices" },
+    { id: "templates", label: "USSD Templates" },
+    { id: "sim-routing", label: "SIM Routing" },
+    { id: "pins", label: "Provider PINs & Automation" },
+  ];
 
   return (
-    <Card style={{ padding: 18, maxWidth: 460 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-        <KeyRound size={18} color={isSet ? GREEN : "#A9720A"} />
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 16, flexWrap: "wrap" }}>
         <div>
-          <div style={{ fontWeight: 700, fontSize: 13.5, color: INK }}>Super Admin PIN</div>
-          <div style={{ fontSize: 11.5, color: MUTE }}>{isSet ? "A PIN is set and encrypted at rest." : "No PIN set yet — USSD generation won't work until one is."}</div>
+          <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Device & USSD Configuration</div>
+          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Agent devices, USSD templates, SIM routing, provider PINs, and the automatic processing pipeline — everything the Agent App's SMS-to-USSD pipeline depends on.</div>
         </div>
+        {!canManage && <Badge tone="amber">View only — ask a Super Admin for the "devices.manage" permission to make changes</Badge>}
       </div>
-      <Field label={isSet ? "Replace PIN" : "Set PIN"}>
-        <input type="password" inputMode="numeric" style={inputStyle} value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))} placeholder="e.g. 4521" maxLength={8} />
-      </Field>
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
-      {message && <div style={{ color: GREEN, fontSize: 12.5, marginBottom: 10 }}>{message}</div>}
-      <Button icon={KeyRound} onClick={save} disabled={saving}>{saving ? "Saving..." : "Save PIN"}</Button>
-    </Card>
+
+      {companiesError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{companiesError}</div>}
+
+      <div style={{ display: "flex", gap: 6, marginBottom: 18, borderBottom: `1px solid ${BORDER}` }}>
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            style={{
+              padding: "10px 16px", border: "none", background: "none", cursor: "pointer", fontSize: 13, fontWeight: 700,
+              color: tab === t.id ? INDIGO : MUTE, borderBottom: tab === t.id ? `2px solid ${INDIGO}` : "2px solid transparent", marginBottom: -1,
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "devices" && <DevicesPanel canManage={canManage} />}
+      {tab === "templates" && <UssdTemplatesPanel companies={companies} canManage={canManage} />}
+      {tab === "sim-routing" && <SimRoutingPanel companies={companies} canManage={canManage} />}
+      {tab === "pins" && <ProviderPinsPanel companies={companies} canManage={canManage} />}
+    </div>
   );
 }
 
-function UssdServices({ ussdTemplates, setUssdTemplates, companies }) {
+function DevicesPanel({ canManage }) {
+  const [devices, setDevices] = useState([]);
+  const [agents, setAgents] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [editing, setEditing] = useState(null); // 'new' | device object | null
+  const [form, setForm] = useState({});
+
+  const fetchAll = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setLoading(true);
+    setError("");
+    try {
+      const [deviceRows, agentRows] = await Promise.all([DalabAdminApi.getAgentDevices(), DalabAdminApi.getAgentsList()]);
+      setDevices(deviceRows);
+      setAgents(agentRows);
+    } catch (err) {
+      setError(err.message || "Could not load devices.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { fetchAll(); }, []);
+
+  const openNew = () => { setForm({ name: "", description: "" }); setEditing("new"); };
+  const openEdit = (d) => { setForm(d); setEditing(d.id); };
+
+  const save = async () => {
+    if (!form.name) return;
+    try {
+      if (editing === "new") await DalabAdminApi.createAgentDevice(form);
+      else await DalabAdminApi.updateAgentDevice(editing, form);
+      setEditing(null);
+      await fetchAll();
+    } catch (err) {
+      alert(err.message || "Could not save device.");
+    }
+  };
+
+  const toggleEnabled = async (d) => {
+    setDevices((prev) => prev.map((x) => (x.id === d.id ? { ...x, enabled: !x.enabled } : x))); // optimistic
+    try {
+      await DalabAdminApi.setAgentDeviceStatus(d.id, !d.enabled);
+    } catch (err) {
+      setError(err.message || "Could not update device status.");
+      fetchAll();
+    }
+  };
+
+  const remove = async (d) => {
+    if (!window.confirm(`Delete device "${d.name}"? Any agent currently assigned to it will be unassigned.`)) return;
+    try {
+      await DalabAdminApi.deleteAgentDevice(d.id);
+      fetchAll();
+    } catch (err) {
+      alert(err.message || "Could not delete device.");
+    }
+  };
+
+  const assignDevice = async (agentId, deviceId) => {
+    setAgents((prev) => prev.map((a) => (a.id === agentId ? { ...a, deviceId: deviceId || null } : a))); // optimistic
+    try {
+      await DalabAdminApi.assignAgentDevice(agentId, deviceId || null);
+    } catch (err) {
+      setError(err.message || "Could not assign device.");
+      fetchAll();
+    }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage devices.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+        {canManage && <Button icon={Plus} onClick={openNew}>Add device</Button>}
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 14, marginBottom: 24 }}>
+        {devices.map((d) => (
+          <Card key={d.id} style={{ padding: 16 }}>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ width: 34, height: 34, borderRadius: 10, background: d.enabled ? INDIGO_SOFT : "#F5E6E6", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <Smartphone size={16} color={d.enabled ? INDIGO : "#C81E2C"} />
+                </div>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 13.5, color: INK }}>{d.name}</div>
+                  <div style={{ fontSize: 11, color: MUTE }}>{d.description || "No description"}</div>
+                </div>
+              </div>
+              <Badge tone={d.enabled ? "green" : "red"}>{d.enabled ? "Enabled" : "Disabled"}</Badge>
+            </div>
+            <div style={{ marginTop: 10, fontSize: 11.5, color: MUTE }}>
+              {(d.sims || []).length > 0
+                ? `Routing: ${d.sims.map((s) => `SIM ${s.simSlot} → ${s.companyName}`).join(", ")}`
+                : "No providers routed to this device yet."}
+            </div>
+            {canManage && (
+              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                <button onClick={() => toggleEnabled(d)} title={d.enabled ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                  <Power size={14} color={d.enabled ? GREEN : "#C81E2C"} />
+                </button>
+                <button onClick={() => openEdit(d)} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                  <Pencil size={14} color={INDIGO} />
+                </button>
+                <button onClick={() => remove(d)} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                  <Trash2 size={14} color="#C81E2C" />
+                </button>
+              </div>
+            )}
+          </Card>
+        ))}
+        {devices.length === 0 && !loading && (
+          <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>No devices registered yet.</div>
+        )}
+      </div>
+
+      <div style={{ fontSize: 12, fontWeight: 700, color: MUTE, letterSpacing: 0.5, marginBottom: 10 }}>ASSIGN DEVICES TO AGENTS</div>
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              {["Agent", "Phone", "Assigned device", ""].map((h) => (
+                <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {agents.map((a) => (
+              <tr key={a.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{a.name}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE, fontFamily: "monospace" }}>{a.phone}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE }}>
+                  {devices.find((d) => d.id === a.deviceId)?.name || "Unassigned"}
+                </td>
+                <td style={{ padding: "10px 14px" }}>
+                  {canManage && (
+                    <select
+                      value={a.deviceId || ""}
+                      onChange={(e) => assignDevice(a.id, e.target.value || null)}
+                      style={{ ...inputStyle, width: 180, padding: "6px 10px" }}
+                    >
+                      <option value="">Unassigned</option>
+                      {devices.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                    </select>
+                  )}
+                </td>
+              </tr>
+            ))}
+            {agents.length === 0 && (
+              <tr><td colSpan={4} style={{ padding: 16, textAlign: "center", fontSize: 12, color: MUTE }}>No agents yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+
+      {editing && (
+        <Modal title={editing === "new" ? "Add device" : "Edit device"} onClose={() => setEditing(null)} width={420}>
+          <Field label="Device name">
+            <input style={inputStyle} value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Shop Counter Phone" />
+          </Field>
+          <Field label="Description (optional)">
+            <input style={inputStyle} value={form.description || ""} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="e.g. Dual-SIM Android, front counter" />
+          </Field>
+          <div style={{ display: "flex", gap: 10 }}>
+            <Button onClick={save} icon={Check}>Save</Button>
+            <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function UssdTemplatesPanel({ companies, canManage }) {
+  const [ussdTemplates, setUssdTemplates] = useState([]);
   const [companyFilter, setCompanyFilter] = useState("all");
   const [editing, setEditing] = useState(null); // 'new' | template object | null
   const [form, setForm] = useState({});
-  const [loading, setLoading] = useState(false);
 
   const fetchTemplates = async () => {
     if (!DALAB_API_ENABLED) return;
-    setLoading(true);
     try {
       const rows = await DalabAdminApi.getUssdTemplates(companyFilter === "all" ? undefined : companyFilter);
       setUssdTemplates(rows);
     } catch (err) {
       console.error("Failed to load USSD templates:", err.message);
-    } finally {
-      setLoading(false);
     }
   };
   useEffect(() => { fetchTemplates(); }, [companyFilter]);
@@ -1297,22 +1670,13 @@ function UssdServices({ ussdTemplates, setUssdTemplates, companies }) {
       alert("USSD code must contain {number}, {amount}, and {pin} placeholders.");
       return;
     }
-    if (DALAB_API_ENABLED) {
-      try {
-        if (editing === "new") await DalabAdminApi.createUssdTemplate(form);
-        else await DalabAdminApi.updateUssdTemplate(editing, form);
-        await fetchTemplates();
-      } catch (err) {
-        alert(err.message || "Could not save template.");
-        return;
-      }
-    } else {
-      const company = companies.find((c) => c.id === form.companyId);
-      if (editing === "new") {
-        setUssdTemplates((prev) => [...prev, { ...form, id: "t-" + Date.now(), companyName: company?.name, companyColor: company?.color, status: "enabled" }]);
-      } else {
-        setUssdTemplates((prev) => prev.map((t) => (t.id === editing ? { ...t, ...form } : t)));
-      }
+    try {
+      if (editing === "new") await DalabAdminApi.createUssdTemplate(form);
+      else await DalabAdminApi.updateUssdTemplate(editing, form);
+      await fetchTemplates();
+    } catch (err) {
+      alert(err.message || "Could not save template.");
+      return;
     }
     setEditing(null);
   };
@@ -1320,30 +1684,22 @@ function UssdServices({ ussdTemplates, setUssdTemplates, companies }) {
   const toggleStatus = async (t) => {
     const next = t.status === "enabled" ? "disabled" : "enabled";
     setUssdTemplates((prev) => prev.map((x) => (x.id === t.id ? { ...x, status: next } : x)));
-    if (DALAB_API_ENABLED) {
-      try { await DalabAdminApi.toggleUssdTemplateStatus(t.id, next); } catch (err) { fetchTemplates(); }
-    }
+    try { await DalabAdminApi.toggleUssdTemplateStatus(t.id, next); } catch (err) { fetchTemplates(); }
   };
 
   const remove = async (t) => {
     setUssdTemplates((prev) => prev.filter((x) => x.id !== t.id));
-    if (DALAB_API_ENABLED) {
-      try { await DalabAdminApi.deleteUssdTemplate(t.id); } catch (err) { fetchTemplates(); }
-    }
+    try { await DalabAdminApi.deleteUssdTemplate(t.id); } catch (err) { fetchTemplates(); }
   };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage USSD templates.</div>;
+  }
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 16, flexWrap: "wrap" }}>
-        <div>
-          <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>USSD Services</div>
-          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Manage USSD dialer templates per provider — used to auto-generate the payment string when an order is approved</div>
-        </div>
-        <Button icon={Plus} onClick={openNew}>Add template</Button>
-      </div>
-
-      <div style={{ marginBottom: 16 }}>
-        <UssdPinCard />
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+        {canManage && <Button icon={Plus} onClick={openNew}>Add template</Button>}
       </div>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
@@ -1382,15 +1738,19 @@ function UssdServices({ ussdTemplates, setUssdTemplates, companies }) {
                     <td style={{ padding: "10px 14px" }}><Badge tone={t.status === "enabled" ? "green" : "gray"}>{t.status === "enabled" ? "Enabled" : "Disabled"}</Badge></td>
                     <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE }}>{t.notes || "—"}</td>
                     <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
-                      <button onClick={() => toggleStatus(t)} title={t.status === "enabled" ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
-                        <Power size={14} color={t.status === "enabled" ? GREEN : "#C81E2C"} />
-                      </button>
-                      <button onClick={() => openEdit(t)} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
-                        <Pencil size={14} color={INDIGO} />
-                      </button>
-                      <button onClick={() => remove(t)} style={{ background: "none", border: "none", cursor: "pointer" }}>
-                        <Trash2 size={14} color="#C81E2C" />
-                      </button>
+                      {canManage && (
+                        <>
+                          <button onClick={() => toggleStatus(t)} title={t.status === "enabled" ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
+                            <Power size={14} color={t.status === "enabled" ? GREEN : "#C81E2C"} />
+                          </button>
+                          <button onClick={() => openEdit(t)} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
+                            <Pencil size={14} color={INDIGO} />
+                          </button>
+                          <button onClick={() => remove(t)} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                            <Trash2 size={14} color="#C81E2C" />
+                          </button>
+                        </>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -1432,29 +1792,24 @@ function UssdServices({ ussdTemplates, setUssdTemplates, companies }) {
   );
 }
 
-function SimRoutingSetup({ companies }) {
+function SimRoutingPanel({ companies, canManage }) {
   const [routing, setRouting] = useState({}); // companyId -> simSlot
-  const [loading, setLoading] = useState(false);
   const [savingId, setSavingId] = useState(null);
   const [error, setError] = useState("");
 
   const fetchRouting = async () => {
     if (!DALAB_API_ENABLED) return;
-    setLoading(true);
     try {
       const rows = await DalabAdminApi.getSimRouting();
       setRouting(Object.fromEntries(rows.map((r) => [r.companyId, r.simSlot])));
     } catch (err) {
       setError(err.message || "Could not load SIM routing.");
-    } finally {
-      setLoading(false);
     }
   };
   useEffect(() => { fetchRouting(); }, []);
 
   const assign = async (companyId, simSlot) => {
     setRouting((prev) => ({ ...prev, [companyId]: simSlot })); // optimistic
-    if (!DALAB_API_ENABLED) return;
     setSavingId(companyId);
     setError("");
     try {
@@ -1470,15 +1825,13 @@ function SimRoutingSetup({ companies }) {
   const bySlot = (slot) => companies.filter((c) => routing[c.id] === slot);
   const unassigned = companies.filter((c) => !routing[c.id]);
 
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage SIM routing.</div>;
+  }
+
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 16, flexWrap: "wrap" }}>
-        <div>
-          <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>SIM Routing Setup</div>
-          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Assign each telecom provider to SIM 1 or SIM 2 on the Agent App's device — this controls which physical SIM the automatic USSD dialer uses.</div>
-        </div>
-        {!DALAB_API_ENABLED && <Badge tone="amber">Demo mode — changes aren't saved</Badge>}
-      </div>
+      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>Assign each telecom provider to SIM 1 or SIM 2 on the Agent App's device — this controls which physical SIM the automatic USSD dialer uses.</div>
 
       {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
@@ -1541,22 +1894,24 @@ function SimRoutingSetup({ companies }) {
                     {routing[c.id] ? `SIM ${routing[c.id]}` : "Not set"}
                   </td>
                   <td style={{ padding: "10px 14px" }}>
-                    <div style={{ display: "flex", gap: 6 }}>
-                      {[1, 2].map((slot) => (
-                        <button
-                          key={slot}
-                          onClick={() => assign(c.id, slot)}
-                          style={{
-                            padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer",
-                            border: `1px solid ${routing[c.id] === slot ? INDIGO : BORDER}`,
-                            background: routing[c.id] === slot ? INDIGO : "#fff",
-                            color: routing[c.id] === slot ? "#fff" : SLATE,
-                          }}
-                        >
-                          SIM {slot}
-                        </button>
-                      ))}
-                    </div>
+                    {canManage && (
+                      <div style={{ display: "flex", gap: 6 }}>
+                        {[1, 2].map((slot) => (
+                          <button
+                            key={slot}
+                            onClick={() => assign(c.id, slot)}
+                            style={{
+                              padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer",
+                              border: `1px solid ${routing[c.id] === slot ? INDIGO : BORDER}`,
+                              background: routing[c.id] === slot ? INDIGO : "#fff",
+                              color: routing[c.id] === slot ? "#fff" : SLATE,
+                            }}
+                          >
+                            SIM {slot}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -1564,6 +1919,254 @@ function SimRoutingSetup({ companies }) {
           </table>
         </Card>
       </div>
+    </div>
+  );
+}
+
+function ProviderPinsPanel({ companies, canManage }) {
+  const [statuses, setStatuses] = useState({}); // companyId -> isSet
+  const [drafts, setDrafts] = useState({}); // companyId -> typed pin
+  const [autoProcess, setAutoProcess] = useState({}); // companyId -> bool
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!DALAB_API_ENABLED || companies.length === 0) return;
+    Promise.all(companies.map((c) => DalabAdminApi.getUssdPinStatus(c.id).then((r) => [c.id, r.isSet])))
+      .then((pairs) => setStatuses(Object.fromEntries(pairs)))
+      .catch((err) => setError(err.message || "Could not load PIN status."));
+    setAutoProcess(Object.fromEntries(companies.map((c) => [c.id, c.autoProcessEnabled !== false])));
+  }, [companies]);
+
+  const toggleAutoProcess = async (companyId) => {
+    const next = !autoProcess[companyId];
+    setAutoProcess((prev) => ({ ...prev, [companyId]: next })); // optimistic
+    try {
+      await DalabAdminApi.setCompanyAutoProcess(companyId, next);
+    } catch (err) {
+      setError(err.message || "Could not update automatic processing.");
+      setAutoProcess((prev) => ({ ...prev, [companyId]: !next }));
+    }
+  };
+
+  const saveAll = async () => {
+    setError(""); setMessage("");
+    const entries = Object.entries(drafts).filter(([, v]) => v);
+    if (entries.length === 0) { setMessage("Nothing to save — type a new PIN for a provider first."); return; }
+    const badPin = entries.find(([, pin]) => !/^\d{3,8}$/.test(pin));
+    if (badPin) { setError(`PIN for ${companies.find((c) => c.id === badPin[0])?.name || badPin[0]} must be 3-8 digits.`); return; }
+
+    setSaving(true);
+    const failures = [];
+    for (const [companyId, pin] of entries) {
+      try {
+        await DalabAdminApi.setUssdPin(companyId, pin);
+        setStatuses((prev) => ({ ...prev, [companyId]: true }));
+      } catch (err) {
+        failures.push(`${companies.find((c) => c.id === companyId)?.name || companyId}: ${err.message}`);
+      }
+    }
+    setDrafts({});
+    setSaving(false);
+    setMessage(failures.length > 0 ? `Saved with errors — ${failures.join("; ")}` : "All configurations saved.");
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage PINs and automation.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>
+        Each provider's PIN is encrypted at rest and used server-side to build its USSD string. Turning automatic processing off for a provider means the Agent App requires a manual "Verify Payment" tap instead of auto-dialing on a matched SMS.
+      </div>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {message && <div style={{ color: GREEN, fontSize: 12.5, marginBottom: 14 }}>{message}</div>}
+
+      <Card style={{ padding: 0, overflow: "hidden", marginBottom: 16 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              {["Provider", "PIN status", "New PIN", "Auto-processing"].map((h) => (
+                <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {companies.map((c) => (
+              <tr key={c.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: 4, background: c.color }} />
+                  {c.name}
+                </td>
+                <td style={{ padding: "10px 14px" }}>
+                  <Badge tone={statuses[c.id] ? "green" : "amber"}>{statuses[c.id] ? "Set" : "Not set"}</Badge>
+                </td>
+                <td style={{ padding: "10px 14px" }}>
+                  {canManage && (
+                    <input
+                      type="password" inputMode="numeric" maxLength={8} placeholder="e.g. 4521"
+                      style={{ ...inputStyle, width: 120, padding: "6px 10px" }}
+                      value={drafts[c.id] || ""}
+                      onChange={(e) => setDrafts((prev) => ({ ...prev, [c.id]: e.target.value.replace(/\D/g, "") }))}
+                    />
+                  )}
+                </td>
+                <td style={{ padding: "10px 14px" }}>
+                  <button
+                    onClick={() => canManage && toggleAutoProcess(c.id)}
+                    disabled={!canManage}
+                    title={autoProcess[c.id] ? "Automatic — click to require manual approval" : "Manual — click to re-enable automation"}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 6, border: "none", background: "none",
+                      cursor: canManage ? "pointer" : "default", fontSize: 12, fontWeight: 700,
+                      color: autoProcess[c.id] ? GREEN : "#A9720A",
+                    }}
+                  >
+                    {autoProcess[c.id] ? <Power size={14} color={GREEN} /> : <AlertTriangle size={14} color="#A9720A" />}
+                    {autoProcess[c.id] ? "Automatic" : "Manual approval"}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+
+      {canManage && (
+        <Button icon={saving ? Loader2 : Check} spin={saving} onClick={saveAll} disabled={saving}>
+          {saving ? "Saving..." : "Save All Configurations"}
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function ExecutionLogs({ companies: fallbackCompanies }) {
+  const { companies } = useLiveCompanies(fallbackCompanies);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [companyFilter, setCompanyFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [expanded, setExpanded] = useState({});
+  const [lastSynced, setLastSynced] = useState(null);
+
+  const fetchLogs = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setLoading(true);
+    setError("");
+    try {
+      const data = await DalabAdminApi.getExecutionLogs({
+        companyId: companyFilter === "all" ? undefined : companyFilter,
+        status: statusFilter === "all" ? undefined : statusFilter,
+      });
+      setRows(data);
+      setLastSynced(new Date());
+    } catch (err) {
+      setError(err.message || "Could not load execution logs.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { fetchLogs(); }, [companyFilter, statusFilter]);
+
+  // Backend already orders by order_id desc, attempt_number asc, so a single
+  // pass groups consecutive rows into one order with its full retry history.
+  const grouped = useMemo(() => {
+    const groups = [];
+    for (const r of rows) {
+      const last = groups[groups.length - 1];
+      if (last && last.orderId === r.orderId) last.attempts.push(r);
+      else groups.push({ orderId: r.orderId, attempts: [r] });
+    }
+    return groups;
+  }, [rows]);
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to view execution logs.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 16, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>USSD Execution Logs</div>
+          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Every USSD dial attempt — SIM used, agent, customer, provider, result, and retry history.</div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {lastSynced && <span style={{ fontSize: 11, color: MUTE }}>Synced {lastSynced.toLocaleTimeString()}</span>}
+          <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={fetchLogs} disabled={loading}>Refresh</Button>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+        <select value={companyFilter} onChange={(e) => setCompanyFilter(e.target.value)} style={{ ...inputStyle, width: 180 }}>
+          <option value="all">All providers</option>
+          {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={{ ...inputStyle, width: 160 }}>
+          <option value="all">All results</option>
+          <option value="success">Success</option>
+          <option value="failed">Failed</option>
+          <option value="pending">Pending</option>
+        </select>
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              {["Order", "Company", "Customer", "Package", "Amount", "Agent", "Latest result", "Attempts", ""].map((h) => (
+                <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {grouped.map(({ orderId, attempts }) => {
+              const latest = attempts[attempts.length - 1];
+              const isOpen = !!expanded[orderId];
+              return (
+                <React.Fragment key={orderId}>
+                  <tr style={{ borderTop: `1px solid ${BORDER}`, cursor: "pointer" }} onClick={() => setExpanded((prev) => ({ ...prev, [orderId]: !prev[orderId] }))}>
+                    <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, color: INK }}>{orderId}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{latest.companyName}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{latest.customerName || "—"}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE }}>{latest.packageName}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: GREEN, fontWeight: 700 }}>${Number(latest.amount).toFixed(2)}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE }}>{latest.agentName || "—"}</td>
+                    <td style={{ padding: "10px 14px" }}>
+                      <Badge tone={latest.status === "success" ? "green" : latest.status === "failed" ? "red" : "amber"}>{latest.status}</Badge>
+                    </td>
+                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE }}>{attempts.length}</td>
+                    <td style={{ padding: "10px 14px" }}>{isOpen ? <ChevronDown size={15} color={MUTE} /> : <ChevronRight size={15} color={MUTE} />}</td>
+                  </tr>
+                  {isOpen && attempts.map((a) => (
+                    <tr key={a.id} style={{ background: "#FAFBFF" }}>
+                      <td colSpan={9} style={{ padding: "8px 14px 8px 34px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 14, fontSize: 11.5, flexWrap: "wrap" }}>
+                          <Badge tone={a.status === "success" ? "green" : a.status === "failed" ? "red" : "amber"}>{a.status}</Badge>
+                          <span style={{ color: MUTE }}>attempt #{a.attemptNumber}</span>
+                          <span style={{ color: MUTE }}>SIM {a.simSlot ?? "—"}</span>
+                          <span style={{ color: SLATE, fontFamily: "monospace" }}>{a.ussdString}</span>
+                          {a.responseMessage && <span style={{ color: "#C81E2C" }}>{a.responseMessage}</span>}
+                          <span style={{ color: MUTE, marginLeft: "auto" }}>{formatDateTime(a.createdAt)}</span>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </React.Fragment>
+              );
+            })}
+            {grouped.length === 0 && !loading && (
+              <tr><td colSpan={9} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No USSD dial attempts recorded yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
     </div>
   );
 }
@@ -1953,7 +2556,6 @@ function AdminDashboardShell({ admin, onLogout }) {
   const [orders, setOrders] = useState(initialOrders);
   const [customers, setCustomers] = useState(initialCustomers);
   const [banners, setBanners] = useState(initialBanners);
-  const [ussdTemplates, setUssdTemplates] = useState(initialUssdTemplates);
 
   const activeLabel = NAV.find((n) => n.id === active)?.label;
 
@@ -2007,10 +2609,10 @@ function AdminDashboardShell({ admin, onLogout }) {
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <div style={{ textAlign: "right" }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: INK }}>{admin?.email}</div>
-              <div style={{ fontSize: 10.5, color: MUTE }}>Super Admin</div>
+              <div style={{ fontSize: 10.5, color: MUTE }}>{admin?.role === "super_admin" ? "Super Admin" : "Admin"}</div>
             </div>
             <div style={{ width: 34, height: 34, borderRadius: 17, background: INDIGO_SOFT, display: "flex", alignItems: "center", justifyContent: "center", color: INDIGO, fontWeight: 800, fontSize: 13 }}>
-              SA
+              {admin?.role === "super_admin" ? "SA" : "AD"}
             </div>
             <button
               onClick={onLogout}
@@ -2026,13 +2628,13 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "companies" && <Companies companies={companies} setCompanies={setCompanies} />}
           {active === "payment-numbers" && <PaymentNumbers companies={companies} setCompanies={setCompanies} />}
           {active === "packages" && <Packages packages={packages} setPackages={setPackages} companies={companies} />}
-          {active === "orders" && <Orders orders={orders} setOrders={setOrders} companies={companies} />}
+          {active === "orders" && <Orders orders={orders} setOrders={setOrders} companies={companies} admin={admin} />}
           {active === "customers" && <Customers customers={customers} setCustomers={setCustomers} />}
           {active === "macaash" && <Macaash customers={customers} />}
           {active === "notifications" && <Notifications />}
           {active === "banners" && <Banners banners={banners} setBanners={setBanners} companies={companies} />}
-          {active === "ussd" && <UssdServices ussdTemplates={ussdTemplates} setUssdTemplates={setUssdTemplates} companies={companies} />}
-          {active === "sim-routing" && <SimRoutingSetup companies={companies} />}
+          {active === "devices" && <DeviceUssdModule companies={companies} admin={admin} />}
+          {active === "execution-logs" && <ExecutionLogs companies={companies} />}
           {active === "reports" && <Reports />}
           {active === "settings" && <SettingsPanel />}
         </div>
