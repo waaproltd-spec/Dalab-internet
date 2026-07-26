@@ -34,7 +34,7 @@ data class CreateSaleRequest(
 
 /**
  * Mirrors the backend architecture doc, §4 "Agent-facing", and the real
- * implementation in dalab-backend.zip (src/routes/*.js) — every path and body
+ * implementation in dalab-backend.zip (src/routes/ *.js) — every path and body
  * shape here matches what that server actually returns, verified against its
  * test suite. Base URL and auth header (Authorization: Bearer <token>) are
  * attached in ApiClient's OkHttp interceptor, not here — this interface only
