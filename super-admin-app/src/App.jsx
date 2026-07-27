@@ -7,7 +7,7 @@ import {
   ArrowUp, ArrowDown, Eye, EyeOff, Lock, Mail, LogOut, ArrowLeft, Copy, Terminal, SmartphoneNfc,
   Smartphone, Radio, ChevronDown, ChevronRight, AlertTriangle, RotateCcw, UserCog, Tags,
   WifiOff, BatteryFull, BatteryMedium, BatteryLow, BatteryWarning,
-  Image as ImageIcon, Upload, MessageSquare, Database, Activity, History
+  Image as ImageIcon, Upload, MessageSquare, Database, Activity, History, CreditCard
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 
@@ -155,6 +155,12 @@ const DalabAdminApi = {
   getAdminUserPermissions: (id) => dalabAdminApiRequest(`/admin/users/${id}/permissions`),
   setAdminUserPermissions: (id, permissions) => dalabAdminApiRequest(`/admin/users/${id}/permissions`, { method: "PUT", body: { permissions } }),
   getActivityLog: (entityType) => dalabAdminApiRequest(`/admin/activity-log${entityType ? `?entityType=${entityType}` : ""}`),
+  // Payment Wallets — the Customer App's "Select Payment Method" list.
+  getPaymentWallets: () => dalabAdminApiRequest("/admin/payment-wallets"),
+  createPaymentWallet: (body) => dalabAdminApiRequest("/admin/payment-wallets", { method: "POST", body }),
+  updatePaymentWallet: (id, body) => dalabAdminApiRequest(`/admin/payment-wallets/${id}`, { method: "PUT", body }),
+  setPaymentWalletStatus: (id, enabled) => dalabAdminApiRequest(`/admin/payment-wallets/${id}/status`, { method: "PUT", body: { enabled } }),
+  deletePaymentWallet: (id) => dalabAdminApiRequest(`/admin/payment-wallets/${id}`, { method: "DELETE" }),
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -428,6 +434,7 @@ const NAV = [
   { id: "overview", label: "Overview", icon: LayoutGrid },
   { id: "companies", label: "Companies", icon: Building2 },
   { id: "payment-numbers", label: "Payment Numbers", icon: Wallet },
+  { id: "payment-wallets", label: "Payment Wallets", icon: CreditCard, superAdminOnly: true },
   { id: "packages", label: "Packages & Pricing", icon: Package },
   { id: "categories", label: "Categories", icon: Tags },
   { id: "orders", label: "Orders", icon: ShoppingCart },
@@ -3805,6 +3812,10 @@ function ActivityLogPanel() {
     update_payment_number: "Updated payment gateway number/template",
     update_status: "Changed payment gateway status",
     update_pin: "Updated provider PIN",
+    create_payment_wallet: "Created payment wallet",
+    update_payment_wallet: "Updated payment wallet",
+    update_payment_wallet_status: "Changed payment wallet status",
+    delete_payment_wallet: "Deleted payment wallet",
   }[action] || action);
 
   if (!DALAB_API_ENABLED) {
@@ -3826,6 +3837,7 @@ function ActivityLogPanel() {
           { id: "all", label: "All" },
           { id: "company", label: "Payment Gateway" },
           { id: "ussd_template", label: "USSD Templates" },
+          { id: "payment_wallet", label: "Payment Wallets" },
         ].map((f) => (
           <button key={f.id} onClick={() => setEntityFilter(f.id)} style={{
             padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
@@ -3886,6 +3898,176 @@ function ActivityLogPanel() {
           </tbody>
         </table>
       </Card>
+    </div>
+  );
+}
+
+// Manages the wallet list shown in the Customer App's "Select Payment
+// Method" sheet — name, dial prefix, logo, color, and enabled status.
+// Super Admin only (enforced server-side too): a regular Admin never even
+// sees this nav item (NAV's superAdminOnly flag). The actual payment number
+// stays per-company (see PaymentNumbers above) — a wallet here only carries
+// the dial prefix + display info, never a phone number.
+function PaymentWalletsPanel() {
+  const [wallets, setWallets] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [editing, setEditing] = useState(null); // 'new' | wallet object | null
+  const [form, setForm] = useState({});
+
+  const fetchWallets = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setLoading(true);
+    setError("");
+    try {
+      setWallets(await DalabAdminApi.getPaymentWallets());
+    } catch (err) {
+      setError(err.message || "Could not load payment wallets.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { fetchWallets(); }, []);
+
+  const openNew = () => {
+    setForm({ id: "", name: "", providerLabel: "", dialPrefix: "", logoKey: "", colorHex: "#16A34A", sortOrder: wallets.length + 1 });
+    setEditing("new");
+  };
+  const openEdit = (w) => { setForm({ ...w }); setEditing(w.id); };
+
+  const save = async () => {
+    if (!form.name || !form.dialPrefix || !form.logoKey || (editing === "new" && !form.id)) {
+      alert("Id, name, dial prefix, and logo key are required.");
+      return;
+    }
+    if (!/^\d{1,6}$/.test(String(form.dialPrefix))) {
+      alert("Dial prefix must be 1-6 digits.");
+      return;
+    }
+    try {
+      if (editing === "new") await DalabAdminApi.createPaymentWallet(form);
+      else await DalabAdminApi.updatePaymentWallet(editing, form);
+      await fetchWallets();
+    } catch (err) {
+      alert(err.message || "Could not save wallet.");
+      return;
+    }
+    setEditing(null);
+  };
+
+  const toggleStatus = async (w) => {
+    const next = !w.enabled;
+    setWallets((prev) => prev.map((x) => (x.id === w.id ? { ...x, enabled: next } : x)));
+    try { await DalabAdminApi.setPaymentWalletStatus(w.id, next); } catch (err) { fetchWallets(); }
+  };
+
+  const remove = async (w) => {
+    if (!window.confirm(`Delete "${w.name}"? Customers will no longer be able to select it.`)) return;
+    setWallets((prev) => prev.filter((x) => x.id !== w.id));
+    try { await DalabAdminApi.deletePaymentWallet(w.id); } catch (err) { fetchWallets(); }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage payment wallets.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 16, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Payment Wallets</div>
+          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>
+            Controls which payment methods appear in the Customer App's "Select Payment Method" sheet — disabling one here removes it from every app instantly. Payment numbers stay per-company (see Payment Numbers).
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={fetchWallets} disabled={loading}>Refresh</Button>
+          <Button icon={Plus} onClick={openNew}>Add Wallet</Button>
+        </div>
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              {["Wallet", "Provider", "Dial Prefix", "Logo Key", "Color", "Status", ""].map((h) => (
+                <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {wallets.map((w) => (
+              <tr key={w.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{w.name}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{w.providerLabel || "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12, color: SLATE, fontFamily: "monospace" }}>{w.dialPrefix}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE, fontFamily: "monospace" }}>{w.logoKey}</td>
+                <td style={{ padding: "10px 14px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{ width: 16, height: 16, borderRadius: 4, background: w.colorHex, border: `1px solid ${BORDER}` }} />
+                    <span style={{ fontSize: 11.5, color: MUTE, fontFamily: "monospace" }}>{w.colorHex}</span>
+                  </div>
+                </td>
+                <td style={{ padding: "10px 14px" }}><Badge tone={w.enabled ? "green" : "gray"}>{w.enabled ? "Enabled" : "Disabled"}</Badge></td>
+                <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
+                  <button onClick={() => toggleStatus(w)} title={w.enabled ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
+                    <Power size={14} color={w.enabled ? GREEN : "#C81E2C"} />
+                  </button>
+                  <button onClick={() => openEdit(w)} title="Edit" style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
+                    <Pencil size={14} color={INDIGO} />
+                  </button>
+                  <button onClick={() => remove(w)} title="Delete" style={{ background: "none", border: "none", cursor: "pointer" }}>
+                    <Trash2 size={14} color="#C81E2C" />
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {wallets.length === 0 && !loading && (
+              <tr><td colSpan={7} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No payment wallets configured yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+
+      {editing && (
+        <Modal title={editing === "new" ? "Add payment wallet" : "Edit payment wallet"} onClose={() => setEditing(null)} width={440}>
+          {editing === "new" && (
+            <Field label="Id (used internally, e.g. amtel_pay)">
+              <input style={{ ...inputStyle, fontFamily: "monospace" }} value={form.id || ""} onChange={(e) => setForm({ ...form, id: e.target.value.trim().toLowerCase().replace(/\s+/g, "_") })} placeholder="amtel_pay" />
+            </Field>
+          )}
+          <Field label="Wallet Name (shown to customers)">
+            <input style={inputStyle} value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Amtel Pay" />
+          </Field>
+          <Field label="Provider Label (optional)">
+            <input style={inputStyle} value={form.providerLabel || ""} onChange={(e) => setForm({ ...form, providerLabel: e.target.value })} placeholder="e.g. Amtel" />
+          </Field>
+          <Field label="Dial Prefix">
+            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={form.dialPrefix || ""} onChange={(e) => setForm({ ...form, dialPrefix: e.target.value.trim() })} placeholder="e.g. 888" />
+          </Field>
+          <div style={{ fontSize: 11, color: MUTE, marginTop: -8, marginBottom: 14 }}>
+            Combined with the purchased company's own payment number as <code>*{"{prefix}"}*{"{companyPaymentNumber}"}*{"{amount}"}#</code> — never a fixed number here.
+          </div>
+          <Field label="Logo Key (matches a bundled app icon)">
+            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={form.logoKey || ""} onChange={(e) => setForm({ ...form, logoKey: e.target.value.trim().toLowerCase() })} placeholder="hormuud / somtel / somnet / amtel" />
+          </Field>
+          <Field label="Color">
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input type="color" value={form.colorHex || "#16A34A"} onChange={(e) => setForm({ ...form, colorHex: e.target.value })} style={{ width: 44, height: 36, border: `1px solid ${BORDER}`, borderRadius: 8, cursor: "pointer" }} />
+              <input style={{ ...inputStyle, flex: 1, fontFamily: "monospace" }} value={form.colorHex || ""} onChange={(e) => setForm({ ...form, colorHex: e.target.value })} />
+            </div>
+          </Field>
+          <Field label="Sort Order">
+            <input type="number" style={inputStyle} value={form.sortOrder ?? 0} onChange={(e) => setForm({ ...form, sortOrder: Number(e.target.value) })} />
+          </Field>
+          <div style={{ display: "flex", gap: 10 }}>
+            <Button onClick={save} icon={Check}>Save Wallet</Button>
+            <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -4234,6 +4416,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "overview" && <Overview companies={companies} orders={orders} />}
           {active === "companies" && <Companies companies={companies} setCompanies={setCompanies} refreshCompanies={refreshCompanies} admin={admin} />}
           {active === "payment-numbers" && <PaymentNumbers companies={companies} setCompanies={setCompanies} refreshCompanies={refreshCompanies} admin={admin} />}
+          {active === "payment-wallets" && <PaymentWalletsPanel />}
           {active === "packages" && <Packages packages={packages} setPackages={setPackages} companies={companies} admin={admin} />}
           {active === "categories" && <Categories companies={companies} admin={admin} />}
           {active === "orders" && <Orders orders={orders} setOrders={setOrders} companies={companies} admin={admin} />}

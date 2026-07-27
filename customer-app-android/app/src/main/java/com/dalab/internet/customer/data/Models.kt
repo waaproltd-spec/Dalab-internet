@@ -40,6 +40,23 @@ data class Company(
     val paymentUssdTemplate: String? = null,
 )
 
+/**
+ * Mirrors GET /payment-wallets (public) — the wallet list shown in "Select
+ * Payment Method", Super-Admin managed. Only the dial prefix + display info
+ * live here; the actual number dialed is always the purchased company's own
+ * paymentNumber (see Company above) — never a number on this class.
+ */
+data class PaymentWallet(
+    val id: String,
+    val name: String,
+    val providerLabel: String? = null,
+    val dialPrefix: String,
+    val logoKey: String,
+    val colorHex: String,
+    val enabled: Boolean = true,
+    val sortOrder: Int = 0,
+)
+
 /** Mirrors GET /companies/{id}/packages. */
 data class PackageItem(
     val id: String,
