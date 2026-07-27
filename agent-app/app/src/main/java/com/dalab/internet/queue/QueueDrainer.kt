@@ -1,6 +1,7 @@
 package com.dalab.internet.queue
 
 import android.content.Context
+import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.sms.SmsUploadAction
 import com.dalab.internet.sms.SmsUploadFlow
 import com.dalab.internet.sms.UploadOutcome
@@ -42,6 +43,7 @@ object QueueDrainer {
             if (RetryClassifier.isRetryable(e)) {
                 PendingActionQueue.markAttempt(action.id, e.message)
             } else {
+                DiagnosticsLog.record("queue_drain", "Dropped ${action.type} (terminal): ${e.message}")
                 PendingActionQueue.remove(action.id) // terminal — will never succeed, drop it
             }
         }
@@ -63,7 +65,10 @@ object QueueDrainer {
                     payload = VerifyPaymentAction(outcome.orderId, outcome.smsLogId, payload.entry.parsedAmount),
                 )
             }
-            is UploadOutcome.Terminal -> PendingActionQueue.remove(action.id) // rejected — will never succeed
+            is UploadOutcome.Terminal -> {
+                DiagnosticsLog.record("queue_drain", "Dropped SMS_UPLOAD (terminal): ${outcome.reason}")
+                PendingActionQueue.remove(action.id) // rejected — will never succeed
+            }
         }
     }
 

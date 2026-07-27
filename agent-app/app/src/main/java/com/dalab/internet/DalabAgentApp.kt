@@ -3,6 +3,7 @@ package com.dalab.internet
 import android.app.Application
 import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.auth.SessionManager
+import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.queue.PendingActionQueue
 import com.dalab.internet.sms.SmsListenerState
 
@@ -20,5 +21,6 @@ class DalabAgentApp : Application() {
         DeviceIdentity.init(this)
         SmsListenerState.init(this)
         PendingActionQueue.init(this)
+        DiagnosticsLog.init(this)
     }
 }

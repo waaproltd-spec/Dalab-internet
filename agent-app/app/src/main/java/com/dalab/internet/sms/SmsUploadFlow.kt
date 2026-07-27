@@ -6,6 +6,7 @@ import androidx.core.app.NotificationManagerCompat
 import com.dalab.internet.MainActivity
 import com.dalab.internet.R
 import com.dalab.internet.data.SmsLogEntry
+import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.queue.RetryClassifier
 import com.dalab.internet.ussd.DialOutcome
@@ -39,7 +40,9 @@ object SmsUploadFlow {
         val uploadResponse = try {
             RetryClassifier.requireSuccessful(ApiClient.service.uploadSmsLog(parsed))
         } catch (e: Exception) {
-            return if (RetryClassifier.isRetryable(e)) UploadOutcome.RetryableUpload(e.message ?: "network error")
+            val retryable = RetryClassifier.isRetryable(e)
+            DiagnosticsLog.record("sms_upload", "${if (retryable) "Queued for retry" else "Rejected"}: ${e.message}")
+            return if (retryable) UploadOutcome.RetryableUpload(e.message ?: "network error")
             else UploadOutcome.Terminal(e.message ?: "upload failed")
         }
 
@@ -67,6 +70,7 @@ object SmsUploadFlow {
         val orchestrator = UssdOrchestrator(context)
         val result = orchestrator.processMatchedOrder(matchedOrderId, smsLogId)
         if (result.outcome == DialOutcome.NETWORK_UNAVAILABLE) {
+            DiagnosticsLog.record("verify_payment", "Queued for retry (order $matchedOrderId): ${result.responseMessage}")
             return UploadOutcome.RetryableVerify(matchedOrderId, smsLogId, result.responseMessage ?: "verify-payment network error")
         }
         notifyAgent(context, matchedOrderId, parsedAmount, result.outcome, result.responseMessage)
