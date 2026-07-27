@@ -1,5 +1,7 @@
 package com.dalab.internet.customer.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -7,12 +9,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -38,7 +42,9 @@ private val DalabIndigo = Color(0xFF1D2E8C)
 @Composable
 fun OrderDetailScreen(initialOrder: CustomerOrder, onBack: () -> Unit) {
     var order by remember { mutableStateOf(initialOrder) }
+    var copied by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     fun refresh() {
         scope.launch {
@@ -64,6 +70,15 @@ fun OrderDetailScreen(initialOrder: CustomerOrder, onBack: () -> Unit) {
                 title = { Text("Order Details") },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back") }
+                },
+                actions = {
+                    IconButton(onClick = {
+                        val clipboard = context.getSystemService(ClipboardManager::class.java)
+                        clipboard?.setPrimaryClip(ClipData.newPlainText("Order reference", order.id))
+                        copied = true
+                    }) {
+                        Icon(Icons.Filled.ContentCopy, contentDescription = "Copy order reference")
+                    }
                 },
             )
         }
@@ -94,11 +109,35 @@ fun OrderDetailScreen(initialOrder: CustomerOrder, onBack: () -> Unit) {
             Text(order.companyName, style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
             Spacer(Modifier.height(12.dp))
             StatusChip(order.status)
+            if (copied) {
+                Spacer(Modifier.height(6.dp))
+                Text("Reference copied to clipboard", style = MaterialTheme.typography.labelSmall, color = DalabIndigo)
+                LaunchedEffect(copied) {
+                    kotlinx.coroutines.delay(1500)
+                    copied = false
+                }
+            }
             Spacer(Modifier.height(20.dp))
 
             Surface(color = Color(0xFFF6F7FC), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(18.dp)) {
                     SectionLabel("SERVICE DETAILS")
+                    DetailRowCustom("Reference") {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(order.id, fontWeight = FontWeight.Medium)
+                            Spacer(Modifier.width(6.dp))
+                            IconButton(
+                                onClick = {
+                                    val clipboard = context.getSystemService(ClipboardManager::class.java)
+                                    clipboard?.setPrimaryClip(ClipData.newPlainText("Order reference", order.id))
+                                    copied = true
+                                },
+                                modifier = Modifier.size(20.dp),
+                            ) {
+                                Icon(Icons.Filled.ContentCopy, contentDescription = "Copy reference", modifier = Modifier.size(14.dp))
+                            }
+                        }
+                    }
                     DetailRow("Service", order.packageName)
                     order.senderPhone?.takeIf { it.isNotBlank() }?.let { DetailRow("Sender Number", it) }
                     order.receiverPhone?.takeIf { it.isNotBlank() }?.let { DetailRow("Receiver Number", it) }

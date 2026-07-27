@@ -14,6 +14,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CalendarToday
+import androidx.compose.material.icons.filled.Circle
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -32,6 +33,7 @@ import com.dalab.internet.customer.data.CustomerOrder
 import com.dalab.internet.customer.data.OrderStatus
 import com.dalab.internet.customer.data.companyLogoRes
 import com.dalab.internet.customer.network.ApiClient
+import com.dalab.internet.customer.network.ConnectionState
 import com.dalab.internet.customer.network.RealtimeClient
 import com.dalab.internet.customer.prefs.LocalizationManager
 import com.dalab.internet.customer.util.formatApiDateTime
@@ -48,6 +50,7 @@ fun OrdersScreen(onOpenOrder: (CustomerOrder) -> Unit) {
     var contentVisible by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val compact = LocalConfiguration.current.screenHeightDp < 700
+    var connectionState by remember { mutableStateOf(ConnectionState.CONNECTING) }
 
     fun refresh() {
         loading = true
@@ -70,10 +73,13 @@ fun OrdersScreen(onOpenOrder: (CustomerOrder) -> Unit) {
     // Agent App) — the connection only lives while this screen is on-screen,
     // which is fine since a customer just watching their orders is exactly
     // when live updates matter most.
-    DisposableEffect(Unit) {
-        val realtime = RealtimeClient(path = "orders/stream") { refresh() }
+    val realtime = remember { RealtimeClient(path = "orders/stream") { refresh() } }
+    DisposableEffect(realtime) {
         realtime.connect()
         onDispose { realtime.disconnect() }
+    }
+    LaunchedEffect(realtime) {
+        realtime.state.collect { connectionState = it }
     }
 
     Scaffold(
@@ -93,12 +99,24 @@ fun OrdersScreen(onOpenOrder: (CustomerOrder) -> Unit) {
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    Text(
-                        LocalizationManager.tr("My Orders", "Dalabyadayda"),
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 19.sp,
-                    )
+                    Column {
+                        Text(
+                            LocalizationManager.tr("My Orders", "Dalabyadayda"),
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 19.sp,
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            val (dotColor, label) = when (connectionState) {
+                                ConnectionState.CONNECTED -> Color(0xFF6FE39A) to LocalizationManager.tr("Live", "Toos ah")
+                                ConnectionState.CONNECTING -> Color(0xFFF2C200) to LocalizationManager.tr("Reconnecting…", "Isku xidhaya…")
+                                ConnectionState.DISCONNECTED -> Color(0xFFF87171) to LocalizationManager.tr("Disconnected", "Go'ay")
+                            }
+                            Icon(Icons.Filled.Circle, contentDescription = null, tint = dotColor, modifier = Modifier.size(7.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text(label, color = Color.White.copy(alpha = 0.85f), fontSize = 11.sp)
+                        }
+                    }
                     IconButton(onClick = { refresh() }) {
                         Icon(Icons.Filled.Refresh, contentDescription = "Refresh", tint = Color.White)
                     }

@@ -65,18 +65,28 @@ fun PermissionsStatusScreen(onBack: () -> Unit) {
                 .fillMaxSize(),
         ) {
             Text(
-                "The automatic payment-detection pipeline needs all three of these " +
-                    "to keep working, even when the app is minimized or the screen is locked.",
+                "Real-time SMS reading requires these system permissions, so the app can detect " +
+                    "payment confirmation messages from 192, Somtel, Somnet, and Amtel the instant " +
+                    "they arrive — even when the app is minimized or the screen is locked.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(20.dp))
 
-            PermissionStatusRow("READ_SMS Permission", readSmsGranted, "Granted", "Not Granted")
+            PermissionStatusRow(
+                "READ_SMS Permission", readSmsGranted, "Granted", "Not Granted",
+                description = "Allows reading payment confirmation messages from 192, Somtel, Somnet, Amtel",
+            )
             Spacer(Modifier.height(12.dp))
-            PermissionStatusRow("RECEIVE_SMS Permission", receiveSmsGranted, "Granted", "Not Granted")
+            PermissionStatusRow(
+                "RECEIVE_SMS Permission", receiveSmsGranted, "Granted", "Not Granted",
+                description = "Triggers immediate processing as soon as SMS arrives",
+            )
             Spacer(Modifier.height(12.dp))
-            PermissionStatusRow("Foreground Service", serviceActive, "Active", "Inactive")
+            PermissionStatusRow(
+                "Foreground Service", serviceActive, "Active", "Inactive",
+                description = "Keeps agent listener active in background even when app is minimized",
+            )
 
             Spacer(Modifier.weight(1f))
 
@@ -104,7 +114,7 @@ fun PermissionsStatusScreen(onBack: () -> Unit) {
 }
 
 @Composable
-private fun PermissionStatusRow(label: String, ok: Boolean, okLabel: String, notOkLabel: String) {
+private fun PermissionStatusRow(label: String, ok: Boolean, okLabel: String, notOkLabel: String, description: String? = null) {
     val color = if (ok) Color(0xFF16A34A) else Color(0xFFDC2626)
     Surface(
         color = color.copy(alpha = 0.08f),
@@ -124,7 +134,12 @@ private fun PermissionStatusRow(label: String, ok: Boolean, okLabel: String, not
                 modifier = Modifier.size(22.dp),
             )
             Spacer(Modifier.width(14.dp))
-            Text(label, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+            Column(modifier = Modifier.weight(1f)) {
+                Text(label, fontWeight = FontWeight.SemiBold)
+                if (description != null) {
+                    Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
             Text(if (ok) okLabel else notOkLabel, color = color, fontWeight = FontWeight.Bold)
         }
     }

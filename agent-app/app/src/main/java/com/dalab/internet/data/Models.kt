@@ -29,6 +29,11 @@ data class Order(
     val paymentMethod: String?,
     val macaashEarned: Int = 0,
     val ussdGenerated: String? = null,
+    // Set when the matched USSD template pins this order to a specific
+    // device+SIM slot (Admin > USSD Templates); null means "use this
+    // device's normal per-company sim_routing entry" (SimRoutingRepository).
+    val ussdDeviceId: String? = null,
+    val ussdSimSlot: Int? = null,
     val createdAt: String,
     val completedAt: String? = null,
 )
