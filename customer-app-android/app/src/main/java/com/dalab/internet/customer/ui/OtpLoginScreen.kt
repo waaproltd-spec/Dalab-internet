@@ -60,14 +60,14 @@ private val FieldBorder = Color(0xFFD8DCEF)
  * PUT /customer/profile before entering the app.
  */
 @Composable
-fun OtpLoginScreen(onLoggedIn: (lastDebugCode: String?) -> Unit) {
+fun OtpLoginScreen(onLoggedIn: (lastOtpCode: String?) -> Unit) {
     var step by remember { mutableStateOf(OtpStep.PHONE) }
     var phone by remember { mutableStateOf("") }
     var code by remember { mutableStateOf("") }
     var name by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var debugCode by remember { mutableStateOf<String?>(null) }
+    var otpCode by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
     // Auto-detect the OTP code from an incoming SMS while this step is showing.
@@ -154,8 +154,8 @@ fun OtpLoginScreen(onLoggedIn: (lastDebugCode: String?) -> Unit) {
                 )
                 Spacer(Modifier.height(16.dp))
 
-                if (debugCode != null) {
-                    DebugCodeCard(debugCode!!)
+                if (otpCode != null) {
+                    OtpCodeCard(otpCode!!)
                     Spacer(Modifier.height(18.dp))
                 }
 
@@ -205,7 +205,7 @@ fun OtpLoginScreen(onLoggedIn: (lastDebugCode: String?) -> Unit) {
                         OtpStep.PHONE -> {
                             when (val result = AuthRepository.requestOtp(phone.trim())) {
                                 is OtpRequestResult.Sent -> {
-                                    debugCode = result.debugCode
+                                    otpCode = result.otpCode
                                     step = OtpStep.CODE
                                 }
                                 is OtpRequestResult.Failure -> error = result.message
@@ -214,7 +214,7 @@ fun OtpLoginScreen(onLoggedIn: (lastDebugCode: String?) -> Unit) {
                         OtpStep.CODE -> {
                             when (val result = AuthRepository.verifyOtp(phone.trim(), code.trim())) {
                                 is OtpVerifyResult.Success -> {
-                                    if (result.name.isNullOrBlank()) step = OtpStep.NAME else onLoggedIn(debugCode)
+                                    if (result.name.isNullOrBlank()) step = OtpStep.NAME else onLoggedIn(otpCode)
                                 }
                                 is OtpVerifyResult.Failure -> error = result.message
                             }
@@ -223,10 +223,10 @@ fun OtpLoginScreen(onLoggedIn: (lastDebugCode: String?) -> Unit) {
                             try {
                                 val response = ApiClient.service.updateProfile(UpdateProfileRequest(name.trim()))
                                 response.body()?.let { SessionManager.updateProfile(it) }
-                                onLoggedIn(debugCode)
+                                onLoggedIn(otpCode)
                             } catch (_: Exception) {
                                 error = "Couldn't save your name — you can add it later from Profile."
-                                onLoggedIn(debugCode)
+                                onLoggedIn(otpCode)
                             }
                         }
                     }
@@ -237,7 +237,7 @@ fun OtpLoginScreen(onLoggedIn: (lastDebugCode: String?) -> Unit) {
 
         if (step == OtpStep.CODE) {
             Spacer(Modifier.height(14.dp))
-            TextButton(onClick = { step = OtpStep.PHONE; code = ""; debugCode = null }) {
+            TextButton(onClick = { step = OtpStep.PHONE; code = ""; otpCode = null }) {
                 Text("Use a different number", color = DalabIndigo, fontWeight = FontWeight.SemiBold)
             }
         }
@@ -302,7 +302,7 @@ private fun DalabTextField(
 }
 
 @Composable
-private fun DebugCodeCard(code: String) {
+private fun OtpCodeCard(code: String) {
     Surface(
         color = Color(0xFFEFF3FF),
         shape = RoundedCornerShape(16.dp),
