@@ -70,14 +70,7 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
     val context = LocalContext.current
     var senderPhone by remember { mutableStateOf(SessionManager.currentCustomer()?.phone ?: "") }
     var receiverPhone by remember { mutableStateOf(SessionManager.currentCustomer()?.phone ?: "") }
-    val selectableMethods = remember(company.gateway) {
-        if (company.gateway.isNullOrBlank() || company.gateway.equals("Manual", ignoreCase = true)) {
-            listOf(company.gateway ?: "Manual")
-        } else {
-            listOf(company.gateway, "JEEB").distinctBy { it.lowercase() }
-        }
-    }
-    var selectedPaymentMethod by remember(company.gateway) { mutableStateOf(selectableMethods.first()) }
+    var selectedPaymentMethod by remember { mutableStateOf<String?>(null) }
     val payNumber = company.paymentNumber?.takeIf { it.isNotBlank() }
 
     var submitting by remember { mutableStateOf(false) }
@@ -165,11 +158,16 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
             }
 
             Spacer(Modifier.height(24.dp))
-            Text("Select Payment Wallet", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.White)
+            Text("Select Your Payment Method", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.White)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Please select the mobile money account you will use to send the payment.",
+                fontSize = 12.sp,
+                color = MutedText,
+            )
             Spacer(Modifier.height(12.dp))
 
-            selectableMethods.forEach { methodKey ->
-                val wallet = WALLET_OPTIONS[methodKey]
+            WALLET_OPTIONS.forEach { (methodKey, wallet) ->
                 val active = methodKey.equals(selectedPaymentMethod, ignoreCase = true)
                 Box(
                     modifier = Modifier
@@ -186,30 +184,23 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                         .padding(14.dp),
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (wallet != null) {
-                            Box(
-                                modifier = Modifier
-                                    .size(width = 88.dp, height = 56.dp)
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(wallet.color),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Image(
-                                    painter = painterResource(wallet.logoRes),
-                                    contentDescription = methodKey,
-                                    modifier = Modifier.size(40.dp),
-                                )
-                            }
-                            Spacer(Modifier.width(16.dp))
-                            Column {
-                                Text(wallet.label, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                                Text(wallet.providerLabel, color = MutedText, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                            }
-                        } else {
-                            Column {
-                                Text(methodKey, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                                Text(company.name.uppercase(), color = MutedText, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                            }
+                        Box(
+                            modifier = Modifier
+                                .size(width = 88.dp, height = 56.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(wallet.color),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Image(
+                                painter = painterResource(wallet.logoRes),
+                                contentDescription = methodKey,
+                                modifier = Modifier.size(40.dp),
+                            )
+                        }
+                        Spacer(Modifier.width(16.dp))
+                        Column {
+                            Text(wallet.label, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                            Text(wallet.providerLabel, color = MutedText, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }
@@ -245,7 +236,11 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                     }
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "Automatically selected for $selectedPaymentMethod. You cannot edit this number.",
+                        if (selectedPaymentMethod != null) {
+                            "Automatically selected for $selectedPaymentMethod. You cannot edit this number."
+                        } else {
+                            "Select a payment method above. You cannot edit this number."
+                        },
                         color = MutedText,
                         fontSize = 12.sp,
                     )
@@ -267,7 +262,7 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
 
             Spacer(Modifier.weight(1f))
 
-            val payEnabled = senderPhone.isNotBlank() && receiverPhone.isNotBlank() && !submitting && !queued
+            val payEnabled = senderPhone.isNotBlank() && receiverPhone.isNotBlank() && selectedPaymentMethod != null && !submitting && !queued
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
