@@ -16,5 +16,5 @@ confirmed this).
 
 Set `VITE_API_BASE_URL` in `.env` to the deployed TS backend's URL to switch
 from demo/mock data to the live API — e.g.
-`VITE_API_BASE_URL=https://dalab-admin-backend.onrender.com`. Build for
+`VITE_API_BASE_URL=https://dalab-internet-2.onrender.com`. Build for
 production with `npm run build` (output in `dist/`).

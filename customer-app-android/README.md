@@ -2,7 +2,7 @@
 
 The native Android counterpart to the [`customer-app`](../customer-app) React
 web prototype, wired to the same production backend
-(`admin-backend-ts`, at `https://dalab-admin-backend.onrender.com/` — see
+(`admin-backend-ts`, at `https://dalab-internet-2.onrender.com/` — see
 `ApiClient.kt`). A standalone Gradle project (own `gradlew`,
 `settings.gradle.kts`) — open `customer-app-android/` directly in Android
 Studio, or build it headlessly via the GitHub Actions workflow below.
