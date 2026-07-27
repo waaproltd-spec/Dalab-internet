@@ -801,11 +801,11 @@ function PaymentNumbers({ companies, setCompanies, refreshCompanies, admin }) {
           <Field label="Payment number / merchant code">
             <input style={inputStyle} value={value} onChange={(e) => setValue(e.target.value)} />
           </Field>
-          <Field label="Service delivery USSD template (e.g. *812*{number}*{amount}#)">
-            <input style={inputStyle} value={templateValue} onChange={(e) => setTemplateValue(e.target.value)} placeholder="*<code>*{number}*{amount}#" />
+          <Field label="Deposit USSD template (e.g. *812*610338686*{amount}#)">
+            <input style={inputStyle} value={templateValue} onChange={(e) => setTemplateValue(e.target.value)} placeholder="*<code>*<payment number>*{amount}#" />
           </Field>
           <div style={{ fontSize: 11.5, color: MUTE, marginTop: -8, marginBottom: 12 }}>
-            Use {"{number}"} and {"{amount}"} as placeholders — the agent app fills them in with the customer's own phone number and the order amount when sending the service, so this template should not contain a hardcoded number.
+            This is the exact code the Customer App opens the dialer with — it should embed the payment number above (not a placeholder), with only {"{amount}"} filled in dynamically per order. Update it together with the payment number so they never go out of sync.
           </div>
           {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
           <div style={{ display: "flex", gap: 10 }}>

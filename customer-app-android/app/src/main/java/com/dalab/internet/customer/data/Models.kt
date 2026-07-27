@@ -19,6 +19,11 @@ data class Company(
     val logoUrl: String? = null,
     val status: String, // "online" | "offline"
     val gateway: String? = null,
+    // The agent/company's own payment number and full deposit USSD code
+    // (e.g. "*712*610338686*{amount}#") — the customer dials this exact
+    // number to pay the agent/company, never their own phone number.
+    val paymentNumber: String? = null,
+    val paymentUssdTemplate: String? = null,
 )
 
 /** Mirrors GET /companies/{id}/packages. */

@@ -87,11 +87,6 @@ data class Company(
     val logoUrl: String? = null,
     val status: String, // "online" | "offline"
     val gateway: String? = null,
-    // Service-delivery USSD template, e.g. "*712*{number}*{amount}#" — the
-    // agent app substitutes {number}/{amount} with the order's own customer
-    // phone number and amount; this is never a fixed/hardcoded number.
-    val paymentNumber: String? = null,
-    val paymentUssdTemplate: String? = null,
 )
 
 /** Mirrors GET /companies/{id}/packages. */

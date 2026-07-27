@@ -1,5 +1,7 @@
 package com.dalab.internet.customer.ui
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -18,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -70,6 +73,7 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
     // create a second order server-side.
     val clientRequestId = remember { UUID.randomUUID().toString() }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     val selectableMethods = remember(company.gateway) {
         if (company.gateway.isNullOrBlank() || company.gateway.equals("Manual", ignoreCase = true)) {
             listOf(company.gateway ?: "Manual")
@@ -112,6 +116,23 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                 colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = brandColor),
                 modifier = Modifier.fillMaxWidth(),
             )
+
+            company.paymentNumber?.takeIf { it.isNotBlank() }?.let { payNumber ->
+                Spacer(Modifier.height(16.dp))
+                Surface(
+                    color = brandColor.copy(alpha = 0.08f),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Text("Send payment to", fontSize = 12.sp, color = Color(0xFF6B7094))
+                        Spacer(Modifier.height(2.dp))
+                        Text(payNumber, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = brandColor)
+                        Spacer(Modifier.height(2.dp))
+                        Text("Amount: $${"%.2f".format(pkg.price)}", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                    }
+                }
+            }
 
             Spacer(Modifier.height(24.dp))
             Text("Select Payment Method", fontWeight = FontWeight.Bold, fontSize = 15.sp)
@@ -208,8 +229,15 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                     try {
                         val response = RetryClassifier.requireSuccessful(ApiClient.service.createOrder(request))
                         val order = response.body()
-                        if (order != null) onOrderCreated(order)
-                        else error = "Couldn't place this order. Please try again."
+                        if (order != null) {
+                            company.paymentUssdTemplate?.takeIf { it.isNotBlank() }?.let { template ->
+                                val ussd = template.replace("{amount}", "%.2f".format(pkg.price))
+                                context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(ussd))))
+                            }
+                            onOrderCreated(order)
+                        } else {
+                            error = "Couldn't place this order. Please try again."
+                        }
                     } catch (e: Exception) {
                         if (RetryClassifier.isRetryable(e)) {
                             PendingActionQueue.enqueue(
