@@ -15,6 +15,15 @@ data class PromoImage(
     val position: Int,
 )
 
+/** Mirrors GET /notifications (admin-backend-ts, notifications.routes.ts) — customer-scoped, excludes 'maintenance' type. */
+data class NotificationItem(
+    val id: String,
+    val type: String,
+    val title: String,
+    val body: String?,
+    val sentAt: String,
+)
+
 /** Mirrors GET /companies (admin-backend-ts, companies.routes.ts) — public, no auth required. */
 data class Company(
     val id: String,

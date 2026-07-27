@@ -3,7 +3,13 @@ package com.dalab.internet.customer.ui
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.slideInVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -24,8 +30,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -34,14 +43,15 @@ import androidx.compose.ui.window.Dialog
 import com.dalab.internet.customer.auth.SessionManager
 import com.dalab.internet.customer.network.ApiClient
 import com.dalab.internet.customer.network.UpdateProfileRequest
+import com.dalab.internet.customer.prefs.LocalizationManager
 import kotlinx.coroutines.launch
 
-private val DalabIndigo = Color(0xFF1D2E8C)
+private val HeaderStart = Color(0xFF1D2E8C)
+private val HeaderEnd = Color(0xFF16A34A)
 private val DangerRed = Color(0xFFDC2626)
 private const val SUPPORT_PHONE = "252610338686"
 private const val PACKAGE_NAME = "com.dalab.internet.customer"
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProfileScreen(onLogout: () -> Unit, onOpenOrders: () -> Unit) {
     val context = LocalContext.current
@@ -49,101 +59,130 @@ fun ProfileScreen(onLogout: () -> Unit, onOpenOrders: () -> Unit) {
     var showEditDialog by remember { mutableStateOf(false) }
     var showAccountSheet by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var contentVisible by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val compact = LocalConfiguration.current.screenHeightDp < 700
 
-    Scaffold(topBar = { TopAppBar(title = { Text("Profile") }) }) { padding ->
-        Column(
-            modifier = Modifier.padding(padding).fillMaxSize(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Spacer(Modifier.height(24.dp))
+    LaunchedEffect(Unit) { contentVisible = true }
+
+    Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
+        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
             Box(
                 modifier = Modifier
-                    .size(84.dp)
-                    .clip(CircleShape)
-                    .background(Color(0xFFE6E9F8)),
+                    .fillMaxWidth()
+                    .background(
+                        Brush.linearGradient(listOf(HeaderStart, HeaderEnd)),
+                        shape = RoundedCornerShape(bottomStart = 28.dp, bottomEnd = 28.dp),
+                    )
+                    .padding(vertical = if (compact) 20.dp else 28.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                Text(
-                    (customer?.name?.takeIf { it.isNotBlank() } ?: "?").take(1).uppercase(),
-                    color = DalabIndigo,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 30.sp,
-                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Box(
+                        modifier = Modifier
+                            .size(if (compact) 72.dp else 84.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.18f))
+                            .border(2.dp, Color.White.copy(alpha = 0.6f), CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            (customer?.name?.takeIf { it.isNotBlank() } ?: "?").take(1).uppercase(),
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 30.sp,
+                        )
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        customer?.name?.takeIf { it.isNotBlank() } ?: "DALAB customer",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                    )
+                    Text(customer?.phone ?: "", style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.85f))
+                    Spacer(Modifier.height(14.dp))
+                    OutlinedButton(
+                        onClick = { showEditDialog = true },
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.6f)),
+                        shape = RoundedCornerShape(24.dp),
+                    ) {
+                        Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(LocalizationManager.tr("Edit Profile", "Wax ka beddel xisaabta"))
+                    }
+                }
             }
-            Spacer(Modifier.height(12.dp))
-            Text(
-                customer?.name?.takeIf { it.isNotBlank() } ?: "DALAB customer",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(customer?.phone ?: "", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
-            Spacer(Modifier.height(16.dp))
 
-            Button(
-                onClick = { showEditDialog = true },
-                colors = ButtonDefaults.buttonColors(containerColor = DalabIndigo),
-                shape = RoundedCornerShape(24.dp),
+            AnimatedVisibility(
+                visible = contentVisible,
+                enter = fadeIn(tween(350)) + slideInVertically(tween(350)) { it / 10 },
             ) {
-                Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("Edit Profile")
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        modifier = Modifier.fillMaxWidth().shadow(3.dp, RoundedCornerShape(20.dp)),
+                    ) {
+                        Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                            ProfileMenuRow(
+                                icon = Icons.Filled.Receipt,
+                                label = LocalizationManager.tr("My Orders", "Dalabyadayda"),
+                                onClick = onOpenOrders,
+                            )
+                            ProfileMenuRow(
+                                icon = Icons.Filled.Call,
+                                label = "Call Us",
+                                onClick = {
+                                    context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$SUPPORT_PHONE")))
+                                },
+                            )
+                            ProfileMenuRow(
+                                icon = Icons.Filled.Chat,
+                                label = "WhatsApp",
+                                onClick = {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$SUPPORT_PHONE")))
+                                },
+                            )
+                            ProfileMenuRow(
+                                icon = Icons.Filled.Star,
+                                label = LocalizationManager.tr("Rate the App", "Qiimee Barnaamijka"),
+                                onClick = {
+                                    try {
+                                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$PACKAGE_NAME")))
+                                    } catch (_: ActivityNotFoundException) {
+                                        context.startActivity(
+                                            Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=$PACKAGE_NAME"))
+                                        )
+                                    }
+                                },
+                            )
+                            ProfileMenuRow(
+                                icon = Icons.Filled.Share,
+                                label = LocalizationManager.tr("Share with Friends", "La wadaag Saaxiibada"),
+                                onClick = {
+                                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(
+                                            Intent.EXTRA_TEXT,
+                                            "Buy internet packages fast with DALAB Internet: https://play.google.com/store/apps/details?id=$PACKAGE_NAME",
+                                        )
+                                    }
+                                    context.startActivity(Intent.createChooser(shareIntent, "Share DALAB Internet"))
+                                },
+                            )
+                            ProfileMenuRow(
+                                icon = Icons.Filled.ManageAccounts,
+                                label = LocalizationManager.tr("Manage Account", "Maamul Xisaabta"),
+                                tint = DangerRed,
+                                onClick = { showAccountSheet = true },
+                                showDivider = false,
+                            )
+                        }
+                    }
+                }
             }
-
-            Spacer(Modifier.height(24.dp))
-            Divider()
-
-            ProfileMenuRow(icon = Icons.Filled.Receipt, label = "My Orders", onClick = onOpenOrders)
-            ProfileMenuRow(
-                icon = Icons.Filled.Call,
-                label = "Call Us",
-                onClick = {
-                    context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$SUPPORT_PHONE")))
-                },
-            )
-            ProfileMenuRow(
-                icon = Icons.Filled.Chat,
-                label = "WhatsApp",
-                onClick = {
-                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$SUPPORT_PHONE")))
-                },
-            )
-            ProfileMenuRow(
-                icon = Icons.Filled.Star,
-                label = "Rate the App",
-                onClick = {
-                    try {
-                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$PACKAGE_NAME")))
-                    } catch (_: ActivityNotFoundException) {
-                        context.startActivity(
-                            Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=$PACKAGE_NAME"))
-                        )
-                    }
-                },
-            )
-            ProfileMenuRow(
-                icon = Icons.Filled.Share,
-                label = "Share with Friends",
-                onClick = {
-                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                        type = "text/plain"
-                        putExtra(
-                            Intent.EXTRA_TEXT,
-                            "Buy internet packages fast with DALAB Internet: https://play.google.com/store/apps/details?id=$PACKAGE_NAME",
-                        )
-                    }
-                    context.startActivity(Intent.createChooser(shareIntent, "Share DALAB Internet"))
-                },
-            )
-            ProfileMenuRow(
-                icon = Icons.Filled.ManageAccounts,
-                label = "Manage Account",
-                tint = DangerRed,
-                onClick = { showAccountSheet = true },
-            )
-
-            Spacer(Modifier.weight(1f))
-            Spacer(Modifier.height(20.dp))
         }
     }
 
@@ -204,7 +243,7 @@ fun ProfileScreen(onLogout: () -> Unit, onOpenOrders: () -> Unit) {
 
     if (showAccountSheet) {
         Dialog(onDismissRequest = { showAccountSheet = false }) {
-            Surface(shape = RoundedCornerShape(20.dp), color = Color.White) {
+            Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
                 Column(modifier = Modifier.padding(vertical = 8.dp)) {
                     AccountActionRow(icon = Icons.Filled.Logout, label = "Log out") {
                         showAccountSheet = false
@@ -294,8 +333,9 @@ private fun ProfileMenuRow(
     icon: ImageVector,
     label: String,
     onClick: () -> Unit,
-    tint: Color = DalabIndigo,
+    tint: Color = HeaderStart,
     showChevron: Boolean = true,
+    showDivider: Boolean = true,
 ) {
     Row(
         modifier = Modifier
@@ -314,10 +354,17 @@ private fun ProfileMenuRow(
             Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
         }
         Spacer(Modifier.width(16.dp))
-        Text(label, modifier = Modifier.weight(1f), fontSize = 15.sp, color = if (tint == DalabIndigo) Color.Unspecified else tint)
+        Text(
+            label,
+            modifier = Modifier.weight(1f),
+            fontSize = 15.sp,
+            color = if (tint == HeaderStart) MaterialTheme.colorScheme.onSurface else tint,
+        )
         if (showChevron) {
             Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = Color.Gray)
         }
     }
-    Divider()
+    if (showDivider) {
+        Divider(modifier = Modifier.padding(start = 72.dp))
+    }
 }
