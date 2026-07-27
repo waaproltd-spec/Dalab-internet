@@ -7,9 +7,10 @@ import com.dalab.internet.data.SmsLogEntry
  * provider's exact SMS format is confirmed with a real sample, and register
  * it in [PaymentSmsParsers.ALL] — nothing else needs to change.
  *
- * Amtel's format is still unconfirmed — no real sample has been provided, so
- * no parser exists for it yet. Its payment SMS are currently ignored rather
- * than guessed at (a wrong regex here risks mis-parsing a real payment).
+ * Amtel deliberately has no parser here: Amtel doesn't send payment
+ * confirmation SMS at all (it's used for data transfer/service delivery
+ * only), so there's nothing to parse — Amtel orders are verified through
+ * the data-delivery/service API flow instead of SMS matching.
  */
 interface PaymentSmsParser {
     val senders: List<String>
@@ -119,10 +120,8 @@ object SomnetEvcPlusParser : PaymentSmsParser {
 /**
  * Registry the receiver consults. Unrecognized senders/formats are ignored — not
  * every SMS on the agent's phone is a payment notification, and we never want to
- * accidentally ingest an unrelated personal message.
- *
- * TODO: add an Amtel parser once its SMS format is confirmed with a real
- * sample, following the same shape as the parsers above.
+ * accidentally ingest an unrelated personal message. No Amtel entry here by
+ * design — see the interface doc comment above.
  */
 object PaymentSmsParsers {
     val ALL: List<PaymentSmsParser> = listOf(
