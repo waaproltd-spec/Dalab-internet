@@ -24,6 +24,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.dalab.internet.customer.R
@@ -145,27 +146,57 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                 Spacer(Modifier.height(if (compact) 10.dp else 14.dp))
                 Text(pkg.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 Spacer(Modifier.height(4.dp))
-                Text(
-                    buildList {
-                        add(company.name)
-                        add("$${"%.2f".format(pkg.price)}")
-                        pkg.validity?.takeIf { it.isNotBlank() }?.let { add(it) }
-                    }.joinToString("  •  "),
-                    color = MutedText,
-                    fontSize = 12.sp,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        buildList {
+                            add(company.name)
+                            pkg.validity?.takeIf { it.isNotBlank() }?.let { add(it) }
+                        }.joinToString("  •  "),
+                        color = MutedText,
+                        fontSize = 12.sp,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    val hasDiscount = pkg.oldPrice != null && pkg.oldPrice > pkg.price
+                    if (hasDiscount) {
+                        Text(
+                            "$${"%.2f".format(pkg.oldPrice)}",
+                            color = MutedText,
+                            fontSize = 12.sp,
+                            textDecoration = TextDecoration.LineThrough,
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text(
+                        "$${"%.2f".format(pkg.price)}",
+                        color = if (hasDiscount) DalabGreen else MutedText,
+                        fontWeight = if (hasDiscount) FontWeight.Bold else FontWeight.Normal,
+                        fontSize = 12.sp,
+                    )
+                }
             }
         }
 
         Spacer(Modifier.height(gap))
         Text("Amount to Pay", color = MutedText, fontSize = 13.sp)
         Spacer(Modifier.height(4.dp))
-        Text(
-            "$${"%.2f".format(pkg.price)}",
-            color = DalabGreen,
-            fontWeight = FontWeight.Black,
-            fontSize = if (compact) 26.sp else 30.sp,
-        )
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(
+                "$${"%.2f".format(pkg.price)}",
+                color = DalabGreen,
+                fontWeight = FontWeight.Black,
+                fontSize = if (compact) 26.sp else 30.sp,
+            )
+            if (pkg.oldPrice != null && pkg.oldPrice > pkg.price) {
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    "$${"%.2f".format(pkg.oldPrice)}",
+                    color = MutedText,
+                    fontSize = if (compact) 15.sp else 17.sp,
+                    textDecoration = TextDecoration.LineThrough,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                )
+            }
+        }
 
         Spacer(Modifier.height(gap))
         PhoneInputField(
