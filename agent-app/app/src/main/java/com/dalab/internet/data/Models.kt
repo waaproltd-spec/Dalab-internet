@@ -64,7 +64,7 @@ data class SmsLogEntry(
 data class Transaction(
     val orderId: String,
     val customerName: String,
-    val company: String,
+    val companyName: String,
     val amount: Double,
     val completedAt: String,
 )

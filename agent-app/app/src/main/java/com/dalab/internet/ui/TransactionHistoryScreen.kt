@@ -60,7 +60,7 @@ fun TransactionHistoryScreen(onBack: () -> Unit) {
                         ) {
                             Column {
                                 Text(tx.customerName, fontWeight = FontWeight.Bold)
-                                Text("${tx.company} · ${tx.orderId}", style = MaterialTheme.typography.bodySmall)
+                                Text("${tx.companyName} · ${tx.orderId}", style = MaterialTheme.typography.bodySmall)
                             }
                             Column(horizontalAlignment = Alignment.End) {
                                 Text("$${"%.2f".format(tx.amount)}", fontWeight = FontWeight.Bold)
