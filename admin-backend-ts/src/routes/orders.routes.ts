@@ -75,6 +75,18 @@ ordersRouter.get("/orders", requireAuth("customer"), async (req, res) => {
   sendJson(res, 200, rows);
 });
 
+// Real-time order feed for the Customer App — same subscribe/broadcast
+// pub/sub already powering /agent/orders/stream and /admin/orders/stream.
+// Registered before "/orders/:id" so "stream" isn't swallowed as an :id
+// param. The broadcast payload is just {type, orderId} regardless of role,
+// so no server-side filtering by customer is needed — the app already
+// re-fetches its own order(s) by id on any event rather than trusting the
+// event payload.
+ordersRouter.get("/orders/stream", requireAuth("customer"), async (req, res) => {
+  const unsubscribe = subscribe(res);
+  req.on("close", unsubscribe);
+});
+
 ordersRouter.get("/orders/:id", requireAuth("customer"), async (req, res) => {
   const order = await loadOrder(req.params.id);
   if (!order || (order as any).customer_id !== req.auth!.sub) return sendJson(res, 404, { error: "Order not found" });

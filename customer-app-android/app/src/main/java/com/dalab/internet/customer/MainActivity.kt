@@ -141,7 +141,7 @@ private fun CustomerApp() {
         }
 
         Screen.ORDER_DETAIL -> selectedOrder?.let { order ->
-            OrderDetailScreen(order = order, onBack = { screen = Screen.HOME })
+            OrderDetailScreen(initialOrder = order, onBack = { screen = Screen.HOME })
         }
     }
 }
