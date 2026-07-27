@@ -28,6 +28,8 @@ import com.dalab.internet.customer.ui.HomeScreen
 import com.dalab.internet.customer.ui.OrderDetailScreen
 import com.dalab.internet.customer.ui.OrdersScreen
 import com.dalab.internet.customer.ui.OtpLoginScreen
+import com.dalab.internet.customer.ui.PaymentDraft
+import com.dalab.internet.customer.ui.PaymentInstructionsScreen
 import com.dalab.internet.customer.ui.ProfileScreen
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -84,7 +86,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { LOGIN, HOME, COMPANY_CATEGORIES, CATEGORY_PACKAGES, CHECKOUT, ORDER_DETAIL }
+private enum class Screen { LOGIN, HOME, COMPANY_CATEGORIES, CATEGORY_PACKAGES, CHECKOUT, PAYMENT_INSTRUCTIONS, ORDER_DETAIL }
 private enum class HomeTab { HOME, ORDERS, PROFILE }
 
 private data class CategorySelection(val id: String, val label: String, val packages: List<PackageItem>)
@@ -95,6 +97,7 @@ private fun CustomerApp() {
     var selectedCompany by remember { mutableStateOf<Company?>(null) }
     var selectedCategory by remember { mutableStateOf<CategorySelection?>(null) }
     var checkoutSelection by remember { mutableStateOf<Pair<Company, PackageItem>?>(null) }
+    var paymentDraft by remember { mutableStateOf<PaymentDraft?>(null) }
     var selectedOrder by remember { mutableStateOf<CustomerOrder?>(null) }
 
     when (screen) {
@@ -134,6 +137,14 @@ private fun CustomerApp() {
                 company = company,
                 pkg = pkg,
                 onBack = { screen = Screen.HOME },
+                onProceedToPayment = { draft -> paymentDraft = draft; screen = Screen.PAYMENT_INSTRUCTIONS },
+            )
+        }
+
+        Screen.PAYMENT_INSTRUCTIONS -> paymentDraft?.let { draft ->
+            PaymentInstructionsScreen(
+                draft = draft,
+                onBack = { screen = Screen.CHECKOUT },
                 onOrderCreated = { order -> selectedOrder = order; screen = Screen.ORDER_DETAIL },
             )
         }

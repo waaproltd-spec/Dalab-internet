@@ -1,7 +1,5 @@
 package com.dalab.internet.customer.ui
 
-import android.content.Intent
-import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -20,24 +18,23 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.dalab.internet.customer.auth.SessionManager
 import com.dalab.internet.customer.data.Company
-import com.dalab.internet.customer.data.CustomerOrder
 import com.dalab.internet.customer.data.PackageItem
-import com.dalab.internet.customer.network.ApiClient
-import com.dalab.internet.customer.network.CreateOrderRequest
-import com.dalab.internet.customer.queue.OrderCreateAction
-import com.dalab.internet.customer.queue.PendingActionQueue
-import com.dalab.internet.customer.queue.RetryClassifier
-import kotlinx.coroutines.launch
-import java.util.UUID
 
 private val DalabIndigo = Color(0xFF1D2E8C)
 private val DalabGreen = Color(0xFF16A34A)
+
+data class PaymentDraft(
+    val company: Company,
+    val pkg: PackageItem,
+    val senderPhone: String,
+    val receiverPhone: String,
+    val paymentMethod: String,
+)
 
 private data class PaymentMethodOption(val label: String, val color: Color)
 private val KNOWN_PAYMENT_METHODS = listOf(
@@ -56,26 +53,17 @@ private val KNOWN_PAYMENT_METHODS = listOf(
  * payment confirmation, verified through a separate flow) has no selectable
  * alternative. Only the applicable icon(s) are selectable/lit; the rest stay
  * dimmed and non-interactive.
+ *
+ * This screen only reviews the order and picks a payment method — tapping
+ * "Pay Now" hands off to PaymentInstructionsScreen, which shows the actual
+ * phone number/amount to send to and only creates the order once the
+ * customer confirms they've sent the payment ("I've Paid").
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrderCreated: (CustomerOrder) -> Unit) {
-    // Both default to the same number the customer already logged in with —
-    // pre-filled so they never have to type it, but each stays independently
-    // editable: the sender is whichever number actually pays, the receiver
-    // is whichever number the data gets delivered to (usually the same
-    // number, but not always — e.g. buying data as a gift for someone else).
+fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onProceedToPayment: (PaymentDraft) -> Unit) {
     var senderPhone by remember { mutableStateOf(SessionManager.currentCustomer()?.phone ?: "") }
     var receiverPhone by remember { mutableStateOf(SessionManager.currentCustomer()?.phone ?: "") }
-    var submitting by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var queued by remember { mutableStateOf(false) }
-    // Reused across manual retaps of the same in-flight attempt (e.g. after a
-    // network error) so a retry — including from the offline queue — can't
-    // create a second order server-side.
-    val clientRequestId = remember { UUID.randomUUID().toString() }
-    val scope = rememberCoroutineScope()
-    val context = LocalContext.current
     val selectableMethods = remember(company.gateway) {
         if (company.gateway.isNullOrBlank() || company.gateway.equals("Manual", ignoreCase = true)) {
             listOf(company.gateway ?: "Manual")
@@ -95,7 +83,7 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Confirm Payment", color = Color.White, fontWeight = FontWeight.Bold) },
+                title = { Text("Confirm Order", color = Color.White, fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White) }
                 },
@@ -129,23 +117,6 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                 colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = brandColor),
                 modifier = Modifier.fillMaxWidth(),
             )
-
-            company.paymentNumber?.takeIf { it.isNotBlank() }?.let { payNumber ->
-                Spacer(Modifier.height(16.dp))
-                Surface(
-                    color = brandColor.copy(alpha = 0.08f),
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Text("Send payment to", fontSize = 12.sp, color = Color(0xFF6B7094))
-                        Spacer(Modifier.height(2.dp))
-                        Text(payNumber, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = brandColor)
-                        Spacer(Modifier.height(2.dp))
-                        Text("Amount: $${"%.2f".format(pkg.price)}", fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                    }
-                }
-            }
 
             Spacer(Modifier.height(24.dp))
             Text("Select Payment Method", fontWeight = FontWeight.Bold, fontSize = 15.sp)
@@ -215,58 +186,8 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
             }
 
             Spacer(Modifier.height(20.dp))
-            if (error != null) {
-                Text(error!!, color = MaterialTheme.colorScheme.error)
-                Spacer(Modifier.height(12.dp))
-            }
-            if (queued) {
-                Text(
-                    "You're offline — this order will be placed automatically once you're back online.",
-                    color = MaterialTheme.colorScheme.primary,
-                )
-                Spacer(Modifier.height(12.dp))
-            }
 
-            val payEnabled = senderPhone.isNotBlank() && receiverPhone.isNotBlank() && !submitting && !queued
-            val onPay: () -> Unit = {
-                error = null
-                submitting = true
-                val request = CreateOrderRequest(
-                    companyId = company.id,
-                    packageId = pkg.id,
-                    senderPhone = senderPhone.trim().ifBlank { null },
-                    receiverPhone = receiverPhone.trim().ifBlank { null },
-                    paymentMethod = selectedPaymentMethod,
-                    clientRequestId = clientRequestId,
-                )
-                scope.launch {
-                    try {
-                        val response = RetryClassifier.requireSuccessful(ApiClient.service.createOrder(request))
-                        val order = response.body()
-                        if (order != null) {
-                            company.paymentUssdTemplate?.takeIf { it.isNotBlank() }?.let { template ->
-                                val ussd = template.replace("{amount}", "%.2f".format(pkg.price))
-                                context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(ussd))))
-                            }
-                            onOrderCreated(order)
-                        } else {
-                            error = "Couldn't place this order. Please try again."
-                        }
-                    } catch (e: Exception) {
-                        if (RetryClassifier.isRetryable(e)) {
-                            PendingActionQueue.enqueue(
-                                id = UUID.randomUUID().toString(),
-                                type = PendingActionQueue.Type.ORDER_CREATE,
-                                payload = OrderCreateAction(request),
-                            )
-                            queued = true
-                        } else {
-                            error = "Couldn't place this order. Please try again."
-                        }
-                    }
-                    submitting = false
-                }
-            }
+            val payEnabled = senderPhone.isNotBlank() && receiverPhone.isNotBlank()
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -276,15 +197,20 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                         if (payEnabled) Brush.horizontalGradient(listOf(DalabIndigo, DalabGreen))
                         else Brush.horizontalGradient(listOf(Color(0xFFBDC2E0), Color(0xFFBDC2E0)))
                     )
-                    .clickable(enabled = payEnabled, onClick = onPay),
+                    .clickable(enabled = payEnabled) {
+                        onProceedToPayment(
+                            PaymentDraft(
+                                company = company,
+                                pkg = pkg,
+                                senderPhone = senderPhone.trim(),
+                                receiverPhone = receiverPhone.trim(),
+                                paymentMethod = selectedPaymentMethod,
+                            )
+                        )
+                    },
                 contentAlignment = Alignment.Center,
             ) {
-                Text(
-                    if (submitting) "Processing..." else if (queued) "Queued" else "Pay Now",
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp,
-                )
+                Text("Pay Now", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
             }
         }
     }
