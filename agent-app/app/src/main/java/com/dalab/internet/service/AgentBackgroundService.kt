@@ -21,6 +21,7 @@ import com.dalab.internet.network.AgentEventBus
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.HeartbeatRequest
 import com.dalab.internet.network.RealtimeClient
+import com.dalab.internet.ussd.SimRoutingRepository
 import com.dalab.internet.ussd.UssdDialer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -58,7 +59,15 @@ class AgentBackgroundService : Service() {
             AgentEventBus.emitOrderEvent()
         }.also { it.connect() }
 
+        // SimRoutingRepository.refresh() previously had zero call sites anywhere in
+        // the app — its cache was never populated on a real install, so simSlotFor()
+        // always returned null and UssdOrchestrator always short-circuited to
+        // NO_SIM_CONFIGURED. An immediate refresh here (plus the periodic loop below)
+        // is what actually makes automatic USSD dialing work.
+        newScope.launch { SimRoutingRepository.refresh() }
+
         newScope.launch { heartbeatLoop() }
+        newScope.launch { simRoutingRefreshLoop() }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
@@ -86,6 +95,20 @@ class AgentBackgroundService : Service() {
                 }
             }
             delay(HEARTBEAT_INTERVAL_MS)
+        }
+    }
+
+    // Routing changes are admin-driven and rare (nothing like heartbeat's need for
+    // a 60s cadence), so this runs on its own slower interval rather than piggybacking
+    // on every heartbeat tick — a dashboard routing change still takes effect without
+    // requiring the agent to restart the app.
+    private suspend fun simRoutingRefreshLoop() {
+        val currentScope = scope ?: return
+        while (currentScope.isActive) {
+            delay(SIM_ROUTING_REFRESH_INTERVAL_MS)
+            if (DeviceIdentity.isSet() && SessionManager.isLoggedIn()) {
+                SimRoutingRepository.refresh()
+            }
         }
     }
 
@@ -145,6 +168,7 @@ class AgentBackgroundService : Service() {
         private const val CHANNEL_ID = "agent_background_channel"
         private const val NOTIFICATION_ID = 1001
         private const val HEARTBEAT_INTERVAL_MS = 60_000L
+        private const val SIM_ROUTING_REFRESH_INTERVAL_MS = 5 * 60_000L
 
         fun start(context: Context) {
             val intent = Intent(context, AgentBackgroundService::class.java)
