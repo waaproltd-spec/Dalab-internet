@@ -50,25 +50,37 @@ ussdRouter.get("/admin/ussd-templates", requireStaff(), async (req, res) => {
   sendJson(res, 200, rows);
 });
 
+// {customerNumber} is accepted as an alias for {number} (same substitution)
+// so a template can be written either way — kept for that one placeholder
+// only, since {amount}/{pin} were never ambiguous in how admins referred to them.
 function hasRequiredPlaceholders(code: string): boolean {
-  return code.includes("{number}") && code.includes("{amount}") && code.includes("{pin}");
+  return (code.includes("{number}") || code.includes("{customerNumber}")) && code.includes("{amount}") && code.includes("{pin}");
+}
+
+function isValidSimSlot(value: unknown): value is number | null {
+  return value === null || value === undefined || value === 1 || value === 2;
 }
 
 ussdRouter.post("/admin/ussd-templates", requirePermission("devices.manage"), async (req, res) => {
-  const { companyId, serviceName, ussdCode, notes } = req.body;
+  const { companyId, serviceName, ussdCode, notes, deviceId, simSlot } = req.body;
   if (!companyId || !serviceName || !ussdCode) {
     return sendJson(res, 400, { error: "companyId, serviceName, and ussdCode are required" });
   }
   if (!hasRequiredPlaceholders(ussdCode)) {
     return sendJson(res, 400, { error: "ussdCode must contain {number}, {amount}, and {pin} placeholders" });
   }
+  if (!isValidSimSlot(simSlot)) return sendJson(res, 400, { error: "simSlot must be 1 or 2" });
   const company = await queryOne(`SELECT id FROM companies WHERE id=$1`, [companyId]);
   if (!company) return sendJson(res, 404, { error: "Company not found" });
+  if (deviceId) {
+    const device = await queryOne(`SELECT id FROM agent_devices WHERE id=$1`, [deviceId]);
+    if (!device) return sendJson(res, 404, { error: "Device not found" });
+  }
 
   const id = randomUUID();
   await query(
-    `INSERT INTO ussd_templates (id, company_id, service_name, ussd_code, notes, status) VALUES ($1,$2,$3,$4,$5,'enabled')`,
-    [id, companyId, serviceName, ussdCode, notes ?? ""]
+    `INSERT INTO ussd_templates (id, company_id, service_name, ussd_code, notes, status, device_id, sim_slot) VALUES ($1,$2,$3,$4,$5,'enabled',$6,$7)`,
+    [id, companyId, serviceName, ussdCode, notes ?? "", deviceId ?? null, simSlot ?? null]
   );
   sendJson(res, 201, await queryOne(`SELECT * FROM ussd_templates WHERE id=$1`, [id]));
 });
@@ -83,13 +95,22 @@ ussdRouter.put("/admin/ussd-templates/:id", requirePermission("devices.manage"),
   if (merged.status && !["enabled", "disabled"].includes(merged.status)) {
     return sendJson(res, 400, { error: "status must be 'enabled' or 'disabled'" });
   }
+  if (req.body.simSlot !== undefined && !isValidSimSlot(req.body.simSlot)) {
+    return sendJson(res, 400, { error: "simSlot must be 1 or 2" });
+  }
+  if (req.body.deviceId) {
+    const device = await queryOne(`SELECT id FROM agent_devices WHERE id=$1`, [req.body.deviceId]);
+    if (!device) return sendJson(res, 404, { error: "Device not found" });
+  }
   await query(
-    `UPDATE ussd_templates SET service_name=$1, ussd_code=$2, notes=$3, status=$4, updated_at=now() WHERE id=$5`,
+    `UPDATE ussd_templates SET service_name=$1, ussd_code=$2, notes=$3, status=$4, device_id=$5, sim_slot=$6, updated_at=now() WHERE id=$7`,
     [
       req.body.serviceName ?? merged.service_name,
       req.body.ussdCode ?? merged.ussd_code,
       req.body.notes ?? merged.notes,
       req.body.status ?? merged.status,
+      req.body.deviceId !== undefined ? (req.body.deviceId || null) : merged.device_id,
+      req.body.simSlot !== undefined ? req.body.simSlot : merged.sim_slot,
       req.params.id,
     ]
   );
@@ -154,10 +175,14 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
   const pin = decrypt(company.pin_encrypted);
   const ussd = template.ussd_code
     .replace("{number}", order.sender_phone ?? "")
+    .replace("{customerNumber}", order.sender_phone ?? "")
     .replace("{amount}", String(order.amount))
     .replace("{pin}", pin);
 
-  await query(`UPDATE orders SET ussd_generated=$1 WHERE id=$2`, [ussd, order.id]);
+  await query(
+    `UPDATE orders SET ussd_generated=$1, ussd_device_id=$2, ussd_sim_slot=$3 WHERE id=$4`,
+    [ussd, template.device_id ?? null, template.sim_slot ?? null, order.id]
+  );
   await query(
     `INSERT INTO ussd_logs (id, order_id, template_id, company_id, admin_id, generated_string) VALUES ($1,$2,$3,$4,$5,$6)`,
     [randomUUID(), order.id, template.id, order.company_id, adminId ?? null, ussd]
