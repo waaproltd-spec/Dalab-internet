@@ -350,7 +350,12 @@ ordersRouter.post("/admin/orders/:id/reverse", requirePermission("orders.reverse
 });
 
 ordersRouter.get("/admin/dashboard/stats", requireStaff(), async (_req, res) => {
-  const totals = await queryOne(
+  const totals = await queryOne<{
+    total_sales: string;
+    pending_orders: string;
+    successful_orders: string;
+    failed_orders: string;
+  }>(
     `SELECT
        COALESCE(SUM(amount) FILTER (WHERE status='completed'), 0) AS total_sales,
        COUNT(*) FILTER (WHERE status='pending') AS pending_orders,
@@ -359,5 +364,15 @@ ordersRouter.get("/admin/dashboard/stats", requireStaff(), async (_req, res) => 
      FROM orders`
   );
   const activeCustomers = await queryOne<{ n: string }>(`SELECT COUNT(*) AS n FROM customers WHERE status='active'`);
-  sendJson(res, 200, { ...totals, active_customers: activeCustomers?.n });
+  // Postgres returns numeric/count columns as strings via node-postgres (to avoid
+  // precision loss on bigint) — the dashboard expects real numbers (it calls
+  // .toFixed()/.toLocaleString() on these), and camelCase keys, not the raw
+  // snake_case column names, or it crashes right after this resolves.
+  sendJson(res, 200, {
+    totalSales: Number(totals?.total_sales ?? 0),
+    pendingOrders: Number(totals?.pending_orders ?? 0),
+    successfulOrders: Number(totals?.successful_orders ?? 0),
+    failedOrders: Number(totals?.failed_orders ?? 0),
+    activeCustomers: Number(activeCustomers?.n ?? 0),
+  });
 });
