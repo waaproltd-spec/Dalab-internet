@@ -1,5 +1,8 @@
 package com.dalab.internet.customer
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -17,6 +20,8 @@ import com.dalab.internet.customer.auth.SessionManager
 import com.dalab.internet.customer.data.Company
 import com.dalab.internet.customer.data.CustomerOrder
 import com.dalab.internet.customer.data.PackageItem
+import com.dalab.internet.customer.queue.PendingActionQueue
+import com.dalab.internet.customer.queue.QueueDrainer
 import com.dalab.internet.customer.ui.CheckoutScreen
 import com.dalab.internet.customer.ui.CompanyCategoriesScreen
 import com.dalab.internet.customer.ui.CompanyPackagesScreen
@@ -26,17 +31,58 @@ import com.dalab.internet.customer.ui.OrderDetailScreen
 import com.dalab.internet.customer.ui.OrdersScreen
 import com.dalab.internet.customer.ui.OtpLoginScreen
 import com.dalab.internet.customer.ui.ProfileScreen
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
+/**
+ * Deliberately no background service here (unlike the Agent App) — a
+ * queued order isn't time-critical the way a missed agent-side payment
+ * match is, so foreground-only draining (connectivity-restored callback +
+ * resume) is a proportionate choice for this customer-facing app.
+ */
 class MainActivity : ComponentActivity() {
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private val activityScope = CoroutineScope(Dispatchers.IO)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         SessionManager.init(this)
+        PendingActionQueue.init(this)
+        registerConnectivityCallback()
+        activityScope.launch { QueueDrainer.drainAll() }
 
         setContent {
             MaterialTheme {
                 CustomerApp()
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        activityScope.launch { QueueDrainer.drainAll() }
+    }
+
+    override fun onDestroy() {
+        networkCallback?.let {
+            (getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager)?.unregisterNetworkCallback(it)
+        }
+        networkCallback = null
+        activityScope.cancel()
+        super.onDestroy()
+    }
+
+    private fun registerConnectivityCallback() {
+        val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                activityScope.launch { QueueDrainer.drainAll() }
+            }
+        }
+        connectivityManager.registerDefaultNetworkCallback(callback)
+        networkCallback = callback
     }
 }
 

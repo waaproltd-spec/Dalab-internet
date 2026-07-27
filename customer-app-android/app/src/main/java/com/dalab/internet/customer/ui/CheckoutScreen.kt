@@ -5,7 +5,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -15,6 +14,9 @@ import com.dalab.internet.customer.data.CustomerOrder
 import com.dalab.internet.customer.data.PackageItem
 import com.dalab.internet.customer.network.ApiClient
 import com.dalab.internet.customer.network.CreateOrderRequest
+import com.dalab.internet.customer.queue.OrderCreateAction
+import com.dalab.internet.customer.queue.PendingActionQueue
+import com.dalab.internet.customer.queue.RetryClassifier
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -30,6 +32,7 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
     var receiverPhone by remember { mutableStateOf(SessionManager.currentCustomer()?.phone ?: "") }
     var submitting by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var queued by remember { mutableStateOf(false) }
     // Reused across manual retaps of the same in-flight attempt (e.g. after a
     // network error) so a retry — including from the offline queue — can't
     // create a second order server-side.
@@ -73,35 +76,50 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                 Text(error!!, color = MaterialTheme.colorScheme.error)
                 Spacer(Modifier.height(12.dp))
             }
+            if (queued) {
+                Text(
+                    "You're offline — this order will be placed automatically once you're back online.",
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.height(12.dp))
+            }
 
             Button(
                 onClick = {
                     error = null
                     submitting = true
+                    val request = CreateOrderRequest(
+                        companyId = company.id,
+                        packageId = pkg.id,
+                        receiverPhone = receiverPhone.trim().ifBlank { null },
+                        paymentMethod = paymentMethod,
+                        clientRequestId = clientRequestId,
+                    )
                     scope.launch {
                         try {
-                            val response = ApiClient.service.createOrder(
-                                CreateOrderRequest(
-                                    companyId = company.id,
-                                    packageId = pkg.id,
-                                    receiverPhone = receiverPhone.trim().ifBlank { null },
-                                    paymentMethod = paymentMethod,
-                                    clientRequestId = clientRequestId,
-                                )
-                            )
+                            val response = RetryClassifier.requireSuccessful(ApiClient.service.createOrder(request))
                             val order = response.body()
-                            if (response.isSuccessful && order != null) onOrderCreated(order)
+                            if (order != null) onOrderCreated(order)
                             else error = "Couldn't place this order. Please try again."
-                        } catch (_: Exception) {
-                            error = "Network error while placing your order."
+                        } catch (e: Exception) {
+                            if (RetryClassifier.isRetryable(e)) {
+                                PendingActionQueue.enqueue(
+                                    id = UUID.randomUUID().toString(),
+                                    type = PendingActionQueue.Type.ORDER_CREATE,
+                                    payload = OrderCreateAction(request),
+                                )
+                                queued = true
+                            } else {
+                                error = "Couldn't place this order. Please try again."
+                            }
                         }
                         submitting = false
                     }
                 },
-                enabled = receiverPhone.isNotBlank() && !submitting,
+                enabled = receiverPhone.isNotBlank() && !submitting && !queued,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text(if (submitting) "Processing..." else "Pay Now")
+                Text(if (submitting) "Processing..." else if (queued) "Queued" else "Pay Now")
             }
         }
     }
