@@ -1,12 +1,16 @@
 package com.dalab.internet.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ContentCopy
 import com.dalab.internet.util.formatApiDateTime
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.dalab.internet.data.Order
@@ -21,7 +25,9 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
     var current by remember(order) { mutableStateOf(order) }
     var working by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
+    var copied by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     Scaffold(
         topBar = {
@@ -32,10 +38,28 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
                         Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
+                actions = {
+                    IconButton(onClick = {
+                        val clipboard = context.getSystemService(ClipboardManager::class.java)
+                        clipboard?.setPrimaryClip(ClipData.newPlainText("Order ID", current.id))
+                        copied = true
+                    }) {
+                        Icon(Icons.Filled.ContentCopy, contentDescription = "Copy order ID")
+                    }
+                },
             )
         }
     ) { padding ->
         Column(modifier = Modifier.padding(padding).padding(20.dp).fillMaxSize()) {
+
+            if (copied) {
+                Text("Order ID copied to clipboard", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.height(8.dp))
+                LaunchedEffect(copied) {
+                    kotlinx.coroutines.delay(1500)
+                    copied = false
+                }
+            }
 
             SectionLabel("CUSTOMER")
             DetailRow("Name", current.customerName ?: "Not provided")

@@ -1,6 +1,7 @@
 package com.dalab.internet.ussd
 
 import android.content.Context
+import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.DialAttemptResultRequest
@@ -57,22 +58,65 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         val ussdString = order.ussdGenerated
             ?: return DialResult(DialOutcome.FAILED, "No USSD template matched this order — check USSD Services in the dashboard.")
 
-        // Step 2: resolve which physical SIM to dial on.
-        val configuredSlot = SimRoutingRepository.simSlotFor(order.companyId)
-            ?: return DialResult(DialOutcome.NO_SIM_CONFIGURED, "No SIM routing configured for ${order.companyName}.")
-        val subscriptionId = dialer.subscriptionIdForSlot(configuredSlot)
-            ?: return DialResult(DialOutcome.NO_SIM_PRESENT, "SIM $configuredSlot is configured for ${order.companyName} but isn't physically inserted.")
+        // Step 2: resolve which physical SIM to dial on. A USSD template can
+        // pin an order to a specific device+slot (Admin > USSD Templates),
+        // which only means anything if *this* device is the one it named —
+        // dialing still requires physically holding that SIM, so an override
+        // naming a different device is ignored in favor of this device's own
+        // per-company routing (logged for visibility, not treated as an error).
+        val configuredSlot = if (order.ussdDeviceId != null && order.ussdDeviceId == DeviceIdentity.deviceId() && order.ussdSimSlot != null) {
+            order.ussdSimSlot
+        } else {
+            if (order.ussdDeviceId != null && order.ussdDeviceId != DeviceIdentity.deviceId()) {
+                DiagnosticsLog.record(
+                    "sim_routing",
+                    "Order $orderId's template is assigned to a different device — falling back to this device's own routing for ${order.companyName}.",
+                    isError = false,
+                )
+            }
+            SimRoutingRepository.simSlotFor(order.companyId)
+        } ?: return DialResult(DialOutcome.NO_SIM_CONFIGURED, "No SIM routing configured for ${order.companyName}.")
+        return dialWithRetry(orderId, configuredSlot, ussdString)
+    }
 
-        // Step 3: dial, with retry on transient failure/timeout (not on
+    /**
+     * Manual, agent-triggered execution from the Orders list — used when an
+     * agent wants to force a specific SIM (e.g. the auto-matched SMS path
+     * didn't fire, or the recommended slot is temporarily unusable) rather
+     * than waiting for SmsReceiver to trigger [processMatchedOrder]. Still
+     * goes through verify-payment first so the backend generates the USSD
+     * string and the order state transitions the same way either path does;
+     * the only difference is the caller supplies `forcedSimSlot` instead of
+     * this resolving it from SimRoutingRepository/the template override.
+     */
+    suspend fun executeManually(orderId: String, forcedSimSlot: Int): DialResult {
+        val verifyResponse = try {
+            ApiClient.service.verifyPayment(orderId, VerifyPaymentRequest(null))
+        } catch (e: Exception) {
+            val outcome = if (RetryClassifier.isRetryable(e)) DialOutcome.NETWORK_UNAVAILABLE else DialOutcome.FAILED
+            DiagnosticsLog.record("manual_execute", "Could not reach server (order $orderId): ${e.message}")
+            return DialResult(outcome, "Could not reach server to verify payment: ${e.message}")
+        }
+        val order = verifyResponse.body() ?: return DialResult(DialOutcome.FAILED, "Verify-payment returned no order.")
+        val ussdString = order.ussdGenerated
+            ?: return DialResult(DialOutcome.FAILED, "No USSD template matched this order — check USSD Services in the dashboard.")
+        return dialWithRetry(orderId, forcedSimSlot, ussdString)
+    }
+
+    private suspend fun dialWithRetry(orderId: String, simSlot: Int, ussdString: String): DialResult {
+        val subscriptionId = dialer.subscriptionIdForSlot(simSlot)
+            ?: return DialResult(DialOutcome.NO_SIM_PRESENT, "SIM $simSlot isn't physically inserted on this device.")
+
+        // Retry on transient failure/timeout (not on
         // NO_SIM_CONFIGURED/NO_SIM_PRESENT/PERMISSION_DENIED — those need a
         // human to fix, retrying won't help and would just waste USSD
         // sessions with the carrier).
         var lastResult: DialResult = DialResult(DialOutcome.FAILED, "Not attempted")
         for (attempt in 1..maxAttempts) {
-            val attemptId = startDialAttemptLog(orderId, configuredSlot, ussdString, attempt)
+            val attemptId = startDialAttemptLog(orderId, simSlot, ussdString, attempt)
 
             lastResult = dialer.dial(subscriptionId, ussdString)
-            reportDialResult(orderId, configuredSlot, ussdString, attempt, attemptId, lastResult)
+            reportDialResult(orderId, simSlot, ussdString, attempt, attemptId, lastResult)
 
             if (lastResult.outcome == DialOutcome.SUCCESS) return lastResult
             if (lastResult.outcome != DialOutcome.FAILED && lastResult.outcome != DialOutcome.TIMEOUT) {

@@ -6,6 +6,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
@@ -16,12 +19,16 @@ import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
 import java.util.concurrent.TimeUnit
 
+enum class ConnectionState { CONNECTING, CONNECTED, DISCONNECTED }
+
 /**
  * Keeps order status live via Server-Sent Events against `GET /orders/stream`
  * — mirrors agent-app's RealtimeClient (no shared module exists between the
  * two apps). The server only ever sends a bare {"type":...,"orderId":...} —
  * this just signals the caller to re-fetch, same philosophy as the agent
- * side, so no server-side per-customer filtering is needed.
+ * side, so no server-side per-customer filtering is needed. [state] lets the
+ * owning screen show a real Connected/Disconnected/Reconnecting indicator
+ * instead of only reacting to events silently.
  */
 class RealtimeClient(private val path: String, private val onOrderEvent: () -> Unit) {
 
@@ -32,8 +39,12 @@ class RealtimeClient(private val path: String, private val onOrderEvent: () -> U
     private var scope: CoroutineScope? = null
     private var retryDelayMs = 2_000L
 
+    private val _state = MutableStateFlow(ConnectionState.CONNECTING)
+    val state: StateFlow<ConnectionState> = _state.asStateFlow()
+
     fun connect() {
         disconnect()
+        _state.value = ConnectionState.CONNECTING
         val newScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         scope = newScope
         open(newScope)
@@ -52,6 +63,7 @@ class RealtimeClient(private val path: String, private val onOrderEvent: () -> U
             object : EventSourceListener() {
                 override fun onOpen(eventSource: EventSource, response: Response) {
                     retryDelayMs = 2_000L
+                    _state.value = ConnectionState.CONNECTED
                 }
 
                 override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
@@ -59,10 +71,12 @@ class RealtimeClient(private val path: String, private val onOrderEvent: () -> U
                 }
 
                 override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
+                    _state.value = ConnectionState.DISCONNECTED
                     scheduleReconnect(scope)
                 }
 
                 override fun onClosed(eventSource: EventSource) {
+                    _state.value = ConnectionState.DISCONNECTED
                     scheduleReconnect(scope)
                 }
             }
@@ -74,7 +88,10 @@ class RealtimeClient(private val path: String, private val onOrderEvent: () -> U
         scope.launch {
             delay(retryDelayMs)
             retryDelayMs = (retryDelayMs * 2).coerceAtMost(30_000L)
-            if (isActive) open(scope)
+            if (isActive) {
+                _state.value = ConnectionState.CONNECTING
+                open(scope)
+            }
         }
     }
 
@@ -83,5 +100,6 @@ class RealtimeClient(private val path: String, private val onOrderEvent: () -> U
         eventSource = null
         scope?.cancel()
         scope = null
+        _state.value = ConnectionState.DISCONNECTED
     }
 }

@@ -62,6 +62,9 @@ class AgentBackgroundService : Service() {
         realtimeClient = RealtimeClient(path = "agent/orders/stream") {
             AgentEventBus.emitOrderEvent()
         }.also { it.connect() }
+        newScope.launch {
+            realtimeClient?.state?.collect { AgentEventBus.setConnectionState(it) }
+        }
 
         // SimRoutingRepository.refresh() previously had zero call sites anywhere in
         // the app — its cache was never populated on a real install, so simSlotFor()
