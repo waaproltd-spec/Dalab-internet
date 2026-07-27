@@ -5,7 +5,7 @@ import com.dalab.internet.customer.network.OtpRequestBody
 import com.dalab.internet.customer.network.OtpVerifyBody
 
 sealed class OtpRequestResult {
-    object Sent : OtpRequestResult()
+    data class Sent(val debugCode: String?) : OtpRequestResult()
     data class Failure(val message: String) : OtpRequestResult()
 }
 
@@ -18,7 +18,7 @@ object AuthRepository {
     suspend fun requestOtp(phone: String): OtpRequestResult {
         return try {
             val response = ApiClient.service.requestOtp(OtpRequestBody(phone))
-            if (response.isSuccessful) OtpRequestResult.Sent
+            if (response.isSuccessful) OtpRequestResult.Sent(response.body()?.debugCode)
             else OtpRequestResult.Failure("Couldn't send a code to that number. Check it and try again.")
         } catch (e: Exception) {
             OtpRequestResult.Failure("Couldn't reach the server. Check your connection.")

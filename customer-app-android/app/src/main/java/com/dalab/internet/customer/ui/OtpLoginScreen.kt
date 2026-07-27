@@ -1,13 +1,33 @@
 package com.dalab.internet.customer.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.dalab.internet.customer.auth.AuthRepository
 import com.dalab.internet.customer.auth.OtpRequestResult
 import com.dalab.internet.customer.auth.OtpVerifyResult
@@ -17,6 +37,12 @@ import com.dalab.internet.customer.network.UpdateProfileRequest
 import kotlinx.coroutines.launch
 
 private enum class OtpStep { PHONE, CODE, NAME }
+
+// Same DALAB brand colors used elsewhere in this app (HomeScreen's banner gradient).
+private val DalabIndigo = Color(0xFF1D2E8C)
+private val DalabGreen = Color(0xFF16A34A)
+private val ScreenBackground = Color(0xFFF6F7FC)
+private val FieldBorder = Color(0xFFD8DCEF)
 
 /**
  * Account creation and login are the same flow here, matching the backend:
@@ -32,66 +58,109 @@ fun OtpLoginScreen(onLoggedIn: () -> Unit) {
     var name by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var debugCode by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(28.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .background(ScreenBackground)
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 28.dp, vertical = 40.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
     ) {
-        Text("DALAB INTERNET", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(4.dp))
+        BrandHeader()
+        Spacer(Modifier.height(28.dp))
+
+        Text(
+            "Internet you can trust.",
+            style = TextStyle(
+                brush = Brush.horizontalGradient(listOf(DalabIndigo, DalabGreen)),
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(10.dp))
         Text(
             when (step) {
                 OtpStep.PHONE -> "Enter your phone number to continue"
                 OtpStep.CODE -> "Enter the code we texted you"
                 OtpStep.NAME -> "What should we call you?"
             },
-            style = MaterialTheme.typography.bodyMedium,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = Color(0xFF2B2F42),
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(28.dp))
 
         when (step) {
             OtpStep.PHONE -> {
-                OutlinedTextField(
+                DalabTextField(
                     value = phone,
                     onValueChange = { phone = it },
-                    label = { Text("Phone number") },
-                    singleLine = true,
-                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Phone),
-                    modifier = Modifier.fillMaxWidth(),
+                    label = "Phone number",
+                    placeholder = "252 6X XXX XXXX",
+                    keyboardType = KeyboardType.Phone,
+                    leadingChip = { CountryChip() },
                 )
             }
             OtpStep.CODE -> {
-                Text("Code sent to $phone", style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = code,
-                    onValueChange = { code = it },
-                    label = { Text("Verification code") },
-                    singleLine = true,
-                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                Text(
+                    "Code sent to $phone",
+                    fontSize = 13.sp,
+                    color = Color(0xFF6B7094),
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(Modifier.height(16.dp))
+
+                if (debugCode != null) {
+                    DebugCodeCard(debugCode!!)
+                    Spacer(Modifier.height(18.dp))
+                }
+
+                Text(
+                    "Confirmation code",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color(0xFF2B2F42),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Spacer(Modifier.height(8.dp))
+                OtpBoxInput(value = code, onValueChange = { code = it }, length = 4)
             }
             OtpStep.NAME -> {
-                OutlinedTextField(
+                DalabTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("Your name") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    label = "Your name",
+                    placeholder = "Your name",
+                    keyboardType = KeyboardType.Text,
                 )
             }
         }
 
         Spacer(Modifier.height(20.dp))
         if (error != null) {
-            Text(error!!, color = MaterialTheme.colorScheme.error)
+            Text(error!!, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(12.dp))
         }
 
-        Button(
+        GradientButton(
+            text = if (loading) "Please wait..." else when (step) {
+                OtpStep.PHONE -> "Send code"
+                OtpStep.CODE -> "Verify"
+                OtpStep.NAME -> "Continue"
+            },
+            enabled = !loading && when (step) {
+                OtpStep.PHONE -> phone.isNotBlank()
+                OtpStep.CODE -> code.isNotBlank()
+                OtpStep.NAME -> name.isNotBlank()
+            },
             onClick = {
                 error = null
                 loading = true
@@ -99,7 +168,10 @@ fun OtpLoginScreen(onLoggedIn: () -> Unit) {
                     when (step) {
                         OtpStep.PHONE -> {
                             when (val result = AuthRepository.requestOtp(phone.trim())) {
-                                is OtpRequestResult.Sent -> step = OtpStep.CODE
+                                is OtpRequestResult.Sent -> {
+                                    debugCode = result.debugCode
+                                    step = OtpStep.CODE
+                                }
                                 is OtpRequestResult.Failure -> error = result.message
                             }
                         }
@@ -125,28 +197,160 @@ fun OtpLoginScreen(onLoggedIn: () -> Unit) {
                     loading = false
                 }
             },
-            enabled = !loading && when (step) {
-                OtpStep.PHONE -> phone.isNotBlank()
-                OtpStep.CODE -> code.isNotBlank()
-                OtpStep.NAME -> name.isNotBlank()
-            },
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(
-                if (loading) "Please wait..."
-                else when (step) {
-                    OtpStep.PHONE -> "Send code"
-                    OtpStep.CODE -> "Verify"
-                    OtpStep.NAME -> "Continue"
-                }
-            )
-        }
+        )
 
         if (step == OtpStep.CODE) {
-            Spacer(Modifier.height(12.dp))
-            TextButton(onClick = { step = OtpStep.PHONE; code = "" }) {
-                Text("Use a different number")
+            Spacer(Modifier.height(14.dp))
+            TextButton(onClick = { step = OtpStep.PHONE; code = ""; debugCode = null }) {
+                Text("Use a different number", color = DalabIndigo, fontWeight = FontWeight.SemiBold)
             }
         }
+    }
+}
+
+@Composable
+private fun BrandHeader() {
+    Box(
+        modifier = Modifier
+            .size(64.dp)
+            .clip(CircleShape)
+            .background(Brush.horizontalGradient(listOf(DalabIndigo, DalabGreen))),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(Icons.Filled.Wifi, contentDescription = null, tint = Color.White, modifier = Modifier.size(32.dp))
+    }
+    Spacer(Modifier.height(14.dp))
+    Text("DALAB", fontSize = 32.sp, fontWeight = FontWeight.Black, color = DalabIndigo, letterSpacing = 0.5.sp)
+    Text("INTERNET", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = DalabGreen, letterSpacing = 4.sp)
+}
+
+@Composable
+private fun CountryChip() {
+    Surface(
+        color = Color(0xFFEFF1FA),
+        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier.padding(start = 4.dp, end = 6.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+            Text("🇸🇴", fontSize = 15.sp)
+            Spacer(Modifier.width(6.dp))
+            Text("+252", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF2B2F42))
+        }
+    }
+}
+
+@Composable
+private fun DalabTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    placeholder: String,
+    keyboardType: KeyboardType,
+    leadingChip: (@Composable () -> Unit)? = null,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        placeholder = { Text(placeholder, color = Color(0xFFA6ABC9)) },
+        singleLine = true,
+        leadingIcon = leadingChip,
+        shape = RoundedCornerShape(14.dp),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = DalabIndigo,
+            unfocusedBorderColor = FieldBorder,
+        ),
+        keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+        modifier = Modifier.fillMaxWidth(),
+    )
+}
+
+@Composable
+private fun DebugCodeCard(code: String) {
+    Surface(
+        color = Color(0xFFEFF3FF),
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text("Your code is", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = DalabIndigo)
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                code.forEach { digit ->
+                    Box(
+                        modifier = Modifier
+                            .size(42.dp)
+                            .background(Color.White, RoundedCornerShape(10.dp)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(digit.toString(), fontSize = 19.sp, fontWeight = FontWeight.Bold, color = DalabIndigo)
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text("Enter this code below", fontSize = 11.5.sp, color = Color(0xFF6B7094))
+        }
+    }
+}
+
+@Composable
+private fun OtpBoxInput(value: String, onValueChange: (String) -> Unit, length: Int) {
+    val focusRequester = remember { FocusRequester() }
+    Box(modifier = Modifier.fillMaxWidth()) {
+        BasicTextField(
+            value = value,
+            onValueChange = { if (it.length <= length && it.all(Char::isDigit)) onValueChange(it) },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+            textStyle = TextStyle(color = Color.Transparent),
+            cursorBrush = SolidColor(Color.Transparent),
+            modifier = Modifier
+                .fillMaxWidth()
+                .focusRequester(focusRequester),
+            decorationBox = {
+                Row(horizontalArrangement = Arrangement.SpaceEvenly, modifier = Modifier.fillMaxWidth()) {
+                    repeat(length) { i ->
+                        val char = value.getOrNull(i)?.toString() ?: ""
+                        val isNext = i == value.length
+                        Box(
+                            modifier = Modifier
+                                .size(52.dp)
+                                .border(
+                                    width = if (isNext) 2.dp else 1.dp,
+                                    color = if (isNext) DalabIndigo else FieldBorder,
+                                    shape = RoundedCornerShape(12.dp),
+                                )
+                                .background(Color.White, RoundedCornerShape(12.dp)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(char, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = DalabIndigo)
+                        }
+                    }
+                }
+            },
+        )
+    }
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+}
+
+@Composable
+private fun GradientButton(text: String, enabled: Boolean, onClick: () -> Unit) {
+    val gradient = if (enabled) {
+        Brush.horizontalGradient(listOf(DalabIndigo, DalabGreen))
+    } else {
+        Brush.horizontalGradient(listOf(Color(0xFFBDC2E0), Color(0xFFBDC2E0)))
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(54.dp)
+            .clip(RoundedCornerShape(28.dp))
+            .background(gradient)
+            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
     }
 }
