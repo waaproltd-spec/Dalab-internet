@@ -491,6 +491,33 @@ function formatDateTime(value) {
   return d.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+// Generic client-side CSV export — every export button in this app builds
+// rows from data it already fetched, so no backend export endpoint is
+// needed; this just serializes and triggers a browser download.
+function exportToCsv(filename, columns, rows) {
+  const escapeCell = (value) => {
+    const s = value == null ? "" : String(value);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const header = columns.map((c) => escapeCell(c.label)).join(",");
+  const body = rows.map((row) => columns.map((c) => escapeCell(c.value(row))).join(",")).join("\n");
+  const blob = new Blob([header + "\n" + body], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+function formatDurationMs(ms) {
+  if (ms == null || Number.isNaN(ms)) return "—";
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
 const ORDER_STATUS_META = {
   pending: { label: "Pending", tone: "amber" },
   in_progress: { label: "In Progress", tone: "blue" },
@@ -2601,9 +2628,25 @@ function UssdTemplatesPanel({ companies, canManage }) {
   const [companyFilter, setCompanyFilter] = useState("all");
   const [deviceFilter, setDeviceFilter] = useState("all");
   const [simSlotFilter, setSimSlotFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState(null); // 'new' | template object | null
   const [form, setForm] = useState({});
+
+  const resetFilters = () => {
+    setCompanyFilter("all");
+    setDeviceFilter("all");
+    setSimSlotFilter("all");
+    setStatusFilter("all");
+    setSearch("");
+  };
+  const activeFilterChips = [
+    search.trim() && { key: "search", label: `Search: ${search.trim()}`, clear: () => setSearch("") },
+    companyFilter !== "all" && { key: "company", label: `Company: ${companies.find((c) => c.id === companyFilter)?.name || companyFilter}`, clear: () => setCompanyFilter("all") },
+    statusFilter !== "all" && { key: "status", label: `Status: ${statusFilter === "enabled" ? "Active" : "Inactive"}`, clear: () => setStatusFilter("all") },
+    deviceFilter !== "all" && { key: "device", label: `Device: ${devices.find((d) => d.id === deviceFilter)?.name || deviceFilter}`, clear: () => setDeviceFilter("all") },
+    simSlotFilter !== "all" && { key: "sim", label: `SIM ${simSlotFilter}`, clear: () => setSimSlotFilter("all") },
+  ].filter(Boolean);
 
   const fetchTemplates = async () => {
     if (!DALAB_API_ENABLED) return;
@@ -2622,9 +2665,13 @@ function UssdTemplatesPanel({ companies, canManage }) {
 
   const shown = ussdTemplates.filter((t) => {
     if (companyFilter !== "all" && t.companyId !== companyFilter) return false;
+    if (statusFilter !== "all" && t.status !== statusFilter) return false;
     if (deviceFilter !== "all" && (t.deviceId || "") !== deviceFilter) return false;
     if (simSlotFilter !== "all" && String(t.simSlot ?? "") !== simSlotFilter) return false;
-    if (search.trim() && !t.serviceName.toLowerCase().includes(search.trim().toLowerCase())) return false;
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      if (!t.serviceName.toLowerCase().includes(q) && !t.ussdCode.toLowerCase().includes(q)) return false;
+    }
     return true;
   });
   const grouped = companies.map((c) => ({ company: c, templates: shown.filter((t) => t.companyId === c.id) })).filter((g) => g.templates.length > 0 || companyFilter === g.company.id);
@@ -2634,6 +2681,12 @@ function UssdTemplatesPanel({ companies, canManage }) {
     setEditing("new");
   };
   const openEdit = (t) => { setForm({ ...t, deviceId: t.deviceId || "", simSlot: t.simSlot ?? "" }); setEditing(t.id); };
+  // Pre-fills the "new template" form from an existing one — still requires
+  // Save to actually create it, so this never silently duplicates anything.
+  const duplicate = (t) => {
+    setForm({ companyId: t.companyId, serviceName: `${t.serviceName} (Copy)`, ussdCode: t.ussdCode, notes: t.notes, deviceId: t.deviceId || "", simSlot: t.simSlot ?? "" });
+    setEditing("new");
+  };
 
   const save = async () => {
     if (!form.serviceName || !form.ussdCode) return;
@@ -2676,7 +2729,30 @@ function UssdTemplatesPanel({ companies, canManage }) {
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 12, flexWrap: "wrap" }}>
         {!canManage && <Badge tone="amber">View only — USSD templates can only be changed by a Super Admin</Badge>}
-        {canManage && <Button icon={Plus} onClick={openNew} style={{ marginLeft: "auto" }}>Add template</Button>}
+        <div style={{ display: "flex", gap: 10, marginLeft: "auto" }}>
+          <Button
+            variant="ghost"
+            icon={Download}
+            onClick={() => exportToCsv(
+              `dalab-ussd-templates-${Date.now()}.csv`,
+              [
+                { label: "Service/Package Name", value: (t) => t.serviceName },
+                { label: "Provider", value: (t) => companies.find((c) => c.id === t.companyId)?.name || t.companyId },
+                { label: "USSD Template", value: (t) => t.ussdCode },
+                { label: "Assigned Device", value: (t) => devices.find((d) => d.id === t.deviceId)?.name || "" },
+                { label: "SIM Slot", value: (t) => t.simSlot ?? "" },
+                { label: "Status", value: (t) => t.status },
+                { label: "Notes", value: (t) => t.notes },
+                { label: "Created", value: (t) => t.createdAt },
+                { label: "Last Updated", value: (t) => t.updatedAt },
+              ],
+              shown,
+            )}
+          >
+            Export CSV
+          </Button>
+          {canManage && <Button icon={Plus} onClick={openNew}>Add template</Button>}
+        </div>
       </div>
 
       <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
@@ -2684,11 +2760,16 @@ function UssdTemplatesPanel({ companies, canManage }) {
           <Search size={14} color={MUTE} style={{ position: "absolute", left: 10, top: 10 }} />
           <input
             style={{ ...inputStyle, paddingLeft: 30, width: "100%" }}
-            placeholder="Search by service/package name"
+            placeholder="Search by package/service name or USSD template"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={{ ...inputStyle, width: 150 }}>
+          <option value="all">All statuses</option>
+          <option value="enabled">Active</option>
+          <option value="disabled">Inactive</option>
+        </select>
         <select value={deviceFilter} onChange={(e) => setDeviceFilter(e.target.value)} style={{ ...inputStyle, width: 170 }}>
           <option value="all">All devices</option>
           {devices.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
@@ -2698,7 +2779,24 @@ function UssdTemplatesPanel({ companies, canManage }) {
           <option value="1">SIM 1</option>
           <option value="2">SIM 2</option>
         </select>
+        <Button variant="ghost" onClick={resetFilters}>Reset Filters</Button>
       </div>
+
+      {activeFilterChips.length > 0 && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+          <span style={{ fontSize: 12, color: MUTE, fontWeight: 700 }}>Active filters:</span>
+          {activeFilterChips.map((chip) => (
+            <span key={chip.key} style={{
+              display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", borderRadius: 16,
+              background: INDIGO_SOFT, color: INDIGO, fontSize: 12, fontWeight: 700,
+            }}>
+              {chip.label}
+              <X size={12} style={{ cursor: "pointer" }} onClick={chip.clear} />
+            </span>
+          ))}
+          <button onClick={resetFilters} style={{ background: "none", border: "none", color: MUTE, fontSize: 12, cursor: "pointer", textDecoration: "underline" }}>Clear all</button>
+        </div>
+      )}
 
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
         <button onClick={() => setCompanyFilter("all")} style={{
@@ -2723,7 +2821,7 @@ function UssdTemplatesPanel({ companies, canManage }) {
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr style={{ background: "#FAFBFF" }}>
-                  {["Service Name", "USSD Code", "Device & SIM", "Status", "Notes", ""].map((h) => (
+                  {["Service Name", "USSD Code", "Device & SIM", "Status", "Notes", "Created", "Last Updated", ""].map((h) => (
                     <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
                   ))}
                 </tr>
@@ -2738,16 +2836,21 @@ function UssdTemplatesPanel({ companies, canManage }) {
                     </td>
                     <td style={{ padding: "10px 14px" }}><Badge tone={t.status === "enabled" ? "green" : "gray"}>{t.status === "enabled" ? "Enabled" : "Disabled"}</Badge></td>
                     <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE }}>{t.notes || "—"}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(t.createdAt)}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(t.updatedAt)}</td>
                     <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
                       {canManage && (
                         <>
                           <button onClick={() => toggleStatus(t)} title={t.status === "enabled" ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
                             <Power size={14} color={t.status === "enabled" ? GREEN : "#C81E2C"} />
                           </button>
-                          <button onClick={() => openEdit(t)} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
+                          <button onClick={() => openEdit(t)} title="Edit" style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
                             <Pencil size={14} color={INDIGO} />
                           </button>
-                          <button onClick={() => remove(t)} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                          <button onClick={() => duplicate(t)} title="Duplicate" style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
+                            <Copy size={14} color={SLATE} />
+                          </button>
+                          <button onClick={() => remove(t)} title="Delete" style={{ background: "none", border: "none", cursor: "pointer" }}>
                             <Trash2 size={14} color="#C81E2C" />
                           </button>
                         </>
@@ -2756,7 +2859,7 @@ function UssdTemplatesPanel({ companies, canManage }) {
                   </tr>
                 ))}
                 {templates.length === 0 && (
-                  <tr><td colSpan={6} style={{ padding: 16, textAlign: "center", fontSize: 12, color: MUTE }}>No templates for {company.name} yet.</td></tr>
+                  <tr><td colSpan={8} style={{ padding: 16, textAlign: "center", fontSize: 12, color: MUTE }}>No templates for {company.name} yet.</td></tr>
                 )}
               </tbody>
             </table>
@@ -3156,6 +3259,30 @@ function ExecutionLogs({ companies }) {
             <Radio size={12} color={GREEN} /> Auto-refreshing every 10s
           </span>
           {lastSynced && <span style={{ fontSize: 11, color: MUTE }}>Synced {lastSynced.toLocaleTimeString()}</span>}
+          <Button
+            variant="ghost"
+            icon={Download}
+            onClick={() => exportToCsv(
+              `dalab-execution-logs-${Date.now()}.csv`,
+              [
+                { label: "Order ID", value: (r) => r.orderId },
+                { label: "Customer Phone", value: (r) => r.customerPhone },
+                { label: "Provider", value: (r) => r.companyName },
+                { label: "Package", value: (r) => r.packageName },
+                { label: "USSD Command", value: (r) => r.ussdString },
+                { label: "SIM Slot", value: (r) => r.simSlot },
+                { label: "Attempt #", value: (r) => r.attemptNumber },
+                { label: "Start Time", value: (r) => r.createdAt },
+                { label: "End Time", value: (r) => r.completedAt },
+                { label: "Duration", value: (r) => (r.completedAt ? formatDurationMs(new Date(r.completedAt) - new Date(r.createdAt)) : "") },
+                { label: "Status", value: (r) => r.status },
+                { label: "Failure Reason", value: (r) => r.responseMessage },
+              ],
+              rows,
+            )}
+          >
+            Export CSV
+          </Button>
           <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={fetchLogs} disabled={loading}>Refresh</Button>
         </div>
       </div>
@@ -3179,7 +3306,7 @@ function ExecutionLogs({ companies }) {
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: "#FAFBFF" }}>
-              {["Transaction ID", "Customer Phone", "Provider", "Service/Package", "USSD Code", "SIM Slot", "Executed", "Status", "Attempts", ""].map((h) => (
+              {["Transaction ID", "Customer Phone", "Provider", "Service/Package", "USSD Code", "SIM Slot", "Start Time", "End Time", "Duration", "Status", "Attempts", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
             </tr>
@@ -3188,6 +3315,7 @@ function ExecutionLogs({ companies }) {
             {grouped.map(({ orderId, attempts }) => {
               const latest = attempts[attempts.length - 1];
               const isOpen = !!expanded[orderId];
+              const durationMs = latest.completedAt ? new Date(latest.completedAt) - new Date(latest.createdAt) : null;
               return (
                 <React.Fragment key={orderId}>
                   <tr style={{ borderTop: `1px solid ${BORDER}`, cursor: "pointer" }} onClick={() => setExpanded((prev) => ({ ...prev, [orderId]: !prev[orderId] }))}>
@@ -3198,6 +3326,8 @@ function ExecutionLogs({ companies }) {
                     <td style={{ padding: "10px 14px", fontSize: 11.5, color: SLATE, fontFamily: "monospace" }}>{latest.ussdString}</td>
                     <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE }}>SIM {latest.simSlot ?? "—"}</td>
                     <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(latest.createdAt)}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{latest.completedAt ? formatDateTime(latest.completedAt) : "—"}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDurationMs(durationMs)}</td>
                     <td style={{ padding: "10px 14px" }}>
                       <Badge tone={latest.status === "success" ? "green" : latest.status === "failed" ? "red" : "amber"}>
                         {latest.status === "success" ? "Success" : latest.status === "failed" ? "Failed" : "Pending"}
@@ -3211,14 +3341,15 @@ function ExecutionLogs({ companies }) {
                   </tr>
                   {isOpen && attempts.map((a) => (
                     <tr key={a.id} style={{ background: "#FAFBFF" }}>
-                      <td colSpan={10} style={{ padding: "8px 14px 8px 34px" }}>
+                      <td colSpan={12} style={{ padding: "8px 14px 8px 34px" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 14, fontSize: 11.5, flexWrap: "wrap" }}>
                           <Badge tone={a.status === "success" ? "green" : a.status === "failed" ? "red" : "amber"}>{a.status}</Badge>
                           <span style={{ color: MUTE }}>attempt #{a.attemptNumber}</span>
                           <span style={{ color: MUTE }}>SIM {a.simSlot ?? "—"}</span>
                           <span style={{ color: SLATE, fontFamily: "monospace" }}>{a.ussdString}</span>
                           {a.responseMessage && <span style={{ color: "#C81E2C" }}>{a.responseMessage}</span>}
-                          <span style={{ color: MUTE, marginLeft: "auto" }}>{formatDateTime(a.createdAt)}</span>
+                          <span style={{ color: MUTE }}>{formatDateTime(a.createdAt)} → {a.completedAt ? formatDateTime(a.completedAt) : "—"}</span>
+                          <span style={{ color: MUTE, marginLeft: "auto" }}>{formatDurationMs(a.completedAt ? new Date(a.completedAt) - new Date(a.createdAt) : null)}</span>
                         </div>
                       </td>
                     </tr>
@@ -3227,7 +3358,7 @@ function ExecutionLogs({ companies }) {
               );
             })}
             {grouped.length === 0 && !loading && (
-              <tr><td colSpan={10} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No USSD dial attempts recorded yet.</td></tr>
+              <tr><td colSpan={12} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No USSD dial attempts recorded yet.</td></tr>
             )}
           </tbody>
         </table>
