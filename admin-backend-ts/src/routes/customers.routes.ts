@@ -97,3 +97,20 @@ customersRouter.put("/customer/profile", requireAuth("customer"), async (req, re
   await query(`UPDATE customers SET name=$1 WHERE id=$2`, [name, req.auth!.sub]);
   sendJson(res, 200, await queryOne(`SELECT ${CUSTOMER_PROFILE_COLUMNS} FROM customers WHERE id=$1`, [req.auth!.sub]));
 });
+
+// Same ON DELETE RESTRICT constraint as the admin delete route — a customer
+// with existing orders can't be hard-deleted without corrupting receipts/
+// reports, surfaced as a friendly 409 rather than a raw constraint error.
+customersRouter.delete("/customer/profile", requireAuth("customer"), async (req, res) => {
+  try {
+    await query(`DELETE FROM customers WHERE id=$1`, [req.auth!.sub]);
+    sendJson(res, 200, { deleted: true });
+  } catch (err: any) {
+    if (err?.code === "23503") {
+      return sendJson(res, 409, {
+        error: "Your account has existing orders and can't be deleted. Please contact support.",
+      });
+    }
+    throw err;
+  }
+});

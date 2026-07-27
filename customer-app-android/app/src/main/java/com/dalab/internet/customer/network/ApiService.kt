@@ -51,6 +51,9 @@ interface ApiService {
     @PUT("customer/profile")
     suspend fun updateProfile(@Body body: UpdateProfileRequest): Response<CustomerProfile>
 
+    @DELETE("customer/profile")
+    suspend fun deleteAccount(): Response<Unit>
+
     @GET("companies")
     suspend fun getCompanies(): Response<List<Company>>
 
