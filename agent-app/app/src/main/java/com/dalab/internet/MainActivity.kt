@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.PointOfSale
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Sell
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -41,6 +42,7 @@ import com.dalab.internet.ui.NewSaleScreen
 import com.dalab.internet.ui.OrderDetailScreen
 import com.dalab.internet.ui.OrdersListScreen
 import com.dalab.internet.ui.PackagesScreen
+import com.dalab.internet.ui.PermissionsStatusScreen
 import com.dalab.internet.ui.ReportsScreen
 import com.dalab.internet.ui.SmsPermissionScreen
 import com.dalab.internet.ui.TransactionHistoryScreen
@@ -79,7 +81,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, LOGIN, DEVICE_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, DIAGNOSTICS }
+private enum class Screen { PERMISSIONS, LOGIN, DEVICE_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, DIAGNOSTICS, PERMISSIONS_STATUS }
 private enum class HomeTab { ORDERS, SALES, CUSTOMERS, REPORTS, MORE }
 
 @Composable
@@ -142,6 +144,7 @@ private fun AgentApp() {
             onOpenTransactions = { screen = Screen.TRANSACTIONS },
             onOpenDeviceSetup = { screen = Screen.DEVICE_SETUP },
             onOpenDiagnostics = { screen = Screen.DIAGNOSTICS },
+            onOpenPermissionsStatus = { screen = Screen.PERMISSIONS_STATUS },
             onLogout = {
                 AuthRepository.logout()
                 AgentBackgroundService.stop(context)
@@ -162,6 +165,8 @@ private fun AgentApp() {
         Screen.TRANSACTIONS -> TransactionHistoryScreen(onBack = { screen = Screen.HOME })
 
         Screen.DIAGNOSTICS -> DiagnosticsScreen(onBack = { screen = Screen.HOME })
+
+        Screen.PERMISSIONS_STATUS -> PermissionsStatusScreen(onBack = { screen = Screen.HOME })
     }
 }
 
@@ -180,6 +185,7 @@ private fun AgentHome(
     onOpenTransactions: () -> Unit,
     onOpenDeviceSetup: () -> Unit,
     onOpenDiagnostics: () -> Unit,
+    onOpenPermissionsStatus: () -> Unit,
     onLogout: () -> Unit,
 ) {
     var tab by remember { mutableStateOf(HomeTab.ORDERS) }
@@ -231,6 +237,7 @@ private fun AgentHome(
                     onOpenTransactions = onOpenTransactions,
                     onOpenDeviceSetup = onOpenDeviceSetup,
                     onOpenDiagnostics = onOpenDiagnostics,
+                    onOpenPermissionsStatus = onOpenPermissionsStatus,
                     onLogout = onLogout,
                 )
             }
@@ -244,6 +251,7 @@ private fun MoreScreen(
     onOpenTransactions: () -> Unit,
     onOpenDeviceSetup: () -> Unit,
     onOpenDiagnostics: () -> Unit,
+    onOpenPermissionsStatus: () -> Unit,
     onLogout: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
@@ -273,6 +281,13 @@ private fun MoreScreen(
             supportingContent = { Text("Recent errors and automatic retries on this device") },
             leadingContent = { Icon(Icons.Filled.BugReport, contentDescription = null) },
             modifier = Modifier.clickable(onClick = onOpenDiagnostics),
+        )
+        Divider()
+        ListItem(
+            headlineContent = { Text("Permissions") },
+            supportingContent = { Text("SMS + background service status for this device") },
+            leadingContent = { Icon(Icons.Filled.Security, contentDescription = null) },
+            modifier = Modifier.clickable(onClick = onOpenPermissionsStatus),
         )
         Divider()
         ListItem(

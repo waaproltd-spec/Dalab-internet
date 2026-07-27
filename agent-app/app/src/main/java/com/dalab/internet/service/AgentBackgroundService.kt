@@ -53,6 +53,7 @@ class AgentBackgroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        isRunning = true
         startForeground(NOTIFICATION_ID, buildNotification())
 
         val newScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -87,6 +88,7 @@ class AgentBackgroundService : Service() {
         realtimeClient = null
         scope?.cancel()
         scope = null
+        isRunning = false
         super.onDestroy()
     }
 
@@ -206,6 +208,11 @@ class AgentBackgroundService : Service() {
         private const val HEARTBEAT_INTERVAL_MS = 60_000L
         private const val SIM_ROUTING_REFRESH_INTERVAL_MS = 5 * 60_000L
         private const val QUEUE_DRAIN_INTERVAL_MS = 2 * 60_000L
+
+        /** Read from PermissionsStatusScreen to show "Foreground Service: Active/Inactive". */
+        @Volatile
+        var isRunning: Boolean = false
+            private set
 
         fun start(context: Context) {
             val intent = Intent(context, AgentBackgroundService::class.java)
