@@ -81,13 +81,13 @@ fun HomeScreen(onOpenCompany: (Company) -> Unit) {
 
     Box(modifier = Modifier.fillMaxSize()) {
         LazyVerticalGrid(
-            columns = GridCells.Fixed(2),
+            columns = GridCells.Fixed(3),
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            item(span = { GridItemSpan(2) }) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
                 Column {
                     Text(greeting(), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(
@@ -112,7 +112,7 @@ fun HomeScreen(onOpenCompany: (Company) -> Unit) {
                 CompanyCard(company = company, onClick = { onOpenCompany(company) })
             }
 
-            item(span = { GridItemSpan(2) }) { Spacer(Modifier.height(72.dp)) }
+            item(span = { GridItemSpan(maxLineSpan) }) { Spacer(Modifier.height(72.dp)) }
         }
 
         FloatingActionButton(
