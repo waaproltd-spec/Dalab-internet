@@ -18,7 +18,7 @@ This is a monorepo containing every component of the system:
 ## Backend
 
 All frontends and both native Android apps point at `admin-backend-ts` —
-deployed at `https://dalab-admin-backend.onrender.com/` — see its README for
+deployed at `https://dalab-internet-2.onrender.com/` — see its README for
 setup, deployment (Render), and role model
 (`super_admin` / `admin` / `agent` / `customer`). The plain `backend/` package
 is legacy/reference only and should not be used alongside it.

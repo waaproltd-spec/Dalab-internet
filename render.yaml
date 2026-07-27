@@ -11,7 +11,7 @@ services:
       # allows (see admin-backend-ts/render.yaml), or dashboard logins will
       # fail with a CORS error even though the API itself is reachable.
       - key: VITE_API_BASE_URL
-        value: https://dalab-admin-backend.onrender.com
+        value: https://dalab-internet-2.onrender.com
     routes:
       - type: rewrite
         source: /*
