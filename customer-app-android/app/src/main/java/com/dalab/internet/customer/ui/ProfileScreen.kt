@@ -12,8 +12,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Chat
@@ -21,7 +23,6 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Logout
-import androidx.compose.material.icons.filled.ManageAccounts
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
@@ -39,7 +40,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import com.dalab.internet.customer.auth.SessionManager
 import com.dalab.internet.customer.network.ApiClient
 import com.dalab.internet.customer.network.UpdateProfileRequest
@@ -57,7 +57,6 @@ fun ProfileScreen(onLogout: () -> Unit, onOpenOrders: () -> Unit) {
     val context = LocalContext.current
     var customer by remember { mutableStateOf(SessionManager.currentCustomer()) }
     var showEditDialog by remember { mutableStateOf(false) }
-    var showAccountSheet by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var contentVisible by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -66,7 +65,12 @@ fun ProfileScreen(onLogout: () -> Unit, onOpenOrders: () -> Unit) {
     LaunchedEffect(Unit) { contentVisible = true }
 
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
-        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState()),
+        ) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -171,16 +175,24 @@ fun ProfileScreen(onLogout: () -> Unit, onOpenOrders: () -> Unit) {
                                     }
                                     context.startActivity(Intent.createChooser(shareIntent, "Share DALAB Internet"))
                                 },
-                            )
-                            ProfileMenuRow(
-                                icon = Icons.Filled.ManageAccounts,
-                                label = LocalizationManager.tr("Manage Account", "Maamul Xisaabta"),
-                                tint = DangerRed,
-                                onClick = { showAccountSheet = true },
                                 showDivider = false,
                             )
                         }
                     }
+
+                    Spacer(Modifier.height(16.dp))
+                    DangerActionCard(
+                        icon = Icons.Filled.Logout,
+                        label = LocalizationManager.tr("Log Out", "Ka Bax"),
+                        onClick = onLogout,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    DangerActionCard(
+                        icon = Icons.Filled.Delete,
+                        label = LocalizationManager.tr("Delete Account", "Tirtir Xisaabta"),
+                        onClick = { showDeleteConfirm = true },
+                    )
+                    Spacer(Modifier.height(16.dp))
                 }
             }
         }
@@ -241,23 +253,6 @@ fun ProfileScreen(onLogout: () -> Unit, onOpenOrders: () -> Unit) {
         )
     }
 
-    if (showAccountSheet) {
-        Dialog(onDismissRequest = { showAccountSheet = false }) {
-            Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
-                Column(modifier = Modifier.padding(vertical = 8.dp)) {
-                    AccountActionRow(icon = Icons.Filled.Logout, label = "Log out") {
-                        showAccountSheet = false
-                        onLogout()
-                    }
-                    AccountActionRow(icon = Icons.Filled.Delete, label = "Delete Account") {
-                        showAccountSheet = false
-                        showDeleteConfirm = true
-                    }
-                }
-            }
-        }
-    }
-
     if (showDeleteConfirm) {
         var deleting by remember { mutableStateOf(false) }
         var deleteError by remember { mutableStateOf<String?>(null) }
@@ -305,26 +300,30 @@ fun ProfileScreen(onLogout: () -> Unit, onOpenOrders: () -> Unit) {
     }
 }
 
+/** A full-width light-red card for a destructive action (Log Out / Delete Account), shown directly in the menu — no extra tap through a popup. */
 @Composable
-private fun AccountActionRow(icon: ImageVector, label: String, onClick: () -> Unit) {
+private fun DangerActionCard(icon: ImageVector, label: String, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(DangerRed.copy(alpha = 0.10f))
             .clickable(onClick = onClick)
-            .padding(horizontal = 20.dp, vertical = 16.dp),
+            .padding(horizontal = 18.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
             modifier = Modifier
-                .size(36.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(DangerRed.copy(alpha = 0.12f)),
+                .size(40.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(DangerRed.copy(alpha = 0.16f)),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(icon, contentDescription = null, tint = DangerRed, modifier = Modifier.size(18.dp))
+            Icon(icon, contentDescription = null, tint = DangerRed, modifier = Modifier.size(20.dp))
         }
         Spacer(Modifier.width(16.dp))
-        Text(label, fontSize = 15.sp, color = DangerRed)
+        Text(label, modifier = Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = DangerRed)
+        Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = DangerRed)
     }
 }
 
