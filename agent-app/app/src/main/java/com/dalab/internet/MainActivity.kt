@@ -16,6 +16,7 @@ import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Logout
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.PointOfSale
 import androidx.compose.material.icons.filled.Sell
@@ -24,10 +25,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.dalab.internet.auth.AuthRepository
+import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.auth.SessionManager
 import com.dalab.internet.data.Order
+import com.dalab.internet.service.AgentBackgroundService
 import com.dalab.internet.sms.SmsListenerState
 import com.dalab.internet.ui.CustomersScreen
+import com.dalab.internet.ui.DeviceSetupScreen
 import com.dalab.internet.ui.LoginScreen
 import com.dalab.internet.ui.NewSaleScreen
 import com.dalab.internet.ui.OrderDetailScreen
@@ -44,8 +48,13 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         SessionManager.init(this)
+        DeviceIdentity.init(this)
         SmsListenerState.init(this)
         createNotificationChannel()
+
+        if (SessionManager.isLoggedIn() && DeviceIdentity.isSet()) {
+            AgentBackgroundService.start(this)
+        }
 
         setContent {
             MaterialTheme {
@@ -64,7 +73,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, LOGIN, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS }
+private enum class Screen { PERMISSIONS, LOGIN, DEVICE_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS }
 private enum class HomeTab { ORDERS, SALES, CUSTOMERS, REPORTS, MORE }
 
 @Composable
@@ -76,13 +85,15 @@ private fun AgentApp() {
         ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
     }
 
+    fun homeOrDeviceSetup() = if (DeviceIdentity.isSet()) Screen.HOME else Screen.DEVICE_SETUP
+
     var hasSmsPermission by remember { mutableStateOf(smsGranted()) }
     var permanentlyDenied by remember { mutableStateOf(false) }
     var screen by remember {
         mutableStateOf(
             if (!hasSmsPermission) Screen.PERMISSIONS
             else if (!SessionManager.isLoggedIn()) Screen.LOGIN
-            else Screen.HOME
+            else homeOrDeviceSetup()
         )
     }
     var selectedOrder by remember { mutableStateOf<Order?>(null) }
@@ -92,7 +103,7 @@ private fun AgentApp() {
             hasSmsPermission = grantedMap.values.all { it }
             if (hasSmsPermission) {
                 SmsListenerState.setListening(true)
-                screen = if (SessionManager.isLoggedIn()) Screen.HOME else Screen.LOGIN
+                screen = if (SessionManager.isLoggedIn()) homeOrDeviceSetup() else Screen.LOGIN
             } else {
                 // If the user denied without checking "don't ask again", Android will
                 // still show the rationale next time; shouldShowRequestPermissionRationale
@@ -110,13 +121,25 @@ private fun AgentApp() {
             onRequestPermissions = { permissionLauncher.launch(SMS_PERMISSIONS) },
         )
 
-        Screen.LOGIN -> LoginScreen(onLoggedIn = { screen = Screen.HOME })
+        Screen.LOGIN -> LoginScreen(onLoggedIn = { screen = homeOrDeviceSetup() })
+
+        Screen.DEVICE_SETUP -> DeviceSetupScreen(
+            onDeviceSelected = {
+                AgentBackgroundService.start(context)
+                screen = Screen.HOME
+            },
+        )
 
         Screen.HOME -> AgentHome(
             onOpenOrder = { order -> selectedOrder = order; screen = Screen.ORDER_DETAIL },
             onOpenPackages = { screen = Screen.PACKAGES },
             onOpenTransactions = { screen = Screen.TRANSACTIONS },
-            onLogout = { AuthRepository.logout(); screen = Screen.LOGIN },
+            onOpenDeviceSetup = { screen = Screen.DEVICE_SETUP },
+            onLogout = {
+                AuthRepository.logout()
+                AgentBackgroundService.stop(context)
+                screen = Screen.LOGIN
+            },
         )
 
         Screen.ORDER_DETAIL -> selectedOrder?.let { order ->
@@ -146,6 +169,7 @@ private fun AgentHome(
     onOpenOrder: (Order) -> Unit,
     onOpenPackages: () -> Unit,
     onOpenTransactions: () -> Unit,
+    onOpenDeviceSetup: () -> Unit,
     onLogout: () -> Unit,
 ) {
     var tab by remember { mutableStateOf(HomeTab.ORDERS) }
@@ -195,6 +219,7 @@ private fun AgentHome(
                 HomeTab.MORE -> MoreScreen(
                     onOpenPackages = onOpenPackages,
                     onOpenTransactions = onOpenTransactions,
+                    onOpenDeviceSetup = onOpenDeviceSetup,
                     onLogout = onLogout,
                 )
             }
@@ -203,7 +228,12 @@ private fun AgentHome(
 }
 
 @Composable
-private fun MoreScreen(onOpenPackages: () -> Unit, onOpenTransactions: () -> Unit, onLogout: () -> Unit) {
+private fun MoreScreen(
+    onOpenPackages: () -> Unit,
+    onOpenTransactions: () -> Unit,
+    onOpenDeviceSetup: () -> Unit,
+    onLogout: () -> Unit,
+) {
     Column(modifier = Modifier.fillMaxSize()) {
         ListItem(
             headlineContent = { Text("Packages") },
@@ -217,6 +247,13 @@ private fun MoreScreen(onOpenPackages: () -> Unit, onOpenTransactions: () -> Uni
             supportingContent = { Text("Orders you've completed") },
             leadingContent = { Icon(Icons.Filled.History, contentDescription = null) },
             modifier = Modifier.clickable(onClick = onOpenTransactions),
+        )
+        Divider()
+        ListItem(
+            headlineContent = { Text("Device") },
+            supportingContent = { Text(DeviceIdentity.deviceName() ?: "Choose which registered device this phone is") },
+            leadingContent = { Icon(Icons.Filled.PhoneAndroid, contentDescription = null) },
+            modifier = Modifier.clickable(onClick = onOpenDeviceSetup),
         )
         Divider()
         ListItem(

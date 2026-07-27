@@ -1,6 +1,7 @@
 package com.dalab.internet
 
 import android.app.Application
+import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.auth.SessionManager
 import com.dalab.internet.sms.SmsListenerState
 
@@ -15,6 +16,7 @@ class DalabAgentApp : Application() {
     override fun onCreate() {
         super.onCreate()
         SessionManager.init(this)
+        DeviceIdentity.init(this)
         SmsListenerState.init(this)
     }
 }
