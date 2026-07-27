@@ -76,8 +76,15 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
     var submitting by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var queued by remember { mutableStateOf(false) }
+    var createdOrder by remember { mutableStateOf<CustomerOrder?>(null) }
     val clientRequestId = remember { UUID.randomUUID().toString() }
     val scope = rememberCoroutineScope()
+
+    val successOrder = createdOrder
+    if (successOrder != null) {
+        PaymentSuccessScreen(order = successOrder, onContinue = { onOrderCreated(successOrder) })
+        return
+    }
 
     Scaffold(
         containerColor = ScreenBg,
@@ -297,7 +304,7 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                                     if (dialTarget != null) {
                                         context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(dialTarget))))
                                     }
-                                    onOrderCreated(order)
+                                    createdOrder = order
                                 } else {
                                     error = "Couldn't place this order. Please try again."
                                 }
