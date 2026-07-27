@@ -14,7 +14,6 @@ This is a monorepo containing every component of the system:
 | [`customer-app-android/`](customer-app-android) | Native Android counterpart to `customer-app` (Kotlin + Jetpack Compose) — OTP account creation/login, buy packages, choose a payment method, track orders/history, Macaash balance. |
 | [`super-admin-app/`](super-admin-app) | Super Admin web dashboard (React + Vite). Companies, payment numbers, packages, orders, customers, Macaash, notifications, banners, USSD services, SIM routing setup, reports, settings. |
 | [`agent-app/`](agent-app) | Native Android app (Kotlin + Jetpack Compose) for field agents — login, customer management, walk-in sales, package catalog, order verification/completion, transaction history, an SMS listener that matches payment-confirmation messages to pending orders, and the agent's own sales reports. |
-| [`agent-app-rn/`](agent-app-rn) | Standalone React Native module (`@dalab/agent-sms-listener`) implementing the same SMS payment-detection pipeline as `agent-app`, for a React Native version of the Agent App. |
 
 ## Backend
 
