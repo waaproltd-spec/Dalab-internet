@@ -7,7 +7,7 @@ import {
   ArrowUp, ArrowDown, Eye, EyeOff, Lock, Mail, LogOut, ArrowLeft, Copy, Terminal, SmartphoneNfc,
   Smartphone, Radio, ChevronDown, ChevronRight, AlertTriangle, RotateCcw, UserCog, Tags,
   WifiOff, BatteryFull, BatteryMedium, BatteryLow, BatteryWarning,
-  Image as ImageIcon, Upload
+  Image as ImageIcon, Upload, MessageSquare, Database, Activity
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 
@@ -122,6 +122,10 @@ const DalabAdminApi = {
   deleteSimRouting: (companyId, deviceId) =>
     dalabAdminApiRequest(`/admin/sim-routing/${companyId}/${deviceId}`, { method: "DELETE" }),
   getUssdLogs: (orderId) => dalabAdminApiRequest(`/admin/ussd-logs${orderId ? `?orderId=${orderId}` : ""}`),
+  getSmsLogs: (filters = {}) => {
+    const qs = new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([, v]) => v))).toString();
+    return dalabAdminApiRequest(`/admin/sms-logs${qs ? `?${qs}` : ""}`);
+  },
   regenerateUssd: (orderId) => dalabAdminApiRequest(`/admin/orders/${orderId}/generate-ussd`, { method: "POST" }),
   reverseOrder: (id) => dalabAdminApiRequest(`/admin/orders/${id}/reverse`, { method: "POST" }),
   // Device & USSD module
@@ -269,10 +273,99 @@ function subscribeOrderEvents(path, { onEvent, onOpen, onClose } = {}) {
   };
 }
 
+/**
+ * System-health panel shown persistently across every dashboard section
+ * (mounted once in AdminDashboardShell) — this is deliberately its own SSE
+ * subscription rather than reusing Orders'/ExecutionLogs' per-view ones, so
+ * it keeps reporting real connection health even while the admin is looking
+ * at a section (e.g. Settings) that has no live stream of its own.
+ */
+function useConnectionStatus() {
+  const [sseState, setSseState] = useState("connecting"); // connecting | connected | disconnected
+  const [dbState, setDbState] = useState("checking"); // checking | connected | unreachable
+  const [eventCount, setEventCount] = useState(0);
+  const [lastSyncAt, setLastSyncAt] = useState(null);
+
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    const unsubscribe = subscribeOrderEvents("/admin/orders/stream", {
+      onEvent: () => { setEventCount((n) => n + 1); setLastSyncAt(new Date()); },
+      onOpen: () => setSseState("connected"),
+      onClose: () => setSseState((prev) => (prev === "connecting" ? "connecting" : "disconnected")),
+    });
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    let cancelled = false;
+    const checkHealth = async () => {
+      try {
+        const res = await fetch(`${DALAB_API_BASE_URL}/health`);
+        if (cancelled) return;
+        if (res.ok) {
+          setDbState("connected");
+          setLastSyncAt(new Date());
+        } else {
+          setDbState("unreachable");
+        }
+      } catch {
+        if (!cancelled) setDbState("unreachable");
+      }
+    };
+    checkHealth();
+    const interval = setInterval(checkHealth, 15000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  return { sseState, dbState, eventCount, lastSyncAt };
+}
+
+function ConnectionStatusBar() {
+  const { sseState, dbState, eventCount, lastSyncAt } = useConnectionStatus();
+
+  if (!DALAB_API_ENABLED) return null;
+
+  const sseTone = sseState === "connected" ? GREEN : sseState === "connecting" ? "#A9720A" : "#C81E2C";
+  const sseLabel = sseState === "connected" ? "Connected" : sseState === "connecting" ? "Reconnecting…" : "Disconnected";
+  const dbTone = dbState === "connected" ? GREEN : dbState === "checking" ? "#A9720A" : "#C81E2C";
+  const dbLabel = dbState === "connected" ? "Session active" : dbState === "checking" ? "Checking…" : "Unreachable";
+  const overallLive = sseState === "connected" && dbState === "connected";
+
+  const Item = ({ icon: Icon, label, value, tone }) => (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 16px", borderRight: `1px solid ${BORDER}` }}>
+      <Icon size={14} color={tone || MUTE} />
+      <div>
+        <div style={{ fontSize: 10, color: MUTE, fontWeight: 700, letterSpacing: 0.3 }}>{label}</div>
+        <div style={{ fontSize: 12, fontWeight: 700, color: tone || INK }}>{value}</div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{
+      display: "flex", alignItems: "stretch", flexWrap: "wrap", background: "#fff", borderBottom: `1px solid ${BORDER}`,
+      padding: "8px 10px 8px 0",
+    }}>
+      <Item icon={Radio} label="SSE LIVE STREAM" value={sseLabel} tone={sseTone} />
+      <Item icon={Database} label="DATABASE SESSION" value={dbLabel} tone={dbTone} />
+      <Item icon={Activity} label="SYNC STATUS" value={`${eventCount} update${eventCount === 1 ? "" : "s"} received`} tone={overallLive ? GREEN : undefined} />
+      <Item icon={overallLive ? Wifi : WifiOff} label="LIVE UPDATES" value={overallLive ? "Receiving" : "Paused"} tone={overallLive ? GREEN : "#A9720A"} />
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 16px" }}>
+        <Clock3 size={14} color={MUTE} />
+        <div>
+          <div style={{ fontSize: 10, color: MUTE, fontWeight: 700, letterSpacing: 0.3 }}>LAST SYNC TIME</div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: INK }}>{lastSyncAt ? lastSyncAt.toLocaleTimeString() : "—"}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const initialCompanies = [
-  { id: "hormuud", name: "Hormuud", group: 1, color: "#16A34A", status: "enabled", payNumber: "252-61-XXXXXXX (EVC Plus)", gateway: "EVC Plus" },
-  { id: "somnet", name: "Somnet", group: 1, color: "#1D4ED8", status: "enabled", payNumber: "252-65-XXXXXXX (Jeeb)", gateway: "JEEB" },
-  { id: "somtel", name: "Somtel", group: 2, color: "#F2C200", status: "enabled", payNumber: "252-63-XXXXXXX (eDahab)", gateway: "eDahab" },
+  { id: "hormuud", name: "Hormuud", group: 1, color: "#16A34A", status: "enabled", payNumber: "610338686", gateway: "EVC Plus" },
+  { id: "somnet", name: "Somnet", group: 1, color: "#1D4ED8", status: "enabled", payNumber: "685115555", gateway: "JEEB" },
+  { id: "somtel", name: "Somtel", group: 2, color: "#F2C200", status: "enabled", payNumber: "620338686", gateway: "eDahab" },
   { id: "amtel", name: "Amtel", group: 2, color: "#C81E2C", status: "disabled", payNumber: "252-68-XXXXXXX", gateway: "Manual" },
 ];
 
@@ -343,6 +436,7 @@ const NAV = [
   { id: "notifications", label: "Notifications", icon: Bell },
   { id: "promo-images", label: "Promo Images", icon: ImageIcon },
   { id: "devices", label: "Device & USSD", icon: SmartphoneNfc },
+  { id: "sms-logs", label: "SMS Monitor", icon: MessageSquare },
   { id: "execution-logs", label: "Execution Logs", icon: Terminal },
   { id: "reports", label: "Reports", icon: FileBarChart2 },
   { id: "roles", label: "Roles & Permissions", icon: ShieldCheck, superAdminOnly: true },
@@ -1134,12 +1228,34 @@ function Categories({ companies, admin }) {
   );
 }
 
+// Drawer close animation duration — kept in one place so the CSS transition
+// and the setTimeout that defers the actual unmount stay in sync.
+const DRAWER_TRANSITION_MS = 220;
+
 function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
   const [attempts, setAttempts] = useState([]);
   const [attemptsError, setAttemptsError] = useState("");
   const [reversing, setReversing] = useState(false);
   const [reverseError, setReverseError] = useState("");
   const [localOrder, setLocalOrder] = useState(order);
+  const [visible, setVisible] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  // Mount closed, then flip to open on the next frame so the browser
+  // actually animates the transform/opacity transition instead of snapping
+  // straight to the open state (which is what a plain conditional render did
+  // before — appear/disappear instantly, no slide).
+  useEffect(() => {
+    if (!order) return;
+    setVisible(false);
+    const raf = requestAnimationFrame(() => setVisible(true));
+    return () => cancelAnimationFrame(raf);
+  }, [order?.id]);
+
+  const requestClose = () => {
+    setVisible(false);
+    setTimeout(onClose, DRAWER_TRANSITION_MS);
+  };
 
   useEffect(() => { setLocalOrder(order); setReverseError(""); }, [order?.id]);
 
@@ -1183,14 +1299,28 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
   };
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(11,18,64,0.45)", display: "flex", justifyContent: "flex-end", zIndex: 60 }}>
-      <div style={{ width: 420, maxWidth: "100%", background: "#fff", height: "100%", overflowY: "auto", padding: 24 }}>
+    <div
+      onClick={requestClose}
+      style={{
+        position: "fixed", inset: 0, background: visible ? "rgba(11,18,64,0.45)" : "rgba(11,18,64,0)",
+        transition: `background ${DRAWER_TRANSITION_MS}ms ease`, display: "flex", justifyContent: "flex-end", zIndex: 60,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: 420, maxWidth: "100%", background: "#fff", height: "100%", overflowY: "auto", padding: 24,
+          transform: visible ? "translateX(0)" : "translateX(100%)",
+          transition: `transform ${DRAWER_TRANSITION_MS}ms ease-out`,
+          boxShadow: "-8px 0 24px rgba(11,18,64,0.18)",
+        }}
+      >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div>
             <div style={{ fontSize: 11, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>ORDER DETAIL</div>
             <div style={{ fontSize: 17, fontWeight: 800, color: INK, marginTop: 2, fontFamily: "monospace" }}>{order.id}</div>
           </div>
-          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer" }}>
+          <button onClick={requestClose} style={{ background: "none", border: "none", cursor: "pointer" }}>
             <X size={20} color={MUTE} />
           </button>
         </div>
@@ -1217,7 +1347,24 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
         {row("Receiver phone", order.receiverPhone, true)}
 
         <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>ORDER</div>
-        {row("Order ID", order.id, true)}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderTop: `1px solid ${BORDER}`, gap: 12 }}>
+          <span style={{ fontSize: 12.5, color: MUTE, flexShrink: 0 }}>Order ID</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontSize: 12.5, color: INK, fontWeight: 600, fontFamily: "monospace" }}>{order.id}</span>
+            <button
+              onClick={() => {
+                navigator.clipboard?.writeText(order.id);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+              }}
+              title="Copy order ID"
+              style={{ background: "none", border: "none", cursor: "pointer", display: "flex", padding: 2 }}
+            >
+              <Copy size={13} color={copied ? GREEN : MUTE} />
+            </button>
+            {copied && <span style={{ fontSize: 10.5, color: GREEN, fontWeight: 700 }}>Copied</span>}
+          </span>
+        </div>
         {row("Price", `$${Number(order.amount).toFixed(2)}`)}
         {row("Payment method", order.paymentMethod)}
         {row("Macaash points earned", order.macaashEarned)}
@@ -1299,6 +1446,21 @@ function StatusCountTile({ label, count, tone, active, onClick }) {
   );
 }
 
+function SummaryMetricCard({ icon: Icon, label, value, color, hint }) {
+  return (
+    <Card style={{ padding: 16, display: "flex", alignItems: "center", gap: 12 }}>
+      <div style={{ width: 40, height: 40, borderRadius: 10, background: `${color}18`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        <Icon size={19} color={color} />
+      </div>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 19, fontWeight: 800, color: INK, lineHeight: 1.15 }}>{value}</div>
+        <div style={{ fontSize: 11.5, color: SLATE, fontWeight: 600, marginTop: 1 }}>{label}</div>
+        {hint && <div style={{ fontSize: 10, color: MUTE, marginTop: 1 }}>{hint}</div>}
+      </div>
+    </Card>
+  );
+}
+
 const ORDERS_POLL_INTERVAL_MS = 8000;
 
 function Orders({ orders, setOrders, companies, admin }) {
@@ -1310,6 +1472,8 @@ function Orders({ orders, setOrders, companies, admin }) {
   const [lastSynced, setLastSynced] = useState(new Date());
   const [liveCounts, setLiveCounts] = useState(null);
   const [live, setLive] = useState(false);
+  const [checkedIds, setCheckedIds] = useState(() => new Set());
+  const [bulkWorking, setBulkWorking] = useState(false);
 
   // Live data: replaces the mock `orders` prop with real API results once
   // configured. Falls back to the mock list (still fully filterable/
@@ -1428,6 +1592,46 @@ function Orders({ orders, setOrders, companies, admin }) {
     in_progress: { label: "Complete", status: "completed", color: GREEN },
   };
 
+  // Recomputed from `shown` (the currently filtered/visible list), not the
+  // full unfiltered `orders` — so switching a status/provider filter or
+  // typing a search updates these numbers immediately, per the request.
+  const summary = useMemo(() => {
+    const todayKey = new Date().toDateString();
+    const totalOrders = shown.length;
+    const dailyRevenue = shown
+      .filter((o) => o.createdAt && new Date(o.createdAt).toDateString() === todayKey)
+      .reduce((sum, o) => sum + Number(o.amount || 0), 0);
+    const totalValue = shown.reduce((sum, o) => sum + Number(o.amount || 0), 0);
+    const avgTransactionValue = totalOrders > 0 ? totalValue / totalOrders : 0;
+    return { totalOrders, dailyRevenue, avgTransactionValue };
+  }, [shown]);
+
+  const toggleChecked = (id) => {
+    setCheckedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const clearChecked = () => setCheckedIds(new Set());
+
+  // Only in_progress orders have a defined one-tap "Complete" transition
+  // today (same rule the per-card quick-action button already follows) —
+  // silently skipping anything else here keeps the batch action from firing
+  // an invalid/no-op status transition on, say, an already-completed order.
+  const eligibleForBatchComplete = shown.filter((o) => checkedIds.has(o.id) && o.status === "in_progress");
+
+  const bulkMarkCompleted = async () => {
+    if (eligibleForBatchComplete.length === 0) return;
+    setBulkWorking(true);
+    for (const o of eligibleForBatchComplete) {
+      await setStatus(o.id, "completed");
+    }
+    setBulkWorking(false);
+    clearChecked();
+  };
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 16, flexWrap: "wrap" }}>
@@ -1448,6 +1652,13 @@ function Orders({ orders, setOrders, companies, admin }) {
         </div>
       </div>
 
+      {/* Summary metrics — recomputed from `shown`, so they track the active filter/search live */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 16 }}>
+        <SummaryMetricCard icon={ShoppingCart} label="Total Orders" value={summary.totalOrders.toLocaleString()} color={INDIGO} />
+        <SummaryMetricCard icon={DollarSign} label="Daily Revenue" value={`$${summary.dailyRevenue.toFixed(2)}`} color={GREEN} hint="Orders created today" />
+        <SummaryMetricCard icon={TrendingUp} label="Average Transaction Value" value={`$${summary.avgTransactionValue.toFixed(2)}`} color="#1D4ED8" />
+      </div>
+
       {/* Status count tiles — always reflect true totals regardless of the active filter */}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
         {statusTiles.map((t) => (
@@ -1466,14 +1677,48 @@ function Orders({ orders, setOrders, companies, admin }) {
         </div>
       </div>
 
+      {/* Batch action bar — appears only once at least one card is checked */}
+      {checkedIds.size > 0 && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", marginBottom: 14,
+          background: INDIGO_SOFT, border: `1px solid ${BORDER}`, borderRadius: 12, padding: "10px 16px",
+        }}>
+          <span style={{ fontSize: 12.5, fontWeight: 700, color: INDIGO }}>{checkedIds.size} selected</span>
+          <Button
+            icon={bulkWorking ? Loader2 : CheckCircle2}
+            spin={bulkWorking}
+            onClick={bulkMarkCompleted}
+            disabled={bulkWorking || eligibleForBatchComplete.length === 0}
+          >
+            {bulkWorking ? "Updating..." : `Mark Completed (${eligibleForBatchComplete.length})`}
+          </Button>
+          {eligibleForBatchComplete.length < checkedIds.size && (
+            <span style={{ fontSize: 11.5, color: MUTE }}>Only in-progress orders can be marked completed — the rest of your selection will be skipped.</span>
+          )}
+          <Button variant="ghost" onClick={clearChecked} style={{ marginLeft: "auto" }}>Clear selection</Button>
+        </div>
+      )}
+
       {/* Responsive card grid — collapses to a single column on mobile */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 14 }}>
         {shown.map((o) => {
           const quick = quickActions[o.status];
+          const isChecked = checkedIds.has(o.id);
           return (
-            <Card key={o.id} style={{ padding: 16, cursor: "pointer" }}>
+            <Card key={o.id} style={{ padding: 16, cursor: "pointer", border: isChecked ? `2px solid ${INDIGO}` : `1px solid ${BORDER}`, position: "relative" }}>
+              <label
+                onClick={(e) => e.stopPropagation()}
+                style={{ position: "absolute", top: 12, right: 12, display: "flex", cursor: "pointer", zIndex: 1 }}
+              >
+                <input
+                  type="checkbox"
+                  checked={isChecked}
+                  onChange={() => toggleChecked(o.id)}
+                  style={{ width: 17, height: 17, cursor: "pointer", accentColor: INDIGO }}
+                />
+              </label>
               <div onClick={() => setSelected(o)}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", paddingRight: 26 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <div style={{ width: 8, height: 8, borderRadius: 4, background: o.companyColor || INDIGO, flexShrink: 0 }} />
                     <span style={{ fontWeight: 700, fontSize: 13.5, color: INK }}>{o.companyName}</span>
@@ -2302,6 +2547,7 @@ function DevicesPanel({ canManage }) {
 
 function UssdTemplatesPanel({ companies, canManage }) {
   const [ussdTemplates, setUssdTemplates] = useState([]);
+  const [devices, setDevices] = useState([]);
   const [companyFilter, setCompanyFilter] = useState("all");
   const [editing, setEditing] = useState(null); // 'new' | template object | null
   const [form, setForm] = useState({});
@@ -2316,15 +2562,19 @@ function UssdTemplatesPanel({ companies, canManage }) {
     }
   };
   useEffect(() => { fetchTemplates(); }, [companyFilter]);
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    DalabAdminApi.getAgentDevices().then(setDevices).catch((err) => console.error("Failed to load devices:", err.message));
+  }, []);
 
   const shown = companyFilter === "all" ? ussdTemplates : ussdTemplates.filter((t) => t.companyId === companyFilter);
   const grouped = companies.map((c) => ({ company: c, templates: shown.filter((t) => t.companyId === c.id) })).filter((g) => g.templates.length > 0 || companyFilter === g.company.id);
 
   const openNew = () => {
-    setForm({ companyId: companies[0]?.id || "", serviceName: "", ussdCode: "*{number}*{amount}*8233{pin}#", notes: "" });
+    setForm({ companyId: companies[0]?.id || "", serviceName: "", ussdCode: "*{number}*{amount}*8233{pin}#", notes: "", deviceId: "", simSlot: "" });
     setEditing("new");
   };
-  const openEdit = (t) => { setForm(t); setEditing(t.id); };
+  const openEdit = (t) => { setForm({ ...t, deviceId: t.deviceId || "", simSlot: t.simSlot ?? "" }); setEditing(t.id); };
 
   const save = async () => {
     if (!form.serviceName || !form.ussdCode) return;
@@ -2332,9 +2582,14 @@ function UssdTemplatesPanel({ companies, canManage }) {
       alert("USSD code must contain {number}, {amount}, and {pin} placeholders.");
       return;
     }
+    const payload = {
+      ...form,
+      deviceId: form.deviceId || null,
+      simSlot: form.simSlot === "" || form.simSlot == null ? null : Number(form.simSlot),
+    };
     try {
-      if (editing === "new") await DalabAdminApi.createUssdTemplate(form);
-      else await DalabAdminApi.updateUssdTemplate(editing, form);
+      if (editing === "new") await DalabAdminApi.createUssdTemplate(payload);
+      else await DalabAdminApi.updateUssdTemplate(editing, payload);
       await fetchTemplates();
     } catch (err) {
       alert(err.message || "Could not save template.");
@@ -2387,7 +2642,7 @@ function UssdTemplatesPanel({ companies, canManage }) {
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr style={{ background: "#FAFBFF" }}>
-                  {["Service Name", "USSD Code", "Status", "Notes", ""].map((h) => (
+                  {["Service Name", "USSD Code", "Device & SIM", "Status", "Notes", ""].map((h) => (
                     <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
                   ))}
                 </tr>
@@ -2397,6 +2652,9 @@ function UssdTemplatesPanel({ companies, canManage }) {
                   <tr key={t.id} style={{ borderTop: `1px solid ${BORDER}` }}>
                     <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{t.serviceName}</td>
                     <td style={{ padding: "10px 14px", fontSize: 12, color: SLATE, fontFamily: "monospace" }}>{t.ussdCode}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE }}>
+                      {t.deviceId ? `${devices.find((d) => d.id === t.deviceId)?.name || "Unknown device"} — SIM ${t.simSlot ?? "?"}` : "Default routing"}
+                    </td>
                     <td style={{ padding: "10px 14px" }}><Badge tone={t.status === "enabled" ? "green" : "gray"}>{t.status === "enabled" ? "Enabled" : "Disabled"}</Badge></td>
                     <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE }}>{t.notes || "—"}</td>
                     <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
@@ -2417,7 +2675,7 @@ function UssdTemplatesPanel({ companies, canManage }) {
                   </tr>
                 ))}
                 {templates.length === 0 && (
-                  <tr><td colSpan={5} style={{ padding: 16, textAlign: "center", fontSize: 12, color: MUTE }}>No templates for {company.name} yet.</td></tr>
+                  <tr><td colSpan={6} style={{ padding: 16, textAlign: "center", fontSize: 12, color: MUTE }}>No templates for {company.name} yet.</td></tr>
                 )}
               </tbody>
             </table>
@@ -2432,20 +2690,36 @@ function UssdTemplatesPanel({ companies, canManage }) {
               {companies.map((c) => <option key={c.id} value={c.id}>{c?.name || "Unnamed"}</option>)}
             </select>
           </Field>
-          <Field label="Service name">
-            <input style={inputStyle} value={form.serviceName || ""} onChange={(e) => setForm({ ...form, serviceName: e.target.value })} placeholder="e.g. Anfac Plus" />
+          <Field label="Service / Package Category">
+            <input style={inputStyle} value={form.serviceName || ""} onChange={(e) => setForm({ ...form, serviceName: e.target.value })} placeholder="e.g. Anfac Plus, Qanciye, Broadband 5G" />
           </Field>
-          <Field label="USSD code template">
-            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={form.ussdCode || ""} onChange={(e) => setForm({ ...form, ussdCode: e.target.value })} placeholder="*738*{number}*{amount}*8233{pin}#" />
+          <Field label="USSD Template Pattern">
+            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={form.ussdCode || ""} onChange={(e) => setForm({ ...form, ussdCode: e.target.value })} placeholder="*738*{customerNumber}*{amount}*8233{pin}#" />
           </Field>
           <div style={{ fontSize: 11, color: MUTE, marginTop: -8, marginBottom: 14 }}>
-            Must include <code>{"{number}"}</code>, <code>{"{amount}"}</code>, and <code>{"{pin}"}</code> — substituted automatically when an order is approved.
+            Must include <code>{"{customerNumber}"}</code> (or <code>{"{number}"}</code>), <code>{"{amount}"}</code>, and <code>{"{pin}"}</code> — substituted automatically when an order is approved.
+          </div>
+          <Field label="Assigned Device & SIM Slot (optional)">
+            <div style={{ display: "flex", gap: 8 }}>
+              <select style={{ ...inputStyle, flex: 2 }} value={form.deviceId || ""} onChange={(e) => setForm({ ...form, deviceId: e.target.value })}>
+                <option value="">Use this provider's normal SIM routing</option>
+                {devices.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+              <select style={{ ...inputStyle, flex: 1 }} value={form.simSlot ?? ""} onChange={(e) => setForm({ ...form, simSlot: e.target.value })} disabled={!form.deviceId}>
+                <option value="">SIM slot</option>
+                <option value="1">SIM 1</option>
+                <option value="2">SIM 2</option>
+              </select>
+            </div>
+          </Field>
+          <div style={{ fontSize: 11, color: MUTE, marginTop: -8, marginBottom: 14 }}>
+            Pins this package's USSD execution to one specific device+slot (e.g. "Mobile 1 — SIM 1") instead of the provider's usual routing — useful when a package should always dial from a particular SIM.
           </div>
           <Field label="Notes (optional)">
             <input style={inputStyle} value={form.notes || ""} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Internal notes for other admins" />
           </Field>
           <div style={{ display: "flex", gap: 10 }}>
-            <Button onClick={save} icon={Check}>Save</Button>
+            <Button onClick={save} icon={Check}>Save Template</Button>
             <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
           </div>
         </Modal>
@@ -2764,6 +3038,15 @@ function ExecutionLogs({ companies }) {
   };
   useEffect(() => { fetchLogs(); }, [companyFilter, statusFilter]);
 
+  // "Live transaction logs" means this view shouldn't need a manual click to
+  // stay current — poll every 10s, same pattern as Orders' polling fallback,
+  // but without live's SSE fast-path since dial attempts don't broadcast
+  // their own event today (they ride along with order-status broadcasts).
+  useEffect(() => {
+    const timer = setInterval(fetchLogs, 10000);
+    return () => clearInterval(timer);
+  }, [companyFilter, statusFilter]);
+
   // Backend already orders by order_id desc, attempt_number asc, so a single
   // pass groups consecutive rows into one order with its full retry history.
   const grouped = useMemo(() => {
@@ -2788,6 +3071,9 @@ function ExecutionLogs({ companies }) {
           <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Every USSD dial attempt — SIM used, agent, customer, provider, result, and retry history.</div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 700, color: GREEN }}>
+            <Radio size={12} color={GREEN} /> Auto-refreshing every 10s
+          </span>
           {lastSynced && <span style={{ fontSize: 11, color: MUTE }}>Synced {lastSynced.toLocaleTimeString()}</span>}
           <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={fetchLogs} disabled={loading}>Refresh</Button>
         </div>
@@ -2812,7 +3098,7 @@ function ExecutionLogs({ companies }) {
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: "#FAFBFF" }}>
-              {["Order", "Company", "Customer", "Package", "Amount", "Agent", "Latest result", "Attempts", ""].map((h) => (
+              {["Transaction ID", "Customer Phone", "Provider", "Service/Package", "USSD Code", "SIM Slot", "Executed", "Status", "Attempts", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
             </tr>
@@ -2825,20 +3111,26 @@ function ExecutionLogs({ companies }) {
                 <React.Fragment key={orderId}>
                   <tr style={{ borderTop: `1px solid ${BORDER}`, cursor: "pointer" }} onClick={() => setExpanded((prev) => ({ ...prev, [orderId]: !prev[orderId] }))}>
                     <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, color: INK }}>{orderId}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontFamily: "monospace" }}>{latest.customerPhone || "—"}</td>
                     <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{latest.companyName}</td>
-                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{latest.customerName || "—"}</td>
                     <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE }}>{latest.packageName}</td>
-                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: GREEN, fontWeight: 700 }}>${Number(latest.amount).toFixed(2)}</td>
-                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE }}>{latest.agentName || "—"}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 11.5, color: SLATE, fontFamily: "monospace" }}>{latest.ussdString}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE }}>SIM {latest.simSlot ?? "—"}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(latest.createdAt)}</td>
                     <td style={{ padding: "10px 14px" }}>
-                      <Badge tone={latest.status === "success" ? "green" : latest.status === "failed" ? "red" : "amber"}>{latest.status}</Badge>
+                      <Badge tone={latest.status === "success" ? "green" : latest.status === "failed" ? "red" : "amber"}>
+                        {latest.status === "success" ? "Success" : latest.status === "failed" ? "Failed" : "Pending"}
+                      </Badge>
+                      {latest.status === "failed" && latest.responseMessage && (
+                        <div style={{ fontSize: 10.5, color: "#C81E2C", marginTop: 3, maxWidth: 160 }}>{latest.responseMessage}</div>
+                      )}
                     </td>
                     <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE }}>{attempts.length}</td>
                     <td style={{ padding: "10px 14px" }}>{isOpen ? <ChevronDown size={15} color={MUTE} /> : <ChevronRight size={15} color={MUTE} />}</td>
                   </tr>
                   {isOpen && attempts.map((a) => (
                     <tr key={a.id} style={{ background: "#FAFBFF" }}>
-                      <td colSpan={9} style={{ padding: "8px 14px 8px 34px" }}>
+                      <td colSpan={10} style={{ padding: "8px 14px 8px 34px" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 14, fontSize: 11.5, flexWrap: "wrap" }}>
                           <Badge tone={a.status === "success" ? "green" : a.status === "failed" ? "red" : "amber"}>{a.status}</Badge>
                           <span style={{ color: MUTE }}>attempt #{a.attemptNumber}</span>
@@ -2854,7 +3146,106 @@ function ExecutionLogs({ companies }) {
               );
             })}
             {grouped.length === 0 && !loading && (
-              <tr><td colSpan={9} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No USSD dial attempts recorded yet.</td></tr>
+              <tr><td colSpan={10} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No USSD dial attempts recorded yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
+// Every payment-confirmation SMS the Agent App uploaded, whether or not it
+// matched a pending order — separate from ExecutionLogs, which only shows
+// USSD dial attempts (i.e. SMS that already matched and moved on to
+// dialing). This is the "did we even see the SMS" view.
+function SmsLogs() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [matchedFilter, setMatchedFilter] = useState("all");
+  const [lastSynced, setLastSynced] = useState(null);
+
+  const fetchLogs = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setLoading(true);
+    setError("");
+    try {
+      const data = await DalabAdminApi.getSmsLogs({
+        matched: matchedFilter === "all" ? undefined : matchedFilter,
+      });
+      setRows(data);
+      setLastSynced(new Date());
+    } catch (err) {
+      setError(err.message || "Could not load SMS logs.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { fetchLogs(); }, [matchedFilter]);
+  useEffect(() => {
+    const timer = setInterval(fetchLogs, 10000);
+    return () => clearInterval(timer);
+  }, [matchedFilter]);
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to view SMS logs.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 16, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>SMS Monitor</div>
+          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Every payment SMS uploaded by an Agent device, and whether it matched a pending order.</div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 700, color: GREEN }}>
+            <Radio size={12} color={GREEN} /> Auto-refreshing every 10s
+          </span>
+          {lastSynced && <span style={{ fontSize: 11, color: MUTE }}>Synced {lastSynced.toLocaleTimeString()}</span>}
+          <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={fetchLogs} disabled={loading}>Refresh</Button>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        {[{ id: "all", label: "All" }, { id: "true", label: "Matched" }, { id: "false", label: "Unmatched" }].map((f) => (
+          <button key={f.id} onClick={() => setMatchedFilter(f.id)} style={{
+            padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
+            border: `1px solid ${matchedFilter === f.id ? INDIGO : BORDER}`, background: matchedFilter === f.id ? INDIGO : "#fff", color: matchedFilter === f.id ? "#fff" : SLATE,
+          }}>{f.label}</button>
+        ))}
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              {["Received", "Sender", "Body", "Parsed provider", "Parsed amount", "Parsed phone", "Matched order"].map((h) => (
+                <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(r.receivedAt)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{r.sender}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12, color: SLATE, maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.body}>{r.body}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE }}>{r.parsedProvider || "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: GREEN, fontWeight: 700 }}>{r.parsedAmount != null ? `$${Number(r.parsedAmount).toFixed(2)}` : "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE }}>{r.parsedPhone || "—"}</td>
+                <td style={{ padding: "10px 14px" }}>
+                  {r.matchedOrderId
+                    ? <Badge tone="green">{r.matchedOrderId}</Badge>
+                    : <Badge tone="amber">Unmatched</Badge>}
+                </td>
+              </tr>
+            ))}
+            {rows.length === 0 && !loading && (
+              <tr><td colSpan={7} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No SMS logs recorded yet.</td></tr>
             )}
           </tbody>
         </table>
@@ -3509,6 +3900,7 @@ function AdminDashboardShell({ admin, onLogout }) {
             </button>
           </div>
         </div>
+        <ConnectionStatusBar />
         <div style={{ padding: 22 }}>
           {active === "overview" && <Overview companies={companies} orders={orders} />}
           {active === "companies" && <Companies companies={companies} setCompanies={setCompanies} refreshCompanies={refreshCompanies} admin={admin} />}
@@ -3522,6 +3914,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "notifications" && <Notifications />}
           {active === "promo-images" && <PromoImages />}
           {active === "devices" && <DeviceUssdModule companies={companies} admin={admin} />}
+          {active === "sms-logs" && <SmsLogs />}
           {active === "execution-logs" && <ExecutionLogs companies={companies} />}
           {active === "reports" && <Reports />}
           {active === "roles" && <RolesPermissions admin={admin} />}
