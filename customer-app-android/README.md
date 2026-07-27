@@ -24,8 +24,9 @@ Android SDK path if building from Android Studio/a local Gradle install.
   customer record on first use (same as the backend does for the web app),
   and if it's a brand-new account (no name on file yet) the screen prompts
   for one via `PUT /customer/profile` before entering the app.
-- **Home** (`HomeScreen`) — greeting header, a Macaash promo banner, and a
-  grid of providers (Hormuud, Somnet, Somtel, Amtel) — tap one to drill into
+- **Home** (`HomeScreen`) — greeting header, a Super Admin-managed promo
+  image carousel (`GET /promo-images`, view-only), and a grid of providers
+  (Hormuud, Somnet, Somtel, Amtel) — tap one to drill into
   its categories (`CompanyCategoriesScreen`, packages grouped by
   `categoryId`) and then that category's packages (`CompanyPackagesScreen`,
   with old-price-strikethrough / new-price styling), via
@@ -36,15 +37,10 @@ Android SDK path if building from Android Studio/a local Gradle install.
   `company.gateway`) and a receiver number, then places the order
   (`POST /orders`).
 - **Order tracking + history** (`OrdersScreen`, `OrderDetailScreen`) — every
-  order the customer has placed (`GET /orders`, `GET /orders/{id}`), status
-  (awaiting payment / confirmed / completed / failed / cancelled), and
-  Macaash points earned once completed.
-- **Macaash Rewards** (`MacaashScreen`) — live points balance
-  (`GET /macaash/balance`), a redeemable rewards catalog
-  (`GET /macaash/rewards`, `POST /macaash/redeem`), and points history
-  (`GET /macaash/history`) — its own bottom-nav tab.
-- **Profile** (`ProfileScreen`) — name, phone, live Macaash points balance,
-  log out.
+  order the customer has placed (`GET /orders`, `GET /orders/{id}`) and its
+  status (awaiting payment / confirmed / completed / failed / cancelled).
+- **Profile** (`ProfileScreen`) — name, phone, Manage Account (log out /
+  delete account).
 - **Session handling** (`SessionManager`, `ApiClient`) — JWT access/refresh
   tokens with automatic one-shot refresh-and-retry on a 401, same pattern as
   the Agent App.

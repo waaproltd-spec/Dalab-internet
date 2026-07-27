@@ -26,7 +26,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -52,9 +51,9 @@ private fun greeting(): String {
     }
 }
 
-/** Home: greeting, Macaash promo, and the provider grid — tap a provider to see its packages. */
+/** Home: greeting and the provider grid — tap a provider to see its packages. */
 @Composable
-fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenMacaash: () -> Unit) {
+fun HomeScreen(onOpenCompany: (Company) -> Unit) {
     var companies by remember { mutableStateOf<List<Company>>(emptyList()) }
     var promoImages by remember { mutableStateOf<List<PromoImage>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
@@ -99,8 +98,6 @@ fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenMacaash: () -> Unit) {
                         Spacer(Modifier.height(16.dp))
                         PromoImageCarousel(images = promoImages)
                     }
-                    Spacer(Modifier.height(16.dp))
-                    MacaashBanner(onClick = onOpenMacaash)
                     Spacer(Modifier.height(20.dp))
                     if (loading) {
                         CircularProgressIndicator(modifier = Modifier.padding(vertical = 16.dp))
@@ -179,7 +176,9 @@ private fun SupportActionRow(icon: androidx.compose.ui.graphics.vector.ImageVect
  * carousel — customers can only view these, never upload. Each page loads
  * its image from GET /promo-images/{id}/image via Coil (the one place this
  * app needs async remote image loading; provider logos are bundled local
- * drawables instead).
+ * drawables instead). Recommended upload size is 1280x658 (the dashboard's
+ * upload copy states this too) — the pager uses that exact aspect ratio so
+ * a correctly-sized image is never cropped/distorted.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -190,7 +189,7 @@ private fun PromoImageCarousel(images: List<PromoImage>) {
             state = pagerState,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(150.dp),
+                .aspectRatio(1280f / 658f),
         ) { page ->
             AsyncImage(
                 model = "${ApiClient.BASE_URL}promo-images/${images[page].id}/image",
@@ -217,42 +216,6 @@ private fun PromoImageCarousel(images: List<PromoImage>) {
                     )
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun MacaashBanner(onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 140.dp)
-            .clip(RoundedCornerShape(24.dp))
-            .background(Brush.linearGradient(listOf(Color(0xFF16A34A), Color(0xFF0E7A38))))
-            .clickable(onClick = onClick),
-    ) {
-        // Subtle decorative accent circles, same idea as the reference banner's
-        // corner swoosh — purely decorative, no new asset needed.
-        Box(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .offset(x = 24.dp, y = (-24).dp)
-                .size(120.dp)
-                .clip(CircleShape)
-                .background(Color.White.copy(alpha = 0.08f)),
-        )
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .offset(x = 16.dp, y = 16.dp)
-                .size(70.dp)
-                .clip(CircleShape)
-                .background(Color.White.copy(alpha = 0.10f)),
-        )
-        Column(modifier = Modifier.padding(24.dp)) {
-            Text("Macaash Rewards", color = Color.White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp))
-            Text("Buy packages and earn points", color = Color.White.copy(alpha = 0.9f), style = MaterialTheme.typography.bodyMedium)
         }
     }
 }

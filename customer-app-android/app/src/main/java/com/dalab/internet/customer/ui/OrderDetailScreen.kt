@@ -114,19 +114,6 @@ fun OrderDetailScreen(initialOrder: CustomerOrder, onBack: () -> Unit) {
 
             Spacer(Modifier.height(12.dp))
             Text(statusMessage(order.status), style = MaterialTheme.typography.bodyMedium)
-
-            if (order.status == OrderStatus.COMPLETED) {
-                Spacer(Modifier.height(20.dp))
-                Surface(color = Color(0xFFF6F7FC), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(18.dp)) {
-                        SectionLabel("MACAASH REWARDS")
-                        DetailRow("Points earned", "+${order.macaashEarned}")
-                        if (order.completedAt != null) {
-                            DetailRow("Completed", formatApiDateTime(order.completedAt))
-                        }
-                    }
-                }
-            }
         }
     }
 }

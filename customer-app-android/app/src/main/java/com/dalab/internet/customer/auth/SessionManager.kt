@@ -17,7 +17,6 @@ object SessionManager {
     private const val KEY_CUSTOMER_ID = "customer_id"
     private const val KEY_CUSTOMER_NAME = "customer_name"
     private const val KEY_CUSTOMER_PHONE = "customer_phone"
-    private const val KEY_MACAASH_POINTS = "macaash_points"
 
     private lateinit var prefs: SharedPreferences
 
@@ -33,14 +32,12 @@ object SessionManager {
             .putString(KEY_CUSTOMER_ID, profile.id)
             .putString(KEY_CUSTOMER_NAME, profile.name)
             .putString(KEY_CUSTOMER_PHONE, profile.phone)
-            .putInt(KEY_MACAASH_POINTS, profile.macaashPoints)
             .apply()
     }
 
     fun updateProfile(profile: CustomerProfile) {
         prefs.edit()
             .putString(KEY_CUSTOMER_NAME, profile.name)
-            .putInt(KEY_MACAASH_POINTS, profile.macaashPoints)
             .apply()
     }
 
@@ -62,7 +59,6 @@ object SessionManager {
             id = id,
             phone = prefs.getString(KEY_CUSTOMER_PHONE, "") ?: "",
             name = prefs.getString(KEY_CUSTOMER_NAME, null),
-            macaashPoints = prefs.getInt(KEY_MACAASH_POINTS, 0),
         )
     }
 
