@@ -801,11 +801,11 @@ function PaymentNumbers({ companies, setCompanies, refreshCompanies, admin }) {
           <Field label="Payment number / merchant code">
             <input style={inputStyle} value={value} onChange={(e) => setValue(e.target.value)} />
           </Field>
-          <Field label="Deposit USSD template (e.g. *812*610338686*{amount}#)">
-            <input style={inputStyle} value={templateValue} onChange={(e) => setTemplateValue(e.target.value)} placeholder="*<code>*<number>*{amount}#" />
+          <Field label="Service delivery USSD template (e.g. *812*{number}*{amount}#)">
+            <input style={inputStyle} value={templateValue} onChange={(e) => setTemplateValue(e.target.value)} placeholder="*<code>*{number}*{amount}#" />
           </Field>
           <div style={{ fontSize: 11.5, color: MUTE, marginTop: -8, marginBottom: 12 }}>
-            Update this together with the payment number above — it isn't derived automatically, so leaving it unchanged after a number change will keep dialing the old number.
+            Use {"{number}"} and {"{amount}"} as placeholders — the agent app fills them in with the customer's own phone number and the order amount when sending the service, so this template should not contain a hardcoded number.
           </div>
           {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
           <div style={{ display: "flex", gap: 10 }}>
