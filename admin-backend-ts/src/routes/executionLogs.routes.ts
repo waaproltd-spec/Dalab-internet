@@ -17,7 +17,7 @@ executionLogsRouter.get("/admin/execution-logs", requireStaff(), async (req, res
   const { orderId, agentId, companyId, status } = req.query as Record<string, string | undefined>;
   let sql = `
     SELECT da.id, da.order_id, da.sim_slot, da.ussd_string, da.attempt_number,
-           da.status, da.response_message, da.created_at,
+           da.status, da.response_message, da.created_at, da.completed_at,
            o.amount, o.company_id, co.name AS company_name,
            c.id AS customer_id, c.name AS customer_name, c.phone AS customer_phone,
            p.name AS package_name,

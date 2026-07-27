@@ -431,7 +431,7 @@ ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (r
   // report of an already-resolved attempt is a no-op that just returns the
   // current state.
   const result = await query(
-    `UPDATE ussd_dial_attempts SET status=$1, response_message=$2 WHERE id=$3 AND status='pending' RETURNING *`,
+    `UPDATE ussd_dial_attempts SET status=$1, response_message=$2, completed_at=now() WHERE id=$3 AND status='pending' RETURNING *`,
     [status, responseMessage ?? null, req.params.attemptId]
   );
   if (result.length === 0) {
