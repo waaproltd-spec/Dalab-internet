@@ -8,7 +8,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Call
@@ -24,6 +26,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -86,6 +89,21 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
         return
     }
 
+    // Scales spacing/font sizes down a notch on shorter screens so the whole
+    // form has a real chance of fitting without scrolling on small phones;
+    // verticalScroll below is the actual guarantee that nothing is ever cut
+    // off, even on the smallest/most cramped devices.
+    val compact = LocalConfiguration.current.screenHeightDp < 700
+    val outerPadding = if (compact) 14.dp else 20.dp
+    val fieldGap = if (compact) 10.dp else 12.dp
+    val sectionGap = if (compact) 14.dp else 20.dp
+    val walletSectionGap = if (compact) 16.dp else 24.dp
+    val walletCardGap = if (compact) 8.dp else 12.dp
+    val walletCardPadding = if (compact) 10.dp else 14.dp
+    val buttonHeight = if (compact) 48.dp else 54.dp
+    val sectionTitleSize = if (compact) 15.sp else 16.sp
+    val cardTitleSize = if (compact) 13.sp else 14.sp
+
     Scaffold(
         containerColor = ScreenBg,
         topBar = {
@@ -101,8 +119,9 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
         Column(
             modifier = Modifier
                 .padding(padding)
-                .padding(20.dp)
-                .fillMaxSize(),
+                .padding(outerPadding)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState()),
         ) {
             OutlinedTextField(
                 value = senderPhone,
@@ -120,7 +139,7 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                 modifier = Modifier.fillMaxWidth(),
             )
 
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(fieldGap))
             OutlinedTextField(
                 value = receiverPhone,
                 onValueChange = { receiverPhone = it },
@@ -137,11 +156,11 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                 modifier = Modifier.fillMaxWidth(),
             )
 
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(sectionGap))
             Surface(color = PanelBg, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Service Details", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.White)
-                    Spacer(Modifier.height(10.dp))
+                Column(modifier = Modifier.padding(if (compact) 12.dp else 16.dp)) {
+                    Text("Service Details", fontWeight = FontWeight.Bold, fontSize = cardTitleSize, color = Color.White)
+                    Spacer(Modifier.height(if (compact) 6.dp else 10.dp))
                     ServiceDetailRow("Provider", company.name)
                     ServiceDetailRow("Package", pkg.name)
                     ServiceDetailRow("Amount", "$${"%.2f".format(pkg.price)}")
@@ -164,22 +183,22 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                 }
             }
 
-            Spacer(Modifier.height(24.dp))
-            Text("Select Your Payment Method", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.White)
+            Spacer(Modifier.height(walletSectionGap))
+            Text("Select Your Payment Method", fontWeight = FontWeight.Bold, fontSize = sectionTitleSize, color = Color.White)
             Spacer(Modifier.height(6.dp))
             Text(
                 "Please select the mobile money account you will use to send the payment.",
                 fontSize = 12.sp,
                 color = MutedText,
             )
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
 
             WALLET_OPTIONS.forEach { (methodKey, wallet) ->
                 val active = methodKey.equals(selectedPaymentMethod, ignoreCase = true)
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 12.dp)
+                        .padding(bottom = walletCardGap)
                         .clip(RoundedCornerShape(16.dp))
                         .border(
                             width = if (active) 2.dp else 1.dp,
@@ -188,12 +207,12 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                         )
                         .background(PanelBg)
                         .clickable { selectedPaymentMethod = methodKey }
-                        .padding(14.dp),
+                        .padding(walletCardPadding),
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(
                             modifier = Modifier
-                                .size(width = 88.dp, height = 56.dp)
+                                .size(width = if (compact) 76.dp else 88.dp, height = if (compact) 48.dp else 56.dp)
                                 .clip(RoundedCornerShape(10.dp))
                                 .background(wallet.color),
                             contentAlignment = Alignment.Center,
@@ -201,12 +220,12 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                             Image(
                                 painter = painterResource(wallet.logoRes),
                                 contentDescription = methodKey,
-                                modifier = Modifier.size(40.dp),
+                                modifier = Modifier.size(if (compact) 34.dp else 40.dp),
                             )
                         }
-                        Spacer(Modifier.width(16.dp))
+                        Spacer(Modifier.width(if (compact) 12.dp else 16.dp))
                         Column {
-                            Text(wallet.label, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                            Text(wallet.label, color = Color.White, fontWeight = FontWeight.Bold, fontSize = if (compact) 14.sp else 16.sp)
                             Text(wallet.providerLabel, color = MutedText, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                         }
                     }
@@ -220,7 +239,7 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                 border = BorderStroke(1.dp, PanelBorder),
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
+                Column(modifier = Modifier.padding(if (compact) 12.dp else 16.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -229,14 +248,14 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Filled.Lock, contentDescription = null, tint = Color(0xFFF2A900), modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text("Admin Number:", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                            Text("Admin Number:", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = cardTitleSize)
                         }
                         Surface(shape = RoundedCornerShape(10.dp), border = BorderStroke(1.dp, PanelBorder), color = Color.Transparent) {
                             Text(
                                 payNumber ?: "Not available",
                                 color = Color.White,
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp,
+                                fontSize = if (compact) 14.sp else 15.sp,
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                             )
                         }
@@ -267,13 +286,13 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                 Spacer(Modifier.height(12.dp))
             }
 
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.height(sectionGap))
 
             val payEnabled = senderPhone.isNotBlank() && receiverPhone.isNotBlank() && selectedPaymentMethod != null && !submitting && !queued
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(54.dp)
+                    .height(buttonHeight)
                     .clip(RoundedCornerShape(28.dp))
                     .background(
                         if (payEnabled) Brush.horizontalGradient(listOf(DalabGreen, Color(0xFF0F9E76)))
@@ -345,6 +364,7 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth(),
             )
+            Spacer(Modifier.height(outerPadding))
         }
     }
 }
