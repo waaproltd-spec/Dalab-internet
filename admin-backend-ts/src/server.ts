@@ -20,6 +20,16 @@ import { seedAll } from "./db/seed.js";
 
 const app = express();
 
+// Render sits in front of this app as a single reverse-proxy hop — trusting
+// exactly one hop makes Express resolve req.ip from X-Forwarded-For
+// correctly (the proxy's own value, not whatever a client appends), which
+// the rate limiter below depends on to not be trivially bypassable.
+app.set("trust proxy", 1);
+
+if (!process.env.CORS_ORIGIN && process.env.NODE_ENV === "production") {
+  throw new Error("CORS_ORIGIN is not set. Refusing to start in production wide open to any origin.");
+}
+
 app.use(express.json());
 app.use(
   cors({
@@ -34,6 +44,9 @@ app.use((_req: Request, res: Response, next: NextFunction) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("Referrer-Policy", "no-referrer");
+  // Render always serves this app over HTTPS (TLS terminates at their edge),
+  // so this is safe to send unconditionally rather than only when req.secure.
+  res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   next();
 });
 

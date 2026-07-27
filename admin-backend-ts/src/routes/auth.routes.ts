@@ -102,7 +102,7 @@ authRouter.post("/admin/auth/login", rateLimit("admin-login", 5, 15 * 60 * 1000)
   });
 });
 
-authRouter.post("/admin/auth/change-password", requireAuth("super_admin", "admin"), async (req, res) => {
+authRouter.post("/admin/auth/change-password", requireAuth("super_admin", "admin"), rateLimit("change-password", 5, 15 * 60 * 1000), async (req, res) => {
   const { currentPassword, newPassword } = req.body;
   if (!currentPassword || !newPassword) return sendJson(res, 400, { error: "currentPassword and newPassword are required" });
   if (!isStrongPassword(newPassword)) {
@@ -136,7 +136,7 @@ authRouter.post("/admin/auth/forgot-password", rateLimit("forgot-password", 3, 6
   sendJson(res, 200, response);
 });
 
-authRouter.post("/admin/auth/reset-password", async (req, res) => {
+authRouter.post("/admin/auth/reset-password", rateLimit("reset-password", 10, 15 * 60 * 1000), async (req, res) => {
   const token = String(req.body.token ?? "");
   const newPassword = String(req.body.newPassword ?? "");
   if (!token || !newPassword) return sendJson(res, 400, { error: "token and newPassword are required" });

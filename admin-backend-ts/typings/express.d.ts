@@ -8,6 +8,8 @@ declare module "express" {
     /** Set by requireAuth() (src/auth/middleware.ts) after verifying the bearer token. */
     auth?: { sub: string; role: string; type?: string; jti?: string; iat?: number; exp?: number };
     on(event: "close", listener: () => void): void;
+    /** Correctly resolved only when app.set("trust proxy", ...) is configured — see server.ts. */
+    ip?: string;
   }
   export interface Response {
     status(code: number): Response;
@@ -34,6 +36,7 @@ declare module "express" {
     use(...args: unknown[]): Express;
     get(path: string, ...handlers: RequestHandler[]): Express;
     listen(port: number, callback: () => void): void;
+    set(setting: string, value: unknown): Express;
   }
   function express(): Express;
   namespace express {
