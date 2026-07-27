@@ -1,7 +1,10 @@
 package com.dalab.internet.customer.ui
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -11,6 +14,8 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.*
@@ -20,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -28,6 +34,8 @@ import com.dalab.internet.customer.data.Company
 import com.dalab.internet.customer.data.companyLogoRes
 import com.dalab.internet.customer.network.ApiClient
 import java.util.Calendar
+
+private const val SUPPORT_PHONE = "252610338686"
 
 private fun greeting(): String {
     val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
@@ -45,6 +53,7 @@ fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenMacaash: () -> Unit) {
     var loading by remember { mutableStateOf(true) }
     var showSupport by remember { mutableStateOf(false) }
     val customer = SessionManager.currentCustomer()
+    val context = LocalContext.current
 
     LaunchedEffect(Unit) {
         try {
@@ -101,9 +110,48 @@ fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenMacaash: () -> Unit) {
         AlertDialog(
             onDismissRequest = { showSupport = false },
             title = { Text("Need help?") },
-            text = { Text("Contact DALAB Internet support at +252 61 000 0000 or support@dalabinternet.so") },
-            confirmButton = { TextButton(onClick = { showSupport = false }) { Text("OK") } },
+            text = {
+                Column {
+                    Text("Reach DALAB Internet support directly:")
+                    Spacer(Modifier.height(12.dp))
+                    SupportActionRow(
+                        icon = Icons.Filled.Call,
+                        label = "Call Us",
+                        onClick = {
+                            context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$SUPPORT_PHONE")))
+                            showSupport = false
+                        },
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    SupportActionRow(
+                        icon = Icons.Filled.Chat,
+                        label = "WhatsApp",
+                        onClick = {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$SUPPORT_PHONE")))
+                            showSupport = false
+                        },
+                    )
+                }
+            },
+            confirmButton = { TextButton(onClick = { showSupport = false }) { Text("Close") } },
         )
+    }
+}
+
+@Composable
+private fun SupportActionRow(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0xFFEFF1FA))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, tint = Color(0xFF1D2E8C), modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(12.dp))
+        Text(label, fontWeight = FontWeight.SemiBold)
     }
 }
 
@@ -154,23 +202,31 @@ private fun CompanyCard(company: Company, onClick: () -> Unit) {
         }
     }
     val logoRes = remember(company.id) { companyLogoRes(company.id) }
+    val borderColor = if (offline) Color.LightGray else brandColor
 
-    Card(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = !offline, onClick = onClick),
-        shape = RoundedCornerShape(18.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+            .clip(RoundedCornerShape(20.dp))
+            .background(Color.White)
+            .border(width = 1.5.dp, color = borderColor, shape = RoundedCornerShape(20.dp))
+            .clickable(enabled = !offline, onClick = onClick)
+            .padding(vertical = 22.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+        Box(
+            modifier = Modifier
+                .size(76.dp)
+                .clip(CircleShape)
+                .background(borderColor.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center,
         ) {
             Box(
                 modifier = Modifier
-                    .size(72.dp)
+                    .size(60.dp)
                     .clip(CircleShape)
-                    .background(if (offline) Color.LightGray else if (logoRes != null) Color.White else brandColor),
+                    .background(Color.White)
+                    .border(width = 1.5.dp, color = borderColor, shape = CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
                 if (offline) {
@@ -179,22 +235,22 @@ private fun CompanyCard(company: Company, onClick: () -> Unit) {
                     Image(
                         painter = painterResource(id = logoRes),
                         contentDescription = company.name,
-                        modifier = Modifier.size(72.dp).clip(CircleShape),
+                        modifier = Modifier.size(60.dp).clip(CircleShape),
                     )
                 } else {
                     Text(
                         company.name.take(1).uppercase(),
-                        color = Color.White,
+                        color = brandColor,
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold,
                     )
                 }
             }
-            Spacer(Modifier.height(12.dp))
-            Text(company.name, fontWeight = FontWeight.Bold)
-            if (offline) {
-                Text("Offline", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
-            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Text(company.name, fontWeight = FontWeight.Bold)
+        if (offline) {
+            Text("Offline", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
         }
     }
 }

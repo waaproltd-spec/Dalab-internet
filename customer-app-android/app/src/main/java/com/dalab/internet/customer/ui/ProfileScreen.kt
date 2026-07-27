@@ -34,7 +34,7 @@ import com.dalab.internet.customer.network.UpdateProfileRequest
 import kotlinx.coroutines.launch
 
 private val DalabIndigo = Color(0xFF1D2E8C)
-private const val SUPPORT_PHONE = "25261033868"
+private const val SUPPORT_PHONE = "252610338686"
 private const val PACKAGE_NAME = "com.dalab.internet.customer"
 
 @OptIn(ExperimentalMaterial3Api::class)

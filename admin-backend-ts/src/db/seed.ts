@@ -3,9 +3,9 @@ import { query, queryOne } from "./pool.js";
 
 async function seedCompaniesAndPackages() {
   const companies = [
-    { id: "hormuud", name: "Hormuud", group_number: 1, color_hex: "#16A34A", gateway: "EVC Plus", ussd_code: "*770#", payment_number: "610338686", payment_ussd_template: "*712*610338686*{amount}#" },
-    { id: "somnet", name: "Somnet", group_number: 1, color_hex: "#1D4ED8", gateway: "JEEB", ussd_code: "*828#", payment_number: "610338686", payment_ussd_template: "*812*610338686*{amount}#" },
-    { id: "somtel", name: "Somtel", group_number: 2, color_hex: "#F2C200", gateway: "eDahab", ussd_code: "*883#", payment_number: "620338686", payment_ussd_template: "*110*620338686*{amount}#" },
+    { id: "hormuud", name: "Hormuud", group_number: 1, color_hex: "#16A34A", gateway: "EVC Plus", ussd_code: "*770#", payment_number: "610338686", payment_ussd_template: "*712*{number}*{amount}#" },
+    { id: "somnet", name: "Somnet", group_number: 1, color_hex: "#1D4ED8", gateway: "JEEB", ussd_code: "*828#", payment_number: "610338686", payment_ussd_template: "*812*{number}*{amount}#" },
+    { id: "somtel", name: "Somtel", group_number: 2, color_hex: "#F2C200", gateway: "eDahab", ussd_code: "*883#", payment_number: "620338686", payment_ussd_template: "*110*{number}*{amount}#" },
     { id: "amtel", name: "Amtel", group_number: 2, color_hex: "#C81E2C", gateway: "Manual", ussd_code: "*505#", payment_number: null, payment_ussd_template: null },
   ];
   for (const c of companies) {
