@@ -190,7 +190,7 @@ private fun CustomerHome(
                 HomeTab.HOME -> HomeScreen(onOpenCompany = onOpenCompany, onOpenMacaash = { tab = HomeTab.MACAASH })
                 HomeTab.MACAASH -> MacaashScreen()
                 HomeTab.ORDERS -> OrdersScreen(onOpenOrder = onOpenOrder)
-                HomeTab.PROFILE -> ProfileScreen(onLogout = onLogout)
+                HomeTab.PROFILE -> ProfileScreen(onLogout = onLogout, onOpenOrders = { tab = HomeTab.ORDERS })
             }
         }
     }
