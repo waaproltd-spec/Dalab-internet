@@ -1,13 +1,26 @@
 package com.dalab.internet.customer.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Sms
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.dalab.internet.customer.auth.SessionManager
 import com.dalab.internet.customer.data.Company
 import com.dalab.internet.customer.data.CustomerOrder
@@ -20,11 +33,25 @@ import com.dalab.internet.customer.queue.RetryClassifier
 import kotlinx.coroutines.launch
 import java.util.UUID
 
+private val DalabIndigo = Color(0xFF1D2E8C)
+private val DalabGreen = Color(0xFF16A34A)
+
+private data class PaymentMethodOption(val label: String, val color: Color)
+private val KNOWN_PAYMENT_METHODS = listOf(
+    PaymentMethodOption("EVC Plus", Color(0xFF16A34A)),
+    PaymentMethodOption("eDahab", Color(0xFFD9A400)),
+    PaymentMethodOption("JEEB", Color(0xFF1D2E8C)),
+)
+
 /**
  * Payment method choice mirrors the real per-provider gateway (EVC Plus /
  * JEEB / eDahab / Manual — see `company.gateway`, seeded in
  * admin-backend-ts/src/db/seed.ts) rather than a generic list, since each
- * provider only actually supports its own mobile-money gateway.
+ * provider only actually supports its own mobile-money gateway. The icon row
+ * below shows all known gateways for visual context (matching the reference
+ * design) but only the one this provider actually uses is selectable/lit —
+ * a customer can never choose a different gateway than their provider
+ * supports.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -39,37 +66,103 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
     val clientRequestId = remember { UUID.randomUUID().toString() }
     val scope = rememberCoroutineScope()
     val paymentMethod = company.gateway ?: "Manual"
+    val brandColor = remember(company.colorHex) {
+        try {
+            Color(android.graphics.Color.parseColor(company.colorHex))
+        } catch (_: Exception) {
+            DalabIndigo
+        }
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Confirm Payment") },
+                title = { Text("Confirm Payment", color = Color.White, fontWeight = FontWeight.Bold) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back") }
+                    IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White) }
                 },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = brandColor),
             )
         }
     ) { padding ->
-        Column(modifier = Modifier.padding(padding).padding(20.dp).fillMaxSize()) {
-            Text("Service Details", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp))
-            DetailRow("Provider", company.name)
-            DetailRow("Package", pkg.name)
-            DetailRow("Amount", "$${"%.2f".format(pkg.price)}")
-
-            Spacer(Modifier.height(20.dp))
-            Text("Payment Method", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp))
-            AssistChip(onClick = {}, label = { Text(paymentMethod) })
-
-            Spacer(Modifier.height(20.dp))
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .padding(20.dp)
+                .fillMaxSize(),
+        ) {
             OutlinedTextField(
                 value = receiverPhone,
                 onValueChange = { receiverPhone = it },
                 label = { Text("Receiver number (target)") },
                 singleLine = true,
+                shape = RoundedCornerShape(28.dp),
+                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = brandColor),
                 modifier = Modifier.fillMaxWidth(),
             )
+
+            Spacer(Modifier.height(24.dp))
+            Text("Select Payment Method", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                KNOWN_PAYMENT_METHODS.forEach { method ->
+                    val active = method.label.equals(paymentMethod, ignoreCase = true)
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Box(
+                            modifier = Modifier
+                                .size(64.dp)
+                                .clip(CircleShape)
+                                .background(if (active) method.color else method.color.copy(alpha = 0.25f)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                method.label.take(2).uppercase(),
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp,
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            method.label,
+                            fontSize = 12.sp,
+                            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                            color = if (active) method.color else Color.Gray,
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(24.dp))
+            Surface(
+                color = Color(0xFFEFF7F0),
+                shape = RoundedCornerShape(18.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(modifier = Modifier.padding(20.dp)) {
+                    Text("Service Details", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Spacer(Modifier.height(14.dp))
+                    ServiceDetailRow("Provider", company.name)
+                    ServiceDetailRow("Package", pkg.name)
+                    ServiceDetailRow("Amount", "$${"%.2f".format(pkg.price)}")
+                    val extras = buildList {
+                        if (pkg.mb > 0) add(Icons.Filled.Wifi to "${pkg.mb} MB")
+                        if (pkg.minutes > 0) add(Icons.Filled.Call to "${pkg.minutes} minutes")
+                        if (pkg.sms > 0) add(Icons.Filled.Sms to "${pkg.sms} SMS")
+                        pkg.validity?.takeIf { it.isNotBlank() }?.let { add(Icons.Filled.Schedule to it) }
+                    }
+                    if (extras.isNotEmpty()) {
+                        Spacer(Modifier.height(6.dp))
+                        extras.forEach { (icon, label) ->
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
+                                Icon(icon, contentDescription = null, tint = DalabGreen, modifier = Modifier.size(15.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text(label, fontSize = 13.sp, color = Color(0xFF44494F))
+                            }
+                        }
+                    }
+                }
+            }
 
             Spacer(Modifier.height(20.dp))
             if (error != null) {
@@ -84,54 +177,68 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                 Spacer(Modifier.height(12.dp))
             }
 
-            Button(
-                onClick = {
-                    error = null
-                    submitting = true
-                    val request = CreateOrderRequest(
-                        companyId = company.id,
-                        packageId = pkg.id,
-                        receiverPhone = receiverPhone.trim().ifBlank { null },
-                        paymentMethod = paymentMethod,
-                        clientRequestId = clientRequestId,
-                    )
-                    scope.launch {
-                        try {
-                            val response = RetryClassifier.requireSuccessful(ApiClient.service.createOrder(request))
-                            val order = response.body()
-                            if (order != null) onOrderCreated(order)
-                            else error = "Couldn't place this order. Please try again."
-                        } catch (e: Exception) {
-                            if (RetryClassifier.isRetryable(e)) {
-                                PendingActionQueue.enqueue(
-                                    id = UUID.randomUUID().toString(),
-                                    type = PendingActionQueue.Type.ORDER_CREATE,
-                                    payload = OrderCreateAction(request),
-                                )
-                                queued = true
-                            } else {
-                                error = "Couldn't place this order. Please try again."
-                            }
+            val payEnabled = receiverPhone.isNotBlank() && !submitting && !queued
+            val onPay: () -> Unit = {
+                error = null
+                submitting = true
+                val request = CreateOrderRequest(
+                    companyId = company.id,
+                    packageId = pkg.id,
+                    receiverPhone = receiverPhone.trim().ifBlank { null },
+                    paymentMethod = paymentMethod,
+                    clientRequestId = clientRequestId,
+                )
+                scope.launch {
+                    try {
+                        val response = RetryClassifier.requireSuccessful(ApiClient.service.createOrder(request))
+                        val order = response.body()
+                        if (order != null) onOrderCreated(order)
+                        else error = "Couldn't place this order. Please try again."
+                    } catch (e: Exception) {
+                        if (RetryClassifier.isRetryable(e)) {
+                            PendingActionQueue.enqueue(
+                                id = UUID.randomUUID().toString(),
+                                type = PendingActionQueue.Type.ORDER_CREATE,
+                                payload = OrderCreateAction(request),
+                            )
+                            queued = true
+                        } else {
+                            error = "Couldn't place this order. Please try again."
                         }
-                        submitting = false
                     }
-                },
-                enabled = receiverPhone.isNotBlank() && !submitting && !queued,
-                modifier = Modifier.fillMaxWidth(),
+                    submitting = false
+                }
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(54.dp)
+                    .clip(RoundedCornerShape(28.dp))
+                    .background(
+                        if (payEnabled) Brush.horizontalGradient(listOf(DalabIndigo, DalabGreen))
+                        else Brush.horizontalGradient(listOf(Color(0xFFBDC2E0), Color(0xFFBDC2E0)))
+                    )
+                    .clickable(enabled = payEnabled, onClick = onPay),
+                contentAlignment = Alignment.Center,
             ) {
-                Text(if (submitting) "Processing..." else if (queued) "Queued" else "Pay Now")
+                Text(
+                    if (submitting) "Processing..." else if (queued) "Queued" else "Pay Now",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp,
+                )
             }
         }
     }
 }
 
 @Composable
-private fun DetailRow(label: String, value: String) {
+private fun ServiceDetailRow(label: String, value: String) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium)
-        Text(value, fontWeight = FontWeight.Medium)
+        Text(label, fontSize = 13.sp, color = Color(0xFF6B7094))
+        Text(value, fontWeight = FontWeight.Bold, fontSize = 13.sp)
     }
 }
