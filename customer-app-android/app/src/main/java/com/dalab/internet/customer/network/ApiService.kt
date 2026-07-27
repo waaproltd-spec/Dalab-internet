@@ -22,6 +22,7 @@ data class CreateOrderRequest(
     val packageId: String,
     val receiverPhone: String? = null,
     val paymentMethod: String? = null,
+    val clientRequestId: String? = null,
 )
 data class RedeemRequest(val rewardId: String)
 data class RedeemResponse(val redeemed: String, val remainingBalance: Int)

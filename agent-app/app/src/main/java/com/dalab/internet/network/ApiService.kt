@@ -37,6 +37,7 @@ data class CreateSaleRequest(
     val packageId: String,
     val receiverPhone: String? = null,
     val paymentMethod: String? = null,
+    val clientRequestId: String? = null,
 )
 
 /**

@@ -14,7 +14,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * `files` array below rather than editing 001 in place.
  */
 async function migrate() {
-  const files = ["001_init.sql", "002_admin_controls.sql", "003_realtime_and_automation.sql", "004_device_health_and_failover.sql"];
+  const files = [
+    "001_init.sql",
+    "002_admin_controls.sql",
+    "003_realtime_and_automation.sql",
+    "004_device_health_and_failover.sql",
+    "005_idempotency_and_dedup.sql",
+  ];
   for (const file of files) {
     const sql = readFileSync(path.join(__dirname, "migrations", file), "utf8");
     // eslint-disable-next-line no-console
