@@ -26,6 +26,8 @@ data class RefreshRequest(val refreshToken: String)
 data class RefreshResponse(val accessToken: String, val refreshToken: String)
 data class VerifyPaymentRequest(val smsLogId: String? = null)
 data class SmsLogUploadResponse(val id: String, val matchedOrderId: String?, val requiresManualApproval: Boolean = false)
+data class VoucherConfirmationRequest(val receiverPhone: String, val amount: Double, val provider: String)
+data class VoucherConfirmationResponse(val matched: Boolean, val orderId: String? = null, val alreadyCompleted: Boolean = false)
 data class DialAttemptStartRequest(val simSlot: Int?, val ussdString: String, val attemptNumber: Int)
 data class DialAttemptStartResponse(val id: String)
 data class DialAttemptResultRequest(val status: String, val responseMessage: String?)
@@ -76,6 +78,9 @@ interface ApiService {
 
     @POST("agent/sms-logs")
     suspend fun uploadSmsLog(@Body body: SmsLogEntry): Response<SmsLogUploadResponse>
+
+    @POST("agent/orders/voucher-confirmation")
+    suspend fun reportVoucherConfirmation(@Body body: VoucherConfirmationRequest): Response<VoucherConfirmationResponse>
 
     @GET("agent/notifications")
     suspend fun getNotifications(): Response<List<AgentNotification>>

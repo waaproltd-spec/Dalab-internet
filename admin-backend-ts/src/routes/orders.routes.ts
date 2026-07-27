@@ -207,21 +207,75 @@ async function creditMacaashIfNeeded(order: any) {
   }
 }
 
-ordersRouter.post("/agent/orders/:id/complete", requireAuth("agent"), async (req, res) => {
-  const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
-  if (!order) return sendJson(res, 404, { error: "Order not found" });
+/**
+ * Atomic in_progress -> completed transition, shared by the agent's own
+ * "mark complete" tap (after a successful USSD dial response) and the
+ * voucher-confirmation endpoint below (a second, independent signal: the
+ * carrier's own SMS confirming the agent's SIM sent the top-up). Either
+ * signal can complete the order first; whichever loses the race just gets
+ * 0 rows back from the guarded UPDATE and is treated as a no-op, not an error.
+ */
+async function completeOrderById(orderId: string): Promise<{ order: any; alreadyCompleted: boolean } | null> {
+  const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [orderId]);
+  if (!order) return null;
 
   const result = await query(
     `UPDATE orders SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1 AND status='in_progress' RETURNING id`,
-    [order.id]
+    [orderId]
   );
   if (result.length === 0) {
-    if (order.status === "completed") return sendJson(res, 200, await loadOrder(order.id));
-    return sendJson(res, 409, { error: "Order must be in progress before it can be completed" });
+    return { order, alreadyCompleted: order.status === "completed" };
   }
   await creditMacaashIfNeeded(order);
-  broadcast({ type: "order.updated", orderId: order.id });
-  sendJson(res, 200, await loadOrder(order.id));
+  broadcast({ type: "order.updated", orderId });
+  return { order, alreadyCompleted: false };
+}
+
+ordersRouter.post("/agent/orders/:id/complete", requireAuth("agent"), async (req, res) => {
+  const result = await completeOrderById(req.params.id);
+  if (!result) return sendJson(res, 404, { error: "Order not found" });
+  if (result.order.status !== "completed" && !result.alreadyCompleted) {
+    return sendJson(res, 409, { error: "Order must be in progress before it can be completed" });
+  }
+  sendJson(res, 200, await loadOrder(req.params.id));
+});
+
+/** Same last-9-digit comparison smsLogs.routes.ts's findMatchingOrder uses —
+ * Somali phone numbers legitimately appear with/without the 252 country
+ * code or a leading 0. */
+function normalizePhone(phone: string | null | undefined): string {
+  return String(phone ?? "").replace(/\D/g, "").slice(-9);
+}
+
+/**
+ * Flow 2's second half: the agent's own SIM sent a top-up/voucher to the
+ * customer, and the carrier confirmed it back to the agent's phone (e.g.
+ * Hormuud's "[-E-Voucher-] You have transferred $X to Y" from sender 740) —
+ * a corroborating signal alongside the USSD dial's own on-screen response,
+ * since some OEM/carrier USSD response callbacks are unreliable or generic.
+ * Matches the most recently updated in_progress order for this receiver
+ * phone + amount and completes it the same atomic way the agent's own
+ * "mark complete" tap does; a redundant or unmatched confirmation is not an
+ * error — nothing to complete just means this device's own top-up already
+ * completed the order (or this SMS doesn't correspond to a DALAB order).
+ */
+ordersRouter.post("/agent/orders/voucher-confirmation", requireAuth("agent"), async (req, res) => {
+  const { receiverPhone, amount } = req.body;
+  if (!receiverPhone || amount == null) {
+    return sendJson(res, 400, { error: "receiverPhone and amount are required" });
+  }
+  const target = normalizePhone(receiverPhone);
+  if (!target) return sendJson(res, 400, { error: "receiverPhone is not a valid phone number" });
+
+  const candidates = await query<{ id: string; receiver_phone: string | null }>(
+    `SELECT id, receiver_phone FROM orders WHERE status='in_progress' AND ABS(amount - $1) < 0.01 ORDER BY updated_at DESC`,
+    [amount]
+  );
+  const match = candidates.find((o) => normalizePhone(o.receiver_phone) === target);
+  if (!match) return sendJson(res, 200, { matched: false });
+
+  const result = await completeOrderById(match.id);
+  sendJson(res, 200, { matched: true, orderId: match.id, alreadyCompleted: result?.alreadyCompleted ?? false });
 });
 
 ordersRouter.get("/agent/transactions", requireAuth("agent"), async (req, res) => {

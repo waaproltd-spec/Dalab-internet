@@ -39,8 +39,9 @@ class SmsReceiver : BroadcastReceiver() {
         val body = messages.joinToString(separator = "") { it.messageBody ?: "" }
         val receivedAt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US).format(Date())
 
-        val parsed = PaymentSmsParsers.parse(sender, body, receivedAt) ?: return
-        SmsListenerState.recordLog(parsed)
+        val parsed = PaymentSmsParsers.parse(sender, body, receivedAt)
+        val voucherSent = if (parsed == null) VoucherSentParsers.parse(sender, body) else null
+        if (parsed == null && voucherSent == null) return
 
         // BroadcastReceivers must finish quickly; goAsync() extends that window just
         // long enough for the network call + USSD dial below to complete or time out.
@@ -50,16 +51,30 @@ class SmsReceiver : BroadcastReceiver() {
         val appContext = context.applicationContext
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                when (val outcome = SmsUploadFlow.uploadAndProcess(appContext, parsed)) {
+                if (voucherSent != null) {
+                    // Flow 2: agent's own SIM confirmed it sent the top-up — a
+                    // corroborating signal, not an incoming customer payment.
+                    if (SmsUploadFlow.reportVoucherConfirmation(voucherSent) is UploadOutcome.RetryableUpload) {
+                        PendingActionQueue.enqueue(
+                            id = UUID.randomUUID().toString(),
+                            type = PendingActionQueue.Type.VOUCHER_CONFIRMATION,
+                            payload = VoucherConfirmationAction(voucherSent),
+                        )
+                    }
+                    return@launch
+                }
+                val entry = parsed!!
+                SmsListenerState.recordLog(entry)
+                when (val outcome = SmsUploadFlow.uploadAndProcess(appContext, entry)) {
                     is UploadOutcome.RetryableUpload -> PendingActionQueue.enqueue(
                         id = UUID.randomUUID().toString(),
                         type = PendingActionQueue.Type.SMS_UPLOAD,
-                        payload = SmsUploadAction(parsed),
+                        payload = SmsUploadAction(entry),
                     )
                     is UploadOutcome.RetryableVerify -> PendingActionQueue.enqueue(
                         id = UUID.randomUUID().toString(),
                         type = PendingActionQueue.Type.VERIFY_PAYMENT,
-                        payload = VerifyPaymentAction(outcome.orderId, outcome.smsLogId, parsed.parsedAmount),
+                        payload = VerifyPaymentAction(outcome.orderId, outcome.smsLogId, entry.parsedAmount),
                     )
                     is UploadOutcome.Terminal, UploadOutcome.Success -> {
                         // Terminal: the server rejected this SMS upload outright (a
