@@ -5,7 +5,7 @@ import {
   X, Check, TrendingUp, Wifi, DollarSign,
   Clock3, CheckCircle2, XCircle, Download, ShieldCheck, Menu, RefreshCw, Loader2,
   GalleryHorizontalEnd, ArrowUp, ArrowDown, Eye, EyeOff, Lock, Mail, LogOut, ArrowLeft, KeyRound, Copy, Terminal, SmartphoneNfc,
-  Smartphone, Radio, ChevronDown, ChevronRight, AlertTriangle, RotateCcw, UserCog
+  Smartphone, Radio, ChevronDown, ChevronRight, AlertTriangle, RotateCcw, UserCog, Tags
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 
@@ -71,6 +71,15 @@ const DalabAdminApi = {
   updateCompanyVisibility: (id, visibleCustomerApp, visibleAgentApp) => dalabAdminApiRequest(`/admin/companies/${id}/visibility`, { method: "PUT", body: { visibleCustomerApp, visibleAgentApp } }),
   updatePaymentNumber: (id, paymentNumber) => dalabAdminApiRequest(`/admin/companies/${id}/payment-number`, { method: "PUT", body: { paymentNumber } }),
   getPackages: (companyId) => dalabAdminApiRequest(`/admin/packages${companyId ? `?companyId=${companyId}` : ""}`),
+  createPackage: (body) => dalabAdminApiRequest("/admin/packages", { method: "POST", body }),
+  updatePackage: (id, body) => dalabAdminApiRequest(`/admin/packages/${id}`, { method: "PUT", body }),
+  deletePackage: (id) => dalabAdminApiRequest(`/admin/packages/${id}`, { method: "DELETE" }),
+  // Service categories
+  getCategories: (companyId) => dalabAdminApiRequest(`/admin/categories${companyId ? `?companyId=${companyId}` : ""}`),
+  createCategory: (body) => dalabAdminApiRequest("/admin/categories", { method: "POST", body }),
+  updateCategory: (id, body) => dalabAdminApiRequest(`/admin/categories/${id}`, { method: "PUT", body }),
+  toggleCategoryStatus: (id, status) => dalabAdminApiRequest(`/admin/categories/${id}/status`, { method: "PUT", body: { status } }),
+  deleteCategory: (id) => dalabAdminApiRequest(`/admin/categories/${id}`, { method: "DELETE" }),
   getOrders: (status, search, companyId) => {
     const qs = new URLSearchParams({
       ...(status ? { status } : {}),
@@ -121,7 +130,29 @@ const DalabAdminApi = {
     const qs = new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([, v]) => v))).toString();
     return dalabAdminApiRequest(`/admin/execution-logs${qs ? `?${qs}` : ""}`);
   },
+  // Roles & Permissions (Super Admin only, enforced server-side too)
+  getAdminUsers: () => dalabAdminApiRequest("/admin/users"),
+  createAdminUser: (body) => dalabAdminApiRequest("/admin/users", { method: "POST", body }),
+  updateAdminUserRole: (id, role) => dalabAdminApiRequest(`/admin/users/${id}/role`, { method: "PUT", body: { role } }),
+  deleteAdminUser: (id) => dalabAdminApiRequest(`/admin/users/${id}`, { method: "DELETE" }),
+  getAdminUserPermissions: (id) => dalabAdminApiRequest(`/admin/users/${id}/permissions`),
+  setAdminUserPermissions: (id, permissions) => dalabAdminApiRequest(`/admin/users/${id}/permissions`, { method: "PUT", body: { permissions } }),
 };
+
+// Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
+// in sync if a key is ever added/renamed there.
+const PERMISSION_OPTIONS = [
+  { key: "companies.manage", label: "Manage companies" },
+  { key: "categories.manage", label: "Manage service categories" },
+  { key: "packages.manage", label: "Manage packages" },
+  { key: "agents.manage", label: "Manage agents" },
+  { key: "customers.manage", label: "Manage customers" },
+  { key: "orders.manage", label: "Manage orders" },
+  { key: "orders.reverse", label: "Reverse transactions" },
+  { key: "devices.manage", label: "Manage devices & USSD" },
+  { key: "settings.manage", label: "Manage system settings" },
+  { key: "reports.export", label: "Export reports" },
+];
 
 // Normalizes a GET /admin/companies row into the shape every section of this
 // app already expects (color/group/status/payNumber, established by the
@@ -297,6 +328,7 @@ const NAV = [
   { id: "companies", label: "Companies", icon: Building2 },
   { id: "payment-numbers", label: "Payment Numbers", icon: Wallet },
   { id: "packages", label: "Packages & Pricing", icon: Package },
+  { id: "categories", label: "Categories", icon: Tags },
   { id: "orders", label: "Orders", icon: ShoppingCart },
   { id: "customers", label: "Customers", icon: Users },
   { id: "agents", label: "Agents", icon: UserCog },
@@ -306,6 +338,7 @@ const NAV = [
   { id: "devices", label: "Device & USSD", icon: SmartphoneNfc },
   { id: "execution-logs", label: "Execution Logs", icon: Terminal },
   { id: "reports", label: "Reports", icon: FileBarChart2 },
+  { id: "roles", label: "Roles & Permissions", icon: ShieldCheck, superAdminOnly: true },
   { id: "settings", label: "Settings", icon: Settings },
 ];
 
@@ -769,46 +802,99 @@ function PaymentNumbers({ companies, setCompanies, refreshCompanies, admin }) {
   );
 }
 
-function Packages({ packages, setPackages, companies }) {
+function Packages({ packages, setPackages, companies, admin }) {
+  const [livePackages, setLivePackages] = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [companyFilter, setCompanyFilter] = useState("all");
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({});
-  const [filter, setFilter] = useState("All");
+  const [error, setError] = useState("");
+  const canManage = hasPermission(admin, "packages.manage");
 
-  const openNew = () => { setForm({ company: companies[0]?.name || "", name: "", old: "", price: "", mb: "", min: "", sms: "", validity: "" }); setEditing("new"); };
-  const openEdit = (p) => { setForm(p); setEditing(p.id); };
-  const save = () => {
-    if (editing === "new") {
-      setPackages((prev) => [...prev, { ...form, id: "pkg-" + Date.now() }]);
+  const fetchPackages = async () => {
+    if (!DALAB_API_ENABLED) return;
+    try {
+      setLivePackages(await DalabAdminApi.getPackages(companyFilter === "all" ? undefined : companyFilter));
+    } catch (err) {
+      setError(err.message || "Could not load packages.");
+    }
+  };
+  useEffect(() => { fetchPackages(); }, [companyFilter]);
+
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    DalabAdminApi.getCategories(companyFilter === "all" ? undefined : companyFilter).then(setCategories).catch(() => setCategories([]));
+  }, [companyFilter]);
+
+  const shown = DALAB_API_ENABLED
+    ? livePackages
+    : companyFilter === "all"
+      ? packages
+      : packages.filter((p) => p.company === companies.find((c) => c.id === companyFilter)?.name);
+
+  const openNew = () => {
+    const companyId = companyFilter !== "all" ? companyFilter : companies[0]?.id || "";
+    setForm({ companyId, categoryId: "", name: "", oldPrice: "", price: "", mb: "", minutes: "", sms: "", validity: "", active: true });
+    setEditing("new");
+  };
+  const openEdit = (p) => {
+    setForm(DALAB_API_ENABLED ? p : { ...p, companyId: companies.find((c) => c.name === p.company)?.id, oldPrice: p.old, minutes: p.min });
+    setEditing(p.id);
+  };
+
+  const save = async () => {
+    if (!form.name || form.price === "" || form.price == null) return;
+    if (DALAB_API_ENABLED) {
+      try {
+        if (editing === "new") await DalabAdminApi.createPackage(form);
+        else await DalabAdminApi.updatePackage(editing, form);
+        await fetchPackages();
+      } catch (err) {
+        setError(err.message || "Could not save package.");
+        return;
+      }
+    } else if (editing === "new") {
+      const companyName = companies.find((c) => c.id === form.companyId)?.name;
+      setPackages((prev) => [...prev, { ...form, company: companyName, old: form.oldPrice, min: form.minutes, id: "pkg-" + Date.now() }]);
     } else {
-      setPackages((prev) => prev.map((p) => (p.id === editing ? { ...p, ...form } : p)));
+      setPackages((prev) => prev.map((p) => (p.id === editing ? { ...p, ...form, old: form.oldPrice, min: form.minutes } : p)));
     }
     setEditing(null);
   };
-  const remove = (id) => setPackages((prev) => prev.filter((p) => p.id !== id));
 
-  const shown = filter === "All" ? packages : packages.filter((p) => p.company === filter);
+  const remove = async (p) => {
+    if (!window.confirm(`${DALAB_API_ENABLED ? "Deactivate" : "Remove"} "${p.name}"?`)) return;
+    if (DALAB_API_ENABLED) {
+      try {
+        await DalabAdminApi.deletePackage(p.id);
+        await fetchPackages();
+      } catch (err) {
+        alert(err.message || "Could not deactivate package.");
+      }
+    } else {
+      setPackages((prev) => prev.filter((x) => x.id !== p.id));
+    }
+  };
 
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
         <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Packages & pricing</div>
-        <Button icon={Plus} onClick={openNew}>Add package</Button>
+        {canManage && <Button icon={Plus} onClick={openNew}>Add package</Button>}
       </div>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-        {["All", ...companies.map((c) => c?.name).filter(Boolean)].map((f) => (
-          <button
-            key={f}
-            onClick={() => setFilter(f)}
-            style={{
-              padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
-              border: `1px solid ${filter === f ? INDIGO : BORDER}`,
-              background: filter === f ? INDIGO : "#fff",
-              color: filter === f ? "#fff" : SLATE,
-            }}
-          >
-            {f}
-          </button>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+        <button onClick={() => setCompanyFilter("all")} style={{
+          padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
+          border: `1px solid ${companyFilter === "all" ? INDIGO : BORDER}`, background: companyFilter === "all" ? INDIGO : "#fff", color: companyFilter === "all" ? "#fff" : SLATE,
+        }}>All</button>
+        {companies.map((c) => (
+          <button key={c.id} onClick={() => setCompanyFilter(c.id)} style={{
+            padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
+            border: `1px solid ${companyFilter === c.id ? INDIGO : BORDER}`, background: companyFilter === c.id ? INDIGO : "#fff", color: companyFilter === c.id ? "#fff" : SLATE,
+          }}>{c.name}</button>
         ))}
       </div>
 
@@ -816,7 +902,7 @@ function Packages({ packages, setPackages, companies }) {
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: "#FAFBFF" }}>
-              {["Package", "Company", "Old price", "Price", "MB", "Min", "SMS", "Validity", ""].map((h) => (
+              {["Package", "Company", "Old price", "Price", "MB", "Min", "SMS", "Validity", ...(DALAB_API_ENABLED ? ["Status"] : []), ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
             </tr>
@@ -825,19 +911,29 @@ function Packages({ packages, setPackages, companies }) {
             {shown.map((p) => (
               <tr key={p.id} style={{ borderTop: `1px solid ${BORDER}` }}>
                 <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{p?.name || "Unnamed package"}</td>
-                <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{p.company}</td>
-                <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE, textDecoration: "line-through" }}>${Number(p.old).toFixed(2)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{p.company || companies.find((c) => c.id === p.companyId)?.name}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE, textDecoration: "line-through" }}>${Number(p.old ?? p.oldPrice).toFixed(2)}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: GREEN, fontWeight: 700 }}>${Number(p.price).toFixed(2)}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{p.mb}</td>
-                <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{p.min}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{p.min ?? p.minutes}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{p.sms}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{p.validity}</td>
+                {DALAB_API_ENABLED && (
+                  <td style={{ padding: "10px 14px" }}><Badge tone={p.active ? "green" : "gray"}>{p.active ? "Active" : "Inactive"}</Badge></td>
+                )}
                 <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
-                  <button onClick={() => openEdit(p)} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}><Pencil size={14} color={INDIGO} /></button>
-                  <button onClick={() => remove(p.id)} style={{ background: "none", border: "none", cursor: "pointer" }}><Trash2 size={14} color="#C81E2C" /></button>
+                  {canManage && (
+                    <>
+                      <button onClick={() => openEdit(p)} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}><Pencil size={14} color={INDIGO} /></button>
+                      <button onClick={() => remove(p)} style={{ background: "none", border: "none", cursor: "pointer" }}><Trash2 size={14} color="#C81E2C" /></button>
+                    </>
+                  )}
                 </td>
               </tr>
             ))}
+            {shown.length === 0 && (
+              <tr><td colSpan={10} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No packages found.</td></tr>
+            )}
           </tbody>
         </table>
       </Card>
@@ -845,22 +941,171 @@ function Packages({ packages, setPackages, companies }) {
       {editing && (
         <Modal title={editing === "new" ? "Add package" : "Edit package"} onClose={() => setEditing(null)} width={460}>
           <Field label="Company">
-            <select style={inputStyle} value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })}>
-              {companies.map((c) => <option key={c.id} value={c?.name || ""}>{c?.name || "Unnamed"}</option>)}
+            <select style={inputStyle} value={form.companyId} onChange={(e) => setForm({ ...form, companyId: e.target.value })}>
+              {companies.map((c) => <option key={c.id} value={c.id}>{c?.name || "Unnamed"}</option>)}
             </select>
+          </Field>
+          <Field label="Category">
+            {DALAB_API_ENABLED && categories.filter((cat) => cat.companyId === form.companyId).length > 0 ? (
+              <select style={inputStyle} value={form.categoryId || ""} onChange={(e) => setForm({ ...form, categoryId: e.target.value })}>
+                <option value="">Select a category</option>
+                {categories.filter((cat) => cat.companyId === form.companyId).map((cat) => (
+                  <option key={cat.id} value={cat.slug}>{cat.name}{cat.status === "disabled" ? " (disabled)" : ""}</option>
+                ))}
+              </select>
+            ) : (
+              <input style={inputStyle} value={form.categoryId || ""} onChange={(e) => setForm({ ...form, categoryId: e.target.value })} placeholder="e.g. anfac-plus (no categories set up yet for this company — see Categories)" />
+            )}
           </Field>
           <Field label="Package name">
             <input style={inputStyle} value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </Field>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <Field label="Old price ($)"><input style={inputStyle} value={form.old} onChange={(e) => setForm({ ...form, old: e.target.value })} /></Field>
-            <Field label="Discount price ($)"><input style={inputStyle} value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} /></Field>
-            <Field label="MB"><input style={inputStyle} value={form.mb} onChange={(e) => setForm({ ...form, mb: e.target.value })} /></Field>
-            <Field label="Minutes"><input style={inputStyle} value={form.min} onChange={(e) => setForm({ ...form, min: e.target.value })} /></Field>
-            <Field label="SMS"><input style={inputStyle} value={form.sms} onChange={(e) => setForm({ ...form, sms: e.target.value })} /></Field>
-            <Field label="Validity"><input style={inputStyle} value={form.validity} onChange={(e) => setForm({ ...form, validity: e.target.value })} placeholder="e.g. 1 month" /></Field>
+            <Field label="Old price ($)"><input style={inputStyle} value={form.oldPrice ?? ""} onChange={(e) => setForm({ ...form, oldPrice: e.target.value })} /></Field>
+            <Field label="Discount price ($)"><input style={inputStyle} value={form.price ?? ""} onChange={(e) => setForm({ ...form, price: e.target.value })} /></Field>
+            <Field label="MB"><input style={inputStyle} value={form.mb ?? ""} onChange={(e) => setForm({ ...form, mb: e.target.value })} /></Field>
+            <Field label="Minutes"><input style={inputStyle} value={form.minutes ?? ""} onChange={(e) => setForm({ ...form, minutes: e.target.value })} /></Field>
+            <Field label="SMS"><input style={inputStyle} value={form.sms ?? ""} onChange={(e) => setForm({ ...form, sms: e.target.value })} /></Field>
+            <Field label="Validity"><input style={inputStyle} value={form.validity ?? ""} onChange={(e) => setForm({ ...form, validity: e.target.value })} placeholder="e.g. 1 month" /></Field>
           </div>
+          {DALAB_API_ENABLED && editing !== "new" && (
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: INK, marginTop: 4, marginBottom: 14, cursor: "pointer" }}>
+              <input type="checkbox" checked={form.active !== false} onChange={(e) => setForm({ ...form, active: e.target.checked })} />
+              Available for purchase (active)
+            </label>
+          )}
+          {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
           <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
+            <Button onClick={save} icon={Check}>Save</Button>
+            <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function Categories({ companies, admin }) {
+  const [categories, setCategories] = useState([]);
+  const [companyFilter, setCompanyFilter] = useState(companies[0]?.id || "");
+  const [editing, setEditing] = useState(null); // 'new' | category object | null
+  const [form, setForm] = useState({});
+  const [error, setError] = useState("");
+  const canManage = hasPermission(admin, "categories.manage");
+
+  const fetchCategories = async () => {
+    if (!DALAB_API_ENABLED || !companyFilter) return;
+    try {
+      setCategories(await DalabAdminApi.getCategories(companyFilter));
+    } catch (err) {
+      setError(err.message || "Could not load categories.");
+    }
+  };
+  useEffect(() => { fetchCategories(); }, [companyFilter]);
+  useEffect(() => { if (!companyFilter && companies[0]) setCompanyFilter(companies[0].id); }, [companies]);
+
+  const openNew = () => { setForm({ name: "" }); setEditing("new"); setError(""); };
+  const openEdit = (c) => { setForm(c); setEditing(c.id); setError(""); };
+
+  const save = async () => {
+    if (!form.name) return;
+    try {
+      if (editing === "new") await DalabAdminApi.createCategory({ companyId: companyFilter, name: form.name });
+      else await DalabAdminApi.updateCategory(editing, { name: form.name });
+      await fetchCategories();
+      setEditing(null);
+    } catch (err) {
+      setError(err.message || "Could not save category.");
+    }
+  };
+
+  const toggleStatus = async (c) => {
+    const next = c.status === "enabled" ? "disabled" : "enabled";
+    setCategories((prev) => prev.map((x) => (x.id === c.id ? { ...x, status: next } : x))); // optimistic
+    try { await DalabAdminApi.toggleCategoryStatus(c.id, next); } catch (err) { setError(err.message); fetchCategories(); }
+  };
+
+  const remove = async (c) => {
+    if (!window.confirm(`Delete category "${c.name}"? Existing packages keep their category label but it stops being selectable.`)) return;
+    try {
+      await DalabAdminApi.deleteCategory(c.id);
+      fetchCategories();
+    } catch (err) {
+      alert(err.message || "Could not delete category.");
+    }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage service categories.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Service Categories</div>
+          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Groupings packages are organized under per provider (e.g. "Anfac Plus", "Unlimited Data & Voice").</div>
+        </div>
+        {canManage && <Button icon={Plus} onClick={openNew}>Add category</Button>}
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        {companies.map((c) => (
+          <button key={c.id} onClick={() => setCompanyFilter(c.id)} style={{
+            padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
+            border: `1px solid ${companyFilter === c.id ? c.color : BORDER}`, background: companyFilter === c.id ? c.color : "#fff", color: companyFilter === c.id ? "#fff" : SLATE,
+          }}>{c.name}</button>
+        ))}
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              {["Name", "Slug", "Status", ""].map((h) => (
+                <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {categories.map((c) => (
+              <tr key={c.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{c.name}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12, color: SLATE, fontFamily: "monospace" }}>{c.slug}</td>
+                <td style={{ padding: "10px 14px" }}><Badge tone={c.status === "enabled" ? "green" : "gray"}>{c.status === "enabled" ? "Enabled" : "Disabled"}</Badge></td>
+                <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
+                  {canManage && (
+                    <>
+                      <button onClick={() => toggleStatus(c)} title={c.status === "enabled" ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
+                        <Power size={14} color={c.status === "enabled" ? GREEN : "#C81E2C"} />
+                      </button>
+                      <button onClick={() => openEdit(c)} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
+                        <Pencil size={14} color={INDIGO} />
+                      </button>
+                      <button onClick={() => remove(c)} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                        <Trash2 size={14} color="#C81E2C" />
+                      </button>
+                    </>
+                  )}
+                </td>
+              </tr>
+            ))}
+            {categories.length === 0 && (
+              <tr><td colSpan={4} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No categories for this company yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+
+      {editing && (
+        <Modal title={editing === "new" ? "Add category" : "Edit category"} onClose={() => setEditing(null)} width={380}>
+          <Field label="Category name">
+            <input style={inputStyle} value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Anfac Plus" />
+          </Field>
+          {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
             <Button onClick={save} icon={Check}>Save</Button>
             <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
           </div>
@@ -2655,6 +2900,185 @@ function SettingsPanel() {
   );
 }
 
+function RolesPermissions({ admin }) {
+  const [users, setUsers] = useState([]);
+  const [permissionsByUser, setPermissionsByUser] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [editing, setEditing] = useState(null); // 'new' | user object | null
+  const [form, setForm] = useState({});
+  const [managingPerms, setManagingPerms] = useState(null); // user object | null
+  const [permsDraft, setPermsDraft] = useState([]);
+  const [savingPerms, setSavingPerms] = useState(false);
+
+  const fetchUsers = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setLoading(true);
+    setError("");
+    try {
+      const rows = await DalabAdminApi.getAdminUsers();
+      setUsers(rows);
+      const perms = await Promise.all(
+        rows.filter((u) => u.role === "admin").map((u) => DalabAdminApi.getAdminUserPermissions(u.id).then((r) => [u.id, r.permissions]))
+      );
+      setPermissionsByUser(Object.fromEntries(perms));
+    } catch (err) {
+      setError(err.message || "Could not load admin users.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { fetchUsers(); }, []);
+
+  const openNew = () => { setForm({ email: "", password: "", role: "admin" }); setEditing("new"); };
+
+  const save = async () => {
+    if (!form.email || !form.password) return;
+    try {
+      await DalabAdminApi.createAdminUser(form);
+      setEditing(null);
+      await fetchUsers();
+    } catch (err) {
+      alert(err.message || "Could not create admin account.");
+    }
+  };
+
+  const changeRole = async (u) => {
+    const nextRole = u.role === "super_admin" ? "admin" : "super_admin";
+    if (!window.confirm(`Change ${u.email} to ${nextRole === "super_admin" ? "Super Admin" : "Admin"}?`)) return;
+    try {
+      await DalabAdminApi.updateAdminUserRole(u.id, nextRole);
+      fetchUsers();
+    } catch (err) {
+      alert(err.message || "Could not change role.");
+    }
+  };
+
+  const remove = async (u) => {
+    if (!window.confirm(`Delete admin account ${u.email}? This can't be undone.`)) return;
+    try {
+      await DalabAdminApi.deleteAdminUser(u.id);
+      fetchUsers();
+    } catch (err) {
+      alert(err.message || "Could not delete admin account.");
+    }
+  };
+
+  const openPerms = (u) => { setManagingPerms(u); setPermsDraft(permissionsByUser[u.id] || []); };
+
+  const savePerms = async () => {
+    setSavingPerms(true);
+    try {
+      await DalabAdminApi.setAdminUserPermissions(managingPerms.id, permsDraft);
+      setPermissionsByUser((prev) => ({ ...prev, [managingPerms.id]: permsDraft }));
+      setManagingPerms(null);
+    } catch (err) {
+      alert(err.message || "Could not save permissions.");
+    } finally {
+      setSavingPerms(false);
+    }
+  };
+
+  if (admin?.role !== "super_admin") {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Only the Super Admin can manage roles and permissions.</div>;
+  }
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage roles and permissions.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Roles & Permissions</div>
+          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Super Admin has unrestricted access always. A regular Admin can only do what's checked below — changes apply immediately, no re-login needed.</div>
+        </div>
+        <Button icon={Plus} onClick={openNew}>Add admin</Button>
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              {["Email", "Role", "Permissions", "Last login", ""].map((h) => (
+                <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {users.map((u) => (
+              <tr key={u.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{u.email}</td>
+                <td style={{ padding: "10px 14px" }}><Badge tone={u.role === "super_admin" ? "green" : "neutral"}>{u.role === "super_admin" ? "Super Admin" : "Admin"}</Badge></td>
+                <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE }}>
+                  {u.role === "super_admin" ? "All (unrestricted)" : `${(permissionsByUser[u.id] || []).length} of ${PERMISSION_OPTIONS.length} granted`}
+                </td>
+                <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE }}>{u.lastLoginAt ? formatDateTime(u.lastLoginAt) : "Never"}</td>
+                <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
+                  {u.role === "admin" && <Button variant="ghost" onClick={() => openPerms(u)}>Permissions</Button>}
+                  <button onClick={() => changeRole(u)} title="Toggle role" style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
+                    <ShieldCheck size={14} color={u.role === "super_admin" ? GREEN : MUTE} />
+                  </button>
+                  <button onClick={() => remove(u)} style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
+                    <Trash2 size={14} color="#C81E2C" />
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {users.length === 0 && !loading && (
+              <tr><td colSpan={5} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No admin accounts found.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+
+      {editing && (
+        <Modal title="Add admin account" onClose={() => setEditing(null)} width={400}>
+          <Field label="Email">
+            <input type="email" style={inputStyle} value={form.email || ""} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+          </Field>
+          <Field label="Temporary password">
+            <input type="password" style={inputStyle} value={form.password || ""} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+          </Field>
+          <Field label="Role">
+            <select style={inputStyle} value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
+              <option value="admin">Admin (limited, permissions below)</option>
+              <option value="super_admin">Super Admin (unrestricted)</option>
+            </select>
+          </Field>
+          <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
+            <Button onClick={save} icon={Check}>Save</Button>
+            <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
+          </div>
+        </Modal>
+      )}
+
+      {managingPerms && (
+        <Modal title={`Permissions — ${managingPerms.email}`} onClose={() => setManagingPerms(null)} width={420}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
+            {PERMISSION_OPTIONS.map((p) => (
+              <label key={p.key} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: INK, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={permsDraft.includes(p.key)}
+                  onChange={(e) => setPermsDraft((prev) => (e.target.checked ? [...prev, p.key] : prev.filter((k) => k !== p.key)))}
+                />
+                {p.label}
+              </label>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <Button onClick={savePerms} icon={savingPerms ? Loader2 : Check} spin={savingPerms} disabled={savingPerms}>{savingPerms ? "Saving..." : "Save"}</Button>
+            <Button variant="ghost" onClick={() => setManagingPerms(null)}>Cancel</Button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 function ChangePasswordCard() {
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -2954,7 +3378,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           )}
         </div>
         <div style={{ flex: 1, padding: "8px 10px", overflowY: "auto" }}>
-          {NAV.map((n) => {
+          {NAV.filter((n) => !n.superAdminOnly || admin?.role === "super_admin").map((n) => {
             const Icon = n.icon;
             const isActive = active === n.id;
             return (
@@ -3008,7 +3432,8 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "overview" && <Overview companies={companies} orders={orders} />}
           {active === "companies" && <Companies companies={companies} setCompanies={setCompanies} refreshCompanies={refreshCompanies} admin={admin} />}
           {active === "payment-numbers" && <PaymentNumbers companies={companies} setCompanies={setCompanies} refreshCompanies={refreshCompanies} admin={admin} />}
-          {active === "packages" && <Packages packages={packages} setPackages={setPackages} companies={companies} />}
+          {active === "packages" && <Packages packages={packages} setPackages={setPackages} companies={companies} admin={admin} />}
+          {active === "categories" && <Categories companies={companies} admin={admin} />}
           {active === "orders" && <Orders orders={orders} setOrders={setOrders} companies={companies} admin={admin} />}
           {active === "customers" && <Customers customers={customers} setCustomers={setCustomers} refreshCustomers={refreshCustomers} admin={admin} />}
           {active === "agents" && <AgentsSection companies={companies} admin={admin} />}
@@ -3018,6 +3443,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "devices" && <DeviceUssdModule companies={companies} admin={admin} />}
           {active === "execution-logs" && <ExecutionLogs companies={companies} />}
           {active === "reports" && <Reports />}
+          {active === "roles" && <RolesPermissions admin={admin} />}
           {active === "settings" && <SettingsPanel />}
         </div>
       </div>
