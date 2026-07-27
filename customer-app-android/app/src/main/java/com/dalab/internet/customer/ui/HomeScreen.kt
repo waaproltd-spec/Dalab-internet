@@ -23,7 +23,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.dalab.internet.customer.auth.SessionManager
 import com.dalab.internet.customer.data.Company
 import com.dalab.internet.customer.data.companyLogoRes
@@ -41,7 +40,7 @@ private fun greeting(): String {
 
 /** Home: greeting, Macaash promo, and the provider grid — tap a provider to see its packages. */
 @Composable
-fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenMacaash: () -> Unit, otpCode: String? = null) {
+fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenMacaash: () -> Unit) {
     var companies by remember { mutableStateOf<List<Company>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var showSupport by remember { mutableStateOf(false) }
@@ -66,10 +65,6 @@ fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenMacaash: () -> Unit, otpC
         ) {
             item(span = { GridItemSpan(2) }) {
                 Column {
-                    if (otpCode != null) {
-                        OtpCodeCard(otpCode)
-                        Spacer(Modifier.height(16.dp))
-                    }
                     Text(greeting(), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(
                         customer?.name?.takeIf { it.isNotBlank() } ?: customer?.phone ?: "there",
@@ -109,37 +104,6 @@ fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenMacaash: () -> Unit, otpC
             text = { Text("Contact DALAB Internet support at +252 61 000 0000 or support@dalabinternet.so") },
             confirmButton = { TextButton(onClick = { showSupport = false }) { Text("OK") } },
         )
-    }
-}
-
-/**
- * No SMS gateway is connected — POST /auth/otp/request returns the code
- * directly so the app can show it to the customer, same as the card already
- * on the OTP entry screen (carried over so it's also visible here on Home).
- */
-@Composable
-private fun OtpCodeCard(code: String) {
-    Surface(
-        color = Color(0xFFEFF3FF),
-        shape = RoundedCornerShape(16.dp),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("Verification Code", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF1D2E8C))
-            Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                code.forEach { digit ->
-                    Box(
-                        modifier = Modifier
-                            .size(42.dp)
-                            .background(Color.White, RoundedCornerShape(10.dp)),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(digit.toString(), fontSize = 19.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1D2E8C))
-                    }
-                }
-            }
-        }
     }
 }
 
