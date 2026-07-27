@@ -24,7 +24,7 @@ object PendingActionQueue {
     private const val KEY_ITEMS = "items"
     private const val MAX_ITEMS = 200
 
-    enum class Type { SMS_UPLOAD, VERIFY_PAYMENT, DIAL_ATTEMPT_AUDIT }
+    enum class Type { SMS_UPLOAD, VERIFY_PAYMENT, DIAL_ATTEMPT_AUDIT, VOUCHER_CONFIRMATION }
 
     data class PendingAction(
         val id: String,

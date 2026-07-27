@@ -137,3 +137,53 @@ object PaymentSmsParsers {
         return null
     }
 }
+
+/**
+ * The OUTGOING half of the pipeline: confirmation that the agent's OWN SIM
+ * successfully sent a top-up/voucher to a customer (as opposed to
+ * [PaymentSmsParser], which detects the customer's incoming payment). Used
+ * as a corroborating signal alongside the USSD dial's own on-screen response
+ * text — see UssdOrchestrator — since some OEM/carrier USSD response
+ * callbacks are unreliable or generic, and this SMS is a second, independent
+ * confirmation from the carrier itself.
+ */
+data class VoucherSentEntry(val receiverPhone: String, val amount: Double, val provider: String)
+
+interface VoucherSentParser {
+    val senders: List<String>
+    fun tryParse(sender: String, body: String): VoucherSentEntry?
+}
+
+/**
+ * Hormuud's E-Voucher (top-up sent) confirmation SMS.
+ * Example: "[-E-Voucher-] You have transferred $0.1 to 252619991299. Your balance is $0.27."
+ * Sender: "740"
+ */
+object HormuudEVoucherParser : VoucherSentParser {
+    override val senders = listOf("740")
+
+    private val pattern = Regex(
+        """transferred\s+\$?\s*([\d.]+)\s+to\s+(\d{6,15})""",
+        RegexOption.IGNORE_CASE
+    )
+
+    override fun tryParse(sender: String, body: String): VoucherSentEntry? {
+        if (senders.none { it.equals(sender.trim(), ignoreCase = true) }) return null
+        val match = pattern.find(body) ?: return null
+        val (amount, phone) = match.destructured
+        val parsedAmount = amount.toDoubleOrNull() ?: return null
+        return VoucherSentEntry(receiverPhone = phone, amount = parsedAmount, provider = "Hormuud")
+    }
+}
+
+/** Registry for outgoing voucher-sent confirmations — mirrors [PaymentSmsParsers]. */
+object VoucherSentParsers {
+    val ALL: List<VoucherSentParser> = listOf(HormuudEVoucherParser)
+
+    fun parse(sender: String, body: String): VoucherSentEntry? {
+        for (parser in ALL) {
+            parser.tryParse(sender, body)?.let { return it }
+        }
+        return null
+    }
+}

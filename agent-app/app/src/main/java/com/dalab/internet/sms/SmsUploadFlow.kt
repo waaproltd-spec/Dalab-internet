@@ -8,13 +8,15 @@ import com.dalab.internet.R
 import com.dalab.internet.data.SmsLogEntry
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.network.ApiClient
+import com.dalab.internet.network.VoucherConfirmationRequest
 import com.dalab.internet.queue.RetryClassifier
 import com.dalab.internet.ussd.DialOutcome
 import com.dalab.internet.ussd.UssdOrchestrator
 
-/** Gson-serialized payloads for the two action types this flow can enqueue. */
+/** Gson-serialized payloads for the action types this flow can enqueue. */
 data class SmsUploadAction(val entry: SmsLogEntry)
 data class VerifyPaymentAction(val orderId: String, val smsLogId: String?, val parsedAmount: Double?)
+data class VoucherConfirmationAction(val entry: VoucherSentEntry)
 
 sealed class UploadOutcome {
     object Success : UploadOutcome()
@@ -58,6 +60,29 @@ object SmsUploadFlow {
         if (matchedOrderId == null) return UploadOutcome.Success // unmatched SMS — nothing further to do
 
         return processMatched(context, matchedOrderId, smsLogId, parsed.parsedAmount)
+    }
+
+    /**
+     * Flow 2's second half: reports an outgoing voucher-sent confirmation
+     * (see [VoucherSentParsers]) so the backend can complete the matching
+     * in_progress order as a corroborating signal alongside the USSD dial's
+     * own response. Best-effort/idempotent server-side — a redundant or
+     * unmatched confirmation is not an error, just a no-op.
+     */
+    suspend fun reportVoucherConfirmation(entry: VoucherSentEntry): UploadOutcome {
+        return try {
+            RetryClassifier.requireSuccessful(
+                ApiClient.service.reportVoucherConfirmation(
+                    VoucherConfirmationRequest(entry.receiverPhone, entry.amount, entry.provider)
+                )
+            )
+            UploadOutcome.Success
+        } catch (e: Exception) {
+            val retryable = RetryClassifier.isRetryable(e)
+            DiagnosticsLog.record("voucher_confirmation", "${if (retryable) "Queued for retry" else "Rejected"}: ${e.message}")
+            if (retryable) UploadOutcome.RetryableUpload(e.message ?: "network error")
+            else UploadOutcome.Terminal(e.message ?: "voucher confirmation failed")
+        }
     }
 
     /** Resumes just the verify/dial/notify tail for a previously-uploaded SMS
