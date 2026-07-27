@@ -24,3 +24,14 @@ from demo/mock data to the live API. Default seeded login:
 `SEED_SUPER_ADMIN_PASSWORD` were set to on the backend — change immediately
 after first login). Build for production with `npm run build` (output in
 `dist/`).
+
+## Deploy
+
+`render.yaml` at the repo root defines this as a Render static site
+(`dalab-super-admin-dashboard`) — connect it as its own Blueprint (repo
+root, no custom root directory) in Render's dashboard, or create the
+static site manually with build command `npm install && npm run build`
+and publish directory `dist`. Either way, set `VITE_API_BASE_URL` to the
+backend's real URL, and make sure that exact origin is included in the
+backend's `CORS_ORIGIN` (see `admin-backend-ts/render.yaml`) — the two
+must match or dashboard logins will fail with a CORS error.
