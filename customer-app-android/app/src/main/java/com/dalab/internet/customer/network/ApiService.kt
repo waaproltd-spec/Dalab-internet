@@ -5,6 +5,7 @@ import com.dalab.internet.customer.data.CustomerOrder
 import com.dalab.internet.customer.data.CustomerProfile
 import com.dalab.internet.customer.data.NotificationItem
 import com.dalab.internet.customer.data.PackageItem
+import com.dalab.internet.customer.data.PaymentWallet
 import com.dalab.internet.customer.data.PromoImage
 import retrofit2.Response
 import retrofit2.http.*
@@ -59,6 +60,9 @@ interface ApiService {
 
     @GET("companies")
     suspend fun getCompanies(): Response<List<Company>>
+
+    @GET("payment-wallets")
+    suspend fun getPaymentWallets(): Response<List<PaymentWallet>>
 
     @GET("companies/{id}/packages")
     suspend fun getPackages(@Path("id") companyId: String): Response<List<PackageItem>>

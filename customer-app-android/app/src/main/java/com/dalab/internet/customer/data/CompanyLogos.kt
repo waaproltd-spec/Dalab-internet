@@ -15,3 +15,6 @@ fun companyLogoRes(companyId: String): Int? = when (companyId.lowercase()) {
     "amtel" -> R.drawable.logo_amtel
     else -> null
 }
+
+/** Same bundled logos, keyed by PaymentWallet.logoKey (admin-set, e.g. "hormuud"). */
+fun walletLogoRes(logoKey: String): Int? = companyLogoRes(logoKey)
