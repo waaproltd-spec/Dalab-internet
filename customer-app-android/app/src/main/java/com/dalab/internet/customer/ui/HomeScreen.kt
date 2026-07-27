@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.RateReview
 import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.*
@@ -144,6 +145,16 @@ fun HomeScreen(onOpenCompany: (Company) -> Unit) {
                         label = "WhatsApp",
                         onClick = {
                             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$SUPPORT_PHONE")))
+                            showSupport = false
+                        },
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    SupportActionRow(
+                        icon = Icons.Filled.RateReview,
+                        label = "Make Suggestion",
+                        onClick = {
+                            val text = Uri.encode("Hi DALAB, I'd like to share a suggestion: ")
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$SUPPORT_PHONE?text=$text")))
                             showSupport = false
                         },
                     )
