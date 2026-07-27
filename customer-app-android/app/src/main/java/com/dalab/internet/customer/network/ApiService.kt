@@ -11,7 +11,7 @@ import retrofit2.Response
 import retrofit2.http.*
 
 data class OtpRequestBody(val phone: String)
-data class OtpRequestResponse(val message: String, val debugCode: String? = null)
+data class OtpRequestResponse(val message: String, val otpCode: String? = null)
 data class OtpVerifyBody(val phone: String, val code: String)
 data class OtpVerifyResponse(val accessToken: String, val refreshToken: String, val customer: CustomerProfile)
 data class RefreshRequest(val refreshToken: String)

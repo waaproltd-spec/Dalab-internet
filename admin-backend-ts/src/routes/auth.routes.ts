@@ -39,9 +39,12 @@ authRouter.post("/auth/otp/request", rateLimit("otp-request", 5, 15 * 60 * 1000)
   // eslint-disable-next-line no-console
   console.log(`[SMS GATEWAY SIM] OTP for ${phone}: ${code}`); // real gateway integration goes here
 
-  const response: Record<string, unknown> = { message: "OTP sent" };
-  if (process.env.NODE_ENV !== "production") response.debugCode = code;
-  sendJson(res, 200, response);
+  // No SMS gateway is connected yet — per explicit product decision, the code
+  // is returned directly in the response so the Customer App can display it
+  // to the customer itself, rather than the flow depending on SMS delivery
+  // that doesn't exist. Once a real gateway is wired up, stop returning
+  // `otpCode` here so the code is only ever delivered out-of-band via SMS.
+  sendJson(res, 200, { message: "OTP sent", otpCode: code });
 });
 
 authRouter.post("/auth/otp/verify", rateLimit("otp-verify", 10, 15 * 60 * 1000), async (req, res) => {

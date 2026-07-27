@@ -38,7 +38,7 @@ private fun greeting(): String {
 
 /** Home: greeting, Macaash promo, and the provider grid — tap a provider to see its packages. */
 @Composable
-fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenMacaash: () -> Unit, debugOtpCode: String? = null) {
+fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenMacaash: () -> Unit, otpCode: String? = null) {
     var companies by remember { mutableStateOf<List<Company>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var showSupport by remember { mutableStateOf(false) }
@@ -63,8 +63,8 @@ fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenMacaash: () -> Unit, debu
         ) {
             item(span = { GridItemSpan(2) }) {
                 Column {
-                    if (debugOtpCode != null) {
-                        DebugOtpCard(debugOtpCode)
+                    if (otpCode != null) {
+                        OtpCodeCard(otpCode)
                         Spacer(Modifier.height(16.dp))
                     }
                     Text(greeting(), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -110,13 +110,12 @@ fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenMacaash: () -> Unit, debu
 }
 
 /**
- * Dev/testing convenience only: the backend only ever returns a debugCode
- * when NODE_ENV != production (see POST /auth/otp/request), so this never
- * renders for a real user in production — same idea as the debug-code card
- * already on the OTP entry screen, just also visible here on Home.
+ * No SMS gateway is connected — POST /auth/otp/request returns the code
+ * directly so the app can show it to the customer, same as the card already
+ * on the OTP entry screen (carried over so it's also visible here on Home).
  */
 @Composable
-private fun DebugOtpCard(code: String) {
+private fun OtpCodeCard(code: String) {
     Surface(
         color = Color(0xFFEFF3FF),
         shape = RoundedCornerShape(16.dp),
