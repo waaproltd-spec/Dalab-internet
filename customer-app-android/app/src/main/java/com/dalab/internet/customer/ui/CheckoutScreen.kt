@@ -32,7 +32,6 @@ import com.dalab.internet.customer.data.CustomerOrder
 import com.dalab.internet.customer.data.PackageItem
 import com.dalab.internet.customer.data.PaymentWallet
 import com.dalab.internet.customer.data.companyLogoRes
-import com.dalab.internet.customer.data.walletLogoRes
 import com.dalab.internet.customer.network.ApiClient
 import com.dalab.internet.customer.network.CreateOrderRequest
 import com.dalab.internet.customer.prefs.LocalizationManager
@@ -49,60 +48,28 @@ private val PanelBorder = Color(0xFF232B45)
 private val MutedText = Color(0xFF9CA3B8)
 
 /**
- * Payment wallets (EVC Plus/eDahab/JEEB/Amtel Pay/...) are fetched from
- * GET /payment-wallets — Super-Admin managed, never hardcoded, so enabling/
- * disabling one there takes effect immediately here. Only the dial prefix +
- * display info come from the wallet; the actual number dialed is always the
- * purchased company's own payment_number (company.paymentNumber below),
- * combined as "*{prefix}*{companyPaymentNumber}*{amount}#" — this is
- * unchanged from before, still per-company, not per-wallet.
+ * Step 3 of checkout — "Confirm Order". The payment method (wallet) is
+ * already chosen on the previous screen (PaymentMethodScreen), so this
+ * screen shows only the package being purchased and the sender/receiver
+ * phone fields — no payment number, no wallet picker. On Pay Now, the
+ * payment gateway configuration (company's own payment number + this
+ * wallet's dial prefix) is re-fetched fresh from the backend rather than
+ * reused from whatever was loaded when these screens first opened, so a
+ * Super Admin change takes effect even mid-checkout.
  */
-
-/**
- * A minimal, single-screen payment page: the number to pay as plain text
- * plus the selected package's details (name, provider, price, validity),
- * the amount, the sender/receiver phone fields (required, validated on
- * submit), a single-select payment wallet, and one Pay Now button that
- * creates the order and opens the dialer with the USSD code pre-filled
- * for whichever wallet was selected.
- */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrderCreated: (CustomerOrder) -> Unit) {
+fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, onBack: () -> Unit, onOrderCreated: (CustomerOrder) -> Unit) {
     val context = LocalContext.current
     var senderPhone by remember { mutableStateOf(SessionManager.currentCustomer()?.phone ?: "") }
     var receiverPhone by remember { mutableStateOf(SessionManager.currentCustomer()?.phone ?: "") }
     var attemptedSubmit by remember { mutableStateOf(false) }
-    var selectedWallet by remember { mutableStateOf<PaymentWallet?>(null) }
-    var showPaymentSheet by remember { mutableStateOf(false) }
-    var wallets by remember { mutableStateOf<List<PaymentWallet>>(emptyList()) }
-    var walletsError by remember { mutableStateOf<String?>(null) }
-    val payNumber = company.paymentNumber?.takeIf { it.isNotBlank() }
     val logoRes = remember(company.id) { companyLogoRes(company.id) }
 
     var submitting by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var queued by remember { mutableStateOf(false) }
-    var createdOrder by remember { mutableStateOf<CustomerOrder?>(null) }
     val clientRequestId = remember { UUID.randomUUID().toString() }
     val scope = rememberCoroutineScope()
-
-    LaunchedEffect(Unit) {
-        try {
-            val response = ApiClient.service.getPaymentWallets()
-            val enabled = response.body().orEmpty().filter { it.enabled }
-            wallets = enabled
-            if (enabled.size == 1) selectedWallet = enabled.first()
-        } catch (e: Exception) {
-            walletsError = "Couldn't load payment methods. Please try again."
-        }
-    }
-
-    val successOrder = createdOrder
-    if (successOrder != null) {
-        PaymentSuccessScreen(order = successOrder, onContinue = { onOrderCreated(successOrder) })
-        return
-    }
 
     val compact = LocalConfiguration.current.screenHeightDp < 700
     val outerPadding = if (compact) 14.dp else 20.dp
@@ -122,9 +89,6 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
             Text("Confirm Order", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
         }
 
-        Spacer(Modifier.height(gap * 0.5f))
-        Text("Send payment to this number.", color = MutedText, fontSize = 13.sp)
-
         Spacer(Modifier.height(gap))
         Surface(
             color = PanelBg,
@@ -137,66 +101,38 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                     .fillMaxWidth()
                     .padding(horizontal = 18.dp, vertical = if (compact) 14.dp else 18.dp),
             ) {
+                Text(pkg.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = if (compact) 18.sp else 20.sp)
+                Spacer(Modifier.height(4.dp))
                 Text(
-                    payNumber ?: "Not available",
-                    color = Color.White,
-                    fontWeight = FontWeight.Black,
-                    fontSize = if (compact) 24.sp else 28.sp,
+                    buildList {
+                        add(company.name)
+                        pkg.validity?.takeIf { it.isNotBlank() }?.let { add(it) }
+                    }.joinToString("  •  "),
+                    color = MutedText,
+                    fontSize = 13.sp,
                 )
                 Spacer(Modifier.height(if (compact) 10.dp else 14.dp))
                 Divider(color = PanelBorder, thickness = 1.dp)
                 Spacer(Modifier.height(if (compact) 10.dp else 14.dp))
-                Text(pkg.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                Spacer(Modifier.height(4.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                val hasDiscount = pkg.oldPrice != null && pkg.oldPrice > pkg.price
+                Row(verticalAlignment = Alignment.Bottom) {
                     Text(
-                        buildList {
-                            add(company.name)
-                            pkg.validity?.takeIf { it.isNotBlank() }?.let { add(it) }
-                        }.joinToString("  •  "),
-                        color = MutedText,
-                        fontSize = 12.sp,
+                        "$${"%.2f".format(pkg.price)}",
+                        color = DalabGreen,
+                        fontWeight = FontWeight.Black,
+                        fontSize = if (compact) 26.sp else 30.sp,
                     )
-                    Spacer(Modifier.width(8.dp))
-                    val hasDiscount = pkg.oldPrice != null && pkg.oldPrice > pkg.price
                     if (hasDiscount) {
+                        Spacer(Modifier.width(10.dp))
                         Text(
                             "$${"%.2f".format(pkg.oldPrice)}",
                             color = MutedText,
-                            fontSize = 12.sp,
+                            fontSize = if (compact) 15.sp else 17.sp,
                             textDecoration = TextDecoration.LineThrough,
+                            modifier = Modifier.padding(bottom = 4.dp),
                         )
-                        Spacer(Modifier.width(6.dp))
                     }
-                    Text(
-                        "$${"%.2f".format(pkg.price)}",
-                        color = if (hasDiscount) DalabGreen else MutedText,
-                        fontWeight = if (hasDiscount) FontWeight.Bold else FontWeight.Normal,
-                        fontSize = 12.sp,
-                    )
                 }
-            }
-        }
-
-        Spacer(Modifier.height(gap))
-        Text("Amount to Pay", color = MutedText, fontSize = 13.sp)
-        Spacer(Modifier.height(4.dp))
-        Row(verticalAlignment = Alignment.Bottom) {
-            Text(
-                "$${"%.2f".format(pkg.price)}",
-                color = DalabGreen,
-                fontWeight = FontWeight.Black,
-                fontSize = if (compact) 26.sp else 30.sp,
-            )
-            if (pkg.oldPrice != null && pkg.oldPrice > pkg.price) {
-                Spacer(Modifier.width(10.dp))
-                Text(
-                    "$${"%.2f".format(pkg.oldPrice)}",
-                    color = MutedText,
-                    fontSize = if (compact) 15.sp else 17.sp,
-                    textDecoration = TextDecoration.LineThrough,
-                    modifier = Modifier.padding(bottom = 4.dp),
-                )
             }
         }
 
@@ -219,67 +155,6 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
             compact = compact,
         )
 
-        Spacer(Modifier.height(gap))
-        Text("Payment Method", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-        Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
-
-        Surface(
-            color = PanelBg,
-            shape = RoundedCornerShape(16.dp),
-            border = BorderStroke(1.dp, if (selectedWallet != null) DalabGreen else PanelBorder),
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(enabled = wallets.isNotEmpty()) { showPaymentSheet = true },
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                val wallet = selectedWallet
-                if (wallet != null) {
-                    val walletLogo = remember(wallet.logoKey) { walletLogoRes(wallet.logoKey) }
-                    Box(
-                        modifier = Modifier
-                            .size(if (compact) 36.dp else 42.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(remember(wallet.colorHex) { parseColorOrDefault(wallet.colorHex, DalabGreen) }),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        if (walletLogo != null) {
-                            Image(painter = painterResource(walletLogo), contentDescription = wallet.name, modifier = Modifier.size(if (compact) 22.dp else 26.dp))
-                        }
-                    }
-                    Spacer(Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(wallet.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        wallet.providerLabel?.takeIf { it.isNotBlank() }?.let {
-                            Text(it, color = MutedText, fontSize = 11.sp)
-                        }
-                    }
-                    Text("Change", color = DalabGreen, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                } else {
-                    Text(
-                        if (walletsError != null) walletsError!!
-                        else if (wallets.isEmpty()) "Loading payment methods..."
-                        else "Select Payment Method",
-                        color = MutedText,
-                        fontSize = 13.sp,
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-            }
-        }
-
-        if (showPaymentSheet) {
-            PaymentMethodSheet(
-                wallets = wallets,
-                onSelect = { selectedWallet = it; showPaymentSheet = false },
-                onDismiss = { showPaymentSheet = false },
-            )
-        }
-
         if (error != null) {
             Spacer(Modifier.height(8.dp))
             Text(error!!, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
@@ -295,7 +170,7 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
 
         Spacer(Modifier.weight(1f))
 
-        val payEnabled = selectedWallet != null && !submitting && !queued
+        val payEnabled = !submitting && !queued
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -317,24 +192,42 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                         packageId = pkg.id,
                         senderPhone = senderPhone.trim(),
                         receiverPhone = receiverPhone.trim(),
-                        paymentMethod = selectedWallet?.name,
+                        paymentMethod = wallet.name,
                         clientRequestId = clientRequestId,
                     )
                     scope.launch {
+                        // Re-fetch the gateway config fresh rather than trusting whatever
+                        // was loaded when the package/payment-method screens first opened —
+                        // a Super Admin change mid-checkout must still take effect.
+                        val freshPayNumber = try {
+                            ApiClient.service.getCompanies().body()
+                                ?.firstOrNull { it.id == company.id }
+                                ?.paymentNumber?.takeIf { it.isNotBlank() }
+                        } catch (e: Exception) {
+                            null
+                        } ?: company.paymentNumber?.takeIf { it.isNotBlank() }
+                        val freshPrefix = try {
+                            ApiClient.service.getPaymentWallets().body()
+                                ?.firstOrNull { it.id == wallet.id }
+                                ?.dialPrefix
+                        } catch (e: Exception) {
+                            null
+                        } ?: wallet.dialPrefix
+
+                        val dialTarget = if (freshPayNumber != null) {
+                            "*$freshPrefix*$freshPayNumber*${"%.2f".format(pkg.price)}#"
+                        } else {
+                            null
+                        }
+                        if (dialTarget != null) {
+                            context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(dialTarget))))
+                        }
+
                         try {
                             val response = RetryClassifier.requireSuccessful(ApiClient.service.createOrder(request))
                             val order = response.body()
                             if (order != null) {
-                                val prefix = selectedWallet?.dialPrefix
-                                val dialTarget = if (prefix != null && payNumber != null) {
-                                    "*$prefix*$payNumber*${"%.2f".format(pkg.price)}#"
-                                } else {
-                                    payNumber
-                                }
-                                if (dialTarget != null) {
-                                    context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(dialTarget))))
-                                }
-                                createdOrder = order
+                                onOrderCreated(order)
                             } else {
                                 error = "Couldn't place this order. Please try again."
                             }
@@ -356,7 +249,11 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
             contentAlignment = Alignment.Center,
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.Call, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                if (submitting) {
+                    CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
+                } else {
+                    Icon(Icons.Filled.Call, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                }
                 Spacer(Modifier.width(10.dp))
                 Text(
                     if (submitting) "Processing..." else if (queued) "Queued" else "Pay Now",
@@ -414,62 +311,8 @@ private fun PhoneInputField(
     }
 }
 
-private fun parseColorOrDefault(hex: String, fallback: Color): Color = try {
+internal fun parseColorOrDefault(hex: String, fallback: Color): Color = try {
     Color(android.graphics.Color.parseColor(hex))
 } catch (_: Exception) {
     fallback
-}
-
-/**
- * "Select Payment Method" bottom sheet — shows only wallets the Super Admin
- * has enabled (already filtered by the caller), fetched live from
- * GET /payment-wallets so a Super Admin toggle takes effect on the very
- * next checkout without an app update.
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun PaymentMethodSheet(wallets: List<PaymentWallet>, onSelect: (PaymentWallet) -> Unit, onDismiss: () -> Unit) {
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = PanelBg,
-    ) {
-        Column(modifier = Modifier.padding(horizontal = 20.dp).padding(bottom = 24.dp)) {
-            Text("Select Payment Method", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-            Spacer(Modifier.height(16.dp))
-            wallets.forEach { wallet ->
-                val walletLogo = remember(wallet.logoKey) { walletLogoRes(wallet.logoKey) }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .clickable { onSelect(wallet) }
-                        .padding(vertical = 12.dp, horizontal = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(44.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(remember(wallet.colorHex) { parseColorOrDefault(wallet.colorHex, DalabGreen) }),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        if (walletLogo != null) {
-                            Image(painter = painterResource(walletLogo), contentDescription = wallet.name, modifier = Modifier.size(28.dp))
-                        }
-                    }
-                    Spacer(Modifier.width(14.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(wallet.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                        wallet.providerLabel?.takeIf { it.isNotBlank() }?.let {
-                            Text(it, color = MutedText, fontSize = 12.sp)
-                        }
-                    }
-                }
-                Divider(color = PanelBorder, thickness = 1.dp)
-            }
-            if (wallets.isEmpty()) {
-                Text("No payment methods are currently available.", color = MutedText, fontSize = 13.sp, modifier = Modifier.padding(vertical = 16.dp))
-            }
-        }
-    }
 }
