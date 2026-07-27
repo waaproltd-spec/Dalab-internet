@@ -131,3 +131,10 @@ data class AgentReport(
     val series: List<ReportPoint>,
     val totals: ReportTotals,
 )
+
+/** Mirrors GET /agent/devices — the physical Agent App installs registered under this account. */
+data class AgentDevice(
+    val id: String,
+    val name: String,
+    val description: String? = null,
+)

@@ -1,5 +1,6 @@
 package com.dalab.internet.network
 
+import com.dalab.internet.data.AgentDevice
 import com.dalab.internet.data.AgentProfile
 import com.dalab.internet.data.AgentReport
 import com.dalab.internet.data.Company
@@ -14,6 +15,12 @@ import retrofit2.Response
 import retrofit2.http.*
 
 data class LoginRequest(val phone: String, val password: String)
+data class HeartbeatRequest(
+    val batteryPercent: Int?,
+    val networkOnline: Boolean,
+    val sim1Present: Boolean?,
+    val sim2Present: Boolean?,
+)
 data class LoginResponse(val accessToken: String, val refreshToken: String, val agent: AgentProfile)
 data class RefreshRequest(val refreshToken: String)
 data class RefreshResponse(val accessToken: String, val refreshToken: String)
@@ -73,13 +80,21 @@ interface ApiService {
     suspend fun getNotifications(): Response<List<AgentNotification>>
 
     @GET("agent/sim-routing")
-    suspend fun getSimRouting(): Response<List<SimRoutingEntry>>
+    suspend fun getSimRouting(@Query("deviceId") deviceId: String? = null): Response<List<SimRoutingEntry>>
 
     @POST("agent/orders/{id}/dial-attempts")
     suspend fun startDialAttempt(@Path("id") orderId: String, @Body body: DialAttemptStartRequest): Response<DialAttemptStartResponse>
 
     @PUT("agent/dial-attempts/{attemptId}")
     suspend fun reportDialResult(@Path("attemptId") attemptId: String, @Body body: DialAttemptResultRequest): Response<DialAttemptResultResponse>
+
+    // ---------------- Device identity & health (dual-mobile reliability) ----------------
+
+    @GET("agent/devices")
+    suspend fun getDevices(): Response<List<AgentDevice>>
+
+    @POST("agent/devices/{id}/heartbeat")
+    suspend fun sendHeartbeat(@Path("id") deviceId: String, @Body body: HeartbeatRequest): Response<Unit>
 
     // ---------------- Customer management (walk-in sales) ----------------
 

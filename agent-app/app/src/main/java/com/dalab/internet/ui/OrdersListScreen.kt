@@ -14,8 +14,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.dalab.internet.data.Order
 import com.dalab.internet.data.OrderStatus
+import com.dalab.internet.network.AgentEventBus
 import com.dalab.internet.network.ApiClient
-import com.dalab.internet.network.RealtimeClient
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -46,13 +46,12 @@ fun OrdersListScreen(onOpenOrder: (Order) -> Unit) {
 
     LaunchedEffect(Unit) { refresh() }
 
-    // Real-time push: any order change anywhere (customer app, another agent,
-    // the dashboard) re-fetches this pending list instead of waiting for the
-    // agent to pull down manually.
-    DisposableEffect(Unit) {
-        val realtime = RealtimeClient(path = "agent/orders/stream") { refresh() }
-        realtime.connect()
-        onDispose { realtime.disconnect() }
+    // Real-time push: AgentBackgroundService owns the single SSE connection
+    // (so it keeps running even off this screen / in the background) and
+    // broadcasts here on every order change anywhere (customer app, another
+    // agent, the dashboard) instead of this screen opening its own connection.
+    LaunchedEffect(Unit) {
+        AgentEventBus.orderEvents.collect { refresh() }
     }
 
     Scaffold(

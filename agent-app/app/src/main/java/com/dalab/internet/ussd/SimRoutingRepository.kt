@@ -1,5 +1,6 @@
 package com.dalab.internet.ussd
 
+import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.network.ApiClient
 
 /**
@@ -8,13 +9,19 @@ import com.dalab.internet.network.ApiClient
  * periodically (e.g. alongside the existing RealtimeClient reconnect logic)
  * so a routing change the Super Admin makes takes effect without requiring
  * an app restart.
+ *
+ * Scoped to this physical device's [DeviceIdentity] — routing is now a
+ * ranked list per company (a company can have a primary + backup device),
+ * so fetching unscoped would pull in every company's routing including ones
+ * configured for the OTHER device, and this device would wrongly attempt to
+ * dial them on its own local SIM slot numbering.
  */
 object SimRoutingRepository {
     @Volatile private var cache: Map<String, Int> = emptyMap() // companyId -> simSlot (1 or 2)
 
     suspend fun refresh(): Result<Unit> {
         return try {
-            val response = ApiClient.service.getSimRouting()
+            val response = ApiClient.service.getSimRouting(deviceId = DeviceIdentity.deviceId())
             if (response.isSuccessful) {
                 cache = response.body()?.associate { it.companyId to it.simSlot } ?: emptyMap()
                 Result.success(Unit)
