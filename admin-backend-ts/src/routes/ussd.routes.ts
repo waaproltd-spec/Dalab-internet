@@ -231,32 +231,41 @@ ussdRouter.get("/admin/sim-routing", requireStaff(), async (_req, res) => {
     200,
     await query(
       `SELECT sr.*, c.name AS company_name, d.name AS device_name
-       FROM sim_routing sr JOIN companies c ON c.id=sr.company_id LEFT JOIN agent_devices d ON d.id=sr.device_id`
+       FROM sim_routing sr JOIN companies c ON c.id=sr.company_id LEFT JOIN agent_devices d ON d.id=sr.device_id
+       ORDER BY sr.company_id, sr.priority`
     )
   );
 });
 
-ussdRouter.put("/admin/sim-routing/:companyId", requirePermission("devices.manage"), async (req, res) => {
-  const { simSlot, deviceId } = req.body;
+// A company can now have more than one routed device (a primary and,
+// if the business has actually provisioned a second SIM for the same
+// provider, a ranked backup) — device_id is part of the row's identity, so
+// assigning a *different* device to a company adds a new row rather than
+// replacing the old one; remove a device's route explicitly via DELETE.
+ussdRouter.put("/admin/sim-routing/:companyId/:deviceId", requirePermission("devices.manage"), async (req, res) => {
+  const { simSlot, priority } = req.body;
   if (![1, 2].includes(simSlot)) return sendJson(res, 400, { error: "simSlot must be 1 or 2" });
   const company = await queryOne(`SELECT id FROM companies WHERE id=$1`, [req.params.companyId]);
   if (!company) return sendJson(res, 404, { error: "Company not found" });
-  if (deviceId && !(await queryOne(`SELECT id FROM agent_devices WHERE id=$1`, [deviceId]))) {
+  if (!(await queryOne(`SELECT id FROM agent_devices WHERE id=$1`, [req.params.deviceId]))) {
     return sendJson(res, 404, { error: "Device not found" });
   }
 
-  // Partial-update safety: a caller that only sends simSlot must not
-  // silently clear an already-configured device assignment (a real bug
-  // caught and fixed in the SQLite version of this same endpoint).
-  const existing = await queryOne(`SELECT device_id FROM sim_routing WHERE company_id=$1`, [req.params.companyId]);
-  const resolvedDeviceId = deviceId !== undefined ? deviceId : (existing?.device_id ?? null);
-
   await query(
-    `INSERT INTO sim_routing (company_id, device_id, sim_slot, updated_by, updated_at) VALUES ($1,$2,$3,$4,now())
-     ON CONFLICT (company_id) DO UPDATE SET device_id=excluded.device_id, sim_slot=excluded.sim_slot, updated_by=excluded.updated_by, updated_at=now()`,
-    [req.params.companyId, resolvedDeviceId, simSlot, req.auth!.sub]
+    `INSERT INTO sim_routing (company_id, device_id, sim_slot, priority, updated_by, updated_at) VALUES ($1,$2,$3,$4,$5,now())
+     ON CONFLICT (company_id, device_id) DO UPDATE SET sim_slot=excluded.sim_slot, priority=excluded.priority, updated_by=excluded.updated_by, updated_at=now()`,
+    [req.params.companyId, req.params.deviceId, simSlot, priority ?? 1, req.auth!.sub]
   );
-  sendJson(res, 200, await queryOne(`SELECT * FROM sim_routing WHERE company_id=$1`, [req.params.companyId]));
+  sendJson(res, 200, await queryOne(`SELECT * FROM sim_routing WHERE company_id=$1 AND device_id=$2`, [req.params.companyId, req.params.deviceId]));
+});
+
+ussdRouter.delete("/admin/sim-routing/:companyId/:deviceId", requirePermission("devices.manage"), async (req, res) => {
+  const result = await query(
+    `DELETE FROM sim_routing WHERE company_id=$1 AND device_id=$2 RETURNING company_id`,
+    [req.params.companyId, req.params.deviceId]
+  );
+  if (result.length === 0) return sendJson(res, 404, { error: "Route not found" });
+  sendJson(res, 200, { deleted: true });
 });
 
 // Agent App: scoped to its own device via ?deviceId= so it only pulls
@@ -278,6 +287,25 @@ ussdRouter.get("/agent/sim-routing", requireAuth("agent"), async (req, res) => {
 
 ussdRouter.get("/agent/devices", requireAuth("agent"), async (_req, res) => {
   sendJson(res, 200, await query(`SELECT id, name, description FROM agent_devices ORDER BY name`));
+});
+
+// Health telemetry from the Agent App's background service — battery,
+// connectivity, and per-slot SIM presence, so the dashboard can show which
+// of two paired devices is actually healthy right now and a Super Admin can
+// react (swap SIMs, investigate) before payments are missed. An agent can
+// only report health for the device they're actually assigned to.
+ussdRouter.post("/agent/devices/:id/heartbeat", requireAuth("agent"), async (req, res) => {
+  const agent = await queryOne<{ device_id: string | null }>(`SELECT device_id FROM agents WHERE id=$1`, [req.auth!.sub]);
+  if (agent?.device_id !== req.params.id) {
+    return sendJson(res, 403, { error: "You can only report health for your own assigned device." });
+  }
+  const { batteryPercent, networkOnline, sim1Present, sim2Present } = req.body;
+  const result = await query(
+    `UPDATE agent_devices SET battery_percent=$1, network_online=$2, sim1_present=$3, sim2_present=$4, last_heartbeat_at=now() WHERE id=$5 RETURNING id`,
+    [batteryPercent ?? null, networkOnline !== false, sim1Present ?? null, sim2Present ?? null, req.params.id]
+  );
+  if (result.length === 0) return sendJson(res, 404, { error: "Device not found" });
+  sendJson(res, 200, { received: true });
 });
 
 // ---------------- Dial attempts (audit trail + retry tracking) ----------------
