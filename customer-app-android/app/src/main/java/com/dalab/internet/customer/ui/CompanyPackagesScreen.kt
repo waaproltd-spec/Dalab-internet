@@ -8,7 +8,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.SimCard
+import androidx.compose.material.icons.filled.Sms
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -120,14 +124,20 @@ private fun PackageCard(pkg: PackageItem, brandColor: Color, enabled: Boolean, o
                     )
                 }
                 val details = buildList {
-                    if (pkg.mb > 0) add("${pkg.mb} MB")
-                    if (pkg.minutes > 0) add("${pkg.minutes} min")
-                    if (pkg.sms > 0) add("${pkg.sms} SMS")
-                    pkg.validity?.takeIf { it.isNotBlank() }?.let { add(it) }
+                    if (pkg.mb > 0) add(Icons.Filled.Wifi to "${pkg.mb} MB")
+                    if (pkg.minutes > 0) add(Icons.Filled.Call to "${pkg.minutes} min")
+                    if (pkg.sms > 0) add(Icons.Filled.Sms to "${pkg.sms} SMS")
+                    pkg.validity?.takeIf { it.isNotBlank() }?.let { add(Icons.Filled.Schedule to it) }
                 }
                 if (details.isNotEmpty()) {
-                    Spacer(Modifier.height(4.dp))
-                    Text(details.joinToString(" · "), style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(6.dp))
+                    details.forEach { (icon, label) ->
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 1.dp)) {
+                            Icon(icon, contentDescription = null, tint = Color(0xFF16A34A), modifier = Modifier.size(15.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(label, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                 }
             }
         }
