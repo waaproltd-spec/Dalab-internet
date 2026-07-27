@@ -3245,21 +3245,12 @@ function AdminLoginScreen({ onLoggedIn }) {
 
     setLoading(true);
     try {
-      if (DALAB_API_ENABLED) {
-        const result = await DalabAdminApi.login(trimmedEmail, password);
-        dalabAdminAccessToken = result.accessToken;
-        onLoggedIn(result.admin);
-      } else {
-        // Demo mode: no live backend to check against — validate against the
-        // exact seeded Super Admin credentials so the demo flow matches what
-        // the real backend actually enforces (src/routes/auth.js seedAdminAndAgent).
-        await new Promise((r) => setTimeout(r, 500));
-        if (trimmedEmail.toLowerCase() === "aarandata33@gmail.com" && password === "Yaas120@") {
-          onLoggedIn({ email: trimmedEmail, role: "super_admin" });
-        } else {
-          setError("Invalid email or password.");
-        }
+      if (!DALAB_API_ENABLED) {
+        throw new Error("DALAB API not configured — set VITE_API_BASE_URL to a deployed backend.");
       }
+      const result = await DalabAdminApi.login(trimmedEmail, password);
+      dalabAdminAccessToken = result.accessToken;
+      onLoggedIn(result.admin);
     } catch (err) {
       setError(err.message || "Invalid email or password.");
     } finally {
