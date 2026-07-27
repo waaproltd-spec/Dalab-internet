@@ -3,9 +3,6 @@ package com.dalab.internet.customer.network
 import com.dalab.internet.customer.data.Company
 import com.dalab.internet.customer.data.CustomerOrder
 import com.dalab.internet.customer.data.CustomerProfile
-import com.dalab.internet.customer.data.MacaashBalance
-import com.dalab.internet.customer.data.MacaashHistoryEntry
-import com.dalab.internet.customer.data.MacaashReward
 import com.dalab.internet.customer.data.PackageItem
 import com.dalab.internet.customer.data.PromoImage
 import retrofit2.Response
@@ -26,8 +23,6 @@ data class CreateOrderRequest(
     val paymentMethod: String? = null,
     val clientRequestId: String? = null,
 )
-data class RedeemRequest(val rewardId: String)
-data class RedeemResponse(val redeemed: String, val remainingBalance: Int)
 
 /**
  * Mirrors admin-backend-ts's routes exactly (src/routes/ *.routes.ts) — the
@@ -72,16 +67,4 @@ interface ApiService {
 
     @GET("orders/{id}")
     suspend fun getOrder(@Path("id") id: String): Response<CustomerOrder>
-
-    @GET("macaash/balance")
-    suspend fun getMacaashBalance(): Response<MacaashBalance>
-
-    @GET("macaash/rewards")
-    suspend fun getMacaashRewards(): Response<List<MacaashReward>>
-
-    @POST("macaash/redeem")
-    suspend fun redeemMacaash(@Body body: RedeemRequest): Response<RedeemResponse>
-
-    @GET("macaash/history")
-    suspend fun getMacaashHistory(): Response<List<MacaashHistoryEntry>>
 }

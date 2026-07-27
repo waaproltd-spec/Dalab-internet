@@ -8,7 +8,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CardGiftcard
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Receipt
@@ -26,7 +25,6 @@ import com.dalab.internet.customer.ui.CheckoutScreen
 import com.dalab.internet.customer.ui.CompanyCategoriesScreen
 import com.dalab.internet.customer.ui.CompanyPackagesScreen
 import com.dalab.internet.customer.ui.HomeScreen
-import com.dalab.internet.customer.ui.MacaashScreen
 import com.dalab.internet.customer.ui.OrderDetailScreen
 import com.dalab.internet.customer.ui.OrdersScreen
 import com.dalab.internet.customer.ui.OtpLoginScreen
@@ -87,7 +85,7 @@ class MainActivity : ComponentActivity() {
 }
 
 private enum class Screen { LOGIN, HOME, COMPANY_CATEGORIES, CATEGORY_PACKAGES, CHECKOUT, ORDER_DETAIL }
-private enum class HomeTab { HOME, MACAASH, ORDERS, PROFILE }
+private enum class HomeTab { HOME, ORDERS, PROFILE }
 
 private data class CategorySelection(val id: String, val label: String, val packages: List<PackageItem>)
 
@@ -146,7 +144,7 @@ private fun CustomerApp() {
     }
 }
 
-/** Bottom-nav shell for the logged-in customer: Home, Macaash, Orders, Profile. */
+/** Bottom-nav shell for the logged-in customer: Home, Orders, Profile. */
 @Composable
 private fun CustomerHome(
     onOpenCompany: (Company) -> Unit,
@@ -165,12 +163,6 @@ private fun CustomerHome(
                     label = { Text("Home") },
                 )
                 NavigationBarItem(
-                    selected = tab == HomeTab.MACAASH,
-                    onClick = { tab = HomeTab.MACAASH },
-                    icon = { Icon(Icons.Filled.CardGiftcard, contentDescription = "Macaash") },
-                    label = { Text("Macaash") },
-                )
-                NavigationBarItem(
                     selected = tab == HomeTab.ORDERS,
                     onClick = { tab = HomeTab.ORDERS },
                     icon = { Icon(Icons.Filled.Receipt, contentDescription = "Orders") },
@@ -187,8 +179,7 @@ private fun CustomerHome(
     ) { padding ->
         Box(modifier = Modifier.padding(padding)) {
             when (tab) {
-                HomeTab.HOME -> HomeScreen(onOpenCompany = onOpenCompany, onOpenMacaash = { tab = HomeTab.MACAASH })
-                HomeTab.MACAASH -> MacaashScreen()
+                HomeTab.HOME -> HomeScreen(onOpenCompany = onOpenCompany)
                 HomeTab.ORDERS -> OrdersScreen(onOpenOrder = onOpenOrder)
                 HomeTab.PROFILE -> ProfileScreen(onLogout = onLogout, onOpenOrders = { tab = HomeTab.ORDERS })
             }

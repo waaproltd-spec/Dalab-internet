@@ -7,7 +7,6 @@ data class CustomerProfile(
     val id: String,
     val phone: String,
     val name: String?,
-    val macaashPoints: Int = 0,
 )
 
 /** Mirrors GET /promo-images (admin-backend-ts, promoImages.routes.ts) — public, Super Admin-uploaded only. */
@@ -67,25 +66,7 @@ data class CustomerOrder(
     val senderPhone: String?,
     val receiverPhone: String?,
     val paymentMethod: String?,
-    val macaashEarned: Int = 0,
     val ussdGenerated: String? = null,
     val createdAt: String,
     val completedAt: String? = null,
-)
-
-data class MacaashBalance(val balance: Int)
-
-/** Mirrors GET /macaash/rewards — a static rewards catalog. */
-data class MacaashReward(
-    val id: String,
-    val title: String,
-    val cost: Int,
-)
-
-/** Mirrors GET /macaash/history — one row from macaash_transactions. */
-data class MacaashHistoryEntry(
-    val id: String,
-    val points: Int,
-    val reason: String?,
-    val createdAt: String,
 )

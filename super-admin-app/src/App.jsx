@@ -4,7 +4,7 @@ import {
   Bell, FileBarChart2, Settings, Search, Plus, Pencil, Trash2, Power,
   X, Check, TrendingUp, Wifi, DollarSign,
   Clock3, CheckCircle2, XCircle, Download, ShieldCheck, Menu, RefreshCw, Loader2,
-  GalleryHorizontalEnd, ArrowUp, ArrowDown, Eye, EyeOff, Lock, Mail, LogOut, ArrowLeft, Copy, Terminal, SmartphoneNfc,
+  ArrowUp, ArrowDown, Eye, EyeOff, Lock, Mail, LogOut, ArrowLeft, Copy, Terminal, SmartphoneNfc,
   Smartphone, Radio, ChevronDown, ChevronRight, AlertTriangle, RotateCcw, UserCog, Tags,
   WifiOff, BatteryFull, BatteryMedium, BatteryLow, BatteryWarning,
   Image as ImageIcon, Upload
@@ -96,7 +96,6 @@ const DalabAdminApi = {
   updateCustomer: (id, body) => dalabAdminApiRequest(`/admin/customers/${id}`, { method: "PUT", body }),
   deleteCustomer: (id) => dalabAdminApiRequest(`/admin/customers/${id}`, { method: "DELETE" }),
   toggleCustomerBlock: (id) => dalabAdminApiRequest(`/admin/customers/${id}/block`, { method: "PUT" }),
-  getBanners: () => dalabAdminApiRequest("/admin/banners"),
   // Promo Images — up to 5 promotional images shown as a carousel on the
   // Customer App Home screen. Images are uploaded as data URIs (base64)
   // rather than multipart form data, since dalabAdminApiRequest already
@@ -294,12 +293,6 @@ const initialOrders = [
   { id: "DLB284755102", customerName: "Ifrah Warsame", senderPhone: "252619001122", receiverPhone: "252619001122", companyName: "Hormuud", companyColor: "#16A34A", packageName: "Anfac Plus 5GB", amount: 1.78, status: "in_progress", paymentMethod: "EVC Plus", createdAt: "2026-07-25 07:58:44", completedAt: null, macaashEarned: 17 },
 ];
 
-const initialBanners = [
-  { id: "bnr-1", title: "Adeega Macaash", subtitle: "Macmiil iibso oo dhibco aruurso", gradient: "linear-gradient(135deg,#16A34A,#0E7A38)", target: "All companies", active: true, order: 1, start: "2026-01-01", end: "" },
-  { id: "bnr-2", title: "Weekend Data Bonus", subtitle: "Get 20% extra MB on Anfac Plus, Fri–Sun", gradient: "linear-gradient(135deg,#1D2E8C,#2A3FC0)", target: "Hormuud", active: true, order: 2, start: "2026-07-24", end: "2026-07-27" },
-  { id: "bnr-3", title: "eDahab Max Launch", subtitle: "6GB packages now on Somtel", gradient: "linear-gradient(135deg,#F2C200,#C79A00)", target: "Somtel", active: false, order: 3, start: "2026-06-01", end: "2026-06-30" },
-];
-
 const initialUssdTemplates = [
   { id: "t1", companyId: "amtel", companyName: "Amtel", companyColor: "#C81E2C", serviceName: "Tanaad GB", ussdCode: "*914*{number}*{amount}*8233{pin}#", status: "enabled", notes: "" },
   { id: "t2", companyId: "amtel", companyName: "Amtel", companyColor: "#C81E2C", serviceName: "Bulaal Unlimited Data", ussdCode: "*918*{number}*{amount}*8233{pin}#", status: "enabled", notes: "" },
@@ -348,7 +341,6 @@ const NAV = [
   { id: "agents", label: "Agents", icon: UserCog },
   { id: "macaash", label: "Macaash (Rewards)", icon: Gift },
   { id: "notifications", label: "Notifications", icon: Bell },
-  { id: "banners", label: "Banner Management", icon: GalleryHorizontalEnd },
   { id: "promo-images", label: "Promo Images", icon: ImageIcon },
   { id: "devices", label: "Device & USSD", icon: SmartphoneNfc },
   { id: "execution-logs", label: "Execution Logs", icon: Terminal },
@@ -1901,150 +1893,6 @@ function Macaash({ customers }) {
   );
 }
 
-function BannerPreview({ banner, width = "100%", height = 92 }) {
-  return (
-    <div style={{ width, height, borderRadius: 16, background: banner.gradient, color: "#fff", padding: "14px 16px", display: "flex", flexDirection: "column", justifyContent: "center", boxSizing: "border-box" }}>
-      <div style={{ fontSize: 15, fontWeight: 800, fontFamily: "Georgia, serif" }}>{banner.title || "Banner title"}</div>
-      <div style={{ fontSize: 11.5, opacity: 0.9, marginTop: 3 }}>{banner.subtitle || "Banner subtitle"}</div>
-    </div>
-  );
-}
-
-const GRADIENT_PRESETS = [
-  "linear-gradient(135deg,#16A34A,#0E7A38)",
-  "linear-gradient(135deg,#1D2E8C,#2A3FC0)",
-  "linear-gradient(135deg,#F2C200,#C79A00)",
-  "linear-gradient(135deg,#C81E2C,#8E1420)",
-  "linear-gradient(135deg,#0B1240,#2436A8)",
-];
-
-function Banners({ banners, setBanners, companies }) {
-  const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState({});
-
-  const openNew = () => {
-    setForm({ title: "", subtitle: "", gradient: GRADIENT_PRESETS[0], target: "All companies", active: true, start: "", end: "" });
-    setEditing("new");
-  };
-  const openEdit = (b) => { setForm(b); setEditing(b.id); };
-
-  const save = () => {
-    if (editing === "new") {
-      setBanners((prev) => [...prev, { ...form, id: "bnr-" + Date.now(), order: prev.length + 1 }]);
-    } else {
-      setBanners((prev) => prev.map((b) => (b.id === editing ? { ...b, ...form } : b)));
-    }
-    setEditing(null);
-  };
-
-  const remove = (id) => setBanners((prev) => prev.filter((b) => b.id !== id).map((b, i) => ({ ...b, order: i + 1 })));
-  const toggle = (id) => setBanners((prev) => prev.map((b) => (b.id === id ? { ...b, active: !b.active } : b)));
-
-  const move = (id, dir) => {
-    setBanners((prev) => {
-      const sorted = [...prev].sort((a, b) => a.order - b.order);
-      const idx = sorted.findIndex((b) => b.id === id);
-      const swapIdx = idx + dir;
-      if (swapIdx < 0 || swapIdx >= sorted.length) return prev;
-      [sorted[idx].order, sorted[swapIdx].order] = [sorted[swapIdx].order, sorted[idx].order];
-      return sorted.map((b) => ({ ...b }));
-    });
-  };
-
-  const ordered = [...banners].sort((a, b) => a.order - b.order);
-
-  return (
-    <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 16 }}>
-        <div>
-          <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Banner Management</div>
-          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Configure promotional hero banners shown in real-time on the Customer App</div>
-        </div>
-        <Button icon={Plus} onClick={openNew}>Add banner</Button>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 14 }}>
-        {ordered.map((b, i) => (
-          <Card key={b.id} style={{ padding: 14 }}>
-            <BannerPreview banner={b} />
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
-              <Badge tone={b.active ? "green" : "neutral"}>{b.active ? "Live on app" : "Hidden"}</Badge>
-              <span style={{ fontSize: 11, color: MUTE }}>Position {b.order}</span>
-            </div>
-            <div style={{ fontSize: 11.5, color: MUTE, marginTop: 8 }}>
-              Target: <strong style={{ color: SLATE }}>{b.target}</strong>
-              {b.start && <> · {b.start}{b.end ? ` – ${b.end}` : " onward"}</>}
-            </div>
-            <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
-              <button onClick={() => move(b.id, -1)} disabled={i === 0} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: i === 0 ? "default" : "pointer", opacity: i === 0 ? 0.4 : 1 }}>
-                <ArrowUp size={13} color={INDIGO} />
-              </button>
-              <button onClick={() => move(b.id, 1)} disabled={i === ordered.length - 1} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: i === ordered.length - 1 ? "default" : "pointer", opacity: i === ordered.length - 1 ? 0.4 : 1 }}>
-                <ArrowDown size={13} color={INDIGO} />
-              </button>
-              <button onClick={() => toggle(b.id)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
-                {b.active ? <EyeOff size={13} color={SLATE} /> : <Eye size={13} color={GREEN} />}
-              </button>
-              <button onClick={() => openEdit(b)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
-                <Pencil size={13} color={INDIGO} />
-              </button>
-              <button onClick={() => remove(b.id)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer", marginLeft: "auto" }}>
-                <Trash2 size={13} color="#C81E2C" />
-              </button>
-            </div>
-          </Card>
-        ))}
-      </div>
-
-      {editing && (
-        <Modal title={editing === "new" ? "Add banner" : "Edit banner"} onClose={() => setEditing(null)} width={440}>
-          <Field label="Preview">
-            <BannerPreview banner={form} />
-          </Field>
-          <Field label="Title">
-            <input style={inputStyle} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Weekend Data Bonus" />
-          </Field>
-          <Field label="Subtitle">
-            <input style={inputStyle} value={form.subtitle} onChange={(e) => setForm({ ...form, subtitle: e.target.value })} placeholder="e.g. Get 20% extra MB, Fri–Sun" />
-          </Field>
-          <Field label="Background">
-            <div style={{ display: "flex", gap: 8 }}>
-              {GRADIENT_PRESETS.map((g) => (
-                <button
-                  key={g}
-                  onClick={() => setForm({ ...form, gradient: g })}
-                  style={{
-                    width: 32, height: 32, borderRadius: 10, background: g, cursor: "pointer",
-                    border: form.gradient === g ? `2px solid ${INK}` : "1px solid transparent",
-                  }}
-                />
-              ))}
-            </div>
-          </Field>
-          <Field label="Target">
-            <select style={inputStyle} value={form.target} onChange={(e) => setForm({ ...form, target: e.target.value })}>
-              <option>All companies</option>
-              {companies.map((c) => <option key={c.id} value={c?.name || ""}>{c?.name || "Unnamed"}</option>)}
-            </select>
-          </Field>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <Field label="Start date"><input type="date" style={inputStyle} value={form.start} onChange={(e) => setForm({ ...form, start: e.target.value })} /></Field>
-            <Field label="End date (optional)"><input type="date" style={inputStyle} value={form.end} onChange={(e) => setForm({ ...form, end: e.target.value })} /></Field>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
-            <input type="checkbox" id="bnr-active" checked={form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} />
-            <label htmlFor="bnr-active" style={{ fontSize: 13, color: SLATE }}>Live on customer app</label>
-          </div>
-          <div style={{ display: "flex", gap: 10 }}>
-            <Button onClick={save} icon={Check}>Save</Button>
-            <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
-          </div>
-        </Modal>
-      )}
-    </div>
-  );
-}
-
 const MAX_PROMO_IMAGES = 5;
 
 function PromoImages() {
@@ -2135,7 +1983,7 @@ function PromoImages() {
         <div>
           <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Promo Images</div>
           <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>
-            Up to {MAX_PROMO_IMAGES} promotional images shown as a swipeable carousel on the Customer App Home screen. Customers can only view these — uploading is Super Admin-only.
+            Up to {MAX_PROMO_IMAGES} promotional images shown as a swipeable carousel on the Customer App Home screen. Customers can only view these — uploading is Super Admin-only. Recommended size: 1280 × 658px.
           </div>
         </div>
         <div>
@@ -3569,7 +3417,6 @@ function AdminDashboardShell({ admin, onLogout }) {
   const [packages, setPackages] = useState(initialPackages);
   const [orders, setOrders] = useState(initialOrders);
   const [customers, setCustomers] = useState(initialCustomers);
-  const [banners, setBanners] = useState(initialBanners);
 
   // Companies used to be mock-only everywhere (Companies/PaymentNumbers never
   // called GET /admin/companies) — this is now the single source of truth,
@@ -3673,7 +3520,6 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "agents" && <AgentsSection companies={companies} admin={admin} />}
           {active === "macaash" && <Macaash customers={customers} />}
           {active === "notifications" && <Notifications />}
-          {active === "banners" && <Banners banners={banners} setBanners={setBanners} companies={companies} />}
           {active === "promo-images" && <PromoImages />}
           {active === "devices" && <DeviceUssdModule companies={companies} admin={admin} />}
           {active === "execution-logs" && <ExecutionLogs companies={companies} />}
