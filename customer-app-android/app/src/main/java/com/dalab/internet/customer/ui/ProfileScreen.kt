@@ -12,8 +12,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Logout
+import androidx.compose.material.icons.filled.ManageAccounts
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
@@ -28,12 +30,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import com.dalab.internet.customer.auth.SessionManager
 import com.dalab.internet.customer.network.ApiClient
 import com.dalab.internet.customer.network.UpdateProfileRequest
 import kotlinx.coroutines.launch
 
 private val DalabIndigo = Color(0xFF1D2E8C)
+private val DangerRed = Color(0xFFDC2626)
 private const val SUPPORT_PHONE = "252610338686"
 private const val PACKAGE_NAME = "com.dalab.internet.customer"
 
@@ -43,6 +47,8 @@ fun ProfileScreen(onLogout: () -> Unit, onOpenOrders: () -> Unit) {
     val context = LocalContext.current
     var customer by remember { mutableStateOf(SessionManager.currentCustomer()) }
     var showEditDialog by remember { mutableStateOf(false) }
+    var showAccountSheet by remember { mutableStateOf(false) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     Scaffold(topBar = { TopAppBar(title = { Text("Profile") }) }) { padding ->
@@ -129,7 +135,12 @@ fun ProfileScreen(onLogout: () -> Unit, onOpenOrders: () -> Unit) {
                     context.startActivity(Intent.createChooser(shareIntent, "Share DALAB Internet"))
                 },
             )
-            ProfileMenuRow(icon = Icons.Filled.Logout, label = "Log out", tint = Color(0xFFDC2626), onClick = onLogout, showChevron = false)
+            ProfileMenuRow(
+                icon = Icons.Filled.ManageAccounts,
+                label = "Manage Account",
+                tint = DangerRed,
+                onClick = { showAccountSheet = true },
+            )
 
             Spacer(Modifier.weight(1f))
             Spacer(Modifier.height(20.dp))
@@ -189,6 +200,92 @@ fun ProfileScreen(onLogout: () -> Unit, onOpenOrders: () -> Unit) {
                 TextButton(onClick = { showEditDialog = false }, enabled = !saving) { Text("Cancel") }
             },
         )
+    }
+
+    if (showAccountSheet) {
+        Dialog(onDismissRequest = { showAccountSheet = false }) {
+            Surface(shape = RoundedCornerShape(20.dp), color = Color.White) {
+                Column(modifier = Modifier.padding(vertical = 8.dp)) {
+                    AccountActionRow(icon = Icons.Filled.Logout, label = "Log out") {
+                        showAccountSheet = false
+                        onLogout()
+                    }
+                    AccountActionRow(icon = Icons.Filled.Delete, label = "Delete Account") {
+                        showAccountSheet = false
+                        showDeleteConfirm = true
+                    }
+                }
+            }
+        }
+    }
+
+    if (showDeleteConfirm) {
+        var deleting by remember { mutableStateOf(false) }
+        var deleteError by remember { mutableStateOf<String?>(null) }
+        AlertDialog(
+            onDismissRequest = { if (!deleting) showDeleteConfirm = false },
+            title = { Text("Delete Account?") },
+            text = {
+                Column {
+                    Text("This permanently deletes your DALAB Internet account. This cannot be undone.")
+                    if (deleteError != null) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(deleteError!!, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !deleting,
+                    onClick = {
+                        deleteError = null
+                        deleting = true
+                        scope.launch {
+                            try {
+                                val response = ApiClient.service.deleteAccount()
+                                if (response.isSuccessful) {
+                                    showDeleteConfirm = false
+                                    onLogout()
+                                } else {
+                                    deleteError = "Couldn't delete your account. Please try again or contact support."
+                                }
+                            } catch (_: Exception) {
+                                deleteError = "Couldn't reach the server. Check your connection."
+                            }
+                            deleting = false
+                        }
+                    },
+                ) {
+                    Text(if (deleting) "Deleting..." else "Delete", color = DangerRed)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }, enabled = !deleting) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun AccountActionRow(icon: ImageVector, label: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(DangerRed.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(icon, contentDescription = null, tint = DangerRed, modifier = Modifier.size(18.dp))
+        }
+        Spacer(Modifier.width(16.dp))
+        Text(label, fontSize = 15.sp, color = DangerRed)
     }
 }
 
