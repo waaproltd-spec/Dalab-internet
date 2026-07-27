@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.BatteryManager
 import android.os.Build
@@ -21,6 +22,7 @@ import com.dalab.internet.network.AgentEventBus
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.HeartbeatRequest
 import com.dalab.internet.network.RealtimeClient
+import com.dalab.internet.queue.QueueDrainer
 import com.dalab.internet.ussd.SimRoutingRepository
 import com.dalab.internet.ussd.UssdDialer
 import kotlinx.coroutines.CoroutineScope
@@ -47,6 +49,7 @@ class AgentBackgroundService : Service() {
 
     private var scope: CoroutineScope? = null
     private var realtimeClient: RealtimeClient? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -65,19 +68,40 @@ class AgentBackgroundService : Service() {
         // NO_SIM_CONFIGURED. An immediate refresh here (plus the periodic loop below)
         // is what actually makes automatic USSD dialing work.
         newScope.launch { SimRoutingRepository.refresh() }
+        newScope.launch { QueueDrainer.drainAll(applicationContext) }
 
         newScope.launch { heartbeatLoop() }
         newScope.launch { simRoutingRefreshLoop() }
+        newScope.launch { queueDrainLoop() }
+        registerConnectivityCallback(newScope)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
     override fun onDestroy() {
+        networkCallback?.let {
+            (getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager)?.unregisterNetworkCallback(it)
+        }
+        networkCallback = null
         realtimeClient?.disconnect()
         realtimeClient = null
         scope?.cancel()
         scope = null
         super.onDestroy()
+    }
+
+    // Immediate drain the moment connectivity comes back, rather than waiting
+    // up to a full queueDrainLoop() interval — the periodic loop is only the
+    // backstop for connectivity flaps this callback misses.
+    private fun registerConnectivityCallback(scope: CoroutineScope) {
+        val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                scope.launch { QueueDrainer.drainAll(applicationContext) }
+            }
+        }
+        connectivityManager.registerDefaultNetworkCallback(callback)
+        networkCallback = callback
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -109,6 +133,18 @@ class AgentBackgroundService : Service() {
             if (DeviceIdentity.isSet() && SessionManager.isLoggedIn()) {
                 SimRoutingRepository.refresh()
             }
+        }
+    }
+
+    // Backstop for connectivity changes the NetworkCallback above misses (e.g.
+    // a flap that doesn't cleanly fire onAvailable) — short enough that a
+    // queued payment doesn't sit for long, but well above heartbeat's cadence
+    // since this is a fallback, not the primary trigger.
+    private suspend fun queueDrainLoop() {
+        val currentScope = scope ?: return
+        while (currentScope.isActive) {
+            delay(QUEUE_DRAIN_INTERVAL_MS)
+            QueueDrainer.drainAll(applicationContext)
         }
     }
 
@@ -169,6 +205,7 @@ class AgentBackgroundService : Service() {
         private const val NOTIFICATION_ID = 1001
         private const val HEARTBEAT_INTERVAL_MS = 60_000L
         private const val SIM_ROUTING_REFRESH_INTERVAL_MS = 5 * 60_000L
+        private const val QUEUE_DRAIN_INTERVAL_MS = 2 * 60_000L
 
         fun start(context: Context) {
             val intent = Intent(context, AgentBackgroundService::class.java)

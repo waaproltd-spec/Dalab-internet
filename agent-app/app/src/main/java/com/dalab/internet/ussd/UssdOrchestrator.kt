@@ -5,7 +5,25 @@ import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.DialAttemptResultRequest
 import com.dalab.internet.network.DialAttemptStartRequest
 import com.dalab.internet.network.VerifyPaymentRequest
+import com.dalab.internet.queue.PendingActionQueue
+import com.dalab.internet.queue.RetryClassifier
 import kotlinx.coroutines.delay
+import java.util.UUID
+
+/** Gson-serialized payload for a queued dial-attempt audit replay — carries
+ * everything needed to redo both the "start" and "result" logging calls
+ * together (see [UssdOrchestrator.replayDialAttemptAudit]), since the two are
+ * only ever meaningfully retried as a pair: the dial itself already happened
+ * by the time either logging call can fail, so there's no separate "pending"
+ * state worth persisting — only the already-known final outcome. */
+data class DialAttemptAuditAction(
+    val orderId: String,
+    val simSlot: Int,
+    val ussdString: String,
+    val attemptNumber: Int,
+    val status: String,
+    val responseMessage: String?,
+)
 
 /**
  * The end-to-end automatic flow described in the spec:
@@ -27,7 +45,11 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         val verifyResponse = try {
             ApiClient.service.verifyPayment(orderId, VerifyPaymentRequest(smsLogId))
         } catch (e: Exception) {
-            return DialResult(DialOutcome.FAILED, "Could not reach server to verify payment: ${e.message}")
+            // No connectivity right now (as opposed to the server actually
+            // rejecting the request) — the caller (SmsUploadFlow) queues a
+            // retry instead of losing this order to a transient network blip.
+            val outcome = if (RetryClassifier.isRetryable(e)) DialOutcome.NETWORK_UNAVAILABLE else DialOutcome.FAILED
+            return DialResult(outcome, "Could not reach server to verify payment: ${e.message}")
         }
         val order = verifyResponse.body() ?: return DialResult(DialOutcome.FAILED, "Verify-payment returned no order.")
         val ussdString = order.ussdGenerated
@@ -48,7 +70,7 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
             val attemptId = startDialAttemptLog(orderId, configuredSlot, ussdString, attempt)
 
             lastResult = dialer.dial(subscriptionId, ussdString)
-            reportDialResult(attemptId, lastResult)
+            reportDialResult(orderId, configuredSlot, ussdString, attempt, attemptId, lastResult)
 
             if (lastResult.outcome == DialOutcome.SUCCESS) return lastResult
             if (lastResult.outcome != DialOutcome.FAILED && lastResult.outcome != DialOutcome.TIMEOUT) {
@@ -64,19 +86,49 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
             val response = ApiClient.service.startDialAttempt(orderId, DialAttemptStartRequest(simSlot, ussdString, attemptNumber))
             response.body()?.id
         } catch (_: Exception) {
-            null // logging failure shouldn't block the actual dial attempt
+            null // dial isn't blocked; reportDialResult below queues a full replay covering both steps
         }
     }
 
-    private suspend fun reportDialResult(attemptId: String?, result: DialResult) {
-        if (attemptId == null) return
+    private suspend fun reportDialResult(
+        orderId: String, simSlot: Int, ussdString: String, attemptNumber: Int,
+        attemptId: String?, result: DialResult,
+    ) {
         val status = if (result.outcome == DialOutcome.SUCCESS) "success" else "failed"
-        try {
-            ApiClient.service.reportDialResult(attemptId, DialAttemptResultRequest(status, result.responseMessage))
-        } catch (_: Exception) {
-            // The order itself will still show as in_progress rather than
-            // completed if this fails — visible to the Super Admin as
-            // something needing manual attention, not silently lost.
+        if (attemptId != null) {
+            try {
+                ApiClient.service.reportDialResult(attemptId, DialAttemptResultRequest(status, result.responseMessage))
+                return // both logging calls succeeded online — nothing to queue
+            } catch (_: Exception) {
+                // fall through — queue a full start+report replay below
+            }
+        }
+        // Either the start call failed (attemptId null) or the result report
+        // did — queue a full replay of both. Safe to redo "start" even if it
+        // actually succeeded the first time: the backend's unique index on
+        // (order_id, attempt_number) makes it an idempotent upsert.
+        PendingActionQueue.enqueue(
+            id = UUID.randomUUID().toString(),
+            type = PendingActionQueue.Type.DIAL_ATTEMPT_AUDIT,
+            payload = DialAttemptAuditAction(orderId, simSlot, ussdString, attemptNumber, status, result.responseMessage),
+        )
+    }
+
+    companion object {
+        /** Replays a queued [DialAttemptAuditAction] — called by QueueDrainer.
+         * Lets any exception propagate so the caller can classify it via
+         * RetryClassifier (retryable -> keep queued, terminal -> drop). */
+        suspend fun replayDialAttemptAudit(action: DialAttemptAuditAction) {
+            val startResponse = RetryClassifier.requireSuccessful(
+                ApiClient.service.startDialAttempt(
+                    action.orderId,
+                    DialAttemptStartRequest(action.simSlot, action.ussdString, action.attemptNumber),
+                )
+            )
+            val attemptId = startResponse.body()?.id ?: error("startDialAttempt returned no id")
+            RetryClassifier.requireSuccessful(
+                ApiClient.service.reportDialResult(attemptId, DialAttemptResultRequest(action.status, action.responseMessage))
+            )
         }
     }
 }
