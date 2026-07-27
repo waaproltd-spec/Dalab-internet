@@ -1,5 +1,6 @@
 package com.dalab.internet.customer.ui
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -19,11 +20,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.dalab.internet.customer.auth.SessionManager
 import com.dalab.internet.customer.data.Company
+import com.dalab.internet.customer.data.companyLogoRes
 import com.dalab.internet.customer.network.ApiClient
 import java.util.Calendar
 
@@ -186,6 +189,7 @@ private fun CompanyCard(company: Company, onClick: () -> Unit) {
             Color(0xFF1D2E8C)
         }
     }
+    val logoRes = remember(company.id) { companyLogoRes(company.id) }
 
     Card(
         modifier = Modifier
@@ -202,11 +206,17 @@ private fun CompanyCard(company: Company, onClick: () -> Unit) {
                 modifier = Modifier
                     .size(72.dp)
                     .clip(CircleShape)
-                    .background(if (offline) Color.LightGray else brandColor),
+                    .background(if (offline) Color.LightGray else if (logoRes != null) Color.White else brandColor),
                 contentAlignment = Alignment.Center,
             ) {
                 if (offline) {
                     Icon(Icons.Filled.WifiOff, contentDescription = "Offline", tint = Color.DarkGray)
+                } else if (logoRes != null) {
+                    Image(
+                        painter = painterResource(id = logoRes),
+                        contentDescription = company.name,
+                        modifier = Modifier.size(72.dp).clip(CircleShape),
+                    )
                 } else {
                     Text(
                         company.name.take(1).uppercase(),
