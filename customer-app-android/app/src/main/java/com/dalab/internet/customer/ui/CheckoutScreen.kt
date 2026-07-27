@@ -16,6 +16,7 @@ import com.dalab.internet.customer.data.PackageItem
 import com.dalab.internet.customer.network.ApiClient
 import com.dalab.internet.customer.network.CreateOrderRequest
 import kotlinx.coroutines.launch
+import java.util.UUID
 
 /**
  * Payment method choice mirrors the real per-provider gateway (EVC Plus /
@@ -29,6 +30,10 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
     var receiverPhone by remember { mutableStateOf(SessionManager.currentCustomer()?.phone ?: "") }
     var submitting by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    // Reused across manual retaps of the same in-flight attempt (e.g. after a
+    // network error) so a retry — including from the offline queue — can't
+    // create a second order server-side.
+    val clientRequestId = remember { UUID.randomUUID().toString() }
     val scope = rememberCoroutineScope()
     val paymentMethod = company.gateway ?: "Manual"
 
@@ -81,6 +86,7 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                                     packageId = pkg.id,
                                     receiverPhone = receiverPhone.trim().ifBlank { null },
                                     paymentMethod = paymentMethod,
+                                    clientRequestId = clientRequestId,
                                 )
                             )
                             val order = response.body()

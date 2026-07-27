@@ -30,7 +30,7 @@ async function loadOrder(id: string) {
 
 // ---------------- Customer ----------------
 ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
-  const { companyId, packageId, receiverPhone, paymentMethod } = req.body;
+  const { companyId, packageId, receiverPhone, paymentMethod, clientRequestId } = req.body;
   const company = await queryOne(`SELECT * FROM companies WHERE id=$1`, [companyId]);
   if (!company) return sendJson(res, 404, { error: "Company not found" });
   if (company.status === "offline") return sendJson(res, 409, { error: `${company.name} is currently offline` });
@@ -40,17 +40,27 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
 
   const customer = await queryOne(`SELECT * FROM customers WHERE id=$1`, [req.auth!.sub]);
   const id = orderRef();
-  await query(
-    `INSERT INTO orders (id, customer_id, company_id, package_id, amount, status, sender_phone, receiver_phone, payment_method, channel, macaash_earned)
-     VALUES ($1,$2,$3,$4,$5,'pending',$6,$7,$8,'android',$9)`,
-    [
-      id, req.auth!.sub, companyId, packageId, pkg.price,
-      customer?.phone ?? null,
-      receiverPhone || customer?.phone || null,
-      paymentMethod || company.gateway || null,
-      Math.round(pkg.price * MACAASH_POINTS_PER_DOLLAR),
-    ]
-  );
+  try {
+    await query(
+      `INSERT INTO orders (id, customer_id, company_id, package_id, amount, status, sender_phone, receiver_phone, payment_method, channel, macaash_earned, client_request_id)
+       VALUES ($1,$2,$3,$4,$5,'pending',$6,$7,$8,'android',$9,$10)`,
+      [
+        id, req.auth!.sub, companyId, packageId, pkg.price,
+        customer?.phone ?? null,
+        receiverPhone || customer?.phone || null,
+        paymentMethod || company.gateway || null,
+        Math.round(pkg.price * MACAASH_POINTS_PER_DOLLAR),
+        clientRequestId ?? null,
+      ]
+    );
+  } catch (err: any) {
+    if (err?.code !== "23505" || err?.constraint !== "idx_orders_client_request_id") throw err;
+    // A retried create (e.g. from the offline queue) with the same
+    // clientRequestId — the original attempt already went through, so
+    // return the existing order instead of creating a second one.
+    const existing = await queryOne<{ id: string }>(`SELECT id FROM orders WHERE client_request_id=$1`, [clientRequestId]);
+    return sendJson(res, 200, await loadOrder(existing!.id));
+  }
   broadcast({ type: "order.created", orderId: id });
   sendJson(res, 201, await loadOrder(id));
 });
@@ -78,7 +88,7 @@ ordersRouter.get("/orders/:id", requireAuth("customer"), async (req, res) => {
 // phone (looked up or created on the spot, same as OTP verify does) since
 // the agent — not the customer — is the one authenticated here.
 ordersRouter.post("/agent/orders", requireAuth("agent"), async (req, res) => {
-  const { customerPhone, companyId, packageId, receiverPhone, paymentMethod } = req.body;
+  const { customerPhone, companyId, packageId, receiverPhone, paymentMethod, clientRequestId } = req.body;
   const phone = String(customerPhone ?? "").trim();
   if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid customer phone number" });
 
@@ -96,18 +106,25 @@ ordersRouter.post("/agent/orders", requireAuth("agent"), async (req, res) => {
   if (customer!.status === "blocked") return sendJson(res, 403, { error: "This customer's account has been blocked" });
 
   const id = orderRef();
-  await query(
-    `INSERT INTO orders (id, customer_id, company_id, package_id, amount, status, sender_phone, receiver_phone, payment_method, channel, agent_id, macaash_earned)
-     VALUES ($1,$2,$3,$4,$5,'pending',$6,$7,$8,'agent',$9,$10)`,
-    [
-      id, customer!.id, companyId, packageId, pkg.price,
-      phone,
-      receiverPhone || phone,
-      paymentMethod || company.gateway || null,
-      req.auth!.sub,
-      Math.round(pkg.price * MACAASH_POINTS_PER_DOLLAR),
-    ]
-  );
+  try {
+    await query(
+      `INSERT INTO orders (id, customer_id, company_id, package_id, amount, status, sender_phone, receiver_phone, payment_method, channel, agent_id, macaash_earned, client_request_id)
+       VALUES ($1,$2,$3,$4,$5,'pending',$6,$7,$8,'agent',$9,$10,$11)`,
+      [
+        id, customer!.id, companyId, packageId, pkg.price,
+        phone,
+        receiverPhone || phone,
+        paymentMethod || company.gateway || null,
+        req.auth!.sub,
+        Math.round(pkg.price * MACAASH_POINTS_PER_DOLLAR),
+        clientRequestId ?? null,
+      ]
+    );
+  } catch (err: any) {
+    if (err?.code !== "23505" || err?.constraint !== "idx_orders_client_request_id") throw err;
+    const existing = await queryOne<{ id: string }>(`SELECT id FROM orders WHERE client_request_id=$1`, [clientRequestId]);
+    return sendJson(res, 200, await loadOrder(existing!.id));
+  }
   broadcast({ type: "order.created", orderId: id });
   sendJson(res, 201, await loadOrder(id));
 });
@@ -137,9 +154,21 @@ ordersRouter.get("/agent/orders/:id", requireAuth("agent"), async (req, res) => 
 ordersRouter.post("/agent/orders/:id/verify-payment", requireAuth("agent"), async (req, res) => {
   const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
   if (!order) return sendJson(res, 404, { error: "Order not found" });
-  if (order.status !== "pending") return sendJson(res, 409, { error: `Cannot verify an order in status '${order.status}'` });
 
-  await query(`UPDATE orders SET status='in_progress', agent_id=$1, updated_at=now() WHERE id=$2`, [req.auth!.sub, order.id]);
+  // Atomic compare-and-swap: only ever one caller of two concurrent/retried
+  // requests actually flips pending -> in_progress, so USSD generation can
+  // never be double-triggered for the same order.
+  const result = await query(
+    `UPDATE orders SET status='in_progress', agent_id=$1, updated_at=now() WHERE id=$2 AND status='pending' RETURNING id`,
+    [req.auth!.sub, order.id]
+  );
+  if (result.length === 0) {
+    // Already verified by this or a concurrent request — idempotent no-op,
+    // return current state rather than erroring a retrying client.
+    if (order.status !== "pending") return sendJson(res, 200, await loadOrder(order.id));
+    return sendJson(res, 409, { error: `Cannot verify an order in status '${order.status}'` });
+  }
+
   if (req.body.smsLogId) {
     await query(`UPDATE sms_logs SET matched_order_id=$1 WHERE id=$2`, [order.id, req.body.smsLogId]);
   }
@@ -153,23 +182,31 @@ ordersRouter.post("/agent/orders/:id/verify-payment", requireAuth("agent"), asyn
 
 async function creditMacaashIfNeeded(order: any) {
   if (order.macaash_earned > 0) {
-    const already = await queryOne(`SELECT id FROM macaash_transactions WHERE order_id=$1`, [order.id]);
-    if (!already) {
+    try {
       await query(
-        `INSERT INTO macaash_transactions (id, customer_id, order_id, points, reason) VALUES ($1,$2,$3,$4,$5)`,
+        `INSERT INTO macaash_transactions (id, customer_id, order_id, points, reason, kind) VALUES ($1,$2,$3,$4,$5,'earn')`,
         [randomUUID(), order.customer_id, order.id, order.macaash_earned, `Earned from order ${order.id}`]
       );
-      await query(`UPDATE customers SET macaash_points = macaash_points + $1 WHERE id=$2`, [order.macaash_earned, order.customer_id]);
+    } catch (err: any) {
+      if (err?.code !== "23505" || err?.constraint !== "idx_macaash_tx_order_earn") throw err;
+      return; // already credited by a concurrent/retried call — no-op
     }
+    await query(`UPDATE customers SET macaash_points = macaash_points + $1 WHERE id=$2`, [order.macaash_earned, order.customer_id]);
   }
 }
 
 ordersRouter.post("/agent/orders/:id/complete", requireAuth("agent"), async (req, res) => {
   const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
   if (!order) return sendJson(res, 404, { error: "Order not found" });
-  if (order.status !== "in_progress") return sendJson(res, 409, { error: "Order must be in progress before it can be completed" });
 
-  await query(`UPDATE orders SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1`, [order.id]);
+  const result = await query(
+    `UPDATE orders SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1 AND status='in_progress' RETURNING id`,
+    [order.id]
+  );
+  if (result.length === 0) {
+    if (order.status === "completed") return sendJson(res, 200, await loadOrder(order.id));
+    return sendJson(res, 409, { error: "Order must be in progress before it can be completed" });
+  }
   await creditMacaashIfNeeded(order);
   broadcast({ type: "order.updated", orderId: order.id });
   sendJson(res, 200, await loadOrder(order.id));
@@ -240,14 +277,24 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
   const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
   if (!order) return sendJson(res, 404, { error: "Order not found" });
 
+  // Only 'completed' (Macaash credit) and 'in_progress' (USSD generation)
+  // have a double-fire side effect — guard those two atomically so a
+  // duplicate/concurrent call re-setting the same target status is a no-op;
+  // other lateral transitions (e.g. failed -> cancelled) have no such risk.
   if (status === "completed") {
-    await query(`UPDATE orders SET status=$1, completed_at=now(), updated_at=now() WHERE id=$2`, [status, req.params.id]);
-    if (order.status !== "completed") await creditMacaashIfNeeded(order);
+    const result = await query(
+      `UPDATE orders SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1 AND status != 'completed' RETURNING id`,
+      [req.params.id]
+    );
+    if (result.length > 0) await creditMacaashIfNeeded(order);
+  } else if (status === "in_progress") {
+    const result = await query(
+      `UPDATE orders SET status='in_progress', updated_at=now() WHERE id=$1 AND status != 'in_progress' RETURNING id`,
+      [req.params.id]
+    );
+    if (result.length > 0) await generateUssdForOrder(order, req.auth!.sub);
   } else {
     await query(`UPDATE orders SET status=$1, updated_at=now() WHERE id=$2`, [status, req.params.id]);
-    if (status === "in_progress" && order.status !== "in_progress") {
-      await generateUssdForOrder(order, req.auth!.sub);
-    }
   }
   broadcast({ type: "order.updated", orderId: req.params.id });
   sendJson(res, 200, await loadOrder(req.params.id));
@@ -260,20 +307,30 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
 ordersRouter.post("/admin/orders/:id/reverse", requirePermission("orders.reverse"), async (req, res) => {
   const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
   if (!order) return sendJson(res, 404, { error: "Order not found" });
-  if (order.reversed_at) return sendJson(res, 409, { error: "Order has already been reversed" });
 
-  await query(`UPDATE orders SET status='cancelled', reversed_at=now(), updated_at=now() WHERE id=$1`, [order.id]);
+  const result = await query(
+    `UPDATE orders SET status='cancelled', reversed_at=now(), updated_at=now() WHERE id=$1 AND reversed_at IS NULL RETURNING id`,
+    [order.id]
+  );
+  if (result.length === 0) return sendJson(res, 409, { error: "Order has already been reversed" });
 
   const credited = await queryOne<{ id: string; points: number }>(
-    `SELECT id, points FROM macaash_transactions WHERE order_id=$1 AND points > 0`,
+    `SELECT id, points FROM macaash_transactions WHERE order_id=$1 AND kind='earn'`,
     [order.id]
   );
   if (credited) {
-    await query(
-      `INSERT INTO macaash_transactions (id, customer_id, order_id, points, reason) VALUES ($1,$2,$3,$4,$5)`,
-      [randomUUID(), order.customer_id, order.id, -credited.points, `Reversed order ${order.id}`]
-    );
-    await query(`UPDATE customers SET macaash_points = GREATEST(0, macaash_points - $1) WHERE id=$2`, [credited.points, order.customer_id]);
+    try {
+      await query(
+        `INSERT INTO macaash_transactions (id, customer_id, order_id, points, reason, kind) VALUES ($1,$2,$3,$4,$5,'reversal')`,
+        [randomUUID(), order.customer_id, order.id, -credited.points, `Reversed order ${order.id}`]
+      );
+      await query(`UPDATE customers SET macaash_points = GREATEST(0, macaash_points - $1) WHERE id=$2`, [credited.points, order.customer_id]);
+    } catch (err: any) {
+      if (err?.code !== "23505" || err?.constraint !== "idx_macaash_tx_order_reversal") throw err;
+      // Already reversed by a concurrent call — the atomic reversed_at guard
+      // above should already prevent reaching here twice, but this is a
+      // defense-in-depth no-op rather than a 500 if it ever does.
+    }
   }
 
   broadcast({ type: "order.updated", orderId: order.id });

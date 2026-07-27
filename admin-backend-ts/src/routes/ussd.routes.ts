@@ -324,12 +324,24 @@ ussdRouter.post("/agent/orders/:id/dial-attempts", requireAuth("agent"), async (
     }
   }
 
+  // Natural key for one logical attempt is (order_id, attempt_number) — a
+  // queued/retried audit-log POST after a dropped response must return the
+  // existing row's id, not create a second one.
   const id = randomUUID();
-  await query(
-    `INSERT INTO ussd_dial_attempts (id, order_id, agent_id, sim_slot, ussd_string, attempt_number, status)
-     VALUES ($1,$2,$3,$4,$5,$6,'pending')`,
-    [id, req.params.id, req.auth!.sub, simSlot ?? null, ussdString, attemptNumber ?? 1]
-  );
+  try {
+    await query(
+      `INSERT INTO ussd_dial_attempts (id, order_id, agent_id, sim_slot, ussd_string, attempt_number, status)
+       VALUES ($1,$2,$3,$4,$5,$6,'pending')`,
+      [id, req.params.id, req.auth!.sub, simSlot ?? null, ussdString, attemptNumber ?? 1]
+    );
+  } catch (err: any) {
+    if (err?.code !== "23505" || err?.constraint !== "idx_ussd_dial_attempts_order_attempt") throw err;
+    const existing = await queryOne<{ id: string }>(
+      `SELECT id FROM ussd_dial_attempts WHERE order_id=$1 AND attempt_number=$2`,
+      [req.params.id, attemptNumber ?? 1]
+    );
+    return sendJson(res, 200, { id: existing!.id });
+  }
   sendJson(res, 201, { id });
 });
 
@@ -337,23 +349,38 @@ ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (r
   const { status, responseMessage } = req.body;
   if (!["success", "failed"].includes(status)) return sendJson(res, 400, { error: "status must be success or failed" });
 
-  const attempt = await queryOne(`SELECT * FROM ussd_dial_attempts WHERE id=$1`, [req.params.attemptId]);
-  if (!attempt) return sendJson(res, 404, { error: "Dial attempt not found" });
-
-  await query(`UPDATE ussd_dial_attempts SET status=$1, response_message=$2 WHERE id=$3`, [status, responseMessage ?? null, req.params.attemptId]);
+  // Atomic compare-and-swap: only the first report of a given attempt ever
+  // runs the order-completion side effects below — a duplicate/retried
+  // report of an already-resolved attempt is a no-op that just returns the
+  // current state.
+  const result = await query(
+    `UPDATE ussd_dial_attempts SET status=$1, response_message=$2 WHERE id=$3 AND status='pending' RETURNING *`,
+    [status, responseMessage ?? null, req.params.attemptId]
+  );
+  if (result.length === 0) {
+    const existing = await queryOne(`SELECT * FROM ussd_dial_attempts WHERE id=$1`, [req.params.attemptId]);
+    if (!existing) return sendJson(res, 404, { error: "Dial attempt not found" });
+    return sendJson(res, 200, existing);
+  }
+  const attempt = result[0] as { order_id: string };
 
   if (status === "success") {
     const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [attempt.order_id]);
     if (order && order.status !== "completed") {
-      await query(`UPDATE orders SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1`, [order.id]);
-      if (order.macaash_earned > 0) {
-        const already = await queryOne(`SELECT id FROM macaash_transactions WHERE order_id=$1`, [order.id]);
-        if (!already) {
+      const completed = await query(
+        `UPDATE orders SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1 AND status != 'completed' RETURNING id`,
+        [order.id]
+      );
+      if (completed.length > 0 && order.macaash_earned > 0) {
+        try {
           await query(
-            `INSERT INTO macaash_transactions (id, customer_id, order_id, points, reason) VALUES ($1,$2,$3,$4,$5)`,
+            `INSERT INTO macaash_transactions (id, customer_id, order_id, points, reason, kind) VALUES ($1,$2,$3,$4,$5,'earn')`,
             [randomUUID(), order.customer_id, order.id, order.macaash_earned, `Earned from order ${order.id}`]
           );
           await query(`UPDATE customers SET macaash_points = macaash_points + $1 WHERE id=$2`, [order.macaash_earned, order.customer_id]);
+        } catch (err: any) {
+          if (err?.code !== "23505" || err?.constraint !== "idx_macaash_tx_order_earn") throw err;
+          // already credited by a concurrent call — no-op
         }
       }
     }

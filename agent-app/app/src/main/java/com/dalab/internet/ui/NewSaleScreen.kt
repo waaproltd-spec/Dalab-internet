@@ -17,6 +17,7 @@ import com.dalab.internet.data.PackageItem
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.CreateSaleRequest
 import kotlinx.coroutines.launch
+import java.util.UUID
 
 /**
  * Agent-initiated sale for a walk-in customer: pick a provider, pick a
@@ -37,6 +38,10 @@ fun NewSaleScreen() {
     var submitting by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var success by remember { mutableStateOf<Order?>(null) }
+    // Reused across manual retaps of the same in-flight attempt (e.g. after a
+    // network error) so a retry can't create a second order server-side; a
+    // fresh one is minted in reset() when a genuinely new sale begins.
+    var clientRequestId by remember { mutableStateOf(UUID.randomUUID().toString()) }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
@@ -70,6 +75,7 @@ fun NewSaleScreen() {
         paymentMethod = ""
         success = null
         error = null
+        clientRequestId = UUID.randomUUID().toString()
     }
 
     Scaffold(topBar = { TopAppBar(title = { Text("New Sale") }) }) { padding ->
@@ -158,6 +164,7 @@ fun NewSaleScreen() {
                                                 packageId = selectedPackage!!.id,
                                                 receiverPhone = receiverPhone.trim().ifBlank { null },
                                                 paymentMethod = paymentMethod.trim().ifBlank { null },
+                                                clientRequestId = clientRequestId,
                                             )
                                         )
                                         val order = response.body()
