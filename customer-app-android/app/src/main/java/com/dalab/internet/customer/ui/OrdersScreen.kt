@@ -15,6 +15,7 @@ import androidx.compose.ui.unit.dp
 import com.dalab.internet.customer.data.CustomerOrder
 import com.dalab.internet.customer.data.OrderStatus
 import com.dalab.internet.customer.network.ApiClient
+import com.dalab.internet.customer.network.RealtimeClient
 import kotlinx.coroutines.launch
 
 /** The customer's own order history / tracking — GET /orders. */
@@ -38,6 +39,18 @@ fun OrdersScreen(onOpenOrder: (CustomerOrder) -> Unit) {
     }
 
     LaunchedEffect(Unit) { refresh() }
+
+    // Real-time push: any status change on this customer's orders (payment
+    // verified, USSD completed) re-fetches the list instead of waiting for a
+    // manual pull-to-refresh. No background service in this app (unlike the
+    // Agent App) — the connection only lives while this screen is on-screen,
+    // which is fine since a customer just watching their orders is exactly
+    // when live updates matter most.
+    DisposableEffect(Unit) {
+        val realtime = RealtimeClient(path = "orders/stream") { refresh() }
+        realtime.connect()
+        onDispose { realtime.disconnect() }
+    }
 
     Scaffold(
         topBar = {

@@ -10,11 +10,40 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.dalab.internet.customer.data.CustomerOrder
 import com.dalab.internet.customer.data.OrderStatus
+import com.dalab.internet.customer.network.ApiClient
+import com.dalab.internet.customer.network.RealtimeClient
 import com.dalab.internet.customer.util.formatApiDateTime
+import kotlinx.coroutines.launch
 
+/**
+ * Starts from the order object the caller already has (avoids a blank
+ * loading flash) but stays live from then on — subscribes to the same SSE
+ * stream OrdersScreen uses and re-fetches by id on every event, so a
+ * customer watching this screen sees the status flip to "Completed" without
+ * navigating back and forth.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun OrderDetailScreen(order: CustomerOrder, onBack: () -> Unit) {
+fun OrderDetailScreen(initialOrder: CustomerOrder, onBack: () -> Unit) {
+    var order by remember { mutableStateOf(initialOrder) }
+    val scope = rememberCoroutineScope()
+
+    fun refresh() {
+        scope.launch {
+            try {
+                ApiClient.service.getOrder(initialOrder.id).body()?.let { order = it }
+            } catch (_: Exception) {
+                // Leave the previous state in place — the next SSE event retries.
+            }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        val realtime = RealtimeClient(path = "orders/stream") { refresh() }
+        realtime.connect()
+        onDispose { realtime.disconnect() }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
