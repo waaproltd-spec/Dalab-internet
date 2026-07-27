@@ -46,16 +46,21 @@ private val KNOWN_PAYMENT_METHODS = listOf(
 /**
  * Payment method choice mirrors the real per-provider gateway (EVC Plus /
  * JEEB / eDahab / Manual — see `company.gateway`, seeded in
- * admin-backend-ts/src/db/seed.ts) rather than a generic list, since each
- * provider only actually supports its own mobile-money gateway. The icon row
- * below shows all known gateways for visual context (matching the reference
- * design) but only the one this provider actually uses is selectable/lit —
- * a customer can never choose a different gateway than their provider
- * supports.
+ * admin-backend-ts/src/db/seed.ts), plus JEEB as a universal alternative
+ * since it works as a cross-carrier payment app regardless of which
+ * provider's package is being bought (e.g. a Hormuud package can be paid via
+ * Hormuud's own EVC Plus, or via JEEB). A "Manual" gateway (Amtel — no SMS
+ * payment confirmation, verified through a separate flow) has no selectable
+ * alternative. Only the applicable icon(s) are selectable/lit; the rest stay
+ * dimmed and non-interactive.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrderCreated: (CustomerOrder) -> Unit) {
+    // The receiver/data-delivery number is the same number the customer
+    // already logged in with — pre-filled so they never have to type it a
+    // second time, but still editable for the rare case of buying data for a
+    // different device.
     var receiverPhone by remember { mutableStateOf(SessionManager.currentCustomer()?.phone ?: "") }
     var submitting by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -65,7 +70,14 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
     // create a second order server-side.
     val clientRequestId = remember { UUID.randomUUID().toString() }
     val scope = rememberCoroutineScope()
-    val paymentMethod = company.gateway ?: "Manual"
+    val selectableMethods = remember(company.gateway) {
+        if (company.gateway.isNullOrBlank() || company.gateway.equals("Manual", ignoreCase = true)) {
+            listOf(company.gateway ?: "Manual")
+        } else {
+            listOf(company.gateway, "JEEB").distinctBy { it.lowercase() }
+        }
+    }
+    var selectedPaymentMethod by remember(company.gateway) { mutableStateOf(selectableMethods.first()) }
     val brandColor = remember(company.colorHex) {
         try {
             Color(android.graphics.Color.parseColor(company.colorHex))
@@ -106,8 +118,12 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
                 KNOWN_PAYMENT_METHODS.forEach { method ->
-                    val active = method.label.equals(paymentMethod, ignoreCase = true)
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    val selectable = selectableMethods.any { it.equals(method.label, ignoreCase = true) }
+                    val active = method.label.equals(selectedPaymentMethod, ignoreCase = true)
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.clickable(enabled = selectable) { selectedPaymentMethod = method.label },
+                    ) {
                         Box(
                             modifier = Modifier
                                 .size(64.dp)
@@ -185,7 +201,7 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                     companyId = company.id,
                     packageId = pkg.id,
                     receiverPhone = receiverPhone.trim().ifBlank { null },
-                    paymentMethod = paymentMethod,
+                    paymentMethod = selectedPaymentMethod,
                     clientRequestId = clientRequestId,
                 )
                 scope.launch {

@@ -1,5 +1,6 @@
 package com.dalab.internet.customer.ui
 
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
@@ -9,15 +10,20 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.Logout
+import androidx.compose.material.icons.filled.Receipt
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -29,10 +35,11 @@ import kotlinx.coroutines.launch
 
 private val DalabIndigo = Color(0xFF1D2E8C)
 private const val SUPPORT_PHONE = "25261033868"
+private const val PACKAGE_NAME = "com.dalab.internet.customer"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ProfileScreen(onLogout: () -> Unit) {
+fun ProfileScreen(onLogout: () -> Unit, onOpenOrders: () -> Unit) {
     val context = LocalContext.current
     var customer by remember { mutableStateOf(SessionManager.currentCustomer()) }
     var showEditDialog by remember { mutableStateOf(false) }
@@ -80,6 +87,7 @@ fun ProfileScreen(onLogout: () -> Unit) {
             Spacer(Modifier.height(24.dp))
             Divider()
 
+            ProfileMenuRow(icon = Icons.Filled.Receipt, label = "My Orders", onClick = onOpenOrders)
             ProfileMenuRow(
                 icon = Icons.Filled.Call,
                 label = "Call Us",
@@ -94,11 +102,37 @@ fun ProfileScreen(onLogout: () -> Unit) {
                     context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$SUPPORT_PHONE")))
                 },
             )
+            ProfileMenuRow(
+                icon = Icons.Filled.Star,
+                label = "Rate the App",
+                onClick = {
+                    try {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$PACKAGE_NAME")))
+                    } catch (_: ActivityNotFoundException) {
+                        context.startActivity(
+                            Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=$PACKAGE_NAME"))
+                        )
+                    }
+                },
+            )
+            ProfileMenuRow(
+                icon = Icons.Filled.Share,
+                label = "Share with Friends",
+                onClick = {
+                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(
+                            Intent.EXTRA_TEXT,
+                            "Buy internet packages fast with DALAB Internet: https://play.google.com/store/apps/details?id=$PACKAGE_NAME",
+                        )
+                    }
+                    context.startActivity(Intent.createChooser(shareIntent, "Share DALAB Internet"))
+                },
+            )
+            ProfileMenuRow(icon = Icons.Filled.Logout, label = "Log out", tint = Color(0xFFDC2626), onClick = onLogout, showChevron = false)
 
             Spacer(Modifier.weight(1f))
-            OutlinedButton(onClick = onLogout, modifier = Modifier.fillMaxWidth().padding(20.dp)) {
-                Text("Log out")
-            }
+            Spacer(Modifier.height(20.dp))
         }
     }
 
@@ -159,7 +193,13 @@ fun ProfileScreen(onLogout: () -> Unit) {
 }
 
 @Composable
-private fun ProfileMenuRow(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
+private fun ProfileMenuRow(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    tint: Color = DalabIndigo,
+    showChevron: Boolean = true,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -171,14 +211,16 @@ private fun ProfileMenuRow(icon: androidx.compose.ui.graphics.vector.ImageVector
             modifier = Modifier
                 .size(36.dp)
                 .clip(RoundedCornerShape(10.dp))
-                .background(Color(0xFFE6E9F8)),
+                .background(tint.copy(alpha = 0.12f)),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(icon, contentDescription = null, tint = DalabIndigo, modifier = Modifier.size(18.dp))
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
         }
         Spacer(Modifier.width(16.dp))
-        Text(label, modifier = Modifier.weight(1f), fontSize = 15.sp)
-        Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = Color.Gray)
+        Text(label, modifier = Modifier.weight(1f), fontSize = 15.sp, color = if (tint == DalabIndigo) Color.Unspecified else tint)
+        if (showChevron) {
+            Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = Color.Gray)
+        }
     }
     Divider()
 }

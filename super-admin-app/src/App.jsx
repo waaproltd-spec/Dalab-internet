@@ -70,7 +70,7 @@ const DalabAdminApi = {
   deleteCompany: (id) => dalabAdminApiRequest(`/admin/companies/${id}`, { method: "DELETE" }),
   updateCompanyStatus: (id, status) => dalabAdminApiRequest(`/admin/companies/${id}/status`, { method: "PUT", body: { status } }),
   updateCompanyVisibility: (id, visibleCustomerApp, visibleAgentApp) => dalabAdminApiRequest(`/admin/companies/${id}/visibility`, { method: "PUT", body: { visibleCustomerApp, visibleAgentApp } }),
-  updatePaymentNumber: (id, paymentNumber) => dalabAdminApiRequest(`/admin/companies/${id}/payment-number`, { method: "PUT", body: { paymentNumber } }),
+  updatePaymentNumber: (id, paymentNumber, paymentUssdTemplate) => dalabAdminApiRequest(`/admin/companies/${id}/payment-number`, { method: "PUT", body: { paymentNumber, paymentUssdTemplate } }),
   getPackages: (companyId) => dalabAdminApiRequest(`/admin/packages${companyId ? `?companyId=${companyId}` : ""}`),
   createPackage: (body) => dalabAdminApiRequest("/admin/packages", { method: "POST", body }),
   updatePackage: (id, body) => dalabAdminApiRequest(`/admin/packages/${id}`, { method: "PUT", body }),
@@ -733,17 +733,23 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
 function PaymentNumbers({ companies, setCompanies, refreshCompanies, admin }) {
   const [editing, setEditing] = useState(null);
   const [value, setValue] = useState("");
+  const [templateValue, setTemplateValue] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const canManage = hasPermission(admin, "companies.manage");
 
-  const openEdit = (c) => { setEditing(c.id); setValue(c.payNumber === "Not set" ? "" : c.payNumber); setError(""); };
+  const openEdit = (c) => {
+    setEditing(c.id);
+    setValue(c.payNumber === "Not set" ? "" : c.payNumber);
+    setTemplateValue(c.paymentUssdTemplate || "");
+    setError("");
+  };
 
   const save = async () => {
     if (DALAB_API_ENABLED) {
       setSaving(true);
       try {
-        await DalabAdminApi.updatePaymentNumber(editing, value);
+        await DalabAdminApi.updatePaymentNumber(editing, value, templateValue);
         await refreshCompanies();
         setEditing(null);
       } catch (err) {
@@ -752,7 +758,7 @@ function PaymentNumbers({ companies, setCompanies, refreshCompanies, admin }) {
         setSaving(false);
       }
     } else {
-      setCompanies((prev) => prev.map((c) => (c.id === editing ? { ...c, payNumber: value } : c)));
+      setCompanies((prev) => prev.map((c) => (c.id === editing ? { ...c, payNumber: value, paymentUssdTemplate: templateValue } : c)));
       setEditing(null);
     }
   };
@@ -795,6 +801,12 @@ function PaymentNumbers({ companies, setCompanies, refreshCompanies, admin }) {
           <Field label="Payment number / merchant code">
             <input style={inputStyle} value={value} onChange={(e) => setValue(e.target.value)} />
           </Field>
+          <Field label="Deposit USSD template (e.g. *812*610338686*{amount}#)">
+            <input style={inputStyle} value={templateValue} onChange={(e) => setTemplateValue(e.target.value)} placeholder="*<code>*<number>*{amount}#" />
+          </Field>
+          <div style={{ fontSize: 11.5, color: MUTE, marginTop: -8, marginBottom: 12 }}>
+            Update this together with the payment number above — it isn't derived automatically, so leaving it unchanged after a number change will keep dialing the old number.
+          </div>
           {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
           <div style={{ display: "flex", gap: 10 }}>
             <Button onClick={save} icon={Check} disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
