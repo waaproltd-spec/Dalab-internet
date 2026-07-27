@@ -15,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.PhoneAndroid
@@ -196,8 +197,8 @@ private fun AgentHome(
                 NavigationBarItem(
                     selected = tab == HomeTab.ORDERS,
                     onClick = { tab = HomeTab.ORDERS },
-                    icon = { Icon(Icons.Filled.List, contentDescription = "Orders") },
-                    label = { Text("Orders") },
+                    icon = { Icon(Icons.Filled.Home, contentDescription = "Home") },
+                    label = { Text("Home") },
                 )
                 NavigationBarItem(
                     selected = tab == HomeTab.SALES,
