@@ -1,5 +1,11 @@
 package com.dalab.internet.customer.ui
 
+import android.Manifest
+import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.provider.Telephony
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,18 +28,21 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.dalab.internet.customer.auth.AuthRepository
 import com.dalab.internet.customer.auth.OtpRequestResult
 import com.dalab.internet.customer.auth.OtpVerifyResult
 import com.dalab.internet.customer.auth.SessionManager
 import com.dalab.internet.customer.network.ApiClient
 import com.dalab.internet.customer.network.UpdateProfileRequest
+import com.dalab.internet.customer.sms.OtpSmsReceiver
 import kotlinx.coroutines.launch
 
 private enum class OtpStep { PHONE, CODE, NAME }
@@ -60,6 +69,33 @@ fun OtpLoginScreen(onLoggedIn: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     var debugCode by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+
+    // Auto-detect the OTP code from an incoming SMS while this step is showing.
+    // Purely additive: it only ever pre-fills `code`, the same state the user
+    // can otherwise type into by hand — verification still submits exactly the
+    // same way regardless of how `code` got its value.
+    val context = LocalContext.current
+    var smsPermissionTick by remember { mutableStateOf(0) }
+    val smsPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) smsPermissionTick++
+    }
+    DisposableEffect(step, smsPermissionTick) {
+        var receiver: OtpSmsReceiver? = null
+        if (step == OtpStep.CODE) {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECEIVE_SMS) == PackageManager.PERMISSION_GRANTED) {
+                receiver = OtpSmsReceiver { detected -> code = detected }
+                ContextCompat.registerReceiver(
+                    context,
+                    receiver,
+                    IntentFilter(Telephony.Sms.Intents.SMS_RECEIVED_ACTION),
+                    ContextCompat.RECEIVER_EXPORTED,
+                )
+            } else {
+                smsPermissionLauncher.launch(Manifest.permission.RECEIVE_SMS)
+            }
+        }
+        onDispose { receiver?.let { context.unregisterReceiver(it) } }
+    }
 
     Column(
         modifier = Modifier
