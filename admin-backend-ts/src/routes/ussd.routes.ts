@@ -6,6 +6,7 @@ import { requirePermission } from "../auth/permissions.js";
 import { encrypt, decrypt, isValidPin } from "../auth/crypto.js";
 import { sendJson } from "../utils/camelCase.js";
 import { broadcast } from "../realtime/orderEvents.js";
+import { recordActivity } from "../utils/activityLog.js";
 
 export const ussdRouter = Router();
 
@@ -23,11 +24,18 @@ ussdRouter.get("/admin/companies/:id/pin-status", requireStaff(), async (req, re
 ussdRouter.put("/admin/companies/:id/pin", requirePermission("devices.manage"), async (req, res) => {
   const { pin } = req.body;
   if (!isValidPin(String(pin ?? ""))) return sendJson(res, 400, { error: "PIN must be 3-8 digits" });
-  const result = await query(
-    `UPDATE companies SET pin_encrypted=$1, updated_at=now() WHERE id=$2 RETURNING id`,
-    [encrypt(pin), req.params.id]
-  );
-  if (result.length === 0) return sendJson(res, 404, { error: "Company not found" });
+  const existing = await queryOne(`SELECT pin_encrypted FROM companies WHERE id=$1`, [req.params.id]);
+  if (!existing) return sendJson(res, 404, { error: "Company not found" });
+  await query(`UPDATE companies SET pin_encrypted=$1, updated_at=now() WHERE id=$2`, [encrypt(pin), req.params.id]);
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "update_pin",
+    entityType: "company",
+    entityId: req.params.id,
+    // Never log the actual PIN value, encrypted or not — only that it changed.
+    oldValue: { pinSet: Boolean(existing.pin_encrypted) },
+    newValue: { pinSet: true },
+  });
   sendJson(res, 200, { message: "PIN saved" });
 });
 
@@ -61,7 +69,10 @@ function isValidSimSlot(value: unknown): value is number | null {
   return value === null || value === undefined || value === 1 || value === 2;
 }
 
-ussdRouter.post("/admin/ussd-templates", requirePermission("devices.manage"), async (req, res) => {
+// USSD Template management is Super-Admin-exclusive, not delegable via
+// devices.manage — these directly control what gets dialed on a customer's
+// behalf, same reasoning as the payment-gateway routes above.
+ussdRouter.post("/admin/ussd-templates", requireAuth("super_admin"), async (req, res) => {
   const { companyId, serviceName, ussdCode, notes, deviceId, simSlot } = req.body;
   if (!companyId || !serviceName || !ussdCode) {
     return sendJson(res, 400, { error: "companyId, serviceName, and ussdCode are required" });
@@ -82,10 +93,19 @@ ussdRouter.post("/admin/ussd-templates", requirePermission("devices.manage"), as
     `INSERT INTO ussd_templates (id, company_id, service_name, ussd_code, notes, status, device_id, sim_slot) VALUES ($1,$2,$3,$4,$5,'enabled',$6,$7)`,
     [id, companyId, serviceName, ussdCode, notes ?? "", deviceId ?? null, simSlot ?? null]
   );
-  sendJson(res, 201, await queryOne(`SELECT * FROM ussd_templates WHERE id=$1`, [id]));
+  const created = await queryOne(`SELECT * FROM ussd_templates WHERE id=$1`, [id]);
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "create_ussd_template",
+    entityType: "ussd_template",
+    entityId: id,
+    oldValue: null,
+    newValue: created,
+  });
+  sendJson(res, 201, created);
 });
 
-ussdRouter.put("/admin/ussd-templates/:id", requirePermission("devices.manage"), async (req, res) => {
+ussdRouter.put("/admin/ussd-templates/:id", requireAuth("super_admin"), async (req, res) => {
   const existing = await queryOne(`SELECT * FROM ussd_templates WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Template not found" });
   const merged = { ...existing, ...req.body };
@@ -114,20 +134,47 @@ ussdRouter.put("/admin/ussd-templates/:id", requirePermission("devices.manage"),
       req.params.id,
     ]
   );
-  sendJson(res, 200, await queryOne(`SELECT * FROM ussd_templates WHERE id=$1`, [req.params.id]));
+  const updated = await queryOne(`SELECT * FROM ussd_templates WHERE id=$1`, [req.params.id]);
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "update_ussd_template",
+    entityType: "ussd_template",
+    entityId: req.params.id,
+    oldValue: existing,
+    newValue: updated,
+  });
+  sendJson(res, 200, updated);
 });
 
-ussdRouter.put("/admin/ussd-templates/:id/status", requirePermission("devices.manage"), async (req, res) => {
+ussdRouter.put("/admin/ussd-templates/:id/status", requireAuth("super_admin"), async (req, res) => {
   const { status } = req.body;
   if (!["enabled", "disabled"].includes(status)) return sendJson(res, 400, { error: "status must be 'enabled' or 'disabled'" });
-  const result = await query(`UPDATE ussd_templates SET status=$1, updated_at=now() WHERE id=$2 RETURNING id`, [status, req.params.id]);
-  if (result.length === 0) return sendJson(res, 404, { error: "Template not found" });
+  const existing = await queryOne(`SELECT status FROM ussd_templates WHERE id=$1`, [req.params.id]);
+  if (!existing) return sendJson(res, 404, { error: "Template not found" });
+  await query(`UPDATE ussd_templates SET status=$1, updated_at=now() WHERE id=$2`, [status, req.params.id]);
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "update_ussd_template_status",
+    entityType: "ussd_template",
+    entityId: req.params.id,
+    oldValue: { status: existing.status },
+    newValue: { status },
+  });
   sendJson(res, 200, await queryOne(`SELECT * FROM ussd_templates WHERE id=$1`, [req.params.id]));
 });
 
-ussdRouter.delete("/admin/ussd-templates/:id", requirePermission("devices.manage"), async (req, res) => {
-  const result = await query(`DELETE FROM ussd_templates WHERE id=$1 RETURNING id`, [req.params.id]);
-  if (result.length === 0) return sendJson(res, 404, { error: "Template not found" });
+ussdRouter.delete("/admin/ussd-templates/:id", requireAuth("super_admin"), async (req, res) => {
+  const existing = await queryOne(`SELECT * FROM ussd_templates WHERE id=$1`, [req.params.id]);
+  if (!existing) return sendJson(res, 404, { error: "Template not found" });
+  await query(`DELETE FROM ussd_templates WHERE id=$1`, [req.params.id]);
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "delete_ussd_template",
+    entityType: "ussd_template",
+    entityId: req.params.id,
+    oldValue: existing,
+    newValue: null,
+  });
   sendJson(res, 200, { deleted: true });
 });
 
@@ -154,7 +201,7 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
   }
 
   const orderWithPackage = await queryOne(
-    `SELECT o.*, p.name AS package_name FROM orders o JOIN packages p ON p.id=o.package_id WHERE o.id=$1`,
+    `SELECT o.*, p.name AS package_name, p.code AS package_code FROM orders o JOIN packages p ON p.id=o.package_id WHERE o.id=$1`,
     [order.id]
   );
 
@@ -173,11 +220,16 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
   if (!template) return { error: "No enabled USSD template matches this order's package or provider." };
 
   const pin = decrypt(company.pin_encrypted);
+  // {packageCode}/{packageName} are optional — a template that doesn't
+  // reference them is unaffected, .replace() is a no-op if the placeholder
+  // isn't present in the string.
   const ussd = template.ussd_code
     .replace("{number}", order.sender_phone ?? "")
     .replace("{customerNumber}", order.sender_phone ?? "")
     .replace("{amount}", String(order.amount))
-    .replace("{pin}", pin);
+    .replace("{pin}", pin)
+    .replace("{packageCode}", orderWithPackage?.package_code ?? "")
+    .replace("{packageName}", orderWithPackage?.package_name ?? "");
 
   await query(
     `UPDATE orders SET ussd_generated=$1, ussd_device_id=$2, ussd_sim_slot=$3 WHERE id=$4`,
