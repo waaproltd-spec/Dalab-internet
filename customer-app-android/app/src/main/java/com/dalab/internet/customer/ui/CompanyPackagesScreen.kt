@@ -1,10 +1,14 @@
 package com.dalab.internet.customer.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.SimCard
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -27,6 +31,13 @@ fun CompanyPackagesScreen(
     onBuy: (PackageItem) -> Unit,
 ) {
     val offline = company.status == "offline"
+    val brandColor = remember(company.colorHex) {
+        try {
+            Color(android.graphics.Color.parseColor(company.colorHex))
+        } catch (_: Exception) {
+            Color(0xFF1D2E8C)
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -55,9 +66,9 @@ fun CompanyPackagesScreen(
                     )
                 }
             } else {
-                LazyColumn(modifier = Modifier.weight(1f)) {
+                LazyColumn(modifier = Modifier.weight(1f).padding(vertical = 4.dp)) {
                     items(packages, key = { it.id }) { pkg ->
-                        PackageCard(pkg = pkg, enabled = !offline, onBuy = { onBuy(pkg) })
+                        PackageCard(pkg = pkg, brandColor = brandColor, enabled = !offline, onBuy = { onBuy(pkg) })
                     }
                 }
             }
@@ -66,14 +77,30 @@ fun CompanyPackagesScreen(
 }
 
 @Composable
-private fun PackageCard(pkg: PackageItem, enabled: Boolean, onBuy: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
+private fun PackageCard(pkg: PackageItem, brandColor: Color, enabled: Boolean, onBuy: () -> Unit) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .clickable(enabled = enabled, onClick = onBuy),
+        shape = RoundedCornerShape(16.dp),
+    ) {
+        Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
+            Box(
+                modifier = Modifier
+                    .width(92.dp)
+                    .fillMaxHeight()
+                    .background(if (enabled) brandColor else Color.LightGray),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.SimCard,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(40.dp),
+                )
+            }
+            Column(modifier = Modifier.weight(1f).padding(16.dp)) {
                 Text(pkg.name, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -103,8 +130,6 @@ private fun PackageCard(pkg: PackageItem, enabled: Boolean, onBuy: () -> Unit) {
                     Text(details.joinToString(" · "), style = MaterialTheme.typography.bodySmall)
                 }
             }
-            Spacer(Modifier.width(12.dp))
-            Button(onClick = onBuy, enabled = enabled) { Text("Buy") }
         }
     }
 }
