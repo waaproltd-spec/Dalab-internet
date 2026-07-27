@@ -11,6 +11,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
@@ -34,8 +35,10 @@ import com.dalab.internet.customer.auth.SessionManager
 import com.dalab.internet.customer.data.Company
 import com.dalab.internet.customer.data.CustomerOrder
 import com.dalab.internet.customer.data.PackageItem
+import com.dalab.internet.customer.data.companyLogoRes
 import com.dalab.internet.customer.network.ApiClient
 import com.dalab.internet.customer.network.CreateOrderRequest
+import com.dalab.internet.customer.prefs.LocalizationManager
 import com.dalab.internet.customer.queue.OrderCreateAction
 import com.dalab.internet.customer.queue.PendingActionQueue
 import com.dalab.internet.customer.queue.RetryClassifier
@@ -57,20 +60,36 @@ private val WALLET_OPTIONS = mapOf(
 )
 
 /**
- * A deliberately minimal, single-screen payment page — no sender/receiver
- * fields, no service-detail breakdown, no instructional paragraphs. Just
- * the number to pay (with Copy), the amount, a single-select payment
- * wallet, and one Pay Now button that creates the order and opens the
- * dialer with the USSD code pre-filled. senderPhone/receiverPhone are
- * sent to the backend using the logged-in customer's own number (no
- * longer user-editable, per this simplified design).
+ * USSD dial prefix per wallet — fixed regardless of which company's
+ * package was purchased, combined with that company's own admin number
+ * (company.paymentNumber) and the amount: "*{prefix}*{number}*{amount}#".
+ * Replaces the old company.paymentUssdTemplate-based dial string, which
+ * was wrong whenever the customer picked a wallet other than the
+ * purchased company's own gateway (e.g. paying via JEEB for a Somtel
+ * package used to wrongly dial Somtel's own eDahab code).
+ */
+private val WALLET_DIAL_PREFIX = mapOf(
+    "EVC Plus" to "712",
+    "eDahab" to "110",
+    "JEEB" to "812",
+)
+
+/**
+ * A minimal, single-screen payment page: the number to pay (with Copy),
+ * the amount, the sender/receiver phone fields (required, validated on
+ * submit), a single-select payment wallet, and one Pay Now button that
+ * creates the order and opens the dialer with the USSD code pre-filled
+ * for whichever wallet was selected.
  */
 @Composable
 fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrderCreated: (CustomerOrder) -> Unit) {
     val context = LocalContext.current
-    val customerPhone = SessionManager.currentCustomer()?.phone
+    var senderPhone by remember { mutableStateOf(SessionManager.currentCustomer()?.phone ?: "") }
+    var receiverPhone by remember { mutableStateOf(SessionManager.currentCustomer()?.phone ?: "") }
+    var attemptedSubmit by remember { mutableStateOf(false) }
     var selectedPaymentMethod by remember { mutableStateOf<String?>(null) }
     val payNumber = company.paymentNumber?.takeIf { it.isNotBlank() }
+    val logoRes = remember(company.id) { companyLogoRes(company.id) }
 
     var submitting by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -153,6 +172,25 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
         )
 
         Spacer(Modifier.height(gap))
+        PhoneInputField(
+            label = LocalizationManager.tr("Number sending payment", "Lambarka Lacagta Ka Diraysid"),
+            value = senderPhone,
+            onValueChange = { senderPhone = it },
+            logoRes = logoRes,
+            showError = attemptedSubmit && senderPhone.isBlank(),
+            compact = compact,
+        )
+        Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
+        PhoneInputField(
+            label = LocalizationManager.tr("Receiver number", "Lambarka Lacagta u Rabtid"),
+            value = receiverPhone,
+            onValueChange = { receiverPhone = it },
+            logoRes = logoRes,
+            showError = attemptedSubmit && receiverPhone.isBlank(),
+            compact = compact,
+        )
+
+        Spacer(Modifier.height(gap))
         Text("Choose Your Payment Method", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
         Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
 
@@ -219,13 +257,17 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                     else Brush.horizontalGradient(listOf(Color(0xFF3A4257), Color(0xFF3A4257)))
                 )
                 .clickable(enabled = payEnabled) {
+                    attemptedSubmit = true
+                    if (senderPhone.isBlank() || receiverPhone.isBlank()) {
+                        return@clickable
+                    }
                     error = null
                     submitting = true
                     val request = CreateOrderRequest(
                         companyId = company.id,
                         packageId = pkg.id,
-                        senderPhone = customerPhone,
-                        receiverPhone = customerPhone,
+                        senderPhone = senderPhone.trim(),
+                        receiverPhone = receiverPhone.trim(),
                         paymentMethod = selectedPaymentMethod,
                         clientRequestId = clientRequestId,
                     )
@@ -234,9 +276,9 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                             val response = RetryClassifier.requireSuccessful(ApiClient.service.createOrder(request))
                             val order = response.body()
                             if (order != null) {
-                                val template = company.paymentUssdTemplate?.takeIf { it.isNotBlank() }
-                                val dialTarget = if (template != null) {
-                                    template.replace("{amount}", "%.2f".format(pkg.price))
+                                val prefix = WALLET_DIAL_PREFIX[selectedPaymentMethod]
+                                val dialTarget = if (prefix != null && payNumber != null) {
+                                    "*$prefix*$payNumber*${"%.2f".format(pkg.price)}#"
                                 } else {
                                     payNumber
                                 }
@@ -275,5 +317,50 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun PhoneInputField(
+    label: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+    logoRes: Int?,
+    showError: Boolean,
+    compact: Boolean,
+) {
+    Column {
+        Text(label, color = MutedText, fontSize = 12.sp)
+        Spacer(Modifier.height(4.dp))
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            placeholder = { Text("6XXXXXXX", color = MutedText) },
+            singleLine = true,
+            isError = showError,
+            leadingIcon = if (logoRes != null) {
+                {
+                    Image(
+                        painter = painterResource(logoRes),
+                        contentDescription = null,
+                        modifier = Modifier.size(26.dp).clip(CircleShape),
+                    )
+                }
+            } else null,
+            supportingText = if (showError) {
+                { Text("Please enter your number", color = MaterialTheme.colorScheme.error, fontSize = 11.sp) }
+            } else null,
+            shape = RoundedCornerShape(14.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = DalabGreen,
+                unfocusedBorderColor = PanelBorder,
+                focusedTextColor = Color.White,
+                unfocusedTextColor = Color.White,
+                cursorColor = DalabGreen,
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(if (compact) 54.dp else 58.dp),
+        )
     }
 }
