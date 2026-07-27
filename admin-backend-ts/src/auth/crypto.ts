@@ -1,7 +1,20 @@
-import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
+import { createCipheriv, createDecipheriv, randomBytes, randomInt, scryptSync } from "node:crypto";
 import bcrypt from "bcryptjs";
 import jwt, { SignOptions } from "jsonwebtoken";
 import { JwtPayload, Role } from "../types/index.js";
+
+/** Fails fast in production rather than silently running with a known,
+ * publicly-visible-in-source-control fallback secret — render.yaml already
+ * auto-generates real values for both, so this only ever fires on a
+ * misconfigured deploy. Local/dev runs keep the fallback for convenience. */
+function requiredSecret(envVar: string, devFallback: string): string {
+  const value = process.env[envVar];
+  if (value) return value;
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(`${envVar} is not set. Refusing to start in production with a default secret.`);
+  }
+  return devFallback;
+}
 
 // ---------- Passwords ----------
 // bcryptjs (pure JS) rather than the native `bcrypt` package deliberately —
@@ -21,7 +34,7 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
 // A PIN must be recoverable in plaintext to build a literal USSD dialer
 // string, so — unlike passwords — it's encrypted, not hashed. Real
 // AES-256-GCM via Node's built-in crypto module, no dependency needed.
-const ENCRYPTION_SECRET = process.env.ENCRYPTION_KEY ?? "dev-only-encryption-key-change-in-production";
+const ENCRYPTION_SECRET = requiredSecret("ENCRYPTION_KEY", "dev-only-encryption-key-change-in-production");
 const ENCRYPTION_KEY = scryptSync(ENCRYPTION_SECRET, "dalab-pin-salt", 32);
 
 export function encrypt(plaintext: string): string {
@@ -41,7 +54,7 @@ export function decrypt(stored: string): string {
 }
 
 // ---------- JWT ----------
-const JWT_SECRET: string = process.env.JWT_SECRET ?? "dev-only-jwt-secret-change-in-production";
+const JWT_SECRET: string = requiredSecret("JWT_SECRET", "dev-only-jwt-secret-change-in-production");
 const ACCESS_TTL_SECONDS = 15 * 60;
 const REFRESH_TTL_SECONDS = 30 * 24 * 60 * 60;
 
@@ -77,5 +90,5 @@ export function isValidPin(pin: string): boolean {
 }
 
 export function generateOtp(): string {
-  return String(Math.floor(1000 + Math.random() * 9000));
+  return String(randomInt(1000, 10000));
 }

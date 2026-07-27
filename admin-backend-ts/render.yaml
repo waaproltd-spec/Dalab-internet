@@ -25,6 +25,13 @@ services:
         generateValue: true
       - key: ENCRYPTION_KEY
         generateValue: true
+      # Required as of the CORS/production hardening pass — the server now
+      # refuses to start in production without this set (previously silently
+      # allowed any origin). Set to the Super Admin dashboard's real deployed
+      # origin(s), comma-separated if there's more than one (e.g. a staging
+      # and a production URL).
+      - key: CORS_ORIGIN
+        sync: false
       - key: SEED_SUPER_ADMIN_EMAIL
         sync: false
       - key: SEED_SUPER_ADMIN_PASSWORD

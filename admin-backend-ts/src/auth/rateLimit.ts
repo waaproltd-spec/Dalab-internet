@@ -3,7 +3,11 @@ import { Request, Response, NextFunction } from "express";
 /**
  * A minimal in-memory sliding-window rate limiter — no dependency needed for
  * this. Keyed by IP + route, so one abusive client hammering /admin/auth/login
- * doesn't affect a different client hitting /auth/otp/request.
+ * doesn't affect a different client hitting /auth/otp/request. Uses
+ * Express's own `req.ip` (not a raw X-Forwarded-For read) — resolved
+ * correctly only because server.ts sets `trust proxy` to Render's single
+ * hop; without that, a client could set its own X-Forwarded-For and rotate
+ * its apparent IP on every request to bypass this entirely.
  *
  * Real limitation, stated plainly: in-memory state means limits reset on a
  * restart/redeploy, and don't share state across multiple server instances.
@@ -17,7 +21,7 @@ const attempts = new Map<string, number[]>();
 
 export function rateLimit(routeKey: string, maxAttempts: number, windowMs: number) {
   return (req: Request, res: Response, next: NextFunction): void => {
-    const ip = req.headers["x-forwarded-for"]?.toString().split(",")[0].trim() ?? req.socket?.remoteAddress ?? "unknown";
+    const ip = req.ip ?? req.socket?.remoteAddress ?? "unknown";
     const key = `${routeKey}:${ip}`;
     const now = Date.now();
 
