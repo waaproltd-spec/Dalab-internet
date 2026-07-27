@@ -7,6 +7,7 @@ import com.dalab.internet.customer.data.MacaashBalance
 import com.dalab.internet.customer.data.MacaashHistoryEntry
 import com.dalab.internet.customer.data.MacaashReward
 import com.dalab.internet.customer.data.PackageItem
+import com.dalab.internet.customer.data.PromoImage
 import retrofit2.Response
 import retrofit2.http.*
 
@@ -53,6 +54,9 @@ interface ApiService {
 
     @DELETE("customer/profile")
     suspend fun deleteAccount(): Response<Unit>
+
+    @GET("promo-images")
+    suspend fun getPromoImages(): Response<List<PromoImage>>
 
     @GET("companies")
     suspend fun getCompanies(): Response<List<Company>>
