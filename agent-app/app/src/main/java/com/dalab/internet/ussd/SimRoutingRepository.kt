@@ -1,6 +1,7 @@
 package com.dalab.internet.ussd
 
 import com.dalab.internet.auth.DeviceIdentity
+import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.network.ApiClient
 
 /**
@@ -26,9 +27,12 @@ object SimRoutingRepository {
                 cache = response.body()?.associate { it.companyId to it.simSlot } ?: emptyMap()
                 Result.success(Unit)
             } else {
-                Result.failure(IllegalStateException("Failed to load SIM routing: HTTP ${response.code()}"))
+                val error = IllegalStateException("Failed to load SIM routing: HTTP ${response.code()}")
+                DiagnosticsLog.record("sim_routing_refresh", error.message ?: "unknown error")
+                Result.failure(error)
             }
         } catch (e: Exception) {
+            DiagnosticsLog.record("sim_routing_refresh", e.message ?: "unknown error")
             Result.failure(e)
         }
     }

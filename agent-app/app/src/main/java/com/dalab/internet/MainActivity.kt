@@ -13,6 +13,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Assessment
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Logout
@@ -28,11 +29,13 @@ import com.dalab.internet.auth.AuthRepository
 import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.auth.SessionManager
 import com.dalab.internet.data.Order
+import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.queue.PendingActionQueue
 import com.dalab.internet.service.AgentBackgroundService
 import com.dalab.internet.sms.SmsListenerState
 import com.dalab.internet.ui.CustomersScreen
 import com.dalab.internet.ui.DeviceSetupScreen
+import com.dalab.internet.ui.DiagnosticsScreen
 import com.dalab.internet.ui.LoginScreen
 import com.dalab.internet.ui.NewSaleScreen
 import com.dalab.internet.ui.OrderDetailScreen
@@ -52,6 +55,7 @@ class MainActivity : ComponentActivity() {
         DeviceIdentity.init(this)
         SmsListenerState.init(this)
         PendingActionQueue.init(this)
+        DiagnosticsLog.init(this)
         createNotificationChannel()
 
         if (SessionManager.isLoggedIn() && DeviceIdentity.isSet()) {
@@ -75,7 +79,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, LOGIN, DEVICE_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS }
+private enum class Screen { PERMISSIONS, LOGIN, DEVICE_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, DIAGNOSTICS }
 private enum class HomeTab { ORDERS, SALES, CUSTOMERS, REPORTS, MORE }
 
 @Composable
@@ -137,6 +141,7 @@ private fun AgentApp() {
             onOpenPackages = { screen = Screen.PACKAGES },
             onOpenTransactions = { screen = Screen.TRANSACTIONS },
             onOpenDeviceSetup = { screen = Screen.DEVICE_SETUP },
+            onOpenDiagnostics = { screen = Screen.DIAGNOSTICS },
             onLogout = {
                 AuthRepository.logout()
                 AgentBackgroundService.stop(context)
@@ -155,6 +160,8 @@ private fun AgentApp() {
         Screen.PACKAGES -> PackagesScreen(onBack = { screen = Screen.HOME })
 
         Screen.TRANSACTIONS -> TransactionHistoryScreen(onBack = { screen = Screen.HOME })
+
+        Screen.DIAGNOSTICS -> DiagnosticsScreen(onBack = { screen = Screen.HOME })
     }
 }
 
@@ -172,6 +179,7 @@ private fun AgentHome(
     onOpenPackages: () -> Unit,
     onOpenTransactions: () -> Unit,
     onOpenDeviceSetup: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
     onLogout: () -> Unit,
 ) {
     var tab by remember { mutableStateOf(HomeTab.ORDERS) }
@@ -222,6 +230,7 @@ private fun AgentHome(
                     onOpenPackages = onOpenPackages,
                     onOpenTransactions = onOpenTransactions,
                     onOpenDeviceSetup = onOpenDeviceSetup,
+                    onOpenDiagnostics = onOpenDiagnostics,
                     onLogout = onLogout,
                 )
             }
@@ -234,6 +243,7 @@ private fun MoreScreen(
     onOpenPackages: () -> Unit,
     onOpenTransactions: () -> Unit,
     onOpenDeviceSetup: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
     onLogout: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
@@ -256,6 +266,13 @@ private fun MoreScreen(
             supportingContent = { Text(DeviceIdentity.deviceName() ?: "Choose which registered device this phone is") },
             leadingContent = { Icon(Icons.Filled.PhoneAndroid, contentDescription = null) },
             modifier = Modifier.clickable(onClick = onOpenDeviceSetup),
+        )
+        Divider()
+        ListItem(
+            headlineContent = { Text("Diagnostics") },
+            supportingContent = { Text("Recent errors and automatic retries on this device") },
+            leadingContent = { Icon(Icons.Filled.BugReport, contentDescription = null) },
+            modifier = Modifier.clickable(onClick = onOpenDiagnostics),
         )
         Divider()
         ListItem(

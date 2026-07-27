@@ -1,6 +1,7 @@
 package com.dalab.internet.ussd
 
 import android.content.Context
+import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.DialAttemptResultRequest
 import com.dalab.internet.network.DialAttemptStartRequest
@@ -49,6 +50,7 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
             // rejecting the request) — the caller (SmsUploadFlow) queues a
             // retry instead of losing this order to a transient network blip.
             val outcome = if (RetryClassifier.isRetryable(e)) DialOutcome.NETWORK_UNAVAILABLE else DialOutcome.FAILED
+            DiagnosticsLog.record("verify_payment", "Could not reach server (order $orderId): ${e.message}")
             return DialResult(outcome, "Could not reach server to verify payment: ${e.message}")
         }
         val order = verifyResponse.body() ?: return DialResult(DialOutcome.FAILED, "Verify-payment returned no order.")
@@ -85,8 +87,11 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         return try {
             val response = ApiClient.service.startDialAttempt(orderId, DialAttemptStartRequest(simSlot, ussdString, attemptNumber))
             response.body()?.id
-        } catch (_: Exception) {
-            null // dial isn't blocked; reportDialResult below queues a full replay covering both steps
+        } catch (e: Exception) {
+            // Dial isn't blocked; reportDialResult below queues a full replay
+            // covering both steps once the (already-known) outcome is in.
+            DiagnosticsLog.record("dial_attempt_log", "Start-log failed (order $orderId, attempt $attemptNumber): ${e.message}", isError = false)
+            null
         }
     }
 
@@ -107,6 +112,7 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         // did — queue a full replay of both. Safe to redo "start" even if it
         // actually succeeded the first time: the backend's unique index on
         // (order_id, attempt_number) makes it an idempotent upsert.
+        DiagnosticsLog.record("dial_attempt_log", "Queued full replay (order $orderId, attempt $attemptNumber)", isError = false)
         PendingActionQueue.enqueue(
             id = UUID.randomUUID().toString(),
             type = PendingActionQueue.Type.DIAL_ATTEMPT_AUDIT,
