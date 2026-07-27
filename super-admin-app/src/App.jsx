@@ -5,7 +5,8 @@ import {
   X, Check, TrendingUp, Wifi, DollarSign,
   Clock3, CheckCircle2, XCircle, Download, ShieldCheck, Menu, RefreshCw, Loader2,
   GalleryHorizontalEnd, ArrowUp, ArrowDown, Eye, EyeOff, Lock, Mail, LogOut, ArrowLeft, Copy, Terminal, SmartphoneNfc,
-  Smartphone, Radio, ChevronDown, ChevronRight, AlertTriangle, RotateCcw, UserCog, Tags
+  Smartphone, Radio, ChevronDown, ChevronRight, AlertTriangle, RotateCcw, UserCog, Tags,
+  WifiOff, BatteryFull, BatteryMedium, BatteryLow, BatteryWarning
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 
@@ -107,7 +108,10 @@ const DalabAdminApi = {
   getUssdPinStatus: (companyId) => dalabAdminApiRequest(`/admin/companies/${companyId}/pin-status`),
   setUssdPin: (companyId, pin) => dalabAdminApiRequest(`/admin/companies/${companyId}/pin`, { method: "PUT", body: { pin } }),
   getSimRouting: () => dalabAdminApiRequest("/admin/sim-routing"),
-  setSimRouting: (companyId, simSlot) => dalabAdminApiRequest(`/admin/sim-routing/${companyId}`, { method: "PUT", body: { simSlot } }),
+  setSimRouting: (companyId, deviceId, simSlot, priority) =>
+    dalabAdminApiRequest(`/admin/sim-routing/${companyId}/${deviceId}`, { method: "PUT", body: { simSlot, priority } }),
+  deleteSimRouting: (companyId, deviceId) =>
+    dalabAdminApiRequest(`/admin/sim-routing/${companyId}/${deviceId}`, { method: "DELETE" }),
   getUssdLogs: (orderId) => dalabAdminApiRequest(`/admin/ussd-logs${orderId ? `?orderId=${orderId}` : ""}`),
   regenerateUssd: (orderId) => dalabAdminApiRequest(`/admin/orders/${orderId}/generate-ussd`, { method: "POST" }),
   reverseOrder: (id) => dalabAdminApiRequest(`/admin/orders/${id}/reverse`, { method: "POST" }),
@@ -2062,6 +2066,30 @@ function DeviceUssdModule({ companies, admin }) {
   );
 }
 
+const STALE_HEARTBEAT_MS = 5 * 60 * 1000;
+
+function minutesAgoLabel(iso) {
+  if (!iso) return "Never";
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 60_000) return "Just now";
+  const mins = Math.floor(ms / 60_000);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  return hours < 48 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`;
+}
+
+function isHeartbeatStale(iso) {
+  if (!iso) return true;
+  return Date.now() - new Date(iso).getTime() > STALE_HEARTBEAT_MS;
+}
+
+function BatteryIcon({ percent, size = 14, color }) {
+  if (percent == null) return <BatteryWarning size={size} color={color || MUTE} />;
+  if (percent <= 15) return <BatteryLow size={size} color={color || "#C81E2C"} />;
+  if (percent <= 50) return <BatteryMedium size={size} color={color || "#A9720A"} />;
+  return <BatteryFull size={size} color={color || GREEN} />;
+}
+
 function DevicesPanel({ canManage }) {
   const [devices, setDevices] = useState([]);
   const [agents, setAgents] = useState([]);
@@ -2158,9 +2186,30 @@ function DevicesPanel({ canManage }) {
               </div>
               <Badge tone={d.enabled ? "green" : "red"}>{d.enabled ? "Enabled" : "Disabled"}</Badge>
             </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 12, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <BatteryIcon percent={d.batteryPercent} />
+                <span style={{ fontSize: 11.5, color: MUTE }}>{d.batteryPercent != null ? `${d.batteryPercent}%` : "No data"}</span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                {d.networkOnline ? <Wifi size={13} color={GREEN} /> : <WifiOff size={13} color="#C81E2C" />}
+                <span style={{ fontSize: 11.5, color: MUTE }}>{d.networkOnline ? "Online" : "Offline"}</span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <Clock3 size={13} color={MUTE} />
+                <span style={{ fontSize: 11.5, color: MUTE }}>{minutesAgoLabel(d.lastHeartbeatAt)}</span>
+              </div>
+            </div>
+            {d.enabled && isHeartbeatStale(d.lastHeartbeatAt) && (
+              <div style={{ marginTop: 8 }}>
+                <Badge tone="amber"><AlertTriangle size={11} style={{ marginRight: 4, verticalAlign: -1 }} />No heartbeat in over 5 minutes</Badge>
+              </div>
+            )}
+
             <div style={{ marginTop: 10, fontSize: 11.5, color: MUTE }}>
               {(d.sims || []).length > 0
-                ? `Routing: ${d.sims.map((s) => `SIM ${s.simSlot} → ${s.companyName}`).join(", ")}`
+                ? `Routing: ${d.sims.map((s) => `SIM ${s.simSlot} (priority ${s.priority}) → ${s.companyName}`).join(", ")}`
                 : "No providers routed to this device yet."}
             </div>
             {canManage && (
@@ -2395,37 +2444,62 @@ function UssdTemplatesPanel({ companies, canManage }) {
 }
 
 function SimRoutingPanel({ companies, canManage }) {
-  const [routing, setRouting] = useState({}); // companyId -> simSlot
-  const [savingId, setSavingId] = useState(null);
+  const [routes, setRoutes] = useState([]); // rows: {companyId, deviceId, simSlot, priority, companyName, deviceName}
+  const [devices, setDevices] = useState([]);
+  const [savingKey, setSavingKey] = useState(null);
   const [error, setError] = useState("");
+  const [addForm, setAddForm] = useState({}); // companyId -> { deviceId, simSlot }
 
-  const fetchRouting = async () => {
+  const fetchAll = async () => {
     if (!DALAB_API_ENABLED) return;
     try {
-      const rows = await DalabAdminApi.getSimRouting();
-      setRouting(Object.fromEntries(rows.map((r) => [r.companyId, r.simSlot])));
+      const [routeRows, deviceRows] = await Promise.all([DalabAdminApi.getSimRouting(), DalabAdminApi.getAgentDevices()]);
+      setRoutes(routeRows);
+      setDevices(deviceRows);
     } catch (err) {
       setError(err.message || "Could not load SIM routing.");
     }
   };
-  useEffect(() => { fetchRouting(); }, []);
+  useEffect(() => { fetchAll(); }, []);
 
-  const assign = async (companyId, simSlot) => {
-    setRouting((prev) => ({ ...prev, [companyId]: simSlot })); // optimistic
-    setSavingId(companyId);
+  const routesFor = (companyId) => routes.filter((r) => r.companyId === companyId).sort((a, b) => a.priority - b.priority);
+  const unassigned = companies.filter((c) => routesFor(c.id).length === 0);
+
+  const upsert = async (companyId, deviceId, simSlot, priority) => {
+    const key = `${companyId}:${deviceId}`;
+    setSavingKey(key);
     setError("");
     try {
-      await DalabAdminApi.setSimRouting(companyId, simSlot);
+      await DalabAdminApi.setSimRouting(companyId, deviceId, simSlot, priority);
+      await fetchAll();
     } catch (err) {
       setError(err.message || "Could not save routing.");
-      fetchRouting(); // reconcile with server truth
     } finally {
-      setSavingId(null);
+      setSavingKey(null);
     }
   };
 
-  const bySlot = (slot) => companies.filter((c) => routing[c.id] === slot);
-  const unassigned = companies.filter((c) => !routing[c.id]);
+  const remove = async (companyId, deviceId) => {
+    const key = `${companyId}:${deviceId}`;
+    setSavingKey(key);
+    setError("");
+    try {
+      await DalabAdminApi.deleteSimRouting(companyId, deviceId);
+      await fetchAll();
+    } catch (err) {
+      setError(err.message || "Could not remove routing.");
+    } finally {
+      setSavingKey(null);
+    }
+  };
+
+  const addDevice = async (companyId) => {
+    const form = addForm[companyId];
+    if (!form?.deviceId) return;
+    const existingCount = routesFor(companyId).length;
+    await upsert(companyId, form.deviceId, form.simSlot || 1, existingCount + 1);
+    setAddForm((prev) => ({ ...prev, [companyId]: { deviceId: "", simSlot: 1 } }));
+  };
 
   if (!DALAB_API_ENABLED) {
     return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage SIM routing.</div>;
@@ -2433,13 +2507,16 @@ function SimRoutingPanel({ companies, canManage }) {
 
   return (
     <div>
-      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>Assign each telecom provider to SIM 1 or SIM 2 on the Agent App's device — this controls which physical SIM the automatic USSD dialer uses.</div>
+      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>
+        Route each telecom provider to one or more agent devices, ranked by priority — priority 1 is the primary device the Agent App auto-dials on;
+        additional devices act as a backup if you've physically provisioned a second SIM for that provider. Each route also picks which physical SIM slot (1 or 2) on that device to use.
+      </div>
 
       {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       {unassigned.length > 0 && (
         <Card style={{ padding: 16, marginBottom: 16, background: "#FFF8E8", border: "1px solid #F4E3B0" }}>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#A9720A", marginBottom: 8 }}>Not yet routed — the Agent App can't auto-dial for these until assigned:</div>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#A9720A", marginBottom: 8 }}>Not yet routed — no Agent App device can auto-dial for these until assigned:</div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {unassigned.map((c) => (
               <Badge key={c.id} tone="amber">{c.name}</Badge>
@@ -2448,78 +2525,81 @@ function SimRoutingPanel({ companies, canManage }) {
         </Card>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 16 }}>
-        {[1, 2].map((slot) => (
-          <Card key={slot} style={{ padding: 18 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-              <div style={{ width: 34, height: 34, borderRadius: 10, background: INDIGO_SOFT, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <SmartphoneNfc size={17} color={INDIGO} />
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {companies.map((c) => {
+          const companyRoutes = routesFor(c.id);
+          const usedDeviceIds = new Set(companyRoutes.map((r) => r.deviceId));
+          const availableDevices = devices.filter((d) => !usedDeviceIds.has(d.id));
+          const form = addForm[c.id] || { deviceId: "", simSlot: 1 };
+
+          return (
+            <Card key={c.id} style={{ padding: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                <div style={{ width: 8, height: 8, borderRadius: 4, background: c.color }} />
+                <span style={{ fontWeight: 800, fontSize: 14, color: INK }}>{c.name}</span>
               </div>
-              <div style={{ fontWeight: 800, fontSize: 14, color: INK }}>SIM {slot}</div>
-            </div>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, minHeight: 40 }}>
-              {bySlot(slot).map((c) => (
-                <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, border: `1px solid ${BORDER}` }}>
-                  <div style={{ width: 8, height: 8, borderRadius: 4, background: c.color }} />
-                  <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: INK }}>{c?.name || "Unnamed"}</span>
-                  {savingId === c.id && <Loader2 size={13} className="animate-spin" color={MUTE} />}
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+                {companyRoutes.map((r, idx) => {
+                  const device = devices.find((d) => d.id === r.deviceId);
+                  const key = `${r.companyId}:${r.deviceId}`;
+                  return (
+                    <div key={r.deviceId} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, border: `1px solid ${BORDER}` }}>
+                      <Badge tone={idx === 0 ? "blue" : "gray"}>{idx === 0 ? "Primary" : `Backup ${idx}`}</Badge>
+                      <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: INK }}>{r.deviceName || "Unknown device"}</span>
+                      {device && (device.enabled === false || isHeartbeatStale(device.lastHeartbeatAt)) && (
+                        <Badge tone="amber"><AlertTriangle size={11} style={{ marginRight: 4, verticalAlign: -1 }} />{device.enabled === false ? "Disabled" : "No recent heartbeat"}</Badge>
+                      )}
+                      {canManage ? (
+                        <select
+                          value={r.simSlot}
+                          onChange={(e) => upsert(r.companyId, r.deviceId, Number(e.target.value), r.priority)}
+                          style={{ ...inputStyle, width: 90, padding: "5px 8px" }}
+                        >
+                          <option value={1}>SIM 1</option>
+                          <option value={2}>SIM 2</option>
+                        </select>
+                      ) : (
+                        <span style={{ fontSize: 12, color: MUTE }}>SIM {r.simSlot}</span>
+                      )}
+                      {savingKey === key && <Loader2 size={13} className="animate-spin" color={MUTE} />}
+                      {canManage && (
+                        <button onClick={() => remove(r.companyId, r.deviceId)} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                          <Trash2 size={14} color="#C81E2C" />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+                {companyRoutes.length === 0 && (
+                  <div style={{ fontSize: 12, color: MUTE, padding: "8px 10px" }}>No devices routed for {c.name} yet.</div>
+                )}
+              </div>
+
+              {canManage && availableDevices.length > 0 && (
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <select
+                    value={form.deviceId}
+                    onChange={(e) => setAddForm((prev) => ({ ...prev, [c.id]: { ...form, deviceId: e.target.value } }))}
+                    style={{ ...inputStyle, flex: 1, padding: "6px 10px" }}
+                  >
+                    <option value="">Add device...</option>
+                    {availableDevices.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  </select>
+                  <select
+                    value={form.simSlot}
+                    onChange={(e) => setAddForm((prev) => ({ ...prev, [c.id]: { ...form, simSlot: Number(e.target.value) } }))}
+                    style={{ ...inputStyle, width: 90, padding: "6px 10px" }}
+                  >
+                    <option value={1}>SIM 1</option>
+                    <option value={2}>SIM 2</option>
+                  </select>
+                  <Button variant="ghost" onClick={() => addDevice(c.id)} disabled={!form.deviceId}>Add</Button>
                 </div>
-              ))}
-              {bySlot(slot).length === 0 && (
-                <div style={{ fontSize: 12, color: MUTE, padding: "8px 10px" }}>No providers assigned to SIM {slot} yet.</div>
               )}
-            </div>
-          </Card>
-        ))}
-      </div>
-
-      <div style={{ marginTop: 16 }}>
-        <div style={{ fontSize: 12, fontWeight: 700, color: MUTE, letterSpacing: 0.5, marginBottom: 10 }}>ASSIGN A PROVIDER</div>
-        <Card style={{ padding: 0, overflow: "hidden" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr style={{ background: "#FAFBFF" }}>
-                {["Provider", "Current SIM", ""].map((h) => (
-                  <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {companies.map((c) => (
-                <tr key={c.id} style={{ borderTop: `1px solid ${BORDER}` }}>
-                  <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
-                    <div style={{ width: 8, height: 8, borderRadius: 4, background: c.color }} />
-                    {c?.name || "Unnamed"}
-                  </td>
-                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE }}>
-                    {routing[c.id] ? `SIM ${routing[c.id]}` : "Not set"}
-                  </td>
-                  <td style={{ padding: "10px 14px" }}>
-                    {canManage && (
-                      <div style={{ display: "flex", gap: 6 }}>
-                        {[1, 2].map((slot) => (
-                          <button
-                            key={slot}
-                            onClick={() => assign(c.id, slot)}
-                            style={{
-                              padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer",
-                              border: `1px solid ${routing[c.id] === slot ? INDIGO : BORDER}`,
-                              background: routing[c.id] === slot ? INDIGO : "#fff",
-                              color: routing[c.id] === slot ? "#fff" : SLATE,
-                            }}
-                          >
-                            SIM {slot}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Card>
+            </Card>
+          );
+        })}
       </div>
     </div>
   );
