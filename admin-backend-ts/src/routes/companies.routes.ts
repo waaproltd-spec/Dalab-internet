@@ -1,9 +1,10 @@
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
 import { query, queryOne } from "../db/pool.js";
-import { requireStaff } from "../auth/middleware.js";
+import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
+import { recordActivity } from "../utils/activityLog.js";
 
 export const companiesRouter = Router();
 export const packagesRouter = Router();
@@ -52,23 +53,48 @@ companiesRouter.put("/admin/companies/:id", requirePermission("companies.manage"
   sendJson(res, 200, await queryOne(`SELECT ${COMPANY_COLUMNS} FROM companies WHERE id=$1`, [req.params.id]));
 });
 
-companiesRouter.put("/admin/companies/:id/payment-number", requirePermission("companies.manage"), async (req, res) => {
+// Payment gateway numbers/templates are Super-Admin-exclusive — unlike most
+// other company fields, not delegable via companies.manage, since this
+// directly controls where customer money is sent.
+companiesRouter.put("/admin/companies/:id/payment-number", requireAuth("super_admin"), async (req, res) => {
   const existing = await queryOne(`SELECT payment_number, payment_ussd_template FROM companies WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Company not found" });
   const paymentNumber = req.body.paymentNumber ?? existing.payment_number ?? "";
   const paymentUssdTemplate = req.body.paymentUssdTemplate ?? existing.payment_ussd_template ?? "";
+  if (paymentNumber && !/^\d{6,15}$/.test(String(paymentNumber))) {
+    return sendJson(res, 400, { error: "paymentNumber must be 6-15 digits" });
+  }
   await query(
     `UPDATE companies SET payment_number=$1, payment_ussd_template=$2, updated_at=now() WHERE id=$3`,
     [paymentNumber, paymentUssdTemplate, req.params.id]
   );
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "update_payment_number",
+    entityType: "company",
+    entityId: req.params.id,
+    oldValue: { paymentNumber: existing.payment_number, paymentUssdTemplate: existing.payment_ussd_template },
+    newValue: { paymentNumber, paymentUssdTemplate },
+  });
   sendJson(res, 200, await queryOne(`SELECT ${COMPANY_COLUMNS} FROM companies WHERE id=$1`, [req.params.id]));
 });
 
-companiesRouter.put("/admin/companies/:id/status", requirePermission("companies.manage"), async (req, res) => {
+// Also the Active/Inactive toggle shown on the Payment Gateway view — Super
+// Admin only, same reasoning as payment-number above.
+companiesRouter.put("/admin/companies/:id/status", requireAuth("super_admin"), async (req, res) => {
   const { status } = req.body;
   if (!["online", "offline"].includes(status)) return sendJson(res, 400, { error: "status must be online|offline" });
-  const result = await query(`UPDATE companies SET status=$1, updated_at=now() WHERE id=$2 RETURNING id`, [status, req.params.id]);
-  if (result.length === 0) return sendJson(res, 404, { error: "Company not found" });
+  const existing = await queryOne(`SELECT status FROM companies WHERE id=$1`, [req.params.id]);
+  if (!existing) return sendJson(res, 404, { error: "Company not found" });
+  await query(`UPDATE companies SET status=$1, updated_at=now() WHERE id=$2`, [status, req.params.id]);
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "update_status",
+    entityType: "company",
+    entityId: req.params.id,
+    oldValue: { status: existing.status },
+    newValue: { status },
+  });
   sendJson(res, 200, await queryOne(`SELECT ${COMPANY_COLUMNS} FROM companies WHERE id=$1`, [req.params.id]));
 });
 
@@ -130,15 +156,15 @@ packagesRouter.get("/admin/packages", requireStaff(), async (req, res) => {
 });
 
 packagesRouter.post("/admin/packages", requirePermission("packages.manage"), async (req, res) => {
-  const { companyId, categoryId, name, oldPrice, price, mb, minutes, sms, validity } = req.body;
+  const { companyId, categoryId, name, oldPrice, price, mb, minutes, sms, validity, code } = req.body;
   if (!companyId || !categoryId || !name || price == null) {
     return sendJson(res, 400, { error: "companyId, categoryId, name, price are required" });
   }
   const id = randomUUID();
   await query(
-    `INSERT INTO packages (id, company_id, category_id, name, old_price, price, mb, minutes, sms, validity)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-    [id, companyId, categoryId, name, oldPrice ?? price, price, mb ?? 0, minutes ?? 0, sms ?? 0, validity ?? ""]
+    `INSERT INTO packages (id, company_id, category_id, name, old_price, price, mb, minutes, sms, validity, code)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+    [id, companyId, categoryId, name, oldPrice ?? price, price, mb ?? 0, minutes ?? 0, sms ?? 0, validity ?? "", code ?? null]
   );
   sendJson(res, 201, await queryOne(`SELECT * FROM packages WHERE id=$1`, [id]));
 });
@@ -148,8 +174,8 @@ packagesRouter.put("/admin/packages/:id", requirePermission("packages.manage"), 
   if (!existing) return sendJson(res, 404, { error: "Package not found" });
   const merged = { ...existing, ...req.body };
   await query(
-    `UPDATE packages SET name=$1, old_price=$2, price=$3, mb=$4, minutes=$5, sms=$6, validity=$7, active=$8 WHERE id=$9`,
-    [merged.name, merged.old_price, merged.price, merged.mb, merged.minutes, merged.sms, merged.validity, Boolean(merged.active), req.params.id]
+    `UPDATE packages SET name=$1, old_price=$2, price=$3, mb=$4, minutes=$5, sms=$6, validity=$7, active=$8, code=$9 WHERE id=$10`,
+    [merged.name, merged.old_price, merged.price, merged.mb, merged.minutes, merged.sms, merged.validity, Boolean(merged.active), merged.code ?? null, req.params.id]
   );
   sendJson(res, 200, await queryOne(`SELECT * FROM packages WHERE id=$1`, [req.params.id]));
 });

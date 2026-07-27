@@ -7,7 +7,7 @@ import {
   ArrowUp, ArrowDown, Eye, EyeOff, Lock, Mail, LogOut, ArrowLeft, Copy, Terminal, SmartphoneNfc,
   Smartphone, Radio, ChevronDown, ChevronRight, AlertTriangle, RotateCcw, UserCog, Tags,
   WifiOff, BatteryFull, BatteryMedium, BatteryLow, BatteryWarning,
-  Image as ImageIcon, Upload, MessageSquare, Database, Activity
+  Image as ImageIcon, Upload, MessageSquare, Database, Activity, History
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 
@@ -154,6 +154,7 @@ const DalabAdminApi = {
   deleteAdminUser: (id) => dalabAdminApiRequest(`/admin/users/${id}`, { method: "DELETE" }),
   getAdminUserPermissions: (id) => dalabAdminApiRequest(`/admin/users/${id}/permissions`),
   setAdminUserPermissions: (id, permissions) => dalabAdminApiRequest(`/admin/users/${id}/permissions`, { method: "PUT", body: { permissions } }),
+  getActivityLog: (entityType) => dalabAdminApiRequest(`/admin/activity-log${entityType ? `?entityType=${entityType}` : ""}`),
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -440,6 +441,7 @@ const NAV = [
   { id: "execution-logs", label: "Execution Logs", icon: Terminal },
   { id: "reports", label: "Reports", icon: FileBarChart2 },
   { id: "roles", label: "Roles & Permissions", icon: ShieldCheck, superAdminOnly: true },
+  { id: "activity-log", label: "Activity Log", icon: History, superAdminOnly: true },
   { id: "settings", label: "Settings", icon: Settings },
 ];
 
@@ -827,13 +829,17 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
   );
 }
 
+// Agent Payment Gateway Management — Super Admin only (not delegable via
+// companies.manage) since it directly controls where customer money is
+// sent; the backend enforces the same restriction on every write route here.
 function PaymentNumbers({ companies, setCompanies, refreshCompanies, admin }) {
   const [editing, setEditing] = useState(null);
   const [value, setValue] = useState("");
   const [templateValue, setTemplateValue] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const canManage = hasPermission(admin, "companies.manage");
+  const [togglingId, setTogglingId] = useState(null);
+  const canManage = admin?.role === "super_admin";
 
   const openEdit = (c) => {
     setEditing(c.id);
@@ -843,10 +849,14 @@ function PaymentNumbers({ companies, setCompanies, refreshCompanies, admin }) {
   };
 
   const save = async () => {
+    if (value && !/^\d{6,15}$/.test(value.trim())) {
+      setError("Payment number must be 6-15 digits.");
+      return;
+    }
     if (DALAB_API_ENABLED) {
       setSaving(true);
       try {
-        await DalabAdminApi.updatePaymentNumber(editing, value, templateValue);
+        await DalabAdminApi.updatePaymentNumber(editing, value.trim(), templateValue.trim());
         await refreshCompanies();
         setEditing(null);
       } catch (err) {
@@ -860,15 +870,35 @@ function PaymentNumbers({ companies, setCompanies, refreshCompanies, admin }) {
     }
   };
 
+  const toggleStatus = async (c) => {
+    const next = c.status === "enabled" ? "disabled" : "enabled";
+    setTogglingId(c.id);
+    if (DALAB_API_ENABLED) {
+      try {
+        await DalabAdminApi.updateCompanyStatus(c.id, next === "enabled" ? "online" : "offline");
+        await refreshCompanies();
+      } catch (err) {
+        setError(err.message || "Could not update status.");
+      }
+    } else {
+      setCompanies((prev) => prev.map((x) => (x.id === c.id ? { ...x, status: next } : x)));
+    }
+    setTogglingId(null);
+  };
+
   return (
     <div>
-      <div style={{ fontWeight: 800, fontSize: 17, color: INK, marginBottom: 4 }}>Payment numbers</div>
-      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>Changes apply instantly — no app update required.</div>
+      <div style={{ fontWeight: 800, fontSize: 17, color: INK, marginBottom: 4 }}>Agent Payment Gateway Numbers & USSD Format</div>
+      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>
+        The Agent App stores the payment numbers used by customers to send funds. Customers dial these USSD templates. Changes apply instantly — no app update required.
+        {!canManage && " Only a Super Admin can add, edit, enable, or disable these settings — you can view them here."}
+      </div>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: "#FAFBFF" }}>
-              {["Company", "Gateway", "Payment number", ""].map((h) => (
+              {["Provider", "Wallet Type", "Payment Phone Number", "USSD Code Template", "Status", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "12px 16px", fontSize: 11.5, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
             </tr>
@@ -884,6 +914,22 @@ function PaymentNumbers({ companies, setCompanies, refreshCompanies, admin }) {
                 </td>
                 <td style={{ padding: "12px 16px", fontSize: 13, color: SLATE }}>{c.gateway}</td>
                 <td style={{ padding: "12px 16px", fontSize: 13, color: INK, fontFamily: "monospace" }}>{c.payNumber}</td>
+                <td style={{ padding: "12px 16px", fontSize: 12, color: SLATE, fontFamily: "monospace" }}>{c.paymentUssdTemplate || "—"}</td>
+                <td style={{ padding: "12px 16px" }}>
+                  <button
+                    onClick={() => canManage && toggleStatus(c)}
+                    disabled={!canManage || togglingId === c.id}
+                    title={canManage ? "Toggle Active/Inactive" : "Only a Super Admin can change this"}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 6, border: "none", background: "none",
+                      cursor: canManage ? "pointer" : "default", fontSize: 12, fontWeight: 700,
+                      color: c.status === "enabled" ? GREEN : "#A9720A", opacity: togglingId === c.id ? 0.5 : 1,
+                    }}
+                  >
+                    {c.status === "enabled" ? <Power size={14} color={GREEN} /> : <Power size={14} color="#A9720A" />}
+                    {c.status === "enabled" ? "Active" : "Inactive"}
+                  </button>
+                </td>
                 <td style={{ padding: "12px 16px", textAlign: "right" }}>
                   {canManage && <Button variant="ghost" icon={Pencil} onClick={() => openEdit(c)}>Edit</Button>}
                 </td>
@@ -894,11 +940,11 @@ function PaymentNumbers({ companies, setCompanies, refreshCompanies, admin }) {
       </Card>
 
       {editing && (
-        <Modal title="Update payment number" onClose={() => setEditing(null)}>
-          <Field label="Payment number / merchant code">
-            <input style={inputStyle} value={value} onChange={(e) => setValue(e.target.value)} />
+        <Modal title="Update payment gateway" onClose={() => setEditing(null)}>
+          <Field label="Payment Phone Number">
+            <input style={inputStyle} value={value} onChange={(e) => setValue(e.target.value.replace(/\D/g, ""))} placeholder="6-15 digits" />
           </Field>
-          <Field label="Deposit USSD template (e.g. *812*610338686*{amount}#)">
+          <Field label="Payment USSD Code Template (e.g. *812*685115555*{amount}#)">
             <input style={inputStyle} value={templateValue} onChange={(e) => setTemplateValue(e.target.value)} placeholder="*<code>*<payment number>*{amount}#" />
           </Field>
           <div style={{ fontSize: 11.5, color: MUTE, marginTop: -8, marginBottom: 12 }}>
@@ -2281,6 +2327,10 @@ function PromoImages() {
 function DeviceUssdModule({ companies, admin }) {
   const [tab, setTab] = useState("devices");
   const canManage = hasPermission(admin, "devices.manage");
+  // USSD Templates control what actually gets dialed on a customer's behalf —
+  // Super-Admin-exclusive on the backend, not delegable via devices.manage
+  // like the other three tabs here still are.
+  const canManageTemplates = admin?.role === "super_admin";
 
   const tabs = [
     { id: "devices", label: "Devices" },
@@ -2315,7 +2365,7 @@ function DeviceUssdModule({ companies, admin }) {
       </div>
 
       {tab === "devices" && <DevicesPanel canManage={canManage} />}
-      {tab === "templates" && <UssdTemplatesPanel companies={companies} canManage={canManage} />}
+      {tab === "templates" && <UssdTemplatesPanel companies={companies} canManage={canManageTemplates} />}
       {tab === "sim-routing" && <SimRoutingPanel companies={companies} canManage={canManage} />}
       {tab === "pins" && <ProviderPinsPanel companies={companies} canManage={canManage} />}
     </div>
@@ -2549,6 +2599,9 @@ function UssdTemplatesPanel({ companies, canManage }) {
   const [ussdTemplates, setUssdTemplates] = useState([]);
   const [devices, setDevices] = useState([]);
   const [companyFilter, setCompanyFilter] = useState("all");
+  const [deviceFilter, setDeviceFilter] = useState("all");
+  const [simSlotFilter, setSimSlotFilter] = useState("all");
+  const [search, setSearch] = useState("");
   const [editing, setEditing] = useState(null); // 'new' | template object | null
   const [form, setForm] = useState({});
 
@@ -2567,7 +2620,13 @@ function UssdTemplatesPanel({ companies, canManage }) {
     DalabAdminApi.getAgentDevices().then(setDevices).catch((err) => console.error("Failed to load devices:", err.message));
   }, []);
 
-  const shown = companyFilter === "all" ? ussdTemplates : ussdTemplates.filter((t) => t.companyId === companyFilter);
+  const shown = ussdTemplates.filter((t) => {
+    if (companyFilter !== "all" && t.companyId !== companyFilter) return false;
+    if (deviceFilter !== "all" && (t.deviceId || "") !== deviceFilter) return false;
+    if (simSlotFilter !== "all" && String(t.simSlot ?? "") !== simSlotFilter) return false;
+    if (search.trim() && !t.serviceName.toLowerCase().includes(search.trim().toLowerCase())) return false;
+    return true;
+  });
   const grouped = companies.map((c) => ({ company: c, templates: shown.filter((t) => t.companyId === c.id) })).filter((g) => g.templates.length > 0 || companyFilter === g.company.id);
 
   const openNew = () => {
@@ -2615,8 +2674,30 @@ function UssdTemplatesPanel({ companies, canManage }) {
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
-        {canManage && <Button icon={Plus} onClick={openNew}>Add template</Button>}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 12, flexWrap: "wrap" }}>
+        {!canManage && <Badge tone="amber">View only — USSD templates can only be changed by a Super Admin</Badge>}
+        {canManage && <Button icon={Plus} onClick={openNew} style={{ marginLeft: "auto" }}>Add template</Button>}
+      </div>
+
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ position: "relative", flex: "1 1 220px", maxWidth: 280 }}>
+          <Search size={14} color={MUTE} style={{ position: "absolute", left: 10, top: 10 }} />
+          <input
+            style={{ ...inputStyle, paddingLeft: 30, width: "100%" }}
+            placeholder="Search by service/package name"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <select value={deviceFilter} onChange={(e) => setDeviceFilter(e.target.value)} style={{ ...inputStyle, width: 170 }}>
+          <option value="all">All devices</option>
+          {devices.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+        </select>
+        <select value={simSlotFilter} onChange={(e) => setSimSlotFilter(e.target.value)} style={{ ...inputStyle, width: 140 }}>
+          <option value="all">All SIM slots</option>
+          <option value="1">SIM 1</option>
+          <option value="2">SIM 2</option>
+        </select>
       </div>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
@@ -3561,6 +3642,123 @@ function RolesPermissions({ admin }) {
   );
 }
 
+// Read-only audit trail of every Super-Admin config change to the payment
+// gateway (numbers/templates/status) and USSD templates — who, when, and
+// the before/after values. Super Admin only, mirrors the write routes it audits.
+function ActivityLogPanel() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [entityFilter, setEntityFilter] = useState("all");
+  const [expanded, setExpanded] = useState({});
+
+  const fetchLog = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setLoading(true);
+    setError("");
+    try {
+      setRows(await DalabAdminApi.getActivityLog(entityFilter === "all" ? undefined : entityFilter));
+    } catch (err) {
+      setError(err.message || "Could not load activity log.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { fetchLog(); }, [entityFilter]);
+
+  const actionLabel = (action) => ({
+    create_ussd_template: "Created USSD template",
+    update_ussd_template: "Updated USSD template",
+    update_ussd_template_status: "Changed USSD template status",
+    delete_ussd_template: "Deleted USSD template",
+    update_payment_number: "Updated payment gateway number/template",
+    update_status: "Changed payment gateway status",
+    update_pin: "Updated provider PIN",
+  }[action] || action);
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to view the activity log.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 16, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Activity Log</div>
+          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Every change to payment gateway numbers, USSD templates, and provider PINs — admin, timestamp, and before/after values.</div>
+        </div>
+        <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={fetchLog} disabled={loading}>Refresh</Button>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        {[
+          { id: "all", label: "All" },
+          { id: "company", label: "Payment Gateway" },
+          { id: "ussd_template", label: "USSD Templates" },
+        ].map((f) => (
+          <button key={f.id} onClick={() => setEntityFilter(f.id)} style={{
+            padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
+            border: `1px solid ${entityFilter === f.id ? INDIGO : BORDER}`, background: entityFilter === f.id ? INDIGO : "#fff", color: entityFilter === f.id ? "#fff" : SLATE,
+          }}>{f.label}</button>
+        ))}
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              {["Time", "Admin", "Action", "Entity", ""].map((h) => (
+                <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const isOpen = !!expanded[r.id];
+              return (
+                <React.Fragment key={r.id}>
+                  <tr style={{ borderTop: `1px solid ${BORDER}`, cursor: "pointer" }} onClick={() => setExpanded((prev) => ({ ...prev, [r.id]: !prev[r.id] }))}>
+                    <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(r.createdAt)}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{r.adminEmail || "Unknown admin"}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontWeight: 600 }}>{actionLabel(r.action)}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE, fontFamily: "monospace" }}>{r.entityType}:{r.entityId}</td>
+                    <td style={{ padding: "10px 14px" }}>{isOpen ? <ChevronDown size={15} color={MUTE} /> : <ChevronRight size={15} color={MUTE} />}</td>
+                  </tr>
+                  {isOpen && (
+                    <tr style={{ background: "#FAFBFF" }}>
+                      <td colSpan={5} style={{ padding: "10px 14px 14px 14px" }}>
+                        <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+                          <div style={{ flex: "1 1 240px" }}>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: MUTE, marginBottom: 4 }}>BEFORE</div>
+                            <pre style={{ fontSize: 11, background: "#fff", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 10, overflowX: "auto", margin: 0 }}>
+                              {JSON.stringify(r.oldValue, null, 2) ?? "—"}
+                            </pre>
+                          </div>
+                          <div style={{ flex: "1 1 240px" }}>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: MUTE, marginBottom: 4 }}>AFTER</div>
+                            <pre style={{ fontSize: 11, background: "#fff", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 10, overflowX: "auto", margin: 0 }}>
+                              {JSON.stringify(r.newValue, null, 2) ?? "—"}
+                            </pre>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+            {rows.length === 0 && !loading && (
+              <tr><td colSpan={5} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No activity recorded yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
 function ChangePasswordCard() {
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -3918,6 +4116,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "execution-logs" && <ExecutionLogs companies={companies} />}
           {active === "reports" && <Reports />}
           {active === "roles" && <RolesPermissions admin={admin} />}
+          {active === "activity-log" && <ActivityLogPanel />}
           {active === "settings" && <SettingsPanel />}
         </div>
       </div>
