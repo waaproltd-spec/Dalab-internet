@@ -33,14 +33,15 @@ Android SDK path if building from Android Studio/a local Gradle install.
   with old-price-strikethrough / new-price styling), via
   `GET /companies` and `GET /companies/{id}/packages`. Offline providers are
   shown but disabled.
-- **Payment** (`CheckoutScreen`) — a dark, single-screen flow: review the
-  order, pick a payment wallet (EVC Plus / eDahab / JEEB, always all three,
-  none pre-selected), see the locked admin number to send payment to, then
-  tap Pay Now to place the order (`POST /orders`) and open the dialer with
-  the USSD code pre-filled. Lands on `PaymentSuccessScreen` (bilingual
-  English/Somali confirmation) instead of jumping straight to Order Detail.
-  Responsive across screen sizes (scrollable, spacing/fonts scale down on
-  short devices).
+- **Payment** — a two-step dark checkout flow: `PaymentMethodScreen` lists only
+  the wallets a Super Admin has enabled (`GET /payment-wallets`, e.g. EVC Plus /
+  eDahab / JEEB / Amtel Pay), then `CheckoutScreen` ("Confirm Order") shows just
+  the package being purchased and the sender/receiver phone fields — no
+  payment number, no wallet picker (already chosen). Tapping Pay Now re-fetches
+  the gateway config fresh (company's own payment number + the chosen wallet's
+  dial prefix), opens the dialer with the USSD code pre-filled, places the
+  order (`POST /orders`), and goes straight to Order Detail. Responsive across
+  screen sizes (scrollable, spacing/fonts scale down on short devices).
 - **Order tracking + history** (`OrdersScreen`, `OrderDetailScreen`) — every
   order the customer has placed (`GET /orders`, `GET /orders/{id}`) and its
   status (awaiting payment / confirmed / completed / failed / cancelled).

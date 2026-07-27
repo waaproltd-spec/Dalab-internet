@@ -19,6 +19,7 @@ import com.dalab.internet.customer.auth.SessionManager
 import com.dalab.internet.customer.data.Company
 import com.dalab.internet.customer.data.CustomerOrder
 import com.dalab.internet.customer.data.PackageItem
+import com.dalab.internet.customer.data.PaymentWallet
 import com.dalab.internet.customer.prefs.LocalizationManager
 import com.dalab.internet.customer.prefs.ThemeManager
 import com.dalab.internet.customer.queue.PendingActionQueue
@@ -32,6 +33,7 @@ import com.dalab.internet.customer.ui.NotificationsScreen
 import com.dalab.internet.customer.ui.OrderDetailScreen
 import com.dalab.internet.customer.ui.OrdersScreen
 import com.dalab.internet.customer.ui.OtpLoginScreen
+import com.dalab.internet.customer.ui.PaymentMethodScreen
 import com.dalab.internet.customer.ui.ProfileScreen
 import com.dalab.internet.customer.ui.SettingsScreen
 import kotlinx.coroutines.CoroutineScope
@@ -89,7 +91,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { LOGIN, HOME, COMPANY_CATEGORIES, CATEGORY_PACKAGES, CHECKOUT, ORDER_DETAIL }
+private enum class Screen { LOGIN, HOME, COMPANY_CATEGORIES, CATEGORY_PACKAGES, PAYMENT_METHOD, CHECKOUT, ORDER_DETAIL }
 private enum class HomeTab { HOME, ORDERS, PROFILE }
 
 private data class CategorySelection(val id: String, val label: String, val packages: List<PackageItem>)
@@ -100,6 +102,7 @@ private fun CustomerApp() {
     var selectedCompany by remember { mutableStateOf<Company?>(null) }
     var selectedCategory by remember { mutableStateOf<CategorySelection?>(null) }
     var checkoutSelection by remember { mutableStateOf<Pair<Company, PackageItem>?>(null) }
+    var selectedWallet by remember { mutableStateOf<PaymentWallet?>(null) }
     var selectedOrder by remember { mutableStateOf<CustomerOrder?>(null) }
 
     when (screen) {
@@ -129,18 +132,29 @@ private fun CustomerApp() {
                     categoryLabel = category.label,
                     packages = category.packages,
                     onBack = { screen = Screen.COMPANY_CATEGORIES },
-                    onBuy = { pkg -> checkoutSelection = company to pkg; screen = Screen.CHECKOUT },
+                    onBuy = { pkg -> checkoutSelection = company to pkg; screen = Screen.PAYMENT_METHOD },
                 )
             }
         }
 
-        Screen.CHECKOUT -> checkoutSelection?.let { (company, pkg) ->
-            CheckoutScreen(
-                company = company,
+        Screen.PAYMENT_METHOD -> checkoutSelection?.let { (_, pkg) ->
+            PaymentMethodScreen(
                 pkg = pkg,
-                onBack = { screen = Screen.HOME },
-                onOrderCreated = { order -> selectedOrder = order; screen = Screen.ORDER_DETAIL },
+                onBack = { screen = Screen.CATEGORY_PACKAGES },
+                onSelect = { wallet -> selectedWallet = wallet; screen = Screen.CHECKOUT },
             )
+        }
+
+        Screen.CHECKOUT -> checkoutSelection?.let { (company, pkg) ->
+            selectedWallet?.let { wallet ->
+                CheckoutScreen(
+                    company = company,
+                    pkg = pkg,
+                    wallet = wallet,
+                    onBack = { screen = Screen.PAYMENT_METHOD },
+                    onOrderCreated = { order -> selectedOrder = order; screen = Screen.ORDER_DETAIL },
+                )
+            }
         }
 
         Screen.ORDER_DETAIL -> selectedOrder?.let { order ->
