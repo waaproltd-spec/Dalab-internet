@@ -20,6 +20,7 @@ data class UpdateProfileRequest(val name: String)
 data class CreateOrderRequest(
     val companyId: String,
     val packageId: String,
+    val senderPhone: String? = null,
     val receiverPhone: String? = null,
     val paymentMethod: String? = null,
     val clientRequestId: String? = null,

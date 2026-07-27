@@ -60,10 +60,12 @@ private val KNOWN_PAYMENT_METHODS = listOf(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrderCreated: (CustomerOrder) -> Unit) {
-    // The receiver/data-delivery number is the same number the customer
-    // already logged in with — pre-filled so they never have to type it a
-    // second time, but still editable for the rare case of buying data for a
-    // different device.
+    // Both default to the same number the customer already logged in with —
+    // pre-filled so they never have to type it, but each stays independently
+    // editable: the sender is whichever number actually pays, the receiver
+    // is whichever number the data gets delivered to (usually the same
+    // number, but not always — e.g. buying data as a gift for someone else).
+    var senderPhone by remember { mutableStateOf(SessionManager.currentCustomer()?.phone ?: "") }
     var receiverPhone by remember { mutableStateOf(SessionManager.currentCustomer()?.phone ?: "") }
     var submitting by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -107,6 +109,17 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                 .padding(20.dp)
                 .fillMaxSize(),
         ) {
+            OutlinedTextField(
+                value = senderPhone,
+                onValueChange = { senderPhone = it },
+                label = { Text("Number sending payment") },
+                singleLine = true,
+                shape = RoundedCornerShape(28.dp),
+                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = brandColor),
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            Spacer(Modifier.height(14.dp))
             OutlinedTextField(
                 value = receiverPhone,
                 onValueChange = { receiverPhone = it },
@@ -214,13 +227,14 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                 Spacer(Modifier.height(12.dp))
             }
 
-            val payEnabled = receiverPhone.isNotBlank() && !submitting && !queued
+            val payEnabled = senderPhone.isNotBlank() && receiverPhone.isNotBlank() && !submitting && !queued
             val onPay: () -> Unit = {
                 error = null
                 submitting = true
                 val request = CreateOrderRequest(
                     companyId = company.id,
                     packageId = pkg.id,
+                    senderPhone = senderPhone.trim().ifBlank { null },
                     receiverPhone = receiverPhone.trim().ifBlank { null },
                     paymentMethod = selectedPaymentMethod,
                     clientRequestId = clientRequestId,

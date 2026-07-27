@@ -30,7 +30,7 @@ async function loadOrder(id: string) {
 
 // ---------------- Customer ----------------
 ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
-  const { companyId, packageId, receiverPhone, paymentMethod, clientRequestId } = req.body;
+  const { companyId, packageId, senderPhone, receiverPhone, paymentMethod, clientRequestId } = req.body;
   const company = await queryOne(`SELECT * FROM companies WHERE id=$1`, [companyId]);
   if (!company) return sendJson(res, 404, { error: "Company not found" });
   if (company.status === "offline") return sendJson(res, 409, { error: `${company.name} is currently offline` });
@@ -46,7 +46,7 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,'pending',$6,$7,$8,'android',$9,$10)`,
       [
         id, req.auth!.sub, companyId, packageId, pkg.price,
-        customer?.phone ?? null,
+        senderPhone || customer?.phone || null,
         receiverPhone || customer?.phone || null,
         paymentMethod || company.gateway || null,
         Math.round(pkg.price * MACAASH_POINTS_PER_DOLLAR),
