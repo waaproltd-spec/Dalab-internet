@@ -1,8 +1,5 @@
 package com.dalab.internet.customer.ui
 
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.BorderStroke
@@ -16,7 +13,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Call
-import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -75,7 +71,8 @@ private val WALLET_DIAL_PREFIX = mapOf(
 )
 
 /**
- * A minimal, single-screen payment page: the number to pay (with Copy),
+ * A minimal, single-screen payment page: the number to pay as plain text
+ * plus the selected package's details (name, provider, price, validity),
  * the amount, the sender/receiver phone fields (required, validated on
  * submit), a single-select payment wallet, and one Pay Now button that
  * creates the order and opens the dialer with the USSD code pre-filled
@@ -132,10 +129,10 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
             border = BorderStroke(1.dp, PanelBorder),
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = if (compact) 14.dp else 18.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = if (compact) 14.dp else 18.dp),
             ) {
                 Text(
                     payNumber ?: "Not available",
@@ -143,21 +140,20 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrd
                     fontWeight = FontWeight.Black,
                     fontSize = if (compact) 24.sp else 28.sp,
                 )
-                OutlinedButton(
-                    onClick = {
-                        if (payNumber != null) {
-                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            clipboard.setPrimaryClip(ClipData.newPlainText("Payment number", payNumber))
-                        }
-                    },
-                    enabled = payNumber != null,
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-                    border = BorderStroke(1.dp, PanelBorder),
-                ) {
-                    Icon(Icons.Filled.ContentCopy, contentDescription = null, tint = Color.White, modifier = Modifier.size(15.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Copy", color = Color.White, fontSize = 13.sp)
-                }
+                Spacer(Modifier.height(if (compact) 10.dp else 14.dp))
+                Divider(color = PanelBorder, thickness = 1.dp)
+                Spacer(Modifier.height(if (compact) 10.dp else 14.dp))
+                Text(pkg.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    buildList {
+                        add(company.name)
+                        add("$${"%.2f".format(pkg.price)}")
+                        pkg.validity?.takeIf { it.isNotBlank() }?.let { add(it) }
+                    }.joinToString("  •  "),
+                    color = MutedText,
+                    fontSize = 12.sp,
+                )
             }
         }
 
