@@ -1,19 +1,31 @@
 package com.dalab.internet.customer.ui
 
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.dalab.internet.customer.data.CustomerOrder
 import com.dalab.internet.customer.data.OrderStatus
+import com.dalab.internet.customer.data.companyLogoRes
 import com.dalab.internet.customer.network.ApiClient
 import com.dalab.internet.customer.network.RealtimeClient
 import com.dalab.internet.customer.util.formatApiDateTime
 import kotlinx.coroutines.launch
+
+private val DalabIndigo = Color(0xFF1D2E8C)
 
 /**
  * Starts from the order object the caller already has (avoids a blank
@@ -44,36 +56,75 @@ fun OrderDetailScreen(initialOrder: CustomerOrder, onBack: () -> Unit) {
         onDispose { realtime.disconnect() }
     }
 
+    val logoRes = remember(order.companyId) { companyLogoRes(order.companyId) }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Order ${order.id}") },
+                title = { Text("Order Details") },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back") }
                 },
             )
         }
     ) { padding ->
-        Column(modifier = Modifier.padding(padding).padding(20.dp).fillMaxSize()) {
-            SectionLabel("SERVICE DETAILS")
-            DetailRow("Provider", order.companyName)
-            DetailRow("Package", order.packageName)
-            DetailRow("Amount", "$${"%.2f".format(order.amount)}")
-            DetailRow("Payment Method", order.paymentMethod ?: "—")
-            DetailRow("Order Date", formatApiDateTime(order.createdAt))
-
-            Spacer(Modifier.height(20.dp))
-            SectionLabel("STATUS")
+        Column(
+            modifier = Modifier.padding(padding).padding(20.dp).fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(72.dp)
+                    .clip(CircleShape)
+                    .background(if (logoRes != null) Color.White else DalabIndigo),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (logoRes != null) {
+                    Image(
+                        painter = painterResource(id = logoRes),
+                        contentDescription = order.companyName,
+                        modifier = Modifier.size(72.dp).clip(CircleShape),
+                    )
+                } else {
+                    Text(order.companyName.take(1).uppercase(), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 26.sp)
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            Text(order.packageName, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            Text(order.companyName, style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
+            Spacer(Modifier.height(12.dp))
             StatusChip(order.status)
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(20.dp))
+
+            Surface(color = Color(0xFFF6F7FC), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    SectionLabel("SERVICE DETAILS")
+                    DetailRow("Service", order.packageName)
+                    order.senderPhone?.takeIf { it.isNotBlank() }?.let { DetailRow("Sender Number", it) }
+                    order.receiverPhone?.takeIf { it.isNotBlank() }?.let { DetailRow("Receiver Number", it) }
+                    DetailRow("Payment Method", order.paymentMethod ?: "—")
+                    DetailRow("Amount", "$${"%.2f".format(order.amount)}")
+
+                    Spacer(Modifier.height(14.dp))
+                    SectionLabel("STATUS")
+                    DetailRowCustom("Payment Status") { StatusChip(order.status) }
+                    DetailRow("Date", formatApiDateTime(order.createdAt))
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
             Text(statusMessage(order.status), style = MaterialTheme.typography.bodyMedium)
 
             if (order.status == OrderStatus.COMPLETED) {
                 Spacer(Modifier.height(20.dp))
-                SectionLabel("MACAASH REWARDS")
-                DetailRow("Points earned", "+${order.macaashEarned}")
-                if (order.completedAt != null) {
-                    DetailRow("Completed", formatApiDateTime(order.completedAt))
+                Surface(color = Color(0xFFF6F7FC), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(18.dp)) {
+                        SectionLabel("MACAASH REWARDS")
+                        DetailRow("Points earned", "+${order.macaashEarned}")
+                        if (order.completedAt != null) {
+                            DetailRow("Completed", formatApiDateTime(order.completedAt))
+                        }
+                    }
                 }
             }
         }
@@ -90,17 +141,29 @@ private fun statusMessage(status: OrderStatus): String = when (status) {
 
 @Composable
 private fun SectionLabel(text: String) {
-    Text(text, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-    Spacer(Modifier.height(6.dp))
+    Text(text, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = Color.Gray)
+    Spacer(Modifier.height(8.dp))
 }
 
 @Composable
 private fun DetailRow(label: String, value: String) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium)
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
         Text(value, fontWeight = FontWeight.Medium)
+    }
+}
+
+@Composable
+private fun DetailRowCustom(label: String, value: @Composable () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
+        value()
     }
 }
