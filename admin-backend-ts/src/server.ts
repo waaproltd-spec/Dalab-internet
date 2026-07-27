@@ -13,6 +13,7 @@ import { settingsRouter } from "./routes/settings.routes.js";
 import { ussdRouter } from "./routes/ussd.routes.js";
 import { macaashRouter } from "./routes/macaash.routes.js";
 import { bannersRouter } from "./routes/banners.routes.js";
+import { promoImagesRouter } from "./routes/promoImages.routes.js";
 import { notificationsRouter } from "./routes/notifications.routes.js";
 import { executionLogsRouter } from "./routes/executionLogs.routes.js";
 import { pool } from "./db/pool.js";
@@ -30,7 +31,10 @@ if (!process.env.CORS_ORIGIN && process.env.NODE_ENV === "production") {
   throw new Error("CORS_ORIGIN is not set. Refusing to start in production wide open to any origin.");
 }
 
-app.use(express.json());
+// Default 100kb limit is far too small for base64-encoded promo images
+// (POST /admin/promo-images) — everything else on this API is small JSON,
+// so raising the limit process-wide is simpler than a per-route override.
+app.use(express.json({ limit: "8mb" }));
 app.use(
   cors({
     origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(",") : "*",
@@ -73,6 +77,7 @@ app.use(settingsRouter);
 app.use(ussdRouter);
 app.use(macaashRouter);
 app.use(bannersRouter);
+app.use(promoImagesRouter);
 app.use(notificationsRouter);
 app.use(executionLogsRouter);
 

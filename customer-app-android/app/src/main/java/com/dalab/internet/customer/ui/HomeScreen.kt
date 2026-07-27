@@ -11,6 +11,9 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -25,12 +28,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
 import com.dalab.internet.customer.auth.SessionManager
 import com.dalab.internet.customer.data.Company
+import com.dalab.internet.customer.data.PromoImage
 import com.dalab.internet.customer.data.companyLogoRes
 import com.dalab.internet.customer.network.ApiClient
 import java.util.Calendar
@@ -50,6 +56,7 @@ private fun greeting(): String {
 @Composable
 fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenMacaash: () -> Unit) {
     var companies by remember { mutableStateOf<List<Company>>(emptyList()) }
+    var promoImages by remember { mutableStateOf<List<PromoImage>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var showSupport by remember { mutableStateOf(false) }
     val customer = SessionManager.currentCustomer()
@@ -62,6 +69,14 @@ fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenMacaash: () -> Unit) {
             // Leave the list empty; the grid shows "no providers" below.
         }
         loading = false
+    }
+
+    LaunchedEffect(Unit) {
+        try {
+            promoImages = ApiClient.service.getPromoImages().body().orEmpty().sortedBy { it.position }
+        } catch (_: Exception) {
+            // Carousel just doesn't show — nothing else on Home depends on it.
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -80,6 +95,10 @@ fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenMacaash: () -> Unit) {
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold,
                     )
+                    if (promoImages.isNotEmpty()) {
+                        Spacer(Modifier.height(16.dp))
+                        PromoImageCarousel(images = promoImages)
+                    }
                     Spacer(Modifier.height(16.dp))
                     MacaashBanner(onClick = onOpenMacaash)
                     Spacer(Modifier.height(20.dp))
@@ -152,6 +171,53 @@ private fun SupportActionRow(icon: androidx.compose.ui.graphics.vector.ImageVect
         Icon(icon, contentDescription = null, tint = Color(0xFF1D2E8C), modifier = Modifier.size(20.dp))
         Spacer(Modifier.width(12.dp))
         Text(label, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+/**
+ * Super Admin-uploaded promotional images (up to 5), shown as a swipeable
+ * carousel — customers can only view these, never upload. Each page loads
+ * its image from GET /promo-images/{id}/image via Coil (the one place this
+ * app needs async remote image loading; provider logos are bundled local
+ * drawables instead).
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun PromoImageCarousel(images: List<PromoImage>) {
+    val pagerState = rememberPagerState(pageCount = { images.size })
+    Column {
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(150.dp),
+        ) { page ->
+            AsyncImage(
+                model = "${ApiClient.BASE_URL}promo-images/${images[page].id}/image",
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(20.dp)),
+            )
+        }
+        if (images.size > 1) {
+            Row(
+                horizontalArrangement = Arrangement.Center,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            ) {
+                repeat(images.size) { i ->
+                    val active = pagerState.currentPage == i
+                    Box(
+                        modifier = Modifier
+                            .padding(horizontal = 3.dp)
+                            .size(if (active) 8.dp else 6.dp)
+                            .clip(CircleShape)
+                            .background(if (active) Color(0xFF1D2E8C) else Color(0xFFD8DCEF)),
+                    )
+                }
+            }
+        }
     }
 }
 

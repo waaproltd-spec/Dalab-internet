@@ -73,6 +73,12 @@ dependencies {
     // Recommended upgrade over plain SharedPreferences for SessionManager's tokens:
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
+    // Only remote images this app loads are Super Admin-uploaded promo
+    // banners (Home screen carousel) — every other image (provider logos)
+    // is a bundled local drawable, so this is the one place async image
+    // loading/caching is actually needed.
+    implementation("io.coil-kt:coil-compose:2.6.0")
+
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
 }

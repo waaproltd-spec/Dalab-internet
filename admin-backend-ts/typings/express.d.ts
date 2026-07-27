@@ -40,7 +40,7 @@ declare module "express" {
   }
   function express(): Express;
   namespace express {
-    function json(): RequestHandler;
+    function json(options?: { limit?: string }): RequestHandler;
   }
   export default express;
 }

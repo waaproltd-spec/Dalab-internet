@@ -6,7 +6,8 @@ import {
   Clock3, CheckCircle2, XCircle, Download, ShieldCheck, Menu, RefreshCw, Loader2,
   GalleryHorizontalEnd, ArrowUp, ArrowDown, Eye, EyeOff, Lock, Mail, LogOut, ArrowLeft, Copy, Terminal, SmartphoneNfc,
   Smartphone, Radio, ChevronDown, ChevronRight, AlertTriangle, RotateCcw, UserCog, Tags,
-  WifiOff, BatteryFull, BatteryMedium, BatteryLow, BatteryWarning
+  WifiOff, BatteryFull, BatteryMedium, BatteryLow, BatteryWarning,
+  Image as ImageIcon, Upload
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 
@@ -96,6 +97,15 @@ const DalabAdminApi = {
   deleteCustomer: (id) => dalabAdminApiRequest(`/admin/customers/${id}`, { method: "DELETE" }),
   toggleCustomerBlock: (id) => dalabAdminApiRequest(`/admin/customers/${id}/block`, { method: "PUT" }),
   getBanners: () => dalabAdminApiRequest("/admin/banners"),
+  // Promo Images — up to 5 promotional images shown as a carousel on the
+  // Customer App Home screen. Images are uploaded as data URIs (base64)
+  // rather than multipart form data, since dalabAdminApiRequest already
+  // sends everything as JSON.
+  getPromoImages: () => dalabAdminApiRequest("/admin/promo-images"),
+  createPromoImage: (imageBase64) => dalabAdminApiRequest("/admin/promo-images", { method: "POST", body: { imageBase64 } }),
+  updatePromoImage: (id, body) => dalabAdminApiRequest(`/admin/promo-images/${id}`, { method: "PUT", body }),
+  deletePromoImage: (id) => dalabAdminApiRequest(`/admin/promo-images/${id}`, { method: "DELETE" }),
+  promoImageUrl: (id) => `${DALAB_API_BASE_URL}/promo-images/${id}/image`,
   sendNotification: (type, title, body) => dalabAdminApiRequest("/admin/notifications/send", { method: "POST", body: { type, title, body } }),
   getReports: (range) => dalabAdminApiRequest(`/admin/reports?range=${range}`),
   // USSD Services
@@ -339,6 +349,7 @@ const NAV = [
   { id: "macaash", label: "Macaash (Rewards)", icon: Gift },
   { id: "notifications", label: "Notifications", icon: Bell },
   { id: "banners", label: "Banner Management", icon: GalleryHorizontalEnd },
+  { id: "promo-images", label: "Promo Images", icon: ImageIcon },
   { id: "devices", label: "Device & USSD", icon: SmartphoneNfc },
   { id: "execution-logs", label: "Execution Logs", icon: Terminal },
   { id: "reports", label: "Reports", icon: FileBarChart2 },
@@ -2034,6 +2045,146 @@ function Banners({ banners, setBanners, companies }) {
   );
 }
 
+const MAX_PROMO_IMAGES = 5;
+
+function PromoImages() {
+  const [images, setImages] = useState([]);
+  const [error, setError] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef(null);
+
+  const fetchImages = async () => {
+    if (!DALAB_API_ENABLED) return;
+    try {
+      setImages(await DalabAdminApi.getPromoImages());
+    } catch (err) {
+      setError(err.message || "Could not load promo images.");
+    }
+  };
+  useEffect(() => { fetchImages(); }, []);
+
+  const ordered = [...images].sort((a, b) => a.position - b.position);
+
+  const onFileSelected = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setError("");
+    setUploading(true);
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        await DalabAdminApi.createPromoImage(reader.result);
+        await fetchImages();
+      } catch (err) {
+        setError(err.message || "Could not upload image.");
+      }
+      setUploading(false);
+    };
+    reader.onerror = () => {
+      setError("Could not read that file.");
+      setUploading(false);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const toggleActive = async (img) => {
+    setImages((prev) => prev.map((x) => (x.id === img.id ? { ...x, active: !x.active } : x))); // optimistic
+    try { await DalabAdminApi.updatePromoImage(img.id, { active: !img.active }); } catch (err) { setError(err.message); fetchImages(); }
+  };
+
+  const move = async (id, dir) => {
+    const idx = ordered.findIndex((x) => x.id === id);
+    const swapIdx = idx + dir;
+    if (swapIdx < 0 || swapIdx >= ordered.length) return;
+    const a = ordered[idx];
+    const b = ordered[swapIdx];
+    setImages((prev) => prev.map((x) => {
+      if (x.id === a.id) return { ...x, position: b.position };
+      if (x.id === b.id) return { ...x, position: a.position };
+      return x;
+    })); // optimistic
+    try {
+      await DalabAdminApi.updatePromoImage(a.id, { position: b.position });
+      await DalabAdminApi.updatePromoImage(b.id, { position: a.position });
+    } catch (err) {
+      setError(err.message);
+      fetchImages();
+    }
+  };
+
+  const remove = async (img) => {
+    if (!window.confirm("Remove this promotional image? It will disappear from the Customer App immediately.")) return;
+    try {
+      await DalabAdminApi.deletePromoImage(img.id);
+      fetchImages();
+    } catch (err) {
+      alert(err.message || "Could not delete image.");
+    }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage promo images.</div>;
+  }
+
+  const atLimit = images.length >= MAX_PROMO_IMAGES;
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 16, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Promo Images</div>
+          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>
+            Up to {MAX_PROMO_IMAGES} promotional images shown as a swipeable carousel on the Customer App Home screen. Customers can only view these — uploading is Super Admin-only.
+          </div>
+        </div>
+        <div>
+          <input ref={fileInputRef} type="file" accept="image/*" onChange={onFileSelected} style={{ display: "none" }} />
+          <Button icon={Upload} disabled={atLimit || uploading} spin={uploading} onClick={() => fileInputRef.current?.click()}>
+            {uploading ? "Uploading..." : atLimit ? `Limit reached (${MAX_PROMO_IMAGES})` : "Upload image"}
+          </Button>
+        </div>
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 14 }}>
+        {ordered.map((img, i) => (
+          <Card key={img.id} style={{ padding: 14 }}>
+            <div style={{
+              width: "100%", height: 120, borderRadius: 10, overflow: "hidden", background: INDIGO_SOFT,
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}>
+              <img src={DalabAdminApi.promoImageUrl(img.id)} alt="Promo" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
+              <Badge tone={img.active ? "green" : "neutral"}>{img.active ? "Live on app" : "Hidden"}</Badge>
+              <span style={{ fontSize: 11, color: MUTE }}>Position {i + 1}</span>
+            </div>
+            <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
+              <button onClick={() => move(img.id, -1)} disabled={i === 0} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: i === 0 ? "default" : "pointer", opacity: i === 0 ? 0.4 : 1 }}>
+                <ArrowUp size={13} color={INDIGO} />
+              </button>
+              <button onClick={() => move(img.id, 1)} disabled={i === ordered.length - 1} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: i === ordered.length - 1 ? "default" : "pointer", opacity: i === ordered.length - 1 ? 0.4 : 1 }}>
+                <ArrowDown size={13} color={INDIGO} />
+              </button>
+              <button onClick={() => toggleActive(img)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                {img.active ? <EyeOff size={13} color={SLATE} /> : <Eye size={13} color={GREEN} />}
+              </button>
+              <button onClick={() => remove(img)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer", marginLeft: "auto" }}>
+                <Trash2 size={13} color="#C81E2C" />
+              </button>
+            </div>
+          </Card>
+        ))}
+        {ordered.length === 0 && (
+          <div style={{ gridColumn: "1 / -1", padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No promo images yet — upload one to start the carousel.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function DeviceUssdModule({ companies, admin }) {
   const [tab, setTab] = useState("devices");
   const canManage = hasPermission(admin, "devices.manage");
@@ -3523,6 +3674,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "macaash" && <Macaash customers={customers} />}
           {active === "notifications" && <Notifications />}
           {active === "banners" && <Banners banners={banners} setBanners={setBanners} companies={companies} />}
+          {active === "promo-images" && <PromoImages />}
           {active === "devices" && <DeviceUssdModule companies={companies} admin={admin} />}
           {active === "execution-logs" && <ExecutionLogs companies={companies} />}
           {active === "reports" && <Reports />}

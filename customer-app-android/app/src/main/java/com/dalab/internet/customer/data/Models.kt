@@ -10,6 +10,12 @@ data class CustomerProfile(
     val macaashPoints: Int = 0,
 )
 
+/** Mirrors GET /promo-images (admin-backend-ts, promoImages.routes.ts) — public, Super Admin-uploaded only. */
+data class PromoImage(
+    val id: String,
+    val position: Int,
+)
+
 /** Mirrors GET /companies (admin-backend-ts, companies.routes.ts) — public, no auth required. */
 data class Company(
     val id: String,
