@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.dalab.internet.customer.auth.SessionManager
 import com.dalab.internet.customer.data.Company
 import com.dalab.internet.customer.network.ApiClient
@@ -37,7 +38,7 @@ private fun greeting(): String {
 
 /** Home: greeting, Macaash promo, and the provider grid — tap a provider to see its packages. */
 @Composable
-fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenMacaash: () -> Unit) {
+fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenMacaash: () -> Unit, debugOtpCode: String? = null) {
     var companies by remember { mutableStateOf<List<Company>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var showSupport by remember { mutableStateOf(false) }
@@ -62,6 +63,10 @@ fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenMacaash: () -> Unit) {
         ) {
             item(span = { GridItemSpan(2) }) {
                 Column {
+                    if (debugOtpCode != null) {
+                        DebugOtpCard(debugOtpCode)
+                        Spacer(Modifier.height(16.dp))
+                    }
                     Text(greeting(), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(
                         customer?.name?.takeIf { it.isNotBlank() } ?: customer?.phone ?: "there",
@@ -101,6 +106,38 @@ fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenMacaash: () -> Unit) {
             text = { Text("Contact DALAB Internet support at +252 61 000 0000 or support@dalabinternet.so") },
             confirmButton = { TextButton(onClick = { showSupport = false }) { Text("OK") } },
         )
+    }
+}
+
+/**
+ * Dev/testing convenience only: the backend only ever returns a debugCode
+ * when NODE_ENV != production (see POST /auth/otp/request), so this never
+ * renders for a real user in production — same idea as the debug-code card
+ * already on the OTP entry screen, just also visible here on Home.
+ */
+@Composable
+private fun DebugOtpCard(code: String) {
+    Surface(
+        color = Color(0xFFEFF3FF),
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("Verification Code", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF1D2E8C))
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                code.forEach { digit ->
+                    Box(
+                        modifier = Modifier
+                            .size(42.dp)
+                            .background(Color.White, RoundedCornerShape(10.dp)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(digit.toString(), fontSize = 19.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1D2E8C))
+                    }
+                }
+            }
+        }
     }
 }
 

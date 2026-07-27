@@ -98,11 +98,16 @@ private fun CustomerApp() {
     var selectedCategory by remember { mutableStateOf<CategorySelection?>(null) }
     var checkoutSelection by remember { mutableStateOf<Pair<Company, PackageItem>?>(null) }
     var selectedOrder by remember { mutableStateOf<CustomerOrder?>(null) }
+    // Dev/testing convenience only: the backend's debugCode (never present in
+    // production) carried over from login so it can also show on Home, the
+    // same idea as the debug-code card on the OTP screen itself.
+    var lastDebugOtp by remember { mutableStateOf<String?>(null) }
 
     when (screen) {
-        Screen.LOGIN -> OtpLoginScreen(onLoggedIn = { screen = Screen.HOME })
+        Screen.LOGIN -> OtpLoginScreen(onLoggedIn = { code -> lastDebugOtp = code; screen = Screen.HOME })
 
         Screen.HOME -> CustomerHome(
+            debugOtpCode = lastDebugOtp,
             onOpenCompany = { company -> selectedCompany = company; screen = Screen.COMPANY_CATEGORIES },
             onOpenOrder = { order -> selectedOrder = order; screen = Screen.ORDER_DETAIL },
             onLogout = { AuthRepository.logout(); screen = Screen.LOGIN },
@@ -149,6 +154,7 @@ private fun CustomerApp() {
 /** Bottom-nav shell for the logged-in customer: Home, Macaash, Orders, Profile. */
 @Composable
 private fun CustomerHome(
+    debugOtpCode: String?,
     onOpenCompany: (Company) -> Unit,
     onOpenOrder: (CustomerOrder) -> Unit,
     onLogout: () -> Unit,
@@ -187,7 +193,7 @@ private fun CustomerHome(
     ) { padding ->
         Box(modifier = Modifier.padding(padding)) {
             when (tab) {
-                HomeTab.HOME -> HomeScreen(onOpenCompany = onOpenCompany, onOpenMacaash = { tab = HomeTab.MACAASH })
+                HomeTab.HOME -> HomeScreen(onOpenCompany = onOpenCompany, onOpenMacaash = { tab = HomeTab.MACAASH }, debugOtpCode = debugOtpCode)
                 HomeTab.MACAASH -> MacaashScreen()
                 HomeTab.ORDERS -> OrdersScreen(onOpenOrder = onOpenOrder)
                 HomeTab.PROFILE -> ProfileScreen(onLogout = onLogout)

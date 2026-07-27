@@ -60,7 +60,7 @@ private val FieldBorder = Color(0xFFD8DCEF)
  * PUT /customer/profile before entering the app.
  */
 @Composable
-fun OtpLoginScreen(onLoggedIn: () -> Unit) {
+fun OtpLoginScreen(onLoggedIn: (lastDebugCode: String?) -> Unit) {
     var step by remember { mutableStateOf(OtpStep.PHONE) }
     var phone by remember { mutableStateOf("") }
     var code by remember { mutableStateOf("") }
@@ -214,7 +214,7 @@ fun OtpLoginScreen(onLoggedIn: () -> Unit) {
                         OtpStep.CODE -> {
                             when (val result = AuthRepository.verifyOtp(phone.trim(), code.trim())) {
                                 is OtpVerifyResult.Success -> {
-                                    if (result.name.isNullOrBlank()) step = OtpStep.NAME else onLoggedIn()
+                                    if (result.name.isNullOrBlank()) step = OtpStep.NAME else onLoggedIn(debugCode)
                                 }
                                 is OtpVerifyResult.Failure -> error = result.message
                             }
@@ -223,10 +223,10 @@ fun OtpLoginScreen(onLoggedIn: () -> Unit) {
                             try {
                                 val response = ApiClient.service.updateProfile(UpdateProfileRequest(name.trim()))
                                 response.body()?.let { SessionManager.updateProfile(it) }
-                                onLoggedIn()
+                                onLoggedIn(debugCode)
                             } catch (_: Exception) {
                                 error = "Couldn't save your name — you can add it later from Profile."
-                                onLoggedIn()
+                                onLoggedIn(debugCode)
                             }
                         }
                     }
