@@ -19,16 +19,21 @@ import com.dalab.internet.customer.auth.SessionManager
 import com.dalab.internet.customer.data.Company
 import com.dalab.internet.customer.data.CustomerOrder
 import com.dalab.internet.customer.data.PackageItem
+import com.dalab.internet.customer.prefs.LocalizationManager
+import com.dalab.internet.customer.prefs.ThemeManager
 import com.dalab.internet.customer.queue.PendingActionQueue
 import com.dalab.internet.customer.queue.QueueDrainer
 import com.dalab.internet.customer.ui.CheckoutScreen
 import com.dalab.internet.customer.ui.CompanyCategoriesScreen
 import com.dalab.internet.customer.ui.CompanyPackagesScreen
+import com.dalab.internet.customer.ui.DalabTheme
 import com.dalab.internet.customer.ui.HomeScreen
+import com.dalab.internet.customer.ui.NotificationsScreen
 import com.dalab.internet.customer.ui.OrderDetailScreen
 import com.dalab.internet.customer.ui.OrdersScreen
 import com.dalab.internet.customer.ui.OtpLoginScreen
 import com.dalab.internet.customer.ui.ProfileScreen
+import com.dalab.internet.customer.ui.SettingsScreen
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
@@ -52,7 +57,7 @@ class MainActivity : ComponentActivity() {
         activityScope.launch { QueueDrainer.drainAll() }
 
         setContent {
-            MaterialTheme {
+            DalabTheme(darkTheme = ThemeManager.isDark) {
                 CustomerApp()
             }
         }
@@ -152,6 +157,17 @@ private fun CustomerHome(
     onLogout: () -> Unit,
 ) {
     var tab by remember { mutableStateOf(HomeTab.HOME) }
+    var showNotifications by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
+
+    if (showSettings) {
+        SettingsScreen(onBack = { showSettings = false })
+        return
+    }
+    if (showNotifications) {
+        NotificationsScreen(onBack = { showNotifications = false })
+        return
+    }
 
     Scaffold(
         bottomBar = {
@@ -160,26 +176,30 @@ private fun CustomerHome(
                     selected = tab == HomeTab.HOME,
                     onClick = { tab = HomeTab.HOME },
                     icon = { Icon(Icons.Filled.Home, contentDescription = "Home") },
-                    label = { Text("Home") },
+                    label = { Text(LocalizationManager.tr("Home", "Guriga")) },
                 )
                 NavigationBarItem(
                     selected = tab == HomeTab.ORDERS,
                     onClick = { tab = HomeTab.ORDERS },
                     icon = { Icon(Icons.Filled.Receipt, contentDescription = "Orders") },
-                    label = { Text("Orders") },
+                    label = { Text(LocalizationManager.tr("Orders", "Dalabyada")) },
                 )
                 NavigationBarItem(
                     selected = tab == HomeTab.PROFILE,
                     onClick = { tab = HomeTab.PROFILE },
                     icon = { Icon(Icons.Filled.Person, contentDescription = "Profile") },
-                    label = { Text("Profile") },
+                    label = { Text(LocalizationManager.tr("Profile", "Xisaabta")) },
                 )
             }
         }
     ) { padding ->
         Box(modifier = Modifier.padding(padding)) {
             when (tab) {
-                HomeTab.HOME -> HomeScreen(onOpenCompany = onOpenCompany)
+                HomeTab.HOME -> HomeScreen(
+                    onOpenCompany = onOpenCompany,
+                    onOpenNotifications = { showNotifications = true },
+                    onOpenSettings = { showSettings = true },
+                )
                 HomeTab.ORDERS -> OrdersScreen(onOpenOrder = onOpenOrder)
                 HomeTab.PROFILE -> ProfileScreen(onLogout = onLogout, onOpenOrders = { tab = HomeTab.ORDERS })
             }

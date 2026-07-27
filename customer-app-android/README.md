@@ -24,23 +24,36 @@ Android SDK path if building from Android Studio/a local Gradle install.
   customer record on first use (same as the backend does for the web app),
   and if it's a brand-new account (no name on file yet) the screen prompts
   for one via `PUT /customer/profile` before entering the app.
-- **Home** (`HomeScreen`) — greeting header, a Super Admin-managed promo
-  image carousel (`GET /promo-images`, view-only), and a grid of providers
+- **Home** (`HomeScreen`) — a gradient welcome header (avatar, greeting,
+  notification + settings icons), a Super Admin-managed promo image carousel
+  (`GET /promo-images`, view-only), and a 3-column grid of providers
   (Hormuud, Somnet, Somtel, Amtel) — tap one to drill into
   its categories (`CompanyCategoriesScreen`, packages grouped by
   `categoryId`) and then that category's packages (`CompanyPackagesScreen`,
   with old-price-strikethrough / new-price styling), via
   `GET /companies` and `GET /companies/{id}/packages`. Offline providers are
   shown but disabled.
-- **Payment options** (`CheckoutScreen`) — confirms the order against the
-  provider's real gateway (EVC Plus / JEEB / eDahab / Manual — from
-  `company.gateway`) and a receiver number, then places the order
-  (`POST /orders`).
+- **Payment** (`CheckoutScreen`) — a dark, single-screen flow: review the
+  order, pick a payment wallet (EVC Plus / eDahab / JEEB, always all three,
+  none pre-selected), see the locked admin number to send payment to, then
+  tap Pay Now to place the order (`POST /orders`) and open the dialer with
+  the USSD code pre-filled. Lands on `PaymentSuccessScreen` (bilingual
+  English/Somali confirmation) instead of jumping straight to Order Detail.
+  Responsive across screen sizes (scrollable, spacing/fonts scale down on
+  short devices).
 - **Order tracking + history** (`OrdersScreen`, `OrderDetailScreen`) — every
   order the customer has placed (`GET /orders`, `GET /orders/{id}`) and its
   status (awaiting payment / confirmed / completed / failed / cancelled).
 - **Profile** (`ProfileScreen`) — name, phone, Manage Account (log out /
   delete account).
+- **Notifications** (`NotificationsScreen`) — `GET /notifications`
+  (customer-scoped, excludes maintenance-type), opened from Home's header
+  bell icon.
+- **Settings** (`SettingsScreen`) — Light/Dark mode and English/Somali
+  language, persisted via `ThemeManager`/`LocalizationManager` and applied
+  app-wide immediately (opened from Home's header gear icon). Language
+  currently covers the app's chrome (navigation, headers, Settings,
+  Notifications, Profile menu) rather than every screen's copy.
 - **Session handling** (`SessionManager`, `ApiClient`) — JWT access/refresh
   tokens with automatic one-shot refresh-and-retry on a 401, same pattern as
   the Agent App.

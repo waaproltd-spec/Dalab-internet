@@ -3,6 +3,7 @@ package com.dalab.internet.customer.network
 import com.dalab.internet.customer.data.Company
 import com.dalab.internet.customer.data.CustomerOrder
 import com.dalab.internet.customer.data.CustomerProfile
+import com.dalab.internet.customer.data.NotificationItem
 import com.dalab.internet.customer.data.PackageItem
 import com.dalab.internet.customer.data.PromoImage
 import retrofit2.Response
@@ -52,6 +53,9 @@ interface ApiService {
 
     @GET("promo-images")
     suspend fun getPromoImages(): Response<List<PromoImage>>
+
+    @GET("notifications")
+    suspend fun getNotifications(): Response<List<NotificationItem>>
 
     @GET("companies")
     suspend fun getCompanies(): Response<List<Company>>

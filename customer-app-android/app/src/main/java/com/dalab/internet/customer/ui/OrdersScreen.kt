@@ -1,5 +1,9 @@
 package com.dalab.internet.customer.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -16,7 +20,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -26,18 +33,21 @@ import com.dalab.internet.customer.data.OrderStatus
 import com.dalab.internet.customer.data.companyLogoRes
 import com.dalab.internet.customer.network.ApiClient
 import com.dalab.internet.customer.network.RealtimeClient
+import com.dalab.internet.customer.prefs.LocalizationManager
 import com.dalab.internet.customer.util.formatApiDateTime
 import kotlinx.coroutines.launch
 
-private val DalabIndigo = Color(0xFF1D2E8C)
+private val HeaderStart = Color(0xFF1D2E8C)
+private val HeaderEnd = Color(0xFF16A34A)
 
 /** The customer's own order history / tracking — GET /orders. */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OrdersScreen(onOpenOrder: (CustomerOrder) -> Unit) {
     var orders by remember { mutableStateOf<List<CustomerOrder>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
+    var contentVisible by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val compact = LocalConfiguration.current.screenHeightDp < 700
 
     fun refresh() {
         loading = true
@@ -48,6 +58,7 @@ fun OrdersScreen(onOpenOrder: (CustomerOrder) -> Unit) {
                 // Leave the previous list in place.
             }
             loading = false
+            contentVisible = true
         }
     }
 
@@ -66,15 +77,33 @@ fun OrdersScreen(onOpenOrder: (CustomerOrder) -> Unit) {
     }
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            TopAppBar(
-                title = { Text("My Orders") },
-                actions = {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        Brush.linearGradient(listOf(HeaderStart, HeaderEnd)),
+                        shape = RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp),
+                    )
+                    .padding(horizontal = 20.dp, vertical = if (compact) 14.dp else 20.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        LocalizationManager.tr("My Orders", "Dalabyadayda"),
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 19.sp,
+                    )
                     IconButton(onClick = { refresh() }) {
-                        Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
+                        Icon(Icons.Filled.Refresh, contentDescription = "Refresh", tint = Color.White)
                     }
-                },
-            )
+                }
+            }
         }
     ) { padding ->
         Box(modifier = Modifier.padding(padding).fillMaxSize()) {
@@ -82,14 +111,25 @@ fun OrdersScreen(onOpenOrder: (CustomerOrder) -> Unit) {
                 CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
             } else if (orders.isEmpty()) {
                 Text(
-                    "No orders yet — buy your first package from the Home tab.",
+                    LocalizationManager.tr(
+                        "No orders yet — buy your first package from the Home tab.",
+                        "Wali dalab kuma lihid — ka iibso baakadaadii ugu horreysay tabka Guriga.",
+                    ),
                     modifier = Modifier.align(Alignment.Center).padding(24.dp),
                     style = MaterialTheme.typography.bodyMedium,
                 )
             } else {
-                LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
-                    items(orders, key = { it.id }) { order ->
-                        OrderRow(order, onClick = { onOpenOrder(order) })
+                AnimatedVisibility(
+                    visible = contentVisible,
+                    enter = fadeIn(tween(350)) + slideInVertically(tween(350)) { it / 10 },
+                ) {
+                    LazyColumn(
+                        contentPadding = PaddingValues(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        items(orders, key = { it.id }) { order ->
+                            OrderRow(order, onClick = { onOpenOrder(order) })
+                        }
                     }
                 }
             }
@@ -104,15 +144,18 @@ private fun OrderRow(order: CustomerOrder, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .shadow(2.dp, RoundedCornerShape(18.dp))
+            .clip(RoundedCornerShape(18.dp))
+            .background(MaterialTheme.colorScheme.surface)
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
             modifier = Modifier
                 .size(48.dp)
                 .clip(CircleShape)
-                .background(if (logoRes != null) Color.White else DalabIndigo),
+                .background(if (logoRes != null) MaterialTheme.colorScheme.surface else HeaderStart),
             contentAlignment = Alignment.Center,
         ) {
             if (logoRes != null) {
@@ -127,7 +170,7 @@ private fun OrderRow(order: CustomerOrder, onClick: () -> Unit) {
         }
         Spacer(Modifier.width(14.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(order.packageName, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            Text(order.packageName, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurface)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(order.companyName, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                 Spacer(Modifier.width(8.dp))
@@ -138,7 +181,7 @@ private fun OrderRow(order: CustomerOrder, onClick: () -> Unit) {
         }
         Spacer(Modifier.width(8.dp))
         Column(horizontalAlignment = Alignment.End) {
-            Text("$${"%.2f".format(order.amount)}", fontWeight = FontWeight.Bold, color = DalabIndigo)
+            Text("$${"%.2f".format(order.amount)}", fontWeight = FontWeight.Bold, color = HeaderStart)
             Spacer(Modifier.height(4.dp))
             StatusChip(order.status)
         }
