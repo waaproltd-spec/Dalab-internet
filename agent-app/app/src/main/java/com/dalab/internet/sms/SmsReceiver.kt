@@ -4,13 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.provider.Telephony
-import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
-import com.dalab.internet.MainActivity
-import com.dalab.internet.R
-import com.dalab.internet.network.ApiClient
-import com.dalab.internet.ussd.DialOutcome
-import com.dalab.internet.ussd.UssdOrchestrator
+import com.dalab.internet.queue.PendingActionQueue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -28,6 +22,11 @@ import java.util.*
  * dials the USSD, and reports the outcome — all without opening any screen.
  * A notification is still posted either way so the agent has visibility,
  * but it's informational, not something they need to act on for the happy path.
+ *
+ * The actual upload/match/verify/dial/notify logic lives in [SmsUploadFlow] so
+ * a queued retry (see [PendingActionQueue], drained by AgentBackgroundService)
+ * can resume the exact same flow after a connectivity gap instead of this
+ * receiver's window silently dropping it.
  */
 class SmsReceiver : BroadcastReceiver() {
 
@@ -48,73 +47,29 @@ class SmsReceiver : BroadcastReceiver() {
         // A USSD round-trip can take several seconds, which is why this whole
         // pipeline runs on a background coroutine rather than blocking onReceive.
         val pendingResult = goAsync()
+        val appContext = context.applicationContext
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val uploadResponse = ApiClient.service.uploadSmsLog(parsed)
-                val smsLogId = uploadResponse.body()?.id
-                val matchedOrderId = uploadResponse.body()?.matchedOrderId
-                val requiresManualApproval = uploadResponse.body()?.requiresManualApproval ?: false
-
-                if (matchedOrderId != null && requiresManualApproval) {
-                    // A Super Admin has turned off automation for this order's
-                    // provider — don't auto-dial, just point the agent at it.
-                    notifyManualApprovalNeeded(context, matchedOrderId, parsed.parsedAmount)
-                } else if (matchedOrderId != null) {
-                    val orchestrator = UssdOrchestrator(context)
-                    val result = orchestrator.processMatchedOrder(matchedOrderId, smsLogId)
-                    notifyAgent(context, matchedOrderId, parsed.parsedAmount, result.outcome, result.responseMessage)
+                when (val outcome = SmsUploadFlow.uploadAndProcess(appContext, parsed)) {
+                    is UploadOutcome.RetryableUpload -> PendingActionQueue.enqueue(
+                        id = UUID.randomUUID().toString(),
+                        type = PendingActionQueue.Type.SMS_UPLOAD,
+                        payload = SmsUploadAction(parsed),
+                    )
+                    is UploadOutcome.RetryableVerify -> PendingActionQueue.enqueue(
+                        id = UUID.randomUUID().toString(),
+                        type = PendingActionQueue.Type.VERIFY_PAYMENT,
+                        payload = VerifyPaymentAction(outcome.orderId, outcome.smsLogId, parsed.parsedAmount),
+                    )
+                    is UploadOutcome.Terminal, UploadOutcome.Success -> {
+                        // Terminal: the server rejected this SMS upload outright (a
+                        // real 4xx) — resending it unchanged would never succeed, so
+                        // it's not queued. Success: nothing further to do.
+                    }
                 }
-            } catch (_: Exception) {
-                // Offline or server unreachable — the SMS is still logged locally in
-                // SmsListenerState so the agent can retry from the Orders screen, and
-                // nothing here should ever crash the receiver.
             } finally {
                 pendingResult.finish()
             }
         }
-    }
-
-    private fun notifyManualApprovalNeeded(context: Context, orderId: String, amount: Double?) {
-        val openIntent = Intent(context, MainActivity::class.java).apply {
-            putExtra("orderId", orderId)
-        }
-        val pendingIntent = android.app.PendingIntent.getActivity(
-            context, 0, openIntent,
-            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
-        )
-        val notification = NotificationCompat.Builder(context, "payment_channel")
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("Payment received — order $orderId")
-            .setContentText("\$${amount ?: "?"} matched. Automation is off for this provider — verify manually.")
-            .setContentIntent(pendingIntent)
-            .setAutoCancel(true)
-            .build()
-        NotificationManagerCompat.from(context).notify(orderId.hashCode(), notification)
-    }
-
-    private fun notifyAgent(context: Context, orderId: String, amount: Double?, outcome: DialOutcome, detail: String?) {
-        val openIntent = Intent(context, MainActivity::class.java).apply {
-            putExtra("orderId", orderId)
-        }
-        val pendingIntent = android.app.PendingIntent.getActivity(
-            context, 0, openIntent,
-            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
-        )
-        val (title, text) = when (outcome) {
-            DialOutcome.SUCCESS -> "Order $orderId completed" to "USSD confirmed automatically."
-            DialOutcome.NO_SIM_CONFIGURED -> "Action needed: order $orderId" to "No SIM routing configured for this provider — set it up in SIM Routing."
-            DialOutcome.NO_SIM_PRESENT -> "Action needed: order $orderId" to "Configured SIM isn't inserted in this device."
-            DialOutcome.PERMISSION_DENIED -> "Action needed: order $orderId" to "Phone/SMS permission missing — dialing couldn't run."
-            DialOutcome.TIMEOUT -> "Check order $orderId" to "USSD dial timed out after retries — verify manually."
-            DialOutcome.FAILED -> "Order $orderId — \$${amount ?: "?"}" to (detail ?: "USSD dial failed after retries.")
-        }
-        val notification = NotificationCompat.Builder(context, "payment_channel")
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(title)
-            .setContentText(text)
-            .setContentIntent(pendingIntent)
-            .setAutoCancel(true)
-            .build()
-        NotificationManagerCompat.from(context).notify(orderId.hashCode(), notification)
     }
 }

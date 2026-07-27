@@ -28,6 +28,7 @@ import com.dalab.internet.auth.AuthRepository
 import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.auth.SessionManager
 import com.dalab.internet.data.Order
+import com.dalab.internet.queue.PendingActionQueue
 import com.dalab.internet.service.AgentBackgroundService
 import com.dalab.internet.sms.SmsListenerState
 import com.dalab.internet.ui.CustomersScreen
@@ -50,6 +51,7 @@ class MainActivity : ComponentActivity() {
         SessionManager.init(this)
         DeviceIdentity.init(this)
         SmsListenerState.init(this)
+        PendingActionQueue.init(this)
         createNotificationChannel()
 
         if (SessionManager.isLoggedIn() && DeviceIdentity.isSet()) {

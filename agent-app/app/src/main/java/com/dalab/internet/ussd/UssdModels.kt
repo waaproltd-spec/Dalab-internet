@@ -19,7 +19,7 @@ data class DeviceSimSlot(
     val carrierName: String,
 )
 
-enum class DialOutcome { SUCCESS, FAILED, TIMEOUT, NO_SIM_CONFIGURED, NO_SIM_PRESENT, PERMISSION_DENIED }
+enum class DialOutcome { SUCCESS, FAILED, TIMEOUT, NO_SIM_CONFIGURED, NO_SIM_PRESENT, PERMISSION_DENIED, NETWORK_UNAVAILABLE }
 
 data class DialResult(
     val outcome: DialOutcome,
