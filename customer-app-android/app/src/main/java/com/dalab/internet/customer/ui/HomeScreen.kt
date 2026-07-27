@@ -145,15 +145,33 @@ private fun MacaashBanner(onClick: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(20.dp))
+            .heightIn(min = 140.dp)
+            .clip(RoundedCornerShape(24.dp))
             .background(Brush.linearGradient(listOf(Color(0xFF16A34A), Color(0xFF0E7A38))))
-            .clickable(onClick = onClick)
-            .padding(24.dp),
+            .clickable(onClick = onClick),
     ) {
-        Column {
-            Text("Macaash Rewards", color = Color.White, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(6.dp))
-            Text("Buy packages and earn points", color = Color.White, style = MaterialTheme.typography.bodyMedium)
+        // Subtle decorative accent circles, same idea as the reference banner's
+        // corner swoosh — purely decorative, no new asset needed.
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .offset(x = 24.dp, y = (-24).dp)
+                .size(120.dp)
+                .clip(CircleShape)
+                .background(Color.White.copy(alpha = 0.08f)),
+        )
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .offset(x = 16.dp, y = 16.dp)
+                .size(70.dp)
+                .clip(CircleShape)
+                .background(Color.White.copy(alpha = 0.10f)),
+        )
+        Column(modifier = Modifier.padding(24.dp)) {
+            Text("Macaash Rewards", color = Color.White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            Text("Buy packages and earn points", color = Color.White.copy(alpha = 0.9f), style = MaterialTheme.typography.bodyMedium)
         }
     }
 }
@@ -173,14 +191,16 @@ private fun CompanyCard(company: Company, onClick: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = !offline, onClick = onClick),
+        shape = RoundedCornerShape(18.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
     ) {
         Column(
-            modifier = Modifier.fillMaxWidth().padding(vertical = 20.dp),
+            modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Box(
                 modifier = Modifier
-                    .size(56.dp)
+                    .size(72.dp)
                     .clip(CircleShape)
                     .background(if (offline) Color.LightGray else brandColor),
                 contentAlignment = Alignment.Center,
@@ -191,12 +211,12 @@ private fun CompanyCard(company: Company, onClick: () -> Unit) {
                     Text(
                         company.name.take(1).uppercase(),
                         color = Color.White,
-                        style = MaterialTheme.typography.titleLarge,
+                        style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold,
                     )
                 }
             }
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(12.dp))
             Text(company.name, fontWeight = FontWeight.Bold)
             if (offline) {
                 Text("Offline", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
