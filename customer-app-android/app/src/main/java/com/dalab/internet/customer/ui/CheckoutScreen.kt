@@ -1,13 +1,18 @@
 package com.dalab.internet.customer.ui
 
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material.icons.filled.Wifi
@@ -18,50 +23,51 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.dalab.internet.customer.R
 import com.dalab.internet.customer.auth.SessionManager
 import com.dalab.internet.customer.data.Company
+import com.dalab.internet.customer.data.CustomerOrder
 import com.dalab.internet.customer.data.PackageItem
+import com.dalab.internet.customer.network.ApiClient
+import com.dalab.internet.customer.network.CreateOrderRequest
+import com.dalab.internet.customer.queue.OrderCreateAction
+import com.dalab.internet.customer.queue.PendingActionQueue
+import com.dalab.internet.customer.queue.RetryClassifier
+import kotlinx.coroutines.launch
+import java.util.UUID
 
-private val DalabIndigo = Color(0xFF1D2E8C)
 private val DalabGreen = Color(0xFF16A34A)
+private val ScreenBg = Color(0xFF0B0F1E)
+private val PanelBg = Color(0xFF141A2E)
+private val PanelBorder = Color(0xFF232B45)
+private val MutedText = Color(0xFF9CA3B8)
 
-data class PaymentDraft(
-    val company: Company,
-    val pkg: PackageItem,
-    val senderPhone: String,
-    val receiverPhone: String,
-    val paymentMethod: String,
-)
+private data class WalletOption(val label: String, val providerLabel: String, val color: Color, val logoRes: Int)
 
-private data class PaymentMethodOption(val label: String, val color: Color)
-private val KNOWN_PAYMENT_METHODS = listOf(
-    PaymentMethodOption("EVC Plus", Color(0xFF16A34A)),
-    PaymentMethodOption("eDahab", Color(0xFFD9A400)),
-    PaymentMethodOption("JEEB", Color(0xFF1D2E8C)),
+private val WALLET_OPTIONS = mapOf(
+    "EVC Plus" to WalletOption("Evc Plus", "HORMUUD TELECOM", Color(0xFF16A34A), R.drawable.logo_hormuud),
+    "eDahab" to WalletOption("eDahab", "SOMTEL TELECOM", Color(0xFFF2C200), R.drawable.logo_somtel),
+    "JEEB" to WalletOption("Jeeb", "SOMNET TELECOM", Color(0xFF1D4ED8), R.drawable.logo_somnet),
 )
 
 /**
- * Payment method choice mirrors the real per-provider gateway (EVC Plus /
- * JEEB / eDahab / Manual — see `company.gateway`, seeded in
- * admin-backend-ts/src/db/seed.ts), plus JEEB as a universal alternative
- * since it works as a cross-carrier payment app regardless of which
- * provider's package is being bought (e.g. a Hormuud package can be paid via
- * Hormuud's own EVC Plus, or via JEEB). A "Manual" gateway (Amtel — no SMS
- * payment confirmation, verified through a separate flow) has no selectable
- * alternative. Only the applicable icon(s) are selectable/lit; the rest stay
- * dimmed and non-interactive.
- *
- * This screen only reviews the order and picks a payment method — tapping
- * "Pay Now" hands off to PaymentInstructionsScreen, which shows the actual
- * phone number/amount to send to and only creates the order once the
- * customer confirms they've sent the payment ("I've Paid").
+ * Single-screen checkout: review the order, pick a payment wallet, see the
+ * locked admin number to send payment to, and tap "Pay Now" to both place
+ * the order (pending, awaiting payment verification) and open the dialer
+ * with the USSD code pre-filled — matching the "Select Payment Wallet"
+ * reference design (dark cards per wallet + locked admin number + single
+ * dial button) rather than a separate confirmation step.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onProceedToPayment: (PaymentDraft) -> Unit) {
+fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onOrderCreated: (CustomerOrder) -> Unit) {
+    val context = LocalContext.current
     var senderPhone by remember { mutableStateOf(SessionManager.currentCustomer()?.phone ?: "") }
     var receiverPhone by remember { mutableStateOf(SessionManager.currentCustomer()?.phone ?: "") }
     val selectableMethods = remember(company.gateway) {
@@ -72,22 +78,23 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onPro
         }
     }
     var selectedPaymentMethod by remember(company.gateway) { mutableStateOf(selectableMethods.first()) }
-    val brandColor = remember(company.colorHex) {
-        try {
-            Color(android.graphics.Color.parseColor(company.colorHex))
-        } catch (_: Exception) {
-            DalabIndigo
-        }
-    }
+    val payNumber = company.paymentNumber?.takeIf { it.isNotBlank() }
+
+    var submitting by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var queued by remember { mutableStateOf(false) }
+    val clientRequestId = remember { UUID.randomUUID().toString() }
+    val scope = rememberCoroutineScope()
 
     Scaffold(
+        containerColor = ScreenBg,
         topBar = {
             TopAppBar(
                 title = { Text("Confirm Order", color = Color.White, fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White) }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = brandColor),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = ScreenBg),
             )
         }
     ) { padding ->
@@ -100,69 +107,41 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onPro
             OutlinedTextField(
                 value = senderPhone,
                 onValueChange = { senderPhone = it },
-                label = { Text("Number sending payment") },
+                label = { Text("Number sending payment", color = MutedText) },
                 singleLine = true,
-                shape = RoundedCornerShape(28.dp),
-                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = brandColor),
+                shape = RoundedCornerShape(14.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = DalabGreen,
+                    unfocusedBorderColor = PanelBorder,
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White,
+                    cursorColor = DalabGreen,
+                ),
                 modifier = Modifier.fillMaxWidth(),
             )
 
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(12.dp))
             OutlinedTextField(
                 value = receiverPhone,
                 onValueChange = { receiverPhone = it },
-                label = { Text("Receiver number (target)") },
+                label = { Text("Receiver number (target)", color = MutedText) },
                 singleLine = true,
-                shape = RoundedCornerShape(28.dp),
-                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = brandColor),
+                shape = RoundedCornerShape(14.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = DalabGreen,
+                    unfocusedBorderColor = PanelBorder,
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White,
+                    cursorColor = DalabGreen,
+                ),
                 modifier = Modifier.fillMaxWidth(),
             )
 
-            Spacer(Modifier.height(24.dp))
-            Text("Select Payment Method", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-            Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-                KNOWN_PAYMENT_METHODS.forEach { method ->
-                    val selectable = selectableMethods.any { it.equals(method.label, ignoreCase = true) }
-                    val active = method.label.equals(selectedPaymentMethod, ignoreCase = true)
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.clickable(enabled = selectable) { selectedPaymentMethod = method.label },
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(64.dp)
-                                .clip(CircleShape)
-                                .background(if (active) method.color else method.color.copy(alpha = 0.25f)),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                method.label.take(2).uppercase(),
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 16.sp,
-                            )
-                        }
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            method.label,
-                            fontSize = 12.sp,
-                            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
-                            color = if (active) method.color else Color.Gray,
-                        )
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(24.dp))
-            Surface(
-                color = Color(0xFFEFF7F0),
-                shape = RoundedCornerShape(18.dp),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Column(modifier = Modifier.padding(20.dp)) {
-                    Text("Service Details", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                    Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(20.dp))
+            Surface(color = PanelBg, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Service Details", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.White)
+                    Spacer(Modifier.height(10.dp))
                     ServiceDetailRow("Provider", company.name)
                     ServiceDetailRow("Package", pkg.name)
                     ServiceDetailRow("Amount", "$${"%.2f".format(pkg.price)}")
@@ -173,45 +152,197 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onPro
                         pkg.validity?.takeIf { it.isNotBlank() }?.let { add(Icons.Filled.Schedule to it) }
                     }
                     if (extras.isNotEmpty()) {
-                        Spacer(Modifier.height(6.dp))
+                        Spacer(Modifier.height(4.dp))
                         extras.forEach { (icon, label) ->
                             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
-                                Icon(icon, contentDescription = null, tint = DalabGreen, modifier = Modifier.size(15.dp))
+                                Icon(icon, contentDescription = null, tint = DalabGreen, modifier = Modifier.size(14.dp))
                                 Spacer(Modifier.width(8.dp))
-                                Text(label, fontSize = 13.sp, color = Color(0xFF44494F))
+                                Text(label, fontSize = 12.sp, color = MutedText)
                             }
                         }
                     }
                 }
             }
 
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(24.dp))
+            Text("Select Payment Wallet", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.White)
+            Spacer(Modifier.height(12.dp))
 
-            val payEnabled = senderPhone.isNotBlank() && receiverPhone.isNotBlank()
+            selectableMethods.forEach { methodKey ->
+                val wallet = WALLET_OPTIONS[methodKey]
+                val active = methodKey.equals(selectedPaymentMethod, ignoreCase = true)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .border(
+                            width = if (active) 2.dp else 1.dp,
+                            color = if (active) DalabGreen else PanelBorder,
+                            shape = RoundedCornerShape(16.dp),
+                        )
+                        .background(PanelBg)
+                        .clickable { selectedPaymentMethod = methodKey }
+                        .padding(14.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (wallet != null) {
+                            Box(
+                                modifier = Modifier
+                                    .size(width = 88.dp, height = 56.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(wallet.color),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Image(
+                                    painter = painterResource(wallet.logoRes),
+                                    contentDescription = methodKey,
+                                    modifier = Modifier.size(40.dp),
+                                )
+                            }
+                            Spacer(Modifier.width(16.dp))
+                            Column {
+                                Text(wallet.label, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                Text(wallet.providerLabel, color = MutedText, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        } else {
+                            Column {
+                                Text(methodKey, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                Text(company.name.uppercase(), color = MutedText, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+            Surface(
+                color = PanelBg,
+                shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(1.dp, PanelBorder),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Filled.Lock, contentDescription = null, tint = Color(0xFFF2A900), modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Admin Number:", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                        }
+                        Surface(shape = RoundedCornerShape(10.dp), border = BorderStroke(1.dp, PanelBorder), color = Color.Transparent) {
+                            Text(
+                                payNumber ?: "Not available",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Automatically selected for $selectedPaymentMethod. You cannot edit this number.",
+                        color = MutedText,
+                        fontSize = 12.sp,
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(20.dp))
+            if (error != null) {
+                Text(error!!, color = MaterialTheme.colorScheme.error)
+                Spacer(Modifier.height(12.dp))
+            }
+            if (queued) {
+                Text(
+                    "You're offline — this order will be placed automatically once you're back online.",
+                    color = DalabGreen,
+                )
+                Spacer(Modifier.height(12.dp))
+            }
+
+            Spacer(Modifier.weight(1f))
+
+            val payEnabled = senderPhone.isNotBlank() && receiverPhone.isNotBlank() && !submitting && !queued
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(54.dp)
                     .clip(RoundedCornerShape(28.dp))
                     .background(
-                        if (payEnabled) Brush.horizontalGradient(listOf(DalabIndigo, DalabGreen))
-                        else Brush.horizontalGradient(listOf(Color(0xFFBDC2E0), Color(0xFFBDC2E0)))
+                        if (payEnabled) Brush.horizontalGradient(listOf(DalabGreen, Color(0xFF0F9E76)))
+                        else Brush.horizontalGradient(listOf(Color(0xFF3A4257), Color(0xFF3A4257)))
                     )
                     .clickable(enabled = payEnabled) {
-                        onProceedToPayment(
-                            PaymentDraft(
-                                company = company,
-                                pkg = pkg,
-                                senderPhone = senderPhone.trim(),
-                                receiverPhone = receiverPhone.trim(),
-                                paymentMethod = selectedPaymentMethod,
-                            )
+                        error = null
+                        submitting = true
+                        val request = CreateOrderRequest(
+                            companyId = company.id,
+                            packageId = pkg.id,
+                            senderPhone = senderPhone.trim().ifBlank { null },
+                            receiverPhone = receiverPhone.trim().ifBlank { null },
+                            paymentMethod = selectedPaymentMethod,
+                            clientRequestId = clientRequestId,
                         )
+                        scope.launch {
+                            try {
+                                val response = RetryClassifier.requireSuccessful(ApiClient.service.createOrder(request))
+                                val order = response.body()
+                                if (order != null) {
+                                    val template = company.paymentUssdTemplate?.takeIf { it.isNotBlank() }
+                                    val dialTarget = if (template != null) {
+                                        template.replace("{amount}", "%.2f".format(pkg.price))
+                                    } else {
+                                        payNumber
+                                    }
+                                    if (dialTarget != null) {
+                                        context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(dialTarget))))
+                                    }
+                                    onOrderCreated(order)
+                                } else {
+                                    error = "Couldn't place this order. Please try again."
+                                }
+                            } catch (e: Exception) {
+                                if (RetryClassifier.isRetryable(e)) {
+                                    PendingActionQueue.enqueue(
+                                        id = UUID.randomUUID().toString(),
+                                        type = PendingActionQueue.Type.ORDER_CREATE,
+                                        payload = OrderCreateAction(request),
+                                    )
+                                    queued = true
+                                } else {
+                                    error = "Couldn't place this order. Please try again."
+                                }
+                            }
+                            submitting = false
+                        }
                     },
                 contentAlignment = Alignment.Center,
             ) {
-                Text("Pay Now", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Call, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        if (submitting) "Processing..." else if (queued) "Queued" else "PAY NOW ($${"%.2f".format(pkg.price)})",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                    )
+                }
             }
+
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "Tapping PAY NOW will open your mobile dialer to complete the payment transaction safely.",
+                fontSize = 12.sp,
+                color = MutedText,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
     }
 }
@@ -222,7 +353,7 @@ private fun ServiceDetailRow(label: String, value: String) {
         modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Text(label, fontSize = 13.sp, color = Color(0xFF6B7094))
-        Text(value, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        Text(label, fontSize = 13.sp, color = MutedText)
+        Text(value, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
     }
 }
