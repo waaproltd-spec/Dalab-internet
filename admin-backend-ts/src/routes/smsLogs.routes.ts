@@ -4,6 +4,7 @@ import { query, queryOne } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
 import { recordActivity } from "../utils/activityLog.js";
+import { createPaymentTransaction } from "../utils/paymentTransactions.js";
 
 export const smsLogsRouter = Router();
 
@@ -80,6 +81,7 @@ async function logPaymentActivity(params: {
   transactionRef: string | null;
   paymentTimestamp: string;
   status: "verified" | "already_processed";
+  requiresManualApproval?: boolean;
 }) {
   await recordActivity({
     adminId: undefined,
@@ -96,11 +98,26 @@ async function logPaymentActivity(params: {
       transactionRef: params.transactionRef,
       paymentTimestamp: params.paymentTimestamp,
       status: params.status,
+      // "verified" here only ever means "this SMS matched an order" — it
+      // does NOT mean the automatic verify->generate->dial pipeline ran.
+      // Without this flag, "Payment verified" reads as "fully processed",
+      // which is exactly the confusion behind more than one "payment
+      // confirmed but USSD never sent" report: the provider's Automatic
+      // Processing toggle was off, so nothing further happens until an
+      // agent manually taps Verify Payment.
+      requiresManualApproval: params.requiresManualApproval ?? false,
     },
   });
 }
 
-async function respondAlreadyProcessed(res: Response, existing: { id: string; matched_order_id: string | null }, transactionRef: string | null, receivedAt: string) {
+async function respondAlreadyProcessed(
+  res: Response,
+  existing: { id: string; matched_order_id: string | null },
+  transactionRef: string | null,
+  receivedAt: string,
+  parsedPhone?: string,
+  parsedAmount?: number
+) {
   const requiresManualApproval = existing.matched_order_id ? await requiresManualApprovalFor(existing.matched_order_id) : false;
   const orderAlreadyCompleted = existing.matched_order_id ? await orderAlreadyFulfilled(existing.matched_order_id) : false;
   if (existing.matched_order_id) {
@@ -116,9 +133,23 @@ async function respondAlreadyProcessed(res: Response, existing: { id: string; ma
         transactionRef,
         paymentTimestamp: receivedAt,
         status: "already_processed",
+        requiresManualApproval,
       });
     }
   }
+  // A distinct ledger row for THIS blocked attempt (not the original), so
+  // the payment_transactions table shows both the real payment and every
+  // re-delivery/retry that was correctly rejected — the audit trail
+  // requirement 5 asks for, and direct evidence the guarantee held.
+  await createPaymentTransaction({
+    smsLogId: existing.id,
+    orderId: existing.matched_order_id,
+    transactionRef,
+    customerPhone: parsedPhone ?? null,
+    amount: parsedAmount ?? null,
+    paymentTimestamp: receivedAt,
+    status: "duplicate_blocked",
+  });
   sendJson(res, 200, {
     id: existing.id,
     matchedOrderId: existing.matched_order_id,
@@ -146,7 +177,7 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
       `SELECT id, matched_order_id FROM sms_logs WHERE transaction_ref=$1 LIMIT 1`,
       [transactionRef]
     );
-    if (existingByRef) return respondAlreadyProcessed(res, existingByRef, transactionRef, effectiveReceivedAt);
+    if (existingByRef) return respondAlreadyProcessed(res, existingByRef, transactionRef, effectiveReceivedAt, parsedPhone, parsedAmount);
   }
 
   const match = await findMatchingOrder(parsedAmount, parsedPhone);
@@ -181,7 +212,7 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
          LIMIT 1`,
         [sender, body, effectiveReceivedAt]
       ));
-    if (existing) return respondAlreadyProcessed(res, existing, transactionRef ?? null, effectiveReceivedAt);
+    if (existing) return respondAlreadyProcessed(res, existing, transactionRef ?? null, effectiveReceivedAt, parsedPhone, parsedAmount);
     throw err;
   }
 
@@ -197,8 +228,24 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
       transactionRef: transactionRef ?? null,
       paymentTimestamp: effectiveReceivedAt,
       status: "verified",
+      requiresManualApproval,
     });
   }
+
+  // The ledger row for this genuinely-new payment attempt — 'pending' until
+  // the Agent App's verify-payment/dial-attempt calls advance it. sms_logs'
+  // own unique indexes (checked above) already guarantee this transactionRef
+  // is new, so this insert always succeeds here — a null return would only
+  // mean a narrow, effectively-impossible race, logged rather than crashing.
+  await createPaymentTransaction({
+    smsLogId: id,
+    orderId: match?.id ?? null,
+    transactionRef: transactionRef ?? null,
+    customerPhone: parsedPhone ?? null,
+    amount: parsedAmount ?? null,
+    paymentTimestamp: effectiveReceivedAt,
+    status: "pending",
+  });
 
   sendJson(res, 201, { id, matchedOrderId: match?.id ?? null, requiresManualApproval, duplicate: false, status: "new" });
 });
@@ -211,5 +258,29 @@ smsLogsRouter.get("/admin/sms-logs", requireStaff(), async (req, res) => {
   if (matched === "true") sql += ` AND matched_order_id IS NOT NULL`;
   if (matched === "false") sql += ` AND matched_order_id IS NULL`;
   sql += ` ORDER BY received_at DESC`;
+  sendJson(res, 200, await query(sql, args));
+});
+
+// The duplicate-prevention ledger's read side — search/filter/sort for the
+// Payment Transactions dashboard panel. Joined to companies/agent_devices
+// for display names rather than making the dashboard do a second round-trip.
+smsLogsRouter.get("/admin/payment-transactions", requireStaff(), async (req, res) => {
+  const { status, search, companyId } = req.query as Record<string, string | undefined>;
+  const args: unknown[] = [];
+  let sql = `
+    SELECT pt.*, o.company_id AS order_company_id, c.name AS provider_name, d.name AS device_name
+    FROM payment_transactions pt
+    LEFT JOIN orders o ON o.id = pt.order_id
+    LEFT JOIN companies c ON c.id = o.company_id
+    LEFT JOIN agent_devices d ON d.id = pt.agent_device_id
+    WHERE 1=1`;
+  if (status) { args.push(status); sql += ` AND pt.status=$${args.length}`; }
+  if (companyId) { args.push(companyId); sql += ` AND o.company_id=$${args.length}`; }
+  if (search) {
+    args.push(`%${search}%`);
+    const p = args.length;
+    sql += ` AND (pt.customer_phone ILIKE $${p} OR pt.transaction_ref ILIKE $${p} OR pt.order_id ILIKE $${p})`;
+  }
+  sql += ` ORDER BY pt.created_at DESC LIMIT 500`;
   sendJson(res, 200, await query(sql, args));
 });

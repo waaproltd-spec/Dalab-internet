@@ -4,14 +4,20 @@ import { query, queryOne } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
+import { hashPassword, isValidPin } from "../auth/crypto.js";
 
 export const customersRouter = Router();
+
+// pin_hash must never reach any client — explicit column list (plus a
+// derived pinSet boolean) rather than SELECT *, same convention already
+// used for pin_encrypted on companies.
+const ADMIN_CUSTOMER_COLUMNS = `id, phone, name, status, macaash_points, created_at, (pin_hash IS NOT NULL) AS pin_set`;
 
 customersRouter.get("/admin/customers", requireStaff(), async (req, res) => {
   const { search } = req.query;
   const rows = search
-    ? await query(`SELECT * FROM customers WHERE name ILIKE $1 OR phone ILIKE $1 ORDER BY created_at DESC`, [`%${search}%`])
-    : await query(`SELECT * FROM customers ORDER BY created_at DESC`);
+    ? await query(`SELECT ${ADMIN_CUSTOMER_COLUMNS} FROM customers WHERE name ILIKE $1 OR phone ILIKE $1 ORDER BY created_at DESC`, [`%${search}%`])
+    : await query(`SELECT ${ADMIN_CUSTOMER_COLUMNS} FROM customers ORDER BY created_at DESC`);
   sendJson(res, 200, rows);
 });
 
@@ -24,7 +30,7 @@ customersRouter.put("/admin/customers/:id", requirePermission("customers.manage"
     return sendJson(res, 409, { error: "A customer with this phone already exists" });
   }
   await query(`UPDATE customers SET name=$1, phone=$2 WHERE id=$3`, [name, phone, req.params.id]);
-  sendJson(res, 200, await queryOne(`SELECT * FROM customers WHERE id=$1`, [req.params.id]));
+  sendJson(res, 200, await queryOne(`SELECT ${ADMIN_CUSTOMER_COLUMNS} FROM customers WHERE id=$1`, [req.params.id]));
 });
 
 customersRouter.put("/admin/customers/:id/block", requirePermission("customers.manage"), async (req, res) => {
@@ -32,7 +38,45 @@ customersRouter.put("/admin/customers/:id/block", requirePermission("customers.m
   if (!customer) return sendJson(res, 404, { error: "Customer not found" });
   const nextStatus = customer.status === "active" ? "blocked" : "active";
   await query(`UPDATE customers SET status=$1 WHERE id=$2`, [nextStatus, req.params.id]);
-  sendJson(res, 200, await queryOne(`SELECT * FROM customers WHERE id=$1`, [req.params.id]));
+  sendJson(res, 200, await queryOne(`SELECT ${ADMIN_CUSTOMER_COLUMNS} FROM customers WHERE id=$1`, [req.params.id]));
+});
+
+// ---------------- Customer PIN management (Super Admin only) ----------------
+// Deliberately requireAuth("super_admin") rather than requirePermission(...)
+// — unlike every other customers.manage action, this is not delegable to a
+// regular Admin no matter what permissions the Super Admin grants them, per
+// explicit requirement. The PIN itself is bcrypt-hashed (same as admin
+// passwords) and never returned to any client — only whether one is set.
+// Self-service is deliberately absent: a customer who forgets their PIN
+// contacts Support, who directs a Super Admin here; the existing OTP login
+// flow is completely untouched by any of this.
+customersRouter.get("/admin/customers/:id/pin-status", requireAuth("super_admin"), async (req, res) => {
+  const customer = await queryOne<{ pin_hash: string | null }>(`SELECT pin_hash FROM customers WHERE id=$1`, [req.params.id]);
+  if (!customer) return sendJson(res, 404, { error: "Customer not found" });
+  sendJson(res, 200, { isSet: Boolean(customer.pin_hash) });
+});
+
+// Same handler covers both "create" and "change" — a PIN either isn't set
+// yet or already is; setting a new value works identically either way.
+customersRouter.put("/admin/customers/:id/pin", requireAuth("super_admin"), async (req, res) => {
+  const { pin } = req.body;
+  if (!isValidPin(String(pin ?? ""))) return sendJson(res, 400, { error: "PIN must be 3-8 digits" });
+  const existing = await queryOne(`SELECT id FROM customers WHERE id=$1`, [req.params.id]);
+  if (!existing) return sendJson(res, 404, { error: "Customer not found" });
+  const pinHash = await hashPassword(String(pin));
+  await query(`UPDATE customers SET pin_hash=$1 WHERE id=$2`, [pinHash, req.params.id]);
+  sendJson(res, 200, { message: "PIN saved", isSet: true });
+});
+
+// "Reset" clears the PIN back to unset (optional) rather than assigning a
+// new one itself — the customer/Support flow that lets them "create a new
+// PIN" afterward is a separate, later concern; this just guarantees the old
+// PIN can never be used again.
+customersRouter.delete("/admin/customers/:id/pin", requireAuth("super_admin"), async (req, res) => {
+  const existing = await queryOne(`SELECT id FROM customers WHERE id=$1`, [req.params.id]);
+  if (!existing) return sendJson(res, 404, { error: "Customer not found" });
+  await query(`UPDATE customers SET pin_hash=NULL WHERE id=$1`, [req.params.id]);
+  sendJson(res, 200, { message: "PIN reset", isSet: false });
 });
 
 // Blocked by ON DELETE RESTRICT from orders if the customer has order

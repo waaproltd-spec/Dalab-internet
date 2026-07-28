@@ -7,6 +7,7 @@ import { encrypt, decrypt, isValidPin } from "../auth/crypto.js";
 import { sendJson } from "../utils/camelCase.js";
 import { broadcast } from "../realtime/orderEvents.js";
 import { recordActivity } from "../utils/activityLog.js";
+import { markPaymentProcessing, markPaymentFinal } from "../utils/paymentTransactions.js";
 
 export const ussdRouter = Router();
 
@@ -439,6 +440,17 @@ ussdRouter.post("/agent/orders/:id/dial-attempts", requireAuth("agent"), async (
     );
     return sendJson(res, 200, { id: existing!.id });
   }
+  // Records which device/SIM is actually handling this payment — the point
+  // requirement 4 asks to answer ("is another job already running for this
+  // request"): the guard inside markPaymentProcessing only advances a row
+  // that isn't already completed/blocked, so a second concurrent dial start
+  // for the same order can't silently overwrite a finished payment's record.
+  await markPaymentProcessing({
+    orderId: req.params.id,
+    agentDeviceId: agent?.device_id ?? null,
+    simSlot: simSlot ?? null,
+    ussdDialAttemptId: id,
+  });
   sendJson(res, 201, { id });
 });
 
@@ -503,8 +515,12 @@ ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (r
         });
       }
     }
+    await markPaymentFinal(attempt.order_id, "completed");
   } else {
     await query(`UPDATE orders SET status='failed', updated_at=now() WHERE id=$1 AND status != 'completed'`, [attempt.order_id]);
+    // Not necessarily final — UssdOrchestrator may still retry, which calls
+    // markPaymentProcessing again and can still move this to 'completed'.
+    await markPaymentFinal(attempt.order_id, "failed");
   }
   broadcast({ type: "order.updated", orderId: attempt.order_id });
   sendJson(res, 200, await queryOne(`SELECT * FROM ussd_dial_attempts WHERE id=$1`, [req.params.attemptId]));

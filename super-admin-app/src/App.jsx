@@ -96,6 +96,12 @@ const DalabAdminApi = {
   updateCustomer: (id, body) => dalabAdminApiRequest(`/admin/customers/${id}`, { method: "PUT", body }),
   deleteCustomer: (id) => dalabAdminApiRequest(`/admin/customers/${id}`, { method: "DELETE" }),
   toggleCustomerBlock: (id) => dalabAdminApiRequest(`/admin/customers/${id}/block`, { method: "PUT" }),
+  // Customer PIN — Super Admin only, enforced server-side too. Optional;
+  // customers with none set are unaffected. No self-service reset — a
+  // customer who forgets their PIN contacts Support.
+  getCustomerPinStatus: (id) => dalabAdminApiRequest(`/admin/customers/${id}/pin-status`),
+  setCustomerPin: (id, pin) => dalabAdminApiRequest(`/admin/customers/${id}/pin`, { method: "PUT", body: { pin } }),
+  resetCustomerPin: (id) => dalabAdminApiRequest(`/admin/customers/${id}/pin`, { method: "DELETE" }),
   // Promo Images — up to 5 promotional images shown as a carousel on the
   // Customer App Home screen. Images are uploaded as data URIs (base64)
   // rather than multipart form data, since dalabAdminApiRequest already
@@ -161,6 +167,14 @@ const DalabAdminApi = {
   updatePaymentWallet: (id, body) => dalabAdminApiRequest(`/admin/payment-wallets/${id}`, { method: "PUT", body }),
   setPaymentWalletStatus: (id, enabled) => dalabAdminApiRequest(`/admin/payment-wallets/${id}/status`, { method: "PUT", body: { enabled } }),
   deletePaymentWallet: (id) => dalabAdminApiRequest(`/admin/payment-wallets/${id}`, { method: "DELETE" }),
+  // Payment Transactions — the duplicate-prevention ledger (one row per
+  // real-world payment attempt, PENDING/PROCESSING/COMPLETED/FAILED/
+  // DUPLICATE_BLOCKED). Read-only from the dashboard; every write happens
+  // server-side as the Agent App's SMS/verify/dial calls advance it.
+  getPaymentTransactions: (filters = {}) => {
+    const qs = new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([, v]) => v))).toString();
+    return dalabAdminApiRequest(`/admin/payment-transactions${qs ? `?${qs}` : ""}`);
+  },
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -210,6 +224,7 @@ function normalizeCustomer(c) {
     status: c.status,
     points: c.macaashPoints ?? 0,
     joined: c.createdAt ? new Date(c.createdAt).toLocaleDateString() : "",
+    pinSet: c.pinSet ?? false,
   };
 }
 
@@ -446,6 +461,7 @@ const NAV = [
   { id: "promo-images", label: "Promo Images", icon: ImageIcon },
   { id: "devices", label: "Device & USSD", icon: SmartphoneNfc },
   { id: "sms-logs", label: "SMS Monitor", icon: MessageSquare },
+  { id: "payment-transactions", label: "Payment Transactions", icon: Activity },
   { id: "execution-logs", label: "Execution Logs", icon: Terminal },
   { id: "reports", label: "Reports", icon: FileBarChart2 },
   { id: "roles", label: "Roles & Permissions", icon: ShieldCheck, superAdminOnly: true },
@@ -1882,7 +1898,14 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({});
   const [error, setError] = useState("");
+  const [pinTarget, setPinTarget] = useState(null); // customer object | null
+  const [pinDraft, setPinDraft] = useState("");
+  const [pinError, setPinError] = useState("");
+  const [pinSaving, setPinSaving] = useState(false);
   const canManage = hasPermission(admin, "customers.manage");
+  // Not delegable via customers.manage — only the Super Admin role itself,
+  // matching the backend's requireAuth("super_admin") on every PIN route.
+  const canManagePin = admin?.role === "super_admin";
 
   useEffect(() => { refreshCustomers?.(search || undefined); }, [search]);
 
@@ -1929,6 +1952,38 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
     }
   };
 
+  const openPin = (c) => { setPinTarget(c); setPinDraft(""); setPinError(""); };
+
+  const savePin = async () => {
+    if (!/^\d{3,8}$/.test(pinDraft)) { setPinError("PIN must be 3-8 digits."); return; }
+    setPinSaving(true);
+    setPinError("");
+    try {
+      await DalabAdminApi.setCustomerPin(pinTarget.id, pinDraft);
+      setCustomers((prev) => prev.map((x) => (x.id === pinTarget.id ? { ...x, pinSet: true } : x)));
+      setPinTarget(null);
+    } catch (err) {
+      setPinError(err.message || "Could not save PIN.");
+    } finally {
+      setPinSaving(false);
+    }
+  };
+
+  const resetPin = async () => {
+    if (!window.confirm(`Reset ${pinTarget.name || pinTarget.phone}'s PIN? They'll need a new one created before it can be used again.`)) return;
+    setPinSaving(true);
+    setPinError("");
+    try {
+      await DalabAdminApi.resetCustomerPin(pinTarget.id);
+      setCustomers((prev) => prev.map((x) => (x.id === pinTarget.id ? { ...x, pinSet: false } : x)));
+      setPinTarget(null);
+    } catch (err) {
+      setPinError(err.message || "Could not reset PIN.");
+    } finally {
+      setPinSaving(false);
+    }
+  };
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
@@ -1945,7 +2000,7 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: "#FAFBFF" }}>
-              {["Customer", "Phone", "Orders", "Macaash points", "Joined", "Status", ""].map((h) => (
+              {["Customer", "Phone", "Orders", "Macaash points", "Joined", "Status", ...(canManagePin ? ["PIN"] : []), ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
             </tr>
@@ -1959,6 +2014,18 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{c.points}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE }}>{c.joined}</td>
                 <td style={{ padding: "10px 14px" }}><Badge tone={c.status === "active" ? "green" : "red"}>{c.status === "active" ? "Active" : "Blocked"}</Badge></td>
+                {canManagePin && (
+                  <td style={{ padding: "10px 14px" }}>
+                    <button
+                      onClick={() => openPin(c)}
+                      title="Create, change, or reset this customer's PIN"
+                      style={{ background: "none", border: "none", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}
+                    >
+                      <Lock size={13} color={c.pinSet ? GREEN : MUTE} />
+                      <span style={{ fontSize: 11.5, fontWeight: 700, color: c.pinSet ? GREEN : MUTE }}>{c.pinSet ? "Set" : "Not set"}</span>
+                    </button>
+                  </td>
+                )}
                 <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
                   {canManage && (
                     <>
@@ -1977,7 +2044,7 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
               </tr>
             ))}
             {shown.length === 0 && (
-              <tr><td colSpan={7} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No customers found.</td></tr>
+              <tr><td colSpan={canManagePin ? 8 : 7} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No customers found.</td></tr>
             )}
           </tbody>
         </table>
@@ -1995,6 +2062,36 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
           <div style={{ display: "flex", gap: 10 }}>
             <Button onClick={saveEdit} icon={Check}>Save</Button>
             <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
+          </div>
+        </Modal>
+      )}
+
+      {pinTarget && (
+        <Modal title={`PIN — ${pinTarget.name || pinTarget.phone}`} onClose={() => setPinTarget(null)}>
+          <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>
+            Optional. If this customer forgets their PIN, direct them to Support — there is no self-service reset.
+            The PIN is stored as a secure hash; it can never be viewed once set, only replaced.
+          </div>
+          <Field label="PIN status">
+            <Badge tone={pinTarget.pinSet ? "green" : "amber"}>{pinTarget.pinSet ? "Set" : "Not set"}</Badge>
+          </Field>
+          <Field label={pinTarget.pinSet ? "New PIN (replaces the current one)" : "Create PIN"}>
+            <input
+              type="password" inputMode="numeric" maxLength={8} placeholder="3-8 digits"
+              style={inputStyle}
+              value={pinDraft}
+              onChange={(e) => setPinDraft(e.target.value.replace(/\D/g, ""))}
+            />
+          </Field>
+          {pinError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{pinError}</div>}
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <Button onClick={savePin} icon={pinSaving ? Loader2 : Check} spin={pinSaving} disabled={pinSaving || !pinDraft}>
+              {pinTarget.pinSet ? "Change PIN" : "Create PIN"}
+            </Button>
+            {pinTarget.pinSet && (
+              <Button variant="danger" onClick={resetPin} disabled={pinSaving}>Reset PIN</Button>
+            )}
+            <Button variant="ghost" onClick={() => setPinTarget(null)} disabled={pinSaving}>Cancel</Button>
           </div>
         </Modal>
       )}
@@ -3574,6 +3671,215 @@ function ProviderNumbers({ companies, refreshCompanies, admin }) {
   );
 }
 
+const PAYMENT_TX_STATUS_META = {
+  pending: { label: "Pending", tone: "amber" },
+  processing: { label: "Processing", tone: "blue" },
+  completed: { label: "Completed", tone: "green" },
+  failed: { label: "Failed", tone: "red" },
+  duplicate_blocked: { label: "Duplicate Blocked", tone: "gray" },
+};
+
+// Read-only view of the duplicate-prevention ledger (payment_transactions) —
+// one row per real-world payment attempt, from the moment its SMS is
+// received through to the USSD dial's outcome, INCLUDING every re-delivery
+// that was correctly rejected as a duplicate. Every write happens
+// server-side as the Agent App's own calls advance it; this panel never
+// writes anything, matching how Execution Logs/SMS Monitor are also
+// observation-only.
+function PaymentTransactionsPanel({ companies }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [companyFilter, setCompanyFilter] = useState("all");
+  const [search, setSearch] = useState("");
+  const [sortKey, setSortKey] = useState("createdAt");
+  const [sortDir, setSortDir] = useState("desc");
+  const [lastSynced, setLastSynced] = useState(null);
+
+  const fetchRows = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setLoading(true);
+    setError("");
+    try {
+      const data = await DalabAdminApi.getPaymentTransactions({
+        status: statusFilter === "all" ? undefined : statusFilter,
+        companyId: companyFilter === "all" ? undefined : companyFilter,
+        search: search.trim() || undefined,
+      });
+      setRows(data);
+      setLastSynced(new Date());
+    } catch (err) {
+      setError(err.message || "Could not load payment transactions.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { fetchRows(); }, [statusFilter, companyFilter]);
+  // Debounced search — avoids a request per keystroke.
+  useEffect(() => {
+    const timer = setTimeout(fetchRows, 350);
+    return () => clearTimeout(timer);
+  }, [search]);
+  // Same "always current, no manual click needed" convention as Execution Logs.
+  useEffect(() => {
+    const timer = setInterval(fetchRows, 8000);
+    return () => clearInterval(timer);
+  }, [statusFilter, companyFilter, search]);
+
+  const toggleSort = (key) => {
+    if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortKey(key); setSortDir("desc"); }
+  };
+
+  const sorted = useMemo(() => {
+    const copy = [...rows];
+    copy.sort((a, b) => {
+      let av = a[sortKey], bv = b[sortKey];
+      if (sortKey === "amount") { av = Number(av) || 0; bv = Number(bv) || 0; }
+      if (av == null) av = "";
+      if (bv == null) bv = "";
+      if (av < bv) return sortDir === "asc" ? -1 : 1;
+      if (av > bv) return sortDir === "asc" ? 1 : -1;
+      return 0;
+    });
+    return copy;
+  }, [rows, sortKey, sortDir]);
+
+  const SortHeader = ({ label, sortKeyName }) => (
+    <th
+      style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700, cursor: "pointer", userSelect: "none", whiteSpace: "nowrap" }}
+      onClick={() => toggleSort(sortKeyName)}
+    >
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
+        {label}
+        {sortKey === sortKeyName && (sortDir === "asc" ? <ArrowUp size={11} /> : <ArrowDown size={11} />)}
+      </span>
+    </th>
+  );
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to view payment transactions.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 16, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Payment Transactions</div>
+          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>
+            The duplicate-prevention ledger — every real payment attempt and every re-delivery correctly rejected as a duplicate, tracked Pending → Processing → Completed/Failed.
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 700, color: GREEN }}>
+            <Radio size={12} color={GREEN} /> Auto-refreshing every 8s
+          </span>
+          {lastSynced && <span style={{ fontSize: 11, color: MUTE }}>Synced {lastSynced.toLocaleTimeString()}</span>}
+          <Button
+            variant="ghost"
+            icon={Download}
+            onClick={() => exportToCsv(
+              `dalab-payment-transactions-${Date.now()}.csv`,
+              [
+                { label: "Order ID", value: (r) => r.orderId },
+                { label: "Transaction Ref", value: (r) => r.transactionRef },
+                { label: "Customer Phone", value: (r) => r.customerPhone },
+                { label: "Amount", value: (r) => r.amount },
+                { label: "Provider", value: (r) => r.providerName },
+                { label: "Device", value: (r) => r.deviceName },
+                { label: "SIM Slot", value: (r) => r.simSlot },
+                { label: "Status", value: (r) => r.status },
+                { label: "Payment Timestamp", value: (r) => r.paymentTimestamp },
+                { label: "Created", value: (r) => r.createdAt },
+                { label: "Last Updated", value: (r) => r.updatedAt },
+              ],
+              sorted,
+            )}
+          >
+            Export CSV
+          </Button>
+          <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={fetchRows} disabled={loading}>Refresh</Button>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ position: "relative", flex: "1 1 240px", maxWidth: 300 }}>
+          <Search size={14} color={MUTE} style={{ position: "absolute", left: 10, top: 10 }} />
+          <input
+            style={{ ...inputStyle, paddingLeft: 30, width: "100%" }}
+            placeholder="Search phone, transaction ref, or order ID"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={{ ...inputStyle, width: 180 }}>
+          <option value="all">All statuses</option>
+          {Object.entries(PAYMENT_TX_STATUS_META).map(([key, meta]) => <option key={key} value={key}>{meta.label}</option>)}
+        </select>
+        <select value={companyFilter} onChange={(e) => setCompanyFilter(e.target.value)} style={{ ...inputStyle, width: 180 }}>
+          <option value="all">All providers</option>
+          {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              <SortHeader label="Order ID" sortKeyName="orderId" />
+              <SortHeader label="Customer Phone" sortKeyName="customerPhone" />
+              <SortHeader label="Amount" sortKeyName="amount" />
+              <SortHeader label="Provider" sortKeyName="providerName" />
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Transaction Ref</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Device / SIM</th>
+              <SortHeader label="Status" sortKeyName="status" />
+              <SortHeader label="Created" sortKeyName="createdAt" />
+            </tr>
+          </thead>
+          <tbody>
+            {loading && rows.length === 0 && (
+              // Lightweight skeleton rather than a spinner overlay — keeps the
+              // header/filters interactive while the first page loads.
+              Array.from({ length: 5 }).map((_, i) => (
+                <tr key={`skeleton-${i}`} style={{ borderTop: `1px solid ${BORDER}` }}>
+                  {Array.from({ length: 8 }).map((__, j) => (
+                    <td key={j} style={{ padding: "12px 14px" }}>
+                      <div style={{ height: 12, borderRadius: 4, background: "#EEF0FB", width: j === 0 ? 90 : "70%" }} />
+                    </td>
+                  ))}
+                </tr>
+              ))
+            )}
+            {sorted.map((r) => {
+              const meta = PAYMENT_TX_STATUS_META[r.status] || { label: r.status, tone: "neutral" };
+              return (
+                <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, color: INK }}>{r.orderId || "—"}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontFamily: "monospace" }}>{r.customerPhone || "—"}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: GREEN, fontWeight: 700 }}>{r.amount != null ? `$${Number(r.amount).toFixed(2)}` : "—"}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{r.providerName || "—"}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 11.5, color: SLATE, fontFamily: "monospace" }}>{r.transactionRef || "—"}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE }}>{r.deviceName ? `${r.deviceName} — SIM ${r.simSlot ?? "?"}` : "—"}</td>
+                  <td style={{ padding: "10px 14px" }}>
+                    <Badge tone={meta.tone}>{meta.label}</Badge>
+                  </td>
+                  <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(r.createdAt)}</td>
+                </tr>
+              );
+            })}
+            {sorted.length === 0 && !loading && (
+              <tr><td colSpan={8} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No payment transactions recorded yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
 function ExecutionLogs({ companies }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -4833,6 +5139,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "promo-images" && <PromoImages />}
           {active === "devices" && <DeviceUssdModule companies={companies} admin={admin} />}
           {active === "sms-logs" && <SmsLogs />}
+          {active === "payment-transactions" && <PaymentTransactionsPanel companies={companies} />}
           {active === "execution-logs" && <ExecutionLogs companies={companies} />}
           {active === "reports" && <Reports />}
           {active === "roles" && <RolesPermissions admin={admin} />}
