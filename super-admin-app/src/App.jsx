@@ -1028,7 +1028,7 @@ function Packages({ packages, setPackages, companies, admin }) {
 
   const openNew = () => {
     const companyId = companyFilter !== "all" ? companyFilter : companies[0]?.id || "";
-    setForm({ companyId, categoryId: "", name: "", oldPrice: "", price: "", mb: "", minutes: "", sms: "", validity: "", active: true });
+    setForm({ companyId, categoryId: "", name: "", oldPrice: "", price: "", providerAmount: "", mb: "", minutes: "", sms: "", validity: "", active: true });
     setEditing("new");
   };
   const openEdit = (p) => {
@@ -1096,7 +1096,7 @@ function Packages({ packages, setPackages, companies, admin }) {
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: "#FAFBFF" }}>
-              {["Package", "Company", "Old price", "Price", "MB", "Min", "SMS", "Validity", ...(DALAB_API_ENABLED ? ["Status"] : []), ""].map((h) => (
+              {["Package", "Company", "Old price", "Price", "Provider Amt", "MB", "Min", "SMS", "Validity", ...(DALAB_API_ENABLED ? ["Status"] : []), ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
             </tr>
@@ -1108,6 +1108,9 @@ function Packages({ packages, setPackages, companies, admin }) {
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{p.company || companies.find((c) => c.id === p.companyId)?.name}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE, textDecoration: "line-through" }}>${Number(p.old ?? p.oldPrice).toFixed(2)}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: GREEN, fontWeight: 700 }}>${Number(p.price).toFixed(2)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }} title="Amount requested from the provider via USSD — falls back to Price when not set">
+                  {p.providerAmount != null && p.providerAmount !== "" ? `$${Number(p.providerAmount).toFixed(2)}` : "—"}
+                </td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{p.mb}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{p.min ?? p.minutes}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{p.sms}</td>
@@ -1126,7 +1129,7 @@ function Packages({ packages, setPackages, companies, admin }) {
               </tr>
             ))}
             {shown.length === 0 && (
-              <tr><td colSpan={10} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No packages found.</td></tr>
+              <tr><td colSpan={11} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No packages found.</td></tr>
             )}
           </tbody>
         </table>
@@ -1161,6 +1164,19 @@ function Packages({ packages, setPackages, companies, admin }) {
             <Field label="Minutes"><input style={inputStyle} value={form.minutes ?? ""} onChange={(e) => setForm({ ...form, minutes: e.target.value })} /></Field>
             <Field label="SMS"><input style={inputStyle} value={form.sms ?? ""} onChange={(e) => setForm({ ...form, sms: e.target.value })} /></Field>
             <Field label="Validity"><input style={inputStyle} value={form.validity ?? ""} onChange={(e) => setForm({ ...form, validity: e.target.value })} placeholder="e.g. 1 month" /></Field>
+          </div>
+          <Field label="Provider / USSD Amount ($) — optional">
+            <input
+              style={inputStyle}
+              value={form.providerAmount ?? ""}
+              onChange={(e) => setForm({ ...form, providerAmount: e.target.value })}
+              placeholder="Leave blank to use Discount price"
+            />
+          </Field>
+          <div style={{ fontSize: 11, color: MUTE, marginTop: -8, marginBottom: 14 }}>
+            The customer is always charged <b>Discount price</b> above, and that's the amount matched against the incoming payment SMS.
+            This field is the separate, full amount actually requested from the provider when the USSD command is generated — set it when the
+            customer's price is discounted below the provider's real package cost. Leave blank if there's no discount; the Discount price is used for both.
           </div>
           {DALAB_API_ENABLED && editing !== "new" && (
             <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: INK, marginTop: 4, marginBottom: 14, cursor: "pointer" }}>

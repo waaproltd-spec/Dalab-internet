@@ -43,10 +43,10 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
   const id = orderRef();
   try {
     await query(
-      `INSERT INTO orders (id, customer_id, company_id, package_id, amount, status, sender_phone, receiver_phone, payment_method, channel, macaash_earned, client_request_id)
-       VALUES ($1,$2,$3,$4,$5,'pending',$6,$7,$8,'android',$9,$10)`,
+      `INSERT INTO orders (id, customer_id, company_id, package_id, amount, provider_amount, status, sender_phone, receiver_phone, payment_method, channel, macaash_earned, client_request_id)
+       VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,'android',$10,$11)`,
       [
-        id, req.auth!.sub, companyId, packageId, pkg.price,
+        id, req.auth!.sub, companyId, packageId, pkg.price, pkg.provider_amount ?? pkg.price,
         senderPhone || customer?.phone || null,
         receiverPhone || customer?.phone || null,
         paymentMethod || company.gateway || null,
@@ -121,10 +121,10 @@ ordersRouter.post("/agent/orders", requireAuth("agent"), async (req, res) => {
   const id = orderRef();
   try {
     await query(
-      `INSERT INTO orders (id, customer_id, company_id, package_id, amount, status, sender_phone, receiver_phone, payment_method, channel, agent_id, macaash_earned, client_request_id)
-       VALUES ($1,$2,$3,$4,$5,'pending',$6,$7,$8,'agent',$9,$10,$11)`,
+      `INSERT INTO orders (id, customer_id, company_id, package_id, amount, provider_amount, status, sender_phone, receiver_phone, payment_method, channel, agent_id, macaash_earned, client_request_id)
+       VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,'agent',$10,$11,$12)`,
       [
-        id, customer!.id, companyId, packageId, pkg.price,
+        id, customer!.id, companyId, packageId, pkg.price, pkg.provider_amount ?? pkg.price,
         phone,
         receiverPhone || phone,
         paymentMethod || company.gateway || null,
