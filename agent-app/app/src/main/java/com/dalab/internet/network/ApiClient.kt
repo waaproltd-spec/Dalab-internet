@@ -40,6 +40,19 @@ object ApiClient {
     }
     private val plainService: ApiService by lazy { plainRetrofit.create(ApiService::class.java) }
 
+    // Guards the refresh call below against a thundering-herd race: several
+    // requests (a queued backlog draining after connectivity returns, a
+    // heartbeat tick, a live SMS upload) can all get a 401 within the same
+    // moment once the 15-minute access token naturally expires. OkHttp
+    // invokes the Authenticator once per failed request with no built-in
+    // de-duplication, and the backend's refresh token is single-use/rotated
+    // (see auth.routes.ts) — without this lock, every one of those
+    // concurrent callers would independently try to consume the SAME
+    // refresh token, exactly one would succeed, and every other one would
+    // get "refresh token revoked" back from the server and force a real
+    // logout for no actual reason (the session was never really dead).
+    private val refreshLock = Any()
+
     // Real 401 handling: on a 401, attempt exactly one token refresh (never an
     // infinite loop — responseCount guards that), retry the original request
     // with the new access token, and only fall back to forcing re-login if the
@@ -47,32 +60,47 @@ object ApiClient {
     private val refreshAuthenticator = Authenticator { _, response ->
         if (responseCount(response) >= 2) {
             SessionManager.clear()
+            AgentEventBus.emitSessionExpired()
             return@Authenticator null
         }
-        val refreshToken = SessionManager.refreshToken()
-        if (refreshToken == null) {
-            SessionManager.clear()
-            return@Authenticator null
-        }
-
-        val newTokens = runBlocking {
-            try {
-                val res = plainService.refresh(RefreshRequest(refreshToken))
-                if (res.isSuccessful) res.body() else null
-            } catch (_: Exception) {
-                null
+        synchronized(refreshLock) {
+            // Another concurrent request may have already refreshed the
+            // token while this one was waiting for the lock — reuse it
+            // instead of burning a second, already-invalid refresh token.
+            val requestedWithToken = response.request.header("Authorization")?.removePrefix("Bearer ")
+            val storedToken = SessionManager.accessToken()
+            if (storedToken != null && storedToken != requestedWithToken) {
+                return@synchronized response.request.newBuilder()
+                    .header("Authorization", "Bearer $storedToken")
+                    .build()
             }
-        }
 
-        if (newTokens == null) {
-            SessionManager.clear()
-            return@Authenticator null
-        }
+            val refreshToken = SessionManager.refreshToken()
+            if (refreshToken == null) {
+                SessionManager.clear()
+                return@synchronized null
+            }
 
-        SessionManager.updateTokens(newTokens.accessToken, newTokens.refreshToken)
-        response.request.newBuilder()
-            .header("Authorization", "Bearer ${newTokens.accessToken}")
-            .build()
+            val newTokens = runBlocking {
+                try {
+                    val res = plainService.refresh(RefreshRequest(refreshToken))
+                    if (res.isSuccessful) res.body() else null
+                } catch (_: Exception) {
+                    null
+                }
+            }
+
+            if (newTokens == null) {
+                SessionManager.clear()
+                AgentEventBus.emitSessionExpired()
+                return@synchronized null
+            }
+
+            SessionManager.updateTokens(newTokens.accessToken, newTokens.refreshToken)
+            response.request.newBuilder()
+                .header("Authorization", "Bearer ${newTokens.accessToken}")
+                .build()
+        }
     }
 
     private fun responseCount(response: Response): Int {

@@ -14,6 +14,7 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import com.dalab.internet.MainActivity
 import com.dalab.internet.R
 import com.dalab.internet.auth.DeviceIdentity
@@ -101,6 +102,15 @@ class AgentBackgroundService : Service() {
         newScope.launch { heartbeatLoop() }
         newScope.launch { simRoutingRefreshLoop() }
         newScope.launch { queueDrainLoop() }
+        newScope.launch {
+            // The single most important event this service can surface: once
+            // ApiClient's Authenticator gives up on refreshing the session,
+            // every subsequent SMS upload/verify/dial call silently 401s
+            // forever — nothing before this told the agent their session had
+            // died, so a real payment could sit unprocessed indefinitely
+            // until they happened to reopen the app on their own.
+            AgentEventBus.sessionExpired.collect { notifySessionExpired() }
+        }
         try {
             registerConnectivityCallback(newScope)
         } catch (e: Exception) {
@@ -241,9 +251,34 @@ class AgentBackgroundService : Service() {
             .build()
     }
 
+    // Posted on "payment_channel" (high-importance, vibrating — set up in
+    // MainActivity.createNotificationChannel) rather than this service's own
+    // silent monitoring channel, since a dead session means payments have
+    // stopped being processed entirely until the agent acts on this.
+    private fun notifySessionExpired() {
+        DiagnosticsLog.record(
+            "session_expired",
+            "Session expired/revoked — every payment SMS will be rejected until you reopen the app and log in again.",
+        )
+        val openApp = android.app.PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java),
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(this, "payment_channel")
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("Action needed: session expired")
+            .setContentText("Payments are NOT being processed. Open DALAB Agent and log in again.")
+            .setContentIntent(openApp)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
+        NotificationManagerCompat.from(this).notify(SESSION_EXPIRED_NOTIFICATION_ID, notification)
+    }
+
     companion object {
         private const val CHANNEL_ID = "agent_background_channel"
         private const val NOTIFICATION_ID = 1001
+        private const val SESSION_EXPIRED_NOTIFICATION_ID = 1002
         private const val HEARTBEAT_INTERVAL_MS = 60_000L
         private const val SIM_ROUTING_REFRESH_INTERVAL_MS = 5 * 60_000L
         private const val QUEUE_DRAIN_INTERVAL_MS = 2 * 60_000L
