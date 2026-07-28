@@ -2,6 +2,7 @@ package com.dalab.internet.ussd
 
 import android.content.Context
 import android.os.Build
+import android.os.PowerManager
 import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
 import androidx.annotation.RequiresApi
@@ -82,45 +83,61 @@ class UssdDialer(private val context: Context) {
         val baseManager = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
         val simManager = baseManager.createForSubscriptionId(subscriptionId)
 
-        return suspendCancellableCoroutine { continuation ->
-            var resumed = false
-            val handler = android.os.Handler(context.mainLooper)
+        // A USSD round-trip (dial -> carrier -> callback) can take several
+        // seconds and must not be cut short by the device going to sleep
+        // mid-request — this is exactly the "critical background task" a
+        // partial wake lock exists for. Scoped tightly to this single dial
+        // (acquired just before sending, released the moment it resumes) and
+        // backstopped with its own timeout equal to the dial timeout, so a
+        // bug here can never hold it indefinitely even if release() were
+        // somehow skipped.
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        val wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "DalabAgent:UssdDial")
+        wakeLock?.acquire(timeoutMs + 5_000)
 
-            val timeoutRunnable = Runnable {
-                if (!resumed) {
-                    resumed = true
-                    continuation.resume(DialResult(DialOutcome.TIMEOUT))
+        try {
+            return suspendCancellableCoroutine { continuation ->
+                var resumed = false
+                val handler = android.os.Handler(context.mainLooper)
+
+                val timeoutRunnable = Runnable {
+                    if (!resumed) {
+                        resumed = true
+                        continuation.resume(DialResult(DialOutcome.TIMEOUT))
+                    }
                 }
+                handler.postDelayed(timeoutRunnable, timeoutMs)
+
+                val callback = object : TelephonyManager.UssdResponseCallback() {
+                    override fun onReceiveUssdResponse(telephonyManager: TelephonyManager, request: String, response: CharSequence) {
+                        if (resumed) return
+                        resumed = true
+                        handler.removeCallbacks(timeoutRunnable)
+                        continuation.resume(DialResult(DialOutcome.SUCCESS, response.toString()))
+                    }
+
+                    override fun onReceiveUssdResponseFailed(telephonyManager: TelephonyManager, request: String, failureCode: Int) {
+                        if (resumed) return
+                        resumed = true
+                        handler.removeCallbacks(timeoutRunnable)
+                        continuation.resume(DialResult(DialOutcome.FAILED, "USSD failure code: $failureCode"))
+                    }
+                }
+
+                try {
+                    simManager.sendUssdRequest(ussdCode, callback, handler)
+                } catch (e: SecurityException) {
+                    if (!resumed) {
+                        resumed = true
+                        handler.removeCallbacks(timeoutRunnable)
+                        continuation.resume(DialResult(DialOutcome.PERMISSION_DENIED, e.message))
+                    }
+                }
+
+                continuation.invokeOnCancellation { handler.removeCallbacks(timeoutRunnable) }
             }
-            handler.postDelayed(timeoutRunnable, timeoutMs)
-
-            val callback = object : TelephonyManager.UssdResponseCallback() {
-                override fun onReceiveUssdResponse(telephonyManager: TelephonyManager, request: String, response: CharSequence) {
-                    if (resumed) return
-                    resumed = true
-                    handler.removeCallbacks(timeoutRunnable)
-                    continuation.resume(DialResult(DialOutcome.SUCCESS, response.toString()))
-                }
-
-                override fun onReceiveUssdResponseFailed(telephonyManager: TelephonyManager, request: String, failureCode: Int) {
-                    if (resumed) return
-                    resumed = true
-                    handler.removeCallbacks(timeoutRunnable)
-                    continuation.resume(DialResult(DialOutcome.FAILED, "USSD failure code: $failureCode"))
-                }
-            }
-
-            try {
-                simManager.sendUssdRequest(ussdCode, callback, handler)
-            } catch (e: SecurityException) {
-                if (!resumed) {
-                    resumed = true
-                    handler.removeCallbacks(timeoutRunnable)
-                    continuation.resume(DialResult(DialOutcome.PERMISSION_DENIED, e.message))
-                }
-            }
-
-            continuation.invokeOnCancellation { handler.removeCallbacks(timeoutRunnable) }
+        } finally {
+            if (wakeLock?.isHeld == true) wakeLock.release()
         }
     }
 }

@@ -96,7 +96,14 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 "payment_channel", "Payment detections", NotificationManager.IMPORTANCE_HIGH
-            )
+            ).apply {
+                // The one alert channel worth vibrating for — a payment/order
+                // update the agent needs to notice even with the phone in a
+                // pocket. The silent background-monitoring notification
+                // (AgentBackgroundService's own channel) deliberately does not.
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 250, 150, 250)
+            }
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
     }
