@@ -4,10 +4,13 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
+import android.os.PowerManager
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.BatteryAlert
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Refresh
@@ -38,14 +41,21 @@ fun PermissionsStatusScreen(onBack: () -> Unit) {
     fun granted(permission: String) =
         ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
 
+    fun batteryUnrestricted(): Boolean {
+        val powerManager = context.getSystemService(PowerManager::class.java) ?: return true
+        return powerManager.isIgnoringBatteryOptimizations(context.packageName)
+    }
+
     var readSmsGranted by remember { mutableStateOf(granted(Manifest.permission.READ_SMS)) }
     var receiveSmsGranted by remember { mutableStateOf(granted(Manifest.permission.RECEIVE_SMS)) }
     var serviceActive by remember { mutableStateOf(AgentBackgroundService.isRunning) }
+    var batteryExempt by remember { mutableStateOf(batteryUnrestricted()) }
 
     fun refresh() {
         readSmsGranted = granted(Manifest.permission.READ_SMS)
         receiveSmsGranted = granted(Manifest.permission.RECEIVE_SMS)
         serviceActive = AgentBackgroundService.isRunning
+        batteryExempt = batteryUnrestricted()
     }
 
     Scaffold(
@@ -65,9 +75,10 @@ fun PermissionsStatusScreen(onBack: () -> Unit) {
                 .fillMaxSize(),
         ) {
             Text(
-                "Real-time SMS reading requires these system permissions, so the app can detect " +
-                    "payment confirmation messages from 192, Somtel, Somnet, and Amtel the instant " +
-                    "they arrive — even when the app is minimized or the screen is locked.",
+                "Real-time SMS reading and reliable background operation require these system " +
+                    "permissions, so the app can detect payment confirmation messages from 192, " +
+                    "Somtel, Somnet, and Amtel the instant they arrive — even when the app is " +
+                    "minimized or the screen is locked.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -87,6 +98,37 @@ fun PermissionsStatusScreen(onBack: () -> Unit) {
                 "Foreground Service", serviceActive, "Active", "Inactive",
                 description = "Keeps agent listener active in background even when app is minimized",
             )
+            Spacer(Modifier.height(12.dp))
+            PermissionStatusRow(
+                "Battery Optimization", batteryExempt, "Unrestricted", "Restricted",
+                description = "Stops Android from killing the background listener to save power",
+            )
+            if (!batteryExempt) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Without this, Android may stop payment monitoring after a few minutes " +
+                        "in the background. Tap below to allow DALAB Agent to run unrestricted — " +
+                        "the system will ask you to confirm.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                            val intent = Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                                data = Uri.parse("package:${context.packageName}")
+                            }
+                            context.startActivity(intent)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Filled.BatteryAlert, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Disable Battery Optimization")
+                }
+            }
 
             Spacer(Modifier.weight(1f))
 

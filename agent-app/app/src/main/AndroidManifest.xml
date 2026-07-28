@@ -15,6 +15,16 @@
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <!-- Android 13+ requires this for any local notification (order updates, etc.) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Vibration for the payment-alert notification channel (see MainActivity.createNotificationChannel) -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Held briefly around the actual USSD dial-and-wait (UssdDialer.dial) so the
+         device sleeping mid-request can't cut off the carrier's callback. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Requested via PermissionsStatusScreen's own consent prompt, not at first
+         launch — Android reserves this for apps whose core function genuinely needs
+         to keep running unattended in the background, which the payment-monitoring
+         service is. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:name=".DalabAgentApp"
