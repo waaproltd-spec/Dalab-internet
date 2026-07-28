@@ -40,9 +40,11 @@ fun SmsPermissionScreen(
         )
         Spacer(Modifier.height(16.dp))
         Text(
-            "DALAB Agent reads incoming payment-confirmation SMS (from Hormuud, " +
-                "Somtel, Somnet, and Amtel) so you can verify a customer's payment " +
-                "without leaving the app. It never reads or uploads any other message.",
+            "DALAB Agent reads payment-confirmation SMS (from Hormuud, Somtel, " +
+                "Somnet, and Amtel) — both new messages as they arrive and any " +
+                "already in your inbox from the last 24 hours — so you can verify " +
+                "a customer's payment without leaving the app. It never reads or " +
+                "uploads any other message.",
             style = MaterialTheme.typography.bodyMedium,
         )
         Spacer(Modifier.height(28.dp))

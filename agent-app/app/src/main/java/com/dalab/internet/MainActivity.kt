@@ -34,6 +34,7 @@ import com.dalab.internet.data.Order
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.queue.PendingActionQueue
 import com.dalab.internet.service.AgentBackgroundService
+import com.dalab.internet.sms.SmsInboxScanner
 import com.dalab.internet.sms.SmsListenerState
 import com.dalab.internet.ui.CustomersScreen
 import com.dalab.internet.ui.DeviceSetupScreen
@@ -47,6 +48,7 @@ import com.dalab.internet.ui.PermissionsStatusScreen
 import com.dalab.internet.ui.ReportsScreen
 import com.dalab.internet.ui.SmsPermissionScreen
 import com.dalab.internet.ui.TransactionHistoryScreen
+import kotlinx.coroutines.launch
 
 private val SMS_PERMISSIONS = arrayOf(Manifest.permission.RECEIVE_SMS, Manifest.permission.READ_SMS)
 
@@ -124,12 +126,26 @@ private fun AgentApp() {
         )
     }
     var selectedOrder by remember { mutableStateOf<Order?>(null) }
+    val scope = rememberCoroutineScope()
+
+    // Granting READ_SMS/RECEIVE_SMS previously only enabled the live receiver
+    // for messages from that moment forward — READ_SMS itself was requested
+    // but never actually used. This catches up on any payment SMS already
+    // sitting in the inbox the moment permission is granted (bounded lookback,
+    // see SmsInboxScanner), and also covers the case where permission was
+    // already granted in a previous session/app version before this existed.
+    LaunchedEffect(Unit) {
+        if (smsGranted()) {
+            SmsInboxScanner.scanRecentInboxOnce(context)
+        }
+    }
 
     val permissionLauncher = rememberLauncherForSmsPermissions(
         onResult = { grantedMap ->
             hasSmsPermission = grantedMap.values.all { it }
             if (hasSmsPermission) {
                 SmsListenerState.setListening(true)
+                scope.launch { SmsInboxScanner.scanRecentInboxOnce(context) }
                 screen = if (SessionManager.isLoggedIn()) homeOrDeviceSetup() else Screen.LOGIN
             } else {
                 // If the user denied without checking "don't ask again", Android will
