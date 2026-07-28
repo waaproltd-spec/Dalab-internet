@@ -25,19 +25,26 @@ import java.util.UUID
  * arrived in the gap before the agent granted permission (or before this app
  * update shipped), not to dredge up years-old messages and generate
  * meaningless match attempts against orders that no longer exist.
+ *
+ * The high-water mark below is persisted (not just an in-memory per-process
+ * flag) precisely because a device stuck crash-looping would otherwise redo
+ * the full 24h/200-message pass — dozens of sequential network calls — on
+ * every single relaunch, which is real, avoidable load right when the app
+ * is already struggling. After the first successful pass, a restart only
+ * re-scans whatever actually arrived since the last pass, which is normally
+ * zero or a handful of messages.
  */
 object SmsInboxScanner {
+    private const val PREFS = "dalab_agent_sms_scan"
+    private const val KEY_LAST_SCANNED_AT = "last_scanned_at"
     private const val LOOKBACK_MS = 24 * 60 * 60 * 1000L
     private const val MAX_MESSAGES = 200
 
-    // One pass per process lifetime is enough — this is a catch-up scan for
-    // the permission-grant moment, not a substitute for the live receiver
-    // that handles everything from here on.
-    @Volatile private var hasScannedThisProcess = false
+    @Volatile private var scanInFlightOrDoneThisProcess = false
 
     suspend fun scanRecentInboxOnce(context: Context) {
-        if (hasScannedThisProcess) return
-        hasScannedThisProcess = true
+        if (scanInFlightOrDoneThisProcess) return
+        scanInFlightOrDoneThisProcess = true
         try {
             scanRecentInbox(context.applicationContext)
         } catch (e: Exception) {
@@ -46,12 +53,16 @@ object SmsInboxScanner {
     }
 
     private suspend fun scanRecentInbox(context: Context) = withContext(Dispatchers.IO) {
-        val cutoff = System.currentTimeMillis() - LOOKBACK_MS
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val scanStartedAt = System.currentTimeMillis()
+        val lastScannedAt = prefs.getLong(KEY_LAST_SCANNED_AT, 0L)
+        val cutoff = maxOf(lastScannedAt, scanStartedAt - LOOKBACK_MS)
+
         val projection = arrayOf(Telephony.Sms.ADDRESS, Telephony.Sms.BODY, Telephony.Sms.DATE)
         val cursor = context.contentResolver.query(
             Telephony.Sms.Inbox.CONTENT_URI,
             projection,
-            "${Telephony.Sms.DATE} >= ?",
+            "${Telephony.Sms.DATE} > ?",
             arrayOf(cutoff.toString()),
             "${Telephony.Sms.DATE} DESC LIMIT $MAX_MESSAGES",
         ) ?: return@withContext
@@ -68,6 +79,11 @@ object SmsInboxScanner {
                 if (address != null && body != null) messages.add(Triple(address, body, date))
             }
         }
+
+        // Recorded before processing, not after: if this pass is interrupted
+        // (crash, process death) partway through, a retry only has to redo
+        // the remaining new messages, not the same already-attempted batch.
+        prefs.edit().putLong(KEY_LAST_SCANNED_AT, scanStartedAt).apply()
 
         // Oldest first: if two messages would match the same order, process
         // them in the order they actually arrived.

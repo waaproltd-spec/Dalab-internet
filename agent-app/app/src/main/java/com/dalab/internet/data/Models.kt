@@ -69,7 +69,11 @@ data class SmsLogEntry(
 
 data class Transaction(
     val orderId: String,
-    val customerName: String,
+    // Nullable despite the backend now coalescing to phone as a fallback —
+    // customers.name is nullable in the database, and a non-null Kotlin
+    // field here previously crashed the app the moment Gson silently
+    // assigned null to it for a customer with no name on file.
+    val customerName: String? = null,
     val companyName: String,
     val amount: Double,
     val completedAt: String,
