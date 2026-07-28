@@ -33,7 +33,20 @@ class SmsReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
-        if (!SmsListenerState.isListening.value) return
+        if (!SmsListenerState.isListening.value) {
+            // Previously a silent return — if listening gets disabled (or
+            // never actually re-enabled after an app/process restart), every
+            // subsequent payment SMS vanished with zero trace anywhere, making
+            // "it worked once then stopped" impossible to tell apart from "the
+            // OS never even ran the receiver again". Logging every ignored SMS
+            // here means Diagnostics can now distinguish the two.
+            DiagnosticsLog.record(
+                "sms_receiver_ignored",
+                "SMS ignored — listening is disabled (More > Permissions to re-check/re-enable).",
+                isError = false,
+            )
+            return
+        }
 
         // Everything from here runs on the main thread, on every single incoming
         // SMS (spam, OTPs, personal texts — not just payment messages), with no
@@ -59,7 +72,23 @@ class SmsReceiver : BroadcastReceiver() {
             DiagnosticsLog.record("sms_receiver_parse", "Parser threw on incoming SMS: ${e.stackTraceToString().take(2000)}")
             return
         }
-        if (parsed == null && voucherSent == null) return
+        if (parsed == null && voucherSent == null) {
+            // Most SMS on this phone are personal texts/OTPs and are correctly
+            // ignored here — logging every one of those would flood
+            // Diagnostics and leak their content. But an SMS that *looks*
+            // like a payment confirmation (mentions money/a provider keyword)
+            // yet matched no parser is exactly the failure mode "some payment
+            // SMS aren't picked up" describes — e.g. a provider slightly
+            // changed their message wording. Previously this was
+            // indistinguishable from "no SMS arrived at all".
+            if (looksLikePaymentSms(body)) {
+                DiagnosticsLog.record(
+                    "sms_receiver_unrecognized",
+                    "Payment-looking SMS from '$sender' matched no parser: ${body.take(160)}",
+                )
+            }
+            return
+        }
 
         // BroadcastReceivers must finish quickly; goAsync() extends that window just
         // long enough for the network call + USSD dial below to complete or time out.
@@ -110,4 +139,18 @@ class SmsReceiver : BroadcastReceiver() {
             }
         }
     }
+}
+
+/** Cheap heuristic, not a parser — used only to decide whether an
+ * unrecognized SMS is worth a diagnostics entry (see the unparsed-SMS branch
+ * above) without logging every ordinary personal text/OTP that passes
+ * through this receiver. */
+private val PAYMENT_LOOKING_KEYWORDS = listOf(
+    "heshay", "ka heshay", "dollar", "aqanoosiga", "edahab", "e-dahab",
+    "evcplus", "evc plus", "somnet", "haraagagu", "haraagaaga",
+)
+
+private fun looksLikePaymentSms(body: String): Boolean {
+    val lower = body.lowercase()
+    return lower.contains("$") || PAYMENT_LOOKING_KEYWORDS.any { lower.contains(it) }
 }
