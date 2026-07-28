@@ -42,6 +42,26 @@ object DiagnosticsLog {
         writeAll(entries.take(MAX_ENTRIES))
     }
 
+    /**
+     * Called only from the process-wide uncaught-exception handler
+     * ([com.dalab.internet.DalabAgentApp]) in the last moments before the
+     * OS kills the process for an unhandled crash. Uses [commit] rather than
+     * [record]'s [android.content.SharedPreferences.Editor.apply] — apply()
+     * queues the write for later on a background thread, which a dying
+     * process may never get to run; commit() blocks the crashing thread
+     * until the write actually lands on disk, so the entry survives even
+     * though the process is about to die.
+     */
+    @Synchronized
+    fun recordFatal(threadName: String, throwable: Throwable) {
+        if (!::prefs.isInitialized) return // AgentApplication.onCreate() always runs first; defensive only
+        val trace = throwable.stackTraceToString().take(4000)
+        val entries = readAll()
+        entries.add(0, Entry(System.currentTimeMillis(), "FATAL CRASH", "Thread '$threadName': $trace", true))
+        val json = gson.toJson(entries.take(MAX_ENTRIES))
+        prefs.edit().putString(KEY_ENTRIES, json).commit()
+    }
+
     @Synchronized
     fun all(): List<Entry> = readAll()
 

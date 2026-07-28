@@ -54,21 +54,39 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        SessionManager.init(this)
-        DeviceIdentity.init(this)
-        SmsListenerState.init(this)
-        PendingActionQueue.init(this)
-        DiagnosticsLog.init(this)
-        createNotificationChannel()
+        // DalabAgentApp.onCreate() already ran all of these once, each isolated
+        // in its own try/catch — these are defensive, idempotent no-ops in the
+        // normal case, but still guarded individually here too so a lingering
+        // failure in one can't prevent the screen from ever rendering.
+        safely("session_init") { SessionManager.init(this) }
+        safely("device_identity_init") { DeviceIdentity.init(this) }
+        safely("sms_listener_init") { SmsListenerState.init(this) }
+        safely("pending_queue_init") { PendingActionQueue.init(this) }
+        safely("diagnostics_init") { DiagnosticsLog.init(this) }
+        safely("notification_channel_init") { createNotificationChannel() }
 
-        if (SessionManager.isLoggedIn() && DeviceIdentity.isSet()) {
-            AgentBackgroundService.start(this)
+        val loggedIn = try { SessionManager.isLoggedIn() } catch (e: Exception) {
+            DiagnosticsLog.record("session_check", "isLoggedIn() failed: ${e.message}"); false
+        }
+        val deviceSet = try { DeviceIdentity.isSet() } catch (e: Exception) {
+            DiagnosticsLog.record("device_check", "isSet() failed: ${e.message}"); false
+        }
+        if (loggedIn && deviceSet) {
+            safely("background_service_start") { AgentBackgroundService.start(this) }
         }
 
         setContent {
             MaterialTheme {
                 AgentApp()
             }
+        }
+    }
+
+    private inline fun safely(tag: String, block: () -> Unit) {
+        try {
+            block()
+        } catch (e: Exception) {
+            DiagnosticsLog.record(tag, "Failed: ${e.stackTraceToString().take(2000)}")
         }
     }
 
