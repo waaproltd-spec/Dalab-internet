@@ -18,6 +18,7 @@ import com.dalab.internet.MainActivity
 import com.dalab.internet.R
 import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.auth.SessionManager
+import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.network.AgentEventBus
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.HeartbeatRequest
@@ -54,30 +55,57 @@ class AgentBackgroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         isRunning = true
-        startForeground(NOTIFICATION_ID, buildNotification())
+
+        try {
+            startForeground(NOTIFICATION_ID, buildNotification())
+        } catch (e: Exception) {
+            // Real crash class on Android 12+: ForegroundServiceStartNotAllowedException
+            // if the OS decides this isn't a valid moment to promote to foreground, or a
+            // missing-type exception on 14+. Losing the foreground promotion means the
+            // service can be killed sooner under memory pressure, but that's a much
+            // better outcome than the whole app crashing here.
+            DiagnosticsLog.record("background_service_foreground", "startForeground failed: ${e.stackTraceToString().take(2000)}")
+        }
 
         val newScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         scope = newScope
 
-        realtimeClient = RealtimeClient(path = "agent/orders/stream") {
-            AgentEventBus.emitOrderEvent()
-        }.also { it.connect() }
-        newScope.launch {
-            realtimeClient?.state?.collect { AgentEventBus.setConnectionState(it) }
+        try {
+            realtimeClient = RealtimeClient(path = "agent/orders/stream") {
+                AgentEventBus.emitOrderEvent()
+            }.also { it.connect() }
+            newScope.launch {
+                realtimeClient?.state?.collect { AgentEventBus.setConnectionState(it) }
+            }
+        } catch (e: Exception) {
+            DiagnosticsLog.record("background_service_realtime", "Failed to start SSE client: ${e.stackTraceToString().take(2000)}")
         }
 
         // SimRoutingRepository.refresh() previously had zero call sites anywhere in
         // the app — its cache was never populated on a real install, so simSlotFor()
         // always returned null and UssdOrchestrator always short-circuited to
         // NO_SIM_CONFIGURED. An immediate refresh here (plus the periodic loop below)
-        // is what actually makes automatic USSD dialing work.
+        // is what actually makes automatic USSD dialing work. refresh() already
+        // catches its own exceptions internally and returns a Result, but the
+        // loops below still get a defensive try/catch since they run unattended
+        // for as long as the service is alive.
         newScope.launch { SimRoutingRepository.refresh() }
-        newScope.launch { QueueDrainer.drainAll(applicationContext) }
+        newScope.launch {
+            try {
+                QueueDrainer.drainAll(applicationContext)
+            } catch (e: Exception) {
+                DiagnosticsLog.record("background_service_queue_drain", "Initial drain failed: ${e.stackTraceToString().take(2000)}")
+            }
+        }
 
         newScope.launch { heartbeatLoop() }
         newScope.launch { simRoutingRefreshLoop() }
         newScope.launch { queueDrainLoop() }
-        registerConnectivityCallback(newScope)
+        try {
+            registerConnectivityCallback(newScope)
+        } catch (e: Exception) {
+            DiagnosticsLog.record("background_service_connectivity", "Failed to register network callback: ${e.stackTraceToString().take(2000)}")
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
@@ -135,8 +163,12 @@ class AgentBackgroundService : Service() {
         val currentScope = scope ?: return
         while (currentScope.isActive) {
             delay(SIM_ROUTING_REFRESH_INTERVAL_MS)
-            if (DeviceIdentity.isSet() && SessionManager.isLoggedIn()) {
-                SimRoutingRepository.refresh()
+            try {
+                if (DeviceIdentity.isSet() && SessionManager.isLoggedIn()) {
+                    SimRoutingRepository.refresh()
+                }
+            } catch (e: Exception) {
+                DiagnosticsLog.record("sim_routing_loop", "Tick failed: ${e.stackTraceToString().take(2000)}")
             }
         }
     }
@@ -149,7 +181,11 @@ class AgentBackgroundService : Service() {
         val currentScope = scope ?: return
         while (currentScope.isActive) {
             delay(QUEUE_DRAIN_INTERVAL_MS)
-            QueueDrainer.drainAll(applicationContext)
+            try {
+                QueueDrainer.drainAll(applicationContext)
+            } catch (e: Exception) {
+                DiagnosticsLog.record("queue_drain_loop", "Tick failed: ${e.stackTraceToString().take(2000)}")
+            }
         }
     }
 

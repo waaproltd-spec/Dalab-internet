@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.provider.Telephony
+import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.queue.PendingActionQueue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -34,13 +35,30 @@ class SmsReceiver : BroadcastReceiver() {
         if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
         if (!SmsListenerState.isListening.value) return
 
-        val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent)
-        val sender = messages.firstOrNull()?.originatingAddress ?: return
-        val body = messages.joinToString(separator = "") { it.messageBody ?: "" }
-        val receivedAt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US).format(Date())
+        // Everything from here runs on the main thread, on every single incoming
+        // SMS (spam, OTPs, personal texts — not just payment messages), with no
+        // user interaction at all — exactly the shape of a crash reported as
+        // "the app closed on its own while just sitting there". Any exception
+        // here previously had nothing catching it.
+        val (sender, body, receivedAt) = try {
+            val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent)
+            val s = messages.firstOrNull()?.originatingAddress ?: return
+            val b = messages.joinToString(separator = "") { it.messageBody ?: "" }
+            val r = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US).format(Date())
+            Triple(s, b, r)
+        } catch (e: Exception) {
+            DiagnosticsLog.record("sms_receiver_extract", "Failed to read incoming SMS: ${e.stackTraceToString().take(2000)}")
+            return
+        }
 
-        val parsed = PaymentSmsParsers.parse(sender, body, receivedAt)
-        val voucherSent = if (parsed == null) VoucherSentParsers.parse(sender, body) else null
+        val (parsed, voucherSent) = try {
+            val p = PaymentSmsParsers.parse(sender, body, receivedAt)
+            val v = if (p == null) VoucherSentParsers.parse(sender, body) else null
+            p to v
+        } catch (e: Exception) {
+            DiagnosticsLog.record("sms_receiver_parse", "Parser threw on incoming SMS: ${e.stackTraceToString().take(2000)}")
+            return
+        }
         if (parsed == null && voucherSent == null) return
 
         // BroadcastReceivers must finish quickly; goAsync() extends that window just
@@ -82,6 +100,11 @@ class SmsReceiver : BroadcastReceiver() {
                         // it's not queued. Success: nothing further to do.
                     }
                 }
+            } catch (e: Exception) {
+                // Previously only a `finally` here — any exception from the upload/
+                // match/dial pipeline propagated straight up and crashed the app
+                // with zero record of what happened.
+                DiagnosticsLog.record("sms_receiver_process", "Failed processing incoming SMS: ${e.stackTraceToString().take(2000)}")
             } finally {
                 pendingResult.finish()
             }

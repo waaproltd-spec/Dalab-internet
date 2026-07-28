@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.auth.SessionManager
+import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.service.AgentBackgroundService
 
 /**
@@ -19,11 +20,20 @@ import com.dalab.internet.service.AgentBackgroundService
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
-        SmsListenerState.init(context)
-        SessionManager.init(context)
-        DeviceIdentity.init(context)
-        if (SessionManager.isLoggedIn() && DeviceIdentity.isSet()) {
-            AgentBackgroundService.start(context)
+        try {
+            DiagnosticsLog.init(context)
+            SmsListenerState.init(context)
+            SessionManager.init(context)
+            DeviceIdentity.init(context)
+            if (SessionManager.isLoggedIn() && DeviceIdentity.isSet()) {
+                AgentBackgroundService.start(context)
+            }
+        } catch (e: Exception) {
+            try {
+                DiagnosticsLog.record("boot_receiver", "Failed on boot: ${e.stackTraceToString().take(2000)}")
+            } catch (_: Exception) {
+                // DiagnosticsLog.init() itself is what failed — nothing left to log to.
+            }
         }
     }
 }
