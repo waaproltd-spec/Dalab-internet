@@ -62,7 +62,11 @@ ussdRouter.get("/admin/ussd-templates", requireStaff(), async (req, res) => {
 // so a template can be written either way — kept for that one placeholder
 // only, since {amount}/{pin} were never ambiguous in how admins referred to them.
 function hasRequiredPlaceholders(code: string): boolean {
-  return (code.includes("{number}") || code.includes("{customerNumber}")) && code.includes("{amount}") && code.includes("{pin}");
+  return (
+    (code.includes("{number}") || code.includes("{customerNumber}") || code.includes("{receiverNumber}")) &&
+    code.includes("{amount}") &&
+    code.includes("{pin}")
+  );
 }
 
 function isValidSimSlot(value: unknown): value is number | null {
@@ -220,12 +224,19 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
   if (!template) return { error: "No enabled USSD template matches this order's package or provider." };
 
   const pin = decrypt(company.pin_encrypted);
+  // The data package must be delivered to the RECEIVING phone, not
+  // necessarily the one that paid — a customer can buy for someone else,
+  // and CheckoutScreen already collects sender/receiver as independent
+  // fields. Falls back to sender_phone only for the (pre-existing) rare
+  // order that somehow has no receiver_phone recorded.
+  const deliverTo = order.receiver_phone ?? order.sender_phone ?? "";
   // {packageCode}/{packageName} are optional — a template that doesn't
   // reference them is unaffected, .replace() is a no-op if the placeholder
   // isn't present in the string.
   const ussd = template.ussd_code
-    .replace("{number}", order.sender_phone ?? "")
-    .replace("{customerNumber}", order.sender_phone ?? "")
+    .replace("{number}", deliverTo)
+    .replace("{customerNumber}", deliverTo)
+    .replace("{receiverNumber}", deliverTo)
     .replace("{amount}", String(order.amount))
     .replace("{pin}", pin)
     .replace("{packageCode}", orderWithPackage?.package_code ?? "")

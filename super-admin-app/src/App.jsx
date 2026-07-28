@@ -394,24 +394,24 @@ const initialOrders = [
 ];
 
 const initialUssdTemplates = [
-  { id: "t1", companyId: "amtel", companyName: "Amtel", companyColor: "#C81E2C", serviceName: "Tanaad GB", ussdCode: "*914*{number}*{amount}*8233{pin}#", status: "enabled", notes: "" },
-  { id: "t2", companyId: "amtel", companyName: "Amtel", companyColor: "#C81E2C", serviceName: "Bulaal Unlimited Data", ussdCode: "*918*{number}*{amount}*8233{pin}#", status: "enabled", notes: "" },
-  { id: "t3", companyId: "somnet", companyName: "Somnet", companyColor: "#1D4ED8", serviceName: "Kaafi Unlimited Data & Voice", ussdCode: "*834*{number}*{amount}*8233{pin}#", status: "enabled", notes: "" },
-  { id: "t4", companyId: "somnet", companyName: "Somnet", companyColor: "#1D4ED8", serviceName: "Kaafi Voice", ussdCode: "*829*{number}*{amount}*8233{pin}#", status: "enabled", notes: "" },
-  { id: "t5", companyId: "somnet", companyName: "Somnet", companyColor: "#1D4ED8", serviceName: "Qanciye Plus", ussdCode: "*830*{number}*{amount}*8233{pin}#", status: "enabled", notes: "" },
-  { id: "t6", companyId: "somnet", companyName: "Somnet", companyColor: "#1D4ED8", serviceName: "Unlimited Data & Voice", ussdCode: "*834*{number}*{amount}*8233{pin}#", status: "enabled", notes: "" },
-  { id: "t7", companyId: "somnet", companyName: "Somnet", companyColor: "#1D4ED8", serviceName: "5G", ussdCode: "*827*{number}*{amount}*8233{pin}#", status: "enabled", notes: "" },
-  { id: "t8", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "Anfac", ussdCode: "*737*{number}*{amount}*8233{pin}#", status: "enabled", notes: "" },
-  { id: "t9", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "Anfac Plus", ussdCode: "*738*{number}*{amount}*8233{pin}#", status: "enabled", notes: "" },
-  { id: "t10", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "Unlimited Data & Voice", ussdCode: "*729*{number}*{amount}*8233{pin}#", status: "enabled", notes: "" },
-  { id: "t11", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "Unlimited Calls", ussdCode: "*741*{number}*{amount}*8233{pin}#", status: "enabled", notes: "" },
-  { id: "t12", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "5G Plus", ussdCode: "*727*{number}*{amount}*8233{pin}#", status: "enabled", notes: "" },
-  { id: "t13", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "ADSL Plus", ussdCode: "*729*{number}*{amount}*8233{pin}#", status: "enabled", notes: "" },
-  { id: "t14", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "Kaar Kuhadal", ussdCode: "*727*{number}*{amount}*8233{pin}#", status: "enabled", notes: "" },
-  { id: "t15", companyId: "somtel", companyName: "Somtel", companyColor: "#F2C200", serviceName: "Unlimited Data & Voice", ussdCode: "*831*{number}*{amount}*8233{pin}#", status: "enabled", notes: "" },
-  { id: "t16", companyId: "somtel", companyName: "Somtel", companyColor: "#F2C200", serviceName: "No Expire", ussdCode: "*830*{number}*{amount}*8233{pin}#", status: "enabled", notes: "" },
-  { id: "t17", companyId: "somtel", companyName: "Somtel", companyColor: "#F2C200", serviceName: "Unlimited Calls", ussdCode: "*834*{number}*{amount}*8233{pin}#", status: "enabled", notes: "" },
-  { id: "t18", companyId: "somtel", companyName: "Somtel", companyColor: "#F2C200", serviceName: "Voice", ussdCode: "*832*{number}*{amount}*8233{pin}#", status: "enabled", notes: "" },
+  { id: "t1", companyId: "amtel", companyName: "Amtel", companyColor: "#C81E2C", serviceName: "Tanaad GB", ussdCode: "*914*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t2", companyId: "amtel", companyName: "Amtel", companyColor: "#C81E2C", serviceName: "Bulaal Unlimited Data", ussdCode: "*918*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t3", companyId: "somnet", companyName: "Somnet", companyColor: "#1D4ED8", serviceName: "Kaafi Unlimited Data & Voice", ussdCode: "*834*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t4", companyId: "somnet", companyName: "Somnet", companyColor: "#1D4ED8", serviceName: "Kaafi Voice", ussdCode: "*829*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t5", companyId: "somnet", companyName: "Somnet", companyColor: "#1D4ED8", serviceName: "Qanciye Plus", ussdCode: "*830*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t6", companyId: "somnet", companyName: "Somnet", companyColor: "#1D4ED8", serviceName: "Unlimited Data & Voice", ussdCode: "*834*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t7", companyId: "somnet", companyName: "Somnet", companyColor: "#1D4ED8", serviceName: "5G", ussdCode: "*827*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t8", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "Anfac", ussdCode: "*737*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t9", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "Anfac Plus", ussdCode: "*738*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t10", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "Unlimited Data & Voice", ussdCode: "*729*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t11", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "Unlimited Calls", ussdCode: "*741*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t12", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "5G Plus", ussdCode: "*727*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t13", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "ADSL Plus", ussdCode: "*729*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t14", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "Kaar Kuhadal", ussdCode: "*727*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t15", companyId: "somtel", companyName: "Somtel", companyColor: "#F2C200", serviceName: "Unlimited Data & Voice", ussdCode: "*831*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t16", companyId: "somtel", companyName: "Somtel", companyColor: "#F2C200", serviceName: "No Expire", ussdCode: "*830*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t17", companyId: "somtel", companyName: "Somtel", companyColor: "#F2C200", serviceName: "Unlimited Calls", ussdCode: "*834*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t18", companyId: "somtel", companyName: "Somtel", companyColor: "#F2C200", serviceName: "Voice", ussdCode: "*832*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
 ];
 
 const initialCustomers = [
@@ -2684,7 +2684,7 @@ function UssdTemplatesPanel({ companies, canManage }) {
   const grouped = companies.map((c) => ({ company: c, templates: shown.filter((t) => t.companyId === c.id) })).filter((g) => g.templates.length > 0 || companyFilter === g.company.id);
 
   const openNew = () => {
-    setForm({ companyId: companies[0]?.id || "", serviceName: "", ussdCode: "*{number}*{amount}*8233{pin}#", notes: "", deviceId: "", simSlot: "" });
+    setForm({ companyId: companies[0]?.id || "", serviceName: "", ussdCode: "*{number}*{amount}*{pin}#", notes: "", deviceId: "", simSlot: "" });
     setEditing("new");
   };
   const openEdit = (t) => { setForm({ ...t, deviceId: t.deviceId || "", simSlot: t.simSlot ?? "" }); setEditing(t.id); };
@@ -2885,10 +2885,12 @@ function UssdTemplatesPanel({ companies, canManage }) {
             <input style={inputStyle} value={form.serviceName || ""} onChange={(e) => setForm({ ...form, serviceName: e.target.value })} placeholder="e.g. Anfac Plus, Qanciye, Broadband 5G" />
           </Field>
           <Field label="USSD Template Pattern">
-            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={form.ussdCode || ""} onChange={(e) => setForm({ ...form, ussdCode: e.target.value })} placeholder="*738*{customerNumber}*{amount}*8233{pin}#" />
+            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={form.ussdCode || ""} onChange={(e) => setForm({ ...form, ussdCode: e.target.value })} placeholder="*738*{customerNumber}*{amount}*{pin}#" />
           </Field>
           <div style={{ fontSize: 11, color: MUTE, marginTop: -8, marginBottom: 14 }}>
-            Must include <code>{"{customerNumber}"}</code> (or <code>{"{number}"}</code>), <code>{"{amount}"}</code>, and <code>{"{pin}"}</code> — substituted automatically when an order is approved.
+            Must include <code>{"{receiverNumber}"}</code> (or <code>{"{number}"}</code>/<code>{"{customerNumber}"}</code>), <code>{"{amount}"}</code>, and <code>{"{pin}"}</code> — substituted automatically when an order is approved.
+            Any digits you type before <code>{"{pin}"}</code> (e.g. a service short-code like <code>*737*</code>) are dialed literally as part of the provider's own USSD format —
+            <b> do not put the PIN itself in this pattern.</b> The actual PIN is entered separately on the Provider PINs page and is loaded fresh from there every time.
           </div>
           <Field label="Assigned Device & SIM Slot (optional)">
             <div style={{ display: "flex", gap: 8 }}>
@@ -3137,7 +3139,9 @@ function ProviderPinsPanel({ companies, canManage }) {
   return (
     <div>
       <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>
-        Each provider's PIN is encrypted at rest and used server-side to build its USSD string. Turning automatic processing off for a provider means the Agent App requires a manual "Verify Payment" tap instead of auto-dialing on a matched SMS.
+        Each provider's PIN is encrypted at rest and loaded fresh from here every time a USSD string is built — it is never cached or hardcoded. Turning automatic processing off for a provider means the Agent App requires a manual "Verify Payment" tap instead of auto-dialing on a matched SMS.
+        <br />
+        <b>This must be the provider's real secret PIN — not any fixed digits that already appear in that provider's USSD Template pattern</b> (e.g. a service short-code). If a template looks like <code>*737*{"{receiverNumber}"}*{"{amount}"}*{"{pin}"}#</code>, the PIN you set here fills in <code>{"{pin}"}</code> only.
       </div>
       {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
       {message && <div style={{ color: GREEN, fontSize: 12.5, marginBottom: 14 }}>{message}</div>}
