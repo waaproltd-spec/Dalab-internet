@@ -3442,7 +3442,7 @@ function SmsLogs() {
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: "#FAFBFF" }}>
-              {["Received", "Sender", "Body", "Parsed provider", "Parsed amount", "Parsed phone", "Matched order"].map((h) => (
+              {["Received", "Sender", "Body", "Parsed provider", "Parsed amount", "Parsed phone", "Transaction Ref", "Matched order"].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
             </tr>
@@ -3456,6 +3456,7 @@ function SmsLogs() {
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE }}>{r.parsedProvider || "—"}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: GREEN, fontWeight: 700 }}>{r.parsedAmount != null ? `$${Number(r.parsedAmount).toFixed(2)}` : "—"}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE }}>{r.parsedPhone || "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, fontFamily: "monospace" }}>{r.transactionRef || "—"}</td>
                 <td style={{ padding: "10px 14px" }}>
                   {r.matchedOrderId
                     ? <Badge tone="green">{r.matchedOrderId}</Badge>
@@ -3464,7 +3465,7 @@ function SmsLogs() {
               </tr>
             ))}
             {rows.length === 0 && !loading && (
-              <tr><td colSpan={7} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No SMS logs recorded yet.</td></tr>
+              <tr><td colSpan={8} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No SMS logs recorded yet.</td></tr>
             )}
           </tbody>
         </table>

@@ -66,10 +66,18 @@ object SomtelEdahabParser : PaymentSmsParser {
         RegexOption.IGNORE_CASE
     )
 
+    // "Aqanoosiga" (receipt/confirmation code) is this format's own unique
+    // per-transaction reference — e.g. "PP260718.0005.F75709". Extracted
+    // separately from `pattern` above (rather than folded into one regex) so
+    // a missing/reformatted reference field never breaks basic amount+phone
+    // parsing — it's a bonus dedup signal, not a requirement for a match.
+    private val referencePattern = Regex("""Aqanoosiga\s*:\s*(\S+)""", RegexOption.IGNORE_CASE)
+
     override fun tryParse(sender: String, body: String, receivedAt: String): SmsLogEntry? {
         if (!body.contains("eDahab", ignoreCase = true)) return null
         val match = pattern.find(body) ?: return null
         val (amount, phone) = match.destructured
+        val reference = referencePattern.find(body)?.groupValues?.get(1)
         return SmsLogEntry(
             sender = sender,
             body = body,
@@ -77,6 +85,7 @@ object SomtelEdahabParser : PaymentSmsParser {
             parsedAmount = amount.toDoubleOrNull(),
             parsedPhone = phone,
             receivedAt = receivedAt,
+            transactionRef = reference,
         )
     }
 }

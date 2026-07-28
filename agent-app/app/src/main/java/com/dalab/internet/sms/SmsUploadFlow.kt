@@ -53,6 +53,22 @@ object SmsUploadFlow {
         val matchedOrderId = body?.matchedOrderId
         val requiresManualApproval = body?.requiresManualApproval ?: false
 
+        if (body?.duplicate == true) {
+            DiagnosticsLog.record(
+                "sms_duplicate_rejected",
+                "Payment already processed (order=$matchedOrderId, orderAlreadyCompleted=${body.orderAlreadyCompleted}) — not re-matched or re-dialed.",
+                isError = false,
+            )
+            // The order this payment already fulfilled is done — re-running
+            // verify/dial here would be attempting to reuse the same real-world
+            // payment for a second completion, exactly what this check exists
+            // to prevent. If it's somehow still pending (this exact message
+            // uploaded twice in quick succession before the first dial ran),
+            // falling through to processMatched is safe — that path is itself
+            // atomic/idempotent server-side.
+            if (matchedOrderId == null || body.orderAlreadyCompleted) return UploadOutcome.Success
+        }
+
         if (matchedOrderId != null && requiresManualApproval) {
             notifyManualApprovalNeeded(context, matchedOrderId, parsed.parsedAmount)
             return UploadOutcome.Success

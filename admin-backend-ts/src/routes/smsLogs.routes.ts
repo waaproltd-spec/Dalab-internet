@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, Response } from "express";
 import { randomUUID } from "node:crypto";
 import { query, queryOne } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
@@ -40,9 +40,42 @@ async function requiresManualApprovalFor(orderId: string): Promise<boolean> {
   return company ? !company.auto_process_enabled : false;
 }
 
+/** True once an order has left 'pending' — a payment can never be (re-)linked to it after this. */
+async function orderAlreadyFulfilled(orderId: string): Promise<boolean> {
+  const order = await queryOne<{ status: string }>(`SELECT status FROM orders WHERE id=$1`, [orderId]);
+  return order != null && order.status !== "pending";
+}
+
+async function respondAlreadyProcessed(res: Response, existing: { id: string; matched_order_id: string | null }) {
+  const requiresManualApproval = existing.matched_order_id ? await requiresManualApprovalFor(existing.matched_order_id) : false;
+  const orderAlreadyCompleted = existing.matched_order_id ? await orderAlreadyFulfilled(existing.matched_order_id) : false;
+  sendJson(res, 200, {
+    id: existing.id,
+    matchedOrderId: existing.matched_order_id,
+    requiresManualApproval,
+    duplicate: true,
+    orderAlreadyCompleted,
+    status: "already_processed",
+  });
+}
+
 smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => {
-  const { sender, body, parsedProvider, parsedAmount, parsedPhone, receivedAt } = req.body;
+  const { sender, body, parsedProvider, parsedAmount, parsedPhone, receivedAt, transactionRef } = req.body;
   if (!sender || !body) return sendJson(res, 400, { error: "sender and body are required" });
+
+  // A telecom's own per-transaction reference code (e.g. Somtel eDahab's
+  // "Aqanoosiga" field) is a stronger, authoritative duplicate-payment
+  // signal than the sender+body+minute heuristic below — check it first so
+  // the exact same real-world payment is rejected as "Already Processed"
+  // even if its message body text ever varies slightly between deliveries
+  // (a redelivered broadcast, an OEM quirk, a manual re-scan of the inbox).
+  if (transactionRef) {
+    const existingByRef = await queryOne<{ id: string; matched_order_id: string | null }>(
+      `SELECT id, matched_order_id FROM sms_logs WHERE transaction_ref=$1 LIMIT 1`,
+      [transactionRef]
+    );
+    if (existingByRef) return respondAlreadyProcessed(res, existingByRef);
+  }
 
   const match = await findMatchingOrder(parsedAmount, parsedPhone);
   const id = randomUUID();
@@ -53,27 +86,31 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
   const effectiveReceivedAt = receivedAt ?? new Date().toISOString();
   try {
     await query(
-      `INSERT INTO sms_logs (id, agent_id, sender, body, parsed_provider, parsed_amount, parsed_phone, matched_order_id, received_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-      [id, req.auth!.sub, sender, body, parsedProvider ?? null, parsedAmount ?? null, parsedPhone ?? null, match?.id ?? null, effectiveReceivedAt]
+      `INSERT INTO sms_logs (id, agent_id, sender, body, parsed_provider, parsed_amount, parsed_phone, matched_order_id, received_at, transaction_ref)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [id, req.auth!.sub, sender, body, parsedProvider ?? null, parsedAmount ?? null, parsedPhone ?? null, match?.id ?? null, effectiveReceivedAt, transactionRef ?? null]
     );
   } catch (err: any) {
     if (err?.code !== "23505") throw err;
     // A redelivered SMS broadcast (or a client retry after a dropped
-    // response) hit the dedup index — return the log that already exists
+    // response) hit a dedup index — return the log that already exists
     // instead of creating a second one, so the same payment never gets
-    // matched/dialed twice.
-    const existing = await queryOne<{ id: string; matched_order_id: string | null }>(
-      `SELECT id, matched_order_id FROM sms_logs
-       WHERE sender=$1 AND body=$2
-         AND date_trunc('minute', received_at AT TIME ZONE 'UTC') = date_trunc('minute', $3::timestamptz AT TIME ZONE 'UTC')
-       LIMIT 1`,
-      [sender, body, effectiveReceivedAt]
-    );
-    if (existing) {
-      const requiresManualApproval = existing.matched_order_id ? await requiresManualApprovalFor(existing.matched_order_id) : false;
-      return sendJson(res, 200, { id: existing.id, matchedOrderId: existing.matched_order_id, requiresManualApproval, duplicate: true });
-    }
+    // matched/dialed twice. Try the transaction_ref index first (more
+    // specific), falling back to the sender+body+minute index.
+    const existing =
+      (transactionRef &&
+        (await queryOne<{ id: string; matched_order_id: string | null }>(
+          `SELECT id, matched_order_id FROM sms_logs WHERE transaction_ref=$1 LIMIT 1`,
+          [transactionRef]
+        ))) ||
+      (await queryOne<{ id: string; matched_order_id: string | null }>(
+        `SELECT id, matched_order_id FROM sms_logs
+         WHERE sender=$1 AND body=$2
+           AND date_trunc('minute', received_at AT TIME ZONE 'UTC') = date_trunc('minute', $3::timestamptz AT TIME ZONE 'UTC')
+         LIMIT 1`,
+        [sender, body, effectiveReceivedAt]
+      ));
+    if (existing) return respondAlreadyProcessed(res, existing);
     throw err;
   }
 
@@ -81,7 +118,7 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
   // existing manual verify-payment flow instead of the app auto-dialing.
   const requiresManualApproval = match ? await requiresManualApprovalFor(match.id) : false;
 
-  sendJson(res, 201, { id, matchedOrderId: match?.id ?? null, requiresManualApproval });
+  sendJson(res, 201, { id, matchedOrderId: match?.id ?? null, requiresManualApproval, duplicate: false, status: "new" });
 });
 
 smsLogsRouter.get("/admin/sms-logs", requireStaff(), async (req, res) => {
