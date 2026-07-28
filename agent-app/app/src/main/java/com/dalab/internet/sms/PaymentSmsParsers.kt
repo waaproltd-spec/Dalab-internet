@@ -17,6 +17,15 @@ interface PaymentSmsParser {
     fun tryParse(sender: String, body: String, receivedAt: String): SmsLogEntry?
 }
 
+/** Amount capture group shared by every parser below — accepts an optional
+ * comma thousands-separator (e.g. "$1,234.56") alongside a plain decimal
+ * (e.g. "$0.09"), since a real payment isn't guaranteed to be small just
+ * because this system's own test packages have been. */
+private const val AMOUNT_PATTERN = """([\d,]+(?:\.\d+)?)"""
+
+/** Strips thousands-separator commas before parsing — "1,234.56" -> 1234.56. */
+private fun parseAmount(raw: String): Double? = raw.replace(",", "").toDoubleOrNull()
+
 /**
  * Hormuud EVC Plus confirmation SMS.
  * Example: "[-EVCPLUS-] waxaad $1 ka heshay 0610346060, Tar: 24/07/26"
@@ -26,7 +35,7 @@ object HormuudEvcPlusParser : PaymentSmsParser {
     override val senders = listOf("192", "EVCPLUS")
 
     private val pattern = Regex(
-        """waxaad\s+\$?\s*([\d.]+)\s*\$?\s*ka\s+heshay\s+(\d{6,12}),?\s*Tar:\s*([\d/]+)""",
+        """waxaad\s+\$?\s*$AMOUNT_PATTERN\s*\$?\s*ka\s+heshay\s+(\d{6,12}),?\s*Tar:\s*([\d/]+)""",
         RegexOption.IGNORE_CASE
     )
 
@@ -38,7 +47,7 @@ object HormuudEvcPlusParser : PaymentSmsParser {
             sender = sender,
             body = body,
             parsedProvider = "Hormuud",
-            parsedAmount = amount.toDoubleOrNull(),
+            parsedAmount = parseAmount(amount),
             parsedPhone = phone,
             receivedAt = receivedAt,
         )
@@ -62,7 +71,7 @@ object SomtelEdahabParser : PaymentSmsParser {
     override val senders: List<String> = emptyList()
 
     private val pattern = Regex(
-        """([\d.]+)\s*Dollar\s+Ayaad\s+Ka\s+Heshay[\s\S]*?Lambarka\s*:\s*(\d{6,15})""",
+        """$AMOUNT_PATTERN\s*Dollar\s+Ayaad\s+Ka\s+Heshay[\s\S]*?Lambarka\s*:\s*(\d{6,15})""",
         RegexOption.IGNORE_CASE
     )
 
@@ -82,7 +91,7 @@ object SomtelEdahabParser : PaymentSmsParser {
             sender = sender,
             body = body,
             parsedProvider = "Somtel",
-            parsedAmount = amount.toDoubleOrNull(),
+            parsedAmount = parseAmount(amount),
             parsedPhone = phone,
             receivedAt = receivedAt,
             transactionRef = reference,
@@ -107,7 +116,7 @@ object SomnetEvcPlusParser : PaymentSmsParser {
     override val senders: List<String> = emptyList()
 
     private val pattern = Regex(
-        """\$([\d.]+)\s*ayaad\s+ka\s+Heshay\s+.+?\((\d{6,15})\)[\s\S]*?via\s+Somnet\s+Telecom""",
+        """\$$AMOUNT_PATTERN\s*ayaad\s+ka\s+Heshay\s+.+?\((\d{6,15})\)[\s\S]*?via\s+Somnet\s+Telecom""",
         RegexOption.IGNORE_CASE
     )
 
@@ -119,7 +128,7 @@ object SomnetEvcPlusParser : PaymentSmsParser {
             sender = sender,
             body = body,
             parsedProvider = "Somnet",
-            parsedAmount = amount.toDoubleOrNull(),
+            parsedAmount = parseAmount(amount),
             parsedPhone = phone,
             receivedAt = receivedAt,
         )
@@ -172,7 +181,7 @@ object HormuudEVoucherParser : VoucherSentParser {
     override val senders = listOf("740")
 
     private val pattern = Regex(
-        """transferred\s+\$?\s*([\d.]+)\s+to\s+(\d{6,15})""",
+        """transferred\s+\$?\s*$AMOUNT_PATTERN\s+to\s+(\d{6,15})""",
         RegexOption.IGNORE_CASE
     )
 
@@ -180,7 +189,7 @@ object HormuudEVoucherParser : VoucherSentParser {
         if (senders.none { it.equals(sender.trim(), ignoreCase = true) }) return null
         val match = pattern.find(body) ?: return null
         val (amount, phone) = match.destructured
-        val parsedAmount = amount.toDoubleOrNull() ?: return null
+        val parsedAmount = parseAmount(amount) ?: return null
         return VoucherSentEntry(receiverPhone = phone, amount = parsedAmount, provider = "Hormuud")
     }
 }
