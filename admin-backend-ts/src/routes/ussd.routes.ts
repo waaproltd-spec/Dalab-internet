@@ -460,6 +460,28 @@ ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (r
           // already credited by a concurrent call — no-op
         }
       }
+      // Only the call that actually flipped the order (completed.length > 0)
+      // logs this — a retried/duplicate dial-attempt report never generates
+      // a second "completed" Activity Log entry for the same order.
+      if (completed.length > 0) {
+        await recordActivity({
+          adminId: undefined,
+          action: "payment_completed",
+          entityType: "payment_transaction",
+          entityId: order.id,
+          oldValue: null,
+          newValue: {
+            orderId: order.id,
+            senderPhone: order.sender_phone,
+            receiverPhone: order.receiver_phone,
+            amount: order.amount,
+            provider: order.company_id,
+            transactionRef: null,
+            paymentTimestamp: new Date().toISOString(),
+            status: "completed",
+          },
+        });
+      }
     }
   } else {
     await query(`UPDATE orders SET status='failed', updated_at=now() WHERE id=$1 AND status != 'completed'`, [attempt.order_id]);

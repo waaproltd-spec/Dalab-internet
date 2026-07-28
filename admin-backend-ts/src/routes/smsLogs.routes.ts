@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { query, queryOne } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
+import { recordActivity } from "../utils/activityLog.js";
 
 export const smsLogsRouter = Router();
 
@@ -12,6 +13,8 @@ function normalizePhone(phone: string | null | undefined): string {
   return String(phone ?? "").replace(/\D/g, "").slice(-9);
 }
 
+type OrderMatch = { id: string; sender_phone: string | null; receiver_phone: string | null; amount: number; company_id: string };
+
 /**
  * Cross-network by design: the telecom that RECEIVED the payment has no
  * bearing on which PROVIDER's order it fulfills — a customer can pay via
@@ -19,13 +22,13 @@ function normalizePhone(phone: string | null | undefined): string {
  * customer phone only, never by provider. No phone match -> returns null
  * rather than guessing across possibly-different customers by amount alone.
  */
-async function findMatchingOrder(parsedAmount: number | undefined, parsedPhone: string | undefined) {
+async function findMatchingOrder(parsedAmount: number | undefined, parsedPhone: string | undefined): Promise<OrderMatch | null> {
   if (parsedAmount == null || !parsedPhone) return null;
   const target = normalizePhone(parsedPhone);
   if (!target) return null;
 
-  const candidates = await query<{ id: string; sender_phone: string | null }>(
-    `SELECT id, sender_phone FROM orders WHERE status='pending' AND ABS(amount - $1) < 0.01 ORDER BY created_at ASC`,
+  const candidates = await query<OrderMatch>(
+    `SELECT id, sender_phone, receiver_phone, amount, company_id FROM orders WHERE status='pending' AND ABS(amount - $1) < 0.01 ORDER BY created_at ASC`,
     [parsedAmount]
   );
   return candidates.find((o) => normalizePhone(o.sender_phone) === target) ?? null;
@@ -46,9 +49,59 @@ async function orderAlreadyFulfilled(orderId: string): Promise<boolean> {
   return order != null && order.status !== "pending";
 }
 
-async function respondAlreadyProcessed(res: Response, existing: { id: string; matched_order_id: string | null }) {
+/**
+ * Every verified/completed/rejected-duplicate payment SMS gets one Activity
+ * Log entry so a Super Admin can see the whole incoming-payment pipeline —
+ * not just admin-driven config changes — in one place, live. adminId is
+ * always null here (this is a system/agent event, not an admin action);
+ * recordActivity already treats a null adminId as valid (ON DELETE SET NULL).
+ */
+async function logPaymentActivity(params: {
+  action: "payment_verified" | "payment_already_processed";
+  smsLogId: string;
+  order: OrderMatch;
+  transactionRef: string | null;
+  paymentTimestamp: string;
+  status: "verified" | "already_processed";
+}) {
+  await recordActivity({
+    adminId: undefined,
+    action: params.action,
+    entityType: "payment_transaction",
+    entityId: params.smsLogId,
+    oldValue: null,
+    newValue: {
+      orderId: params.order.id,
+      senderPhone: params.order.sender_phone,
+      receiverPhone: params.order.receiver_phone,
+      amount: params.order.amount,
+      provider: params.order.company_id,
+      transactionRef: params.transactionRef,
+      paymentTimestamp: params.paymentTimestamp,
+      status: params.status,
+    },
+  });
+}
+
+async function respondAlreadyProcessed(res: Response, existing: { id: string; matched_order_id: string | null }, transactionRef: string | null, receivedAt: string) {
   const requiresManualApproval = existing.matched_order_id ? await requiresManualApprovalFor(existing.matched_order_id) : false;
   const orderAlreadyCompleted = existing.matched_order_id ? await orderAlreadyFulfilled(existing.matched_order_id) : false;
+  if (existing.matched_order_id) {
+    const order = await queryOne<OrderMatch>(
+      `SELECT id, sender_phone, receiver_phone, amount, company_id FROM orders WHERE id=$1`,
+      [existing.matched_order_id]
+    );
+    if (order) {
+      await logPaymentActivity({
+        action: "payment_already_processed",
+        smsLogId: existing.id,
+        order,
+        transactionRef,
+        paymentTimestamp: receivedAt,
+        status: "already_processed",
+      });
+    }
+  }
   sendJson(res, 200, {
     id: existing.id,
     matchedOrderId: existing.matched_order_id,
@@ -63,6 +116,8 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
   const { sender, body, parsedProvider, parsedAmount, parsedPhone, receivedAt, transactionRef } = req.body;
   if (!sender || !body) return sendJson(res, 400, { error: "sender and body are required" });
 
+  const effectiveReceivedAt = receivedAt ?? new Date().toISOString();
+
   // A telecom's own per-transaction reference code (e.g. Somtel eDahab's
   // "Aqanoosiga" field) is a stronger, authoritative duplicate-payment
   // signal than the sender+body+minute heuristic below — check it first so
@@ -74,7 +129,7 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
       `SELECT id, matched_order_id FROM sms_logs WHERE transaction_ref=$1 LIMIT 1`,
       [transactionRef]
     );
-    if (existingByRef) return respondAlreadyProcessed(res, existingByRef);
+    if (existingByRef) return respondAlreadyProcessed(res, existingByRef, transactionRef, effectiveReceivedAt);
   }
 
   const match = await findMatchingOrder(parsedAmount, parsedPhone);
@@ -83,7 +138,6 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
   // lookup below, if the insert conflicts, checks the exact same instant
   // the failed insert attempted — not a fresh now() that could land in a
   // different truncated minute than the row that actually won.
-  const effectiveReceivedAt = receivedAt ?? new Date().toISOString();
   try {
     await query(
       `INSERT INTO sms_logs (id, agent_id, sender, body, parsed_provider, parsed_amount, parsed_phone, matched_order_id, received_at, transaction_ref)
@@ -110,13 +164,24 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
          LIMIT 1`,
         [sender, body, effectiveReceivedAt]
       ));
-    if (existing) return respondAlreadyProcessed(res, existing);
+    if (existing) return respondAlreadyProcessed(res, existing, transactionRef ?? null, effectiveReceivedAt);
     throw err;
   }
 
   // A company with automation off means the agent must tap through the
   // existing manual verify-payment flow instead of the app auto-dialing.
   const requiresManualApproval = match ? await requiresManualApprovalFor(match.id) : false;
+
+  if (match) {
+    await logPaymentActivity({
+      action: "payment_verified",
+      smsLogId: id,
+      order: match,
+      transactionRef: transactionRef ?? null,
+      paymentTimestamp: effectiveReceivedAt,
+      status: "verified",
+    });
+  }
 
   sendJson(res, 201, { id, matchedOrderId: match?.id ?? null, requiresManualApproval, duplicate: false, status: "new" });
 });
