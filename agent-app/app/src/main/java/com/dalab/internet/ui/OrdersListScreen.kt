@@ -184,7 +184,7 @@ fun OrdersListScreen(onOpenOrder: (Order) -> Unit) {
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
                         Column {
-                            Text(tx.customerName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                            Text(tx.customerName ?: "Customer", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
                             Text(tx.companyName, style = MaterialTheme.typography.labelSmall)
                         }
                         Text("$${"%.2f".format(tx.amount)}", fontWeight = FontWeight.Bold, color = DalabGreen)

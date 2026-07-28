@@ -279,8 +279,13 @@ ordersRouter.post("/agent/orders/voucher-confirmation", requireAuth("agent"), as
 });
 
 ordersRouter.get("/agent/transactions", requireAuth("agent"), async (req, res) => {
+  // customers.name is nullable (a customer who registered via OTP but never
+  // set one) — the Agent App's Transaction.customerName is a non-null Kotlin
+  // field, and Gson silently assigns null to it instead of erroring, which
+  // crashed the app the moment that row rendered. Coalescing to phone here
+  // means this column is never actually null over the wire.
   const rows = await query(
-    `SELECT o.id AS order_id, c.name AS customer_name, co.name AS company_name, o.amount, o.completed_at
+    `SELECT o.id AS order_id, COALESCE(c.name, c.phone) AS customer_name, co.name AS company_name, o.amount, o.completed_at
      FROM orders o JOIN customers c ON c.id=o.customer_id JOIN companies co ON co.id=o.company_id
      WHERE o.agent_id=$1 AND o.status='completed' ORDER BY o.completed_at DESC`,
     [req.auth!.sub]
