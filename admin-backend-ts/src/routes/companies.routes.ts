@@ -13,6 +13,13 @@ export const packagesRouter = Router();
 // explicit column list rather than SELECT *.
 const COMPANY_COLUMNS = `id, name, group_number, color_hex, logo_url, status, gateway, payment_number, payment_ussd_template, ussd_code, visible_customer_app, visible_agent_app, auto_process_enabled, created_at, updated_at`;
 
+// provider_amount is the internal cost actually requested from the telecom
+// via USSD — it can differ from the customer-facing price (e.g. a
+// discounted sale), so it's excluded here the same way pin_encrypted is
+// excluded from COMPANY_COLUMNS: an implementation detail of the fulfilment
+// pipeline, not something the public Customer/Agent App package list needs.
+const PUBLIC_PACKAGE_COLUMNS = `id, company_id, category_id, name, old_price, price, mb, minutes, sms, validity, active, code, created_at`;
+
 companiesRouter.get("/companies", async (_req, res) => {
   const rows = await query(`SELECT ${COMPANY_COLUMNS} FROM companies ORDER BY group_number, name`);
   sendJson(res, 200, rows);
@@ -20,7 +27,7 @@ companiesRouter.get("/companies", async (_req, res) => {
 
 companiesRouter.get("/companies/:id/packages", async (req, res) => {
   const rows = await query(
-    `SELECT * FROM packages WHERE company_id=$1 AND active=true ORDER BY category_id, price`,
+    `SELECT ${PUBLIC_PACKAGE_COLUMNS} FROM packages WHERE company_id=$1 AND active=true ORDER BY category_id, price`,
     [req.params.id]
   );
   sendJson(res, 200, rows);
@@ -156,15 +163,19 @@ packagesRouter.get("/admin/packages", requireStaff(), async (req, res) => {
 });
 
 packagesRouter.post("/admin/packages", requirePermission("packages.manage"), async (req, res) => {
-  const { companyId, categoryId, name, oldPrice, price, mb, minutes, sms, validity, code } = req.body;
+  const { companyId, categoryId, name, oldPrice, price, providerAmount, mb, minutes, sms, validity, code } = req.body;
   if (!companyId || !categoryId || !name || price == null) {
     return sendJson(res, 400, { error: "companyId, categoryId, name, price are required" });
   }
   const id = randomUUID();
+  // "" (an intentionally-cleared/never-filled-in form field) must become
+  // NULL, not be sent to Postgres as an empty string literal for a NUMERIC
+  // column — unlike price, this field is optional so "" is a valid input.
+  const providerAmountValue = providerAmount === "" || providerAmount == null ? null : providerAmount;
   await query(
-    `INSERT INTO packages (id, company_id, category_id, name, old_price, price, mb, minutes, sms, validity, code)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-    [id, companyId, categoryId, name, oldPrice ?? price, price, mb ?? 0, minutes ?? 0, sms ?? 0, validity ?? "", code ?? null]
+    `INSERT INTO packages (id, company_id, category_id, name, old_price, price, provider_amount, mb, minutes, sms, validity, code)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+    [id, companyId, categoryId, name, oldPrice ?? price, price, providerAmountValue, mb ?? 0, minutes ?? 0, sms ?? 0, validity ?? "", code ?? null]
   );
   sendJson(res, 201, await queryOne(`SELECT * FROM packages WHERE id=$1`, [id]));
 });
@@ -173,9 +184,16 @@ packagesRouter.put("/admin/packages/:id", requirePermission("packages.manage"), 
   const existing = await queryOne(`SELECT * FROM packages WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Package not found" });
   const merged = { ...existing, ...req.body };
+  // providerAmount (camelCase, from the request body) is read explicitly
+  // rather than via the merged.provider_amount trick above — merged's
+  // spread can't bridge the naming mismatch between the client's camelCase
+  // body and the DB's snake_case existing row, so merged.provider_amount
+  // would only ever reflect the existing value, never an update.
+  const rawProviderAmount = req.body.providerAmount !== undefined ? req.body.providerAmount : existing.provider_amount;
+  const providerAmount = rawProviderAmount === "" || rawProviderAmount == null ? null : rawProviderAmount;
   await query(
-    `UPDATE packages SET name=$1, old_price=$2, price=$3, mb=$4, minutes=$5, sms=$6, validity=$7, active=$8, code=$9 WHERE id=$10`,
-    [merged.name, merged.old_price, merged.price, merged.mb, merged.minutes, merged.sms, merged.validity, Boolean(merged.active), merged.code ?? null, req.params.id]
+    `UPDATE packages SET name=$1, old_price=$2, price=$3, provider_amount=$4, mb=$5, minutes=$6, sms=$7, validity=$8, active=$9, code=$10 WHERE id=$11`,
+    [merged.name, merged.old_price, merged.price, providerAmount, merged.mb, merged.minutes, merged.sms, merged.validity, Boolean(merged.active), merged.code ?? null, req.params.id]
   );
   sendJson(res, 200, await queryOne(`SELECT * FROM packages WHERE id=$1`, [req.params.id]));
 });

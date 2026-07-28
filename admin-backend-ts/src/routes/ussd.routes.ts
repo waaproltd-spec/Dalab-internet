@@ -230,6 +230,15 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
   // fields. Falls back to sender_phone only for the (pre-existing) rare
   // order that somehow has no receiver_phone recorded.
   const deliverTo = order.receiver_phone ?? order.sender_phone ?? "";
+  // order.amount is what the CUSTOMER paid (matched against incoming
+  // payment SMS in smsLogs.routes.ts — it must stay the discounted price,
+  // or a real payment SMS for the discounted amount would stop matching).
+  // The USSD request to the provider must use the full, undiscounted
+  // package cost instead — order.provider_amount, snapshotted from
+  // packages.provider_amount at order-creation time. Falls back to
+  // order.amount for a package that was never given a separate provider
+  // amount (provider_amount is nullable — "no discount configured").
+  const providerAmount = order.provider_amount ?? order.amount;
   // {packageCode}/{packageName} are optional — a template that doesn't
   // reference them is unaffected, .replace() is a no-op if the placeholder
   // isn't present in the string.
@@ -237,7 +246,7 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
     .replace("{number}", deliverTo)
     .replace("{customerNumber}", deliverTo)
     .replace("{receiverNumber}", deliverTo)
-    .replace("{amount}", String(order.amount))
+    .replace("{amount}", String(providerAmount))
     .replace("{pin}", pin)
     .replace("{packageCode}", orderWithPackage?.package_code ?? "")
     .replace("{packageName}", orderWithPackage?.package_name ?? "");
