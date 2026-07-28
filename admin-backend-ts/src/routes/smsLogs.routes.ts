@@ -21,14 +21,31 @@ type OrderMatch = { id: string; sender_phone: string | null; receiver_phone: str
  * any network for a package on any other. Matches by amount + normalized
  * customer phone only, never by provider. No phone match -> returns null
  * rather than guessing across possibly-different customers by amount alone.
+ *
+ * Two safeguards against a real payment being silently absorbed by the
+ * WRONG order (same customer, same amount, but an old/abandoned attempt):
+ *  - MATCH_WINDOW_HOURS excludes anything older than a day — a payment SMS
+ *    arriving now is confirming something the customer just did, not a
+ *    order they gave up on yesterday.
+ *  - Within that window, the NEWEST pending order wins (`created_at DESC`,
+ *    not ASC) — a customer who repeats a purchase at the same price almost
+ *    always means their latest attempt, not an earlier abandoned one. Used
+ *    to pick oldest-first, which meant a stale never-paid test/abandoned
+ *    order for the same amount would keep "winning" every future payment
+ *    for that amount from that phone, leaving the actual current order
+ *    stuck at Pending forever while the stale one silently advanced.
  */
+const MATCH_WINDOW_HOURS = 24;
+
 async function findMatchingOrder(parsedAmount: number | undefined, parsedPhone: string | undefined): Promise<OrderMatch | null> {
   if (parsedAmount == null || !parsedPhone) return null;
   const target = normalizePhone(parsedPhone);
   if (!target) return null;
 
   const candidates = await query<OrderMatch>(
-    `SELECT id, sender_phone, receiver_phone, amount, company_id FROM orders WHERE status='pending' AND ABS(amount - $1) < 0.01 ORDER BY created_at ASC`,
+    `SELECT id, sender_phone, receiver_phone, amount, company_id FROM orders
+     WHERE status='pending' AND ABS(amount - $1) < 0.01 AND created_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
+     ORDER BY created_at DESC`,
     [parsedAmount]
   );
   return candidates.find((o) => normalizePhone(o.sender_phone) === target) ?? null;
