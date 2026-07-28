@@ -3,11 +3,9 @@ package com.dalab.internet.customer.ui
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
@@ -19,7 +17,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -31,7 +28,6 @@ import com.dalab.internet.customer.data.Company
 import com.dalab.internet.customer.data.CustomerOrder
 import com.dalab.internet.customer.data.PackageItem
 import com.dalab.internet.customer.data.PaymentWallet
-import com.dalab.internet.customer.data.companyLogoRes
 import com.dalab.internet.customer.network.ApiClient
 import com.dalab.internet.customer.network.CreateOrderRequest
 import com.dalab.internet.customer.prefs.LocalizationManager
@@ -63,7 +59,6 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
     var senderPhone by remember { mutableStateOf(SessionManager.currentCustomer()?.phone ?: "") }
     var receiverPhone by remember { mutableStateOf(SessionManager.currentCustomer()?.phone ?: "") }
     var attemptedSubmit by remember { mutableStateOf(false) }
-    val logoRes = remember(company.id) { companyLogoRes(company.id) }
 
     var submitting by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -141,7 +136,6 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
             label = LocalizationManager.tr("Number sending payment", "Lambarka Lacagta Ka Diraysid"),
             value = senderPhone,
             onValueChange = { senderPhone = it },
-            logoRes = logoRes,
             showError = attemptedSubmit && senderPhone.isBlank(),
             compact = compact,
         )
@@ -150,7 +144,6 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
             label = LocalizationManager.tr("Receiver number", "Lambarka Lacagta u Rabtid"),
             value = receiverPhone,
             onValueChange = { receiverPhone = it },
-            logoRes = logoRes,
             showError = attemptedSubmit && receiverPhone.isBlank(),
             compact = compact,
         )
@@ -271,7 +264,6 @@ private fun PhoneInputField(
     label: String,
     value: String,
     onValueChange: (String) -> Unit,
-    logoRes: Int?,
     showError: Boolean,
     compact: Boolean,
 ) {
@@ -284,15 +276,6 @@ private fun PhoneInputField(
             placeholder = { Text("6XXXXXXX", color = MutedText) },
             singleLine = true,
             isError = showError,
-            leadingIcon = if (logoRes != null) {
-                {
-                    Image(
-                        painter = painterResource(logoRes),
-                        contentDescription = null,
-                        modifier = Modifier.size(26.dp).clip(CircleShape),
-                    )
-                }
-            } else null,
             supportingText = if (showError) {
                 { Text("Please enter your number", color = MaterialTheme.colorScheme.error, fontSize = 11.sp) }
             } else null,

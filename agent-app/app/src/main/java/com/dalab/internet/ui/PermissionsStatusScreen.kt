@@ -1,6 +1,9 @@
 package com.dalab.internet.ui
 
 import android.Manifest
+import android.content.ActivityNotFoundException
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -45,6 +48,8 @@ fun PermissionsStatusScreen(onBack: () -> Unit) {
         val powerManager = context.getSystemService(PowerManager::class.java) ?: return true
         return powerManager.isIgnoringBatteryOptimizations(context.packageName)
     }
+
+    val oemAutostartIntent = remember { resolveOemAutostartIntent(context) }
 
     var readSmsGranted by remember { mutableStateOf(granted(Manifest.permission.READ_SMS)) }
     var receiveSmsGranted by remember { mutableStateOf(granted(Manifest.permission.RECEIVE_SMS)) }
@@ -130,6 +135,52 @@ fun PermissionsStatusScreen(onBack: () -> Unit) {
                 }
             }
 
+            // Standard Android battery-optimization exemption above only covers
+            // Android's own Doze/App-Standby system. Several major manufacturers
+            // (Xiaomi/Redmi/POCO, Huawei/Honor, Oppo/Realme, Vivo, and Transsion's
+            // Tecno/Infinix/itel — all common in this market) ship a SEPARATE,
+            // more aggressive background-app killer on top of stock Android that
+            // the standard exemption does NOT disable. This is the most common
+            // real-world reason a background SMS listener works once (while the
+            // app was recently open/foregrounded) and then silently stops
+            // reacting to further incoming SMS once the OS decides to kill it —
+            // with no crash, no error, nothing in Diagnostics to explain it.
+            if (oemAutostartIntent != null) {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} devices have their own separate battery/app manager " +
+                        "that can silently stop background SMS monitoring even with battery optimization above disabled. " +
+                        "Find DALAB Agent in the screen that opens and allow \"Auto-start\" / remove it from any \"Protected\"/restricted list.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        try {
+                            context.startActivity(oemAutostartIntent)
+                        } catch (_: ActivityNotFoundException) {
+                            // Not present on this exact ROM/version — fall back to
+                            // general app settings rather than crashing the screen.
+                            try {
+                                context.startActivity(
+                                    Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                        data = Uri.fromParts("package", context.packageName, null)
+                                    }
+                                )
+                            } catch (_: ActivityNotFoundException) {
+                                // Nothing more we can do — avoid crashing either way.
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Filled.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Allow Auto-start / Remove Background Restrictions")
+                }
+            }
+
             Spacer(Modifier.weight(1f))
 
             Button(onClick = { refresh() }, modifier = Modifier.fillMaxWidth()) {
@@ -185,4 +236,40 @@ private fun PermissionStatusRow(label: String, ok: Boolean, okLabel: String, not
             Text(if (ok) okLabel else notOkLabel, color = color, fontWeight = FontWeight.Bold)
         }
     }
+}
+
+/**
+ * Well-known (but ROM-version-fragile, hence the try/catch at every call
+ * site) component names for each major manufacturer's own background-app/
+ * auto-start manager — a layer of restriction ADDITIONAL to and separate
+ * from stock Android's battery optimization, which
+ * ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS does not touch. Returns null
+ * (hides the section entirely) on a manufacturer with no known screen for
+ * this, rather than guessing at a component that doesn't exist.
+ */
+private fun resolveOemAutostartIntent(context: Context): Intent? {
+    val candidates: List<Pair<String, String>> = when (Build.MANUFACTURER.lowercase()) {
+        "xiaomi" -> listOf("com.miui.securitycenter" to "com.miui.permcenter.autostart.AutoStartManagementActivity")
+        "huawei", "honor" -> listOf(
+            "com.huawei.systemmanager" to "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
+            "com.huawei.systemmanager" to "com.huawei.systemmanager.optimize.process.ProtectActivity",
+        )
+        "oppo", "realme" -> listOf(
+            "com.coloros.safecenter" to "com.coloros.safecenter.permission.startup.StartupAppListActivity",
+            "com.oppo.safe" to "com.oppo.safe.permission.startup.StartupAppListActivity",
+        )
+        "vivo" -> listOf("com.vivo.permissionmanager" to "com.vivo.permissionmanager.activity.BgStartUpManagerActivity")
+        "transsion", "tecno", "infinix", "itel" -> listOf(
+            "com.transsion.phonemanager" to "com.transsion.phonemanager.MainActivity",
+        )
+        "samsung" -> listOf("com.samsung.android.lool" to "com.samsung.android.sm.ui.battery.BatteryActivity")
+        else -> emptyList()
+    }
+    for ((pkg, cls) in candidates) {
+        val intent = Intent().apply {
+            component = ComponentName(pkg, cls)
+        }
+        if (intent.resolveActivity(context.packageManager) != null) return intent
+    }
+    return null
 }
