@@ -25,7 +25,18 @@ data class LoginResponse(val accessToken: String, val refreshToken: String, val 
 data class RefreshRequest(val refreshToken: String)
 data class RefreshResponse(val accessToken: String, val refreshToken: String)
 data class VerifyPaymentRequest(val smsLogId: String? = null)
-data class SmsLogUploadResponse(val id: String, val matchedOrderId: String?, val requiresManualApproval: Boolean = false)
+data class SmsLogUploadResponse(
+    val id: String,
+    val matchedOrderId: String?,
+    val requiresManualApproval: Boolean = false,
+    // See admin-backend-ts smsLogs.routes.ts: duplicate/status reflect the
+    // server's transaction_ref (or sender+body+minute) dedup check — a
+    // duplicate payment is rejected as "already_processed" rather than
+    // being matched/dialed a second time.
+    val duplicate: Boolean = false,
+    val status: String? = null,
+    val orderAlreadyCompleted: Boolean = false,
+)
 data class VoucherConfirmationRequest(val receiverPhone: String, val amount: Double, val provider: String)
 data class VoucherConfirmationResponse(val matched: Boolean, val orderId: String? = null, val alreadyCompleted: Boolean = false)
 data class DialAttemptStartRequest(val simSlot: Int?, val ussdString: String, val attemptNumber: Int)

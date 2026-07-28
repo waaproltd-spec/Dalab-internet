@@ -59,6 +59,12 @@ data class SmsLogEntry(
     val parsedPhone: String? = null,
     val matchedOrderId: String? = null,
     val receivedAt: String,
+    // The telecom's own per-transaction reference/receipt code, when the SMS
+    // format includes one (e.g. Somtel eDahab's "Aqanoosiga" field) — a
+    // stronger duplicate-payment signal than sender+body+timestamp alone.
+    // Null for formats with no such field; the server falls back to its
+    // existing sender+body+minute dedup in that case.
+    val transactionRef: String? = null,
 )
 
 data class Transaction(
