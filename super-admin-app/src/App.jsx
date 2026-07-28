@@ -434,6 +434,7 @@ const NAV = [
   { id: "overview", label: "Overview", icon: LayoutGrid },
   { id: "companies", label: "Companies", icon: Building2 },
   { id: "payment-numbers", label: "Payment Numbers", icon: Wallet },
+  { id: "provider-numbers", label: "Provider Numbers", icon: Radio },
   { id: "payment-wallets", label: "Payment Wallets", icon: CreditCard, superAdminOnly: true },
   { id: "packages", label: "Packages & Pricing", icon: Package },
   { id: "categories", label: "Categories", icon: Tags },
@@ -3205,6 +3206,358 @@ function ProviderPinsPanel({ companies, canManage }) {
   );
 }
 
+// Consolidated per-provider configuration: everything a Super Admin needs to
+// fix a broken payment/USSD flow for one operator (Hormuud, Somnet, Somtel,
+// Amtel) lives on one card instead of four separate sections. Every field
+// here writes through the exact same endpoints as Payment Numbers, Provider
+// PINs, SIM Routing, and USSD Templates already use elsewhere — this view
+// adds no new backend state, it just re-groups the existing one by provider
+// so nothing can drift between the two places it's edited from.
+function ProviderNumbers({ companies, refreshCompanies, admin }) {
+  const [pinStatuses, setPinStatuses] = useState({});
+  const [pinDrafts, setPinDrafts] = useState({});
+  const [numberDrafts, setNumberDrafts] = useState({});
+  const [routes, setRoutes] = useState([]);
+  const [devices, setDevices] = useState([]);
+  const [templates, setTemplates] = useState([]);
+  const [savingKey, setSavingKey] = useState(null);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [templateEditing, setTemplateEditing] = useState(null); // { companyId, id: 'new'|templateId }
+  const [templateForm, setTemplateForm] = useState({});
+  const [routeForm, setRouteForm] = useState({}); // companyId -> { deviceId, simSlot }
+
+  // Payment number, PIN, and USSD templates are Super-Admin-exclusive on the
+  // backend (see companies.routes.ts / ussd.routes.ts) — not delegable via
+  // any permission, since they control where customer money is sent and what
+  // gets dialed. SIM/device routing IS delegable via devices.manage.
+  const canManageSecrets = admin?.role === "super_admin";
+  const canManageRouting = hasPermission(admin, "devices.manage");
+
+  const fetchAll = async () => {
+    if (!DALAB_API_ENABLED || companies.length === 0) return;
+    setError("");
+    try {
+      const [pinPairs, routeRows, deviceRows, templateRows] = await Promise.all([
+        Promise.all(companies.map((c) => DalabAdminApi.getUssdPinStatus(c.id).then((r) => [c.id, r.isSet]))),
+        DalabAdminApi.getSimRouting(),
+        DalabAdminApi.getAgentDevices(),
+        DalabAdminApi.getUssdTemplates(),
+      ]);
+      setPinStatuses(Object.fromEntries(pinPairs));
+      setRoutes(routeRows);
+      setDevices(deviceRows);
+      setTemplates(templateRows);
+    } catch (err) {
+      setError(err.message || "Could not load provider settings.");
+    }
+  };
+  useEffect(() => { fetchAll(); }, [companies]);
+
+  const routesFor = (companyId) => routes.filter((r) => r.companyId === companyId).sort((a, b) => a.priority - b.priority);
+  const templatesFor = (companyId) => templates.filter((t) => t.companyId === companyId);
+
+  const saveNumber = async (company) => {
+    const value = (numberDrafts[company.id] ?? (company.payNumber === "Not set" ? "" : company.payNumber)).trim();
+    if (value && !/^\d{6,15}$/.test(value)) {
+      setError("Payment/reseller number must be 6-15 digits.");
+      return;
+    }
+    setSavingKey(`number:${company.id}`);
+    setError(""); setMessage("");
+    try {
+      await DalabAdminApi.updatePaymentNumber(company.id, value, company.paymentUssdTemplate || "");
+      await refreshCompanies();
+      setMessage(`${company.name}'s payment number saved.`);
+    } catch (err) {
+      setError(err.message || "Could not save payment number.");
+    } finally {
+      setSavingKey(null);
+    }
+  };
+
+  const savePin = async (companyId) => {
+    const pin = pinDrafts[companyId];
+    if (!pin || !/^\d{3,8}$/.test(pin)) {
+      setError("PIN must be 3-8 digits.");
+      return;
+    }
+    setSavingKey(`pin:${companyId}`);
+    setError(""); setMessage("");
+    try {
+      await DalabAdminApi.setUssdPin(companyId, pin);
+      setPinStatuses((prev) => ({ ...prev, [companyId]: true }));
+      setPinDrafts((prev) => ({ ...prev, [companyId]: "" }));
+      setMessage("PIN saved — it will be used fresh on the very next USSD dial for this provider.");
+    } catch (err) {
+      setError(err.message || "Could not save PIN.");
+    } finally {
+      setSavingKey(null);
+    }
+  };
+
+  const saveRoute = async (companyId, deviceId, simSlot, priority) => {
+    setSavingKey(`route:${companyId}:${deviceId}`);
+    setError(""); setMessage("");
+    try {
+      await DalabAdminApi.setSimRouting(companyId, deviceId, simSlot, priority);
+      await fetchAll();
+    } catch (err) {
+      setError(err.message || "Could not save SIM slot.");
+    } finally {
+      setSavingKey(null);
+    }
+  };
+
+  const addRoute = async (companyId) => {
+    const form = routeForm[companyId];
+    if (!form?.deviceId) return;
+    await saveRoute(companyId, form.deviceId, form.simSlot || 1, routesFor(companyId).length + 1);
+    setRouteForm((prev) => ({ ...prev, [companyId]: { deviceId: "", simSlot: 1 } }));
+  };
+
+  const openNewTemplate = (companyId) => {
+    setTemplateForm({ companyId, serviceName: "", ussdCode: "*{receiverNumber}*{amount}*{pin}#", notes: "", deviceId: "", simSlot: "" });
+    setTemplateEditing({ companyId, id: "new" });
+  };
+  const openEditTemplate = (t) => {
+    setTemplateForm({ ...t, deviceId: t.deviceId || "", simSlot: t.simSlot ?? "" });
+    setTemplateEditing({ companyId: t.companyId, id: t.id });
+  };
+
+  const saveTemplate = async () => {
+    if (!templateForm.serviceName || !templateForm.ussdCode) return;
+    if (!templateForm.ussdCode.includes("{amount}") || !templateForm.ussdCode.includes("{pin}") ||
+        !(templateForm.ussdCode.includes("{number}") || templateForm.ussdCode.includes("{customerNumber}") || templateForm.ussdCode.includes("{receiverNumber}"))) {
+      alert("USSD template must contain {receiverNumber} (or {number}/{customerNumber}), {amount}, and {pin} placeholders.");
+      return;
+    }
+    const payload = {
+      ...templateForm,
+      deviceId: templateForm.deviceId || null,
+      simSlot: templateForm.simSlot === "" || templateForm.simSlot == null ? null : Number(templateForm.simSlot),
+    };
+    try {
+      if (templateEditing.id === "new") await DalabAdminApi.createUssdTemplate(payload);
+      else await DalabAdminApi.updateUssdTemplate(templateEditing.id, payload);
+      await fetchAll();
+    } catch (err) {
+      alert(err.message || "Could not save USSD template.");
+      return;
+    }
+    setTemplateEditing(null);
+  };
+
+  const toggleTemplateStatus = async (t) => {
+    const next = t.status === "enabled" ? "disabled" : "enabled";
+    setTemplates((prev) => prev.map((x) => (x.id === t.id ? { ...x, status: next } : x)));
+    try { await DalabAdminApi.toggleUssdTemplateStatus(t.id, next); } catch (err) { fetchAll(); }
+  };
+
+  const removeTemplate = async (t) => {
+    if (!window.confirm(`Delete the "${t.serviceName}" USSD template? This can't be undone.`)) return;
+    setTemplates((prev) => prev.filter((x) => x.id !== t.id));
+    try { await DalabAdminApi.deleteUssdTemplate(t.id); } catch (err) { fetchAll(); }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage provider numbers.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Provider Numbers</div>
+        <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>
+          Everything about one mobile operator in one place — Payment/Reseller Number, USSD PIN, USSD Template(s), and SIM Slot — all editable here at
+          any time, with no source-code changes. The Agent App always loads the latest saved value of each of these fresh from the database on every USSD dial; nothing is ever cached.
+        </div>
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {message && <div style={{ color: GREEN, fontSize: 12.5, marginBottom: 14 }}>{message}</div>}
+      {!canManageSecrets && <Badge tone="amber">View only for Payment Number, PIN and USSD Template — ask a Super Admin to change those</Badge>}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 14 }}>
+        {companies.map((c) => {
+          const companyRoutes = routesFor(c.id);
+          const primaryRoute = companyRoutes[0];
+          const companyTemplates = templatesFor(c.id);
+          const usedDeviceIds = new Set(companyRoutes.map((r) => r.deviceId));
+          const availableDevices = devices.filter((d) => !usedDeviceIds.has(d.id));
+          const routeDraft = routeForm[c.id] || { deviceId: "", simSlot: 1 };
+
+          return (
+            <Card key={c.id} style={{ padding: 18 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+                <div style={{ width: 10, height: 10, borderRadius: 5, background: c.color }} />
+                <span style={{ fontWeight: 800, fontSize: 15, color: INK }}>{c.name}</span>
+                <Badge tone={c.status === "enabled" ? "green" : "red"}>{c.status === "enabled" ? "Enabled" : "Disabled"}</Badge>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+                <Field label="Payment / Reseller Number">
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input
+                      style={inputStyle}
+                      placeholder="e.g. 0610338686"
+                      disabled={!canManageSecrets}
+                      value={numberDrafts[c.id] ?? (c.payNumber === "Not set" ? "" : c.payNumber)}
+                      onChange={(e) => setNumberDrafts((prev) => ({ ...prev, [c.id]: e.target.value.replace(/\D/g, "") }))}
+                    />
+                    {canManageSecrets && (
+                      <Button variant="ghost" onClick={() => saveNumber(c)} disabled={savingKey === `number:${c.id}`}>
+                        {savingKey === `number:${c.id}` ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                      </Button>
+                    )}
+                  </div>
+                </Field>
+
+                <Field label="USSD PIN">
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <input
+                      type="password" inputMode="numeric" maxLength={8}
+                      style={inputStyle}
+                      placeholder={pinStatuses[c.id] ? "•••• (set — type to replace)" : "Not set"}
+                      disabled={!canManageSecrets}
+                      value={pinDrafts[c.id] || ""}
+                      onChange={(e) => setPinDrafts((prev) => ({ ...prev, [c.id]: e.target.value.replace(/\D/g, "") }))}
+                    />
+                    {canManageSecrets && (
+                      <Button variant="ghost" onClick={() => savePin(c.id)} disabled={savingKey === `pin:${c.id}` || !pinDrafts[c.id]}>
+                        {savingKey === `pin:${c.id}` ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                      </Button>
+                    )}
+                    <Badge tone={pinStatuses[c.id] ? "green" : "amber"}>{pinStatuses[c.id] ? "Set" : "Not set"}</Badge>
+                  </div>
+                </Field>
+              </div>
+
+              <Field label="SIM Slot (primary device)">
+                {primaryRoute ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: INK }}>{primaryRoute.deviceName || "Unknown device"}</span>
+                    {canManageRouting ? (
+                      <select
+                        value={primaryRoute.simSlot}
+                        onChange={(e) => saveRoute(c.id, primaryRoute.deviceId, Number(e.target.value), primaryRoute.priority)}
+                        style={{ ...inputStyle, width: 100, padding: "5px 8px" }}
+                      >
+                        <option value={1}>SIM 1</option>
+                        <option value={2}>SIM 2</option>
+                      </select>
+                    ) : (
+                      <Badge tone="blue">SIM {primaryRoute.simSlot}</Badge>
+                    )}
+                    {savingKey === `route:${c.id}:${primaryRoute.deviceId}` && <Loader2 size={13} className="animate-spin" color={MUTE} />}
+                    {companyRoutes.length > 1 && (
+                      <span style={{ fontSize: 11.5, color: MUTE }}>+{companyRoutes.length - 1} backup device(s) — manage in Device &amp; USSD → SIM Routing</span>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12.5, color: "#A9720A", display: "flex", alignItems: "center", gap: 6 }}>
+                    <AlertTriangle size={13} />
+                    No device routed yet — the Agent App can't auto-dial for {c.name} until one is assigned.
+                  </div>
+                )}
+                {canManageRouting && !primaryRoute && availableDevices.length > 0 && (
+                  <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                    <select
+                      value={routeDraft.deviceId}
+                      onChange={(e) => setRouteForm((prev) => ({ ...prev, [c.id]: { ...routeDraft, deviceId: e.target.value } }))}
+                      style={{ ...inputStyle, flex: 1, padding: "6px 10px" }}
+                    >
+                      <option value="">Choose a device...</option>
+                      {availableDevices.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                    </select>
+                    <select
+                      value={routeDraft.simSlot}
+                      onChange={(e) => setRouteForm((prev) => ({ ...prev, [c.id]: { ...routeDraft, simSlot: Number(e.target.value) } }))}
+                      style={{ ...inputStyle, width: 100, padding: "6px 10px" }}
+                    >
+                      <option value={1}>SIM 1</option>
+                      <option value={2}>SIM 2</option>
+                    </select>
+                    <Button variant="ghost" onClick={() => addRoute(c.id)} disabled={!routeDraft.deviceId}>Assign</Button>
+                  </div>
+                )}
+              </Field>
+
+              <div style={{ marginTop: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: SLATE }}>USSD TEMPLATE(S)</div>
+                  {canManageSecrets && <Button variant="ghost" icon={Plus} onClick={() => openNewTemplate(c.id)}>Add template</Button>}
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {companyTemplates.map((t) => (
+                    <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, border: `1px solid ${BORDER}` }}>
+                      <span style={{ fontSize: 12.5, fontWeight: 700, color: INK, width: 150, flexShrink: 0 }}>{t.serviceName}</span>
+                      <span style={{ flex: 1, fontSize: 12, color: SLATE, fontFamily: "monospace" }}>{t.ussdCode}</span>
+                      <Badge tone={t.status === "enabled" ? "green" : "gray"}>{t.status === "enabled" ? "Enabled" : "Disabled"}</Badge>
+                      {canManageSecrets && (
+                        <>
+                          <button onClick={() => toggleTemplateStatus(t)} title={t.status === "enabled" ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                            <Power size={14} color={t.status === "enabled" ? GREEN : "#C81E2C"} />
+                          </button>
+                          <button onClick={() => openEditTemplate(t)} title="Edit" style={{ background: "none", border: "none", cursor: "pointer" }}>
+                            <Pencil size={14} color={INDIGO} />
+                          </button>
+                          <button onClick={() => removeTemplate(t)} title="Delete" style={{ background: "none", border: "none", cursor: "pointer" }}>
+                            <Trash2 size={14} color="#C81E2C" />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                  {companyTemplates.length === 0 && (
+                    <div style={{ fontSize: 12, color: MUTE, padding: "8px 10px" }}>No USSD templates for {c.name} yet.</div>
+                  )}
+                </div>
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+
+      {templateEditing && (
+        <Modal title={templateEditing.id === "new" ? "Add USSD template" : "Edit USSD template"} onClose={() => setTemplateEditing(null)} width={460}>
+          <Field label="Service / Package Category">
+            <input style={inputStyle} value={templateForm.serviceName || ""} onChange={(e) => setTemplateForm({ ...templateForm, serviceName: e.target.value })} placeholder="e.g. Anfac Plus, Qanciye, Broadband 5G" />
+          </Field>
+          <Field label="USSD Template Pattern">
+            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={templateForm.ussdCode || ""} onChange={(e) => setTemplateForm({ ...templateForm, ussdCode: e.target.value })} placeholder="*737*{receiverNumber}*{amount}*{pin}#" />
+          </Field>
+          <div style={{ fontSize: 11, color: MUTE, marginTop: -8, marginBottom: 14 }}>
+            Must include <code>{"{receiverNumber}"}</code> (or <code>{"{number}"}</code>/<code>{"{customerNumber}"}</code>), <code>{"{amount}"}</code>, and <code>{"{pin}"}</code>.
+            Any digits typed before <code>{"{pin}"}</code> (e.g. a service short-code like <code>*737*</code>) are dialed literally —
+            <b> do not put the PIN itself in this pattern.</b> The real PIN is the field set above and is loaded fresh every time.
+          </div>
+          <Field label="Assigned Device & SIM Slot (optional — overrides this provider's usual routing)">
+            <div style={{ display: "flex", gap: 8 }}>
+              <select style={{ ...inputStyle, flex: 2 }} value={templateForm.deviceId || ""} onChange={(e) => setTemplateForm({ ...templateForm, deviceId: e.target.value })}>
+                <option value="">Use this provider's normal SIM routing</option>
+                {devices.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+              <select style={{ ...inputStyle, flex: 1 }} value={templateForm.simSlot ?? ""} onChange={(e) => setTemplateForm({ ...templateForm, simSlot: e.target.value })} disabled={!templateForm.deviceId}>
+                <option value="">SIM slot</option>
+                <option value="1">SIM 1</option>
+                <option value="2">SIM 2</option>
+              </select>
+            </div>
+          </Field>
+          <Field label="Notes (optional)">
+            <input style={inputStyle} value={templateForm.notes || ""} onChange={(e) => setTemplateForm({ ...templateForm, notes: e.target.value })} placeholder="Internal notes for other admins" />
+          </Field>
+          <div style={{ display: "flex", gap: 10 }}>
+            <Button onClick={saveTemplate} icon={Check}>Save Template</Button>
+            <Button variant="ghost" onClick={() => setTemplateEditing(null)}>Cancel</Button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 function ExecutionLogs({ companies }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -4452,6 +4805,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "overview" && <Overview companies={companies} orders={orders} />}
           {active === "companies" && <Companies companies={companies} setCompanies={setCompanies} refreshCompanies={refreshCompanies} admin={admin} />}
           {active === "payment-numbers" && <PaymentNumbers companies={companies} setCompanies={setCompanies} refreshCompanies={refreshCompanies} admin={admin} />}
+          {active === "provider-numbers" && <ProviderNumbers companies={companies} refreshCompanies={refreshCompanies} admin={admin} />}
           {active === "payment-wallets" && <PaymentWalletsPanel />}
           {active === "packages" && <Packages packages={packages} setPackages={setPackages} companies={companies} admin={admin} />}
           {active === "categories" && <Categories companies={companies} admin={admin} />}
