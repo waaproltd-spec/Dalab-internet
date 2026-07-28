@@ -3804,6 +3804,14 @@ function ActivityLogPanel() {
     }
   };
   useEffect(() => { fetchLog(); }, [entityFilter]);
+  // Payment transactions arrive continuously from the automatic SMS→USSD
+  // pipeline (not admin-driven), so this view polls like SMS Monitor does —
+  // a Super Admin watching this tab sees new verified/completed/rejected
+  // entries without manually refreshing.
+  useEffect(() => {
+    const timer = setInterval(fetchLog, 10000);
+    return () => clearInterval(timer);
+  }, [entityFilter]);
 
   const actionLabel = (action) => ({
     create_ussd_template: "Created USSD template",
@@ -3817,7 +3825,16 @@ function ActivityLogPanel() {
     update_payment_wallet: "Updated payment wallet",
     update_payment_wallet_status: "Changed payment wallet status",
     delete_payment_wallet: "Deleted payment wallet",
+    payment_verified: "Payment verified — matched to order",
+    payment_completed: "Payment completed — order fulfilled",
+    payment_already_processed: "Duplicate payment rejected",
   }[action] || action);
+
+  const paymentStatusTone = (status) => ({
+    verified: "amber",
+    completed: "green",
+    already_processed: "gray",
+  }[status] || "gray");
 
   if (!DALAB_API_ENABLED) {
     return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to view the activity log.</div>;
@@ -3828,7 +3845,7 @@ function ActivityLogPanel() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 16, flexWrap: "wrap" }}>
         <div>
           <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Activity Log</div>
-          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Every change to payment gateway numbers, USSD templates, and provider PINs — admin, timestamp, and before/after values.</div>
+          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Every admin config change (payment gateway numbers, USSD templates, provider PINs, payment wallets) plus every incoming payment transaction — verified, completed, or rejected as a duplicate — the instant the Agent App reports it.</div>
         </div>
         <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={fetchLog} disabled={loading}>Refresh</Button>
       </div>
@@ -3839,6 +3856,7 @@ function ActivityLogPanel() {
           { id: "company", label: "Payment Gateway" },
           { id: "ussd_template", label: "USSD Templates" },
           { id: "payment_wallet", label: "Payment Wallets" },
+          { id: "payment_transaction", label: "Payment Transactions" },
         ].map((f) => (
           <button key={f.id} onClick={() => setEntityFilter(f.id)} style={{
             padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
@@ -3864,11 +3882,24 @@ function ActivityLogPanel() {
               return (
                 <React.Fragment key={r.id}>
                   <tr style={{ borderTop: `1px solid ${BORDER}`, cursor: "pointer" }} onClick={() => setExpanded((prev) => ({ ...prev, [r.id]: !prev[r.id] }))}>
-                    <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(r.createdAt)}</td>
-                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{r.adminEmail || "Unknown admin"}</td>
-                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontWeight: 600 }}>{actionLabel(r.action)}</td>
-                    <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE, fontFamily: "monospace" }}>{r.entityType}:{r.entityId}</td>
-                    <td style={{ padding: "10px 14px" }}>{isOpen ? <ChevronDown size={15} color={MUTE} /> : <ChevronRight size={15} color={MUTE} />}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap", verticalAlign: "top" }}>{formatDateTime(r.createdAt)}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, verticalAlign: "top" }}>{r.entityType === "payment_transaction" ? "Agent App" : (r.adminEmail || "Unknown admin")}</td>
+                    <td style={{ padding: "10px 14px", verticalAlign: "top" }}>
+                      <div style={{ fontSize: 12.5, color: INK, fontWeight: 600 }}>{actionLabel(r.action)}</div>
+                      {r.entityType === "payment_transaction" && r.newValue && (
+                        <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 12, fontSize: 11.5, color: SLATE }}>
+                          <span><b>Order:</b> {r.newValue.orderId || "—"}</span>
+                          <span><b>From:</b> {r.newValue.senderPhone || "—"}</span>
+                          <span><b>To:</b> {r.newValue.receiverPhone || "—"}</span>
+                          <span><b>Amount:</b> {r.newValue.amount != null ? `$${Number(r.newValue.amount).toFixed(2)}` : "—"}</span>
+                          <span><b>Provider:</b> {r.newValue.provider || "—"}</span>
+                          {r.newValue.transactionRef && <span><b>Ref:</b> {r.newValue.transactionRef}</span>}
+                          <Badge tone={paymentStatusTone(r.newValue.status)}>{r.newValue.status}</Badge>
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE, fontFamily: "monospace", verticalAlign: "top" }}>{r.entityType}:{r.entityId}</td>
+                    <td style={{ padding: "10px 14px", verticalAlign: "top" }}>{isOpen ? <ChevronDown size={15} color={MUTE} /> : <ChevronRight size={15} color={MUTE} />}</td>
                   </tr>
                   {isOpen && (
                     <tr style={{ background: "#FAFBFF" }}>

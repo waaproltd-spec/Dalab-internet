@@ -6,6 +6,7 @@ import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { generateUssdForOrder } from "./ussd.routes.js";
 import { subscribe, broadcast } from "../realtime/orderEvents.js";
+import { recordActivity } from "../utils/activityLog.js";
 
 export const ordersRouter = Router();
 
@@ -228,6 +229,23 @@ async function completeOrderById(orderId: string): Promise<{ order: any; already
   }
   await creditMacaashIfNeeded(order);
   broadcast({ type: "order.updated", orderId });
+  await recordActivity({
+    adminId: undefined,
+    action: "payment_completed",
+    entityType: "payment_transaction",
+    entityId: order.id,
+    oldValue: null,
+    newValue: {
+      orderId: order.id,
+      senderPhone: order.sender_phone,
+      receiverPhone: order.receiver_phone,
+      amount: order.amount,
+      provider: order.company_id,
+      transactionRef: null,
+      paymentTimestamp: new Date().toISOString(),
+      status: "completed",
+    },
+  });
   return { order, alreadyCompleted: false };
 }
 
