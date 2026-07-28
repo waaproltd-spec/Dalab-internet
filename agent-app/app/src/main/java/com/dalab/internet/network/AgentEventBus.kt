@@ -25,11 +25,24 @@ object AgentEventBus {
     private val _connectionState = MutableStateFlow(ConnectionState.CONNECTING)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
+    // Emitted the moment ApiClient's token-refresh Authenticator gives up and
+    // clears the session in the background (refresh token expired/revoked).
+    // Nothing prompted the agent to notice this before — every subsequent
+    // SMS upload/verify/dial call just silently 401'd forever until they
+    // happened to reopen the app. AgentBackgroundService collects this to
+    // post a real notification instead.
+    private val _sessionExpired = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val sessionExpired: SharedFlow<Unit> = _sessionExpired.asSharedFlow()
+
     fun emitOrderEvent() {
         _orderEvents.tryEmit(Unit)
     }
 
     fun setConnectionState(state: ConnectionState) {
         _connectionState.value = state
+    }
+
+    fun emitSessionExpired() {
+        _sessionExpired.tryEmit(Unit)
     }
 }
