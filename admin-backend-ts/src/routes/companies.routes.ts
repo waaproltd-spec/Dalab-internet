@@ -6,6 +6,7 @@ import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { recordActivity } from "../utils/activityLog.js";
 import { parseDataUri } from "../utils/dataUri.js";
+import { matchTemplateByName, selfHealStuckOrders } from "./ussd.routes.js";
 
 export const companiesRouter = Router();
 export const packagesRouter = Router();
@@ -226,8 +227,28 @@ packagesRouter.get("/admin/packages", requireStaff(), async (req, res) => {
   sendJson(res, 200, rows);
 });
 
+// A package with no way to resolve a USSD template (neither the real ID
+// link nor the legacy name-fallback) will succeed here but silently strand
+// the first real customer who buys it — this is the root cause a full
+// pipeline audit traced a real stuck-order incident to. Returns a
+// non-blocking warning string for the caller to surface, rather than
+// failing the save: the Super Admin may be linking the template separately,
+// or genuinely wants to save a draft package before USSD Services is set up.
+async function templateWarningFor(companyId: string, packageName: string, ussdTemplateId: string | null): Promise<string | undefined> {
+  if (ussdTemplateId) return undefined;
+  const match = await matchTemplateByName(companyId, packageName);
+  return match ? undefined : "No USSD template matches this package yet — link one in USSD Services, or a customer paying for it will get stuck.";
+}
+
+async function validateUssdTemplateId(companyId: string, ussdTemplateId: unknown): Promise<string | undefined> {
+  if (ussdTemplateId == null || ussdTemplateId === "") return undefined;
+  const template = await queryOne(`SELECT id FROM ussd_templates WHERE id=$1 AND company_id=$2`, [ussdTemplateId, companyId]);
+  if (!template) return "ussdTemplateId does not match any USSD template for this company";
+  return undefined;
+}
+
 packagesRouter.post("/admin/packages", requirePermission("packages.manage"), async (req, res) => {
-  const { companyId, categoryId, name, oldPrice, price, providerAmount, mb, minutes, sms, validity, code } = req.body;
+  const { companyId, categoryId, name, oldPrice, price, providerAmount, mb, minutes, sms, validity, code, ussdTemplateId } = req.body;
   if (!companyId || !categoryId || !name || price == null) {
     return sendJson(res, 400, { error: "companyId, categoryId, name, price are required" });
   }
@@ -240,17 +261,31 @@ packagesRouter.post("/admin/packages", requirePermission("packages.manage"), asy
   if (!(await queryOne(`SELECT id FROM service_categories WHERE company_id=$1 AND slug=$2`, [companyId, categoryId]))) {
     return sendJson(res, 400, { error: "categoryId does not match any category for this company" });
   }
+  const templateError = await validateUssdTemplateId(companyId, ussdTemplateId);
+  if (templateError) return sendJson(res, 400, { error: templateError });
   const id = randomUUID();
   // "" (an intentionally-cleared/never-filled-in form field) must become
   // NULL, not be sent to Postgres as an empty string literal for a NUMERIC
   // column — unlike price, this field is optional so "" is a valid input.
   const providerAmountValue = providerAmount === "" || providerAmount == null ? null : providerAmount;
+  const ussdTemplateIdValue = ussdTemplateId || null;
   await query(
-    `INSERT INTO packages (id, company_id, category_id, name, old_price, price, provider_amount, mb, minutes, sms, validity, code)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-    [id, companyId, categoryId, name, oldPrice ?? price, price, providerAmountValue, mb ?? 0, minutes ?? 0, sms ?? 0, validity ?? "", code ?? null]
+    `INSERT INTO packages (id, company_id, category_id, name, old_price, price, provider_amount, mb, minutes, sms, validity, code, ussd_template_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+    [id, companyId, categoryId, name, oldPrice ?? price, price, providerAmountValue, mb ?? 0, minutes ?? 0, sms ?? 0, validity ?? "", code ?? null, ussdTemplateIdValue]
   );
-  sendJson(res, 201, await queryOne(`SELECT * FROM packages WHERE id=$1`, [id]));
+  const created = await queryOne(`SELECT * FROM packages WHERE id=$1`, [id]);
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "create_package",
+    entityType: "package",
+    entityId: id,
+    oldValue: null,
+    newValue: created,
+  });
+  const templateWarning = await templateWarningFor(companyId, name, ussdTemplateIdValue);
+  if (ussdTemplateIdValue) await selfHealStuckOrders(companyId);
+  sendJson(res, 201, { ...created, templateWarning });
 });
 
 packagesRouter.put("/admin/packages/:id", requirePermission("packages.manage"), async (req, res) => {
@@ -275,22 +310,67 @@ packagesRouter.put("/admin/packages/:id", requirePermission("packages.manage"), 
   const code = req.body.code !== undefined ? req.body.code : existing.code;
   const rawProviderAmount = req.body.providerAmount !== undefined ? req.body.providerAmount : existing.provider_amount;
   const providerAmount = rawProviderAmount === "" || rawProviderAmount == null ? null : rawProviderAmount;
+  const ussdTemplateId = req.body.ussdTemplateId !== undefined ? (req.body.ussdTemplateId || null) : existing.ussd_template_id;
   if (
     req.body.categoryId !== undefined &&
     !(await queryOne(`SELECT id FROM service_categories WHERE company_id=$1 AND slug=$2`, [existing.company_id, categoryId]))
   ) {
     return sendJson(res, 400, { error: "categoryId does not match any category for this company" });
   }
+  if (req.body.ussdTemplateId !== undefined) {
+    const templateError = await validateUssdTemplateId(existing.company_id, ussdTemplateId);
+    if (templateError) return sendJson(res, 400, { error: templateError });
+  }
   await query(
-    `UPDATE packages SET name=$1, category_id=$2, old_price=$3, price=$4, provider_amount=$5, mb=$6, minutes=$7, sms=$8, validity=$9, active=$10, code=$11 WHERE id=$12`,
-    [name, categoryId, oldPrice, price, providerAmount, mb, minutes, sms, validity, Boolean(active), code ?? null, req.params.id]
+    `UPDATE packages SET name=$1, category_id=$2, old_price=$3, price=$4, provider_amount=$5, mb=$6, minutes=$7, sms=$8, validity=$9, active=$10, code=$11, ussd_template_id=$12 WHERE id=$13`,
+    [name, categoryId, oldPrice, price, providerAmount, mb, minutes, sms, validity, Boolean(active), code ?? null, ussdTemplateId, req.params.id]
   );
-  sendJson(res, 200, await queryOne(`SELECT * FROM packages WHERE id=$1`, [req.params.id]));
+  const updated = await queryOne(`SELECT * FROM packages WHERE id=$1`, [req.params.id]);
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "update_package",
+    entityType: "package",
+    entityId: req.params.id,
+    oldValue: existing,
+    newValue: updated,
+  });
+  const templateWarning = await templateWarningFor(existing.company_id, name, ussdTemplateId);
+  // Only when this request actually touched the link (not every price/name
+  // edit) — covers "the Super Admin fixes the mismatch by linking this
+  // package to the right template" the same way adding/enabling a template
+  // does above.
+  if (req.body.ussdTemplateId !== undefined && ussdTemplateId) await selfHealStuckOrders(existing.company_id);
+  sendJson(res, 200, { ...updated, templateWarning });
 });
 
 // Soft delete — a package already ordered must stay in history for receipts/reports.
 packagesRouter.delete("/admin/packages/:id", requirePermission("packages.manage"), async (req, res) => {
   const result = await query(`UPDATE packages SET active=false WHERE id=$1 RETURNING id`, [req.params.id]);
   if (result.length === 0) return sendJson(res, 404, { error: "Package not found" });
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "deactivate_package",
+    entityType: "package",
+    entityId: req.params.id,
+    oldValue: { active: true },
+    newValue: { active: false },
+  });
   sendJson(res, 200, { deactivated: true });
+});
+
+// Proactive: every active package that will fail generateUssdForOrder's
+// matching today — neither linked by id nor resolvable by the legacy
+// name-fallback — so a Super Admin can find and fix these BEFORE a real
+// customer payment hits one, instead of after a stuck order is reported.
+packagesRouter.get("/admin/packages/missing-template", requireStaff(), async (_req, res) => {
+  sendJson(res, 200, await query(
+    `SELECT p.*, c.name AS company_name FROM packages p
+     JOIN companies c ON c.id = p.company_id AND c.deleted_at IS NULL
+     WHERE p.active = true AND p.ussd_template_id IS NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM ussd_templates t WHERE t.company_id = p.company_id AND t.status='enabled'
+           AND (LOWER(t.service_name) = LOWER(p.name) OR POSITION(LOWER(t.service_name) IN LOWER(p.name)) > 0)
+       )
+     ORDER BY c.name, p.name`
+  ));
 });

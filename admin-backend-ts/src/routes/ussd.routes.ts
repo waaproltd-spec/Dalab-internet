@@ -38,6 +38,7 @@ ussdRouter.put("/admin/companies/:id/pin", requireAuth("super_admin"), async (re
     oldValue: { pinSet: Boolean(existing.pin_encrypted) },
     newValue: { pinSet: true },
   });
+  await selfHealStuckOrders(req.params.id);
   sendJson(res, 200, { message: "PIN saved" });
 });
 
@@ -108,6 +109,9 @@ ussdRouter.post("/admin/ussd-templates", requireAuth("super_admin"), async (req,
     oldValue: null,
     newValue: created,
   });
+  // Always enabled on create (see the INSERT above) — a brand-new template
+  // could be exactly what unblocks a currently-stuck order.
+  await selfHealStuckOrders(companyId);
   sendJson(res, 201, created);
 });
 
@@ -149,13 +153,14 @@ ussdRouter.put("/admin/ussd-templates/:id", requireAuth("super_admin"), async (r
     oldValue: existing,
     newValue: updated,
   });
+  if (updated?.status === "enabled") await selfHealStuckOrders(updated.company_id);
   sendJson(res, 200, updated);
 });
 
 ussdRouter.put("/admin/ussd-templates/:id/status", requireAuth("super_admin"), async (req, res) => {
   const { status } = req.body;
   if (!["enabled", "disabled"].includes(status)) return sendJson(res, 400, { error: "status must be 'enabled' or 'disabled'" });
-  const existing = await queryOne(`SELECT status FROM ussd_templates WHERE id=$1`, [req.params.id]);
+  const existing = await queryOne(`SELECT status, company_id FROM ussd_templates WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Template not found" });
   await query(`UPDATE ussd_templates SET status=$1, updated_at=now() WHERE id=$2`, [status, req.params.id]);
   await recordActivity({
@@ -166,6 +171,7 @@ ussdRouter.put("/admin/ussd-templates/:id/status", requireAuth("super_admin"), a
     oldValue: { status: existing.status },
     newValue: { status },
   });
+  if (status === "enabled") await selfHealStuckOrders(existing.company_id);
   sendJson(res, 200, await queryOne(`SELECT * FROM ussd_templates WHERE id=$1`, [req.params.id]));
 });
 
@@ -200,10 +206,31 @@ ussdRouter.get("/admin/ussd-logs", requireStaff(), async (req, res) => {
 });
 
 /**
+ * Legacy name-based fallback matcher — the exact logic generateUssdForOrder
+ * used exclusively before packages.ussd_template_id existed. Still used for
+ * (a) any package never migrated to an ID link, and (b) the missing-template
+ * validation/listing in companies.routes.ts, so both stay provably in sync
+ * with what generateUssdForOrder will actually do at dial time.
+ */
+export async function matchTemplateByName(companyId: string, packageName: string): Promise<{ id: string } | null> {
+  const exact = await queryOne<{ id: string }>(
+    `SELECT id FROM ussd_templates WHERE company_id=$1 AND status='enabled' AND LOWER(service_name)=LOWER($2) LIMIT 1`,
+    [companyId, packageName]
+  );
+  if (exact) return exact;
+  const candidates = await query<{ id: string; service_name: string }>(
+    `SELECT id, service_name FROM ussd_templates WHERE company_id=$1 AND status='enabled'`,
+    [companyId]
+  );
+  return candidates.find((t) => packageName.toLowerCase().includes(t.service_name.toLowerCase())) ?? null;
+}
+
+/**
  * Core generation logic, also called from orders.routes.ts when an order
- * moves to 'in_progress'. Matches a template for the order's company by
- * exact service-name match against the package name first, falling back to
- * a partial match. Returns { ussd, templateId } or { error }.
+ * moves to 'in_progress'. Matches a template for the order's package via the
+ * real ID link (packages.ussd_template_id) when set; only a package never
+ * migrated to that link falls back to matchTemplateByName's free-text
+ * matching. Returns { ussd, templateId } or { error }.
  */
 export async function generateUssdForOrder(order: any, adminId?: string): Promise<{ ussd?: string; maskedUssd?: string; templateId?: string; error?: string }> {
   const company = await queryOne(`SELECT pin_encrypted FROM companies WHERE id=$1`, [order.company_id]);
@@ -212,23 +239,37 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
   }
 
   const orderWithPackage = await queryOne(
-    `SELECT o.*, p.name AS package_name, p.code AS package_code FROM orders o JOIN packages p ON p.id=o.package_id WHERE o.id=$1`,
+    `SELECT o.*, p.name AS package_name, p.code AS package_code, p.ussd_template_id
+     FROM orders o JOIN packages p ON p.id=o.package_id WHERE o.id=$1`,
     [order.id]
   );
 
-  let template = await queryOne(
-    `SELECT * FROM ussd_templates WHERE company_id=$1 AND status='enabled' AND LOWER(service_name)=LOWER($2) LIMIT 1`,
-    [order.company_id, orderWithPackage?.package_name ?? ""]
-  );
+  let template: any = null;
+  let linkedTemplateDisabled = false;
+
+  if (orderWithPackage?.ussd_template_id) {
+    // The ID-based link is authoritative once set — deliberately does NOT
+    // fall through to name-matching if the linked template is disabled or
+    // gone: that's a real misconfiguration to surface and fix, not something
+    // to silently paper over by re-guessing from the package name.
+    template = await queryOne(
+      `SELECT * FROM ussd_templates WHERE id=$1 AND company_id=$2 AND status='enabled'`,
+      [orderWithPackage.ussd_template_id, order.company_id]
+    );
+    if (!template) linkedTemplateDisabled = true;
+  } else {
+    // Never migrated to an ID link — preserve today's exact behavior.
+    const match = await matchTemplateByName(order.company_id, orderWithPackage?.package_name ?? "");
+    if (match) template = await queryOne(`SELECT * FROM ussd_templates WHERE id=$1`, [match.id]);
+  }
 
   if (!template) {
-    const candidates = await query<{ id: string; service_name: string; ussd_code: string }>(
-      `SELECT * FROM ussd_templates WHERE company_id=$1 AND status='enabled'`,
-      [order.company_id]
-    );
-    template = candidates.find((t) => (orderWithPackage?.package_name ?? "").toLowerCase().includes(t.service_name.toLowerCase())) ?? null;
+    return {
+      error: linkedTemplateDisabled
+        ? "This package's linked USSD template is disabled — check USSD Services in the dashboard."
+        : "No enabled USSD template matches this order's package or provider.",
+    };
   }
-  if (!template) return { error: "No enabled USSD template matches this order's package or provider." };
 
   const pin = decrypt(company.pin_encrypted);
   // The data package must be delivered to the RECEIVING phone, not
@@ -278,6 +319,40 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
     [randomUUID(), order.id, template.id, order.company_id, adminId ?? null, ussd, maskedUssd]
   );
   return { ussd, maskedUssd, templateId: template.id };
+}
+
+/**
+ * Re-attempts generateUssdForOrder for every order this company's Super
+ * Admin might have just unblocked (a fixed PIN, a newly-enabled/linked
+ * template), and broadcasts order.updated for each one that now succeeds —
+ * this is what makes "fix the template/PIN" alone enough, with zero
+ * one-off manual retry per stuck order. Reuses the exact same
+ * generateUssdForOrder used at verify-payment time, and the same
+ * broadcast() every other order mutation already uses — no new pub/sub.
+ * Best-effort: never throws, so a bug here can't break the save request
+ * that triggered it.
+ */
+export async function selfHealStuckOrders(companyId: string): Promise<{ healed: number; stillStuck: number }> {
+  try {
+    const stuck = await query<any>(
+      `SELECT * FROM orders WHERE status='in_progress' AND ussd_generated IS NULL AND company_id=$1`,
+      [companyId]
+    );
+    let healed = 0;
+    for (const order of stuck) {
+      const result = await generateUssdForOrder(order);
+      await query(`UPDATE orders SET ussd_generation_failed_reason=$1 WHERE id=$2`, [result.error ?? null, order.id]);
+      if (result.ussd) {
+        healed++;
+        broadcast({ type: "order.updated", orderId: order.id });
+      }
+    }
+    return { healed, stillStuck: stuck.length - healed };
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("selfHealStuckOrders failed:", (err as Error).message);
+    return { healed: 0, stillStuck: 0 };
+  }
 }
 
 ussdRouter.post("/admin/orders/:id/generate-ussd", requireStaff(), async (req, res) => {
