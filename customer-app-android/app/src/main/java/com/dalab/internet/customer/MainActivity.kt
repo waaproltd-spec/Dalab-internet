@@ -129,8 +129,9 @@ private fun CustomerApp() {
             selectedCategory?.let { category ->
                 CompanyPackagesScreen(
                     company = company,
+                    categoryId = category.id,
                     categoryLabel = category.label,
-                    packages = category.packages,
+                    initialPackages = category.packages,
                     onBack = { screen = Screen.COMPANY_CATEGORIES },
                     onBuy = { pkg -> checkoutSelection = company to pkg; screen = Screen.PAYMENT_METHOD },
                 )

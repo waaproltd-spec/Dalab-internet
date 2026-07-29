@@ -27,17 +27,29 @@ import androidx.compose.ui.unit.dp
 import com.dalab.internet.customer.data.Company
 import com.dalab.internet.customer.data.PackageItem
 import com.dalab.internet.customer.data.companyLogoRes
+import com.dalab.internet.customer.network.ApiClient
+import com.dalab.internet.customer.network.RealtimeClient
+import kotlinx.coroutines.launch
 
-/** Packages within one category of a provider — reached from CompanyCategoriesScreen. */
+/**
+ * Packages within one category of a provider — reached from
+ * CompanyCategoriesScreen. `initialPackages` is that screen's already-fetched
+ * snapshot (instant first paint, no loading flash); this screen then keeps
+ * itself live via the same catalog.updated SSE event the other catalog
+ * screens listen for, so a package enabled/disabled while a customer is
+ * parked exactly here still updates without them backing out and back in.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CompanyPackagesScreen(
     company: Company,
+    categoryId: String,
     categoryLabel: String,
-    packages: List<PackageItem>,
+    initialPackages: List<PackageItem>,
     onBack: () -> Unit,
     onBuy: (PackageItem) -> Unit,
 ) {
+    var packages by remember(company.id, categoryId) { mutableStateOf(initialPackages) }
     val offline = company.status == "offline"
     val brandColor = remember(company.colorHex) {
         try {
@@ -45,6 +57,23 @@ fun CompanyPackagesScreen(
         } catch (_: Exception) {
             Color(0xFF1D2E8C)
         }
+    }
+    val scope = rememberCoroutineScope()
+
+    val realtime = remember(company.id, categoryId) {
+        RealtimeClient(path = "orders/stream") {
+            scope.launch {
+                try {
+                    packages = ApiClient.service.getPackages(company.id).body().orEmpty().filter { it.categoryId == categoryId }
+                } catch (_: Exception) {
+                    // Keep showing the last known list rather than clearing it on a transient error.
+                }
+            }
+        }
+    }
+    DisposableEffect(realtime) {
+        realtime.connect()
+        onDispose { realtime.disconnect() }
     }
 
     Scaffold(

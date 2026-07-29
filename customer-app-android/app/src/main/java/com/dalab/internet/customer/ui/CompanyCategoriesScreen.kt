@@ -27,6 +27,8 @@ import com.dalab.internet.customer.data.PackageItem
 import com.dalab.internet.customer.data.ServiceCategory
 import com.dalab.internet.customer.data.companyLogoRes
 import com.dalab.internet.customer.network.ApiClient
+import com.dalab.internet.customer.network.RealtimeClient
+import kotlinx.coroutines.launch
 
 /** One entry per distinct categoryId among a company's packages. */
 private data class PackageCategory(val id: String, val label: String, val packages: List<PackageItem>)
@@ -53,8 +55,9 @@ fun CompanyCategoriesScreen(company: Company, onBack: () -> Unit, onSelectCatego
             Color(0xFF1D2E8C)
         }
     }
+    val scope = rememberCoroutineScope()
 
-    LaunchedEffect(company.id) {
+    suspend fun refresh() {
         try {
             packages = ApiClient.service.getPackages(company.id).body().orEmpty()
         } catch (_: Exception) {
@@ -66,6 +69,17 @@ fun CompanyCategoriesScreen(company: Company, onBack: () -> Unit, onSelectCatego
             serviceCategories = emptyList() // falls back to formatCategoryLabel below — never blocks showing packages
         }
         loading = false
+    }
+
+    LaunchedEffect(company.id) { refresh() }
+
+    // Same catalog.updated push HomeScreen listens for — a package enabled/
+    // disabled/edited while a customer is browsing this company's categories
+    // shows up without them having to navigate away and back.
+    val realtime = remember(company.id) { RealtimeClient(path = "orders/stream") { scope.launch { refresh() } } }
+    DisposableEffect(realtime) {
+        realtime.connect()
+        onDispose { realtime.disconnect() }
     }
 
     val categories = remember(packages, serviceCategories) {
