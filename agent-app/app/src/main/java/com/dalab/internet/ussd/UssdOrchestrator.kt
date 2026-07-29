@@ -45,11 +45,12 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         // the backend's own USSD string generation (see dalab-backend.zip,
         // routes/orders.js -> generateUssdForOrder).
         val verifyResponse = try {
-            ApiClient.service.verifyPayment(orderId, VerifyPaymentRequest(smsLogId))
+            RetryClassifier.requireSuccessful(ApiClient.service.verifyPayment(orderId, VerifyPaymentRequest(smsLogId)))
         } catch (e: Exception) {
-            // No connectivity right now (as opposed to the server actually
-            // rejecting the request) — the caller (SmsUploadFlow) queues a
-            // retry instead of losing this order to a transient network blip.
+            // No connectivity right now, or the server responded with a
+            // non-2xx status (as opposed to a genuinely rejected request) —
+            // the caller (SmsUploadFlow) queues a retry instead of losing
+            // this order to a transient network blip or backend hiccup.
             val outcome = if (RetryClassifier.isRetryable(e)) DialOutcome.NETWORK_UNAVAILABLE else DialOutcome.FAILED
             DiagnosticsLog.record("verify_payment", "Could not reach server (order $orderId): ${e.message}")
             return DialResult(outcome, "Could not reach server to verify payment: ${e.message}")
@@ -98,7 +99,7 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
      */
     suspend fun executeManually(orderId: String, forcedSimSlot: Int): DialResult {
         val verifyResponse = try {
-            ApiClient.service.verifyPayment(orderId, VerifyPaymentRequest(null))
+            RetryClassifier.requireSuccessful(ApiClient.service.verifyPayment(orderId, VerifyPaymentRequest(null)))
         } catch (e: Exception) {
             val outcome = if (RetryClassifier.isRetryable(e)) DialOutcome.NETWORK_UNAVAILABLE else DialOutcome.FAILED
             DiagnosticsLog.record("manual_execute", "Could not reach server (order $orderId): ${e.message}")

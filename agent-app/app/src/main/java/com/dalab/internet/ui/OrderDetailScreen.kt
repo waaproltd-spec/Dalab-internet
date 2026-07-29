@@ -101,7 +101,7 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
 
             Spacer(Modifier.height(20.dp))
             SectionLabel("STATUS")
-            StatusChip(current.status)
+            StatusChip(current)
 
             Spacer(Modifier.height(28.dp))
 
