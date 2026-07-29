@@ -416,6 +416,37 @@ ordersRouter.get("/admin/orders/:id", requireStaff(), async (req, res) => {
   sendJson(res, 200, maskOrder(order));
 });
 
+// For an order that's verified + USSD-generated but has zero dial attempts
+// (the "delivering, but nobody's dialed it yet" state) — tells the dashboard
+// whether that's because no device is configured to handle this company at
+// all, or because the responsible device's heartbeat has gone stale, rather
+// than leaving that ambiguous. Same "no heartbeat in >5 min = stale"
+// threshold already used by the Devices panel's own staleness badge.
+const DEVICE_STALE_MS = 5 * 60 * 1000;
+
+ordersRouter.get("/admin/orders/:id/delivery-status", requireStaff(), async (req, res) => {
+  const order = await queryOne(`SELECT company_id FROM orders WHERE id=$1`, [req.params.id]);
+  if (!order) return sendJson(res, 404, { error: "Order not found" });
+
+  const devices = await query(
+    `SELECT d.name, d.last_heartbeat_at
+     FROM sim_routing sr JOIN agent_devices d ON d.id = sr.device_id
+     WHERE sr.company_id=$1
+     ORDER BY sr.priority ASC`,
+    [order.company_id]
+  );
+  if (devices.length === 0) {
+    return sendJson(res, 200, { hasRouting: false, device: null });
+  }
+  const top = devices[0];
+  const lastHeartbeatAt = top.last_heartbeat_at ? new Date(top.last_heartbeat_at) : null;
+  const stale = !lastHeartbeatAt || Date.now() - lastHeartbeatAt.getTime() > DEVICE_STALE_MS;
+  sendJson(res, 200, {
+    hasRouting: true,
+    device: { name: top.name, lastHeartbeatAt: top.last_heartbeat_at, stale },
+  });
+});
+
 ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"), async (req, res) => {
   const { status } = req.body;
   if (!ORDER_STATUSES.includes(status)) return sendJson(res, 400, { error: `status must be one of ${ORDER_STATUSES.join(", ")}` });

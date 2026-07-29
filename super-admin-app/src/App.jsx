@@ -155,6 +155,7 @@ const DalabAdminApi = {
     const qs = new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([, v]) => v))).toString();
     return dalabAdminApiRequest(`/admin/execution-logs${qs ? `?${qs}` : ""}`);
   },
+  getOrderDeliveryStatus: (orderId) => dalabAdminApiRequest(`/admin/orders/${orderId}/delivery-status`),
   // Roles & Permissions (Super Admin only, enforced server-side too)
   getAdminUsers: () => dalabAdminApiRequest("/admin/users"),
   createAdminUser: (body) => dalabAdminApiRequest("/admin/users", { method: "POST", body }),
@@ -573,6 +574,23 @@ function displayOrderStatus(order) {
     return order?.ussdGenerated ? "Delivering" : "Processing";
   }
   return orderStatusLabel(order?.status);
+}
+
+// Turns a GET /admin/orders/:id/delivery-status response into the specific
+// sentence for the "verified, USSD generated, zero dial attempts, no
+// generation-failure reason" ambiguous state — distinguishing "no device is
+// even configured for this provider" from "the configured device looks
+// offline" from "a device is configured and should pick this up shortly",
+// instead of leaving a bare "no dial attempts yet". Returns null (falls back
+// to the caller's default text) while the status hasn't loaded yet.
+function waitingForDeviceMessage(deliveryStatus) {
+  if (!deliveryStatus) return null;
+  if (!deliveryStatus.hasRouting) return "No device is configured to handle payments for this provider.";
+  if (deliveryStatus.device?.stale) {
+    const seen = deliveryStatus.device.lastHeartbeatAt ? formatDateTime(deliveryStatus.device.lastHeartbeatAt) : "never";
+    return `Device ${deliveryStatus.device.name} appears offline (last seen ${seen}).`;
+  }
+  return `Verified and USSD generated — waiting on ${deliveryStatus.device.name} to dial it. This should happen automatically within a few minutes.`;
 }
 
 function Card({ children, style }) {
@@ -1492,6 +1510,7 @@ const DRAWER_TRANSITION_MS = 220;
 function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
   const [attempts, setAttempts] = useState([]);
   const [attemptsError, setAttemptsError] = useState("");
+  const [deliveryStatus, setDeliveryStatus] = useState(null);
   const [reversing, setReversing] = useState(false);
   const [reverseError, setReverseError] = useState("");
   const [localOrder, setLocalOrder] = useState(order);
@@ -1522,6 +1541,16 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
       .then(setAttempts)
       .catch((err) => setAttemptsError(err.message || "Could not load USSD execution history."));
   }, [order?.id]);
+
+  // Only worth checking when we're in the specific ambiguous state: verified,
+  // USSD generated, no attempts yet, and generation itself didn't fail — the
+  // one case a bare "no dial attempts" leaves unexplained.
+  useEffect(() => {
+    setDeliveryStatus(null);
+    if (!order || !DALAB_API_ENABLED) return;
+    if (attempts.length > 0 || !order.ussdGenerated || order.ussdGenerationFailedReason) return;
+    DalabAdminApi.getOrderDeliveryStatus(order.id).then(setDeliveryStatus).catch(() => {});
+  }, [order?.id, attempts.length, order?.ussdGenerated, order?.ussdGenerationFailedReason]);
 
   if (!order) return null;
   const row = (label, value, mono) => (
@@ -1656,7 +1685,9 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
         {attemptsError ? (
           <div style={{ marginTop: 8, fontSize: 12, color: "#C81E2C" }}>{attemptsError}</div>
         ) : attempts.length === 0 ? (
-          <div style={{ marginTop: 8, fontSize: 12, color: MUTE }}>No dial attempts recorded for this order yet.</div>
+          <div style={{ marginTop: 8, fontSize: 12, color: MUTE }}>
+            {waitingForDeviceMessage(deliveryStatus) || "No dial attempts recorded for this order yet."}
+          </div>
         ) : (
           <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
             {attempts.map((a) => (
@@ -3991,6 +4022,7 @@ function PaymentTransactionsPanel({ companies }) {
   const [timeline, setTimeline] = useState(null);
   const [timelineLoading, setTimelineLoading] = useState(false);
   const [timelineError, setTimelineError] = useState("");
+  const [deliveryStatus, setDeliveryStatus] = useState(null);
 
   // Devices fetched once, purely to populate the filter dropdown — the
   // list itself changes rarely, unlike the transactions it's filtering.
@@ -4036,10 +4068,17 @@ function PaymentTransactionsPanel({ companies }) {
   const openTimeline = async (id) => {
     setSelectedTxId(id);
     setTimeline(null);
+    setDeliveryStatus(null);
     setTimelineError("");
     setTimelineLoading(true);
     try {
-      setTimeline(await DalabAdminApi.getPaymentTransactionTimeline(id));
+      const data = await DalabAdminApi.getPaymentTransactionTimeline(id);
+      setTimeline(data);
+      // Same ambiguous state the Order Detail Drawer checks: verified, USSD
+      // generated, zero dial attempts, no generation-failure reason.
+      if (data.dialAttempts.length === 0 && data.order?.ussdGenerated && !data.order?.ussdGenerationFailedReason) {
+        DalabAdminApi.getOrderDeliveryStatus(data.order.id).then(setDeliveryStatus).catch(() => {});
+      }
     } catch (err) {
       setTimelineError(err.message || "Could not load transaction history.");
     } finally {
@@ -4245,7 +4284,9 @@ function PaymentTransactionsPanel({ companies }) {
               <div>
                 <div style={{ fontSize: 11, fontWeight: 700, color: MUTE, textTransform: "uppercase" }}>Dial attempts</div>
                 {timeline.dialAttempts.length === 0 && (
-                  <div style={{ fontSize: 12.5, color: MUTE, marginTop: 4 }}>No dial attempts yet.</div>
+                  <div style={{ fontSize: 12.5, color: MUTE, marginTop: 4 }}>
+                    {waitingForDeviceMessage(deliveryStatus) || "No dial attempts yet."}
+                  </div>
                 )}
                 {timeline.dialAttempts.length === 0 && timeline.order?.ussdGenerationFailedReason && (
                   <div style={{ fontSize: 12.5, color: "#C81E2C", marginTop: 4, fontWeight: 600 }}>
