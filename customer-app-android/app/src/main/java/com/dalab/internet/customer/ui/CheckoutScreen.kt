@@ -23,7 +23,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.dalab.internet.customer.auth.SessionManager
 import com.dalab.internet.customer.data.Company
 import com.dalab.internet.customer.data.CustomerOrder
 import com.dalab.internet.customer.data.PackageItem
@@ -57,8 +56,13 @@ private val MutedText = Color(0xFF9CA3B8)
 @Composable
 fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, onBack: () -> Unit, onOrderCreated: (CustomerOrder) -> Unit) {
     val context = LocalContext.current
-    var senderPhone by remember { mutableStateOf(SessionManager.currentCustomer()?.phone ?: "") }
-    var receiverPhone by remember { mutableStateOf(SessionManager.currentCustomer()?.phone ?: "") }
+    // Always start empty — never default to the logged-in account's phone or
+    // any payment number. The customer must type the real sending/receiving
+    // number for this specific order every time; auto-filling from session
+    // data risks silently reusing the wrong number (e.g. a payment number)
+    // for a field that must be a phone number.
+    var senderPhone by remember { mutableStateOf("") }
+    var receiverPhone by remember { mutableStateOf("") }
     var attemptedSubmit by remember { mutableStateOf(false) }
 
     var submitting by remember { mutableStateOf(false) }
