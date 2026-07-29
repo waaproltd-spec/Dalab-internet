@@ -17,6 +17,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.dalab.internet.customer.data.Company
 import com.dalab.internet.customer.data.PackageItem
 import com.dalab.internet.customer.data.PaymentWallet
 import com.dalab.internet.customer.data.walletLogoRes
@@ -33,16 +34,25 @@ private val MutedText = Color(0xFF9CA3B8)
  * Admin has enabled are shown, fetched live from GET /payment-wallets (never
  * hardcoded). Selecting one advances to Confirm Order (Step 3), which no
  * longer needs to show a payment method picker since it's already chosen.
+ *
+ * Wallets are GLOBAL (evc_plus/edahab/jeeb/amtel_pay, no company_id), but
+ * CheckoutScreen combines the selected wallet's dialPrefix with THIS
+ * company's own paymentNumber to build the dial string — so showing a
+ * wallet that doesn't belong to `company` would let the customer combine
+ * one provider's USSD prefix with a different provider's payment number,
+ * dialing a string that matches neither. Filter down to the wallet(s) whose
+ * providerLabel matches this company (seeded 1:1, e.g. "Somtel" -> eDahab).
  */
 @Composable
-fun PaymentMethodScreen(pkg: PackageItem, onBack: () -> Unit, onSelect: (PaymentWallet) -> Unit) {
+fun PaymentMethodScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onSelect: (PaymentWallet) -> Unit) {
     var wallets by remember { mutableStateOf<List<PaymentWallet>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(company.id) {
         try {
-            wallets = ApiClient.service.getPaymentWallets().body().orEmpty().filter { it.enabled }
+            val all = ApiClient.service.getPaymentWallets().body().orEmpty().filter { it.enabled }
+            wallets = all.filter { it.providerLabel?.equals(company.name, ignoreCase = true) == true }
         } catch (e: Exception) {
             error = "Couldn't load payment methods. Please try again."
         }
@@ -72,7 +82,7 @@ fun PaymentMethodScreen(pkg: PackageItem, onBack: () -> Unit, onSelect: (Payment
             when {
                 loading -> Text("Loading payment methods...", color = MutedText, fontSize = 13.sp)
                 error != null -> Text(error!!, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
-                wallets.isEmpty() -> Text("No payment methods are currently available.", color = MutedText, fontSize = 13.sp)
+                wallets.isEmpty() -> Text("No payment method is set up for ${company.name} yet. Please contact support.", color = MutedText, fontSize = 13.sp)
                 else -> wallets.forEach { wallet ->
                     val walletLogo = remember(wallet.logoKey) { walletLogoRes(wallet.logoKey) }
                     Surface(
