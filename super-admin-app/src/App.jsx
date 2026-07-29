@@ -498,16 +498,13 @@ const NAV = [
 
 function Logo({ size = 34 }) {
   return (
-    <div style={{ width: size, height: size, borderRadius: size * 0.3, background: "linear-gradient(160deg,#2436A8,#16209E)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-      <svg width={size * 0.62} height={size * 0.62} viewBox="0 0 100 100">
-        <polygon points="50,10 15,85 85,85" fill="#fff" />
-        <polygon points="50,10 60,32 42,32" fill="#22B24C" />
-        <circle cx="60" cy="60" r="8" fill="#22B24C" />
-        <path d="M60 60 Q75 50 78 32" stroke="#fff" strokeWidth="7" fill="none" strokeLinecap="round" />
-        <path d="M60 60 Q80 55 90 45" stroke="#fff" strokeWidth="7" fill="none" strokeLinecap="round" />
-        <polygon points="70,68 90,60 84,82" fill="#22B24C" />
-      </svg>
-    </div>
+    <img
+      src="/logo.png"
+      alt="Dalab Internet"
+      width={size}
+      height={size}
+      style={{ width: size, height: size, borderRadius: size * 0.3, flexShrink: 0, objectFit: "cover" }}
+    />
   );
 }
 
