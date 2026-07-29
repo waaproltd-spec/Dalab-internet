@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { query, queryOne } from "../db/pool.js";
 import { requireStaff } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
+import { parseDataUri } from "../utils/dataUri.js";
 
 export const promoImagesRouter = Router();
 
@@ -38,16 +39,6 @@ promoImagesRouter.get("/promo-images/:id/image", async (req, res) => {
 promoImagesRouter.get("/admin/promo-images", requireStaff(), async (_req, res) => {
   sendJson(res, 200, await query(`SELECT ${PROMO_IMAGE_COLUMNS} FROM promo_images ORDER BY position`));
 });
-
-// Body is { imageBase64: "data:image/png;base64,...." } — a data URI, parsed
-// here into raw bytes + mime type rather than trusting a separate mimeType
-// field from the client.
-function parseDataUri(dataUri: unknown): { data: Buffer; mimeType: string } | null {
-  if (typeof dataUri !== "string") return null;
-  const match = dataUri.match(/^data:([\w/+.-]+);base64,(.+)$/);
-  if (!match) return null;
-  return { mimeType: match[1], data: Buffer.from(match[2], "base64") };
-}
 
 promoImagesRouter.post("/admin/promo-images", requireStaff(), async (req, res) => {
   const parsed = parseDataUri(req.body.imageBase64);
