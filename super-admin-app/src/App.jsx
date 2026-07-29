@@ -737,6 +737,11 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
   const [form, setForm] = useState({ name: "", group: 1, color: "#1D2E8C" });
   const [error, setError] = useState("");
   const canManage = hasPermission(admin, "companies.manage");
+  // Enabling/disabling a provider is Super-Admin-exclusive on the backend
+  // (requireAuth("super_admin") on PUT /admin/companies/:id/status, not
+  // delegable via companies.manage like the rest of this panel) — mirror
+  // that here so a regular Admin never sees a button that would just 403.
+  const canManageStatus = admin?.role === "super_admin";
 
   const openNew = () => { setForm({ name: "", group: 1, color: "#1D2E8C" }); setEditing("new"); };
   const openEdit = (c) => { setForm(c); setEditing(c.id); };
@@ -835,13 +840,15 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
                   <div style={{ fontSize: 11.5, color: MUTE }}>{c.gateway}</div>
                 </div>
                 <Badge tone={c.status === "enabled" ? "green" : "red"}>{c.status === "enabled" ? "Enabled" : "Disabled"}</Badge>
+                {canManageStatus && (
+                  <button onClick={() => toggle(c)} title="Enable / disable" style={{ background: "none", border: "none", cursor: "pointer" }}>
+                    <Power size={16} color={c.status === "enabled" ? GREEN : "#C81E2C"} />
+                  </button>
+                )}
                 {canManage && (
                   <>
                     <button onClick={() => toggleVisibility(c, "visibleCustomerApp")} title={c.visibleCustomerApp ? "Visible in Customer App — click to hide" : "Hidden from Customer App — click to show"} style={{ background: "none", border: "none", cursor: "pointer" }}>
                       {c.visibleCustomerApp ? <Eye size={15} color={INDIGO} /> : <EyeOff size={15} color={MUTE} />}
-                    </button>
-                    <button onClick={() => toggle(c)} title="Enable / disable" style={{ background: "none", border: "none", cursor: "pointer" }}>
-                      <Power size={16} color={c.status === "enabled" ? GREEN : "#C81E2C"} />
                     </button>
                     <button onClick={() => openEdit(c)} style={{ background: "none", border: "none", cursor: "pointer" }}>
                       <Pencil size={15} color={INDIGO} />
@@ -4881,7 +4888,7 @@ function ActivityLogPanel() {
 // sees this nav item (NAV's superAdminOnly flag). The actual payment number
 // stays per-company (see PaymentNumbers above) — a wallet here only carries
 // the dial prefix + display info, never a phone number.
-function PaymentWalletsPanel() {
+function PaymentWalletsPanel({ companies }) {
   const [wallets, setWallets] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -4903,7 +4910,7 @@ function PaymentWalletsPanel() {
   useEffect(() => { fetchWallets(); }, []);
 
   const openNew = () => {
-    setForm({ id: "", name: "", providerLabel: "", dialPrefix: "", logoKey: "", colorHex: "#16A34A", sortOrder: wallets.length + 1 });
+    setForm({ id: "", name: "", providerLabel: "", companyId: "", dialPrefix: "", logoKey: "", colorHex: "#16A34A", sortOrder: wallets.length + 1 });
     setEditing("new");
   };
   const openEdit = (w) => { setForm({ ...w }); setEditing(w.id); };
@@ -4974,7 +4981,9 @@ function PaymentWalletsPanel() {
             {wallets.map((w) => (
               <tr key={w.id} style={{ borderTop: `1px solid ${BORDER}` }}>
                 <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{w.name}</td>
-                <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{w.providerLabel || "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: w.companyId ? SLATE : "#C81E2C" }}>
+                  {w.companyId ? (companies.find((c) => c.id === w.companyId)?.name || w.companyId) : (w.providerLabel ? `${w.providerLabel} (unlinked!)` : "— unlinked —")}
+                </td>
                 <td style={{ padding: "10px 14px", fontSize: 12, color: SLATE, fontFamily: "monospace" }}>{w.dialPrefix}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE, fontFamily: "monospace" }}>{w.logoKey}</td>
                 <td style={{ padding: "10px 14px" }}>
@@ -5014,14 +5023,17 @@ function PaymentWalletsPanel() {
           <Field label="Wallet Name (shown to customers)">
             <input style={inputStyle} value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Amtel Pay" />
           </Field>
-          <Field label="Provider Label (optional)">
-            <input style={inputStyle} value={form.providerLabel || ""} onChange={(e) => setForm({ ...form, providerLabel: e.target.value })} placeholder="e.g. Amtel" />
+          <Field label="Provider (company this wallet pays into)">
+            <select style={inputStyle} value={form.companyId || ""} onChange={(e) => setForm({ ...form, companyId: e.target.value })}>
+              <option value="">— none —</option>
+              {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
           </Field>
           <Field label="Dial Prefix">
             <input style={{ ...inputStyle, fontFamily: "monospace" }} value={form.dialPrefix || ""} onChange={(e) => setForm({ ...form, dialPrefix: e.target.value.trim() })} placeholder="e.g. 888" />
           </Field>
           <div style={{ fontSize: 11, color: MUTE, marginTop: -8, marginBottom: 14 }}>
-            Combined with the purchased company's own payment number as <code>*{"{prefix}"}*{"{companyPaymentNumber}"}*{"{amount}"}#</code> — never a fixed number here.
+            Combined with <b>this wallet's own provider's</b> payment number (selected above) as <code>*{"{prefix}"}*{"{providerPaymentNumber}"}*{"{amount}"}#</code> — never the purchased package's company. A customer may pay via this wallet to buy a different provider's package; that's intentional.
           </div>
           <Field label="Logo Key (matches a bundled app icon)">
             <input style={{ ...inputStyle, fontFamily: "monospace" }} value={form.logoKey || ""} onChange={(e) => setForm({ ...form, logoKey: e.target.value.trim().toLowerCase() })} placeholder="hormuud / somtel / somnet / amtel" />
@@ -5390,7 +5402,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "companies" && <Companies companies={companies} setCompanies={setCompanies} refreshCompanies={refreshCompanies} admin={admin} />}
           {active === "payment-numbers" && <PaymentNumbers companies={companies} setCompanies={setCompanies} refreshCompanies={refreshCompanies} admin={admin} />}
           {active === "provider-numbers" && <ProviderNumbers companies={companies} refreshCompanies={refreshCompanies} admin={admin} />}
-          {active === "payment-wallets" && <PaymentWalletsPanel />}
+          {active === "payment-wallets" && <PaymentWalletsPanel companies={companies} />}
           {active === "packages" && <Packages packages={packages} setPackages={setPackages} companies={companies} admin={admin} />}
           {active === "categories" && <Categories companies={companies} admin={admin} />}
           {active === "orders" && <Orders orders={orders} setOrders={setOrders} companies={companies} admin={admin} />}
