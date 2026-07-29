@@ -10,7 +10,7 @@ sealed class OtpRequestResult {
 }
 
 sealed class OtpVerifyResult {
-    data class Success(val name: String?) : OtpVerifyResult()
+    data class Success(val name: String?, val pinSet: Boolean) : OtpVerifyResult()
     data class Failure(val message: String) : OtpVerifyResult()
 }
 
@@ -30,8 +30,8 @@ object AuthRepository {
             val response = ApiClient.service.verifyOtp(OtpVerifyBody(phone, code))
             val body = response.body()
             if (response.isSuccessful && body != null) {
-                SessionManager.saveSession(body.accessToken, body.refreshToken, body.customer)
-                OtpVerifyResult.Success(body.customer.name)
+                SessionManager.saveSession(body.accessToken, body.refreshToken, body.customer, body.pinSet)
+                OtpVerifyResult.Success(body.customer.name, body.pinSet)
             } else {
                 OtpVerifyResult.Failure("Incorrect code. Check the digits and try again.")
             }

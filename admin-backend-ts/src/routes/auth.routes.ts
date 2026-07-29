@@ -68,7 +68,16 @@ authRouter.post("/auth/otp/verify", rateLimit("otp-verify", 10, 15 * 60 * 1000),
   if (customer!.status === "blocked") return sendJson(res, 403, { error: "This account has been blocked" });
 
   const tokens = await issueTokens(customer!.id, "customer");
-  sendJson(res, 200, { ...tokens, customer: { id: customer!.id, phone: customer!.phone, name: customer!.name } });
+  // pinSet is additive — existing clients that ignore it see no behavior
+  // change; it only tells a client whether to prompt for the customer's
+  // OPTIONAL self-service PIN (see customers.routes.ts) after this same OTP
+  // login succeeds. The OTP flow itself (phone -> code -> tokens) is
+  // completely unchanged either way.
+  sendJson(res, 200, {
+    ...tokens,
+    customer: { id: customer!.id, phone: customer!.phone, name: customer!.name },
+    pinSet: Boolean(customer!.pin_hash),
+  });
 });
 
 // ---------------- Agent login ----------------

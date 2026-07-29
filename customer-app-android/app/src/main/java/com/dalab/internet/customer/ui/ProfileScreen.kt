@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
@@ -22,6 +23,7 @@ import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Share
@@ -38,10 +40,13 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.dalab.internet.customer.auth.SessionManager
 import com.dalab.internet.customer.network.ApiClient
+import com.dalab.internet.customer.network.PinBody
 import com.dalab.internet.customer.network.UpdateProfileRequest
 import com.dalab.internet.customer.prefs.LocalizationManager
 import kotlinx.coroutines.launch
@@ -58,11 +63,27 @@ fun ProfileScreen(onLogout: () -> Unit, onOpenOrders: () -> Unit) {
     var customer by remember { mutableStateOf(SessionManager.currentCustomer()) }
     var showEditDialog by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showPinDialog by remember { mutableStateOf(false) }
+    // Optional login PIN — entirely separate from the required phone+OTP
+    // flow. isPinSet drives whether the menu row/dialog offer "Create" or
+    // "Change / Remove"; refreshed from the server in case it was reset by
+    // Support since this session started.
+    var isPinSet by remember { mutableStateOf(SessionManager.isPinSet()) }
     var contentVisible by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val compact = LocalConfiguration.current.screenHeightDp < 700
 
-    LaunchedEffect(Unit) { contentVisible = true }
+    LaunchedEffect(Unit) {
+        contentVisible = true
+        try {
+            ApiClient.service.getPinStatus().body()?.let {
+                isPinSet = it.isSet
+                SessionManager.updatePinSet(it.isSet)
+            }
+        } catch (_: Exception) {
+            // Keep whatever was last known locally — not worth surfacing an error for.
+        }
+    }
 
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
         Column(
@@ -134,6 +155,15 @@ fun ProfileScreen(onLogout: () -> Unit, onOpenOrders: () -> Unit) {
                                 icon = Icons.Filled.Receipt,
                                 label = LocalizationManager.tr("My Orders", "Dalabyadayda"),
                                 onClick = onOpenOrders,
+                            )
+                            ProfileMenuRow(
+                                icon = Icons.Filled.Lock,
+                                label = if (isPinSet) {
+                                    LocalizationManager.tr("Login PIN", "PIN-ka Gelitaanka")
+                                } else {
+                                    LocalizationManager.tr("Create Login PIN", "Samee PIN Gelitaan")
+                                },
+                                onClick = { showPinDialog = true },
                             )
                             ProfileMenuRow(
                                 icon = Icons.Filled.Call,
@@ -295,6 +325,118 @@ fun ProfileScreen(onLogout: () -> Unit, onOpenOrders: () -> Unit) {
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteConfirm = false }, enabled = !deleting) { Text("Cancel") }
+            },
+        )
+    }
+
+    if (showPinDialog) {
+        var newPin by remember { mutableStateOf("") }
+        var confirmPin by remember { mutableStateOf("") }
+        var saving by remember { mutableStateOf(false) }
+        var pinError by remember { mutableStateOf<String?>(null) }
+
+        fun closeDialog() {
+            showPinDialog = false
+            newPin = ""
+            confirmPin = ""
+            pinError = null
+        }
+
+        AlertDialog(
+            onDismissRequest = { if (!saving) closeDialog() },
+            title = { Text(if (isPinSet) "Change Login PIN" else "Create Login PIN") },
+            text = {
+                Column {
+                    Text(
+                        "Optional: after entering your OTP code, you'll also be asked for this PIN. Leave it unset and login stays exactly as it is today.",
+                        fontSize = 12.5.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = newPin,
+                        onValueChange = { if (it.length <= 8 && it.all(Char::isDigit)) newPin = it },
+                        label = { Text("New PIN (3-8 digits)") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = confirmPin,
+                        onValueChange = { if (it.length <= 8 && it.all(Char::isDigit)) confirmPin = it },
+                        label = { Text("Confirm PIN") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (pinError != null) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(pinError!!, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+                    }
+                    if (isPinSet) {
+                        Spacer(Modifier.height(12.dp))
+                        TextButton(
+                            enabled = !saving,
+                            onClick = {
+                                pinError = null
+                                saving = true
+                                scope.launch {
+                                    try {
+                                        val response = ApiClient.service.removePin()
+                                        if (response.isSuccessful) {
+                                            isPinSet = false
+                                            SessionManager.updatePinSet(false)
+                                            closeDialog()
+                                        } else {
+                                            pinError = "Couldn't remove your PIN. Please try again."
+                                        }
+                                    } catch (_: Exception) {
+                                        pinError = "Couldn't reach the server. Check your connection."
+                                    }
+                                    saving = false
+                                }
+                            },
+                        ) {
+                            Text("Remove PIN", color = DangerRed)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !saving && newPin.length >= 3 && newPin == confirmPin,
+                    onClick = {
+                        pinError = null
+                        if (newPin != confirmPin) {
+                            pinError = "PINs don't match."
+                            return@TextButton
+                        }
+                        saving = true
+                        scope.launch {
+                            try {
+                                val response = ApiClient.service.setPin(PinBody(newPin))
+                                if (response.isSuccessful) {
+                                    isPinSet = true
+                                    SessionManager.updatePinSet(true)
+                                    closeDialog()
+                                } else {
+                                    pinError = "PIN must be 3-8 digits."
+                                }
+                            } catch (_: Exception) {
+                                pinError = "Couldn't reach the server. Check your connection."
+                            }
+                            saving = false
+                        }
+                    },
+                ) {
+                    Text(if (saving) "Saving..." else "Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { closeDialog() }, enabled = !saving) { Text("Cancel") }
             },
         )
     }
