@@ -264,6 +264,19 @@ async function validateUssdTemplateId(companyId: string, ussdTemplateId: unknown
   return undefined;
 }
 
+// "" (an intentionally-blank optional number field, e.g. Old Price/MB/
+// Minutes/SMS left empty on the dashboard form) must never reach a
+// NUMERIC/INTEGER column as an empty-string literal — Postgres rejects that
+// outright with "invalid input syntax for type numeric", and until now that
+// rejection became an unhandled promise rejection with no HTTP response ever
+// sent (see server.ts's unhandledRejection logger), leaving the client's
+// fetch hung forever with zero explanation. Every optional numeric package
+// field is normalized through this, matching the pattern already used
+// correctly for providerAmount just below.
+function numOrDefault(value: unknown, fallback: number | null): number | null {
+  return value === "" || value == null ? fallback : (value as number);
+}
+
 packagesRouter.post("/admin/packages", requirePermission("packages.manage"), async (req, res) => {
   const { companyId, categoryId, name, oldPrice, price, providerAmount, mb, minutes, sms, validity, code, ussdTemplateId } = req.body;
   if (!companyId || !categoryId || !name || price == null) {
@@ -289,7 +302,7 @@ packagesRouter.post("/admin/packages", requirePermission("packages.manage"), asy
   await query(
     `INSERT INTO packages (id, company_id, category_id, name, old_price, price, provider_amount, mb, minutes, sms, validity, code, ussd_template_id)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-    [id, companyId, categoryId, name, oldPrice ?? price, price, providerAmountValue, mb ?? 0, minutes ?? 0, sms ?? 0, validity ?? "", code ?? null, ussdTemplateIdValue]
+    [id, companyId, categoryId, name, numOrDefault(oldPrice, price), price, providerAmountValue, numOrDefault(mb, 0), numOrDefault(minutes, 0), numOrDefault(sms, 0), validity ?? "", code ?? null, ussdTemplateIdValue]
   );
   const created = await queryOne(`SELECT * FROM packages WHERE id=$1`, [id]);
   await recordActivity({
@@ -318,11 +331,11 @@ packagesRouter.put("/admin/packages/:id", requirePermission("packages.manage"), 
   // persisted on edit, no matter what the dashboard's form sent.
   const name = req.body.name !== undefined ? req.body.name : existing.name;
   const categoryId = req.body.categoryId !== undefined ? req.body.categoryId : existing.category_id;
-  const oldPrice = req.body.oldPrice !== undefined ? req.body.oldPrice : existing.old_price;
   const price = req.body.price !== undefined ? req.body.price : existing.price;
-  const mb = req.body.mb !== undefined ? req.body.mb : existing.mb;
-  const minutes = req.body.minutes !== undefined ? req.body.minutes : existing.minutes;
-  const sms = req.body.sms !== undefined ? req.body.sms : existing.sms;
+  const oldPrice = numOrDefault(req.body.oldPrice !== undefined ? req.body.oldPrice : existing.old_price, price);
+  const mb = numOrDefault(req.body.mb !== undefined ? req.body.mb : existing.mb, 0);
+  const minutes = numOrDefault(req.body.minutes !== undefined ? req.body.minutes : existing.minutes, 0);
+  const sms = numOrDefault(req.body.sms !== undefined ? req.body.sms : existing.sms, 0);
   const validity = req.body.validity !== undefined ? req.body.validity : existing.validity;
   const active = req.body.active !== undefined ? req.body.active : existing.active;
   const code = req.body.code !== undefined ? req.body.code : existing.code;

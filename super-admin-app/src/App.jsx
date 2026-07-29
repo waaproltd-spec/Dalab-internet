@@ -47,11 +47,29 @@ async function dalabAdminApiRequest(path, { method = "GET", body } = {}) {
   if (!DALAB_API_ENABLED) throw new Error("DALAB API not configured (DALAB_API_BASE_URL is empty)");
   const headers = { "Content-Type": "application/json" };
   if (dalabAdminAccessToken) headers.Authorization = `Bearer ${dalabAdminAccessToken}`;
-  const res = await fetch(`${DALAB_API_BASE_URL}${path}`, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  const controller = new AbortController();
+  // Render's free-tier backend can take 30-60s to wake from an idle cold
+  // start, so a much shorter timeout would misfire on a legitimate first
+  // request of the day — but without any timeout, a genuine network/backend
+  // hang left every caller (e.g. a "Saving..." button) waiting forever with
+  // zero feedback, which is the exact bug this closes.
+  const timeoutId = setTimeout(() => controller.abort(), 45000);
+  let res;
+  try {
+    res = await fetch(`${DALAB_API_BASE_URL}${path}`, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err.name === "AbortError") {
+      throw new Error("Request timed out — the server may be waking up after being idle. Please try again in a moment.");
+    }
+    throw new Error("Could not reach the server. Check your connection and try again.");
+  } finally {
+    clearTimeout(timeoutId);
+  }
   const json = await res.json().catch(() => null);
   if (!res.ok) throw new Error(json?.error || `Request failed (${res.status})`);
   return json;
@@ -1132,6 +1150,7 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({});
   const [error, setError] = useState("");
+  const [successMessage, setSuccessMessage] = useState("");
   const [saving, setSaving] = useState(false);
   const [templateWarning, setTemplateWarning] = useState("");
   const canManage = hasPermission(admin, "packages.manage");
@@ -1169,22 +1188,26 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
     const companyId = companyFilter !== "all" ? companyFilter : companies[0]?.id || "";
     setForm({ companyId, categoryId: "", name: "", oldPrice: "", price: "", providerAmount: "", mb: "", minutes: "", sms: "", validity: "", active: true, ussdTemplateId: "" });
     setTemplateWarning("");
+    setError("");
     setEditing("new");
   };
   const openEdit = (p) => {
     setForm(DALAB_API_ENABLED ? p : { ...p, companyId: companies.find((c) => c.name === p.company)?.id, oldPrice: p.old, minutes: p.min });
     setTemplateWarning("");
+    setError("");
     setEditing(p.id);
   };
 
   const save = async () => {
     if (!form.name || form.price === "" || form.price == null) return;
+    setError("");
     if (DALAB_API_ENABLED) {
       setSaving(true);
       let warning = "";
       let result;
+      const wasNew = editing === "new";
       try {
-        result = editing === "new" ? await DalabAdminApi.createPackage(form) : await DalabAdminApi.updatePackage(editing, form);
+        result = wasNew ? await DalabAdminApi.createPackage(form) : await DalabAdminApi.updatePackage(editing, form);
         warning = result?.templateWarning || "";
         await fetchPackages();
         onPackagesChanged?.();
@@ -1202,9 +1225,14 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
       // duplicate.
       setTemplateWarning(warning);
       if (warning) {
-        if (editing === "new" && result?.id) setEditing(result.id);
+        if (wasNew && result?.id) setEditing(result.id);
         return;
       }
+      // Confirms the save landed instantly, since the modal closes right
+      // after — visible on the list page itself, not just inside the modal
+      // that's about to disappear.
+      setSuccessMessage(`Package "${form.name}" ${wasNew ? "created" : "updated"} successfully.`);
+      setTimeout(() => setSuccessMessage(""), 4000);
     } else if (editing === "new") {
       const companyName = companies.find((c) => c.id === form.companyId)?.name;
       setPackages((prev) => [...prev, { ...form, company: companyName, old: form.oldPrice, min: form.minutes, id: "pkg-" + Date.now() }]);
@@ -1237,6 +1265,7 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
       </div>
 
       {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {successMessage && <div style={{ color: GREEN, fontSize: 12.5, marginBottom: 14, fontWeight: 600 }}>{successMessage}</div>}
 
       <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
         <button onClick={() => setCompanyFilter("all")} style={{
