@@ -125,22 +125,29 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
             // row instead of returning before startDialAttemptLog ever runs
             // — previously this left zero trace anywhere (server or local)
             // that an attempt was even made.
-            val subscriptionId = dialer.subscriptionIdForSlot(simSlot)
-            lastResult = if (subscriptionId == null) {
-                DialResult(DialOutcome.NO_SIM_PRESENT, "SIM $simSlot isn't physically inserted on this device.")
-            } else {
-                // UssdDialer only catches SecurityException around the telephony
-                // call — other stack exceptions (e.g. IllegalStateException when
-                // the modem/RIL isn't ready) previously escaped uncaught all the
-                // way to QueueDrainer, which then classified them terminal and
-                // dropped a genuinely transient failure forever. Catching here
-                // converts it into a normal FAILED outcome, which this same retry
-                // loop already knows how to handle.
-                try {
-                    dialer.dial(subscriptionId, ussdString)
-                } catch (e: Exception) {
-                    DiagnosticsLog.record("ussd_dial", "Dial threw (order $orderId, attempt $attempt): ${e.message}", isError = true)
-                    DialResult(DialOutcome.FAILED, "Dial error: ${e.message}")
+            lastResult = when (val lookup = dialer.subscriptionIdForSlot(simSlot)) {
+                // A lost CALL_PHONE/READ_PHONE_STATE permission looks identical
+                // to a missing SIM at the API level — reported distinctly here so
+                // it's never confused with an actually-empty SIM tray again.
+                SubscriptionLookupResult.PermissionMissing -> DialResult(
+                    DialOutcome.PERMISSION_DENIED,
+                    "Required phone permissions aren't granted on this device — check Settings > Apps > Dalab Agent > Permissions.",
+                )
+                SubscriptionLookupResult.NotPresent -> DialResult(DialOutcome.NO_SIM_PRESENT, "SIM $simSlot isn't physically inserted on this device.")
+                is SubscriptionLookupResult.Found -> {
+                    // UssdDialer only catches SecurityException around the telephony
+                    // call — other stack exceptions (e.g. IllegalStateException when
+                    // the modem/RIL isn't ready) previously escaped uncaught all the
+                    // way to QueueDrainer, which then classified them terminal and
+                    // dropped a genuinely transient failure forever. Catching here
+                    // converts it into a normal FAILED outcome, which this same retry
+                    // loop already knows how to handle.
+                    try {
+                        dialer.dial(lookup.subscriptionId, ussdString)
+                    } catch (e: Exception) {
+                        DiagnosticsLog.record("ussd_dial", "Dial threw (order $orderId, attempt $attempt): ${e.message}", isError = true)
+                        DialResult(DialOutcome.FAILED, "Dial error: ${e.message}")
+                    }
                 }
             }
             reportDialResult(orderId, simSlot, ussdString, attempt, attemptId, lastResult)
