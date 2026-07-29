@@ -12,9 +12,10 @@ import { markPaymentProcessing, markPaymentFinal } from "../utils/paymentTransac
 export const ussdRouter = Router();
 
 // ---------------- Per-Provider PIN Management ----------------
-// Each provider has its own PIN — super_admin always, plus any admin the
-// Super Admin has explicitly granted 'devices.manage' to (the PIN itself
-// never leaves the server unencrypted regardless of who can set it).
+// Each provider's PIN is Super-Admin-exclusive — not delegable via
+// devices.manage, since it directly controls what gets dialed on a
+// customer's behalf (the PIN itself never leaves the server unencrypted
+// regardless of who can set it).
 
 ussdRouter.get("/admin/companies/:id/pin-status", requireStaff(), async (req, res) => {
   const company = await queryOne(`SELECT pin_encrypted FROM companies WHERE id=$1`, [req.params.id]);
@@ -22,7 +23,7 @@ ussdRouter.get("/admin/companies/:id/pin-status", requireStaff(), async (req, re
   sendJson(res, 200, { isSet: Boolean(company.pin_encrypted) });
 });
 
-ussdRouter.put("/admin/companies/:id/pin", requirePermission("devices.manage"), async (req, res) => {
+ussdRouter.put("/admin/companies/:id/pin", requireAuth("super_admin"), async (req, res) => {
   const { pin } = req.body;
   if (!isValidPin(String(pin ?? ""))) return sendJson(res, 400, { error: "PIN must be 3-8 digits" });
   const existing = await queryOne(`SELECT pin_encrypted FROM companies WHERE id=$1`, [req.params.id]);
@@ -357,7 +358,7 @@ ussdRouter.get("/admin/sim-routing", requireStaff(), async (_req, res) => {
 // provider, a ranked backup) — device_id is part of the row's identity, so
 // assigning a *different* device to a company adds a new row rather than
 // replacing the old one; remove a device's route explicitly via DELETE.
-ussdRouter.put("/admin/sim-routing/:companyId/:deviceId", requirePermission("devices.manage"), async (req, res) => {
+ussdRouter.put("/admin/sim-routing/:companyId/:deviceId", requireAuth("super_admin"), async (req, res) => {
   const { simSlot, priority } = req.body;
   if (![1, 2].includes(simSlot)) return sendJson(res, 400, { error: "simSlot must be 1 or 2" });
   const company = await queryOne(`SELECT id FROM companies WHERE id=$1`, [req.params.companyId]);
@@ -374,7 +375,7 @@ ussdRouter.put("/admin/sim-routing/:companyId/:deviceId", requirePermission("dev
   sendJson(res, 200, await queryOne(`SELECT * FROM sim_routing WHERE company_id=$1 AND device_id=$2`, [req.params.companyId, req.params.deviceId]));
 });
 
-ussdRouter.delete("/admin/sim-routing/:companyId/:deviceId", requirePermission("devices.manage"), async (req, res) => {
+ussdRouter.delete("/admin/sim-routing/:companyId/:deviceId", requireAuth("super_admin"), async (req, res) => {
   const result = await query(
     `DELETE FROM sim_routing WHERE company_id=$1 AND device_id=$2 RETURNING company_id`,
     [req.params.companyId, req.params.deviceId]
