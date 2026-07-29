@@ -7,6 +7,7 @@ import { sendJson } from "../utils/camelCase.js";
 import { recordActivity } from "../utils/activityLog.js";
 import { parseDataUri } from "../utils/dataUri.js";
 import { matchTemplateByName, selfHealStuckOrders } from "./ussd.routes.js";
+import { broadcast } from "../realtime/orderEvents.js";
 
 export const companiesRouter = Router();
 export const packagesRouter = Router();
@@ -24,8 +25,18 @@ const COMPANY_COLUMNS = `id, name, group_number, color_hex, logo_url, status, ga
 // pipeline, not something the public Customer/Agent App package list needs.
 const PUBLIC_PACKAGE_COLUMNS = `id, company_id, category_id, name, old_price, price, mb, minutes, sms, validity, active, code, created_at`;
 
-companiesRouter.get("/companies", async (_req, res) => {
-  const rows = await query(`SELECT ${COMPANY_COLUMNS} FROM companies WHERE deleted_at IS NULL ORDER BY group_number, sort_order, name`);
+// Also called by the Agent App (NewSaleScreen/PackagesScreen) for its own
+// unrelated "create a sale" flow, so the default (no ?audience=) stays
+// unfiltered beyond soft-delete — only an explicit ?audience=customer
+// additionally hides a company that's offline or hidden from the Customer
+// App specifically, without changing what the Agent App sees.
+companiesRouter.get("/companies", async (req, res) => {
+  const forCustomer = req.query.audience === "customer";
+  const rows = await query(
+    forCustomer
+      ? `SELECT ${COMPANY_COLUMNS} FROM companies WHERE deleted_at IS NULL AND status='online' AND visible_customer_app=true ORDER BY group_number, sort_order, name`
+      : `SELECT ${COMPANY_COLUMNS} FROM companies WHERE deleted_at IS NULL ORDER BY group_number, sort_order, name`
+  );
   sendJson(res, 200, rows);
 });
 
@@ -81,6 +92,7 @@ companiesRouter.post("/admin/companies", requirePermission("companies.manage"), 
     }
     throw err;
   }
+  broadcast({ type: "catalog.updated" });
   sendJson(res, 201, await queryOne(`SELECT ${COMPANY_COLUMNS} FROM companies WHERE id=$1`, [id]));
 });
 
@@ -110,6 +122,7 @@ companiesRouter.put("/admin/companies/:id", requirePermission("companies.manage"
     `UPDATE companies SET name=$1, group_number=$2, color_hex=$3, gateway=$4, slug=$5, description=$6, sort_order=$7, logo_data=$8, logo_mime_type=$9, updated_at=now() WHERE id=$10`,
     [name, groupNumber, colorHex, gateway, slug || null, description || null, sortOrder ?? 0, logoData, logoMimeType, req.params.id]
   );
+  broadcast({ type: "catalog.updated" });
   sendJson(res, 200, await queryOne(`SELECT ${COMPANY_COLUMNS} FROM companies WHERE id=$1`, [req.params.id]));
 });
 
@@ -155,6 +168,7 @@ companiesRouter.put("/admin/companies/:id/status", requireAuth("super_admin"), a
     oldValue: { status: existing.status },
     newValue: { status },
   });
+  broadcast({ type: "catalog.updated" });
   sendJson(res, 200, await queryOne(`SELECT ${COMPANY_COLUMNS} FROM companies WHERE id=$1`, [req.params.id]));
 });
 
@@ -167,6 +181,7 @@ companiesRouter.put("/admin/companies/:id/visibility", requirePermission("compan
     `UPDATE companies SET visible_customer_app=$1, visible_agent_app=$2, updated_at=now() WHERE id=$3`,
     [Boolean(visibleCustomerApp), Boolean(visibleAgentApp), req.params.id]
   );
+  broadcast({ type: "catalog.updated" });
   sendJson(res, 200, await queryOne(`SELECT ${COMPANY_COLUMNS} FROM companies WHERE id=$1`, [req.params.id]));
 });
 
@@ -195,6 +210,7 @@ companiesRouter.delete("/admin/companies/:id", requirePermission("companies.mana
   try {
     const result = await query(`DELETE FROM companies WHERE id=$1 AND deleted_at IS NULL RETURNING id`, [req.params.id]);
     if (result.length === 0) return sendJson(res, 404, { error: "Company not found" });
+    broadcast({ type: "catalog.updated" });
     return sendJson(res, 200, { deleted: true });
   } catch (err: any) {
     if (err?.code !== "23503") throw err;
@@ -205,6 +221,7 @@ companiesRouter.delete("/admin/companies/:id", requirePermission("companies.mana
     [req.params.id]
   );
   if (result.length === 0) return sendJson(res, 404, { error: "Company not found" });
+  broadcast({ type: "catalog.updated" });
   sendJson(res, 200, { deleted: true, softDeleted: true });
 });
 
@@ -285,6 +302,7 @@ packagesRouter.post("/admin/packages", requirePermission("packages.manage"), asy
   });
   const templateWarning = await templateWarningFor(companyId, name, ussdTemplateIdValue);
   if (ussdTemplateIdValue) await selfHealStuckOrders(companyId);
+  broadcast({ type: "catalog.updated" });
   sendJson(res, 201, { ...created, templateWarning });
 });
 
@@ -340,6 +358,7 @@ packagesRouter.put("/admin/packages/:id", requirePermission("packages.manage"), 
   // package to the right template" the same way adding/enabling a template
   // does above.
   if (req.body.ussdTemplateId !== undefined && ussdTemplateId) await selfHealStuckOrders(existing.company_id);
+  broadcast({ type: "catalog.updated" });
   sendJson(res, 200, { ...updated, templateWarning });
 });
 
@@ -355,6 +374,7 @@ packagesRouter.delete("/admin/packages/:id", requirePermission("packages.manage"
     oldValue: { active: true },
     newValue: { active: false },
   });
+  broadcast({ type: "catalog.updated" });
   sendJson(res, 200, { deactivated: true });
 });
 

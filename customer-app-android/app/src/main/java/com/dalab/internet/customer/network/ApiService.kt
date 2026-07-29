@@ -80,8 +80,11 @@ interface ApiService {
     @GET("notifications")
     suspend fun getNotifications(): Response<List<NotificationItem>>
 
+    // audience=customer additionally hides a company that's offline or
+    // hidden from the Customer App specifically — the backend leaves every
+    // other caller (e.g. the Agent App) unfiltered when this param is absent.
     @GET("companies")
-    suspend fun getCompanies(): Response<List<Company>>
+    suspend fun getCompanies(@Query("audience") audience: String = "customer"): Response<List<Company>>
 
     @GET("payment-wallets")
     suspend fun getPaymentWallets(): Response<List<PaymentWallet>>

@@ -49,7 +49,9 @@ import com.dalab.internet.customer.data.Company
 import com.dalab.internet.customer.data.PromoImage
 import com.dalab.internet.customer.data.companyLogoRes
 import com.dalab.internet.customer.network.ApiClient
+import com.dalab.internet.customer.network.RealtimeClient
 import com.dalab.internet.customer.prefs.LocalizationManager
+import kotlinx.coroutines.launch
 import java.util.Calendar
 
 private const val SUPPORT_PHONE = "252610338686"
@@ -80,16 +82,19 @@ fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenNotifications: () -> Unit
     val customer = SessionManager.currentCustomer()
     val context = LocalContext.current
     val compact = LocalConfiguration.current.screenHeightDp < 700
+    val scope = rememberCoroutineScope()
 
-    LaunchedEffect(Unit) {
+    suspend fun refreshCompanies() {
         try {
             companies = ApiClient.service.getCompanies().body().orEmpty()
         } catch (_: Exception) {
-            // Leave the list empty; the grid shows "no providers" below.
+            // Leave the list as-is; the grid shows "no providers" below on first load.
         }
         loading = false
         contentVisible = true
     }
+
+    LaunchedEffect(Unit) { refreshCompanies() }
 
     LaunchedEffect(Unit) {
         try {
@@ -97,6 +102,16 @@ fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenNotifications: () -> Unit
         } catch (_: Exception) {
             // Carousel just doesn't show — nothing else on Home depends on it.
         }
+    }
+
+    // A package/company saved or disabled on the dashboard reaches this
+    // screen instantly instead of waiting for the customer to navigate away
+    // and back — same SSE pattern OrdersScreen already uses for order status,
+    // catalog.updated just added to the shared event stream.
+    val realtime = remember { RealtimeClient(path = "orders/stream") { scope.launch { refreshCompanies() } } }
+    DisposableEffect(realtime) {
+        realtime.connect()
+        onDispose { realtime.disconnect() }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
