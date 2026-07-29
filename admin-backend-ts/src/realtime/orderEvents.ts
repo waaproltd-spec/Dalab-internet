@@ -1,6 +1,14 @@
 import { Response } from "express";
 
-export type OrderEvent = { type: string; orderId: string };
+// Widened from the original order-only shape to also cover SMS/ledger
+// events — safe to widen freely: every existing subscriber (dashboard
+// connection status, the Orders panel) already treats any message as an
+// opaque "something changed, refetch" signal and never inspects `type`, so
+// adding new variants changes no existing runtime behavior.
+export type OrderEvent =
+  | { type: "order.created" | "order.updated"; orderId: string }
+  | { type: "sms_log.created"; smsLogId: string; orderId: string | null }
+  | { type: "payment_transaction.updated"; paymentTransactionId: string; orderId: string | null };
 
 const subscribers = new Set<Response>();
 

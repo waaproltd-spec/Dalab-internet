@@ -5,6 +5,7 @@ import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
 import { recordActivity } from "../utils/activityLog.js";
 import { createPaymentTransaction } from "../utils/paymentTransactions.js";
+import { broadcast } from "../realtime/orderEvents.js";
 
 export const smsLogsRouter = Router();
 
@@ -150,6 +151,7 @@ async function respondAlreadyProcessed(
     paymentTimestamp: receivedAt,
     status: "duplicate_blocked",
   });
+  broadcast({ type: "sms_log.created", smsLogId: existing.id, orderId: existing.matched_order_id });
   sendJson(res, 200, {
     id: existing.id,
     matchedOrderId: existing.matched_order_id,
@@ -247,17 +249,34 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
     status: "pending",
   });
 
+  broadcast({ type: "sms_log.created", smsLogId: id, orderId: match?.id ?? null });
   sendJson(res, 201, { id, matchedOrderId: match?.id ?? null, requiresManualApproval, duplicate: false, status: "new" });
 });
 
 smsLogsRouter.get("/admin/sms-logs", requireStaff(), async (req, res) => {
-  const { agentId, matched } = req.query as Record<string, string | undefined>;
-  let sql = `SELECT * FROM sms_logs WHERE 1=1`;
+  const { agentId, matched, companyId, search, dateFrom, dateTo, limit } = req.query as Record<string, string | undefined>;
+  let sql = `
+    SELECT sl.*, o.company_id AS matched_company_id
+    FROM sms_logs sl
+    LEFT JOIN orders o ON o.id = sl.matched_order_id
+    WHERE 1=1`;
   const args: unknown[] = [];
-  if (agentId) { args.push(agentId); sql += ` AND agent_id=$${args.length}`; }
-  if (matched === "true") sql += ` AND matched_order_id IS NOT NULL`;
-  if (matched === "false") sql += ` AND matched_order_id IS NULL`;
-  sql += ` ORDER BY received_at DESC`;
+  if (agentId) { args.push(agentId); sql += ` AND sl.agent_id=$${args.length}`; }
+  if (matched === "true") sql += ` AND sl.matched_order_id IS NOT NULL`;
+  if (matched === "false") sql += ` AND sl.matched_order_id IS NULL`;
+  if (companyId) { args.push(companyId); sql += ` AND o.company_id=$${args.length}`; }
+  if (search) {
+    args.push(`%${search}%`);
+    const p = args.length;
+    sql += ` AND (sl.sender ILIKE $${p} OR sl.body ILIKE $${p} OR sl.parsed_phone ILIKE $${p} OR sl.transaction_ref ILIKE $${p})`;
+  }
+  if (dateFrom) { args.push(dateFrom); sql += ` AND sl.received_at >= $${args.length}`; }
+  if (dateTo) { args.push(dateTo); sql += ` AND sl.received_at <= $${args.length}`; }
+  // Was fully unbounded before — cap at a generous default so this can't
+  // choke on an ever-growing table; existing callers that pass no ?limit
+  // see no change unless they already had more than 200 rows to show.
+  const cappedLimit = Math.min(Number(limit) || 200, 1000);
+  sql += ` ORDER BY sl.received_at DESC LIMIT ${cappedLimit}`;
   sendJson(res, 200, await query(sql, args));
 });
 
@@ -265,7 +284,7 @@ smsLogsRouter.get("/admin/sms-logs", requireStaff(), async (req, res) => {
 // Payment Transactions dashboard panel. Joined to companies/agent_devices
 // for display names rather than making the dashboard do a second round-trip.
 smsLogsRouter.get("/admin/payment-transactions", requireStaff(), async (req, res) => {
-  const { status, search, companyId } = req.query as Record<string, string | undefined>;
+  const { status, search, companyId, deviceId, simSlot, dateFrom, dateTo, limit, offset } = req.query as Record<string, string | undefined>;
   const args: unknown[] = [];
   let sql = `
     SELECT pt.*, o.company_id AS order_company_id, c.name AS provider_name, d.name AS device_name
@@ -276,11 +295,73 @@ smsLogsRouter.get("/admin/payment-transactions", requireStaff(), async (req, res
     WHERE 1=1`;
   if (status) { args.push(status); sql += ` AND pt.status=$${args.length}`; }
   if (companyId) { args.push(companyId); sql += ` AND o.company_id=$${args.length}`; }
+  if (deviceId) { args.push(deviceId); sql += ` AND pt.agent_device_id=$${args.length}`; }
+  if (simSlot) { args.push(Number(simSlot)); sql += ` AND pt.sim_slot=$${args.length}`; }
+  if (dateFrom) { args.push(dateFrom); sql += ` AND pt.created_at >= $${args.length}`; }
+  if (dateTo) { args.push(dateTo); sql += ` AND pt.created_at <= $${args.length}`; }
   if (search) {
     args.push(`%${search}%`);
     const p = args.length;
     sql += ` AND (pt.customer_phone ILIKE $${p} OR pt.transaction_ref ILIKE $${p} OR pt.order_id ILIKE $${p})`;
   }
-  sql += ` ORDER BY pt.created_at DESC LIMIT 500`;
+  // Default stays 500 — same as before this endpoint took a ?limit param —
+  // so a caller that never passes one sees identical behavior.
+  const cappedLimit = Math.min(Number(limit) || 500, 2000);
+  args.push(cappedLimit);
+  sql += ` ORDER BY pt.created_at DESC LIMIT $${args.length}`;
+  if (offset) { args.push(Number(offset)); sql += ` OFFSET $${args.length}`; }
   sendJson(res, 200, await query(sql, args));
+});
+
+// Full chronological trace for one payment: the matched SMS, every dial
+// attempt for its order (retry history), and the config/audit-log entries
+// tied to either the SMS log or the order — activity-log writes elsewhere
+// in this codebase key by whichever of the two happened to be in scope at
+// the time (payment_verified/payment_already_processed use smsLogId,
+// payment_completed uses orderId), so both are checked here.
+smsLogsRouter.get("/admin/payment-transactions/:id/timeline", requireStaff(), async (req, res) => {
+  const tx = await queryOne<Record<string, unknown>>(
+    `SELECT pt.*, o.company_id AS order_company_id, c.name AS provider_name, d.name AS device_name
+     FROM payment_transactions pt
+     LEFT JOIN orders o ON o.id = pt.order_id
+     LEFT JOIN companies c ON c.id = o.company_id
+     LEFT JOIN agent_devices d ON d.id = pt.agent_device_id
+     WHERE pt.id=$1`,
+    [req.params.id]
+  );
+  if (!tx) return sendJson(res, 404, { error: "Payment transaction not found" });
+
+  const smsLog = tx.sms_log_id ? await queryOne(`SELECT * FROM sms_logs WHERE id=$1`, [tx.sms_log_id]) : null;
+  const order = tx.order_id
+    ? await queryOne<Record<string, unknown>>(
+        `SELECT o.*, cu.name AS customer_name, cu.phone AS customer_phone, p.name AS package_name
+         FROM orders o
+         JOIN customers cu ON cu.id = o.customer_id
+         JOIN packages p ON p.id = o.package_id
+         WHERE o.id=$1`,
+        [tx.order_id]
+      )
+    : null;
+  // Staff-facing — same PIN-redaction rule as every order response
+  // elsewhere: never let the raw ussd_generated column (real PIN inlined)
+  // reach a non-agent response.
+  if (order) order.ussd_generated = order.ussd_generated_masked ?? null;
+  const dialAttempts = tx.order_id
+    ? await query(
+        `SELECT id, sim_slot, attempt_number, status, response_message, created_at, completed_at,
+                COALESCE(ussd_string_masked, '(masked — regenerate to view)') AS ussd_string
+         FROM ussd_dial_attempts WHERE order_id=$1 ORDER BY attempt_number ASC`,
+        [tx.order_id]
+      )
+    : [];
+  const entityIds = [tx.sms_log_id, tx.order_id].filter((v): v is string => typeof v === "string");
+  const activity = entityIds.length
+    ? await query(
+        `SELECT id, action, entity_type, entity_id, new_value, created_at
+         FROM admin_activity_log WHERE entity_id = ANY($1::text[]) ORDER BY created_at ASC`,
+        [entityIds]
+      )
+    : [];
+
+  sendJson(res, 200, { transaction: tx, smsLog, order, dialAttempts, activity });
 });

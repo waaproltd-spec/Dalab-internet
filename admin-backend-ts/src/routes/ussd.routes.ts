@@ -185,11 +185,16 @@ ussdRouter.delete("/admin/ussd-templates/:id", requireAuth("super_admin"), async
 
 // ---------------- Generation + audit log ----------------
 
+// Staff-facing — generated_string is returned with the PIN redacted
+// (generated_string_masked); the raw column is never selected here at all.
+const USSD_LOG_COLUMNS = `id, order_id, template_id, company_id, admin_id, created_at,
+  COALESCE(generated_string_masked, '(masked — regenerate to view)') AS generated_string`;
+
 ussdRouter.get("/admin/ussd-logs", requireStaff(), async (req, res) => {
   const { orderId } = req.query;
   const rows = orderId
-    ? await query(`SELECT * FROM ussd_logs WHERE order_id=$1 ORDER BY created_at DESC`, [orderId])
-    : await query(`SELECT * FROM ussd_logs ORDER BY created_at DESC LIMIT 200`);
+    ? await query(`SELECT ${USSD_LOG_COLUMNS} FROM ussd_logs WHERE order_id=$1 ORDER BY created_at DESC`, [orderId])
+    : await query(`SELECT ${USSD_LOG_COLUMNS} FROM ussd_logs ORDER BY created_at DESC LIMIT 200`);
   sendJson(res, 200, rows);
 });
 
@@ -199,7 +204,7 @@ ussdRouter.get("/admin/ussd-logs", requireStaff(), async (req, res) => {
  * exact service-name match against the package name first, falling back to
  * a partial match. Returns { ussd, templateId } or { error }.
  */
-export async function generateUssdForOrder(order: any, adminId?: string): Promise<{ ussd?: string; templateId?: string; error?: string }> {
+export async function generateUssdForOrder(order: any, adminId?: string): Promise<{ ussd?: string; maskedUssd?: string; templateId?: string; error?: string }> {
   const company = await queryOne(`SELECT pin_encrypted FROM companies WHERE id=$1`, [order.company_id]);
   if (!company?.pin_encrypted) {
     return { error: "No PIN has been set for this provider yet — go to USSD Services and set its PIN." };
@@ -251,16 +256,27 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
     .replace("{pin}", pin)
     .replace("{packageCode}", orderWithPackage?.package_code ?? "")
     .replace("{packageName}", orderWithPackage?.package_name ?? "");
+  // Same substitution, PIN redacted — this is the only copy of the dial
+  // string that should ever reach a customer or admin/staff response; the
+  // raw `ussd` above is for the Agent App's eyes (and dial) only.
+  const maskedUssd = template.ussd_code
+    .replace("{number}", deliverTo)
+    .replace("{customerNumber}", deliverTo)
+    .replace("{receiverNumber}", deliverTo)
+    .replace("{amount}", String(providerAmount))
+    .replace("{pin}", "•".repeat(pin.length))
+    .replace("{packageCode}", orderWithPackage?.package_code ?? "")
+    .replace("{packageName}", orderWithPackage?.package_name ?? "");
 
   await query(
-    `UPDATE orders SET ussd_generated=$1, ussd_device_id=$2, ussd_sim_slot=$3 WHERE id=$4`,
-    [ussd, template.device_id ?? null, template.sim_slot ?? null, order.id]
+    `UPDATE orders SET ussd_generated=$1, ussd_generated_masked=$2, ussd_device_id=$3, ussd_sim_slot=$4 WHERE id=$5`,
+    [ussd, maskedUssd, template.device_id ?? null, template.sim_slot ?? null, order.id]
   );
   await query(
-    `INSERT INTO ussd_logs (id, order_id, template_id, company_id, admin_id, generated_string) VALUES ($1,$2,$3,$4,$5,$6)`,
-    [randomUUID(), order.id, template.id, order.company_id, adminId ?? null, ussd]
+    `INSERT INTO ussd_logs (id, order_id, template_id, company_id, admin_id, generated_string, generated_string_masked) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [randomUUID(), order.id, template.id, order.company_id, adminId ?? null, ussd, maskedUssd]
   );
-  return { ussd, templateId: template.id };
+  return { ussd, maskedUssd, templateId: template.id };
 }
 
 ussdRouter.post("/admin/orders/:id/generate-ussd", requireStaff(), async (req, res) => {
@@ -268,7 +284,8 @@ ussdRouter.post("/admin/orders/:id/generate-ussd", requireStaff(), async (req, r
   if (!order) return sendJson(res, 404, { error: "Order not found" });
   const result = await generateUssdForOrder(order, req.auth!.sub);
   if (result.error) return sendJson(res, 422, { error: result.error });
-  sendJson(res, 200, { ussd: result.ussd, templateId: result.templateId });
+  // Staff-facing — PIN redacted, same as every other admin/customer response.
+  sendJson(res, 200, { ussd: result.maskedUssd, templateId: result.templateId });
 });
 
 // ---------------- Multi-Device Configuration ----------------
@@ -411,7 +428,10 @@ ussdRouter.post("/agent/devices/:id/heartbeat", requireAuth("agent"), async (req
 ussdRouter.post("/agent/orders/:id/dial-attempts", requireAuth("agent"), async (req, res) => {
   const { simSlot, ussdString, attemptNumber } = req.body;
   if (!ussdString) return sendJson(res, 400, { error: "ussdString is required" });
-  const order = await queryOne(`SELECT id FROM orders WHERE id=$1`, [req.params.id]);
+  const order = await queryOne<{ id: string; ussd_generated_masked: string | null }>(
+    `SELECT id, ussd_generated_masked FROM orders WHERE id=$1`,
+    [req.params.id]
+  );
   if (!order) return sendJson(res, 404, { error: "Order not found" });
 
   const agent = await queryOne<{ device_id: string | null }>(`SELECT device_id FROM agents WHERE id=$1`, [req.auth!.sub]);
@@ -428,9 +448,9 @@ ussdRouter.post("/agent/orders/:id/dial-attempts", requireAuth("agent"), async (
   const id = randomUUID();
   try {
     await query(
-      `INSERT INTO ussd_dial_attempts (id, order_id, agent_id, sim_slot, ussd_string, attempt_number, status)
-       VALUES ($1,$2,$3,$4,$5,$6,'pending')`,
-      [id, req.params.id, req.auth!.sub, simSlot ?? null, ussdString, attemptNumber ?? 1]
+      `INSERT INTO ussd_dial_attempts (id, order_id, agent_id, sim_slot, ussd_string, ussd_string_masked, attempt_number, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'pending')`,
+      [id, req.params.id, req.auth!.sub, simSlot ?? null, ussdString, order.ussd_generated_masked ?? null, attemptNumber ?? 1]
     );
   } catch (err: any) {
     if (err?.code !== "23505" || err?.constraint !== "idx_ussd_dial_attempts_order_attempt") throw err;
