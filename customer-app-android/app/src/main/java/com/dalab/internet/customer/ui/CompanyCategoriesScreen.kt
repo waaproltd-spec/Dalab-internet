@@ -1,30 +1,31 @@
 package com.dalab.internet.customer.ui
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AllInclusive
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Call
-import androidx.compose.material.icons.filled.PhoneAndroid
-import androidx.compose.material.icons.filled.Router
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.dalab.internet.customer.data.Company
 import com.dalab.internet.customer.data.PackageItem
 import com.dalab.internet.customer.data.ServiceCategory
+import com.dalab.internet.customer.data.companyLogoRes
 import com.dalab.internet.customer.network.ApiClient
 
 /** One entry per distinct categoryId among a company's packages. */
@@ -36,16 +37,6 @@ private data class PackageCategory(val id: String, val label: String, val packag
 // category name is found, that admin-configured name is used instead.
 private fun formatCategoryLabel(categoryId: String): String =
     categoryId.split("-", "_").joinToString(" ") { it.replaceFirstChar(Char::uppercase) }
-
-private fun categoryIcon(categoryId: String): ImageVector {
-    val id = categoryId.lowercase()
-    return when {
-        "voice" in id || "call" in id || "hadal" in id -> Icons.Filled.Call
-        "adsl" in id || "5g" in id || "mifi" in id || "router" in id -> Icons.Filled.Router
-        "unlimited" in id -> Icons.Filled.AllInclusive
-        else -> Icons.Filled.PhoneAndroid
-    }
-}
 
 /** Providers' packages grouped by category — tap a category to see its packages. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -118,12 +109,13 @@ fun CompanyCategoriesScreen(company: Company, onBack: () -> Unit, onSelectCatego
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(2),
                     contentPadding = PaddingValues(16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
                     items(categories, key = { it.id }) { category ->
                         CategoryCard(
                             category = category,
+                            company = company,
                             brandColor = brandColor,
                             enabled = !offline,
                             onClick = { onSelectCategory(category.id, category.label, category.packages) },
@@ -135,27 +127,53 @@ fun CompanyCategoriesScreen(company: Company, onBack: () -> Unit, onSelectCatego
     }
 }
 
+// Same card design for every provider — a colored header band carrying the
+// company's own logo (not a category-specific icon; the reference design
+// repeats the same provider logo on every card, only the title differs),
+// and a light content section below with the category name. Deliberately
+// provider-branded rather than category-branded, matching the reference.
 @Composable
-private fun CategoryCard(category: PackageCategory, brandColor: Color, enabled: Boolean, onClick: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick)) {
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(vertical = 20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+private fun CategoryCard(category: PackageCategory, company: Company, brandColor: Color, enabled: Boolean, onClick: () -> Unit) {
+    val headerColor = if (enabled) brandColor else Color.LightGray
+    val logoRes = remember(company.id) { companyLogoRes(company.id) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .shadow(3.dp, RoundedCornerShape(18.dp))
+            .clip(RoundedCornerShape(18.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .clickable(enabled = enabled, onClick = onClick),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(88.dp)
+                .background(headerColor),
+            contentAlignment = Alignment.Center,
         ) {
-            Box(
-                modifier = Modifier
-                    .size(56.dp)
-                    .clip(CircleShape)
-                    .background(if (enabled) brandColor else Color.LightGray),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(categoryIcon(category.id), contentDescription = null, tint = Color.White)
+            if (logoRes != null) {
+                Image(
+                    painter = painterResource(id = logoRes),
+                    contentDescription = company.name,
+                    modifier = Modifier.size(48.dp),
+                )
+            } else {
+                Icon(Icons.Filled.Wifi, contentDescription = company.name, tint = Color.White, modifier = Modifier.size(36.dp))
             }
-            Spacer(Modifier.height(10.dp))
-            Text(category.label, fontWeight = FontWeight.Bold)
+        }
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 18.dp)) {
+            Text(
+                category.label,
+                fontWeight = FontWeight.Bold,
+                fontSize = 19.sp,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Spacer(Modifier.height(4.dp))
             Text(
                 "${category.packages.size} package${if (category.packages.size == 1) "" else "s"}",
                 style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
