@@ -80,6 +80,19 @@ object PendingActionQueue {
         writeAll(trimmed)
     }
 
+    /** Same as [enqueue] but a no-op if an entry with this id already exists —
+     * lets the same deterministic id be (re-)persisted both at flow-start and
+     * again during a queue-drain replay of that same action without ever
+     * creating a duplicate entry for one order. */
+    @Synchronized
+    fun enqueueIfAbsent(id: String, type: Type, payload: Any) {
+        val items = readAll()
+        if (items.any { it.id == id }) return
+        items.add(PendingAction(id = id, type = type, payloadJson = gson.toJson(payload), createdAt = System.currentTimeMillis()))
+        val trimmed = if (items.size > MAX_ITEMS) items.takeLast(MAX_ITEMS) else items
+        writeAll(trimmed)
+    }
+
     @Synchronized
     fun all(): List<PendingAction> = readAll()
 
