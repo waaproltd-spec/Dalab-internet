@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 
@@ -59,7 +60,11 @@ object PendingActionQueue {
         val json = prefs.getString(KEY_ITEMS, null) ?: return mutableListOf()
         return try {
             gson.fromJson(json, listType) ?: mutableListOf()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            // Every unresolved payment/verify/dial-audit entry the queue was
+            // holding is lost here — this previously happened with zero trace
+            // anywhere, indistinguishable from the queue just being empty.
+            DiagnosticsLog.record("pending_queue_corrupt", "Queue JSON failed to decode, resetting to empty: ${e.message}")
             mutableListOf()
         }
     }
@@ -69,15 +74,25 @@ object PendingActionQueue {
         prefs.edit().putString(KEY_ITEMS, gson.toJson(items)).apply()
     }
 
+    // Oldest items beyond the cap are dropped rather than growing forever if
+    // the device stays offline a very long time. Logs the drop itself — this
+    // used to be a comment-only promise nobody kept, since enqueue/enqueueIfAbsent
+    // never actually logged anything, silently losing queued payment data.
+    private fun trimAndLog(items: MutableList<PendingAction>): List<PendingAction> {
+        if (items.size <= MAX_ITEMS) return items
+        val dropped = items.take(items.size - MAX_ITEMS)
+        DiagnosticsLog.record(
+            "pending_queue_trim",
+            "Dropping ${dropped.size} oldest queued action(s) past MAX_ITEMS=$MAX_ITEMS: ${dropped.joinToString { it.type.name }}",
+        )
+        return items.takeLast(MAX_ITEMS)
+    }
+
     @Synchronized
     fun enqueue(id: String, type: Type, payload: Any) {
         val items = readAll()
         items.add(PendingAction(id = id, type = type, payloadJson = gson.toJson(payload), createdAt = System.currentTimeMillis()))
-        // Oldest items beyond the cap are dropped rather than growing forever
-        // if the device stays offline a very long time — the caller logs the
-        // drop to DiagnosticsLog rather than this silently losing data.
-        val trimmed = if (items.size > MAX_ITEMS) items.takeLast(MAX_ITEMS) else items
-        writeAll(trimmed)
+        writeAll(trimAndLog(items))
     }
 
     /** Same as [enqueue] but a no-op if an entry with this id already exists —
@@ -89,8 +104,7 @@ object PendingActionQueue {
         val items = readAll()
         if (items.any { it.id == id }) return
         items.add(PendingAction(id = id, type = type, payloadJson = gson.toJson(payload), createdAt = System.currentTimeMillis()))
-        val trimmed = if (items.size > MAX_ITEMS) items.takeLast(MAX_ITEMS) else items
-        writeAll(trimmed)
+        writeAll(trimAndLog(items))
     }
 
     @Synchronized

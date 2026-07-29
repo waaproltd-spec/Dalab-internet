@@ -176,6 +176,27 @@ ordersRouter.get("/agent/orders/stream", requireAuth("agent"), async (req, res) 
   req.on("close", unsubscribe);
 });
 
+// Self-heal target list for the Agent App: an order that reached in_progress
+// with a USSD string generated, but whose payment_transactions row is still
+// 'pending' -- meaning no dial attempt has EVER started for it (markPaymentProcessing
+// only flips it to 'processing', called exclusively from POST .../dial-attempts).
+// This is the exact same "stuck" predicate GET /admin/payment-transactions/stuck-count
+// already uses, just filtered to what's now actually actionable (a USSD string
+// exists) rather than every possible cause — this is what lets an order that
+// failed generation get auto-dialed the moment a Super Admin fixes the
+// underlying template/PIN, with zero manual "Dial Now" tap required.
+// Registered before "/agent/orders/:id" so "self-heal-candidates" isn't
+// swallowed as an :id param (same reasoning as "/agent/orders/stream" above).
+ordersRouter.get("/agent/orders/self-heal-candidates", requireAuth("agent"), async (_req, res) => {
+  const rows = await query(
+    `${ORDER_LIST_SELECT}
+     WHERE o.status='in_progress' AND o.ussd_generated IS NOT NULL
+       AND EXISTS (SELECT 1 FROM payment_transactions pt WHERE pt.order_id = o.id AND pt.status='pending')
+     ORDER BY o.updated_at ASC`
+  );
+  sendJson(res, 200, rows);
+});
+
 ordersRouter.get("/agent/orders/:id", requireAuth("agent"), async (req, res) => {
   const order = await loadOrder(req.params.id);
   if (!order) return sendJson(res, 404, { error: "Order not found" });

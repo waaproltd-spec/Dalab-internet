@@ -72,6 +72,14 @@ interface ApiService {
     @GET("agent/orders")
     suspend fun getOrders(@Query("status") status: String? = null): Response<List<Order>>
 
+    // Orders that reached in_progress with a USSD string generated but were
+    // never actually dialed — e.g. generation failed at verify-payment time
+    // and a Super Admin fixed the missing template/PIN afterward. Drained by
+    // SelfHealSweeper so that fix alone is enough, with no manual "Dial Now"
+    // tap required.
+    @GET("agent/orders/self-heal-candidates")
+    suspend fun getSelfHealCandidates(): Response<List<Order>>
+
     @GET("agent/orders/{id}")
     suspend fun getOrder(@Path("id") id: String): Response<Order>
 

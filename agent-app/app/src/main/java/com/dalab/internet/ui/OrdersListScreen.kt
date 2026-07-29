@@ -38,6 +38,7 @@ import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.ConnectionState
 import com.dalab.internet.service.AgentBackgroundService
 import com.dalab.internet.ussd.SimRoutingRepository
+import com.dalab.internet.ussd.SimSlotResult
 import com.dalab.internet.ussd.UssdOrchestrator
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -151,7 +152,7 @@ fun OrdersListScreen(onOpenOrder: (Order) -> Unit) {
         scope.launch {
             var successCount = 0
             for (order in targets) {
-                val slot = SimRoutingRepository.simSlotFor(order.companyId) ?: 1
+                val slot = (SimRoutingRepository.simSlotFor(order.companyId) as? SimSlotResult.Slot)?.slot ?: 1
                 val result = orchestrator.executeManually(order.id, slot)
                 if (result.outcome.name == "SUCCESS") successCount++
             }

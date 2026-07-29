@@ -25,3 +25,17 @@ data class DialResult(
     val outcome: DialOutcome,
     val responseMessage: String? = null,
 )
+
+/**
+ * Distinguishes "this company genuinely has no SIM routing configured" from
+ * "the very first refresh call failed on a transient network blip" — both
+ * previously collapsed to a bare null, which UssdOrchestrator treated as the
+ * terminal NO_SIM_CONFIGURED outcome even for a cold-start connectivity hiccup,
+ * dropping the durable retry-queue entry for what was really just a network
+ * problem (only NETWORK_UNAVAILABLE keeps that entry alive).
+ */
+sealed class SimSlotResult {
+    data class Slot(val slot: Int) : SimSlotResult()
+    object NotConfigured : SimSlotResult()
+    object LoadFailed : SimSlotResult()
+}
