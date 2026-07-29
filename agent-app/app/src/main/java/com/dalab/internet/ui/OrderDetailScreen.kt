@@ -16,7 +16,8 @@ import androidx.compose.ui.unit.dp
 import com.dalab.internet.data.Order
 import com.dalab.internet.data.OrderStatus
 import com.dalab.internet.network.ApiClient
-import com.dalab.internet.network.VerifyPaymentRequest
+import com.dalab.internet.ussd.SimRoutingRepository
+import com.dalab.internet.ussd.UssdOrchestrator
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -28,6 +29,33 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
     var copied by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val orchestrator = remember { UssdOrchestrator(context) }
+    val recommendedSlot = remember(current.companyId) { SimRoutingRepository.simSlotFor(current.companyId) }
+
+    // Verifying payment alone never dials — executeManually does both
+    // (verify-payment, then generate+dial the USSD string), same call the
+    // Orders list's "Execute SIM" buttons already use. Safe to call again
+    // even if the order is already in_progress: verify-payment's status
+    // guard just no-ops the transition, and USSD generation is idempotent —
+    // this is exactly how a stuck order (verified, in_progress, never
+    // dialed) gets a way forward instead of a dead end.
+    fun dial(simSlot: Int) {
+        working = true
+        message = null
+        scope.launch {
+            val result = orchestrator.executeManually(current.id, simSlot)
+            message = "${result.outcome}${result.responseMessage?.let { " — $it" } ?: ""}"
+            try {
+                ApiClient.service.getOrder(current.id).body()?.let {
+                    current = it
+                    onOrderUpdated(it)
+                }
+            } catch (_: Exception) {
+                // Keep showing the dial result above even if the refresh fails.
+            }
+            working = false
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -83,33 +111,51 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
             }
 
             if (current.status == OrderStatus.PENDING) {
-                Button(
-                    onClick = {
-                        working = true
-                        scope.launch {
-                            try {
-                                val response = ApiClient.service.verifyPayment(
-                                    current.id, VerifyPaymentRequest()
-                                )
-                                response.body()?.let {
-                                    current = it
-                                    onOrderUpdated(it)
-                                    message = "Payment verified."
-                                } ?: run { message = "Couldn't verify — try again." }
-                            } catch (_: Exception) {
-                                message = "Network error while verifying."
-                            }
-                            working = false
+                Text(
+                    "Verifying payment also generates and dials the USSD code — pick the SIM this order's provider is routed to.",
+                    style = MaterialTheme.typography.labelSmall,
+                )
+                if (recommendedSlot != null) {
+                    Spacer(Modifier.height(4.dp))
+                    Text("Recommended: SIM $recommendedSlot", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    listOf(1, 2).forEach { slot ->
+                        val isRecommended = recommendedSlot == slot
+                        OutlinedButton(
+                            onClick = { dial(slot) },
+                            enabled = !working,
+                            modifier = Modifier.weight(1f),
+                            colors = if (isRecommended) ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary) else ButtonDefaults.outlinedButtonColors(),
+                        ) {
+                            Text(if (working) "Working..." else if (isRecommended) "Verify + Dial SIM $slot ★" else "Verify + Dial SIM $slot")
                         }
-                    },
-                    enabled = !working,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(if (working) "Verifying..." else "Verify Payment")
+                    }
                 }
             }
 
             if (current.status == OrderStatus.IN_PROGRESS) {
+                Spacer(Modifier.height(12.dp))
+                // Covers the order that's already verified but was never
+                // actually dialed (e.g. verified before this screen dialed on
+                // verify, or a dial that exhausted its retries) — same
+                // executeManually call as above, safe to re-run.
+                Text("No confirmation the USSD was dialed yet? Retry it here.", style = MaterialTheme.typography.labelSmall)
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    listOf(1, 2).forEach { slot ->
+                        val isRecommended = recommendedSlot == slot
+                        OutlinedButton(
+                            onClick = { dial(slot) },
+                            enabled = !working,
+                            modifier = Modifier.weight(1f),
+                            colors = if (isRecommended) ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary) else ButtonDefaults.outlinedButtonColors(),
+                        ) {
+                            Text(if (working) "Working..." else if (isRecommended) "Dial SIM $slot ★" else "Dial SIM $slot")
+                        }
+                    }
+                }
                 Spacer(Modifier.height(12.dp))
                 Button(
                     onClick = {

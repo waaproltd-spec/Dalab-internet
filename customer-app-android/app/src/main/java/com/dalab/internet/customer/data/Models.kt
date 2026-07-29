@@ -60,6 +60,20 @@ data class PaymentWallet(
     val paymentNumber: String? = null,
 )
 
+/**
+ * Mirrors GET /companies/{id}/categories — the Super-Admin-configured
+ * display name for a category, keyed by `slug` (which is what
+ * PackageItem.categoryId actually matches; category_id is free text, not a
+ * foreign key, so this is a client-side lookup, not a guaranteed join).
+ */
+data class ServiceCategory(
+    val id: String,
+    val companyId: String,
+    val slug: String,
+    val name: String,
+    val status: String,
+)
+
 /** Mirrors GET /companies/{id}/packages. */
 data class PackageItem(
     val id: String,
