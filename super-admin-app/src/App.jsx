@@ -77,6 +77,7 @@ const DalabAdminApi = {
   createPackage: (body) => dalabAdminApiRequest("/admin/packages", { method: "POST", body }),
   updatePackage: (id, body) => dalabAdminApiRequest(`/admin/packages/${id}`, { method: "PUT", body }),
   deletePackage: (id) => dalabAdminApiRequest(`/admin/packages/${id}`, { method: "DELETE" }),
+  getPackagesMissingTemplate: () => dalabAdminApiRequest("/admin/packages/missing-template"),
   // Service categories
   getCategories: (companyId) => dalabAdminApiRequest(`/admin/categories${companyId ? `?companyId=${companyId}` : ""}`),
   createCategory: (body) => dalabAdminApiRequest("/admin/categories", { method: "POST", body }),
@@ -1095,14 +1096,16 @@ function PaymentNumbers({ companies, setCompanies, refreshCompanies, admin }) {
   );
 }
 
-function Packages({ packages, setPackages, companies, admin }) {
+function Packages({ packages, setPackages, companies, admin, onPackagesChanged }) {
   const [livePackages, setLivePackages] = useState([]);
   const [categories, setCategories] = useState([]);
+  const [templates, setTemplates] = useState([]);
   const [companyFilter, setCompanyFilter] = useState("all");
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({});
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [templateWarning, setTemplateWarning] = useState("");
   const canManage = hasPermission(admin, "packages.manage");
 
   const fetchPackages = async () => {
@@ -1120,6 +1123,14 @@ function Packages({ packages, setPackages, companies, admin }) {
     DalabAdminApi.getCategories(companyFilter === "all" ? undefined : companyFilter).then(setCategories).catch(() => setCategories([]));
   }, [companyFilter]);
 
+  // Scoped to the modal's own selected company (not the list's companyFilter,
+  // which can be "all") so switching Company inside Add/Edit Package always
+  // shows that company's own templates.
+  useEffect(() => {
+    if (!DALAB_API_ENABLED || !editing || !form.companyId) { setTemplates([]); return; }
+    DalabAdminApi.getUssdTemplates(form.companyId).then(setTemplates).catch(() => setTemplates([]));
+  }, [editing, form.companyId]);
+
   const shown = DALAB_API_ENABLED
     ? livePackages
     : companyFilter === "all"
@@ -1128,11 +1139,13 @@ function Packages({ packages, setPackages, companies, admin }) {
 
   const openNew = () => {
     const companyId = companyFilter !== "all" ? companyFilter : companies[0]?.id || "";
-    setForm({ companyId, categoryId: "", name: "", oldPrice: "", price: "", providerAmount: "", mb: "", minutes: "", sms: "", validity: "", active: true });
+    setForm({ companyId, categoryId: "", name: "", oldPrice: "", price: "", providerAmount: "", mb: "", minutes: "", sms: "", validity: "", active: true, ussdTemplateId: "" });
+    setTemplateWarning("");
     setEditing("new");
   };
   const openEdit = (p) => {
     setForm(DALAB_API_ENABLED ? p : { ...p, companyId: companies.find((c) => c.name === p.company)?.id, oldPrice: p.old, minutes: p.min });
+    setTemplateWarning("");
     setEditing(p.id);
   };
 
@@ -1140,15 +1153,29 @@ function Packages({ packages, setPackages, companies, admin }) {
     if (!form.name || form.price === "" || form.price == null) return;
     if (DALAB_API_ENABLED) {
       setSaving(true);
+      let warning = "";
+      let result;
       try {
-        if (editing === "new") await DalabAdminApi.createPackage(form);
-        else await DalabAdminApi.updatePackage(editing, form);
+        result = editing === "new" ? await DalabAdminApi.createPackage(form) : await DalabAdminApi.updatePackage(editing, form);
+        warning = result?.templateWarning || "";
         await fetchPackages();
+        onPackagesChanged?.();
       } catch (err) {
         setError(err.message || "Could not save package.");
         return;
       } finally {
         setSaving(false);
+      }
+      // Saved successfully either way — but a template warning means this
+      // package will strand a real customer, so keep the modal open with the
+      // warning visible instead of closing straight to the list. If this was
+      // a brand-new package, switch to editing its real id so a second Save
+      // (e.g. after picking a template) updates it instead of creating a
+      // duplicate.
+      setTemplateWarning(warning);
+      if (warning) {
+        if (editing === "new" && result?.id) setEditing(result.id);
+        return;
       }
     } else if (editing === "new") {
       const companyName = companies.find((c) => c.id === form.companyId)?.name;
@@ -1165,6 +1192,7 @@ function Packages({ packages, setPackages, companies, admin }) {
       try {
         await DalabAdminApi.deletePackage(p.id);
         await fetchPackages();
+        onPackagesChanged?.();
       } catch (err) {
         alert(err.message || "Could not deactivate package.");
       }
@@ -1281,6 +1309,25 @@ function Packages({ packages, setPackages, companies, admin }) {
             This field is the separate, full amount actually requested from the provider when the USSD command is generated — set it when the
             customer's price is discounted below the provider's real package cost. Leave blank if there's no discount; the Discount price is used for both.
           </div>
+          {DALAB_API_ENABLED && (
+            <Field label="USSD Template">
+              <select style={inputStyle} value={form.ussdTemplateId || ""} onChange={(e) => setForm({ ...form, ussdTemplateId: e.target.value })}>
+                <option value="">Auto-match by name (legacy)</option>
+                {templates.filter((t) => t.status === "enabled").map((t) => (
+                  <option key={t.id} value={t.id}>{t.serviceName}</option>
+                ))}
+              </select>
+              <div style={{ fontSize: 11, color: MUTE, marginTop: 4 }}>
+                Links this package directly to the template that fulfills it — the recommended way. Leave as "Auto-match by name" only for
+                legacy packages that already work without one; a customer paying for a package with no matching template ends up stuck.
+              </div>
+            </Field>
+          )}
+          {templateWarning && (
+            <div style={{ background: "#FFF6E5", border: "1px solid #F5C451", borderRadius: 8, padding: "10px 12px", fontSize: 12.5, color: "#8A6100", marginBottom: 14 }}>
+              {templateWarning}
+            </div>
+          )}
           {DALAB_API_ENABLED && editing !== "new" && (
             <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: INK, marginTop: 4, marginBottom: 14, cursor: "pointer" }}>
               <input type="checkbox" checked={form.active !== false} onChange={(e) => setForm({ ...form, active: e.target.checked })} />
@@ -1580,6 +1627,10 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
             >
               <Copy size={15} color="#9AA1D4" />
             </button>
+          </div>
+        ) : order.ussdGenerationFailedReason ? (
+          <div style={{ marginTop: 8, fontSize: 12.5, color: "#C81E2C", fontWeight: 600 }}>
+            USSD generation failed: {order.ussdGenerationFailedReason}
           </div>
         ) : (
           <div style={{ marginTop: 8, fontSize: 12, color: MUTE }}>
@@ -2559,7 +2610,7 @@ function PromoImages() {
   );
 }
 
-function DeviceUssdModule({ companies, admin }) {
+function DeviceUssdModule({ companies, admin, onPackagesChanged }) {
   const [tab, setTab] = useState("devices");
   const canManage = hasPermission(admin, "devices.manage");
   // USSD Templates, SIM Routing (sender number/SIM slot assignment), and
@@ -2608,7 +2659,7 @@ function DeviceUssdModule({ companies, admin }) {
       </div>
 
       {tab === "devices" && <DevicesPanel canManage={canManage} />}
-      {tab === "templates" && <UssdTemplatesPanel companies={companies} canManage={canManageSuperOnly} />}
+      {tab === "templates" && <UssdTemplatesPanel companies={companies} canManage={canManageSuperOnly} onPackagesChanged={onPackagesChanged} />}
       {tab === "sim-routing" && <SimRoutingPanel companies={companies} canManage={canManageSuperOnly} />}
       {tab === "pins" && <ProviderPinsPanel companies={companies} canManage={canManageSuperOnly} />}
     </div>
@@ -2846,7 +2897,7 @@ function DevicesPanel({ canManage }) {
   );
 }
 
-function UssdTemplatesPanel({ companies, canManage }) {
+function UssdTemplatesPanel({ companies, canManage, onPackagesChanged }) {
   const [ussdTemplates, setUssdTemplates] = useState([]);
   const [devices, setDevices] = useState([]);
   const [companyFilter, setCompanyFilter] = useState("all");
@@ -2856,6 +2907,26 @@ function UssdTemplatesPanel({ companies, canManage }) {
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState(null); // 'new' | template object | null
   const [form, setForm] = useState({});
+  const [packagesForCompany, setPackagesForCompany] = useState([]);
+
+  // Only meaningful once the template already has a real id (edit mode) —
+  // a brand-new template has nothing for a package to link to yet.
+  useEffect(() => {
+    if (!DALAB_API_ENABLED || editing === "new" || !editing || !form.companyId) { setPackagesForCompany([]); return; }
+    DalabAdminApi.getPackages(form.companyId).then(setPackagesForCompany).catch(() => setPackagesForCompany([]));
+  }, [editing, form.companyId]);
+
+  const togglePackageTemplate = async (pkg, linked) => {
+    const nextId = linked ? editing : null;
+    setPackagesForCompany((prev) => prev.map((p) => (p.id === pkg.id ? { ...p, ussdTemplateId: nextId } : p)));
+    try {
+      await DalabAdminApi.updatePackage(pkg.id, { ussdTemplateId: nextId });
+      onPackagesChanged?.();
+    } catch (err) {
+      alert(err.message || "Could not update package link.");
+      DalabAdminApi.getPackages(form.companyId).then(setPackagesForCompany).catch(() => {});
+    }
+  };
 
   const resetFilters = () => {
     setCompanyFilter("all");
@@ -3098,9 +3169,35 @@ function UssdTemplatesPanel({ companies, canManage }) {
               {companies.map((c) => <option key={c.id} value={c.id}>{c?.name || "Unnamed"}</option>)}
             </select>
           </Field>
-          <Field label="Service / Package Category">
+          <Field label="Template label">
             <input style={inputStyle} value={form.serviceName || ""} onChange={(e) => setForm({ ...form, serviceName: e.target.value })} placeholder="e.g. Anfac Plus, Qanciye, Broadband 5G" />
           </Field>
+          <div style={{ fontSize: 11, color: MUTE, marginTop: -8, marginBottom: 14 }}>
+            Only used to match a legacy package that isn't directly linked below — link packages instead of relying on this label matching their name.
+          </div>
+          {editing !== "new" && (
+            <Field label="Packages using this template">
+              {packagesForCompany.length === 0 ? (
+                <div style={{ fontSize: 12, color: MUTE }}>No packages for this provider yet.</div>
+              ) : (
+                <div style={{ maxHeight: 160, overflowY: "auto", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 8 }}>
+                  {packagesForCompany.map((p) => (
+                    <label key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: INK, padding: "4px 2px", cursor: "pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={p.ussdTemplateId === editing}
+                        onChange={(e) => togglePackageTemplate(p, e.target.checked)}
+                      />
+                      {p.name}
+                      {p.ussdTemplateId && p.ussdTemplateId !== editing && (
+                        <span style={{ fontSize: 11, color: MUTE }}>(linked to another template)</span>
+                      )}
+                    </label>
+                  ))}
+                </div>
+              )}
+            </Field>
+          )}
           <Field label="USSD Template Pattern">
             <input style={{ ...inputStyle, fontFamily: "monospace" }} value={form.ussdCode || ""} onChange={(e) => setForm({ ...form, ussdCode: e.target.value })} placeholder="*738*{customerNumber}*{amount}*{pin}#" />
           </Field>
@@ -3429,7 +3526,7 @@ function ProviderPinsPanel({ companies, canManage }) {
 // PINs, SIM Routing, and USSD Templates already use elsewhere — this view
 // adds no new backend state, it just re-groups the existing one by provider
 // so nothing can drift between the two places it's edited from.
-function ProviderNumbers({ companies, refreshCompanies, admin }) {
+function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged }) {
   const [pinStatuses, setPinStatuses] = useState({});
   const [pinDrafts, setPinDrafts] = useState({});
   const [numberDrafts, setNumberDrafts] = useState({});
@@ -3441,6 +3538,26 @@ function ProviderNumbers({ companies, refreshCompanies, admin }) {
   const [message, setMessage] = useState("");
   const [templateEditing, setTemplateEditing] = useState(null); // { companyId, id: 'new'|templateId }
   const [templateForm, setTemplateForm] = useState({});
+  const [packagesForTemplateCompany, setPackagesForTemplateCompany] = useState([]);
+
+  // Only meaningful once the template already has a real id (edit mode) —
+  // a brand-new template has nothing for a package to link to yet.
+  useEffect(() => {
+    if (!DALAB_API_ENABLED || !templateEditing || templateEditing.id === "new") { setPackagesForTemplateCompany([]); return; }
+    DalabAdminApi.getPackages(templateEditing.companyId).then(setPackagesForTemplateCompany).catch(() => setPackagesForTemplateCompany([]));
+  }, [templateEditing]);
+
+  const toggleTemplatePackageLink = async (pkg, linked) => {
+    const nextId = linked ? templateEditing.id : null;
+    setPackagesForTemplateCompany((prev) => prev.map((p) => (p.id === pkg.id ? { ...p, ussdTemplateId: nextId } : p)));
+    try {
+      await DalabAdminApi.updatePackage(pkg.id, { ussdTemplateId: nextId });
+      onPackagesChanged?.();
+    } catch (err) {
+      alert(err.message || "Could not update package link.");
+      DalabAdminApi.getPackages(templateEditing.companyId).then(setPackagesForTemplateCompany).catch(() => {});
+    }
+  };
   const [routeForm, setRouteForm] = useState({}); // companyId -> { deviceId, simSlot }
 
   // Payment number, PIN, USSD templates, AND sim/device routing (sender
@@ -3740,9 +3857,35 @@ function ProviderNumbers({ companies, refreshCompanies, admin }) {
 
       {templateEditing && (
         <Modal title={templateEditing.id === "new" ? "Add USSD template" : "Edit USSD template"} onClose={() => setTemplateEditing(null)} width={460}>
-          <Field label="Service / Package Category">
+          <Field label="Template label">
             <input style={inputStyle} value={templateForm.serviceName || ""} onChange={(e) => setTemplateForm({ ...templateForm, serviceName: e.target.value })} placeholder="e.g. Anfac Plus, Qanciye, Broadband 5G" />
           </Field>
+          <div style={{ fontSize: 11, color: MUTE, marginTop: -8, marginBottom: 14 }}>
+            Only used to match a legacy package that isn't directly linked below — link packages instead of relying on this label matching their name.
+          </div>
+          {templateEditing.id !== "new" && (
+            <Field label="Packages using this template">
+              {packagesForTemplateCompany.length === 0 ? (
+                <div style={{ fontSize: 12, color: MUTE }}>No packages for this provider yet.</div>
+              ) : (
+                <div style={{ maxHeight: 160, overflowY: "auto", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 8 }}>
+                  {packagesForTemplateCompany.map((p) => (
+                    <label key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: INK, padding: "4px 2px", cursor: "pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={p.ussdTemplateId === templateEditing.id}
+                        onChange={(e) => toggleTemplatePackageLink(p, e.target.checked)}
+                      />
+                      {p.name}
+                      {p.ussdTemplateId && p.ussdTemplateId !== templateEditing.id && (
+                        <span style={{ fontSize: 11, color: MUTE }}>(linked to another template)</span>
+                      )}
+                    </label>
+                  ))}
+                </div>
+              )}
+            </Field>
+          )}
           <Field label="USSD Template Pattern">
             <input style={{ ...inputStyle, fontFamily: "monospace" }} value={templateForm.ussdCode || ""} onChange={(e) => setTemplateForm({ ...templateForm, ussdCode: e.target.value })} placeholder="*737*{receiverNumber}*{amount}*{pin}#" />
           </Field>
@@ -5398,6 +5541,7 @@ function AdminDashboardShell({ admin, onLogout }) {
   const [orders, setOrders] = useState(initialOrders);
   const [customers, setCustomers] = useState(initialCustomers);
   const [stuckCount, setStuckCount] = useState(0);
+  const [missingTemplateCount, setMissingTemplateCount] = useState(0);
 
   // Companies used to be mock-only everywhere (Companies/PaymentNumbers never
   // called GET /admin/companies) — this is now the single source of truth,
@@ -5444,6 +5588,31 @@ function AdminDashboardShell({ admin, onLogout }) {
     return () => unsubscribe();
   }, []);
 
+  // Proactive: catches a package with no way to resolve a USSD template
+  // (root cause of orders getting stuck at generation time) at the point of
+  // configuration, instead of waiting for a real customer payment to reveal
+  // it. Same real-time refresh pattern as the stuck-payment badge above.
+  const refreshMissingTemplateCount = async () => {
+    if (!DALAB_API_ENABLED) return;
+    try {
+      setMissingTemplateCount((await DalabAdminApi.getPackagesMissingTemplate()).length);
+    } catch (err) {
+      console.error("Failed to load packages missing a template:", err.message);
+    }
+  };
+  useEffect(() => { refreshMissingTemplateCount(); }, []);
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    const unsubscribe = subscribeOrderEvents("/admin/orders/stream", { onEvent: refreshMissingTemplateCount });
+    return () => unsubscribe();
+  }, []);
+  // Package/template saves don't broadcast an order event (there's no order
+  // involved), so the count also refreshes whenever the admin visits either
+  // section where it could have just changed.
+  useEffect(() => {
+    if (active === "packages" || active === "devices") refreshMissingTemplateCount();
+  }, [active]);
+
   const activeLabel = NAV.find((n) => n.id === active)?.label;
 
   return (
@@ -5480,6 +5649,11 @@ function AdminDashboardShell({ admin, onLogout }) {
                 {!collapsed && n.id === "payment-transactions" && stuckCount > 0 && (
                   <span style={{ marginLeft: "auto" }}>
                     <Badge tone="red">{stuckCount}</Badge>
+                  </span>
+                )}
+                {!collapsed && n.id === "packages" && missingTemplateCount > 0 && (
+                  <span style={{ marginLeft: "auto" }} title="Packages with no matching USSD template">
+                    <Badge tone="amber">{missingTemplateCount}</Badge>
                   </span>
                 )}
               </button>
@@ -5520,9 +5694,9 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "overview" && <Overview companies={companies} orders={orders} />}
           {active === "companies" && <Companies companies={companies} setCompanies={setCompanies} refreshCompanies={refreshCompanies} admin={admin} />}
           {active === "payment-numbers" && <PaymentNumbers companies={companies} setCompanies={setCompanies} refreshCompanies={refreshCompanies} admin={admin} />}
-          {active === "provider-numbers" && <ProviderNumbers companies={companies} refreshCompanies={refreshCompanies} admin={admin} />}
+          {active === "provider-numbers" && <ProviderNumbers companies={companies} refreshCompanies={refreshCompanies} admin={admin} onPackagesChanged={refreshMissingTemplateCount} />}
           {active === "payment-wallets" && <PaymentWalletsPanel companies={companies} />}
-          {active === "packages" && <Packages packages={packages} setPackages={setPackages} companies={companies} admin={admin} />}
+          {active === "packages" && <Packages packages={packages} setPackages={setPackages} companies={companies} admin={admin} onPackagesChanged={refreshMissingTemplateCount} />}
           {active === "categories" && <Categories companies={companies} admin={admin} />}
           {active === "orders" && <Orders orders={orders} setOrders={setOrders} companies={companies} admin={admin} />}
           {active === "customers" && <Customers customers={customers} setCustomers={setCustomers} refreshCustomers={refreshCustomers} admin={admin} />}
@@ -5530,7 +5704,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "macaash" && <Macaash customers={customers} />}
           {active === "notifications" && <Notifications />}
           {active === "promo-images" && <PromoImages />}
-          {active === "devices" && <DeviceUssdModule companies={companies} admin={admin} />}
+          {active === "devices" && <DeviceUssdModule companies={companies} admin={admin} onPackagesChanged={refreshMissingTemplateCount} />}
           {active === "sms-logs" && <SmsLogs companies={companies} />}
           {active === "payment-transactions" && <PaymentTransactionsPanel companies={companies} />}
           {active === "execution-logs" && <ExecutionLogs companies={companies} />}
