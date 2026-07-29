@@ -39,3 +39,16 @@ sealed class SimSlotResult {
     object NotConfigured : SimSlotResult()
     object LoadFailed : SimSlotResult()
 }
+
+/**
+ * Distinguishes "this slot genuinely has no SIM inserted right now" from
+ * "we can't tell, because CALL_PHONE/READ_PHONE_STATE isn't granted" — both
+ * previously collapsed to the same null from UssdDialer.subscriptionIdForSlot,
+ * producing the identical "SIM isn't physically inserted" message for a lost
+ * permission as for a truly missing SIM.
+ */
+sealed class SubscriptionLookupResult {
+    data class Found(val subscriptionId: Int) : SubscriptionLookupResult()
+    object PermissionMissing : SubscriptionLookupResult()
+    object NotPresent : SubscriptionLookupResult()
+}

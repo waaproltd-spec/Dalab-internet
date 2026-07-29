@@ -60,14 +60,17 @@ class UssdDialer(private val context: Context) {
 
     /**
      * Resolves the Super Admin's 1-based "SIM 1 / SIM 2" configuration to an
-     * actual device subscription id. Returns null if that slot has no SIM
-     * physically present right now (e.g. configured for SIM 2 but the agent
-     * only has one SIM inserted) — callers must treat that as
-     * DialOutcome.NO_SIM_PRESENT, not silently fall back to the wrong SIM.
+     * actual device subscription id. `listActiveSims()` silently returns an
+     * empty list when CALL_PHONE/READ_PHONE_STATE isn't granted — indistinguishable
+     * from a genuinely empty SIM tray unless checked separately here, which
+     * previously meant a lost permission and a missing SIM produced the exact
+     * same "isn't physically inserted" message with no way to tell them apart.
      */
-    fun subscriptionIdForSlot(oneBasedSlot: Int): Int? {
+    fun subscriptionIdForSlot(oneBasedSlot: Int): SubscriptionLookupResult {
+        if (!hasRequiredPermissions()) return SubscriptionLookupResult.PermissionMissing
         val targetIndex = oneBasedSlot - 1 // Android's simSlotIndex is 0-based
-        return listActiveSims().firstOrNull { it.simSlotIndex == targetIndex }?.subscriptionId
+        val subscriptionId = listActiveSims().firstOrNull { it.simSlotIndex == targetIndex }?.subscriptionId
+        return subscriptionId?.let { SubscriptionLookupResult.Found(it) } ?: SubscriptionLookupResult.NotPresent
     }
 
     /**
