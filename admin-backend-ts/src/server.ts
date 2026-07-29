@@ -21,6 +21,18 @@ import { paymentWalletsRouter } from "./routes/paymentWallets.routes.js";
 import { pool } from "./db/pool.js";
 import { seedAll } from "./db/seed.js";
 
+// Express 4 route handlers here are plain `async (req, res) => {...}` with no
+// wrapper — a promise rejection inside one (e.g. an uncaught DB error) never
+// reaches the error middleware below; it becomes an unhandled rejection at
+// the process level, which Node terminates the whole process for by default.
+// Attaching this listener is what stops that: Node only hard-crashes on an
+// unhandled rejection when *nothing* is listening for it. One bad request
+// must never take the entire backend down for every other user.
+process.on("unhandledRejection", (reason) => {
+  // eslint-disable-next-line no-console
+  console.error("Unhandled rejection (request likely already failed with a response, but the process stays up):", reason);
+});
+
 const app = express();
 
 // Render sits in front of this app as a single reverse-proxy hop — trusting

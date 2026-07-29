@@ -69,6 +69,7 @@ const DalabAdminApi = {
   createCompany: (body) => dalabAdminApiRequest("/admin/companies", { method: "POST", body }),
   updateCompany: (id, body) => dalabAdminApiRequest(`/admin/companies/${id}`, { method: "PUT", body }),
   deleteCompany: (id) => dalabAdminApiRequest(`/admin/companies/${id}`, { method: "DELETE" }),
+  companyLogoUrl: (id) => `${DALAB_API_BASE_URL}/companies/${id}/logo`,
   updateCompanyStatus: (id, status) => dalabAdminApiRequest(`/admin/companies/${id}/status`, { method: "PUT", body: { status } }),
   updateCompanyVisibility: (id, visibleCustomerApp, visibleAgentApp) => dalabAdminApiRequest(`/admin/companies/${id}/visibility`, { method: "PUT", body: { visibleCustomerApp, visibleAgentApp } }),
   updatePaymentNumber: (id, paymentNumber, paymentUssdTemplate) => dalabAdminApiRequest(`/admin/companies/${id}/payment-number`, { method: "PUT", body: { paymentNumber, paymentUssdTemplate } }),
@@ -210,6 +211,10 @@ function normalizeCompany(c) {
     visibleCustomerApp: c.visibleCustomerApp !== false,
     visibleAgentApp: c.visibleAgentApp !== false,
     autoProcessEnabled: c.autoProcessEnabled !== false,
+    slug: c.slug || "",
+    description: c.description || "",
+    sortOrder: c.sortOrder ?? 0,
+    hasLogo: Boolean(c.hasLogo),
   };
 }
 
@@ -732,10 +737,14 @@ function Overview({ companies, orders }) {
   );
 }
 
+const NEW_COMPANY_FORM = { name: "", group: 1, color: "#1D2E8C", slug: "", description: "", sortOrder: 0, status: "enabled", logoBase64: null };
+
 function Companies({ companies, setCompanies, refreshCompanies, admin }) {
   const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState({ name: "", group: 1, color: "#1D2E8C" });
+  const [form, setForm] = useState(NEW_COMPANY_FORM);
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const fileInputRef = useRef(null);
   const canManage = hasPermission(admin, "companies.manage");
   // Enabling/disabling a provider is Super-Admin-exclusive on the backend
   // (requireAuth("super_admin") on PUT /admin/companies/:id/status, not
@@ -743,23 +752,44 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
   // that here so a regular Admin never sees a button that would just 403.
   const canManageStatus = admin?.role === "super_admin";
 
-  const openNew = () => { setForm({ name: "", group: 1, color: "#1D2E8C" }); setEditing("new"); };
-  const openEdit = (c) => { setForm(c); setEditing(c.id); };
+  const openNew = () => { setForm(NEW_COMPANY_FORM); setError(""); setEditing("new"); };
+  const openEdit = (c) => { setForm({ ...c, logoBase64: null }); setError(""); setEditing(c.id); };
+
+  const onLogoSelected = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setForm((prev) => ({ ...prev, logoBase64: reader.result }));
+    reader.onerror = () => setError("Could not read that image file.");
+    reader.readAsDataURL(file);
+  };
 
   const save = async () => {
     setError("");
     if (!form.name) return;
+    setSaving(true);
     if (DALAB_API_ENABLED) {
       try {
         if (editing === "new") {
           const id = (form.name || "").toLowerCase().replace(/\s+/g, "-");
-          await DalabAdminApi.createCompany({ id, name: form.name, groupNumber: form.group, colorHex: form.color, gateway: form.gateway || "Manual" });
+          await DalabAdminApi.createCompany({
+            id, name: form.name, groupNumber: form.group, colorHex: form.color, gateway: form.gateway || "Manual",
+            slug: form.slug || "", description: form.description || "", sortOrder: Number(form.sortOrder) || 0,
+            status: form.status === "disabled" ? "offline" : "online",
+            ...(form.logoBase64 ? { logoBase64: form.logoBase64 } : {}),
+          });
         } else {
-          await DalabAdminApi.updateCompany(editing, { name: form.name, groupNumber: form.group, colorHex: form.color, gateway: form.gateway });
+          await DalabAdminApi.updateCompany(editing, {
+            name: form.name, groupNumber: form.group, colorHex: form.color, gateway: form.gateway,
+            slug: form.slug || "", description: form.description || "", sortOrder: Number(form.sortOrder) || 0,
+            ...(form.logoBase64 ? { logoBase64: form.logoBase64 } : {}),
+          });
         }
         await refreshCompanies();
       } catch (err) {
         setError(err.message || "Could not save company.");
+        setSaving(false);
         return;
       }
     } else if (editing === "new") {
@@ -767,6 +797,7 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
     } else {
       setCompanies((prev) => prev.map((c) => (c.id === editing ? { ...c, ...form } : c)));
     }
+    setSaving(false);
     setEditing(null);
   };
 
@@ -829,7 +860,9 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
             {companies.filter((c) => c.group === g).map((c) => (
               <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 0", borderTop: `1px solid ${BORDER}` }}>
                 <div style={{ width: 40, height: 40, borderRadius: 10, background: c.color, display: "flex", alignItems: "center", justifyContent: "center", padding: 6, overflow: "hidden" }}>
-                  {LOGOS[c.id] ? (
+                  {c.hasLogo ? (
+                    <img src={DalabAdminApi.companyLogoUrl(c.id)} alt={c?.name || "Company"} style={{ maxHeight: "100%", maxWidth: "100%", objectFit: "contain" }} />
+                  ) : LOGOS[c.id] ? (
                     <img src={LOGOS[c.id]} alt={c?.name || "Company"} style={{ maxHeight: "100%", maxWidth: "100%", objectFit: "contain" }} />
                   ) : (
                     <Wifi size={18} color="#fff" />
@@ -837,7 +870,7 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
                 </div>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 700, fontSize: 14, color: INK }}>{c?.name || "Unnamed company"}</div>
-                  <div style={{ fontSize: 11.5, color: MUTE }}>{c.gateway}</div>
+                  <div style={{ fontSize: 11.5, color: MUTE }}>{c.gateway}{c.description ? ` · ${c.description}` : ""}</div>
                 </div>
                 <Badge tone={c.status === "enabled" ? "green" : "red"}>{c.status === "enabled" ? "Enabled" : "Disabled"}</Badge>
                 {canManageStatus && (
@@ -866,20 +899,61 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
 
       {editing && (
         <Modal title={editing === "new" ? "Add company" : "Edit company"} onClose={() => setEditing(null)}>
-          <Field label="Company name">
-            <input style={inputStyle} value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Telesom" />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Provider name *">
+              <input style={inputStyle} value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Telesom" />
+            </Field>
+            <Field label="Slug">
+              <input style={inputStyle} value={form.slug || ""} onChange={(e) => setForm({ ...form, slug: e.target.value })} placeholder="e.g. telesom" />
+            </Field>
+          </div>
+
+          <Field label="Provider logo (image)">
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ width: 44, height: 44, borderRadius: 10, background: form.color || "#1D2E8C", display: "flex", alignItems: "center", justifyContent: "center", padding: 6, overflow: "hidden", flexShrink: 0 }}>
+                {form.logoBase64 ? (
+                  <img src={form.logoBase64} alt="Logo preview" style={{ maxHeight: "100%", maxWidth: "100%", objectFit: "contain" }} />
+                ) : editing !== "new" && form.hasLogo ? (
+                  <img src={DalabAdminApi.companyLogoUrl(editing)} alt="Current logo" style={{ maxHeight: "100%", maxWidth: "100%", objectFit: "contain" }} />
+                ) : (
+                  <Wifi size={18} color="#fff" />
+                )}
+              </div>
+              <input ref={fileInputRef} type="file" accept="image/*" onChange={onLogoSelected} style={{ display: "none" }} />
+              <Button variant="ghost" icon={Upload} onClick={() => fileInputRef.current?.click()}>Choose file</Button>
+            </div>
           </Field>
-          <Field label="Group">
-            <select style={inputStyle} value={form.group} onChange={(e) => setForm({ ...form, group: Number(e.target.value) })}>
-              <option value={1}>Group 1</option>
-              <option value={2}>Group 2</option>
-            </select>
+
+          <Field label="Description">
+            <textarea style={{ ...inputStyle, minHeight: 60, resize: "vertical" }} value={form.description || ""} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Brief details..." />
           </Field>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Group">
+              <select style={inputStyle} value={form.group} onChange={(e) => setForm({ ...form, group: Number(e.target.value) })}>
+                <option value={1}>Group 1</option>
+                <option value={2}>Group 2</option>
+              </select>
+            </Field>
+            <Field label="Location in UI (sort order)">
+              <input type="number" style={inputStyle} value={form.sortOrder ?? 0} onChange={(e) => setForm({ ...form, sortOrder: e.target.value })} />
+            </Field>
+          </div>
+
+          {editing === "new" && (
+            <Field label="Status">
+              <select style={inputStyle} value={form.status || "enabled"} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+                <option value="enabled">Active</option>
+                <option value="disabled">Inactive</option>
+              </select>
+            </Field>
+          )}
+
           <Field label="Brand color">
             <input type="color" style={{ ...inputStyle, padding: 4, height: 40 }} value={form.color} onChange={(e) => setForm({ ...form, color: e.target.value })} />
           </Field>
           <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
-            <Button onClick={save} icon={Check}>Save</Button>
+            <Button onClick={save} icon={Check} disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
             <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
           </div>
         </Modal>
@@ -2487,10 +2561,12 @@ function PromoImages() {
 function DeviceUssdModule({ companies, admin }) {
   const [tab, setTab] = useState("devices");
   const canManage = hasPermission(admin, "devices.manage");
-  // USSD Templates control what actually gets dialed on a customer's behalf —
-  // Super-Admin-exclusive on the backend, not delegable via devices.manage
-  // like the other three tabs here still are.
-  const canManageTemplates = admin?.role === "super_admin";
+  // USSD Templates, SIM Routing (sender number/SIM slot assignment), and
+  // Provider PINs all directly control what gets dialed and where money/data
+  // moves — Super-Admin-exclusive on the backend (requireAuth("super_admin")
+  // on every mutating route in each), not delegable via devices.manage like
+  // the Devices tab (agent device inventory) still is.
+  const canManageSuperOnly = admin?.role === "super_admin";
 
   const tabs = [
     { id: "devices", label: "Devices" },
@@ -2506,7 +2582,13 @@ function DeviceUssdModule({ companies, admin }) {
           <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Device & USSD Configuration</div>
           <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Agent devices, USSD templates, SIM routing, provider PINs, and the automatic processing pipeline — everything the Agent App's SMS-to-USSD pipeline depends on.</div>
         </div>
-        {!canManage && <Badge tone="amber">View only — ask a Super Admin for the "devices.manage" permission to make changes</Badge>}
+        {!canManageSuperOnly && (
+          <Badge tone="amber">
+            {canManage
+              ? "USSD Templates, SIM Routing, and Provider PINs are Super Admin only"
+              : 'View only — ask a Super Admin for the "devices.manage" permission to manage devices, or Super Admin access for templates/routing/PINs'}
+          </Badge>
+        )}
       </div>
 
       <div style={{ display: "flex", gap: 6, marginBottom: 18, borderBottom: `1px solid ${BORDER}` }}>
@@ -2525,9 +2607,9 @@ function DeviceUssdModule({ companies, admin }) {
       </div>
 
       {tab === "devices" && <DevicesPanel canManage={canManage} />}
-      {tab === "templates" && <UssdTemplatesPanel companies={companies} canManage={canManageTemplates} />}
-      {tab === "sim-routing" && <SimRoutingPanel companies={companies} canManage={canManage} />}
-      {tab === "pins" && <ProviderPinsPanel companies={companies} canManage={canManage} />}
+      {tab === "templates" && <UssdTemplatesPanel companies={companies} canManage={canManageSuperOnly} />}
+      {tab === "sim-routing" && <SimRoutingPanel companies={companies} canManage={canManageSuperOnly} />}
+      {tab === "pins" && <ProviderPinsPanel companies={companies} canManage={canManageSuperOnly} />}
     </div>
   );
 }
@@ -3360,12 +3442,13 @@ function ProviderNumbers({ companies, refreshCompanies, admin }) {
   const [templateForm, setTemplateForm] = useState({});
   const [routeForm, setRouteForm] = useState({}); // companyId -> { deviceId, simSlot }
 
-  // Payment number, PIN, and USSD templates are Super-Admin-exclusive on the
-  // backend (see companies.routes.ts / ussd.routes.ts) — not delegable via
-  // any permission, since they control where customer money is sent and what
-  // gets dialed. SIM/device routing IS delegable via devices.manage.
+  // Payment number, PIN, USSD templates, AND sim/device routing (sender
+  // number + SIM slot assignment) are all Super-Admin-exclusive on the
+  // backend (see companies.routes.ts / ussd.routes.ts) — none delegable via
+  // any permission, since they control where customer money is sent, what
+  // gets dialed, and which physical SIM sends it.
   const canManageSecrets = admin?.role === "super_admin";
-  const canManageRouting = hasPermission(admin, "devices.manage");
+  const canManageRouting = admin?.role === "super_admin";
 
   const fetchAll = async () => {
     if (!DALAB_API_ENABLED || companies.length === 0) return;
@@ -3401,7 +3484,7 @@ function ProviderNumbers({ companies, refreshCompanies, admin }) {
     try {
       await DalabAdminApi.updatePaymentNumber(company.id, value, company.paymentUssdTemplate || "");
       await refreshCompanies();
-      setMessage(`${company.name}'s payment number saved.`);
+      setMessage(`Settings saved successfully. ${company.name}'s payment number is live for new payment requests.`);
     } catch (err) {
       setError(err.message || "Could not save payment number.");
     } finally {
@@ -3421,7 +3504,7 @@ function ProviderNumbers({ companies, refreshCompanies, admin }) {
       await DalabAdminApi.setUssdPin(companyId, pin);
       setPinStatuses((prev) => ({ ...prev, [companyId]: true }));
       setPinDrafts((prev) => ({ ...prev, [companyId]: "" }));
-      setMessage("PIN saved — it will be used fresh on the very next USSD dial for this provider.");
+      setMessage("Settings saved successfully. The new PIN will be used on the very next USSD dial for this provider.");
     } catch (err) {
       setError(err.message || "Could not save PIN.");
     } finally {
@@ -3435,6 +3518,7 @@ function ProviderNumbers({ companies, refreshCompanies, admin }) {
     try {
       await DalabAdminApi.setSimRouting(companyId, deviceId, simSlot, priority);
       await fetchAll();
+      setMessage("Settings saved successfully. The sender number / SIM slot is live immediately.");
     } catch (err) {
       setError(err.message || "Could not save SIM slot.");
     } finally {
@@ -3474,6 +3558,7 @@ function ProviderNumbers({ companies, refreshCompanies, admin }) {
       if (templateEditing.id === "new") await DalabAdminApi.createUssdTemplate(payload);
       else await DalabAdminApi.updateUssdTemplate(templateEditing.id, payload);
       await fetchAll();
+      setMessage("Settings saved successfully. The USSD template is live immediately.");
     } catch (err) {
       alert(err.message || "Could not save USSD template.");
       return;
@@ -3509,7 +3594,7 @@ function ProviderNumbers({ companies, refreshCompanies, admin }) {
 
       {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
       {message && <div style={{ color: GREEN, fontSize: 12.5, marginBottom: 14 }}>{message}</div>}
-      {!canManageSecrets && <Badge tone="amber">View only for Payment Number, PIN and USSD Template — ask a Super Admin to change those</Badge>}
+      {!canManageSecrets && <Badge tone="amber">View only — Payment Number, USSD PIN, Sender Number/SIM Slot, and USSD Templates are Super Admin only</Badge>}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 14 }}>
         {companies.map((c) => {

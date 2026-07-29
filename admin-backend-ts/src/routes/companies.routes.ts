@@ -5,13 +5,16 @@ import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { recordActivity } from "../utils/activityLog.js";
+import { parseDataUri } from "../utils/dataUri.js";
 
 export const companiesRouter = Router();
 export const packagesRouter = Router();
 
-// pin_encrypted must never reach any client, including the public endpoint —
-// explicit column list rather than SELECT *.
-const COMPANY_COLUMNS = `id, name, group_number, color_hex, logo_url, status, gateway, payment_number, payment_ussd_template, ussd_code, visible_customer_app, visible_agent_app, auto_process_enabled, created_at, updated_at`;
+// pin_encrypted and logo_data must never reach any client on the list/detail
+// routes — logo_data is only ever read by the dedicated .../logo route below
+// (raw bytes, not through sendJson); has_logo is a cheap boolean so the
+// dashboard/apps know whether to point an <img> at that route at all.
+const COMPANY_COLUMNS = `id, name, group_number, color_hex, logo_url, status, gateway, payment_number, payment_ussd_template, ussd_code, visible_customer_app, visible_agent_app, auto_process_enabled, slug, description, sort_order, (logo_data IS NOT NULL) AS has_logo, created_at, updated_at`;
 
 // provider_amount is the internal cost actually requested from the telecom
 // via USSD — it can differ from the customer-facing price (e.g. a
@@ -21,8 +24,21 @@ const COMPANY_COLUMNS = `id, name, group_number, color_hex, logo_url, status, ga
 const PUBLIC_PACKAGE_COLUMNS = `id, company_id, category_id, name, old_price, price, mb, minutes, sms, validity, active, code, created_at`;
 
 companiesRouter.get("/companies", async (_req, res) => {
-  const rows = await query(`SELECT ${COMPANY_COLUMNS} FROM companies ORDER BY group_number, name`);
+  const rows = await query(`SELECT ${COMPANY_COLUMNS} FROM companies ORDER BY group_number, sort_order, name`);
   sendJson(res, 200, rows);
+});
+
+// Public — served by company id (not a secret), same reasoning as
+// promo-images: an <img src> tag can't send an Authorization header anyway.
+companiesRouter.get("/companies/:id/logo", async (req, res) => {
+  const row = await queryOne<{ logo_data: Buffer | null; logo_mime_type: string | null }>(
+    `SELECT logo_data, logo_mime_type FROM companies WHERE id=$1`,
+    [req.params.id]
+  );
+  if (!row || !row.logo_data) return sendJson(res, 404, { error: "Logo not found" });
+  res.setHeader("Content-Type", row.logo_mime_type || "image/png");
+  res.setHeader("Cache-Control", "public, max-age=3600");
+  res.send(row.logo_data);
 });
 
 companiesRouter.get("/companies/:id/packages", async (req, res) => {
@@ -34,28 +50,62 @@ companiesRouter.get("/companies/:id/packages", async (req, res) => {
 });
 
 companiesRouter.get("/admin/companies", requireStaff(), async (_req, res) => {
-  sendJson(res, 200, await query(`SELECT ${COMPANY_COLUMNS} FROM companies ORDER BY group_number, name`));
+  sendJson(res, 200, await query(`SELECT ${COMPANY_COLUMNS} FROM companies ORDER BY group_number, sort_order, name`));
 });
 
 companiesRouter.post("/admin/companies", requirePermission("companies.manage"), async (req, res) => {
-  const { id, name, groupNumber, colorHex, gateway } = req.body;
+  const { id, name, groupNumber, colorHex, gateway, slug, description, sortOrder, status, logoBase64 } = req.body;
   if (!id || !name || !groupNumber || !colorHex) {
     return sendJson(res, 400, { error: "id, name, groupNumber, colorHex are required" });
   }
-  await query(
-    `INSERT INTO companies (id, name, group_number, color_hex, gateway, status) VALUES ($1,$2,$3,$4,$5,'online')`,
-    [id, name, groupNumber, colorHex, gateway ?? "Manual"]
-  );
+  // The Active/Inactive toggle after creation goes through the dedicated,
+  // strict-super_admin /status route (see below) — this is only the initial
+  // value on a row the caller is creating themselves, not a later change.
+  const initialStatus = status === "offline" ? "offline" : "online";
+  const parsedLogo = logoBase64 ? parseDataUri(logoBase64) : null;
+  if (logoBase64 && !parsedLogo) {
+    return sendJson(res, 400, { error: "logoBase64 must be a data:<mime>;base64,<data> string" });
+  }
+  try {
+    await query(
+      `INSERT INTO companies (id, name, group_number, color_hex, gateway, status, slug, description, sort_order, logo_data, logo_mime_type)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [id, name, groupNumber, colorHex, gateway ?? "Manual", initialStatus, slug || null, description || null, sortOrder ?? 0, parsedLogo?.data ?? null, parsedLogo?.mimeType ?? null]
+    );
+  } catch (err: any) {
+    if (err?.code === "23505") {
+      return sendJson(res, 409, { error: `A company with id "${id}" already exists. Choose a different name.` });
+    }
+    throw err;
+  }
   sendJson(res, 201, await queryOne(`SELECT ${COMPANY_COLUMNS} FROM companies WHERE id=$1`, [id]));
 });
 
 companiesRouter.put("/admin/companies/:id", requirePermission("companies.manage"), async (req, res) => {
   const existing = await queryOne(`SELECT * FROM companies WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Company not found" });
-  const merged = { ...existing, ...req.body };
+  // Read each field explicitly from the camelCase request body rather than
+  // via `{ ...existing, ...req.body }` — existing's keys are snake_case
+  // (group_number, color_hex, ...) so that spread silently never picked up
+  // a client-sent groupNumber/colorHex update; explicit reads fix that.
+  const name = req.body.name !== undefined ? req.body.name : existing.name;
+  const groupNumber = req.body.groupNumber !== undefined ? req.body.groupNumber : existing.group_number;
+  const colorHex = req.body.colorHex !== undefined ? req.body.colorHex : existing.color_hex;
+  const gateway = req.body.gateway !== undefined ? req.body.gateway : existing.gateway;
+  const slug = req.body.slug !== undefined ? req.body.slug : existing.slug;
+  const description = req.body.description !== undefined ? req.body.description : existing.description;
+  const sortOrder = req.body.sortOrder !== undefined ? req.body.sortOrder : existing.sort_order;
+  let logoData = existing.logo_data;
+  let logoMimeType = existing.logo_mime_type;
+  if (req.body.logoBase64) {
+    const parsedLogo = parseDataUri(req.body.logoBase64);
+    if (!parsedLogo) return sendJson(res, 400, { error: "logoBase64 must be a data:<mime>;base64,<data> string" });
+    logoData = parsedLogo.data;
+    logoMimeType = parsedLogo.mimeType;
+  }
   await query(
-    `UPDATE companies SET name=$1, group_number=$2, color_hex=$3, gateway=$4, updated_at=now() WHERE id=$5`,
-    [merged.name, merged.group_number, merged.color_hex, merged.gateway, req.params.id]
+    `UPDATE companies SET name=$1, group_number=$2, color_hex=$3, gateway=$4, slug=$5, description=$6, sort_order=$7, logo_data=$8, logo_mime_type=$9, updated_at=now() WHERE id=$10`,
+    [name, groupNumber, colorHex, gateway, slug || null, description || null, sortOrder ?? 0, logoData, logoMimeType, req.params.id]
   );
   sendJson(res, 200, await queryOne(`SELECT ${COMPANY_COLUMNS} FROM companies WHERE id=$1`, [req.params.id]));
 });
