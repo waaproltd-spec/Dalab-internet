@@ -112,9 +112,6 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
     }
 
     private suspend fun dialWithRetry(orderId: String, simSlot: Int, ussdString: String): DialResult {
-        val subscriptionId = dialer.subscriptionIdForSlot(simSlot)
-            ?: return DialResult(DialOutcome.NO_SIM_PRESENT, "SIM $simSlot isn't physically inserted on this device.")
-
         // Retry on transient failure/timeout (not on
         // NO_SIM_CONFIGURED/NO_SIM_PRESENT/PERMISSION_DENIED — those need a
         // human to fix, retrying won't help and would just waste USSD
@@ -123,24 +120,34 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         for (attempt in 1..maxAttempts) {
             val attemptId = startDialAttemptLog(orderId, simSlot, ussdString, attempt)
 
-            // UssdDialer only catches SecurityException around the telephony
-            // call — other stack exceptions (e.g. IllegalStateException when
-            // the modem/RIL isn't ready) previously escaped uncaught all the
-            // way to QueueDrainer, which then classified them terminal and
-            // dropped a genuinely transient failure forever. Catching here
-            // converts it into a normal FAILED outcome, which this same retry
-            // loop already knows how to handle.
-            lastResult = try {
-                dialer.dial(subscriptionId, ussdString)
-            } catch (e: Exception) {
-                DiagnosticsLog.record("ussd_dial", "Dial threw (order $orderId, attempt $attempt): ${e.message}", isError = true)
-                DialResult(DialOutcome.FAILED, "Dial error: ${e.message}")
+            // subscriptionId is resolved inside the loop (not before it) so
+            // a missing SIM still produces exactly one logged dial-attempt
+            // row instead of returning before startDialAttemptLog ever runs
+            // — previously this left zero trace anywhere (server or local)
+            // that an attempt was even made.
+            val subscriptionId = dialer.subscriptionIdForSlot(simSlot)
+            lastResult = if (subscriptionId == null) {
+                DialResult(DialOutcome.NO_SIM_PRESENT, "SIM $simSlot isn't physically inserted on this device.")
+            } else {
+                // UssdDialer only catches SecurityException around the telephony
+                // call — other stack exceptions (e.g. IllegalStateException when
+                // the modem/RIL isn't ready) previously escaped uncaught all the
+                // way to QueueDrainer, which then classified them terminal and
+                // dropped a genuinely transient failure forever. Catching here
+                // converts it into a normal FAILED outcome, which this same retry
+                // loop already knows how to handle.
+                try {
+                    dialer.dial(subscriptionId, ussdString)
+                } catch (e: Exception) {
+                    DiagnosticsLog.record("ussd_dial", "Dial threw (order $orderId, attempt $attempt): ${e.message}", isError = true)
+                    DialResult(DialOutcome.FAILED, "Dial error: ${e.message}")
+                }
             }
             reportDialResult(orderId, simSlot, ussdString, attempt, attemptId, lastResult)
 
             if (lastResult.outcome == DialOutcome.SUCCESS) return lastResult
             if (lastResult.outcome != DialOutcome.FAILED && lastResult.outcome != DialOutcome.TIMEOUT) {
-                return lastResult // permission/config problems — don't retry blindly
+                return lastResult // permission/config/no-SIM problems — don't retry blindly
             }
             if (attempt < maxAttempts) delay(2000L * attempt) // simple linear backoff between USSD retries
         }

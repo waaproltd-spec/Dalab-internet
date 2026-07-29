@@ -51,28 +51,41 @@ object SelfHealSweeper {
             }
             if (!claimed) continue
             try {
-                val slot = resolveSlot(order)
-                if (slot == null) {
-                    DiagnosticsLog.record("self_heal_sweep", "No SIM routing for order ${order.id} on this device — skipping.", isError = false)
-                    continue
+                // NotConfigured and LoadFailed both still result in "skip this
+                // pass, try again next sweep" — a later sweep (periodic or the
+                // next SSE event) can retry either without needing to act on
+                // them differently the way the live-SMS dial path does — but
+                // they're now logged distinctly so a technician reading
+                // Diagnostics isn't misled between "go configure SIM routing"
+                // and "transient network blip, will retry automatically."
+                val slot = when (val result = resolveSlot(order)) {
+                    is SimSlotResult.Slot -> result.slot
+                    SimSlotResult.NotConfigured -> {
+                        DiagnosticsLog.record("self_heal_sweep", "No SIM routing configured for order ${order.id}'s company — skipping.", isError = false)
+                        continue
+                    }
+                    SimSlotResult.LoadFailed -> {
+                        DiagnosticsLog.record("self_heal_sweep", "SIM routing cache failed to load for order ${order.id} — will retry next sweep.", isError = false)
+                        continue
+                    }
                 }
                 DiagnosticsLog.record("self_heal_sweep", "Auto-dialing order ${order.id} (SIM $slot) after a config fix.", isError = false)
-                orchestrator.executeManually(order.id, slot)
+                val result = orchestrator.executeManually(order.id, slot)
+                DiagnosticsLog.record(
+                    "self_heal_sweep",
+                    "Order ${order.id} self-heal dial result: ${result.outcome}${result.responseMessage?.let { " — $it" } ?: ""}",
+                    isError = result.outcome != DialOutcome.SUCCESS,
+                )
             } finally {
                 mutex.withLock { inFlight.remove(order.id) }
             }
         }
     }
 
-    // NotConfigured and LoadFailed are both "skip this pass, try again next
-    // sweep" here — a LoadFailed's underlying network blip and a genuinely
-    // unconfigured route are both things a later sweep (periodic or the next
-    // SSE event) can retry without needing to distinguish them the way the
-    // live-SMS dial path does.
-    private suspend fun resolveSlot(order: Order): Int? {
+    private suspend fun resolveSlot(order: Order): SimSlotResult {
         if (order.ussdDeviceId != null && order.ussdDeviceId == DeviceIdentity.deviceId() && order.ussdSimSlot != null) {
-            return order.ussdSimSlot
+            return SimSlotResult.Slot(order.ussdSimSlot)
         }
-        return (SimRoutingRepository.simSlotFor(order.companyId) as? SimSlotResult.Slot)?.slot
+        return SimRoutingRepository.simSlotFor(order.companyId)
     }
 }
