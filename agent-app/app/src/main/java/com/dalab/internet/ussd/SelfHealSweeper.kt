@@ -5,6 +5,7 @@ import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.data.Order
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.network.ApiClient
+import com.dalab.internet.queue.RetryClassifier
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -31,8 +32,13 @@ object SelfHealSweeper {
 
     suspend fun sweep(context: Context) {
         val candidates = try {
-            ApiClient.service.getSelfHealCandidates().body().orEmpty()
+            RetryClassifier.requireSuccessful(ApiClient.service.getSelfHealCandidates()).body().orEmpty()
         } catch (e: Exception) {
+            // A non-2xx response now throws here instead of silently
+            // resolving to an empty list — this sweep is one of two
+            // independent recovery paths for a stuck order, so a transient
+            // failure needs to be visible (it'll simply be retried on the
+            // next sweep) rather than indistinguishable from "nothing to do."
             DiagnosticsLog.record("self_heal_sweep", "Could not fetch candidates: ${e.message}", isError = false)
             return
         }

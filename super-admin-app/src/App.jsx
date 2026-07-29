@@ -564,6 +564,16 @@ function orderTone(status) {
 function orderStatusLabel(status) {
   return ORDER_STATUS_META[status]?.label ?? status;
 }
+// Cosmetic-only split of "in_progress" into "Processing" (payment verified,
+// USSD not generated yet) vs "Delivering" (USSD generated, dial in flight) —
+// no schema/status-column change, purely how the same underlying state reads
+// to an admin. Falls back to the plain status label for every other status.
+function displayOrderStatus(order) {
+  if (order?.status === "in_progress") {
+    return order?.ussdGenerated ? "Delivering" : "Processing";
+  }
+  return orderStatusLabel(order?.status);
+}
 
 function Card({ children, style }) {
   return (
@@ -1580,7 +1590,7 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
             <div style={{ fontWeight: 700, fontSize: 14, color: INK }}>{order.packageName}</div>
             <div style={{ fontSize: 11.5, color: MUTE }}>{order.companyName}</div>
           </div>
-          <div style={{ marginLeft: "auto" }}><Badge tone={orderTone(localOrder.status)}>{orderStatusLabel(localOrder.status)}</Badge></div>
+          <div style={{ marginLeft: "auto" }}><Badge tone={orderTone(localOrder.status)}>{displayOrderStatus(localOrder)}</Badge></div>
         </div>
         {localOrder.reversedAt && (
           <div style={{ marginTop: 10, fontSize: 11.5, color: "#A9720A", background: "#FFF8E8", border: "1px solid #F4E3B0", borderRadius: 8, padding: "6px 10px" }}>
@@ -2001,7 +2011,7 @@ function Orders({ orders, setOrders, companies, admin }) {
                     <div style={{ width: 8, height: 8, borderRadius: 4, background: o.companyColor || INDIGO, flexShrink: 0 }} />
                     <span style={{ fontWeight: 700, fontSize: 13.5, color: INK }}>{o.companyName}</span>
                   </div>
-                  <Badge tone={orderTone(o.status)}>{orderStatusLabel(o.status)}</Badge>
+                  <Badge tone={orderTone(o.status)}>{displayOrderStatus(o)}</Badge>
                 </div>
 
                 <div style={{ fontSize: 14, fontWeight: 700, color: INK, marginTop: 8 }}>{o.packageName}</div>

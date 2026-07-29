@@ -385,7 +385,7 @@ private fun RecentActivityCard(orders: List<Order>) {
                     Column(horizontalAlignment = Alignment.End) {
                         Text("$${"%.2f".format(order.amount)}", fontWeight = FontWeight.Bold, color = DalabGreen)
                         Spacer(Modifier.height(4.dp))
-                        StatusChip(order.status)
+                        StatusChip(order)
                     }
                 }
                 if (index != orders.lastIndex) Divider(modifier = Modifier.padding(top = 2.dp))
@@ -419,7 +419,7 @@ private fun OrderCard(
             }
             Column(horizontalAlignment = Alignment.End) {
                 Text("$${"%.2f".format(order.amount)}", fontWeight = FontWeight.Bold)
-                StatusChip(order.status)
+                StatusChip(order)
             }
         }
 
@@ -463,10 +463,14 @@ private fun DetailLine(label: String, value: String) {
 }
 
 @Composable
-fun StatusChip(status: OrderStatus) {
-    val label = when (status) {
+fun StatusChip(order: Order) {
+    // "in_progress" is one status in the data model, but reads better to an
+    // agent split into whether the USSD string has actually been generated
+    // yet (dial about to/already in flight) vs. still waiting on that step —
+    // cosmetic only, no change to the underlying OrderStatus.
+    val label = when (order.status) {
         OrderStatus.PENDING -> "Pending"
-        OrderStatus.IN_PROGRESS -> "In Progress"
+        OrderStatus.IN_PROGRESS -> if (order.ussdGenerated != null) "Delivering" else "Processing"
         OrderStatus.COMPLETED -> "Completed"
         OrderStatus.FAILED -> "Failed"
         OrderStatus.CANCELLED -> "Cancelled"
