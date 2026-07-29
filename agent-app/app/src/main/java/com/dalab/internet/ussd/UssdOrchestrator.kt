@@ -64,7 +64,7 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         // dialing still requires physically holding that SIM, so an override
         // naming a different device is ignored in favor of this device's own
         // per-company routing (logged for visibility, not treated as an error).
-        val configuredSlot = if (order.ussdDeviceId != null && order.ussdDeviceId == DeviceIdentity.deviceId() && order.ussdSimSlot != null) {
+        val configuredSlot: Int = if (order.ussdDeviceId != null && order.ussdDeviceId == DeviceIdentity.deviceId() && order.ussdSimSlot != null) {
             order.ussdSimSlot
         } else {
             if (order.ussdDeviceId != null && order.ussdDeviceId != DeviceIdentity.deviceId()) {
@@ -74,8 +74,15 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
                     isError = false,
                 )
             }
-            SimRoutingRepository.simSlotFor(order.companyId)
-        } ?: return DialResult(DialOutcome.NO_SIM_CONFIGURED, "No SIM routing configured for ${order.companyName}.")
+            when (val result = SimRoutingRepository.simSlotFor(order.companyId)) {
+                is SimSlotResult.Slot -> result.slot
+                SimSlotResult.NotConfigured -> return DialResult(DialOutcome.NO_SIM_CONFIGURED, "No SIM routing configured for ${order.companyName}.")
+                // A cold-start refresh failure, not a real "not configured" —
+                // keep this in NETWORK_UNAVAILABLE so SmsUploadFlow preserves
+                // the durable retry-queue entry instead of dropping it terminal.
+                SimSlotResult.LoadFailed -> return DialResult(DialOutcome.NETWORK_UNAVAILABLE, "Could not load SIM routing (network) — will retry.")
+            }
+        }
         return dialWithRetry(orderId, configuredSlot, ussdString)
     }
 
@@ -115,7 +122,19 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         for (attempt in 1..maxAttempts) {
             val attemptId = startDialAttemptLog(orderId, simSlot, ussdString, attempt)
 
-            lastResult = dialer.dial(subscriptionId, ussdString)
+            // UssdDialer only catches SecurityException around the telephony
+            // call — other stack exceptions (e.g. IllegalStateException when
+            // the modem/RIL isn't ready) previously escaped uncaught all the
+            // way to QueueDrainer, which then classified them terminal and
+            // dropped a genuinely transient failure forever. Catching here
+            // converts it into a normal FAILED outcome, which this same retry
+            // loop already knows how to handle.
+            lastResult = try {
+                dialer.dial(subscriptionId, ussdString)
+            } catch (e: Exception) {
+                DiagnosticsLog.record("ussd_dial", "Dial threw (order $orderId, attempt $attempt): ${e.message}", isError = true)
+                DialResult(DialOutcome.FAILED, "Dial error: ${e.message}")
+            }
             reportDialResult(orderId, simSlot, ussdString, attempt, attemptId, lastResult)
 
             if (lastResult.outcome == DialOutcome.SUCCESS) return lastResult

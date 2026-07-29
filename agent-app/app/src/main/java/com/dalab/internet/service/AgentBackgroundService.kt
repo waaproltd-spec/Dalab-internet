@@ -27,6 +27,7 @@ import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.HeartbeatRequest
 import com.dalab.internet.network.RealtimeClient
 import com.dalab.internet.queue.QueueDrainer
+import com.dalab.internet.ussd.SelfHealSweeper
 import com.dalab.internet.ussd.SimRoutingRepository
 import com.dalab.internet.ussd.UssdDialer
 import kotlinx.coroutines.CoroutineScope
@@ -80,7 +81,15 @@ class AgentBackgroundService : Service() {
                 AgentEventBus.emitOrderEvent()
             }.also { it.connect() }
             newScope.launch {
-                realtimeClient?.state?.collect { AgentEventBus.setConnectionState(it) }
+                try {
+                    realtimeClient?.state?.collect { AgentEventBus.setConnectionState(it) }
+                } catch (e: Exception) {
+                    // Unguarded before: an exception here would silently kill
+                    // this coroutine forever (SupervisorJob only stops it from
+                    // cancelling siblings) — the connection-state indicator
+                    // would just stop updating with no trace anywhere.
+                    DiagnosticsLog.record("background_service_realtime_state", "Connection-state relay died: ${e.stackTraceToString().take(2000)}")
+                }
             }
         } catch (e: Exception) {
             DiagnosticsLog.record("background_service_realtime", "Failed to start SSE client: ${e.stackTraceToString().take(2000)}")
@@ -102,10 +111,32 @@ class AgentBackgroundService : Service() {
                 DiagnosticsLog.record("background_service_queue_drain", "Initial drain failed: ${e.stackTraceToString().take(2000)}")
             }
         }
+        newScope.launch {
+            try {
+                SelfHealSweeper.sweep(applicationContext)
+            } catch (e: Exception) {
+                DiagnosticsLog.record("self_heal_sweep", "Initial sweep failed: ${e.stackTraceToString().take(2000)}")
+            }
+        }
+        newScope.launch {
+            // Near-instant recovery the moment a Super Admin fixes whatever
+            // blocked generation (a missing PIN/template) — the backend's own
+            // self-heal broadcasts order.updated over this same SSE stream
+            // OrdersListScreen already listens to, so this is a second,
+            // independent consumer of an event that already exists.
+            AgentEventBus.orderEvents.collect {
+                try {
+                    SelfHealSweeper.sweep(applicationContext)
+                } catch (e: Exception) {
+                    DiagnosticsLog.record("self_heal_sweep", "Event-triggered sweep failed: ${e.stackTraceToString().take(2000)}")
+                }
+            }
+        }
 
         newScope.launch { heartbeatLoop() }
         newScope.launch { simRoutingRefreshLoop() }
         newScope.launch { queueDrainLoop() }
+        newScope.launch { selfHealSweepLoop() }
         newScope.launch {
             // There's no login screen to send the agent to anymore, so a dead
             // session first tries to silently re-authenticate itself the same
@@ -115,10 +146,22 @@ class AgentBackgroundService : Service() {
             // assigned to this device) does this surface a notification,
             // since every SMS upload/verify/dial call would otherwise silently
             // 401 forever with nothing telling the agent payments stopped.
-            AgentEventBus.sessionExpired.collect {
-                val deviceId = DeviceIdentity.deviceId()
-                val recovered = deviceId != null && AuthRepository.loginWithDevice(deviceId) is LoginResult.Success
-                if (!recovered) notifySessionExpired()
+            //
+            // This collector must survive for the app's entire lifetime — an
+            // uncaught exception previously killed it silently forever, after
+            // which a real future session expiry would stop all SMS
+            // processing with zero notification. The while(isActive) restart
+            // loop means one bad tick doesn't end monitoring permanently.
+            while (isActive) {
+                try {
+                    AgentEventBus.sessionExpired.collect {
+                        val deviceId = DeviceIdentity.deviceId()
+                        val recovered = deviceId != null && AuthRepository.loginWithDevice(deviceId) is LoginResult.Success
+                        if (!recovered) notifySessionExpired()
+                    }
+                } catch (e: Exception) {
+                    DiagnosticsLog.record("background_service_session_expired", "Collector died, restarting: ${e.stackTraceToString().take(2000)}")
+                }
             }
         }
         try {
@@ -209,6 +252,22 @@ class AgentBackgroundService : Service() {
         }
     }
 
+    // Backstop for the event-triggered sweep above (e.g. this device missed
+    // the SSE event, or was offline when it fired) — a light read-only GET
+    // plus, at most, a handful of dials, so a few minutes' cadence is a safe
+    // fallback without hammering the backend.
+    private suspend fun selfHealSweepLoop() {
+        val currentScope = scope ?: return
+        while (currentScope.isActive) {
+            delay(SELF_HEAL_SWEEP_INTERVAL_MS)
+            try {
+                SelfHealSweeper.sweep(applicationContext)
+            } catch (e: Exception) {
+                DiagnosticsLog.record("self_heal_sweep_loop", "Tick failed: ${e.stackTraceToString().take(2000)}")
+            }
+        }
+    }
+
     private fun buildHeartbeat(): HeartbeatRequest {
         val battery = readBatteryPercent()
         val online = isNetworkOnline()
@@ -292,6 +351,7 @@ class AgentBackgroundService : Service() {
         private const val HEARTBEAT_INTERVAL_MS = 60_000L
         private const val SIM_ROUTING_REFRESH_INTERVAL_MS = 5 * 60_000L
         private const val QUEUE_DRAIN_INTERVAL_MS = 2 * 60_000L
+        private const val SELF_HEAL_SWEEP_INTERVAL_MS = 3 * 60_000L
 
         /** Read from PermissionsStatusScreen to show "Foreground Service: Active/Inactive". */
         @Volatile

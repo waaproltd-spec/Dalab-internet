@@ -53,13 +53,16 @@ object SimRoutingRepository {
      * SMS arriving in that same window don't each trigger their own refresh)
      * closes that race instead of failing fast.
      */
-    suspend fun simSlotFor(companyId: String): Int? {
+    suspend fun simSlotFor(companyId: String): SimSlotResult {
         if (!hasLoadedOnce) {
             refreshMutex.withLock {
-                if (!hasLoadedOnce) refresh()
+                if (!hasLoadedOnce) {
+                    val result = refresh()
+                    if (result.isFailure) return SimSlotResult.LoadFailed
+                }
             }
         }
-        return cache[companyId]
+        return cache[companyId]?.let { SimSlotResult.Slot(it) } ?: SimSlotResult.NotConfigured
     }
 
     /** Non-suspend, no self-heal — for UI-only "recommended SIM" hints
