@@ -13,10 +13,16 @@ import retrofit2.http.*
 data class OtpRequestBody(val phone: String)
 data class OtpRequestResponse(val message: String, val otpCode: String? = null)
 data class OtpVerifyBody(val phone: String, val code: String)
-data class OtpVerifyResponse(val accessToken: String, val refreshToken: String, val customer: CustomerProfile)
+// pinSet is additive on top of the existing OTP response — false for every
+// customer who never created one, so the login flow behaves exactly as
+// before unless the customer opted into this optional feature themselves.
+data class OtpVerifyResponse(val accessToken: String, val refreshToken: String, val customer: CustomerProfile, val pinSet: Boolean = false)
 data class RefreshRequest(val refreshToken: String)
 data class RefreshResponse(val accessToken: String, val refreshToken: String)
 data class UpdateProfileRequest(val name: String)
+data class PinBody(val pin: String)
+data class PinStatusResponse(val isSet: Boolean)
+data class PinVerifyResponse(val valid: Boolean)
 data class CreateOrderRequest(
     val companyId: String,
     val packageId: String,
@@ -51,6 +57,21 @@ interface ApiService {
 
     @DELETE("customer/profile")
     suspend fun deleteAccount(): Response<Unit>
+
+    // Optional, customer-facing login PIN — entirely separate from the
+    // required phone+OTP flow above; a customer who never calls setPin stays
+    // unaffected (pin-status is simply always "not set" for them).
+    @GET("customer/pin-status")
+    suspend fun getPinStatus(): Response<PinStatusResponse>
+
+    @PUT("customer/pin")
+    suspend fun setPin(@Body body: PinBody): Response<Unit>
+
+    @DELETE("customer/pin")
+    suspend fun removePin(): Response<Unit>
+
+    @POST("customer/pin/verify")
+    suspend fun verifyPin(@Body body: PinBody): Response<PinVerifyResponse>
 
     @GET("promo-images")
     suspend fun getPromoImages(): Response<List<PromoImage>>

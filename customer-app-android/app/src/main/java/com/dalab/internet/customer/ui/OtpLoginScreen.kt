@@ -32,6 +32,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -41,11 +43,15 @@ import com.dalab.internet.customer.auth.OtpRequestResult
 import com.dalab.internet.customer.auth.OtpVerifyResult
 import com.dalab.internet.customer.auth.SessionManager
 import com.dalab.internet.customer.network.ApiClient
+import com.dalab.internet.customer.network.PinBody
 import com.dalab.internet.customer.network.UpdateProfileRequest
 import com.dalab.internet.customer.sms.OtpSmsReceiver
 import kotlinx.coroutines.launch
 
-private enum class OtpStep { PHONE, CODE, NAME }
+// PIN is inserted only when the customer already created one (result.pinSet
+// from OTP verify) — otherwise this step is skipped entirely and the flow is
+// exactly PHONE -> CODE -> (NAME) -> logged in, unchanged from before.
+private enum class OtpStep { PHONE, CODE, PIN, NAME }
 
 // Same DALAB brand colors used elsewhere in this app (HomeScreen's banner gradient).
 private val DalabIndigo = Color(0xFF1D2E8C)
@@ -64,11 +70,20 @@ fun OtpLoginScreen(onLoggedIn: () -> Unit) {
     var step by remember { mutableStateOf(OtpStep.PHONE) }
     var phone by remember { mutableStateOf("") }
     var code by remember { mutableStateOf("") }
+    var pin by remember { mutableStateOf("") }
+    var pendingName by remember { mutableStateOf<String?>(null) }
     var name by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var otpCode by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+
+    // After a PIN (or a PIN-less OTP success) is confirmed, either the NAME
+    // step or onLoggedIn() follows — same decision either path used to make
+    // right after OTP verify, now shared so PIN doesn't duplicate it.
+    fun proceedAfterVerified(customerName: String?) {
+        if (customerName.isNullOrBlank()) step = OtpStep.NAME else onLoggedIn()
+    }
 
     // Auto-detect the OTP code from an incoming SMS while this step is showing.
     // Purely additive: it only ever pre-fills `code`, the same state the user
@@ -123,6 +138,7 @@ fun OtpLoginScreen(onLoggedIn: () -> Unit) {
             when (step) {
                 OtpStep.PHONE -> "Enter your phone number to continue"
                 OtpStep.CODE -> "Enter the code we texted you"
+                OtpStep.PIN -> "Enter your PIN"
                 OtpStep.NAME -> "What should we call you?"
             },
             fontSize = 15.sp,
@@ -169,6 +185,24 @@ fun OtpLoginScreen(onLoggedIn: () -> Unit) {
                 Spacer(Modifier.height(8.dp))
                 OtpBoxInput(value = code, onValueChange = { code = it }, length = 4)
             }
+            OtpStep.PIN -> {
+                Text(
+                    "You created a PIN for faster, more secure sign-in",
+                    fontSize = 13.sp,
+                    color = Color(0xFF6B7094),
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(Modifier.height(16.dp))
+                DalabTextField(
+                    value = pin,
+                    onValueChange = { if (it.length <= 8 && it.all(Char::isDigit)) pin = it },
+                    label = "PIN",
+                    placeholder = "Enter your PIN",
+                    keyboardType = KeyboardType.NumberPassword,
+                    masked = true,
+                )
+            }
             OtpStep.NAME -> {
                 DalabTextField(
                     value = name,
@@ -190,11 +224,13 @@ fun OtpLoginScreen(onLoggedIn: () -> Unit) {
             text = if (loading) "Please wait..." else when (step) {
                 OtpStep.PHONE -> "Send code"
                 OtpStep.CODE -> "Verify"
+                OtpStep.PIN -> "Unlock"
                 OtpStep.NAME -> "Continue"
             },
             enabled = !loading && when (step) {
                 OtpStep.PHONE -> phone.isNotBlank()
                 OtpStep.CODE -> code.isNotBlank()
+                OtpStep.PIN -> pin.isNotBlank()
                 OtpStep.NAME -> name.isNotBlank()
             },
             onClick = {
@@ -214,9 +250,27 @@ fun OtpLoginScreen(onLoggedIn: () -> Unit) {
                         OtpStep.CODE -> {
                             when (val result = AuthRepository.verifyOtp(phone.trim(), code.trim())) {
                                 is OtpVerifyResult.Success -> {
-                                    if (result.name.isNullOrBlank()) step = OtpStep.NAME else onLoggedIn()
+                                    if (result.pinSet) {
+                                        pendingName = result.name
+                                        step = OtpStep.PIN
+                                    } else {
+                                        proceedAfterVerified(result.name)
+                                    }
                                 }
                                 is OtpVerifyResult.Failure -> error = result.message
+                            }
+                        }
+                        OtpStep.PIN -> {
+                            try {
+                                val response = ApiClient.service.verifyPin(PinBody(pin.trim()))
+                                if (response.isSuccessful && response.body()?.valid == true) {
+                                    proceedAfterVerified(pendingName)
+                                } else {
+                                    error = "Incorrect PIN. Please try again."
+                                    pin = ""
+                                }
+                            } catch (_: Exception) {
+                                error = "Couldn't reach the server. Check your connection."
                             }
                         }
                         OtpStep.NAME -> {
@@ -283,6 +337,7 @@ private fun DalabTextField(
     placeholder: String,
     keyboardType: KeyboardType,
     leadingChip: (@Composable () -> Unit)? = null,
+    masked: Boolean = false,
 ) {
     OutlinedTextField(
         value = value,
@@ -291,6 +346,7 @@ private fun DalabTextField(
         placeholder = { Text(placeholder, color = Color(0xFFA6ABC9)) },
         singleLine = true,
         leadingIcon = leadingChip,
+        visualTransformation = if (masked) PasswordVisualTransformation() else VisualTransformation.None,
         shape = RoundedCornerShape(14.dp),
         colors = OutlinedTextFieldDefaults.colors(
             focusedBorderColor = DalabIndigo,

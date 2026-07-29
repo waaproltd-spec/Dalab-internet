@@ -4,7 +4,7 @@ import { query, queryOne } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
-import { hashPassword, isValidPin } from "../auth/crypto.js";
+import { hashPassword, verifyPassword, isValidPin } from "../auth/crypto.js";
 
 export const customersRouter = Router();
 
@@ -47,9 +47,11 @@ customersRouter.put("/admin/customers/:id/block", requirePermission("customers.m
 // regular Admin no matter what permissions the Super Admin grants them, per
 // explicit requirement. The PIN itself is bcrypt-hashed (same as admin
 // passwords) and never returned to any client — only whether one is set.
-// Self-service is deliberately absent: a customer who forgets their PIN
-// contacts Support, who directs a Super Admin here; the existing OTP login
-// flow is completely untouched by any of this.
+// This stays the path for a customer who's locked out (forgot their PIN) —
+// Support directs them to a Super Admin here. Self-service create/verify for
+// a customer who still has access to their own account is a separate,
+// later-added set of routes below ("Customer: own profile" section), which
+// operate on this same pin_hash column but never touch the OTP login flow.
 customersRouter.get("/admin/customers/:id/pin-status", requireAuth("super_admin"), async (req, res) => {
   const customer = await queryOne<{ pin_hash: string | null }>(`SELECT pin_hash FROM customers WHERE id=$1`, [req.params.id]);
   if (!customer) return sendJson(res, 404, { error: "Customer not found" });
@@ -157,4 +159,49 @@ customersRouter.delete("/customer/profile", requireAuth("customer"), async (req,
     }
     throw err;
   }
+});
+
+// ---------------- Customer: optional self-service login PIN ----------------
+// Entirely additive, on the same pin_hash column the Super Admin routes above
+// manage. Optional by design: a customer with no PIN set is completely
+// unaffected — /auth/otp/verify already reports pinSet=false and the app
+// skips straight past any PIN prompt. Setting one here is the customer
+// choosing to add a lightweight extra step of their own accord; the OTP
+// login flow itself (phone -> code -> tokens) is never touched by any of this.
+customersRouter.get("/customer/pin-status", requireAuth("customer"), async (req, res) => {
+  const customer = await queryOne<{ pin_hash: string | null }>(`SELECT pin_hash FROM customers WHERE id=$1`, [req.auth!.sub]);
+  if (!customer) return sendJson(res, 404, { error: "Customer not found" });
+  sendJson(res, 200, { isSet: Boolean(customer.pin_hash) });
+});
+
+// Same handler covers both "create" and "change" for the same reason the
+// Super Admin route does — being authenticated as this customer (via the
+// OTP-issued token) is already the proof of ownership needed to set a new one.
+customersRouter.put("/customer/pin", requireAuth("customer"), async (req, res) => {
+  const { pin } = req.body;
+  if (!isValidPin(String(pin ?? ""))) return sendJson(res, 400, { error: "PIN must be 3-8 digits" });
+  const pinHash = await hashPassword(String(pin));
+  await query(`UPDATE customers SET pin_hash=$1 WHERE id=$2`, [pinHash, req.auth!.sub]);
+  sendJson(res, 200, { message: "PIN saved", isSet: true });
+});
+
+// Lets a customer opt back out entirely — after this, pinSet is false again
+// and the app stops prompting for a PIN on future logins, same as if they
+// had never created one.
+customersRouter.delete("/customer/pin", requireAuth("customer"), async (req, res) => {
+  await query(`UPDATE customers SET pin_hash=NULL WHERE id=$1`, [req.auth!.sub]);
+  sendJson(res, 200, { message: "PIN removed", isSet: false });
+});
+
+// Called right after OTP login (using the token /auth/otp/verify already
+// issued) to check the PIN the customer just typed — this is a UX gate on
+// top of an already-fully-authenticated session, not a second factor that
+// blocks token issuance; a wrong PIN here never invalidates the tokens.
+customersRouter.post("/customer/pin/verify", requireAuth("customer"), async (req, res) => {
+  const customer = await queryOne<{ pin_hash: string | null }>(`SELECT pin_hash FROM customers WHERE id=$1`, [req.auth!.sub]);
+  if (!customer) return sendJson(res, 404, { error: "Customer not found" });
+  if (!customer.pin_hash) return sendJson(res, 200, { valid: true }); // nothing to verify against — treat as pass-through
+  const pin = String(req.body.pin ?? "");
+  const valid = await verifyPassword(pin, customer.pin_hash);
+  sendJson(res, 200, { valid });
 });
