@@ -80,14 +80,12 @@ authRouter.post("/auth/otp/verify", rateLimit("otp-verify", 10, 15 * 60 * 1000),
   });
 });
 
-// ---------------- Agent login ----------------
+// ---------------- Agent login (phone number only — no password) ----------------
 authRouter.post("/agent/auth/login", rateLimit("agent-login", 5, 15 * 60 * 1000), async (req, res) => {
   const phone = String(req.body.phone ?? "").trim();
-  const password = String(req.body.password ?? "");
+  if (!phone) return sendJson(res, 400, { error: "Phone number is required" });
   const agent = await queryOne(`SELECT * FROM agents WHERE phone=$1`, [phone]);
-  if (!agent || !(await verifyPassword(password, agent.password_hash))) {
-    return sendJson(res, 401, { error: "Invalid phone or password" });
-  }
+  if (!agent) return sendJson(res, 401, { error: "No agent account found for this phone number" });
   if (agent.status === "suspended") return sendJson(res, 403, { error: "Agent account suspended" });
 
   await query(`UPDATE agents SET last_login_at = now() WHERE id=$1`, [agent.id]);

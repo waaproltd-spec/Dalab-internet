@@ -14,7 +14,7 @@ import com.dalab.internet.ussd.SimRoutingEntry
 import retrofit2.Response
 import retrofit2.http.*
 
-data class LoginRequest(val phone: String, val password: String)
+data class LoginRequest(val phone: String)
 data class HeartbeatRequest(
     val batteryPercent: Int?,
     val networkOnline: Boolean,

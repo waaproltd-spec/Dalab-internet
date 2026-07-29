@@ -6,7 +6,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.dalab.internet.auth.AuthRepository
 import com.dalab.internet.auth.LoginResult
@@ -15,10 +14,21 @@ import kotlinx.coroutines.launch
 @Composable
 fun LoginScreen(onLoggedIn: () -> Unit) {
     var phone by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+
+    fun submit() {
+        error = null
+        loading = true
+        scope.launch {
+            when (val result = AuthRepository.login(phone.trim())) {
+                is LoginResult.Success -> onLoggedIn()
+                is LoginResult.Failure -> error = result.message
+            }
+            loading = false
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -29,7 +39,7 @@ fun LoginScreen(onLoggedIn: () -> Unit) {
     ) {
         Text("DALAB Agent", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(4.dp))
-        Text("Sign in with your agent account", style = MaterialTheme.typography.bodyMedium)
+        Text("Sign in with your agent phone number", style = MaterialTheme.typography.bodyMedium)
         Spacer(Modifier.height(28.dp))
 
         OutlinedTextField(
@@ -37,15 +47,13 @@ fun LoginScreen(onLoggedIn: () -> Unit) {
             onValueChange = { phone = it },
             label = { Text("Phone number") },
             singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(12.dp))
-        OutlinedTextField(
-            value = password,
-            onValueChange = { password = it },
-            label = { Text("Password") },
-            singleLine = true,
-            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                keyboardType = androidx.compose.ui.text.input.KeyboardType.Phone,
+                imeAction = androidx.compose.ui.text.input.ImeAction.Done,
+            ),
+            keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                onDone = { if (phone.isNotBlank() && !loading) submit() },
+            ),
             modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(20.dp))
@@ -56,18 +64,8 @@ fun LoginScreen(onLoggedIn: () -> Unit) {
         }
 
         Button(
-            onClick = {
-                error = null
-                loading = true
-                scope.launch {
-                    when (val result = AuthRepository.login(phone.trim(), password)) {
-                        is LoginResult.Success -> onLoggedIn()
-                        is LoginResult.Failure -> error = result.message
-                    }
-                    loading = false
-                }
-            },
-            enabled = phone.isNotBlank() && password.isNotBlank() && !loading,
+            onClick = { submit() },
+            enabled = phone.isNotBlank() && !loading,
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text(if (loading) "Signing in..." else "Sign in")
@@ -76,7 +74,7 @@ fun LoginScreen(onLoggedIn: () -> Unit) {
         Spacer(Modifier.height(12.dp))
         Text(
             "Agent accounts are created by the Super Admin — contact your admin " +
-                "if you don't have credentials yet.",
+                "if your phone number isn't registered yet.",
             style = MaterialTheme.typography.bodySmall,
         )
     }
