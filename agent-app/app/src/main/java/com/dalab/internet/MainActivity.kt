@@ -17,7 +17,6 @@ import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.List
-import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.PointOfSale
@@ -27,7 +26,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
-import com.dalab.internet.auth.AuthRepository
 import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.auth.SessionManager
 import com.dalab.internet.data.Order
@@ -36,10 +34,10 @@ import com.dalab.internet.queue.PendingActionQueue
 import com.dalab.internet.service.AgentBackgroundService
 import com.dalab.internet.sms.SmsInboxScanner
 import com.dalab.internet.sms.SmsListenerState
+import com.dalab.internet.ui.AutoLoginScreen
 import com.dalab.internet.ui.CustomersScreen
 import com.dalab.internet.ui.DeviceSetupScreen
 import com.dalab.internet.ui.DiagnosticsScreen
-import com.dalab.internet.ui.LoginScreen
 import com.dalab.internet.ui.NewSaleScreen
 import com.dalab.internet.ui.OrderDetailScreen
 import com.dalab.internet.ui.OrdersListScreen
@@ -109,7 +107,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, LOGIN, DEVICE_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, DIAGNOSTICS, PERMISSIONS_STATUS }
+private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, DIAGNOSTICS, PERMISSIONS_STATUS }
 private enum class HomeTab { ORDERS, SALES, CUSTOMERS, REPORTS, MORE }
 
 @Composable
@@ -121,15 +119,23 @@ private fun AgentApp() {
         ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
     }
 
-    fun homeOrDeviceSetup() = if (DeviceIdentity.isSet()) Screen.HOME else Screen.DEVICE_SETUP
+    // There is no login screen: once a device is chosen, the app authenticates
+    // itself against whichever agent is assigned to it (see AutoLoginScreen).
+    // A session normally outlives the app (it's only ever cleared by an
+    // explicit backend revocation), so on every subsequent open this resolves
+    // straight to HOME with no network round-trip at all.
+    fun nextScreen() = when {
+        !DeviceIdentity.isSet() -> Screen.DEVICE_SETUP
+        !SessionManager.isLoggedIn() -> Screen.AUTHENTICATING
+        else -> Screen.HOME
+    }
 
     var hasSmsPermission by remember { mutableStateOf(smsGranted()) }
     var permanentlyDenied by remember { mutableStateOf(false) }
     var screen by remember {
         mutableStateOf(
             if (!hasSmsPermission) Screen.PERMISSIONS
-            else if (!SessionManager.isLoggedIn()) Screen.LOGIN
-            else homeOrDeviceSetup()
+            else nextScreen()
         )
     }
     var selectedOrder by remember { mutableStateOf<Order?>(null) }
@@ -153,7 +159,7 @@ private fun AgentApp() {
             if (hasSmsPermission) {
                 SmsListenerState.setListening(true)
                 scope.launch { SmsInboxScanner.scanRecentInboxOnce(context) }
-                screen = if (SessionManager.isLoggedIn()) homeOrDeviceSetup() else Screen.LOGIN
+                screen = nextScreen()
             } else {
                 // If the user denied without checking "don't ask again", Android will
                 // still show the rationale next time; shouldShowRequestPermissionRationale
@@ -171,13 +177,16 @@ private fun AgentApp() {
             onRequestPermissions = { permissionLauncher.launch(SMS_PERMISSIONS) },
         )
 
-        Screen.LOGIN -> LoginScreen(onLoggedIn = { screen = homeOrDeviceSetup() })
-
         Screen.DEVICE_SETUP -> DeviceSetupScreen(
-            onDeviceSelected = {
+            onDeviceSelected = { screen = Screen.AUTHENTICATING },
+        )
+
+        Screen.AUTHENTICATING -> AutoLoginScreen(
+            onSuccess = {
                 AgentBackgroundService.start(context)
                 screen = Screen.HOME
             },
+            onChooseDifferentDevice = { screen = Screen.DEVICE_SETUP },
         )
 
         Screen.HOME -> AgentHome(
@@ -187,11 +196,6 @@ private fun AgentApp() {
             onOpenDeviceSetup = { screen = Screen.DEVICE_SETUP },
             onOpenDiagnostics = { screen = Screen.DIAGNOSTICS },
             onOpenPermissionsStatus = { screen = Screen.PERMISSIONS_STATUS },
-            onLogout = {
-                AuthRepository.logout()
-                AgentBackgroundService.stop(context)
-                screen = Screen.LOGIN
-            },
         )
 
         Screen.ORDER_DETAIL -> selectedOrder?.let { order ->
@@ -228,7 +232,6 @@ private fun AgentHome(
     onOpenDeviceSetup: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onOpenPermissionsStatus: () -> Unit,
-    onLogout: () -> Unit,
 ) {
     var tab by remember { mutableStateOf(HomeTab.ORDERS) }
 
@@ -280,7 +283,6 @@ private fun AgentHome(
                     onOpenDeviceSetup = onOpenDeviceSetup,
                     onOpenDiagnostics = onOpenDiagnostics,
                     onOpenPermissionsStatus = onOpenPermissionsStatus,
-                    onLogout = onLogout,
                 )
             }
         }
@@ -294,7 +296,6 @@ private fun MoreScreen(
     onOpenDeviceSetup: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onOpenPermissionsStatus: () -> Unit,
-    onLogout: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         ListItem(
@@ -330,12 +331,6 @@ private fun MoreScreen(
             supportingContent = { Text("SMS + background service status for this device") },
             leadingContent = { Icon(Icons.Filled.Security, contentDescription = null) },
             modifier = Modifier.clickable(onClick = onOpenPermissionsStatus),
-        )
-        Divider()
-        ListItem(
-            headlineContent = { Text("Log out") },
-            leadingContent = { Icon(Icons.Filled.Logout, contentDescription = null) },
-            modifier = Modifier.clickable(onClick = onLogout),
         )
     }
 }

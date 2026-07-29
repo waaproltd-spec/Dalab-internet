@@ -17,7 +17,9 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.dalab.internet.MainActivity
 import com.dalab.internet.R
+import com.dalab.internet.auth.AuthRepository
 import com.dalab.internet.auth.DeviceIdentity
+import com.dalab.internet.auth.LoginResult
 import com.dalab.internet.auth.SessionManager
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.network.AgentEventBus
@@ -44,8 +46,10 @@ import kotlinx.coroutines.launch
  * dashboard — and this device's own SIM-routing priority logic — can see
  * when it goes unhealthy.
  *
- * Started from MainActivity right after login (and from BootReceiver if a
- * session already exists after a reboot); stopped on logout.
+ * Started from MainActivity right after device setup/auto-login succeeds
+ * (and from BootReceiver if a session already exists after a reboot). There
+ * is no logout in this app, so nothing ever explicitly stops it short of the
+ * OS killing the process.
  */
 class AgentBackgroundService : Service() {
 
@@ -103,13 +107,19 @@ class AgentBackgroundService : Service() {
         newScope.launch { simRoutingRefreshLoop() }
         newScope.launch { queueDrainLoop() }
         newScope.launch {
-            // The single most important event this service can surface: once
-            // ApiClient's Authenticator gives up on refreshing the session,
-            // every subsequent SMS upload/verify/dial call silently 401s
-            // forever — nothing before this told the agent their session had
-            // died, so a real payment could sit unprocessed indefinitely
-            // until they happened to reopen the app on their own.
-            AgentEventBus.sessionExpired.collect { notifySessionExpired() }
+            // There's no login screen to send the agent to anymore, so a dead
+            // session first tries to silently re-authenticate itself the same
+            // way app startup does (this device's assigned agent) — no
+            // interaction needed for the common case (e.g. an admin-triggered
+            // token revocation). Only if that also fails (no agent currently
+            // assigned to this device) does this surface a notification,
+            // since every SMS upload/verify/dial call would otherwise silently
+            // 401 forever with nothing telling the agent payments stopped.
+            AgentEventBus.sessionExpired.collect {
+                val deviceId = DeviceIdentity.deviceId()
+                val recovered = deviceId != null && AuthRepository.loginWithDevice(deviceId) is LoginResult.Success
+                if (!recovered) notifySessionExpired()
+            }
         }
         try {
             registerConnectivityCallback(newScope)
@@ -258,7 +268,7 @@ class AgentBackgroundService : Service() {
     private fun notifySessionExpired() {
         DiagnosticsLog.record(
             "session_expired",
-            "Session expired/revoked — every payment SMS will be rejected until you reopen the app and log in again.",
+            "Session expired and silent re-auth failed — likely no active agent is assigned to this device anymore.",
         )
         val openApp = android.app.PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java),
@@ -266,8 +276,8 @@ class AgentBackgroundService : Service() {
         )
         val notification = NotificationCompat.Builder(this, "payment_channel")
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("Action needed: session expired")
-            .setContentText("Payments are NOT being processed. Open DALAB Agent and log in again.")
+            .setContentTitle("Action needed: this device isn't signed in")
+            .setContentText("Payments are NOT being processed. Ask your Super Admin to assign an active agent to this device.")
             .setContentIntent(openApp)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)

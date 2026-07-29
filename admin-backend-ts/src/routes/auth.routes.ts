@@ -80,13 +80,22 @@ authRouter.post("/auth/otp/verify", rateLimit("otp-verify", 10, 15 * 60 * 1000),
   });
 });
 
-// ---------------- Agent login (phone number only — no password) ----------------
-authRouter.post("/agent/auth/login", rateLimit("agent-login", 5, 15 * 60 * 1000), async (req, res) => {
-  const phone = String(req.body.phone ?? "").trim();
-  if (!phone) return sendJson(res, 400, { error: "Phone number is required" });
-  const agent = await queryOne(`SELECT * FROM agents WHERE phone=$1`, [phone]);
-  if (!agent) return sendJson(res, 401, { error: "No agent account found for this phone number" });
-  if (agent.status === "suspended") return sendJson(res, 403, { error: "Agent account suspended" });
+// ---------------- Agent login (fully automatic — no credentials at all) ----------------
+// The Agent App has no login screen: it authenticates itself using whichever
+// agent the Super Admin has assigned to this physical device (agents.device_id,
+// set via PUT /admin/agents/:id/device). The app already learns its own
+// deviceId during device setup (a one-time, non-credential step — see
+// GET /agent/devices), so this needs nothing else from the person using it.
+authRouter.post("/agent/auth/device-login", rateLimit("agent-device-login", 30, 15 * 60 * 1000), async (req, res) => {
+  const deviceId = String(req.body.deviceId ?? "").trim();
+  if (!deviceId) return sendJson(res, 400, { error: "deviceId is required" });
+  const agent = await queryOne(
+    `SELECT * FROM agents WHERE device_id=$1 AND status='active' ORDER BY created_at ASC LIMIT 1`,
+    [deviceId]
+  );
+  if (!agent) {
+    return sendJson(res, 404, { error: "No active agent account is assigned to this device yet. Ask your Super Admin to assign one from the dashboard." });
+  }
 
   await query(`UPDATE agents SET last_login_at = now() WHERE id=$1`, [agent.id]);
   const tokens = await issueTokens(agent.id, "agent");
