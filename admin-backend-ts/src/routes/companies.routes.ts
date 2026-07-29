@@ -24,7 +24,7 @@ const COMPANY_COLUMNS = `id, name, group_number, color_hex, logo_url, status, ga
 const PUBLIC_PACKAGE_COLUMNS = `id, company_id, category_id, name, old_price, price, mb, minutes, sms, validity, active, code, created_at`;
 
 companiesRouter.get("/companies", async (_req, res) => {
-  const rows = await query(`SELECT ${COMPANY_COLUMNS} FROM companies ORDER BY group_number, sort_order, name`);
+  const rows = await query(`SELECT ${COMPANY_COLUMNS} FROM companies WHERE deleted_at IS NULL ORDER BY group_number, sort_order, name`);
   sendJson(res, 200, rows);
 });
 
@@ -42,6 +42,8 @@ companiesRouter.get("/companies/:id/logo", async (req, res) => {
 });
 
 companiesRouter.get("/companies/:id/packages", async (req, res) => {
+  const company = await queryOne(`SELECT id FROM companies WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
+  if (!company) return sendJson(res, 200, []);
   const rows = await query(
     `SELECT ${PUBLIC_PACKAGE_COLUMNS} FROM packages WHERE company_id=$1 AND active=true ORDER BY category_id, price`,
     [req.params.id]
@@ -50,7 +52,7 @@ companiesRouter.get("/companies/:id/packages", async (req, res) => {
 });
 
 companiesRouter.get("/admin/companies", requireStaff(), async (_req, res) => {
-  sendJson(res, 200, await query(`SELECT ${COMPANY_COLUMNS} FROM companies ORDER BY group_number, sort_order, name`));
+  sendJson(res, 200, await query(`SELECT ${COMPANY_COLUMNS} FROM companies WHERE deleted_at IS NULL ORDER BY group_number, sort_order, name`));
 });
 
 companiesRouter.post("/admin/companies", requirePermission("companies.manage"), async (req, res) => {
@@ -181,22 +183,28 @@ companiesRouter.put("/admin/companies/:id/auto-process", requirePermission("devi
   sendJson(res, 200, await queryOne(`SELECT ${COMPANY_COLUMNS} FROM companies WHERE id=$1`, [req.params.id]));
 });
 
-// Blocked by ON DELETE RESTRICT from packages/orders if the company is still
-// in use — surfaced as a friendly 409 rather than a raw 500, since deleting a
-// company with order history would corrupt receipts/reports.
+// A real company almost always has packages/orders referencing it, which
+// ON DELETE RESTRICT blocks a hard delete for (deleting a company with order
+// history would corrupt receipts/reports) — so this falls back to a soft
+// delete instead of just returning an error: the row and its history stay
+// intact, but it's immediately excluded from every company listing (public,
+// admin, and everything sourced from those listings), so it disappears from
+// the Customer/Agent apps and every dashboard section right away.
 companiesRouter.delete("/admin/companies/:id", requirePermission("companies.manage"), async (req, res) => {
   try {
-    const result = await query(`DELETE FROM companies WHERE id=$1 RETURNING id`, [req.params.id]);
+    const result = await query(`DELETE FROM companies WHERE id=$1 AND deleted_at IS NULL RETURNING id`, [req.params.id]);
     if (result.length === 0) return sendJson(res, 404, { error: "Company not found" });
-    sendJson(res, 200, { deleted: true });
+    return sendJson(res, 200, { deleted: true });
   } catch (err: any) {
-    if (err?.code === "23503") {
-      return sendJson(res, 409, {
-        error: "This company has existing packages or orders and can't be deleted. Disable it instead to hide it from the apps.",
-      });
-    }
-    throw err;
+    if (err?.code !== "23503") throw err;
   }
+  const result = await query(
+    `UPDATE companies SET deleted_at=now(), status='offline', visible_customer_app=false, visible_agent_app=false, updated_at=now()
+     WHERE id=$1 AND deleted_at IS NULL RETURNING id`,
+    [req.params.id]
+  );
+  if (result.length === 0) return sendJson(res, 404, { error: "Company not found" });
+  sendJson(res, 200, { deleted: true, softDeleted: true });
 });
 
 // Per-provider PIN management (get/set) lives in ussd.routes.ts, grouped
@@ -206,9 +214,15 @@ companiesRouter.delete("/admin/companies/:id", requirePermission("companies.mana
 
 packagesRouter.get("/admin/packages", requireStaff(), async (req, res) => {
   const { companyId } = req.query;
+  // The "all packages" view excludes packages belonging to a soft-deleted
+  // company (same as every other listing) — an explicit ?companyId= lookup
+  // is left unfiltered, matching every other by-id route in this file.
   const rows = companyId
     ? await query(`SELECT * FROM packages WHERE company_id=$1 ORDER BY category_id, price`, [companyId])
-    : await query(`SELECT * FROM packages ORDER BY company_id, category_id, price`);
+    : await query(
+        `SELECT p.* FROM packages p JOIN companies c ON c.id = p.company_id
+         WHERE c.deleted_at IS NULL ORDER BY p.company_id, p.category_id, p.price`
+      );
   sendJson(res, 200, rows);
 });
 
