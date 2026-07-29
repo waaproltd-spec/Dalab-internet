@@ -9,6 +9,7 @@ import com.dalab.internet.data.SmsLogEntry
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.VoucherConfirmationRequest
+import com.dalab.internet.queue.PendingActionQueue
 import com.dalab.internet.queue.RetryClassifier
 import com.dalab.internet.ussd.DialOutcome
 import com.dalab.internet.ussd.UssdOrchestrator
@@ -108,12 +109,29 @@ object SmsUploadFlow {
         processMatched(context, orderId, smsLogId, parsedAmount)
 
     private suspend fun processMatched(context: Context, matchedOrderId: String, smsLogId: String?, parsedAmount: Double?): UploadOutcome {
+        // Persisted BEFORE the risky verify->dial chain runs (not just after a
+        // failure is classified) — a process death anywhere in that chain
+        // (verify-payment succeeding but the app being killed before the dial
+        // attempt is even logged) now leaves a durable trace that
+        // AgentBackgroundService's existing queue-drain on next start will pick
+        // up and resume, instead of the order silently sitting in_progress
+        // forever with zero dial attempts and zero trace. Deterministic,
+        // order-keyed id means a live call and a later drain-replay of this
+        // same order can never create two queued entries for it.
+        val actionId = "verify_$matchedOrderId"
+        PendingActionQueue.enqueueIfAbsent(actionId, PendingActionQueue.Type.VERIFY_PAYMENT, VerifyPaymentAction(matchedOrderId, smsLogId, parsedAmount))
+
         val orchestrator = UssdOrchestrator(context)
         val result = orchestrator.processMatchedOrder(matchedOrderId, smsLogId)
         if (result.outcome == DialOutcome.NETWORK_UNAVAILABLE) {
             DiagnosticsLog.record("verify_payment", "Queued for retry (order $matchedOrderId): ${result.responseMessage}")
+            // Entry from above stays in the queue — this IS the queued retry.
             return UploadOutcome.RetryableVerify(matchedOrderId, smsLogId, result.responseMessage ?: "verify-payment network error")
         }
+        // Any other outcome is definitive (success or a terminal dial failure,
+        // both already reported to the backend by UssdOrchestrator) — the
+        // durable record of "this needs to run" is no longer needed.
+        PendingActionQueue.remove(actionId)
         notifyAgent(context, matchedOrderId, parsedAmount, result.outcome, result.responseMessage)
         return UploadOutcome.Success
     }

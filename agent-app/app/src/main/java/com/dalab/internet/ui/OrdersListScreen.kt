@@ -403,7 +403,7 @@ private fun OrderCard(
     onExecute: (Int) -> Unit,
     executing: Boolean,
 ) {
-    val recommendedSlot = remember(order.companyId) { SimRoutingRepository.simSlotFor(order.companyId) }
+    val recommendedSlot = remember(order.companyId) { SimRoutingRepository.cachedSlotFor(order.companyId) }
 
     Column(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp)) {
         Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {

@@ -118,11 +118,13 @@ class SmsReceiver : BroadcastReceiver() {
                         type = PendingActionQueue.Type.SMS_UPLOAD,
                         payload = SmsUploadAction(entry),
                     )
-                    is UploadOutcome.RetryableVerify -> PendingActionQueue.enqueue(
-                        id = UUID.randomUUID().toString(),
-                        type = PendingActionQueue.Type.VERIFY_PAYMENT,
-                        payload = VerifyPaymentAction(outcome.orderId, outcome.smsLogId, entry.parsedAmount),
-                    )
+                    is UploadOutcome.RetryableVerify -> {
+                        // Already durably queued by SmsUploadFlow.processMatched
+                        // itself (a deterministic "verify_$orderId" id) before it
+                        // even attempted the verify+dial chain — enqueuing here
+                        // too would create a second, differently-keyed duplicate
+                        // entry for the same order.
+                    }
                     is UploadOutcome.Terminal, UploadOutcome.Success -> {
                         // Terminal: the server rejected this SMS upload outright (a
                         // real 4xx) — resending it unchanged would never succeed, so

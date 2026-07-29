@@ -30,7 +30,7 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val orchestrator = remember { UssdOrchestrator(context) }
-    val recommendedSlot = remember(current.companyId) { SimRoutingRepository.simSlotFor(current.companyId) }
+    val recommendedSlot = remember(current.companyId) { SimRoutingRepository.cachedSlotFor(current.companyId) }
 
     // Verifying payment alone never dials — executeManually does both
     // (verify-payment, then generate+dial the USSD string), same call the

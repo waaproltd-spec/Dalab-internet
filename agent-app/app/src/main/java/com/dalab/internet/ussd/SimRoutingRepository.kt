@@ -3,6 +3,8 @@ package com.dalab.internet.ussd
 import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.network.ApiClient
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Caches GET /agent/sim-routing in memory so the orchestrator doesn't hit the
@@ -19,12 +21,15 @@ import com.dalab.internet.network.ApiClient
  */
 object SimRoutingRepository {
     @Volatile private var cache: Map<String, Int> = emptyMap() // companyId -> simSlot (1 or 2)
+    @Volatile private var hasLoadedOnce = false
+    private val refreshMutex = Mutex()
 
     suspend fun refresh(): Result<Unit> {
         return try {
             val response = ApiClient.service.getSimRouting(deviceId = DeviceIdentity.deviceId())
             if (response.isSuccessful) {
                 cache = response.body()?.associate { it.companyId to it.simSlot } ?: emptyMap()
+                hasLoadedOnce = true
                 Result.success(Unit)
             } else {
                 val error = IllegalStateException("Failed to load SIM routing: HTTP ${response.code()}")
@@ -37,6 +42,29 @@ object SimRoutingRepository {
         }
     }
 
-    /** Null if the Super Admin hasn't configured routing for this provider yet. */
-    fun simSlotFor(companyId: String): Int? = cache[companyId]
+    /**
+     * Null means "the Super Admin hasn't configured routing for this
+     * provider" — a genuine no-config case. But AgentBackgroundService's
+     * periodic refresh() is fire-and-forget with nothing gating incoming SMS
+     * processing on the FIRST one landing, so a payment SMS arriving in the
+     * narrow window right after an app/device restart could hit an empty
+     * cache and be treated as "no config" when really it's just "not loaded
+     * yet." Blocking once on a live refresh here (mutex-guarded so several
+     * SMS arriving in that same window don't each trigger their own refresh)
+     * closes that race instead of failing fast.
+     */
+    suspend fun simSlotFor(companyId: String): Int? {
+        if (!hasLoadedOnce) {
+            refreshMutex.withLock {
+                if (!hasLoadedOnce) refresh()
+            }
+        }
+        return cache[companyId]
+    }
+
+    /** Non-suspend, no self-heal — for UI-only "recommended SIM" hints
+     * (a starred suggestion next to the real Execute/Dial buttons) where
+     * blocking Compose's `remember {}` on a network call would be wrong.
+     * The actual dial path always goes through [simSlotFor] instead. */
+    fun cachedSlotFor(companyId: String): Int? = cache[companyId]
 }
