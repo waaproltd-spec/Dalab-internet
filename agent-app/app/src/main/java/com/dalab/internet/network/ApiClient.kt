@@ -34,7 +34,7 @@ object ApiClient {
     private val plainRetrofit: Retrofit by lazy {
         Retrofit.Builder()
             .baseUrl(BASE_URL)
-            .client(OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).build())
+            .client(OkHttpClient.Builder().connectTimeout(45, TimeUnit.SECONDS).readTimeout(45, TimeUnit.SECONDS).build())
             .addConverterFactory(GsonConverterFactory.create())
             .build()
     }
@@ -113,11 +113,17 @@ object ApiClient {
         return count
     }
 
+    // The backend runs on Render's free tier, which spins the instance down
+    // after ~15 minutes idle and can take 30-60+ seconds to cold-start on the
+    // next request. A 15s timeout was shorter than that window, so the very
+    // first request after any idle period (most commonly login, the first
+    // thing the app calls) failed with a generic connection error even
+    // though the server was simply waking up, not actually unreachable.
     private val okHttpClient = OkHttpClient.Builder()
         .addInterceptor(authInterceptor)
         .authenticator(refreshAuthenticator)
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
+        .connectTimeout(45, TimeUnit.SECONDS)
+        .readTimeout(45, TimeUnit.SECONDS)
         .build()
 
     val service: ApiService by lazy {
