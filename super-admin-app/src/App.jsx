@@ -7,7 +7,7 @@ import {
   ArrowUp, ArrowDown, Eye, EyeOff, Lock, Mail, LogOut, ArrowLeft, Copy, Terminal, SmartphoneNfc,
   Smartphone, Radio, ChevronDown, ChevronRight, AlertTriangle, RotateCcw, UserCog, Tags,
   WifiOff, BatteryFull, BatteryMedium, BatteryLow, BatteryWarning,
-  Image as ImageIcon, Upload, MessageSquare, Database, Activity, History, CreditCard
+  Image as ImageIcon, Upload, MessageSquare, Database, Activity, History, CreditCard, PlayCircle
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 
@@ -1883,6 +1883,21 @@ function Orders({ orders, setOrders, companies, admin }) {
     clearChecked();
   };
 
+  // Mirrors the per-card "Start" quick action (pending -> in_progress) —
+  // the same one-tap transition already defined in `quickActions`, just
+  // applied to every checked pending order at once instead of one at a time.
+  const eligibleForBatchStart = shown.filter((o) => checkedIds.has(o.id) && o.status === "pending");
+
+  const bulkStartProcessing = async () => {
+    if (eligibleForBatchStart.length === 0) return;
+    setBulkWorking(true);
+    for (const o of eligibleForBatchStart) {
+      await setStatus(o.id, "in_progress");
+    }
+    setBulkWorking(false);
+    clearChecked();
+  };
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 16, flexWrap: "wrap" }}>
@@ -1935,16 +1950,28 @@ function Orders({ orders, setOrders, companies, admin }) {
           background: INDIGO_SOFT, border: `1px solid ${BORDER}`, borderRadius: 12, padding: "10px 16px",
         }}>
           <span style={{ fontSize: 12.5, fontWeight: 700, color: INDIGO }}>{checkedIds.size} selected</span>
-          <Button
-            icon={bulkWorking ? Loader2 : CheckCircle2}
-            spin={bulkWorking}
-            onClick={bulkMarkCompleted}
-            disabled={bulkWorking || eligibleForBatchComplete.length === 0}
-          >
-            {bulkWorking ? "Updating..." : `Mark Completed (${eligibleForBatchComplete.length})`}
-          </Button>
-          {eligibleForBatchComplete.length < checkedIds.size && (
-            <span style={{ fontSize: 11.5, color: MUTE }}>Only in-progress orders can be marked completed — the rest of your selection will be skipped.</span>
+          {eligibleForBatchStart.length > 0 && (
+            <Button
+              icon={bulkWorking ? Loader2 : PlayCircle}
+              spin={bulkWorking}
+              onClick={bulkStartProcessing}
+              disabled={bulkWorking}
+            >
+              {bulkWorking ? "Processing..." : `Start Processing (${eligibleForBatchStart.length})`}
+            </Button>
+          )}
+          {eligibleForBatchComplete.length > 0 && (
+            <Button
+              icon={bulkWorking ? Loader2 : CheckCircle2}
+              spin={bulkWorking}
+              onClick={bulkMarkCompleted}
+              disabled={bulkWorking}
+            >
+              {bulkWorking ? "Updating..." : `Mark Completed (${eligibleForBatchComplete.length})`}
+            </Button>
+          )}
+          {eligibleForBatchStart.length + eligibleForBatchComplete.length < checkedIds.size && (
+            <span style={{ fontSize: 11.5, color: MUTE }}>Only pending orders can be started and only in-progress orders can be marked completed — the rest of your selection will be skipped.</span>
           )}
           <Button variant="ghost" onClick={clearChecked} style={{ marginLeft: "auto" }}>Clear selection</Button>
         </div>
