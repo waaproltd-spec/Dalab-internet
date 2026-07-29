@@ -313,6 +313,25 @@ smsLogsRouter.get("/admin/payment-transactions", requireStaff(), async (req, res
   sendJson(res, 200, await query(sql, args));
 });
 
+// "Stuck" is precise, not a guess: payment_transactions.status only ever
+// leaves 'pending' when a dial attempt is actually logged (markPaymentProcessing,
+// called from POST /agent/orders/:id/dial-attempts). So a transaction still
+// 'pending' while its order has already flipped to 'in_progress' (proving
+// verify-payment succeeded) means the automatic dial never happened — the
+// exact failure mode this endpoint surfaces for the dashboard.
+smsLogsRouter.get("/admin/payment-transactions/stuck-count", requireStaff(), async (req, res) => {
+  const thresholdMinutes = Math.min(Number(req.query.minutes) || 5, 1440);
+  const row = await queryOne<{ count: string }>(
+    `SELECT COUNT(*) AS count
+     FROM payment_transactions pt
+     JOIN orders o ON o.id = pt.order_id
+     WHERE pt.status = 'pending' AND o.status = 'in_progress'
+       AND pt.created_at < now() - ($1 || ' minutes')::interval`,
+    [thresholdMinutes]
+  );
+  sendJson(res, 200, { count: Number(row?.count ?? 0), thresholdMinutes });
+});
+
 // Full chronological trace for one payment: the matched SMS, every dial
 // attempt for its order (retry history), and the config/audit-log entries
 // tied to either the SMS log or the order — activity-log writes elsewhere
