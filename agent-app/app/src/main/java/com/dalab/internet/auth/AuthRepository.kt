@@ -10,15 +10,15 @@ sealed class LoginResult {
 }
 
 object AuthRepository {
-    suspend fun login(phone: String, password: String): LoginResult {
+    suspend fun login(phone: String): LoginResult {
         return try {
-            val response = ApiClient.service.login(LoginRequest(phone, password))
+            val response = ApiClient.service.login(LoginRequest(phone))
             val body = response.body()
             if (response.isSuccessful && body != null) {
                 SessionManager.saveSession(body.accessToken, body.refreshToken, body.agent)
                 LoginResult.Success(body.agent.name)
             } else {
-                LoginResult.Failure("Invalid phone or password")
+                LoginResult.Failure("No agent account found for this phone number")
             }
         } catch (e: SocketTimeoutException) {
             // The backend can take 30-60s to wake up after being idle — this is
