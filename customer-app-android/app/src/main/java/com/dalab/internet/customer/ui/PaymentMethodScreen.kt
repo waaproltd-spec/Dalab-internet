@@ -17,6 +17,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.dalab.internet.customer.data.Company
 import com.dalab.internet.customer.data.PackageItem
 import com.dalab.internet.customer.data.PaymentWallet
 import com.dalab.internet.customer.data.walletLogoRes
@@ -29,13 +30,17 @@ private val PanelBorder = Color(0xFF232B45)
 private val MutedText = Color(0xFF9CA3B8)
 
 /**
- * Step 2 of checkout — "Select Payment Method". Only wallets the Super
- * Admin has enabled are shown, fetched live from GET /payment-wallets (never
- * hardcoded). Selecting one advances to Confirm Order (Step 3), which no
- * longer needs to show a payment method picker since it's already chosen.
+ * Step 2 of checkout — "Select Payment Method". Shows every enabled wallet
+ * regardless of the package's company: the customer may pay via any
+ * provider's wallet to buy any other provider's package (e.g. pay via
+ * eDahab/Somtel to buy a Somnet package) — this is intentional. Fetched
+ * live from GET /payment-wallets (never hardcoded). CheckoutScreen resolves
+ * the dialed payment number from the *wallet's own* provider (server-joined
+ * via payment_wallets.company_id), never from the purchased package's
+ * company. Selecting a wallet advances to Confirm Order (Step 3).
  */
 @Composable
-fun PaymentMethodScreen(pkg: PackageItem, onBack: () -> Unit, onSelect: (PaymentWallet) -> Unit) {
+fun PaymentMethodScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, onSelect: (PaymentWallet) -> Unit) {
     var wallets by remember { mutableStateOf<List<PaymentWallet>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
@@ -72,7 +77,7 @@ fun PaymentMethodScreen(pkg: PackageItem, onBack: () -> Unit, onSelect: (Payment
             when {
                 loading -> Text("Loading payment methods...", color = MutedText, fontSize = 13.sp)
                 error != null -> Text(error!!, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
-                wallets.isEmpty() -> Text("No payment methods are currently available.", color = MutedText, fontSize = 13.sp)
+                wallets.isEmpty() -> Text("No payment methods are available right now. Please contact support.", color = MutedText, fontSize = 13.sp)
                 else -> wallets.forEach { wallet ->
                     val walletLogo = remember(wallet.logoKey) { walletLogoRes(wallet.logoKey) }
                     Surface(

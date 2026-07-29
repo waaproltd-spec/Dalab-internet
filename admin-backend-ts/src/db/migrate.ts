@@ -33,6 +33,7 @@ async function migrate() {
     "016_mask_ussd_pin.sql",
     "017_read_pagination_indexes.sql",
     "018_payment_tx_filters_indexes.sql",
+    "019_payment_wallets_company_id.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(path.join(__dirname, "migrations", file), "utf8");

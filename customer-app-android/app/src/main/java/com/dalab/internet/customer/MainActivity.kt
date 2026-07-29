@@ -137,8 +137,9 @@ private fun CustomerApp() {
             }
         }
 
-        Screen.PAYMENT_METHOD -> checkoutSelection?.let { (_, pkg) ->
+        Screen.PAYMENT_METHOD -> checkoutSelection?.let { (company, pkg) ->
             PaymentMethodScreen(
+                company = company,
                 pkg = pkg,
                 onBack = { screen = Screen.CATEGORY_PACKAGES },
                 onSelect = { wallet -> selectedWallet = wallet; screen = Screen.CHECKOUT },

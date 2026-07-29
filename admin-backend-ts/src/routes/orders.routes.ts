@@ -50,6 +50,9 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
 
   const pkg = await queryOne(`SELECT * FROM packages WHERE id=$1 AND active=true`, [packageId]);
   if (!pkg) return sendJson(res, 404, { error: "Package not found" });
+  if (pkg.company_id !== companyId) {
+    return sendJson(res, 400, { error: "Package does not belong to the selected company" });
+  }
 
   const customer = await queryOne(`SELECT * FROM customers WHERE id=$1`, [req.auth!.sub]);
   const id = orderRef();
@@ -123,6 +126,9 @@ ordersRouter.post("/agent/orders", requireAuth("agent"), async (req, res) => {
 
   const pkg = await queryOne(`SELECT * FROM packages WHERE id=$1 AND active=true`, [packageId]);
   if (!pkg) return sendJson(res, 404, { error: "Package not found" });
+  if (pkg.company_id !== companyId) {
+    return sendJson(res, 400, { error: "Package does not belong to the selected company" });
+  }
 
   let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
   if (!customer) {
