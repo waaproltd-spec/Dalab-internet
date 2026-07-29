@@ -1020,6 +1020,7 @@ function Packages({ packages, setPackages, companies, admin }) {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({});
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
   const canManage = hasPermission(admin, "packages.manage");
 
   const fetchPackages = async () => {
@@ -1056,6 +1057,7 @@ function Packages({ packages, setPackages, companies, admin }) {
   const save = async () => {
     if (!form.name || form.price === "" || form.price == null) return;
     if (DALAB_API_ENABLED) {
+      setSaving(true);
       try {
         if (editing === "new") await DalabAdminApi.createPackage(form);
         else await DalabAdminApi.updatePackage(editing, form);
@@ -1063,6 +1065,8 @@ function Packages({ packages, setPackages, companies, admin }) {
       } catch (err) {
         setError(err.message || "Could not save package.");
         return;
+      } finally {
+        setSaving(false);
       }
     } else if (editing === "new") {
       const companyName = companies.find((c) => c.id === form.companyId)?.name;
@@ -1203,7 +1207,7 @@ function Packages({ packages, setPackages, companies, admin }) {
           )}
           {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
           <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
-            <Button onClick={save} icon={Check}>Save</Button>
+            <Button onClick={save} icon={Check} disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
             <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
           </div>
         </Modal>
