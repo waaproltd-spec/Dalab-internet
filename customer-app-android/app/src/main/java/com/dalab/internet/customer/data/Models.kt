@@ -42,19 +42,22 @@ data class Company(
 
 /**
  * Mirrors GET /payment-wallets (public) — the wallet list shown in "Select
- * Payment Method", Super-Admin managed. Only the dial prefix + display info
- * live here; the actual number dialed is always the purchased company's own
- * paymentNumber (see Company above) — never a number on this class.
+ * Payment Method", Super-Admin managed. companyId/paymentNumber are THIS
+ * wallet's own provider — server-joined from payment_wallets.company_id,
+ * never the purchased package's company. Paying via one telecom's wallet to
+ * buy a different telecom's package is intentional; never conflate the two.
  */
 data class PaymentWallet(
     val id: String,
     val name: String,
     val providerLabel: String? = null,
+    val companyId: String? = null,
     val dialPrefix: String,
     val logoKey: String,
     val colorHex: String,
     val enabled: Boolean = true,
     val sortOrder: Int = 0,
+    val paymentNumber: String? = null,
 )
 
 /** Mirrors GET /companies/{id}/packages. */

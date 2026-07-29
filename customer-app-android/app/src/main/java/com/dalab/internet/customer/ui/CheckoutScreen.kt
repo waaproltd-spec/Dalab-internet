@@ -48,10 +48,11 @@ private val MutedText = Color(0xFF9CA3B8)
  * already chosen on the previous screen (PaymentMethodScreen), so this
  * screen shows only the package being purchased and the sender/receiver
  * phone fields — no payment number, no wallet picker. On Pay Now, the
- * payment gateway configuration (company's own payment number + this
- * wallet's dial prefix) is re-fetched fresh from the backend rather than
- * reused from whatever was loaded when these screens first opened, so a
- * Super Admin change takes effect even mid-checkout.
+ * dial string is built from the selected wallet's OWN provider's payment
+ * number + dial prefix (never the purchased package's company), re-fetched
+ * fresh from the backend rather than reused from whatever was loaded when
+ * these screens first opened, so a Super Admin change takes effect even
+ * mid-checkout.
  */
 @Composable
 fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, onBack: () -> Unit, onOrderCreated: (CustomerOrder) -> Unit) {
@@ -189,23 +190,21 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
                         clientRequestId = clientRequestId,
                     )
                     scope.launch {
-                        // Re-fetch the gateway config fresh rather than trusting whatever
-                        // was loaded when the package/payment-method screens first opened —
-                        // a Super Admin change mid-checkout must still take effect.
-                        val freshPayNumber = try {
-                            ApiClient.service.getCompanies().body()
-                                ?.firstOrNull { it.id == company.id }
-                                ?.paymentNumber?.takeIf { it.isNotBlank() }
+                        // Re-fetch the wallet fresh rather than trusting whatever was
+                        // loaded when the payment-method screen first opened — a Super
+                        // Admin change mid-checkout must still take effect. The payment
+                        // number here is always the WALLET's OWN provider's number
+                        // (server-joined via payment_wallets.company_id), independent of
+                        // which company's package is being purchased — cross-provider
+                        // payment (pay via one telecom, buy from another) is intentional.
+                        val freshWallet = try {
+                            ApiClient.service.getPaymentWallets().body()?.firstOrNull { it.id == wallet.id }
                         } catch (e: Exception) {
                             null
-                        } ?: company.paymentNumber?.takeIf { it.isNotBlank() }
-                        val freshPrefix = try {
-                            ApiClient.service.getPaymentWallets().body()
-                                ?.firstOrNull { it.id == wallet.id }
-                                ?.dialPrefix
-                        } catch (e: Exception) {
-                            null
-                        } ?: wallet.dialPrefix
+                        }
+                        val freshPrefix = freshWallet?.dialPrefix ?: wallet.dialPrefix
+                        val freshPayNumber = freshWallet?.paymentNumber?.takeIf { it.isNotBlank() }
+                            ?: wallet.paymentNumber?.takeIf { it.isNotBlank() }
 
                         val dialTarget = if (freshPayNumber != null) {
                             "*$freshPrefix*$freshPayNumber*${"%.2f".format(pkg.price)}#"
