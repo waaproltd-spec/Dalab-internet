@@ -175,6 +175,7 @@ const DalabAdminApi = {
     const qs = new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([, v]) => v))).toString();
     return dalabAdminApiRequest(`/admin/payment-transactions${qs ? `?${qs}` : ""}`);
   },
+  getPaymentTransactionTimeline: (id) => dalabAdminApiRequest(`/admin/payment-transactions/${id}/timeline`),
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -2567,6 +2568,14 @@ function DevicesPanel({ canManage }) {
     }
   };
   useEffect(() => { fetchAll(); }, []);
+  // Device health (battery/online/last-heartbeat) changes continuously —
+  // this panel used to fetch once and never refresh, same 10s-ish
+  // convention as ExecutionLogs/SmsLogs but slightly slower since device
+  // health is lower-urgency than the payment ledger itself.
+  useEffect(() => {
+    const timer = setInterval(fetchAll, 15000);
+    return () => clearInterval(timer);
+  }, []);
 
   const openNew = () => { setForm({ name: "", description: "" }); setEditing("new"); };
   const openEdit = (d) => { setForm(d); setEditing(d.id); };
@@ -3692,10 +3701,26 @@ function PaymentTransactionsPanel({ companies }) {
   const [error, setError] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [companyFilter, setCompanyFilter] = useState("all");
+  const [deviceFilter, setDeviceFilter] = useState("all");
+  const [simSlotFilter, setSimSlotFilter] = useState("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState("createdAt");
   const [sortDir, setSortDir] = useState("desc");
   const [lastSynced, setLastSynced] = useState(null);
+  const [devices, setDevices] = useState([]);
+  const [selectedTxId, setSelectedTxId] = useState(null);
+  const [timeline, setTimeline] = useState(null);
+  const [timelineLoading, setTimelineLoading] = useState(false);
+  const [timelineError, setTimelineError] = useState("");
+
+  // Devices fetched once, purely to populate the filter dropdown — the
+  // list itself changes rarely, unlike the transactions it's filtering.
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    DalabAdminApi.getAgentDevices().then(setDevices).catch(() => {});
+  }, []);
 
   const fetchRows = async () => {
     if (!DALAB_API_ENABLED) return;
@@ -3705,6 +3730,10 @@ function PaymentTransactionsPanel({ companies }) {
       const data = await DalabAdminApi.getPaymentTransactions({
         status: statusFilter === "all" ? undefined : statusFilter,
         companyId: companyFilter === "all" ? undefined : companyFilter,
+        deviceId: deviceFilter === "all" ? undefined : deviceFilter,
+        simSlot: simSlotFilter === "all" ? undefined : simSlotFilter,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
         search: search.trim() || undefined,
       });
       setRows(data);
@@ -3715,7 +3744,7 @@ function PaymentTransactionsPanel({ companies }) {
       setLoading(false);
     }
   };
-  useEffect(() => { fetchRows(); }, [statusFilter, companyFilter]);
+  useEffect(() => { fetchRows(); }, [statusFilter, companyFilter, deviceFilter, simSlotFilter, dateFrom, dateTo]);
   // Debounced search — avoids a request per keystroke.
   useEffect(() => {
     const timer = setTimeout(fetchRows, 350);
@@ -3725,7 +3754,21 @@ function PaymentTransactionsPanel({ companies }) {
   useEffect(() => {
     const timer = setInterval(fetchRows, 8000);
     return () => clearInterval(timer);
-  }, [statusFilter, companyFilter, search]);
+  }, [statusFilter, companyFilter, deviceFilter, simSlotFilter, dateFrom, dateTo, search]);
+
+  const openTimeline = async (id) => {
+    setSelectedTxId(id);
+    setTimeline(null);
+    setTimelineError("");
+    setTimelineLoading(true);
+    try {
+      setTimeline(await DalabAdminApi.getPaymentTransactionTimeline(id));
+    } catch (err) {
+      setTimelineError(err.message || "Could not load transaction history.");
+    } finally {
+      setTimelineLoading(false);
+    }
+  };
 
   const toggleSort = (key) => {
     if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -3821,6 +3864,17 @@ function PaymentTransactionsPanel({ companies }) {
           <option value="all">All providers</option>
           {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
+        <select value={deviceFilter} onChange={(e) => setDeviceFilter(e.target.value)} style={{ ...inputStyle, width: 160 }}>
+          <option value="all">All devices</option>
+          {devices.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+        </select>
+        <select value={simSlotFilter} onChange={(e) => setSimSlotFilter(e.target.value)} style={{ ...inputStyle, width: 130 }}>
+          <option value="all">All SIM slots</option>
+          <option value="1">SIM 1</option>
+          <option value="2">SIM 2</option>
+        </select>
+        <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} style={{ ...inputStyle, width: 150 }} title="From date" />
+        <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ ...inputStyle, width: 150 }} title="To date" />
       </div>
 
       {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
@@ -3856,7 +3910,12 @@ function PaymentTransactionsPanel({ companies }) {
             {sorted.map((r) => {
               const meta = PAYMENT_TX_STATUS_META[r.status] || { label: r.status, tone: "neutral" };
               return (
-                <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <tr
+                  key={r.id}
+                  onClick={() => openTimeline(r.id)}
+                  style={{ borderTop: `1px solid ${BORDER}`, cursor: "pointer" }}
+                  title="View full payment history"
+                >
                   <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, color: INK }}>{r.orderId || "—"}</td>
                   <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontFamily: "monospace" }}>{r.customerPhone || "—"}</td>
                   <td style={{ padding: "10px 14px", fontSize: 12.5, color: GREEN, fontWeight: 700 }}>{r.amount != null ? `$${Number(r.amount).toFixed(2)}` : "—"}</td>
@@ -3876,8 +3935,79 @@ function PaymentTransactionsPanel({ companies }) {
           </tbody>
         </table>
       </Card>
+
+      {selectedTxId && (
+        <Modal title="Payment history" onClose={() => setSelectedTxId(null)} width={560}>
+          {timelineLoading && <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>}
+          {timelineError && <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{timelineError}</div>}
+          {timeline && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: MUTE, textTransform: "uppercase" }}>SMS received</div>
+                {timeline.smsLog ? (
+                  <div style={{ fontSize: 12.5, color: INK, marginTop: 4 }}>
+                    {formatDateTime(timeline.smsLog.receivedAt)} — from {timeline.smsLog.sender}
+                    {timeline.smsLog.transactionRef ? ` — ref ${timeline.smsLog.transactionRef}` : ""}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12.5, color: MUTE, marginTop: 4 }}>No matching SMS log on record.</div>
+                )}
+              </div>
+
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: MUTE, textTransform: "uppercase" }}>Order</div>
+                {timeline.order ? (
+                  <div style={{ fontSize: 12.5, color: INK, marginTop: 4 }}>
+                    {timeline.order.id} — {timeline.order.customerName || timeline.order.customerPhone} — {timeline.order.packageName} — <Badge tone="neutral">{timeline.order.status}</Badge>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12.5, color: MUTE, marginTop: 4 }}>No linked order.</div>
+                )}
+              </div>
+
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: MUTE, textTransform: "uppercase" }}>Dial attempts</div>
+                {timeline.dialAttempts.length === 0 && <div style={{ fontSize: 12.5, color: MUTE, marginTop: 4 }}>No dial attempts yet.</div>}
+                {timeline.dialAttempts.map((a) => (
+                  <div key={a.id} style={{ fontSize: 12.5, color: INK, marginTop: 4, display: "flex", gap: 8, alignItems: "center" }}>
+                    <Badge tone={a.status === "success" ? "green" : a.status === "failed" ? "red" : "amber"}>Attempt {a.attemptNumber}</Badge>
+                    <span>SIM {a.simSlot ?? "?"}</span>
+                    <span style={{ color: MUTE }}>{formatDateTime(a.createdAt)}</span>
+                    {a.responseMessage && <span style={{ color: MUTE }}>— {a.responseMessage}</span>}
+                  </div>
+                ))}
+              </div>
+
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: MUTE, textTransform: "uppercase" }}>Activity log</div>
+                {timeline.activity.length === 0 && <div style={{ fontSize: 12.5, color: MUTE, marginTop: 4 }}>No activity log entries.</div>}
+                {timeline.activity.map((entry) => (
+                  <div key={entry.id} style={{ fontSize: 12.5, color: INK, marginTop: 4 }}>
+                    <span style={{ color: MUTE }}>{formatDateTime(entry.createdAt)}</span> — {entry.action}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </Modal>
+      )}
     </div>
   );
+}
+
+// Maps common carrier/USSD failure substrings to a plain-language sentence
+// — the raw responseMessage is still shown alongside it, this just adds a
+// human summary above the jargon. Order matters: first substring match wins.
+const USSD_FAILURE_EXPLANATIONS = [
+  { match: /insufficient|not enough|low balance/i, text: "The provider's account/float ran low." },
+  { match: /invalid pin|wrong pin|incorrect pin/i, text: "The provider PIN was rejected — check Provider Numbers." },
+  { match: /busy|timeout|no response/i, text: "The carrier network didn't respond in time." },
+  { match: /invalid number|not registered/i, text: "The destination number was rejected by the carrier." },
+];
+function explainFailure(message) {
+  if (!message) return null;
+  const hit = USSD_FAILURE_EXPLANATIONS.find((e) => e.match.test(message));
+  return hit ? hit.text : null;
 }
 
 function ExecutionLogs({ companies }) {
@@ -3886,6 +4016,7 @@ function ExecutionLogs({ companies }) {
   const [error, setError] = useState("");
   const [companyFilter, setCompanyFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState({});
   const [lastSynced, setLastSynced] = useState(null);
 
@@ -3917,17 +4048,30 @@ function ExecutionLogs({ companies }) {
     return () => clearInterval(timer);
   }, [companyFilter, statusFilter]);
 
+  // Client-side over the already-fetched (bounded, LIMIT 2000) page — the
+  // backend doesn't take a ?search param for this endpoint, and adding
+  // server-side search isn't worth it until real pagination lands here.
+  const filteredRows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter((r) =>
+      (r.orderId || "").toLowerCase().includes(q) ||
+      (r.customerPhone || "").toLowerCase().includes(q) ||
+      (r.ussdString || "").toLowerCase().includes(q)
+    );
+  }, [rows, search]);
+
   // Backend already orders by order_id desc, attempt_number asc, so a single
   // pass groups consecutive rows into one order with its full retry history.
   const grouped = useMemo(() => {
     const groups = [];
-    for (const r of rows) {
+    for (const r of filteredRows) {
       const last = groups[groups.length - 1];
       if (last && last.orderId === r.orderId) last.attempts.push(r);
       else groups.push({ orderId: r.orderId, attempts: [r] });
     }
     return groups;
-  }, [rows]);
+  }, [filteredRows]);
 
   if (!DALAB_API_ENABLED) {
     return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to view execution logs.</div>;
@@ -3938,7 +4082,10 @@ function ExecutionLogs({ companies }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 16, flexWrap: "wrap" }}>
         <div>
           <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>USSD Execution Logs</div>
-          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Every USSD dial attempt — SIM used, agent, customer, provider, result, and retry history.</div>
+          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>
+            Every USSD dial attempt — SIM used, agent, customer, provider, result, and retry history.
+            "Failed" isn't final — a retry may still complete it, so keep an eye on the retry count before treating a payment as stuck.
+          </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 700, color: GREEN }}>
@@ -3956,6 +4103,7 @@ function ExecutionLogs({ companies }) {
                 { label: "Provider", value: (r) => r.companyName },
                 { label: "Package", value: (r) => r.packageName },
                 { label: "USSD Command", value: (r) => r.ussdString },
+                { label: "Device", value: (r) => r.deviceName },
                 { label: "SIM Slot", value: (r) => r.simSlot },
                 { label: "Attempt #", value: (r) => r.attemptNumber },
                 { label: "Start Time", value: (r) => r.createdAt },
@@ -3964,7 +4112,7 @@ function ExecutionLogs({ companies }) {
                 { label: "Status", value: (r) => r.status },
                 { label: "Failure Reason", value: (r) => r.responseMessage },
               ],
-              rows,
+              filteredRows,
             )}
           >
             Export CSV
@@ -3973,7 +4121,16 @@ function ExecutionLogs({ companies }) {
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ position: "relative", flex: "1 1 220px", maxWidth: 280 }}>
+          <Search size={14} color={MUTE} style={{ position: "absolute", left: 10, top: 10 }} />
+          <input
+            style={{ ...inputStyle, paddingLeft: 30, width: "100%" }}
+            placeholder="Search order ID, phone, or USSD code"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
         <select value={companyFilter} onChange={(e) => setCompanyFilter(e.target.value)} style={{ ...inputStyle, width: 180 }}>
           <option value="all">All providers</option>
           {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -3992,7 +4149,7 @@ function ExecutionLogs({ companies }) {
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: "#FAFBFF" }}>
-              {["Transaction ID", "Customer Phone", "Provider", "Service/Package", "USSD Code", "SIM Slot", "Start Time", "End Time", "Duration", "Status", "Attempts", ""].map((h) => (
+              {["Transaction ID", "Customer Phone", "Provider", "Service/Package", "USSD Code", "Device / SIM", "Start Time", "End Time", "Duration", "Status", "Attempts", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
             </tr>
@@ -4010,16 +4167,18 @@ function ExecutionLogs({ companies }) {
                     <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{latest.companyName}</td>
                     <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE }}>{latest.packageName}</td>
                     <td style={{ padding: "10px 14px", fontSize: 11.5, color: SLATE, fontFamily: "monospace" }}>{latest.ussdString}</td>
-                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE }}>SIM {latest.simSlot ?? "—"}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE }}>{latest.deviceName ? `${latest.deviceName} — SIM ${latest.simSlot ?? "?"}` : `SIM ${latest.simSlot ?? "—"}`}</td>
                     <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(latest.createdAt)}</td>
                     <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{latest.completedAt ? formatDateTime(latest.completedAt) : "—"}</td>
                     <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDurationMs(durationMs)}</td>
                     <td style={{ padding: "10px 14px" }}>
                       <Badge tone={latest.status === "success" ? "green" : latest.status === "failed" ? "red" : "amber"}>
-                        {latest.status === "success" ? "Success" : latest.status === "failed" ? "Failed" : "Pending"}
+                        {latest.status === "success" ? "Success" : latest.status === "failed" ? "Failed (not final — may retry)" : "Pending"}
                       </Badge>
                       {latest.status === "failed" && latest.responseMessage && (
-                        <div style={{ fontSize: 10.5, color: "#C81E2C", marginTop: 3, maxWidth: 160 }}>{latest.responseMessage}</div>
+                        <div style={{ fontSize: 10.5, color: "#C81E2C", marginTop: 3, maxWidth: 180 }}>
+                          {explainFailure(latest.responseMessage) || latest.responseMessage}
+                        </div>
                       )}
                     </td>
                     <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE }}>{attempts.length}</td>
@@ -4031,9 +4190,9 @@ function ExecutionLogs({ companies }) {
                         <div style={{ display: "flex", alignItems: "center", gap: 14, fontSize: 11.5, flexWrap: "wrap" }}>
                           <Badge tone={a.status === "success" ? "green" : a.status === "failed" ? "red" : "amber"}>{a.status}</Badge>
                           <span style={{ color: MUTE }}>attempt #{a.attemptNumber}</span>
-                          <span style={{ color: MUTE }}>SIM {a.simSlot ?? "—"}</span>
+                          <span style={{ color: MUTE }}>{a.deviceName ? `${a.deviceName} — SIM ${a.simSlot ?? "?"}` : `SIM ${a.simSlot ?? "—"}`}</span>
                           <span style={{ color: SLATE, fontFamily: "monospace" }}>{a.ussdString}</span>
-                          {a.responseMessage && <span style={{ color: "#C81E2C" }}>{a.responseMessage}</span>}
+                          {a.responseMessage && <span style={{ color: "#C81E2C" }}>{explainFailure(a.responseMessage) || a.responseMessage}</span>}
                           <span style={{ color: MUTE }}>{formatDateTime(a.createdAt)} → {a.completedAt ? formatDateTime(a.completedAt) : "—"}</span>
                           <span style={{ color: MUTE, marginLeft: "auto" }}>{formatDurationMs(a.completedAt ? new Date(a.completedAt) - new Date(a.createdAt) : null)}</span>
                         </div>
@@ -4057,11 +4216,17 @@ function ExecutionLogs({ companies }) {
 // matched a pending order — separate from ExecutionLogs, which only shows
 // USSD dial attempts (i.e. SMS that already matched and moved on to
 // dialing). This is the "did we even see the SMS" view.
-function SmsLogs() {
+function SmsLogs({ companies }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [matchedFilter, setMatchedFilter] = useState("all");
+  const [companyFilter, setCompanyFilter] = useState("all");
+  const [search, setSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [sortKey, setSortKey] = useState("receivedAt");
+  const [sortDir, setSortDir] = useState("desc");
   const [lastSynced, setLastSynced] = useState(null);
 
   const fetchLogs = async () => {
@@ -4071,6 +4236,10 @@ function SmsLogs() {
     try {
       const data = await DalabAdminApi.getSmsLogs({
         matched: matchedFilter === "all" ? undefined : matchedFilter,
+        companyId: companyFilter === "all" ? undefined : companyFilter,
+        search: search.trim() || undefined,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
       });
       setRows(data);
       setLastSynced(new Date());
@@ -4080,11 +4249,47 @@ function SmsLogs() {
       setLoading(false);
     }
   };
-  useEffect(() => { fetchLogs(); }, [matchedFilter]);
+  useEffect(() => { fetchLogs(); }, [matchedFilter, companyFilter, dateFrom, dateTo]);
+  // Debounced search — avoids a request per keystroke, same convention as
+  // the Payment Transactions panel.
+  useEffect(() => {
+    const timer = setTimeout(fetchLogs, 350);
+    return () => clearTimeout(timer);
+  }, [search]);
   useEffect(() => {
     const timer = setInterval(fetchLogs, 10000);
     return () => clearInterval(timer);
-  }, [matchedFilter]);
+  }, [matchedFilter, companyFilter, search, dateFrom, dateTo]);
+
+  const toggleSort = (key) => {
+    if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortKey(key); setSortDir("desc"); }
+  };
+  const sorted = useMemo(() => {
+    const copy = [...rows];
+    copy.sort((a, b) => {
+      let av = a[sortKey], bv = b[sortKey];
+      if (sortKey === "parsedAmount") { av = Number(av) || 0; bv = Number(bv) || 0; }
+      if (av == null) av = "";
+      if (bv == null) bv = "";
+      if (av < bv) return sortDir === "asc" ? -1 : 1;
+      if (av > bv) return sortDir === "asc" ? 1 : -1;
+      return 0;
+    });
+    return copy;
+  }, [rows, sortKey, sortDir]);
+
+  const SortHeader = ({ label, sortKeyName }) => (
+    <th
+      style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700, cursor: "pointer", userSelect: "none", whiteSpace: "nowrap" }}
+      onClick={() => toggleSort(sortKeyName)}
+    >
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
+        {label}
+        {sortKey === sortKeyName && (sortDir === "asc" ? <ArrowUp size={11} /> : <ArrowDown size={11} />)}
+      </span>
+    </th>
+  );
 
   if (!DALAB_API_ENABLED) {
     return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to view SMS logs.</div>;
@@ -4102,17 +4307,54 @@ function SmsLogs() {
             <Radio size={12} color={GREEN} /> Auto-refreshing every 10s
           </span>
           {lastSynced && <span style={{ fontSize: 11, color: MUTE }}>Synced {lastSynced.toLocaleTimeString()}</span>}
+          <Button
+            variant="ghost"
+            icon={Download}
+            onClick={() => exportToCsv(
+              `dalab-sms-logs-${Date.now()}.csv`,
+              [
+                { label: "Received", value: (r) => r.receivedAt },
+                { label: "Sender", value: (r) => r.sender },
+                { label: "Body", value: (r) => r.body },
+                { label: "Parsed Provider", value: (r) => r.parsedProvider },
+                { label: "Parsed Amount", value: (r) => r.parsedAmount },
+                { label: "Parsed Phone", value: (r) => r.parsedPhone },
+                { label: "Transaction Ref", value: (r) => r.transactionRef },
+                { label: "Matched Order", value: (r) => r.matchedOrderId },
+              ],
+              sorted,
+            )}
+          >
+            Export CSV
+          </Button>
           <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={fetchLogs} disabled={loading}>Refresh</Button>
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-        {[{ id: "all", label: "All" }, { id: "true", label: "Matched" }, { id: "false", label: "Unmatched" }].map((f) => (
-          <button key={f.id} onClick={() => setMatchedFilter(f.id)} style={{
-            padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
-            border: `1px solid ${matchedFilter === f.id ? INDIGO : BORDER}`, background: matchedFilter === f.id ? INDIGO : "#fff", color: matchedFilter === f.id ? "#fff" : SLATE,
-          }}>{f.label}</button>
-        ))}
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ position: "relative", flex: "1 1 220px", maxWidth: 280 }}>
+          <Search size={14} color={MUTE} style={{ position: "absolute", left: 10, top: 10 }} />
+          <input
+            style={{ ...inputStyle, paddingLeft: 30, width: "100%" }}
+            placeholder="Search sender, body, phone, or ref"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {[{ id: "all", label: "All" }, { id: "true", label: "Matched" }, { id: "false", label: "Unmatched" }].map((f) => (
+            <button key={f.id} onClick={() => setMatchedFilter(f.id)} style={{
+              padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
+              border: `1px solid ${matchedFilter === f.id ? INDIGO : BORDER}`, background: matchedFilter === f.id ? INDIGO : "#fff", color: matchedFilter === f.id ? "#fff" : SLATE,
+            }}>{f.label}</button>
+          ))}
+        </div>
+        <select value={companyFilter} onChange={(e) => setCompanyFilter(e.target.value)} style={{ ...inputStyle, width: 170 }}>
+          <option value="all">All providers</option>
+          {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} style={{ ...inputStyle, width: 150 }} title="From date" />
+        <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ ...inputStyle, width: 150 }} title="To date" />
       </div>
 
       {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
@@ -4121,13 +4363,29 @@ function SmsLogs() {
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: "#FAFBFF" }}>
-              {["Received", "Sender", "Body", "Parsed provider", "Parsed amount", "Parsed phone", "Transaction Ref", "Matched order"].map((h) => (
-                <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
-              ))}
+              <SortHeader label="Received" sortKeyName="receivedAt" />
+              <SortHeader label="Sender" sortKeyName="sender" />
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Body</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Parsed provider</th>
+              <SortHeader label="Parsed amount" sortKeyName="parsedAmount" />
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Parsed phone</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Transaction Ref</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Matched order</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
+            {loading && rows.length === 0 && (
+              Array.from({ length: 5 }).map((_, i) => (
+                <tr key={`skeleton-${i}`} style={{ borderTop: `1px solid ${BORDER}` }}>
+                  {Array.from({ length: 8 }).map((__, j) => (
+                    <td key={j} style={{ padding: "12px 14px" }}>
+                      <div style={{ height: 12, borderRadius: 4, background: "#EEF0FB", width: j === 0 ? 90 : "70%" }} />
+                    </td>
+                  ))}
+                </tr>
+              ))
+            )}
+            {sorted.map((r) => (
               <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
                 <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(r.receivedAt)}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{r.sender}</td>
@@ -4143,7 +4401,7 @@ function SmsLogs() {
                 </td>
               </tr>
             ))}
-            {rows.length === 0 && !loading && (
+            {sorted.length === 0 && !loading && (
               <tr><td colSpan={8} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No SMS logs recorded yet.</td></tr>
             )}
           </tbody>
@@ -5138,7 +5396,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "notifications" && <Notifications />}
           {active === "promo-images" && <PromoImages />}
           {active === "devices" && <DeviceUssdModule companies={companies} admin={admin} />}
-          {active === "sms-logs" && <SmsLogs />}
+          {active === "sms-logs" && <SmsLogs companies={companies} />}
           {active === "payment-transactions" && <PaymentTransactionsPanel companies={companies} />}
           {active === "execution-logs" && <ExecutionLogs companies={companies} />}
           {active === "reports" && <Reports />}

@@ -29,6 +29,18 @@ async function loadOrder(id: string) {
   return queryOne(`${ORDER_LIST_SELECT} WHERE o.id=$1`, [id]);
 }
 
+// ussd_generated carries the provider's plaintext PIN inlined (the Agent
+// App needs the real string to dial) — every customer- and admin/staff-
+// facing response must show ussd_generated_masked instead. Agent-facing
+// routes intentionally never call this and keep the raw field.
+function maskOrder<T extends Record<string, any> | undefined | null>(order: T): T {
+  if (!order) return order;
+  return { ...order, ussd_generated: order.ussd_generated_masked ?? null };
+}
+function maskOrders<T extends Record<string, any>>(orders: T[]): T[] {
+  return orders.map(maskOrder);
+}
+
 // ---------------- Customer ----------------
 ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
   const { companyId, packageId, senderPhone, receiverPhone, paymentMethod, clientRequestId } = req.body;
@@ -60,10 +72,10 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
     // clientRequestId — the original attempt already went through, so
     // return the existing order instead of creating a second one.
     const existing = await queryOne<{ id: string }>(`SELECT id FROM orders WHERE client_request_id=$1`, [clientRequestId]);
-    return sendJson(res, 200, await loadOrder(existing!.id));
+    return sendJson(res, 200, maskOrder(await loadOrder(existing!.id)));
   }
   broadcast({ type: "order.created", orderId: id });
-  sendJson(res, 201, await loadOrder(id));
+  sendJson(res, 201, maskOrder(await loadOrder(id)));
 });
 
 ordersRouter.get("/orders", requireAuth("customer"), async (req, res) => {
@@ -73,7 +85,7 @@ ordersRouter.get("/orders", requireAuth("customer"), async (req, res) => {
      WHERE o.customer_id=$1 ORDER BY o.created_at DESC`,
     [req.auth!.sub]
   );
-  sendJson(res, 200, rows);
+  sendJson(res, 200, maskOrders(rows));
 });
 
 // Real-time order feed for the Customer App — same subscribe/broadcast
@@ -91,7 +103,7 @@ ordersRouter.get("/orders/stream", requireAuth("customer"), async (req, res) => 
 ordersRouter.get("/orders/:id", requireAuth("customer"), async (req, res) => {
   const order = await loadOrder(req.params.id);
   if (!order || (order as any).customer_id !== req.auth!.sub) return sendJson(res, 404, { error: "Order not found" });
-  sendJson(res, 200, order);
+  sendJson(res, 200, maskOrder(order));
 });
 
 // ---------------- Agent ----------------
@@ -324,7 +336,7 @@ ordersRouter.get("/admin/orders", requireStaff(), async (req, res) => {
     sql += ` AND (o.id ILIKE $${idx} OR c.name ILIKE $${idx} OR o.sender_phone ILIKE $${idx} OR o.receiver_phone ILIKE $${idx} OR c.phone ILIKE $${idx})`;
   }
   sql += ` ORDER BY o.created_at DESC`;
-  sendJson(res, 200, await query(sql, args));
+  sendJson(res, 200, maskOrders(await query(sql, args)));
 });
 
 ordersRouter.get("/admin/orders/counts", requireStaff(), async (req, res) => {
@@ -357,7 +369,7 @@ ordersRouter.get("/admin/orders/stream", requireStaff(), async (req, res) => {
 ordersRouter.get("/admin/orders/:id", requireStaff(), async (req, res) => {
   const order = await loadOrder(req.params.id);
   if (!order) return sendJson(res, 404, { error: "Order not found" });
-  sendJson(res, 200, order);
+  sendJson(res, 200, maskOrder(order));
 });
 
 ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"), async (req, res) => {
@@ -386,7 +398,7 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
     await query(`UPDATE orders SET status=$1, updated_at=now() WHERE id=$2`, [status, req.params.id]);
   }
   broadcast({ type: "order.updated", orderId: req.params.id });
-  sendJson(res, 200, await loadOrder(req.params.id));
+  sendJson(res, 200, maskOrder(await loadOrder(req.params.id)));
 });
 
 // Internal bookkeeping reversal only — there is no payment gateway here to
@@ -423,7 +435,7 @@ ordersRouter.post("/admin/orders/:id/reverse", requirePermission("orders.reverse
   }
 
   broadcast({ type: "order.updated", orderId: order.id });
-  sendJson(res, 200, await loadOrder(order.id));
+  sendJson(res, 200, maskOrder(await loadOrder(order.id)));
 });
 
 ordersRouter.get("/admin/dashboard/stats", requireStaff(), async (_req, res) => {

@@ -14,26 +14,31 @@ export const executionLogsRouter = Router();
  * customers/agents/companies/packages.
  */
 executionLogsRouter.get("/admin/execution-logs", requireStaff(), async (req, res) => {
-  const { orderId, agentId, companyId, status } = req.query as Record<string, string | undefined>;
+  const { orderId, agentId, companyId, status, dateFrom, dateTo } = req.query as Record<string, string | undefined>;
   let sql = `
-    SELECT da.id, da.order_id, da.sim_slot, da.ussd_string, da.attempt_number,
+    SELECT da.id, da.order_id, da.sim_slot, da.attempt_number,
+           COALESCE(da.ussd_string_masked, '(masked — regenerate to view)') AS ussd_string,
            da.status, da.response_message, da.created_at, da.completed_at,
            o.amount, o.company_id, co.name AS company_name,
            c.id AS customer_id, c.name AS customer_name, c.phone AS customer_phone,
            p.name AS package_name,
-           a.id AS agent_id, a.name AS agent_name
+           a.id AS agent_id, a.name AS agent_name,
+           dev.id AS device_id, dev.name AS device_name
     FROM ussd_dial_attempts da
     JOIN orders o ON o.id = da.order_id
     JOIN companies co ON co.id = o.company_id
     JOIN customers c ON c.id = o.customer_id
     JOIN packages p ON p.id = o.package_id
     LEFT JOIN agents a ON a.id = da.agent_id
+    LEFT JOIN agent_devices dev ON dev.id = a.device_id
     WHERE 1=1`;
   const args: unknown[] = [];
   if (orderId) { args.push(orderId); sql += ` AND da.order_id=$${args.length}`; }
   if (agentId) { args.push(agentId); sql += ` AND da.agent_id=$${args.length}`; }
   if (companyId) { args.push(companyId); sql += ` AND o.company_id=$${args.length}`; }
   if (status) { args.push(status); sql += ` AND da.status=$${args.length}`; }
-  sql += ` ORDER BY da.order_id DESC, da.attempt_number ASC`;
+  if (dateFrom) { args.push(dateFrom); sql += ` AND da.created_at >= $${args.length}`; }
+  if (dateTo) { args.push(dateTo); sql += ` AND da.created_at <= $${args.length}`; }
+  sql += ` ORDER BY da.order_id DESC, da.attempt_number ASC LIMIT 2000`;
   sendJson(res, 200, await query(sql, args));
 });

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { query, queryOne } from "../db/pool.js";
+import { broadcast } from "../realtime/orderEvents.js";
 
 /**
  * The explicit payment-transaction ledger — one row per real-world payment
@@ -39,6 +40,7 @@ export async function createPaymentTransaction(params: {
         params.status,
       ]
     );
+    broadcast({ type: "payment_transaction.updated", paymentTransactionId: id, orderId: params.orderId });
     return id;
   } catch (err: any) {
     // A concurrent request already created the active (non-duplicate_blocked)
@@ -60,20 +62,28 @@ export async function markPaymentProcessing(params: {
   simSlot: number | null;
   ussdDialAttemptId: string;
 }): Promise<void> {
-  await query(
+  const rows = await query<{ id: string }>(
     `UPDATE payment_transactions
      SET status='processing', agent_device_id=$1, sim_slot=$2, ussd_dial_attempt_id=$3, updated_at=now()
-     WHERE order_id=$4 AND status NOT IN ('completed','duplicate_blocked')`,
+     WHERE order_id=$4 AND status NOT IN ('completed','duplicate_blocked')
+     RETURNING id`,
     [params.agentDeviceId, params.simSlot, params.ussdDialAttemptId, params.orderId]
   );
+  if (rows.length > 0) {
+    broadcast({ type: "payment_transaction.updated", paymentTransactionId: rows[0].id, orderId: params.orderId });
+  }
 }
 
 export async function markPaymentFinal(orderId: string, status: "completed" | "failed"): Promise<void> {
-  await query(
+  const rows = await query<{ id: string }>(
     `UPDATE payment_transactions SET status=$1, updated_at=now()
-     WHERE order_id=$2 AND status NOT IN ('completed','duplicate_blocked')`,
+     WHERE order_id=$2 AND status NOT IN ('completed','duplicate_blocked')
+     RETURNING id`,
     [status, orderId]
   );
+  if (rows.length > 0) {
+    broadcast({ type: "payment_transaction.updated", paymentTransactionId: rows[0].id, orderId });
+  }
 }
 
 /** True if this order already has a payment_transactions row that reached a
