@@ -25,8 +25,10 @@ need it since it installs the SDK itself).
 - **First-launch permission flow** (`MainActivity`, `SmsPermissionScreen`) —
   requests `READ_SMS` + `RECEIVE_SMS`, shows a plain-language rationale, and falls
   back to an **Open App Settings** button if the agent denies permanently.
-- **Agent login** (`LoginScreen`, `AuthRepository`, `SessionManager`) — phone +
-  password against `POST /agent/auth/login`, JWT stored locally.
+- **Agent login** (`AutoLoginScreen`, `AuthRepository`, `SessionManager`) — no
+  credentials at all; the app authenticates itself against
+  `POST /agent/auth/device-login` using whichever agent is assigned to this
+  device (`DeviceIdentity`), JWT stored locally.
 - **Customer management** (`CustomersScreen`) — search existing customers by
   name/phone, or register a new walk-in customer (`GET`/`POST /agent/customers`).
 - **Sales** (`NewSaleScreen`) — pick a provider, pick a package, enter the

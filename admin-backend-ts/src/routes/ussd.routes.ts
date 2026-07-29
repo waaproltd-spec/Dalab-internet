@@ -401,7 +401,11 @@ ussdRouter.get("/agent/sim-routing", requireAuth("agent"), async (req, res) => {
   sendJson(res, 200, rows);
 });
 
-ussdRouter.get("/agent/devices", requireAuth("agent"), async (_req, res) => {
+// Public: the Agent App has no login screen, so it must be able to list
+// devices for its device-setup picker before it has ever authenticated (the
+// deviceId chosen there is what auth/device-login uses to find its agent).
+// Only non-sensitive labels are returned — no PINs, no health telemetry.
+ussdRouter.get("/agent/devices", async (_req, res) => {
   sendJson(res, 200, await query(`SELECT id, name, description FROM agent_devices ORDER BY name`));
 });
 

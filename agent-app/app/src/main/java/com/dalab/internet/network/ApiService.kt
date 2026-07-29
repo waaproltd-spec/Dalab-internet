@@ -14,7 +14,7 @@ import com.dalab.internet.ussd.SimRoutingEntry
 import retrofit2.Response
 import retrofit2.http.*
 
-data class LoginRequest(val phone: String)
+data class DeviceLoginRequest(val deviceId: String)
 data class HeartbeatRequest(
     val batteryPercent: Int?,
     val networkOnline: Boolean,
@@ -63,8 +63,8 @@ data class CreateSaleRequest(
  */
 interface ApiService {
 
-    @POST("agent/auth/login")
-    suspend fun login(@Body body: LoginRequest): Response<LoginResponse>
+    @POST("agent/auth/device-login")
+    suspend fun deviceLogin(@Body body: DeviceLoginRequest): Response<LoginResponse>
 
     @POST("auth/refresh")
     suspend fun refresh(@Body body: RefreshRequest): Response<RefreshResponse>

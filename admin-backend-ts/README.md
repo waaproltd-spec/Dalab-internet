@@ -66,7 +66,7 @@ between the two backends before touching any frontend code:
 Login and OTP endpoints had no brute-force protection. Added a dependency-
 free in-memory sliding-window limiter (`src/auth/rateLimit.ts`) on
 `/auth/otp/request` (5/15min), `/auth/otp/verify` (10/15min),
-`/agent/auth/login` (5/15min), `/admin/auth/login` (5/15min), and
+`/agent/auth/device-login` (30/15min), `/admin/auth/login` (5/15min), and
 `/admin/auth/forgot-password` (3/hour), keyed by IP + route.
 
 **Stated limitation, not hidden**: this is in-memory, so limits reset on a
