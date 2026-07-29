@@ -44,7 +44,7 @@ function maskOrders<T extends Record<string, any>>(orders: T[]): T[] {
 // ---------------- Customer ----------------
 ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
   const { companyId, packageId, senderPhone, receiverPhone, paymentMethod, clientRequestId } = req.body;
-  const company = await queryOne(`SELECT * FROM companies WHERE id=$1`, [companyId]);
+  const company = await queryOne(`SELECT * FROM companies WHERE id=$1 AND deleted_at IS NULL`, [companyId]);
   if (!company) return sendJson(res, 404, { error: "Company not found" });
   if (company.status === "offline") return sendJson(res, 409, { error: `${company.name} is currently offline` });
 
@@ -120,7 +120,7 @@ ordersRouter.post("/agent/orders", requireAuth("agent"), async (req, res) => {
   const phone = String(customerPhone ?? "").trim();
   if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid customer phone number" });
 
-  const company = await queryOne(`SELECT * FROM companies WHERE id=$1`, [companyId]);
+  const company = await queryOne(`SELECT * FROM companies WHERE id=$1 AND deleted_at IS NULL`, [companyId]);
   if (!company) return sendJson(res, 404, { error: "Company not found" });
   if (company.status === "offline") return sendJson(res, 409, { error: `${company.name} is currently offline` });
 
@@ -211,6 +211,19 @@ ordersRouter.post("/agent/orders/:id/verify-payment", requireAuth("agent"), asyn
   // looking identical to any other kind of stall.
   const genResult = await generateUssdForOrder(order);
   await query(`UPDATE orders SET ussd_generation_failed_reason=$1 WHERE id=$2`, [genResult.error ?? null, order.id]);
+  if (genResult.error) {
+    // This is what makes the failure visible in the Activity Log panel —
+    // previously it only reached orders.ussd_generation_failed_reason,
+    // reachable only via one specific transaction's timeline modal.
+    await recordActivity({
+      adminId: undefined,
+      action: "ussd_generation_failed",
+      entityType: "order",
+      entityId: order.id,
+      oldValue: null,
+      newValue: { reason: genResult.error, companyId: order.company_id, packageId: order.package_id },
+    });
+  }
   broadcast({ type: "order.updated", orderId: order.id });
   sendJson(res, 200, await loadOrder(order.id));
 });
@@ -406,6 +419,16 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
     if (result.length > 0) {
       const genResult = await generateUssdForOrder(order, req.auth!.sub);
       await query(`UPDATE orders SET ussd_generation_failed_reason=$1 WHERE id=$2`, [genResult.error ?? null, req.params.id]);
+      if (genResult.error) {
+        await recordActivity({
+          adminId: req.auth!.sub,
+          action: "ussd_generation_failed",
+          entityType: "order",
+          entityId: req.params.id,
+          oldValue: null,
+          newValue: { reason: genResult.error, companyId: order.company_id, packageId: order.package_id },
+        });
+      }
     }
   } else {
     await query(`UPDATE orders SET status=$1, updated_at=now() WHERE id=$2`, [status, req.params.id]);

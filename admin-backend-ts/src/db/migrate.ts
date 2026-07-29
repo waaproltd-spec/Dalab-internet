@@ -37,6 +37,7 @@ async function migrate() {
     "020_company_details.sql",
     "021_company_soft_delete.sql",
     "022_ussd_generation_failure_reason.sql",
+    "023_package_ussd_template_link.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(path.join(__dirname, "migrations", file), "utf8");
