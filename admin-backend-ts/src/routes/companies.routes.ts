@@ -231,6 +231,15 @@ packagesRouter.post("/admin/packages", requirePermission("packages.manage"), asy
   if (!companyId || !categoryId || !name || price == null) {
     return sendJson(res, 400, { error: "companyId, categoryId, name, price are required" });
   }
+  // categoryId is the category's slug, not its id — packages.category_id is
+  // free text with no DB-level FK (a category rename must never risk
+  // breaking existing packages), so this is the one place that actually
+  // checks it matches a real category for this company, catching a typo'd
+  // or stale value before it silently creates an orphan grouping no admin
+  // can see or manage.
+  if (!(await queryOne(`SELECT id FROM service_categories WHERE company_id=$1 AND slug=$2`, [companyId, categoryId]))) {
+    return sendJson(res, 400, { error: "categoryId does not match any category for this company" });
+  }
   const id = randomUUID();
   // "" (an intentionally-cleared/never-filled-in form field) must become
   // NULL, not be sent to Postgres as an empty string literal for a NUMERIC
@@ -247,17 +256,34 @@ packagesRouter.post("/admin/packages", requirePermission("packages.manage"), asy
 packagesRouter.put("/admin/packages/:id", requirePermission("packages.manage"), async (req, res) => {
   const existing = await queryOne(`SELECT * FROM packages WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Package not found" });
-  const merged = { ...existing, ...req.body };
-  // providerAmount (camelCase, from the request body) is read explicitly
-  // rather than via the merged.provider_amount trick above — merged's
-  // spread can't bridge the naming mismatch between the client's camelCase
-  // body and the DB's snake_case existing row, so merged.provider_amount
-  // would only ever reflect the existing value, never an update.
+  // Every field the client can actually send (oldPrice, categoryId,
+  // providerAmount, ...) is camelCase, while `existing`'s keys are the DB's
+  // snake_case column names — `{ ...existing, ...req.body }` can't bridge
+  // that for any of them, so each is read explicitly here (same fix already
+  // applied to companies.routes.ts's PUT /admin/companies/:id for the same
+  // reason). Previously this meant oldPrice AND categoryId silently never
+  // persisted on edit, no matter what the dashboard's form sent.
+  const name = req.body.name !== undefined ? req.body.name : existing.name;
+  const categoryId = req.body.categoryId !== undefined ? req.body.categoryId : existing.category_id;
+  const oldPrice = req.body.oldPrice !== undefined ? req.body.oldPrice : existing.old_price;
+  const price = req.body.price !== undefined ? req.body.price : existing.price;
+  const mb = req.body.mb !== undefined ? req.body.mb : existing.mb;
+  const minutes = req.body.minutes !== undefined ? req.body.minutes : existing.minutes;
+  const sms = req.body.sms !== undefined ? req.body.sms : existing.sms;
+  const validity = req.body.validity !== undefined ? req.body.validity : existing.validity;
+  const active = req.body.active !== undefined ? req.body.active : existing.active;
+  const code = req.body.code !== undefined ? req.body.code : existing.code;
   const rawProviderAmount = req.body.providerAmount !== undefined ? req.body.providerAmount : existing.provider_amount;
   const providerAmount = rawProviderAmount === "" || rawProviderAmount == null ? null : rawProviderAmount;
+  if (
+    req.body.categoryId !== undefined &&
+    !(await queryOne(`SELECT id FROM service_categories WHERE company_id=$1 AND slug=$2`, [existing.company_id, categoryId]))
+  ) {
+    return sendJson(res, 400, { error: "categoryId does not match any category for this company" });
+  }
   await query(
-    `UPDATE packages SET name=$1, old_price=$2, price=$3, provider_amount=$4, mb=$5, minutes=$6, sms=$7, validity=$8, active=$9, code=$10 WHERE id=$11`,
-    [merged.name, merged.old_price, merged.price, providerAmount, merged.mb, merged.minutes, merged.sms, merged.validity, Boolean(merged.active), merged.code ?? null, req.params.id]
+    `UPDATE packages SET name=$1, category_id=$2, old_price=$3, price=$4, provider_amount=$5, mb=$6, minutes=$7, sms=$8, validity=$9, active=$10, code=$11 WHERE id=$12`,
+    [name, categoryId, oldPrice, price, providerAmount, mb, minutes, sms, validity, Boolean(active), code ?? null, req.params.id]
   );
   sendJson(res, 200, await queryOne(`SELECT * FROM packages WHERE id=$1`, [req.params.id]));
 });

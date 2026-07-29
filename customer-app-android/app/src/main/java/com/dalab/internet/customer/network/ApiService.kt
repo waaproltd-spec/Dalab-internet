@@ -7,6 +7,7 @@ import com.dalab.internet.customer.data.NotificationItem
 import com.dalab.internet.customer.data.PackageItem
 import com.dalab.internet.customer.data.PaymentWallet
 import com.dalab.internet.customer.data.PromoImage
+import com.dalab.internet.customer.data.ServiceCategory
 import retrofit2.Response
 import retrofit2.http.*
 
@@ -87,6 +88,9 @@ interface ApiService {
 
     @GET("companies/{id}/packages")
     suspend fun getPackages(@Path("id") companyId: String): Response<List<PackageItem>>
+
+    @GET("companies/{id}/categories")
+    suspend fun getCategories(@Path("id") companyId: String): Response<List<ServiceCategory>>
 
     @POST("orders")
     suspend fun createOrder(@Body body: CreateOrderRequest): Response<CustomerOrder>

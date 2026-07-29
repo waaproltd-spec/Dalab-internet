@@ -24,11 +24,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.dalab.internet.customer.data.Company
 import com.dalab.internet.customer.data.PackageItem
+import com.dalab.internet.customer.data.ServiceCategory
 import com.dalab.internet.customer.network.ApiClient
 
 /** One entry per distinct categoryId among a company's packages. */
 private data class PackageCategory(val id: String, val label: String, val packages: List<PackageItem>)
 
+// Fallback only — used when a package's categoryId doesn't match any known
+// service_categories row (category_id is free text, not a foreign key, so
+// this can legitimately happen for stale/typo'd data). Whenever a real
+// category name is found, that admin-configured name is used instead.
 private fun formatCategoryLabel(categoryId: String): String =
     categoryId.split("-", "_").joinToString(" ") { it.replaceFirstChar(Char::uppercase) }
 
@@ -47,6 +52,7 @@ private fun categoryIcon(categoryId: String): ImageVector {
 @Composable
 fun CompanyCategoriesScreen(company: Company, onBack: () -> Unit, onSelectCategory: (String, String, List<PackageItem>) -> Unit) {
     var packages by remember { mutableStateOf<List<PackageItem>>(emptyList()) }
+    var serviceCategories by remember { mutableStateOf<List<ServiceCategory>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     val offline = company.status == "offline"
     val brandColor = remember(company.colorHex) {
@@ -63,12 +69,18 @@ fun CompanyCategoriesScreen(company: Company, onBack: () -> Unit, onSelectCatego
         } catch (_: Exception) {
             packages = emptyList()
         }
+        try {
+            serviceCategories = ApiClient.service.getCategories(company.id).body().orEmpty()
+        } catch (_: Exception) {
+            serviceCategories = emptyList() // falls back to formatCategoryLabel below — never blocks showing packages
+        }
         loading = false
     }
 
-    val categories = remember(packages) {
+    val categories = remember(packages, serviceCategories) {
+        val namesBySlug = serviceCategories.associate { it.slug to it.name }
         packages.groupBy { it.categoryId }
-            .map { (id, pkgs) -> PackageCategory(id, formatCategoryLabel(id), pkgs) }
+            .map { (id, pkgs) -> PackageCategory(id, namesBySlug[id] ?: formatCategoryLabel(id), pkgs) }
             .sortedBy { it.label }
     }
 
