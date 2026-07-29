@@ -177,6 +177,7 @@ const DalabAdminApi = {
     return dalabAdminApiRequest(`/admin/payment-transactions${qs ? `?${qs}` : ""}`);
   },
   getPaymentTransactionTimeline: (id) => dalabAdminApiRequest(`/admin/payment-transactions/${id}/timeline`),
+  getStuckPaymentCount: (minutes) => dalabAdminApiRequest(`/admin/payment-transactions/stuck-count${minutes ? `?minutes=${minutes}` : ""}`),
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -4063,7 +4064,14 @@ function PaymentTransactionsPanel({ companies }) {
 
               <div>
                 <div style={{ fontSize: 11, fontWeight: 700, color: MUTE, textTransform: "uppercase" }}>Dial attempts</div>
-                {timeline.dialAttempts.length === 0 && <div style={{ fontSize: 12.5, color: MUTE, marginTop: 4 }}>No dial attempts yet.</div>}
+                {timeline.dialAttempts.length === 0 && (
+                  <div style={{ fontSize: 12.5, color: MUTE, marginTop: 4 }}>No dial attempts yet.</div>
+                )}
+                {timeline.dialAttempts.length === 0 && timeline.order?.ussdGenerationFailedReason && (
+                  <div style={{ fontSize: 12.5, color: "#C81E2C", marginTop: 4, fontWeight: 600 }}>
+                    USSD generation failed: {timeline.order.ussdGenerationFailedReason}
+                  </div>
+                )}
                 {timeline.dialAttempts.map((a) => (
                   <div key={a.id} style={{ fontSize: 12.5, color: INK, marginTop: 4, display: "flex", gap: 8, alignItems: "center" }}>
                     <Badge tone={a.status === "success" ? "green" : a.status === "failed" ? "red" : "amber"}>Attempt {a.attemptNumber}</Badge>
@@ -5389,6 +5397,7 @@ function AdminDashboardShell({ admin, onLogout }) {
   const [packages, setPackages] = useState(initialPackages);
   const [orders, setOrders] = useState(initialOrders);
   const [customers, setCustomers] = useState(initialCustomers);
+  const [stuckCount, setStuckCount] = useState(0);
 
   // Companies used to be mock-only everywhere (Companies/PaymentNumbers never
   // called GET /admin/companies) — this is now the single source of truth,
@@ -5414,6 +5423,26 @@ function AdminDashboardShell({ admin, onLogout }) {
     }
   };
   useEffect(() => { refreshCustomers(); }, []);
+
+  // A "stuck" payment (verified, in_progress, never actually dialed) was
+  // previously invisible until an admin happened to open its Payment
+  // Transactions timeline modal — this badge surfaces it proactively,
+  // refreshed on the same order-events stream every other live section
+  // already subscribes to, so it's genuinely real-time, not a new poll loop.
+  const refreshStuckCount = async () => {
+    if (!DALAB_API_ENABLED) return;
+    try {
+      setStuckCount((await DalabAdminApi.getStuckPaymentCount()).count);
+    } catch (err) {
+      console.error("Failed to load stuck payment count:", err.message);
+    }
+  };
+  useEffect(() => { refreshStuckCount(); }, []);
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    const unsubscribe = subscribeOrderEvents("/admin/orders/stream", { onEvent: refreshStuckCount });
+    return () => unsubscribe();
+  }, []);
 
   const activeLabel = NAV.find((n) => n.id === active)?.label;
 
@@ -5448,6 +5477,11 @@ function AdminDashboardShell({ admin, onLogout }) {
               >
                 <Icon size={17} />
                 {!collapsed && n.label}
+                {!collapsed && n.id === "payment-transactions" && stuckCount > 0 && (
+                  <span style={{ marginLeft: "auto" }}>
+                    <Badge tone="red">{stuckCount}</Badge>
+                  </span>
+                )}
               </button>
             );
           })}

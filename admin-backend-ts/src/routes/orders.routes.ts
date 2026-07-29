@@ -206,7 +206,11 @@ ordersRouter.post("/agent/orders/:id/verify-payment", requireAuth("agent"), asyn
   // Order approved — auto-generate the USSD dialer string. A missing PIN or
   // template isn't fatal to the approval itself; ussd_generated just stays
   // null until an admin sets one up, visible on the order detail either way.
-  await generateUssdForOrder(order);
+  // The failure reason (if any) is persisted rather than discarded, so a
+  // stuck order (verified, in_progress, never dialed) shows WHY instead of
+  // looking identical to any other kind of stall.
+  const genResult = await generateUssdForOrder(order);
+  await query(`UPDATE orders SET ussd_generation_failed_reason=$1 WHERE id=$2`, [genResult.error ?? null, order.id]);
   broadcast({ type: "order.updated", orderId: order.id });
   sendJson(res, 200, await loadOrder(order.id));
 });
@@ -399,7 +403,10 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
       `UPDATE orders SET status='in_progress', updated_at=now() WHERE id=$1 AND status != 'in_progress' RETURNING id`,
       [req.params.id]
     );
-    if (result.length > 0) await generateUssdForOrder(order, req.auth!.sub);
+    if (result.length > 0) {
+      const genResult = await generateUssdForOrder(order, req.auth!.sub);
+      await query(`UPDATE orders SET ussd_generation_failed_reason=$1 WHERE id=$2`, [genResult.error ?? null, req.params.id]);
+    }
   } else {
     await query(`UPDATE orders SET status=$1, updated_at=now() WHERE id=$2`, [status, req.params.id]);
   }
