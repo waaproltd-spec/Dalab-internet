@@ -250,7 +250,7 @@ private fun CustomerHome(
                         onOpenSettings = { showSettings = true },
                     )
                     HomeTab.ORDERS -> OrdersScreen(onOpenOrder = onOpenOrder)
-                    HomeTab.PROFILE -> ProfileScreen(onLogout = onLogout, onOpenOrders = { tab = HomeTab.ORDERS })
+                    HomeTab.PROFILE -> ProfileScreen(onLogout = onLogout)
                 }
             }
         }
