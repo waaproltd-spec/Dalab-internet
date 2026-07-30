@@ -170,6 +170,7 @@ object SmsUploadFlow {
             DialOutcome.TIMEOUT -> "Check order $orderId" to "USSD dial timed out after retries — verify manually."
             DialOutcome.NETWORK_UNAVAILABLE -> "Order $orderId — \$${amount ?: "?"}" to "Waiting for connectivity to verify payment — will retry automatically."
             DialOutcome.FAILED -> "Order $orderId — \$${amount ?: "?"}" to (detail ?: "USSD dial failed after retries.")
+            DialOutcome.DUPLICATE_SKIPPED -> "Order $orderId — \$${amount ?: "?"}" to "Duplicate dial attempt skipped (already being processed)."
         }
         val notification = NotificationCompat.Builder(context, "payment_channel")
             .setSmallIcon(R.drawable.ic_notification)

@@ -19,7 +19,10 @@ data class DeviceSimSlot(
     val carrierName: String,
 )
 
-enum class DialOutcome { SUCCESS, FAILED, TIMEOUT, NO_SIM_CONFIGURED, NO_SIM_PRESENT, PERMISSION_DENIED, NETWORK_UNAVAILABLE }
+// DUPLICATE_SKIPPED: another in-flight call on this device is already
+// processing this exact order (see UssdOrchestrator's per-order dial lock) --
+// distinct from SUCCESS/FAILED since no dial decision was made here at all.
+enum class DialOutcome { SUCCESS, FAILED, TIMEOUT, NO_SIM_CONFIGURED, NO_SIM_PRESENT, PERMISSION_DENIED, NETWORK_UNAVAILABLE, DUPLICATE_SKIPPED }
 
 data class DialResult(
     val outcome: DialOutcome,
