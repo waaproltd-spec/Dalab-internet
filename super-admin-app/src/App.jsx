@@ -2663,7 +2663,7 @@ function PromoImages() {
         <div>
           <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Promo Images</div>
           <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>
-            Up to {MAX_PROMO_IMAGES} promotional images shown as a swipeable carousel on the Customer App Home screen. Customers can only view these — uploading is Super Admin-only. Recommended size: 1280 × 658px.
+            Up to {MAX_PROMO_IMAGES} promotional images shown as a swipeable carousel on the Customer App Home screen. Customers can only view these — uploading is Super Admin-only. Recommended size: 1280 × 400px (a short, wide banner — this keeps the carousel compact so provider logos stay visible on the first screen without scrolling).
           </div>
         </div>
         <div>

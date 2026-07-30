@@ -346,11 +346,13 @@ private fun SupportActionRow(icon: androidx.compose.ui.graphics.vector.ImageVect
  * fought, only continued from). Each page loads its image from
  * GET /promo-images/{id}/image via Coil (the one place this app needs async
  * remote image loading; provider logos are bundled local drawables instead).
- * The frame keeps a fixed 1280:658 aspect ratio for consistent swipe height,
- * but ContentScale.Fit means an uploaded image of any aspect ratio is always
- * shown in full — auto-scaled down to fit within the frame, never cropped —
- * so a wider/shorter or narrower/taller banner than the recommended 1280x658
- * still displays completely instead of losing its top/bottom or sides.
+ * The frame is a compact, wide 1280:400 aspect ratio (matching the
+ * dashboard's upload guidance) so the provider grid below is visible on the
+ * first screen without scrolling on most phones. ContentScale.Fit means an
+ * uploaded image of any aspect ratio is still always shown in full — scaled
+ * to fit within the frame, never cropped or stretched — a banner shot at the
+ * recommended 1280x400 fills the frame edge-to-edge with no empty margin;
+ * a taller/narrower image will letterbox rather than lose content.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -371,7 +373,7 @@ private fun PromoImageCarousel(images: List<PromoImage>) {
             state = pagerState,
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(1280f / 658f)
+                .aspectRatio(1280f / 400f)
                 .shadow(4.dp, RoundedCornerShape(20.dp))
                 .clip(RoundedCornerShape(20.dp))
                 .background(MaterialTheme.colorScheme.surface),
