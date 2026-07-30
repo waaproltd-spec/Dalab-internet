@@ -346,9 +346,11 @@ private fun SupportActionRow(icon: androidx.compose.ui.graphics.vector.ImageVect
  * fought, only continued from). Each page loads its image from
  * GET /promo-images/{id}/image via Coil (the one place this app needs async
  * remote image loading; provider logos are bundled local drawables instead).
- * Recommended upload size is 1280x658 (the dashboard's upload copy states
- * this too) — the pager uses that exact aspect ratio so a correctly-sized
- * image is never cropped/distorted.
+ * The frame keeps a fixed 1280:658 aspect ratio for consistent swipe height,
+ * but ContentScale.Fit means an uploaded image of any aspect ratio is always
+ * shown in full — auto-scaled down to fit within the frame, never cropped —
+ * so a wider/shorter or narrower/taller banner than the recommended 1280x658
+ * still displays completely instead of losing its top/bottom or sides.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -370,15 +372,15 @@ private fun PromoImageCarousel(images: List<PromoImage>) {
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(1280f / 658f)
-                .shadow(4.dp, RoundedCornerShape(20.dp)),
+                .shadow(4.dp, RoundedCornerShape(20.dp))
+                .clip(RoundedCornerShape(20.dp))
+                .background(MaterialTheme.colorScheme.surface),
         ) { page ->
             AsyncImage(
                 model = "${ApiClient.BASE_URL}promo-images/${images[page].id}/image",
                 contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clip(RoundedCornerShape(20.dp)),
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize(),
             )
         }
         if (images.size > 1) {
