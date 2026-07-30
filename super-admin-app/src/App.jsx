@@ -91,6 +91,7 @@ const DalabAdminApi = {
   updateCompanyStatus: (id, status) => dalabAdminApiRequest(`/admin/companies/${id}/status`, { method: "PUT", body: { status } }),
   updateCompanyVisibility: (id, visibleCustomerApp, visibleAgentApp) => dalabAdminApiRequest(`/admin/companies/${id}/visibility`, { method: "PUT", body: { visibleCustomerApp, visibleAgentApp } }),
   updatePaymentNumber: (id, paymentNumber, paymentUssdTemplate) => dalabAdminApiRequest(`/admin/companies/${id}/payment-number`, { method: "PUT", body: { paymentNumber, paymentUssdTemplate } }),
+  updateProviderNumber: (id, providerNumber) => dalabAdminApiRequest(`/admin/companies/${id}/provider-number`, { method: "PUT", body: { providerNumber } }),
   getPackages: (companyId) => dalabAdminApiRequest(`/admin/packages${companyId ? `?companyId=${companyId}` : ""}`),
   createPackage: (body) => dalabAdminApiRequest("/admin/packages", { method: "POST", body }),
   updatePackage: (id, body) => dalabAdminApiRequest(`/admin/packages/${id}`, { method: "PUT", body }),
@@ -227,6 +228,7 @@ function normalizeCompany(c) {
     color: c.colorHex || "#1D2E8C",
     status: c.status === "online" ? "enabled" : "disabled",
     payNumber: c.paymentNumber || "Not set",
+    providerNumber: c.providerNumber || "Not set",
     paymentUssdTemplate: c.paymentUssdTemplate || "",
     gateway: c.gateway || "Manual",
     visibleCustomerApp: c.visibleCustomerApp !== false,
@@ -3297,6 +3299,7 @@ function UssdTemplatesPanel({ companies, canManage, onPackagesChanged }) {
           </Field>
           <div style={{ fontSize: 11, color: MUTE, marginTop: -8, marginBottom: 14 }}>
             Must include <code>{"{receiverNumber}"}</code> (or <code>{"{number}"}</code>/<code>{"{customerNumber}"}</code>), <code>{"{amount}"}</code>, and <code>{"{pin}"}</code> — substituted automatically when an order is approved.
+            Optional placeholders are also available: <code>{"{providerNumber}"}</code> (this company's saved Provider Number), <code>{"{packageCode}"}</code>, and <code>{"{packageName}"}</code> — a template that doesn't use them is unaffected.
             Any digits you type before <code>{"{pin}"}</code> (e.g. a service short-code like <code>*737*</code>) are dialed literally as part of the provider's own USSD format —
             <b> do not put the PIN itself in this pattern.</b> The actual PIN is entered separately on the Provider PINs page and is loaded fresh from there every time.
           </div>
@@ -3615,15 +3618,19 @@ function ProviderPinsPanel({ companies, canManage }) {
 
 // Consolidated per-provider configuration: everything a Super Admin needs to
 // fix a broken payment/USSD flow for one operator (Hormuud, Somnet, Somtel,
-// Amtel) lives on one card instead of four separate sections. Every field
-// here writes through the exact same endpoints as Payment Numbers, Provider
-// PINs, SIM Routing, and USSD Templates already use elsewhere — this view
-// adds no new backend state, it just re-groups the existing one by provider
-// so nothing can drift between the two places it's edited from.
+// Amtel) lives on one card instead of four separate sections. Most fields
+// here write through the exact same endpoints as Provider PINs, SIM Routing,
+// and USSD Templates already use elsewhere. The two number fields are the
+// deliberate exception: Payment Number (customer payments, `payment_number`)
+// and Provider Number (outgoing USSD to the telecom, `provider_number`) are
+// genuinely independent columns saved through two fully separate endpoints —
+// they are never allowed to share a write path, so saving one can never
+// overwrite the other.
 function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged }) {
   const [pinStatuses, setPinStatuses] = useState({});
   const [pinDrafts, setPinDrafts] = useState({});
   const [numberDrafts, setNumberDrafts] = useState({});
+  const [providerNumberDrafts, setProviderNumberDrafts] = useState({});
   const [routes, setRoutes] = useState([]);
   const [devices, setDevices] = useState([]);
   const [templates, setTemplates] = useState([]);
@@ -3699,6 +3706,25 @@ function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged
       setMessage(`Settings saved successfully. ${company.name}'s payment number is live for new payment requests.`);
     } catch (err) {
       setError(err.message || "Could not save payment number.");
+    } finally {
+      setSavingKey(null);
+    }
+  };
+
+  const saveProviderNumber = async (company) => {
+    const value = (providerNumberDrafts[company.id] ?? (company.providerNumber === "Not set" ? "" : company.providerNumber)).trim();
+    if (value && !/^\d{6,15}$/.test(value)) {
+      setError("Provider number must be 6-15 digits.");
+      return;
+    }
+    setSavingKey(`providerNumber:${company.id}`);
+    setError(""); setMessage("");
+    try {
+      await DalabAdminApi.updateProviderNumber(company.id, value);
+      await refreshCompanies();
+      setMessage(`Settings saved successfully. ${company.name}'s provider number is live for outgoing USSD requests.`);
+    } catch (err) {
+      setError(err.message || "Could not save provider number.");
     } finally {
       setSavingKey(null);
     }
@@ -3799,14 +3825,16 @@ function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged
       <div style={{ marginBottom: 14 }}>
         <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Provider Numbers</div>
         <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>
-          Everything about one mobile operator in one place — Payment/Reseller Number, USSD PIN, USSD Template(s), and SIM Slot — all editable here at
-          any time, with no source-code changes. The Agent App always loads the latest saved value of each of these fresh from the database on every USSD dial; nothing is ever cached.
+          Everything about one mobile operator in one place — Payment Number, Provider Number, USSD PIN, USSD Template(s), and SIM Slot — all editable here at
+          any time, with no source-code changes. Payment Number and Provider Number are two genuinely separate fields: Payment Number is where customer
+          payments are received (used for payment verification only), while Provider Number is used only for sending the provider USSD/data request during
+          fulfillment — saving one never overwrites the other. The Agent App always loads the latest saved value of each of these fresh from the database on every USSD dial; nothing is ever cached.
         </div>
       </div>
 
       {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
       {message && <div style={{ color: GREEN, fontSize: 12.5, marginBottom: 14 }}>{message}</div>}
-      {!canManageSecrets && <Badge tone="amber">View only — Payment Number, USSD PIN, Sender Number/SIM Slot, and USSD Templates are Super Admin only</Badge>}
+      {!canManageSecrets && <Badge tone="amber">View only — Payment Number, Provider Number, USSD PIN, Sender Number/SIM Slot, and USSD Templates are Super Admin only</Badge>}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 14 }}>
         {companies.map((c) => {
@@ -3825,8 +3853,8 @@ function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged
                 <Badge tone={c.status === "enabled" ? "green" : "red"}>{c.status === "enabled" ? "Enabled" : "Disabled"}</Badge>
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
-                <Field label="Payment / Reseller Number">
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 16 }}>
+                <Field label="Payment Number (customer payments)">
                   <div style={{ display: "flex", gap: 8 }}>
                     <input
                       style={inputStyle}
@@ -3838,6 +3866,23 @@ function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged
                     {canManageSecrets && (
                       <Button variant="ghost" onClick={() => saveNumber(c)} disabled={savingKey === `number:${c.id}`}>
                         {savingKey === `number:${c.id}` ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                      </Button>
+                    )}
+                  </div>
+                </Field>
+
+                <Field label="Provider Number (outgoing USSD to telecom)">
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input
+                      style={inputStyle}
+                      placeholder="e.g. 0610338686"
+                      disabled={!canManageSecrets}
+                      value={providerNumberDrafts[c.id] ?? (c.providerNumber === "Not set" ? "" : c.providerNumber)}
+                      onChange={(e) => setProviderNumberDrafts((prev) => ({ ...prev, [c.id]: e.target.value.replace(/\D/g, "") }))}
+                    />
+                    {canManageSecrets && (
+                      <Button variant="ghost" onClick={() => saveProviderNumber(c)} disabled={savingKey === `providerNumber:${c.id}`}>
+                        {savingKey === `providerNumber:${c.id}` ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
                       </Button>
                     )}
                   </div>
@@ -3985,6 +4030,7 @@ function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged
           </Field>
           <div style={{ fontSize: 11, color: MUTE, marginTop: -8, marginBottom: 14 }}>
             Must include <code>{"{receiverNumber}"}</code> (or <code>{"{number}"}</code>/<code>{"{customerNumber}"}</code>), <code>{"{amount}"}</code>, and <code>{"{pin}"}</code>.
+            Optional placeholders are also available: <code>{"{providerNumber}"}</code> (this company's saved Provider Number), <code>{"{packageCode}"}</code>, and <code>{"{packageName}"}</code> — a template that doesn't use them is unaffected.
             Any digits typed before <code>{"{pin}"}</code> (e.g. a service short-code like <code>*737*</code>) are dialed literally —
             <b> do not put the PIN itself in this pattern.</b> The real PIN is the field set above and is loaded fresh every time.
           </div>

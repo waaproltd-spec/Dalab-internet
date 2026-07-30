@@ -233,7 +233,7 @@ export async function matchTemplateByName(companyId: string, packageName: string
  * matching. Returns { ussd, templateId } or { error }.
  */
 export async function generateUssdForOrder(order: any, adminId?: string): Promise<{ ussd?: string; maskedUssd?: string; templateId?: string; error?: string }> {
-  const company = await queryOne(`SELECT pin_encrypted FROM companies WHERE id=$1`, [order.company_id]);
+  const company = await queryOne(`SELECT pin_encrypted, provider_number FROM companies WHERE id=$1`, [order.company_id]);
   if (!company?.pin_encrypted) {
     return { error: "No PIN has been set for this provider yet — go to USSD Services and set its PIN." };
   }
@@ -297,7 +297,8 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
     .replace("{amount}", String(providerAmount))
     .replace("{pin}", pin)
     .replace("{packageCode}", orderWithPackage?.package_code ?? "")
-    .replace("{packageName}", orderWithPackage?.package_name ?? "");
+    .replace("{packageName}", orderWithPackage?.package_name ?? "")
+    .replace("{providerNumber}", company.provider_number ?? "");
   // Same substitution, PIN redacted — this is the only copy of the dial
   // string that should ever reach a customer or admin/staff response; the
   // raw `ussd` above is for the Agent App's eyes (and dial) only.
@@ -308,7 +309,8 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
     .replace("{amount}", String(providerAmount))
     .replace("{pin}", "•".repeat(pin.length))
     .replace("{packageCode}", orderWithPackage?.package_code ?? "")
-    .replace("{packageName}", orderWithPackage?.package_name ?? "");
+    .replace("{packageName}", orderWithPackage?.package_name ?? "")
+    .replace("{providerNumber}", company.provider_number ?? "");
 
   await query(
     `UPDATE orders SET ussd_generated=$1, ussd_generated_masked=$2, ussd_device_id=$3, ussd_sim_slot=$4 WHERE id=$5`,
