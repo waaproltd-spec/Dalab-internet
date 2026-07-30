@@ -128,8 +128,10 @@ const TRANSLATIONS = {
     // Feedback
     feedbackTitle: "Feedback", selectTitle: "Select title", writeYourFeedback: "Please write your feedback",
     selectIssue: "Select Issue", thanksForFeedback: "Thanks for your feedback", teamWillReview: "Our team will review it shortly.",
-    issueAppCrashes: "App crashes frequently", issuePaymentFailed: "Unable to complete payment",
-    issuePaymentDeducted: "Payment failed but balance deducted", issueFeedback: "Feedback / Suggestion", issueOther: "Other",
+    issueAppCrashes: "App Crashes Frequently", issuePaymentFailed: "Unable to Complete Payment",
+    issueInternetPackage: "Internet Package Problem", issuePaymentVerification: "Payment Verification Issue",
+    issueMakeSuggestion: "Make Suggestion", issueFeedback: "Feedback", issueOther: "Other",
+    submitError: "Couldn't submit your feedback. Please try again.", submitting: "Submitting...",
     // Referral
     referralTitle: "Referral", inviteFriendsTitle: "Invite Your Friends",
     inviteFriendsBody: "Share DALAB INTERNET with friends and family to get the better service experience ever.",
@@ -220,7 +222,9 @@ const TRANSLATIONS = {
     feedbackTitle: "Fikradaha", selectTitle: "Dooro cinwaanka", writeYourFeedback: "Fadlan qor fikradaada",
     selectIssue: "Dooro Dhibaatada", thanksForFeedback: "Waad ku mahadsan tahay fikradaada", teamWillReview: "Kooxdeenu way dib u eegi doontaa.",
     issueAppCrashes: "App-ku si joogto ah ayuu u xiraa", issuePaymentFailed: "Lacag-bixinta lama dhamaystirin",
-    issuePaymentDeducted: "Lacag-bixintu way fashilantay balse lacagta waa laga jaray", issueFeedback: "Fikrad / Soo jeedin", issueOther: "Kale",
+    issueInternetPackage: "Dhibaato Baakada Internetka", issuePaymentVerification: "Dhibaato Xaqiijinta Lacag-bixinta",
+    issueMakeSuggestion: "Soo Jeedin", issueFeedback: "Fikrad", issueOther: "Kale",
+    submitError: "Fikradaada lama gudbin karin. Fadlan isku day mar kale.", submitting: "Waa la gudbinayaa...",
     // Referral
     referralTitle: "U-xilsaarid", inviteFriendsTitle: "Ku Casuumo Saaxiibadaada",
     inviteFriendsBody: "La wadaag DALAB INTERNET saaxiibada iyo qoyska si ay u helaan adeeg wanaagsan.",
@@ -328,6 +332,8 @@ const DalabApi = {
   getMacaashRewards: () => dalabApiRequest("/macaash/rewards", { auth: true }),
   redeemMacaash: (rewardId) => dalabApiRequest("/macaash/redeem", { method: "POST", auth: true, body: { rewardId } }),
   getMacaashHistory: () => dalabApiRequest("/macaash/history", { auth: true }),
+  submitFeedback: ({ category, message, deviceInfo }) =>
+    dalabApiRequest("/feedback", { method: "POST", auth: true, body: { category, message, deviceInfo } }),
 };
 
 const PROVIDERS = [
@@ -1812,7 +1818,29 @@ function NotificationsPrefScreen({ onBack }) {
   );
 }
 
-const ISSUE_OPTION_KEYS = ["issueAppCrashes", "issuePaymentFailed", "issuePaymentDeducted", "issueFeedback", "issueOther"];
+const ISSUE_OPTION_KEYS = [
+  "issueAppCrashes",
+  "issuePaymentFailed",
+  "issueInternetPackage",
+  "issuePaymentVerification",
+  "issueMakeSuggestion",
+  "issueFeedback",
+  "issueOther",
+];
+
+// The backend's fixed category enum is always these exact English labels,
+// independent of the customer's chosen display language — keeps the Admin
+// Dashboard's category filter stable regardless of which language a
+// customer submitted in.
+const FEEDBACK_CATEGORY_BY_KEY = {
+  issueAppCrashes: "App Crashes Frequently",
+  issuePaymentFailed: "Unable to Complete Payment",
+  issueInternetPackage: "Internet Package Problem",
+  issuePaymentVerification: "Payment Verification Issue",
+  issueMakeSuggestion: "Make Suggestion",
+  issueFeedback: "Feedback",
+  issueOther: "Other",
+};
 
 function IssueSheet({ selected, onSelect, onClose }) {
   const { colors } = useTheme();
@@ -1833,12 +1861,12 @@ function IssueSheet({ selected, onSelect, onClose }) {
             return (
               <button
                 key={key}
-                onClick={() => { onSelect(opt); onClose(); }}
+                onClick={() => { onSelect(key); onClose(); }}
                 style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 20px", background: "none", border: "none", borderBottom: `1px solid ${colors.divider}`, cursor: "pointer", textAlign: "left" }}
               >
                 <span style={{ fontSize: 14.5, color: colors.text }}>{opt}</span>
-                <div style={{ width: 20, height: 20, borderRadius: 10, border: `2px solid ${selected === opt ? "#1D2E8C" : colors.border}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  {selected === opt && <div style={{ width: 10, height: 10, borderRadius: 5, background: "#1D2E8C" }} />}
+                <div style={{ width: 20, height: 20, borderRadius: 10, border: `2px solid ${selected === key ? "#1D2E8C" : colors.border}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  {selected === key && <div style={{ width: 10, height: 10, borderRadius: 5, background: "#1D2E8C" }} />}
                 </div>
               </button>
             );
@@ -1851,9 +1879,11 @@ function IssueSheet({ selected, onSelect, onClose }) {
 
 function FeedbackScreen({ onBack }) {
   const [issueSheetOpen, setIssueSheetOpen] = useState(false);
-  const [issue, setIssue] = useState("");
+  const [issueKey, setIssueKey] = useState("");
   const [text, setText] = useState("");
   const [submitted, setSubmitted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
   const { colors } = useTheme();
   const { t } = useI18n();
 
@@ -1873,6 +1903,24 @@ function FeedbackScreen({ onBack }) {
     );
   }
 
+  const submit = async () => {
+    if (!issueKey || !text.trim() || submitting) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      await DalabApi.submitFeedback({
+        category: FEEDBACK_CATEGORY_BY_KEY[issueKey],
+        message: text.trim(),
+        deviceInfo: typeof navigator !== "undefined" ? `${navigator.userAgent} (${navigator.platform || "web"})` : "web",
+      });
+      setSubmitted(true);
+    } catch (err) {
+      setError(err.message || t("submitError"));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <Screen>
       <StatusBar />
@@ -1887,7 +1935,7 @@ function FeedbackScreen({ onBack }) {
           onClick={() => setIssueSheetOpen(true)}
           style={{ width: "100%", marginTop: 22, background: colors.surfaceAlt, border: "none", borderRadius: 14, padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}
         >
-          <span style={{ fontSize: 14, color: issue ? colors.text : colors.textMuted }}>{issue || t("selectTitle")}</span>
+          <span style={{ fontSize: 14, color: issueKey ? colors.text : colors.textMuted }}>{issueKey ? t(issueKey) : t("selectTitle")}</span>
           <ChevronDownIcon />
         </button>
 
@@ -1897,16 +1945,18 @@ function FeedbackScreen({ onBack }) {
           placeholder={t("writeYourFeedback")}
           style={{ width: "100%", marginTop: 14, minHeight: 220, background: colors.surfaceAlt, border: "none", borderRadius: 14, padding: 16, fontSize: 13.5, color: colors.text, outline: "none", resize: "none", boxSizing: "border-box", fontFamily: "inherit" }}
         />
+        {error && <div style={{ width: "100%", marginTop: 10, fontSize: 12.5, color: "#C81E2C" }}>{error}</div>}
       </div>
       <div style={{ padding: "0 20px 22px" }}>
         <button
-          onClick={() => (issue || text) && setSubmitted(true)}
-          style={{ width: "100%", padding: "14px 0", borderRadius: 14, border: "none", background: "#0B1240", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}
+          onClick={submit}
+          disabled={submitting}
+          style={{ width: "100%", padding: "14px 0", borderRadius: 14, border: "none", background: "#0B1240", color: "#fff", fontWeight: 700, fontSize: 15, cursor: submitting ? "default" : "pointer", opacity: submitting ? 0.7 : 1 }}
         >
-          {t("submit")}
+          {submitting ? t("submitting") : t("submit")}
         </button>
       </div>
-      {issueSheetOpen && <IssueSheet selected={issue} onSelect={setIssue} onClose={() => setIssueSheetOpen(false)} />}
+      {issueSheetOpen && <IssueSheet selected={issueKey} onSelect={setIssueKey} onClose={() => setIssueSheetOpen(false)} />}
     </Screen>
   );
 }
