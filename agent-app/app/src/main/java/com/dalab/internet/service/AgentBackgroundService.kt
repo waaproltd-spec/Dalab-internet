@@ -26,9 +26,11 @@ import com.dalab.internet.diagnostics.HeartbeatStats
 import com.dalab.internet.network.AgentEventBus
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.DiagnosticsEntryDto
+import com.dalab.internet.network.HeartbeatFailureClassifier
 import com.dalab.internet.network.HeartbeatRequest
 import com.dalab.internet.network.RealtimeClient
 import com.dalab.internet.queue.QueueDrainer
+import com.dalab.internet.queue.RetryClassifier
 import com.dalab.internet.ussd.SelfHealSweeper
 import com.dalab.internet.ussd.SimRoutingRepository
 import com.dalab.internet.ussd.UssdDialer
@@ -240,25 +242,50 @@ class AgentBackgroundService : Service() {
                 // this very tick's own failure path below must wait for the
                 // *next* tick to go out, same as any other pending entry.
                 val pendingDiagnostics = DiagnosticsLog.unsyncedEntries()
-                try {
-                    ApiClient.service.sendHeartbeat(deviceId, buildHeartbeat(pendingDiagnostics))
-                    HeartbeatStats.recordSuccess()
-                    if (pendingDiagnostics.isNotEmpty()) {
-                        DiagnosticsLog.markSyncedUpTo(pendingDiagnostics.last().timestamp)
-                    }
-                } catch (e: Exception) {
-                    // Best-effort — the next tick tries again; a dropped heartbeat
-                    // just shows as a stale "last seen" on the dashboard. Now
-                    // logged locally too (previously silent) so a technician
-                    // debugging a stale-heartbeat report has on-device evidence
-                    // of network/backend failures vs. the process having been
-                    // killed outright (which would leave no trace here at all).
-                    HeartbeatStats.recordFailure(e.message ?: e.javaClass.simpleName)
-                    DiagnosticsLog.record("heartbeat_loop", "sendHeartbeat failed: ${e.stackTraceToString().take(2000)}")
-                }
+                sendHeartbeatWithRetry(deviceId, pendingDiagnostics)
             }
             delay(HEARTBEAT_INTERVAL_MS)
         }
+    }
+
+    /**
+     * Up to 4 attempts within this single tick (2s/4s/8s backoff between
+     * them) before giving up until the next regular 60s tick — this is what
+     * lets a heartbeat recover from a transient blip (e.g. the backend
+     * mid-cold-start on a free-tier host) within the same cycle instead of
+     * waiting a full extra minute. Every attempt's failure is classified via
+     * HeartbeatFailureClassifier (DNS/TLS/timeout/connection/HTTP) so the
+     * Reliability Dashboard's "Last error" line is specific, not a bare
+     * exception message — the previous behavior gave no way to tell "the
+     * backend is cold-starting" apart from "this device has no signal."
+     * Runs on this same coroutine only -- never blocks or shares state with
+     * SMS processing (SmsReceiver's own goAsync-bound scope), payment
+     * verification, or order dispatch, all of which run on their own
+     * independent triggers/loops and are unaffected by heartbeat health.
+     */
+    private suspend fun sendHeartbeatWithRetry(deviceId: String, pendingDiagnostics: List<DiagnosticsLog.Entry>) {
+        var lastReason = "Not attempted"
+        for (attempt in 1..HEARTBEAT_MAX_ATTEMPTS) {
+            try {
+                RetryClassifier.requireSuccessful(ApiClient.service.sendHeartbeat(deviceId, buildHeartbeat(pendingDiagnostics)))
+                HeartbeatStats.recordSuccess()
+                if (pendingDiagnostics.isNotEmpty()) {
+                    DiagnosticsLog.markSyncedUpTo(pendingDiagnostics.last().timestamp)
+                }
+                return
+            } catch (e: Exception) {
+                lastReason = HeartbeatFailureClassifier.classify(e)
+                DiagnosticsLog.record(
+                    "heartbeat_loop",
+                    "Heartbeat attempt $attempt/$HEARTBEAT_MAX_ATTEMPTS failed: $lastReason",
+                )
+                if (attempt < HEARTBEAT_MAX_ATTEMPTS) delay(HEARTBEAT_RETRY_BASE_DELAY_MS * (1L shl (attempt - 1)))
+            }
+        }
+        // Best-effort — the next regular tick tries again automatically (this
+        // loop never stops on failure); a dropped heartbeat just shows as a
+        // stale "last seen" on the dashboard in the meantime.
+        HeartbeatStats.recordFailure(lastReason)
     }
 
     // Routing changes are admin-driven and rare (nothing like heartbeat's need for
@@ -395,6 +422,8 @@ class AgentBackgroundService : Service() {
         private const val NOTIFICATION_ID = 1001
         private const val SESSION_EXPIRED_NOTIFICATION_ID = 1002
         private const val HEARTBEAT_INTERVAL_MS = 60_000L
+        private const val HEARTBEAT_MAX_ATTEMPTS = 4
+        private const val HEARTBEAT_RETRY_BASE_DELAY_MS = 2_000L
         private const val SIM_ROUTING_REFRESH_INTERVAL_MS = 5 * 60_000L
         private const val QUEUE_DRAIN_INTERVAL_MS = 2 * 60_000L
         private const val SELF_HEAL_SWEEP_INTERVAL_MS = 3 * 60_000L
