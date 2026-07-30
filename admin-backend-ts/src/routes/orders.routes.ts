@@ -450,11 +450,13 @@ ordersRouter.get("/agent/transactions", requireAuth("agent"), async (req, res) =
 
 // ---------------- Admin/Staff: Orders Management ----------------
 ordersRouter.get("/admin/orders", requireStaff(), async (req, res) => {
-  const { status, companyId, search } = req.query as Record<string, string | undefined>;
+  const { status, companyId, search, dateFrom, dateTo } = req.query as Record<string, string | undefined>;
   let sql = `${ORDER_LIST_SELECT} WHERE 1=1`;
   const args: unknown[] = [];
   if (status) { args.push(status); sql += ` AND o.status=$${args.length}`; }
   if (companyId) { args.push(companyId); sql += ` AND o.company_id=$${args.length}`; }
+  if (dateFrom) { args.push(dateFrom); sql += ` AND o.created_at >= $${args.length}`; }
+  if (dateTo) { args.push(dateTo); sql += ` AND o.created_at <= $${args.length}`; }
   if (search) {
     args.push(`%${search}%`);
     const idx = args.length;

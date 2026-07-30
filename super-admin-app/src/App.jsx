@@ -103,11 +103,13 @@ const DalabAdminApi = {
   updateCategory: (id, body) => dalabAdminApiRequest(`/admin/categories/${id}`, { method: "PUT", body }),
   toggleCategoryStatus: (id, status) => dalabAdminApiRequest(`/admin/categories/${id}/status`, { method: "PUT", body: { status } }),
   deleteCategory: (id) => dalabAdminApiRequest(`/admin/categories/${id}`, { method: "DELETE" }),
-  getOrders: (status, search, companyId) => {
+  getOrders: (status, search, companyId, dateFrom, dateTo) => {
     const qs = new URLSearchParams({
       ...(status ? { status } : {}),
       ...(search ? { search } : {}),
       ...(companyId ? { companyId } : {}),
+      ...(dateFrom ? { dateFrom } : {}),
+      ...(dateTo ? { dateTo } : {}),
     }).toString();
     return dalabAdminApiRequest(`/admin/orders${qs ? `?${qs}` : ""}`);
   },
@@ -1814,6 +1816,8 @@ function Orders({ orders, setOrders, companies, admin }) {
   const [filter, setFilter] = useState("all");
   const [companyFilter, setCompanyFilter] = useState("all");
   const [search, setSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [selected, setSelected] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [lastSynced, setLastSynced] = useState(new Date());
@@ -1831,7 +1835,7 @@ function Orders({ orders, setOrders, companies, admin }) {
       const statusParam = filter === "all" ? undefined : filter;
       const companyParam = companyFilter === "all" ? undefined : companyFilter;
       const [orderRows, counts] = await Promise.all([
-        DalabAdminApi.getOrders(statusParam, search || undefined, companyParam),
+        DalabAdminApi.getOrders(statusParam, search || undefined, companyParam, dateFrom || undefined, dateTo || undefined),
         DalabAdminApi.getOrderCounts(companyParam),
       ]);
       setOrders(orderRows);
@@ -1852,7 +1856,7 @@ function Orders({ orders, setOrders, companies, admin }) {
   useEffect(() => {
     if (!DALAB_API_ENABLED) return;
     fetchOrders();
-  }, [filter, companyFilter, search]);
+  }, [filter, companyFilter, search, dateFrom, dateTo]);
 
   // Real-time push via SSE — falls back to polling automatically whenever
   // the stream isn't currently connected (first load, a drop mid-session,
@@ -1896,8 +1900,22 @@ function Orders({ orders, setOrders, companies, admin }) {
           (o.customerName || "").toLowerCase().includes(q) ||
           (o.senderPhone || "").includes(search) ||
           (o.receiverPhone || "").includes(search);
-        return matchesStatus && matchesCompany && matchesSearch;
+        const created = o.createdAt ? new Date(o.createdAt) : null;
+        const matchesDateFrom = !dateFrom || (created && created >= new Date(dateFrom));
+        // Compare against the END of the "to" day so picking the same day for
+        // both bounds includes that whole day's orders, not just midnight.
+        const matchesDateTo = !dateTo || (created && created <= new Date(`${dateTo}T23:59:59.999`));
+        return matchesStatus && matchesCompany && matchesSearch && matchesDateFrom && matchesDateTo;
       });
+
+  const hasActiveFilters = filter !== "all" || companyFilter !== "all" || search || dateFrom || dateTo;
+  const clearFilters = () => {
+    setFilter("all");
+    setCompanyFilter("all");
+    setSearch("");
+    setDateFrom("");
+    setDateTo("");
+  };
 
   const counts = liveCounts || {
     all: orders.length,
@@ -2028,16 +2046,46 @@ function Orders({ orders, setOrders, companies, admin }) {
         ))}
       </div>
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 12, flexWrap: "wrap" }}>
-        <select value={companyFilter} onChange={(e) => setCompanyFilter(e.target.value)} style={{ ...inputStyle, width: 180 }}>
-          <option value="all">All providers</option>
-          {companies.map((c) => <option key={c.id} value={c.id}>{c?.name || "Unnamed"}</option>)}
-        </select>
-        <div style={{ position: "relative", flex: "1 1 260px", maxWidth: 340 }}>
+      {/* Filter menu: search + operator + status + date range, all in one place */}
+      <Card style={{ padding: 14, marginBottom: 16 }}>
+        <div style={{ position: "relative", marginBottom: 12 }}>
           <Search size={14} color={MUTE} style={{ position: "absolute", left: 10, top: 10 }} />
-          <input style={{ ...inputStyle, paddingLeft: 30, width: "100%" }} placeholder="Search phone, order ID, or customer name" value={search} onChange={(e) => setSearch(e.target.value)} />
+          <input
+            style={{ ...inputStyle, paddingLeft: 30, width: "100%" }}
+            placeholder="Search phone, order ID, or customer name"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
         </div>
-      </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: MUTE, marginBottom: 4 }}>OPERATOR</div>
+            <select value={companyFilter} onChange={(e) => setCompanyFilter(e.target.value)} style={{ ...inputStyle, width: 180 }}>
+              <option value="all">All providers</option>
+              {companies.map((c) => <option key={c.id} value={c.id}>{c?.name || "Unnamed"}</option>)}
+            </select>
+          </div>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: MUTE, marginBottom: 4 }}>STATUS</div>
+            <select value={filter} onChange={(e) => setFilter(e.target.value)} style={{ ...inputStyle, width: 160 }}>
+              {statusTiles.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: MUTE, marginBottom: 4 }}>FROM DATE</div>
+            <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} style={{ ...inputStyle, width: 150 }} />
+          </div>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: MUTE, marginBottom: 4 }}>TO DATE</div>
+            <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ ...inputStyle, width: 150 }} />
+          </div>
+          {hasActiveFilters && (
+            <Button variant="ghost" icon={X} onClick={clearFilters} style={{ marginLeft: "auto", alignSelf: "flex-end" }}>
+              Clear filters
+            </Button>
+          )}
+        </div>
+      </Card>
 
       {/* Batch action bar — appears only once at least one card is checked */}
       {checkedIds.size > 0 && (
