@@ -6,6 +6,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -21,12 +22,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.GetApp
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.CardGiftcard
@@ -57,7 +64,13 @@ import kotlinx.coroutines.launch
 private val HeaderStart = Color(0xFF1D2E8C)
 private val HeaderEnd = Color(0xFF16A34A)
 private val DangerRed = Color(0xFFDC2626)
+private val DalabGreen = Color(0xFF16A34A)
 private const val PACKAGE_NAME = "com.dalab.internet.customer"
+// Same support number used in HomeScreen's support dialog.
+private const val SUPPORT_PHONE = "252610338686"
+// Facebook/Instagram/TikTok page links and a support email are not yet
+// configured — these three stay as "coming soon" taps (never a fabricated
+// URL) until the real links are provided.
 
 @Composable
 fun ProfileScreen(onLogout: () -> Unit) {
@@ -219,6 +232,10 @@ fun ProfileScreen(onLogout: () -> Unit) {
                         label = LocalizationManager.tr("Delete Account", "Tirtir Xisaabta"),
                         onClick = { showDeleteConfirm = true },
                     )
+                    Spacer(Modifier.height(20.dp))
+                    FollowUsSection(context = context)
+                    Spacer(Modifier.height(18.dp))
+                    PoweredBySection()
                     Spacer(Modifier.height(16.dp))
                 }
             }
@@ -579,6 +596,150 @@ private fun LoyaltyStat(label: String, value: String, modifier: Modifier = Modif
     Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         Text(value, fontWeight = FontWeight.Bold, fontSize = 16.sp)
         Text(label, fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+    }
+}
+
+/**
+ * "Follow us on social media" — a green header bar over a 3x3 grid of round
+ * icon buttons, mirroring the reference design. WhatsApp/Call/Share/Play
+ * Store already have real destinations in this app; Facebook/Instagram/
+ * TikTok/Email don't have a configured link yet, so they show a short
+ * "coming soon" message instead of guessing a URL.
+ */
+@Composable
+private fun FollowUsSection(context: Context) {
+    fun notConfigured() {
+        Toast.makeText(context, "This link isn't set up yet.", Toast.LENGTH_SHORT).show()
+    }
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surface,
+        modifier = Modifier.fillMaxWidth().shadow(3.dp, RoundedCornerShape(20.dp)),
+    ) {
+        Column {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+                    .background(DalabGreen)
+                    .padding(horizontal = 18.dp, vertical = 14.dp),
+            ) {
+                Text(
+                    LocalizationManager.tr("Follow us on social media", "Nagala soco baraha bulshada"),
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp,
+                )
+            }
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    SocialIconButton(label = "f", contentDescription = "Facebook", onClick = { notConfigured() })
+                    SocialIconButton(icon = Icons.Filled.CameraAlt, contentDescription = "Instagram", onClick = { notConfigured() })
+                    SocialIconButton(icon = Icons.Filled.MusicNote, contentDescription = "TikTok", onClick = { notConfigured() })
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    SocialIconButton(
+                        icon = Icons.Filled.Chat,
+                        contentDescription = "WhatsApp",
+                        onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$SUPPORT_PHONE"))) },
+                    )
+                    SocialIconButton(icon = Icons.Filled.Email, contentDescription = "Email", onClick = { notConfigured() })
+                    SocialIconButton(
+                        icon = Icons.Filled.Share,
+                        contentDescription = "Share",
+                        onClick = {
+                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(
+                                    Intent.EXTRA_TEXT,
+                                    "Check out DALAB Internet: https://play.google.com/store/apps/details?id=$PACKAGE_NAME",
+                                )
+                            }
+                            context.startActivity(Intent.createChooser(shareIntent, "Share DALAB Internet"))
+                        },
+                    )
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    SocialIconButton(
+                        icon = Icons.Filled.Call,
+                        contentDescription = "Call",
+                        onClick = { context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$SUPPORT_PHONE"))) },
+                    )
+                    SocialIconButton(
+                        icon = Icons.Filled.GetApp,
+                        contentDescription = "Play Store",
+                        onClick = {
+                            try {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$PACKAGE_NAME")))
+                            } catch (_: ActivityNotFoundException) {
+                                context.startActivity(
+                                    Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=$PACKAGE_NAME"))
+                                )
+                            }
+                        },
+                    )
+                    SocialIconButton(
+                        icon = Icons.Filled.Star,
+                        contentDescription = "Rate",
+                        onClick = {
+                            try {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$PACKAGE_NAME")))
+                            } catch (_: ActivityNotFoundException) {
+                                context.startActivity(
+                                    Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=$PACKAGE_NAME"))
+                                )
+                            }
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SocialIconButton(
+    icon: ImageVector? = null,
+    label: String? = null,
+    contentDescription: String,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(48.dp)
+            .clip(CircleShape)
+            .border(1.5.dp, DalabGreen, CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (icon != null) {
+            Icon(icon, contentDescription = contentDescription, tint = DalabGreen, modifier = Modifier.size(22.dp))
+        } else if (label != null) {
+            Text(label, color = DalabGreen, fontWeight = FontWeight.Black, fontSize = 18.sp)
+        }
+    }
+}
+
+/** Text-only wordmark — no logo asset provided, so styled the same way BrandHeader renders "DALAB" / "INTERNET" without an image. */
+@Composable
+private fun PoweredBySection() {
+    Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            LocalizationManager.tr("Powered by", "Waxaa maamula"),
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "WAAPROLTD",
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Black,
+            color = HeaderStart,
+            letterSpacing = 1.sp,
+        )
     }
 }
 

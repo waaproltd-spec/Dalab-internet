@@ -31,17 +31,10 @@ data class CreateOrderRequest(
     val receiverPhone: String? = null,
     val paymentMethod: String? = null,
     val clientRequestId: String? = null,
-    // Schedule Recharge: ISO-8601 timestamp string. Payment still happens
-    // immediately either way — this only defers the provider-side USSD/data
-    // delivery. Omitted (null) means "process immediately," the default and
-    // only behavior before this field existed.
-    val scheduledAt: String? = null,
     // Referral / Loyalty Points: optional discount applied at order creation.
     // Omitted (null) means "don't redeem any points," identical to today.
     val useLoyaltyPoints: Int? = null,
 )
-
-data class UpdateScheduleRequest(val scheduledAt: String)
 
 // Referral / Loyalty Points — reuses the existing Macaash balance/ledger as
 // the one points currency; see admin-backend-ts's referrals.routes.ts.
@@ -133,15 +126,6 @@ interface ApiService {
 
     @GET("orders/{id}")
     suspend fun getOrder(@Path("id") id: String): Response<CustomerOrder>
-
-    // Schedule Recharge: both only succeed while the order's schedule hasn't
-    // executed yet (ussd_generated still null) and no cancellation request is
-    // already pending — the backend enforces this, not just the UI.
-    @PUT("orders/{id}/schedule")
-    suspend fun updateSchedule(@Path("id") id: String, @Body body: UpdateScheduleRequest): Response<CustomerOrder>
-
-    @POST("orders/{id}/request-cancellation")
-    suspend fun requestCancellation(@Path("id") id: String): Response<CustomerOrder>
 
     @GET("customers/me/referral")
     suspend fun getReferralInfo(): Response<ReferralInfo>

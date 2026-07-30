@@ -34,10 +34,6 @@ data class Order(
     // device's normal per-company sim_routing entry" (SimRoutingRepository).
     val ussdDeviceId: String? = null,
     val ussdSimSlot: Int? = null,
-    // Schedule Recharge: set when the customer deferred delivery to a future
-    // date/time. Payment is still captured immediately either way; only
-    // fulfillment (ussdGenerated) waits for this to elapse.
-    val scheduledAt: String? = null,
     val createdAt: String,
     val completedAt: String? = null,
 )

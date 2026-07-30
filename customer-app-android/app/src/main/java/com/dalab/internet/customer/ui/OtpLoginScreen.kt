@@ -17,6 +17,11 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -120,6 +125,19 @@ fun OtpLoginScreen(onLoggedIn: () -> Unit) {
             .padding(horizontal = 28.dp, vertical = 40.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        if (step == OtpStep.PHONE) {
+            CountrySelectorRow()
+            Spacer(Modifier.height(24.dp))
+            LoginIllustration()
+            Spacer(Modifier.height(24.dp))
+            Text(
+                "Welcome to",
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = DalabGreen,
+            )
+            Spacer(Modifier.height(4.dp))
+        }
         BrandHeader()
         Spacer(Modifier.height(28.dp))
 
@@ -314,6 +332,93 @@ private fun BrandHeader() {
     Text("INTERNET", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = DalabGreen, letterSpacing = 4.sp)
 }
 
+/** Somalia-only today — a static display pill (not a real multi-country
+ * picker) so the screen still reads as "your region is recognized" without
+ * pretending to support a dropdown of countries this app doesn't serve. */
+@Composable
+private fun CountrySelectorRow() {
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            border = BorderStroke(1.dp, FieldBorder),
+            color = Color.White,
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            ) {
+                Icon(Icons.Filled.Public, contentDescription = null, tint = DalabGreen, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Somalia", fontWeight = FontWeight.SemiBold, color = DalabGreen, fontSize = 14.sp)
+                Spacer(Modifier.width(6.dp))
+                Icon(Icons.Filled.ExpandMore, contentDescription = null, tint = DalabGreen, modifier = Modifier.size(18.dp))
+            }
+        }
+    }
+}
+
+/** A simple, self-contained illustration built from shapes/icons (no bitmap
+ * assets) evoking "a verified phone sign-in": a phone mock-up with a
+ * profile avatar and a masked code row, with a checkmark and a shield
+ * badge overlapping the corners. */
+@Composable
+private fun LoginIllustration() {
+    Box(modifier = Modifier.size(180.dp), contentAlignment = Alignment.Center) {
+        Box(
+            modifier = Modifier
+                .size(150.dp, 170.dp)
+                .clip(RoundedCornerShape(24.dp))
+                .background(Color.White)
+                .border(2.dp, FieldBorder, RoundedCornerShape(24.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(
+                    modifier = Modifier
+                        .size(56.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFFFBC02D)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Filled.Person, contentDescription = null, tint = Color.White, modifier = Modifier.size(32.dp))
+                }
+                Spacer(Modifier.height(14.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    repeat(5) { i ->
+                        Box(
+                            modifier = Modifier
+                                .size(7.dp)
+                                .clip(CircleShape)
+                                .background(if (i < 2) DalabGreen else FieldBorder),
+                        )
+                    }
+                }
+            }
+        }
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .size(36.dp)
+                .clip(CircleShape)
+                .background(DalabGreen),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+        }
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .size(40.dp)
+                .clip(CircleShape)
+                .background(Color.White)
+                .border(2.dp, DalabGreen, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Filled.Shield, contentDescription = null, tint = DalabGreen, modifier = Modifier.size(20.dp))
+        }
+    }
+}
+
 @Composable
 private fun CountryChip() {
     Surface(
@@ -429,20 +534,15 @@ private fun OtpBoxInput(value: String, onValueChange: (String) -> Unit, length: 
 
 @Composable
 private fun GradientButton(text: String, enabled: Boolean, onClick: () -> Unit) {
-    val gradient = if (enabled) {
-        Brush.horizontalGradient(listOf(DalabIndigo, DalabGreen))
-    } else {
-        Brush.horizontalGradient(listOf(Color(0xFFBDC2E0), Color(0xFFBDC2E0)))
-    }
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(54.dp)
+            .height(56.dp)
             .clip(RoundedCornerShape(28.dp))
-            .background(gradient)
+            .background(if (enabled) DalabGreen else Color(0xFFBDC2E0))
             .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
         contentAlignment = Alignment.Center,
     ) {
-        Text(text, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+        Text(text, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 17.sp)
     }
 }
