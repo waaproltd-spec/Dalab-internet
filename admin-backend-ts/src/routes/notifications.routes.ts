@@ -20,6 +20,19 @@ notificationsRouter.get("/agent/notifications", requireAuth("agent"), async (_re
   sendJson(res, 200, await query(`SELECT * FROM notifications ORDER BY sent_at DESC LIMIT 50`));
 });
 
-notificationsRouter.get("/notifications", requireAuth("customer"), async (_req, res) => {
-  sendJson(res, 200, await query(`SELECT * FROM notifications WHERE type != 'maintenance' ORDER BY sent_at DESC LIMIT 50`));
+// A customer sees every broadcast (customer_id IS NULL, unchanged) plus
+// anything targeted specifically at them — e.g. a reply to their own
+// feedback/suggestion (POST /admin/feedback/:id sets customer_id when it
+// inserts a 'feedback_update' notification).
+notificationsRouter.get("/notifications", requireAuth("customer"), async (req, res) => {
+  sendJson(
+    res,
+    200,
+    await query(
+      `SELECT * FROM notifications
+       WHERE type != 'maintenance' AND (customer_id IS NULL OR customer_id = $1)
+       ORDER BY sent_at DESC LIMIT 50`,
+      [req.auth!.sub]
+    )
+  );
 });

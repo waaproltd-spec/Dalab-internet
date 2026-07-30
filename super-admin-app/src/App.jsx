@@ -7,7 +7,8 @@ import {
   ArrowUp, ArrowDown, Eye, EyeOff, Lock, Mail, LogOut, ArrowLeft, Copy, Terminal, SmartphoneNfc,
   Smartphone, Radio, ChevronDown, ChevronRight, AlertTriangle, RotateCcw, UserCog, Tags,
   WifiOff, BatteryFull, BatteryMedium, BatteryLow, BatteryWarning,
-  Image as ImageIcon, Upload, MessageSquare, Database, Activity, History, CreditCard, PlayCircle, Percent
+  Image as ImageIcon, Upload, MessageSquare, Database, Activity, History, CreditCard, PlayCircle, Percent,
+  MessageCircle, Lightbulb
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 
@@ -234,6 +235,16 @@ const DalabAdminApi = {
   // fixes the underlying issue and sends the SAME order back to the agent.
   getPendingRecovery: () => dalabAdminApiRequest("/admin/orders/pending-recovery"),
   recoverOrder: (id) => dalabAdminApiRequest(`/admin/orders/${id}/recover`, { method: "POST" }),
+  // Feedback & Suggestions — every category from the Customer App's
+  // "Select Issue" sheet (including the new "Make Suggestion" category)
+  // lands here for review, reply, and status tracking.
+  getFeedback: (filters = {}) => {
+    const qs = new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([, v]) => v))).toString();
+    return dalabAdminApiRequest(`/admin/feedback${qs ? `?${qs}` : ""}`);
+  },
+  getFeedbackCategories: () => dalabAdminApiRequest("/admin/feedback/categories"),
+  getFeedbackPendingCount: () => dalabAdminApiRequest("/admin/feedback/pending-count"),
+  updateFeedback: (id, body) => dalabAdminApiRequest(`/admin/feedback/${id}`, { method: "PUT", body }),
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -250,6 +261,7 @@ const PERMISSION_OPTIONS = [
   { key: "settings.manage", label: "Manage system settings" },
   { key: "reports.export", label: "Export reports" },
   { key: "commissions.manage", label: "Manage commission rules" },
+  { key: "feedback.manage", label: "Manage feedback & suggestions" },
 ];
 
 // Normalizes a GET /admin/companies row into the shape every section of this
@@ -523,6 +535,7 @@ const NAV = [
   { id: "customers", label: "Customers", icon: Users },
   { id: "agents", label: "Agents", icon: UserCog },
   { id: "notifications", label: "Notifications", icon: Bell },
+  { id: "feedback", label: "Feedback & Suggestions", icon: Lightbulb },
   { id: "promo-images", label: "Promo Images", icon: ImageIcon },
   { id: "devices", label: "Device & USSD", icon: SmartphoneNfc },
   { id: "sms-logs", label: "SMS Monitor", icon: MessageSquare },
@@ -5117,6 +5130,250 @@ function CommissionsPanel({ companies, packages, admin }) {
   );
 }
 
+const FEEDBACK_STATUS_META = {
+  pending: { tone: "amber", label: "Pending" },
+  reviewed: { tone: "blue", label: "Reviewed" },
+  implemented: { tone: "green", label: "Implemented" },
+  rejected: { tone: "red", label: "Rejected" },
+};
+
+// Feedback & Suggestions: customers submit issue reports and feature
+// suggestions from the Customer App; every submission lands here for staff to
+// triage, reply to, and move through Pending → Reviewed/Implemented/Rejected —
+// any transition away from Pending fires a targeted notification back to that
+// customer (handled server-side, PUT /admin/feedback/:id).
+function FeedbackPanel({ admin }) {
+  const canManage = hasPermission(admin, "feedback.manage");
+
+  const [categories, setCategories] = useState([]);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [search, setSearch] = useState("");
+
+  const [editing, setEditing] = useState(null);
+  const [statusDraft, setStatusDraft] = useState("pending");
+  const [replyDraft, setReplyDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+
+  const fetchCategories = async () => {
+    if (!DALAB_API_ENABLED) return;
+    try {
+      setCategories(await DalabAdminApi.getFeedbackCategories());
+    } catch (err) {
+      console.error("getFeedbackCategories failed:", err.message);
+    }
+  };
+
+  const fetchRows = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setLoading(true);
+    try {
+      const data = await DalabAdminApi.getFeedback({
+        category: categoryFilter === "all" ? undefined : categoryFilter,
+        status: statusFilter === "all" ? undefined : statusFilter,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
+        search: search.trim() || undefined,
+      });
+      setRows(data);
+    } catch (err) {
+      console.error("getFeedback failed:", err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchCategories(); }, []);
+  useEffect(() => { fetchRows(); }, [categoryFilter, statusFilter, dateFrom, dateTo]);
+  useEffect(() => {
+    const timer = setTimeout(fetchRows, 350);
+    return () => clearTimeout(timer);
+  }, [search]);
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    const unsubscribe = subscribeOrderEvents("/admin/orders/stream", { onEvent: fetchRows });
+    return () => unsubscribe();
+  }, [categoryFilter, statusFilter, dateFrom, dateTo, search]);
+
+  const openItem = (row) => {
+    setEditing(row);
+    setStatusDraft(row.status);
+    setReplyDraft(row.adminReply || "");
+    setSaveError("");
+  };
+
+  const saveItem = async () => {
+    setSaving(true);
+    setSaveError("");
+    try {
+      await DalabAdminApi.updateFeedback(editing.id, {
+        status: statusDraft,
+        adminReply: replyDraft.trim() || undefined,
+      });
+      setEditing(null);
+      fetchRows();
+    } catch (err) {
+      setSaveError(err.message || "Couldn't save this update.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to view feedback.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 16, flexWrap: "wrap" }}>
+        <div style={{ fontWeight: 800, fontSize: 15, color: INK }}>Feedback & Suggestions</div>
+        <Button
+          variant="ghost"
+          icon={Download}
+          onClick={() => exportToCsv(
+            `dalab-feedback-${Date.now()}.csv`,
+            [
+              { label: "Date", value: (r) => r.createdAt },
+              { label: "Customer", value: (r) => r.customerName },
+              { label: "Phone", value: (r) => r.customerPhone },
+              { label: "Category", value: (r) => r.category },
+              { label: "Message", value: (r) => r.message },
+              { label: "Status", value: (r) => r.status },
+              { label: "Admin Reply", value: (r) => r.adminReply },
+              { label: "Device Info", value: (r) => r.deviceInfo },
+            ],
+            rows,
+          )}
+        >
+          Export CSV
+        </Button>
+      </div>
+
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ position: "relative", flex: "1 1 220px", maxWidth: 280 }}>
+          <Search size={14} color={MUTE} style={{ position: "absolute", left: 10, top: 10 }} />
+          <input
+            style={{ ...inputStyle, paddingLeft: 30, width: "100%" }}
+            placeholder="Search message, customer, phone"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} style={{ ...inputStyle, width: 220 }}>
+          <option value="all">All categories</option>
+          {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={{ ...inputStyle, width: 160 }}>
+          <option value="all">All statuses</option>
+          <option value="pending">Pending</option>
+          <option value="reviewed">Reviewed</option>
+          <option value="implemented">Implemented</option>
+          <option value="rejected">Rejected</option>
+        </select>
+        <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} style={{ ...inputStyle, width: 150 }} title="From date" />
+        <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ ...inputStyle, width: 150 }} title="To date" />
+      </div>
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: "#FAFBFF" }}>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Submitted</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Category</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Customer</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Message</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Device</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Status</th>
+                <th style={{ padding: "10px 14px" }} />
+              </tr>
+            </thead>
+            <tbody>
+              {loading && rows.length === 0 && (
+                Array.from({ length: 5 }).map((_, i) => (
+                  <tr key={`skeleton-${i}`} style={{ borderTop: `1px solid ${BORDER}` }}>
+                    {Array.from({ length: 7 }).map((__, j) => (
+                      <td key={j} style={{ padding: "12px 14px" }}>
+                        <div style={{ height: 12, borderRadius: 4, background: "#EEF0FB", width: j === 0 ? 90 : "70%" }} />
+                      </td>
+                    ))}
+                  </tr>
+                ))
+              )}
+              {rows.map((r) => (
+                <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}`, cursor: "pointer" }} onClick={() => openItem(r)}>
+                  <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(r.createdAt)}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontWeight: 700 }}>{r.category}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>
+                    {r.customerName || "—"}
+                    <div style={{ fontSize: 11, color: MUTE }}>{r.customerPhone}</div>
+                  </td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.message}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.deviceInfo || "—"}</td>
+                  <td style={{ padding: "10px 14px" }}>
+                    <Badge tone={FEEDBACK_STATUS_META[r.status]?.tone || "gray"}>{FEEDBACK_STATUS_META[r.status]?.label || r.status}</Badge>
+                  </td>
+                  <td style={{ padding: "10px 14px", textAlign: "right" }}>
+                    <button onClick={(e) => { e.stopPropagation(); openItem(r); }} style={{ background: "none", border: "none", cursor: "pointer" }} title="View / reply">
+                      <Pencil size={15} color={SLATE} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {!loading && rows.length === 0 && (
+                <tr><td colSpan={7} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No feedback or suggestions yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      {editing && (
+        <Modal title={editing.category} onClose={() => setEditing(null)} width={480}>
+          <div style={{ fontSize: 11.5, color: MUTE, marginBottom: 4 }}>Submitted {formatDateTime(editing.createdAt)}</div>
+          <div style={{ fontSize: 12.5, color: INK, fontWeight: 700, marginBottom: 2 }}>
+            {editing.customerName || "Unknown customer"} {editing.customerPhone ? `— ${editing.customerPhone}` : ""}
+          </div>
+          {editing.deviceInfo && <div style={{ fontSize: 11.5, color: MUTE, marginBottom: 10 }}>Device: {editing.deviceInfo}</div>}
+          <div style={{ fontSize: 13, color: INK, background: "#FAFBFF", border: `1px solid ${BORDER}`, borderRadius: 10, padding: 12, marginBottom: 14, whiteSpace: "pre-wrap" }}>
+            {editing.message}
+          </div>
+          <Field label="Status">
+            <select style={inputStyle} value={statusDraft} onChange={(e) => setStatusDraft(e.target.value)} disabled={!canManage}>
+              <option value="pending">Pending</option>
+              <option value="reviewed">Reviewed</option>
+              <option value="implemented">Implemented</option>
+              <option value="rejected">Rejected</option>
+            </select>
+          </Field>
+          <Field label="Reply to customer (optional)">
+            <textarea
+              style={{ ...inputStyle, minHeight: 80, resize: "vertical" }}
+              value={replyDraft}
+              onChange={(e) => setReplyDraft(e.target.value)}
+              placeholder="This message is sent to the customer when you save a status change."
+              disabled={!canManage}
+            />
+          </Field>
+          {saveError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{saveError}</div>}
+          {canManage ? (
+            <Button onClick={saveItem} disabled={saving} style={{ width: "100%", justifyContent: "center" }}>
+              {saving ? "Saving…" : "Save"}
+            </Button>
+          ) : (
+            <div style={{ fontSize: 12, color: MUTE }}>You don't have permission to update feedback.</div>
+          )}
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 // Schedule Recharge: a customer's cancellation request on a scheduled (already
 // paid) recharge never auto-refunds — it lands here for the Super Admin to
 // approve (bookkeeping reversal + Macaash clawback, same as "Reverse
@@ -6648,6 +6905,7 @@ function AdminDashboardShell({ admin, onLogout }) {
   const [lowBalanceCount, setLowBalanceCount] = useState(0);
   const [pendingRecoveryCount, setPendingRecoveryCount] = useState(0);
   const [missingTemplateCount, setMissingTemplateCount] = useState(0);
+  const [pendingFeedbackCount, setPendingFeedbackCount] = useState(0);
 
   // Companies used to be mock-only everywhere (Companies/PaymentNumbers never
   // called GET /admin/companies) — this is now the single source of truth,
@@ -6776,6 +7034,24 @@ function AdminDashboardShell({ admin, onLogout }) {
     if (active === "packages" || active === "devices") refreshMissingTemplateCount();
   }, [active]);
 
+  // Feedback & Suggestions: same live-badge pattern — a real, unresolved
+  // submission (status still 'pending') deserves the Super Admin's attention,
+  // not a running total of everything ever submitted.
+  const refreshFeedbackCount = async () => {
+    if (!DALAB_API_ENABLED) return;
+    try {
+      setPendingFeedbackCount((await DalabAdminApi.getFeedbackPendingCount()).count);
+    } catch (err) {
+      console.error("Failed to load pending feedback count:", err.message);
+    }
+  };
+  useEffect(() => { refreshFeedbackCount(); }, []);
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    const unsubscribe = subscribeOrderEvents("/admin/orders/stream", { onEvent: refreshFeedbackCount });
+    return () => unsubscribe();
+  }, []);
+
   const activeLabel = NAV.find((n) => n.id === active)?.label;
 
   return (
@@ -6834,6 +7110,11 @@ function AdminDashboardShell({ admin, onLogout }) {
                     <Badge tone="amber">{missingTemplateCount}</Badge>
                   </span>
                 )}
+                {!collapsed && n.id === "feedback" && pendingFeedbackCount > 0 && (
+                  <span style={{ marginLeft: "auto" }} title="Feedback/suggestions awaiting review">
+                    <Badge tone="amber">{pendingFeedbackCount}</Badge>
+                  </span>
+                )}
               </button>
             );
           })}
@@ -6886,6 +7167,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "sms-logs" && <SmsLogs companies={companies} />}
           {active === "payment-transactions" && <PaymentTransactionsPanel companies={companies} />}
           {active === "commissions" && <CommissionsPanel companies={companies} packages={packages} admin={admin} />}
+          {active === "feedback" && <FeedbackPanel admin={admin} />}
           {active === "scheduled-cancellations" && <ScheduledCancellationsPanel />}
           {active === "pending-recovery" && <PendingRecoveryPanel />}
           {active === "execution-logs" && <ExecutionLogs companies={companies} />}
