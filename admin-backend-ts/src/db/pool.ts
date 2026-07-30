@@ -1,4 +1,4 @@
-import { Pool, PoolConfig } from "pg";
+import { Pool, PoolClient, PoolConfig } from "pg";
 
 /**
  * A single shared pg Pool for the whole process — the standard pattern for
@@ -38,4 +38,27 @@ export async function query<T = any>(text: string, params?: unknown[]): Promise<
 export async function queryOne<T = any>(text: string, params?: unknown[]): Promise<T | null> {
   const rows = await query<T>(text, params);
   return rows[0] ?? null;
+}
+
+/**
+ * Runs `fn` inside a single checked-out client wrapped in BEGIN/COMMIT, for
+ * the rare case where a read (e.g. a SELECT ... FOR UPDATE) and a subsequent
+ * write must be atomic together — every other write in this codebase is a
+ * single guarded statement (UPDATE ... WHERE status=... RETURNING, or an
+ * INSERT-catch-23505) and doesn't need this. Always releases the client,
+ * even on error.
+ */
+export async function withTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await fn(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
 }

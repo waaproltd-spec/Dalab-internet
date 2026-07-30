@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
-import { query, queryOne } from "../db/pool.js";
+import { query, queryOne, withTransaction } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
@@ -128,12 +128,26 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
       await query(`UPDATE customers SET macaash_points = GREATEST(0, macaash_points - $1) WHERE id=$2`, [pointsToUse, req.auth!.sub]);
     }
   } catch (err: any) {
-    if (err?.code !== "23505" || err?.constraint !== "idx_orders_client_request_id") throw err;
-    // A retried create (e.g. from the offline queue) with the same
-    // clientRequestId — the original attempt already went through, so
-    // return the existing order instead of creating a second one.
-    const existing = await queryOne<{ id: string }>(`SELECT id FROM orders WHERE client_request_id=$1`, [clientRequestId]);
-    return sendJson(res, 200, maskOrder(await loadOrder(existing!.id)));
+    if (err?.code !== "23505") throw err;
+    if (err?.constraint === "idx_orders_client_request_id") {
+      // A retried create (e.g. from the offline queue) with the same
+      // clientRequestId — the original attempt already went through, so
+      // return the existing order instead of creating a second one.
+      const existing = await queryOne<{ id: string }>(`SELECT id FROM orders WHERE client_request_id=$1`, [clientRequestId]);
+      return sendJson(res, 200, maskOrder(await loadOrder(existing!.id)));
+    }
+    if (err?.constraint === "idx_orders_pending_content_dedup") {
+      // Same customer already has a pending, non-scheduled order for this
+      // exact company+package+amount (e.g. re-visiting Checkout without
+      // paying) — reuse it instead of creating a duplicate sibling order
+      // that a future payment could otherwise leave stranded.
+      const existing = await queryOne<{ id: string }>(
+        `SELECT id FROM orders WHERE customer_id=$1 AND company_id=$2 AND package_id=$3 AND amount=$4 AND status='pending' AND scheduled_at IS NULL`,
+        [req.auth!.sub, companyId, packageId, finalAmount]
+      );
+      if (existing) return sendJson(res, 200, maskOrder(await loadOrder(existing.id)));
+    }
+    throw err;
   }
   broadcast({ type: "order.created", orderId: id });
   sendJson(res, 201, maskOrder(await loadOrder(id)));
@@ -459,9 +473,20 @@ ordersRouter.post("/agent/orders/voucher-confirmation", requireAuth("agent"), as
   const target = normalizePhone(receiverPhone);
   if (!target) return sendJson(res, 400, { error: "receiverPhone is not a valid phone number" });
 
-  const candidates = await query<{ id: string; receiver_phone: string | null }>(
-    `SELECT id, receiver_phone FROM orders WHERE status='in_progress' AND ABS(amount - $1) < 0.01 ORDER BY updated_at DESC`,
-    [amount]
+  // Oldest-first + row-locked, mirroring findMatchingOrder's rationale in
+  // smsLogs.routes.ts: when several in_progress siblings exist for the same
+  // amount+phone, the carrier's confirmation should complete whichever was
+  // claimed first, and FOR UPDATE SKIP LOCKED keeps two concurrent carrier
+  // confirmations from both landing on the same in-flight candidate.
+  const candidates = await withTransaction((client) =>
+    client
+      .query<{ id: string; receiver_phone: string | null }>(
+        `SELECT id, receiver_phone FROM orders WHERE status='in_progress' AND ABS(amount - $1) < 0.01
+         ORDER BY updated_at ASC
+         FOR UPDATE SKIP LOCKED`,
+        [amount]
+      )
+      .then((r) => r.rows)
   );
   const match = candidates.find((o) => normalizePhone(o.receiver_phone) === target);
   if (!match) return sendJson(res, 200, { matched: false });
