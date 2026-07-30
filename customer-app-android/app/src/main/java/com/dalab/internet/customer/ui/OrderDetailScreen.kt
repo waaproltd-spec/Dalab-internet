@@ -295,7 +295,7 @@ fun OrderDetailScreen(initialOrder: CustomerOrder, onBack: () -> Unit) {
                                     colors = ButtonDefaults.buttonColors(containerColor = SchedulePurple),
                                     modifier = Modifier.fillMaxWidth(),
                                 ) {
-                                    Text(LocalizationManager.tr("Pay Now", "Hadda Bixi"))
+                                    Text(LocalizationManager.tr("Send Money", "Dir Lacagta"))
                                 }
                                 Spacer(Modifier.height(10.dp))
                             }
