@@ -55,7 +55,7 @@ private val MutedText = Color(0xFF9CA3B8)
  * Step 3 of checkout — "Confirm Order". The payment method (wallet) is
  * already chosen on the previous screen (PaymentMethodScreen), so this
  * screen shows only the package being purchased and the sender/receiver
- * phone fields — no payment number, no wallet picker. On Pay Now, the
+ * phone fields — no payment number, no wallet picker. On Send Money, the
  * dial string is built from the selected wallet's OWN provider's payment
  * number + dial prefix (never the purchased package's company), re-fetched
  * fresh from the backend rather than reused from whatever was loaded when
@@ -99,7 +99,7 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
         if (date != null && time != null) LocalDateTime.of(date, time).atZone(ZoneId.systemDefault()).toInstant() else null
     }
     val scheduleMissing = scheduleEnabled && scheduledInstant == null
-    // When true, Pay Now still creates the order but skips the payment
+    // When true, Send Money still creates the order but skips the payment
     // dial prompt — the customer pays later from Order Details once the
     // scheduled time arrives (see PaymentDialUtil / OrderDetailScreen).
     // A manual payment sent early outside this prompt still gets captured
@@ -360,7 +360,9 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
                 }
                 Spacer(Modifier.width(10.dp))
                 Text(
-                    if (submitting) "Processing..." else if (queued) "Queued" else "Pay Now",
+                    if (submitting) "Processing..."
+                    else if (queued) "Queued"
+                    else LocalizationManager.tr("Send Money", "Dir Lacagta"),
                     color = Color.White,
                     fontWeight = FontWeight.Bold,
                     fontSize = 17.sp,
