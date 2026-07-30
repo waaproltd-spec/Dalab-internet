@@ -13,6 +13,23 @@ export const ordersRouter = Router();
 const ORDER_STATUSES = ["pending", "in_progress", "completed", "failed", "cancelled"];
 const MACAASH_POINTS_PER_DOLLAR = 10;
 
+// Schedule Recharge bounds: a scheduled fulfillment time must be far enough
+// out to be meaningfully "scheduled" (not effectively immediate) and not so
+// far out that it's indistinguishable from never — both the initial pick and
+// any later edit are validated against these same bounds.
+const MIN_SCHEDULE_LEAD_MS = 5 * 60 * 1000;
+const MAX_SCHEDULE_LEAD_MS = 30 * 24 * 60 * 60 * 1000;
+
+function validateScheduledAt(scheduledAt: unknown): { error?: string; date?: Date } {
+  if (scheduledAt == null) return {};
+  const date = new Date(scheduledAt as string);
+  if (Number.isNaN(date.getTime())) return { error: "scheduledAt is not a valid date/time" };
+  const leadMs = date.getTime() - Date.now();
+  if (leadMs < MIN_SCHEDULE_LEAD_MS) return { error: "scheduledAt must be at least 5 minutes in the future" };
+  if (leadMs > MAX_SCHEDULE_LEAD_MS) return { error: "scheduledAt must be within 30 days" };
+  return { date };
+}
+
 function orderRef(): string {
   return "DLB" + Math.floor(100000000 + Math.random() * 900000000);
 }
@@ -43,7 +60,7 @@ function maskOrders<T extends Record<string, any>>(orders: T[]): T[] {
 
 // ---------------- Customer ----------------
 ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
-  const { companyId, packageId, senderPhone, receiverPhone, paymentMethod, clientRequestId } = req.body;
+  const { companyId, packageId, senderPhone, receiverPhone, paymentMethod, clientRequestId, scheduledAt } = req.body;
   const company = await queryOne(`SELECT * FROM companies WHERE id=$1 AND deleted_at IS NULL`, [companyId]);
   if (!company) return sendJson(res, 404, { error: "Company not found" });
   if (company.status === "offline") return sendJson(res, 409, { error: `${company.name} is currently offline` });
@@ -54,12 +71,15 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
     return sendJson(res, 400, { error: "Package does not belong to the selected company" });
   }
 
+  const scheduleCheck = validateScheduledAt(scheduledAt);
+  if (scheduleCheck.error) return sendJson(res, 400, { error: scheduleCheck.error });
+
   const customer = await queryOne(`SELECT * FROM customers WHERE id=$1`, [req.auth!.sub]);
   const id = orderRef();
   try {
     await query(
-      `INSERT INTO orders (id, customer_id, company_id, package_id, amount, provider_amount, status, sender_phone, receiver_phone, payment_method, channel, macaash_earned, client_request_id)
-       VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,'android',$10,$11)`,
+      `INSERT INTO orders (id, customer_id, company_id, package_id, amount, provider_amount, status, sender_phone, receiver_phone, payment_method, channel, macaash_earned, client_request_id, scheduled_at)
+       VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,'android',$10,$11,$12)`,
       [
         id, req.auth!.sub, companyId, packageId, pkg.price, pkg.provider_amount ?? pkg.price,
         senderPhone || customer?.phone || null,
@@ -67,6 +87,7 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
         paymentMethod || company.gateway || null,
         Math.round(pkg.price * MACAASH_POINTS_PER_DOLLAR),
         clientRequestId ?? null,
+        scheduleCheck.date ?? null,
       ]
     );
   } catch (err: any) {
@@ -107,6 +128,52 @@ ordersRouter.get("/orders/:id", requireAuth("customer"), async (req, res) => {
   const order = await loadOrder(req.params.id);
   if (!order || (order as any).customer_id !== req.auth!.sub) return sendJson(res, 404, { error: "Order not found" });
   sendJson(res, 200, maskOrder(order));
+});
+
+// A scheduled recharge can only be edited/cancelled by its own customer,
+// and only while it's genuinely still pending fulfillment -- once
+// ussd_generated is set (by the sweep or, for a non-scheduled order,
+// verify-payment itself) it's too late to change the plan, and a second
+// cancellation request can't be filed on top of one already awaiting review.
+async function loadEditableScheduledOrder(orderId: string, customerId: string) {
+  const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [orderId]);
+  if (!order || order.customer_id !== customerId) return { error: 404 as const };
+  if (!order.scheduled_at || order.ussd_generated || order.cancellation_requested_at) {
+    return { error: 409 as const };
+  }
+  return { order };
+}
+
+ordersRouter.put("/orders/:id/schedule", requireAuth("customer"), async (req, res) => {
+  const found = await loadEditableScheduledOrder(req.params.id, req.auth!.sub);
+  if (found.error === 404) return sendJson(res, 404, { error: "Order not found" });
+  if (found.error === 409) return sendJson(res, 409, { error: "This order's schedule can no longer be edited" });
+
+  const scheduleCheck = validateScheduledAt(req.body.scheduledAt);
+  if (scheduleCheck.error || !scheduleCheck.date) {
+    return sendJson(res, 400, { error: scheduleCheck.error ?? "scheduledAt is required" });
+  }
+  await query(`UPDATE orders SET scheduled_at=$1, updated_at=now() WHERE id=$2`, [scheduleCheck.date, req.params.id]);
+  broadcast({ type: "order.updated", orderId: req.params.id });
+  sendJson(res, 200, maskOrder(await loadOrder(req.params.id)));
+});
+
+ordersRouter.post("/orders/:id/request-cancellation", requireAuth("customer"), async (req, res) => {
+  const found = await loadEditableScheduledOrder(req.params.id, req.auth!.sub);
+  if (found.error === 404) return sendJson(res, 404, { error: "Order not found" });
+  if (found.error === 409) return sendJson(res, 409, { error: "This order's schedule can no longer be cancelled" });
+
+  await query(`UPDATE orders SET cancellation_requested_at=now(), updated_at=now() WHERE id=$1`, [req.params.id]);
+  await recordActivity({
+    adminId: undefined,
+    action: "schedule_cancellation_requested",
+    entityType: "order",
+    entityId: req.params.id,
+    oldValue: null,
+    newValue: { scheduledAt: found.order.scheduled_at },
+  });
+  broadcast({ type: "order.updated", orderId: req.params.id });
+  sendJson(res, 200, maskOrder(await loadOrder(req.params.id)));
 });
 
 // ---------------- Agent ----------------
@@ -230,20 +297,32 @@ ordersRouter.post("/agent/orders/:id/verify-payment", requireAuth("agent"), asyn
   // The failure reason (if any) is persisted rather than discarded, so a
   // stuck order (verified, in_progress, never dialed) shows WHY instead of
   // looking identical to any other kind of stall.
-  const genResult = await generateUssdForOrder(order);
-  await query(`UPDATE orders SET ussd_generation_failed_reason=$1 WHERE id=$2`, [genResult.error ?? null, order.id]);
-  if (genResult.error) {
-    // This is what makes the failure visible in the Activity Log panel —
-    // previously it only reached orders.ussd_generation_failed_reason,
-    // reachable only via one specific transaction's timeline modal.
-    await recordActivity({
-      adminId: undefined,
-      action: "ussd_generation_failed",
-      entityType: "order",
-      entityId: order.id,
-      oldValue: null,
-      newValue: { reason: genResult.error, companyId: order.company_id, packageId: order.package_id },
-    });
+  //
+  // Schedule Recharge: a future scheduled_at means the customer has already
+  // paid (this verify-payment call is unaffected) but explicitly asked for
+  // fulfillment to wait -- so generateUssdForOrder is deliberately skipped
+  // here and left for runScheduledRechargeSweep() to call once that time
+  // arrives. ussd_generated stays null in the meantime, which already keeps
+  // this order invisible to the self-heal-candidates predicate below (it
+  // requires ussd_generated IS NOT NULL) -- no other change needed to avoid
+  // an early/duplicate dial.
+  const isScheduledForLater = order.scheduled_at && new Date(order.scheduled_at).getTime() > Date.now();
+  if (!isScheduledForLater) {
+    const genResult = await generateUssdForOrder(order);
+    await query(`UPDATE orders SET ussd_generation_failed_reason=$1 WHERE id=$2`, [genResult.error ?? null, order.id]);
+    if (genResult.error) {
+      // This is what makes the failure visible in the Activity Log panel —
+      // previously it only reached orders.ussd_generation_failed_reason,
+      // reachable only via one specific transaction's timeline modal.
+      await recordActivity({
+        adminId: undefined,
+        action: "ussd_generation_failed",
+        entityType: "order",
+        entityId: order.id,
+        oldValue: null,
+        newValue: { reason: genResult.error, companyId: order.company_id, packageId: order.package_id },
+      });
+    }
   }
   broadcast({ type: "order.updated", orderId: order.id });
   sendJson(res, 200, await loadOrder(order.id));
@@ -410,6 +489,18 @@ ordersRouter.get("/admin/orders/stream", requireStaff(), async (req, res) => {
   req.on("close", unsubscribe);
 });
 
+// Schedule Recharge cancellation review list (Super Admin only) — same
+// "register before :id" reasoning as "/admin/orders/stream" above, since
+// this is also exactly 3 path segments and would otherwise be swallowed as
+// an :id param by the route below.
+ordersRouter.get("/admin/orders/scheduled-cancellations", requireAuth("super_admin"), async (_req, res) => {
+  const rows = await query(
+    `${ORDER_LIST_SELECT} WHERE o.cancellation_requested_at IS NOT NULL AND o.cancellation_decision IS NULL
+     ORDER BY o.cancellation_requested_at ASC`
+  );
+  sendJson(res, 200, maskOrders(rows));
+});
+
 ordersRouter.get("/admin/orders/:id", requireStaff(), async (req, res) => {
   const order = await loadOrder(req.params.id);
   if (!order) return sendJson(res, 404, { error: "Order not found" });
@@ -493,25 +584,29 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
 // call for a real refund. Cancels the order and claws back any Macaash
 // points already credited via an offsetting negative ledger row (never
 // mutates/deletes the original credit row, so history stays intact).
-ordersRouter.post("/admin/orders/:id/reverse", requirePermission("orders.reverse"), async (req, res) => {
-  const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
-  if (!order) return sendJson(res, 404, { error: "Order not found" });
+// Shared by the direct admin reversal endpoint below and by the Schedule
+// Recharge cancellation-approval endpoint (`POST
+// /admin/orders/:id/scheduled-cancellations/approve`), so the Macaash
+// clawback logic exists in exactly one place.
+async function reverseOrderInternal(orderId: string): Promise<{ ok: boolean; order?: any }> {
+  const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [orderId]);
+  if (!order) return { ok: false };
 
   const result = await query(
     `UPDATE orders SET status='cancelled', reversed_at=now(), updated_at=now() WHERE id=$1 AND reversed_at IS NULL RETURNING id`,
-    [order.id]
+    [orderId]
   );
-  if (result.length === 0) return sendJson(res, 409, { error: "Order has already been reversed" });
+  if (result.length === 0) return { ok: false, order };
 
   const credited = await queryOne<{ id: string; points: number }>(
     `SELECT id, points FROM macaash_transactions WHERE order_id=$1 AND kind='earn'`,
-    [order.id]
+    [orderId]
   );
   if (credited) {
     try {
       await query(
         `INSERT INTO macaash_transactions (id, customer_id, order_id, points, reason, kind) VALUES ($1,$2,$3,$4,$5,'reversal')`,
-        [randomUUID(), order.customer_id, order.id, -credited.points, `Reversed order ${order.id}`]
+        [randomUUID(), order.customer_id, orderId, -credited.points, `Reversed order ${orderId}`]
       );
       await query(`UPDATE customers SET macaash_points = GREATEST(0, macaash_points - $1) WHERE id=$2`, [credited.points, order.customer_id]);
     } catch (err: any) {
@@ -522,8 +617,74 @@ ordersRouter.post("/admin/orders/:id/reverse", requirePermission("orders.reverse
     }
   }
 
-  broadcast({ type: "order.updated", orderId: order.id });
-  sendJson(res, 200, maskOrder(await loadOrder(order.id)));
+  broadcast({ type: "order.updated", orderId });
+  return { ok: true, order };
+}
+
+ordersRouter.post("/admin/orders/:id/reverse", requirePermission("orders.reverse"), async (req, res) => {
+  const result = await reverseOrderInternal(req.params.id);
+  if (!result.order) return sendJson(res, 404, { error: "Order not found" });
+  if (!result.ok) return sendJson(res, 409, { error: "Order has already been reversed" });
+  sendJson(res, 200, maskOrder(await loadOrder(req.params.id)));
+});
+
+// ---------------- Schedule Recharge: cancellation review (Super Admin only) ----------------
+// A customer's cancellation request never auto-refunds — it's a review item.
+// Deliberately requireAuth("super_admin") rather than the delegable
+// "orders.reverse" permission a regular Admin could hold: approving/rejecting
+// a refund decision must stay Super-Admin-exclusive per explicit instruction.
+// (The GET list route lives earlier in this file, before "/admin/orders/:id".)
+ordersRouter.post("/admin/orders/:id/scheduled-cancellations/approve", requireAuth("super_admin"), async (req, res) => {
+  const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
+  if (!order) return sendJson(res, 404, { error: "Order not found" });
+  if (!order.cancellation_requested_at || order.cancellation_decision) {
+    return sendJson(res, 409, { error: "This order has no pending cancellation request" });
+  }
+
+  const reversal = await reverseOrderInternal(req.params.id);
+  if (!reversal.ok) return sendJson(res, 409, { error: "Order has already been reversed" });
+
+  await query(
+    `UPDATE orders SET cancellation_decision='approved', cancellation_decided_at=now(), cancellation_decided_by=$1, updated_at=now() WHERE id=$2`,
+    [req.auth!.sub, req.params.id]
+  );
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "schedule_cancellation_approved",
+    entityType: "order",
+    entityId: req.params.id,
+    oldValue: null,
+    newValue: { scheduledAt: order.scheduled_at },
+  });
+  broadcast({ type: "order.updated", orderId: req.params.id });
+  sendJson(res, 200, maskOrder(await loadOrder(req.params.id)));
+});
+
+ordersRouter.post("/admin/orders/:id/scheduled-cancellations/reject", requireAuth("super_admin"), async (req, res) => {
+  const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
+  if (!order) return sendJson(res, 404, { error: "Order not found" });
+  if (!order.cancellation_requested_at || order.cancellation_decision) {
+    return sendJson(res, 409, { error: "This order has no pending cancellation request" });
+  }
+
+  // Order itself is untouched (still in_progress, still scheduled) -- setting
+  // cancellation_decision='rejected' is what makes runScheduledRechargeSweep()
+  // eligible to pick it up again, immediately if scheduled_at already elapsed
+  // during the review window, otherwise at its original time.
+  await query(
+    `UPDATE orders SET cancellation_decision='rejected', cancellation_decided_at=now(), cancellation_decided_by=$1, updated_at=now() WHERE id=$2`,
+    [req.auth!.sub, req.params.id]
+  );
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "schedule_cancellation_rejected",
+    entityType: "order",
+    entityId: req.params.id,
+    oldValue: null,
+    newValue: { scheduledAt: order.scheduled_at },
+  });
+  broadcast({ type: "order.updated", orderId: req.params.id });
+  sendJson(res, 200, maskOrder(await loadOrder(req.params.id)));
 });
 
 ordersRouter.get("/admin/dashboard/stats", requireStaff(), async (_req, res) => {
@@ -553,3 +714,44 @@ ordersRouter.get("/admin/dashboard/stats", requireStaff(), async (_req, res) => 
     activeCustomers: Number(activeCustomers?.n ?? 0),
   });
 });
+
+// ---------------- Schedule Recharge: periodic sweep ----------------
+// The first scan-the-DB-and-act periodic job in this backend (every other
+// setInterval here is either an SSE heartbeat or a rate-limit map cleanup) —
+// each module owns its own timer, so this one lives here rather than in a
+// central registry. Finds every order whose scheduled fulfillment time has
+// arrived and calls generateUssdForOrder for it, exactly the same call
+// verify-payment itself would have made immediately were it not scheduled.
+// From that point on, zero new machinery is needed: ussd_generated being set
+// plus the broadcast below already makes the order a self-heal candidate
+// (see GET /agent/orders/self-heal-candidates above), which the Agent App's
+// existing SelfHealSweeper already picks up and dials automatically.
+async function runScheduledRechargeSweep() {
+  const due = await query(
+    `SELECT * FROM orders
+     WHERE scheduled_at IS NOT NULL AND scheduled_at <= now() AND ussd_generated IS NULL AND status='in_progress'
+       AND (cancellation_requested_at IS NULL OR cancellation_decision = 'rejected')`
+  );
+  for (const order of due as any[]) {
+    const genResult = await generateUssdForOrder(order);
+    await query(`UPDATE orders SET ussd_generation_failed_reason=$1 WHERE id=$2`, [genResult.error ?? null, order.id]);
+    if (genResult.error) {
+      await recordActivity({
+        adminId: undefined,
+        action: "ussd_generation_failed",
+        entityType: "order",
+        entityId: order.id,
+        oldValue: null,
+        newValue: { reason: genResult.error, companyId: order.company_id, packageId: order.package_id },
+      });
+    }
+    broadcast({ type: "order.updated", orderId: order.id });
+  }
+}
+
+setInterval(() => {
+  runScheduledRechargeSweep().catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error("Scheduled recharge sweep failed:", err);
+  });
+}, 60_000);
