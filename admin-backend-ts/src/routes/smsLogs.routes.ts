@@ -1,6 +1,6 @@
 import { Router, Response } from "express";
 import { randomUUID } from "node:crypto";
-import { query, queryOne } from "../db/pool.js";
+import { query, queryOne, withTransaction } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
 import { recordActivity } from "../utils/activityLog.js";
@@ -26,17 +26,24 @@ type OrderMatch = { id: string; sender_phone: string | null; receiver_phone: str
  * rather than guessing across possibly-different customers by amount alone.
  *
  * Two safeguards against a real payment being silently absorbed by the
- * WRONG order (same customer, same amount, but an old/abandoned attempt):
+ * WRONG order (same customer, same amount, but a different attempt):
  *  - MATCH_WINDOW_HOURS excludes anything older than a day — a payment SMS
- *    arriving now is confirming something the customer just did, not a
- *    order they gave up on yesterday.
- *  - Within that window, the NEWEST pending order wins (`created_at DESC`,
- *    not ASC) — a customer who repeats a purchase at the same price almost
- *    always means their latest attempt, not an earlier abandoned one. Used
- *    to pick oldest-first, which meant a stale never-paid test/abandoned
- *    order for the same amount would keep "winning" every future payment
- *    for that amount from that phone, leaving the actual current order
- *    stuck at Pending forever while the stale one silently advanced.
+ *    arriving now is confirming something the customer just did, not an
+ *    order they gave up on yesterday. This is also what keeps oldest-first
+ *    matching (below) safe: a stale/abandoned order can only "win" future
+ *    payments of that amount for up to this window, never indefinitely.
+ *  - Within that window, the OLDEST pending order wins (`created_at ASC`)
+ *    — when a customer has several pending orders for the same amount
+ *    (e.g. re-visiting Checkout more than once before paying), the payment
+ *    they actually send should complete the one they created first, not
+ *    leave it stranded while a newer duplicate jumps the queue.
+ *  - The candidate SELECT runs inside a transaction with
+ *    `FOR UPDATE SKIP LOCKED` so two payment SMS arriving at the same
+ *    instant can't both be handed the same locked-in-flight candidate row
+ *    — a concurrent call instead skips it and considers the next-oldest
+ *    eligible order. The actual pending -> in_progress transition still
+ *    happens later, atomically, in verify-payment's own compare-and-swap;
+ *    this lock only protects the candidate SELECT itself.
  */
 const MATCH_WINDOW_HOURS = 24;
 
@@ -45,11 +52,16 @@ async function findMatchingOrder(parsedAmount: number | undefined, parsedPhone: 
   const target = normalizePhone(parsedPhone);
   if (!target) return null;
 
-  const candidates = await query<OrderMatch>(
-    `SELECT id, sender_phone, receiver_phone, amount, company_id FROM orders
-     WHERE status='pending' AND ABS(amount - $1) < 0.01 AND created_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
-     ORDER BY created_at DESC`,
-    [parsedAmount]
+  const candidates = await withTransaction((client) =>
+    client
+      .query<OrderMatch>(
+        `SELECT id, sender_phone, receiver_phone, amount, company_id FROM orders
+         WHERE status='pending' AND ABS(amount - $1) < 0.01 AND created_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
+         ORDER BY created_at ASC
+         FOR UPDATE SKIP LOCKED`,
+        [parsedAmount]
+      )
+      .then((r) => r.rows)
   );
   return candidates.find((o) => normalizePhone(o.sender_phone) === target) ?? null;
 }
