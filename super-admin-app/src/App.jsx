@@ -201,6 +201,7 @@ const DalabAdminApi = {
   },
   getPaymentTransactionTimeline: (id) => dalabAdminApiRequest(`/admin/payment-transactions/${id}/timeline`),
   getStuckPaymentCount: (minutes) => dalabAdminApiRequest(`/admin/payment-transactions/stuck-count${minutes ? `?minutes=${minutes}` : ""}`),
+  getDuplicateBlockedCount: (minutes) => dalabAdminApiRequest(`/admin/payment-transactions/duplicate-count${minutes ? `?minutes=${minutes}` : ""}`),
   // Commission Management — the cut the company/Super Admin earns from a
   // completed order, calculated automatically server-side; this dashboard
   // only manages the rules and views the resulting records/summary.
@@ -1567,6 +1568,8 @@ const DRAWER_TRANSITION_MS = 220;
 function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
   const [attempts, setAttempts] = useState([]);
   const [attemptsError, setAttemptsError] = useState("");
+  const [paymentTx, setPaymentTx] = useState([]);
+  const [paymentTxError, setPaymentTxError] = useState("");
   const [deliveryStatus, setDeliveryStatus] = useState(null);
   const [reversing, setReversing] = useState(false);
   const [reverseError, setReverseError] = useState("");
@@ -1597,6 +1600,16 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
     DalabAdminApi.getExecutionLogs({ orderId: order.id })
       .then(setAttempts)
       .catch((err) => setAttemptsError(err.message || "Could not load USSD execution history."));
+  }, [order?.id]);
+
+  // Full payment ledger for this order — every attempt, not just the one
+  // that succeeded, including any duplicate_blocked rows the critical
+  // duplicate-order-processing guard rejected (idx_payment_tx_order_active).
+  useEffect(() => {
+    if (!order || !DALAB_API_ENABLED) return;
+    DalabAdminApi.getPaymentTransactions({ orderId: order.id })
+      .then(setPaymentTx)
+      .catch((err) => setPaymentTxError(err.message || "Could not load payment transaction history."));
   }, [order?.id]);
 
   // Only worth checking when we're in the specific ambiguous state: verified,
@@ -1686,6 +1699,7 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
 
         <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>CUSTOMER</div>
         {row("Name", order.customerName || "Not provided")}
+        {row("User ID", order.customerId, true)}
         {row("Sender phone", order.senderPhone, true)}
         {row("Receiver phone", order.receiverPhone, true)}
 
@@ -1711,6 +1725,32 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
         {row("Price", `$${Number(order.amount).toFixed(2)}`)}
         {row("Payment method", order.paymentMethod)}
         {row("Macaash points earned", order.macaashEarned)}
+
+        <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>PAYMENT TRANSACTION HISTORY</div>
+        {paymentTxError ? (
+          <div style={{ marginTop: 8, fontSize: 12, color: "#C81E2C" }}>{paymentTxError}</div>
+        ) : paymentTx.length === 0 ? (
+          <div style={{ marginTop: 8, fontSize: 12, color: MUTE }}>No payment transaction recorded for this order yet.</div>
+        ) : (
+          <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+            {paymentTx.map((t) => {
+              const meta = PAYMENT_TX_STATUS_META[t.status] || { label: t.status, tone: "neutral" };
+              return (
+                <div key={t.id} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${t.status === "duplicate_blocked" ? "#F4E3B0" : BORDER}`, background: t.status === "duplicate_blocked" ? "#FFFBEF" : "transparent" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11.5 }}>
+                    <Badge tone={meta.tone}>{meta.label}</Badge>
+                    <span style={{ color: MUTE, fontFamily: "monospace" }}>{t.transactionRef || "no ref"}</span>
+                    <span style={{ color: MUTE, marginLeft: "auto" }}>{formatDateTime(t.createdAt)}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: MUTE, marginTop: 4 }}>
+                    <span>{t.deviceName ? `${t.deviceName}${t.simSlot ? ` · SIM ${t.simSlot}` : ""}` : "No device assigned yet"}</span>
+                    <span>${Number(t.amount ?? 0).toFixed(2)}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>USSD DIALER</div>
         {order.ussdGenerated ? (
@@ -4140,7 +4180,7 @@ const PAYMENT_TX_STATUS_META = {
   processing: { label: "Processing", tone: "blue" },
   completed: { label: "Completed", tone: "green" },
   failed: { label: "Failed", tone: "red" },
-  duplicate_blocked: { label: "Duplicate Blocked", tone: "gray" },
+  duplicate_blocked: { label: "Duplicate Blocked", tone: "amber" },
 };
 
 // Read-only view of the duplicate-prevention ledger (payment_transactions) —
@@ -6282,6 +6322,7 @@ function AdminDashboardShell({ admin, onLogout }) {
   const [orders, setOrders] = useState(initialOrders);
   const [customers, setCustomers] = useState(initialCustomers);
   const [stuckCount, setStuckCount] = useState(0);
+  const [duplicateBlockedCount, setDuplicateBlockedCount] = useState(0);
   const [missingTemplateCount, setMissingTemplateCount] = useState(0);
 
   // Companies used to be mock-only everywhere (Companies/PaymentNumbers never
@@ -6326,6 +6367,27 @@ function AdminDashboardShell({ admin, onLogout }) {
   useEffect(() => {
     if (!DALAB_API_ENABLED) return;
     const unsubscribe = subscribeOrderEvents("/admin/orders/stream", { onEvent: refreshStuckCount });
+    return () => unsubscribe();
+  }, []);
+
+  // Critical fix — Prevent Duplicate Order Processing: a payment_transactions
+  // row only ever reaches 'duplicate_blocked' when the backend actually
+  // caught a second SMS/payment attempt for an order that already had one in
+  // flight. This is a real warning, not a routine status, so it gets its own
+  // badge (same live refresh pattern as the stuck-payment one above) rather
+  // than being buried in the Payment Transactions table's status filter.
+  const refreshDuplicateBlockedCount = async () => {
+    if (!DALAB_API_ENABLED) return;
+    try {
+      setDuplicateBlockedCount((await DalabAdminApi.getDuplicateBlockedCount()).count);
+    } catch (err) {
+      console.error("Failed to load duplicate-blocked payment count:", err.message);
+    }
+  };
+  useEffect(() => { refreshDuplicateBlockedCount(); }, []);
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    const unsubscribe = subscribeOrderEvents("/admin/orders/stream", { onEvent: refreshDuplicateBlockedCount });
     return () => unsubscribe();
   }, []);
 
@@ -6387,9 +6449,14 @@ function AdminDashboardShell({ admin, onLogout }) {
               >
                 <Icon size={17} />
                 {!collapsed && n.label}
-                {!collapsed && n.id === "payment-transactions" && stuckCount > 0 && (
-                  <span style={{ marginLeft: "auto" }}>
-                    <Badge tone="red">{stuckCount}</Badge>
+                {!collapsed && n.id === "payment-transactions" && (stuckCount > 0 || duplicateBlockedCount > 0) && (
+                  <span style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+                    {stuckCount > 0 && <Badge tone="red">{stuckCount}</Badge>}
+                    {duplicateBlockedCount > 0 && (
+                      <span title="Duplicate delivery prevented">
+                        <Badge tone="amber">{duplicateBlockedCount}</Badge>
+                      </span>
+                    )}
                   </span>
                 )}
                 {!collapsed && n.id === "packages" && missingTemplateCount > 0 && (

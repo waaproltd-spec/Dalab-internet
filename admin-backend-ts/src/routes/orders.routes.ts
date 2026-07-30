@@ -14,11 +14,13 @@ export const ordersRouter = Router();
 const ORDER_STATUSES = ["pending", "in_progress", "completed", "failed", "cancelled"];
 const MACAASH_POINTS_PER_DOLLAR = 10;
 
-// Schedule Recharge bounds: a scheduled fulfillment time must be far enough
-// out to be meaningfully "scheduled" (not effectively immediate) and not so
-// far out that it's indistinguishable from never — both the initial pick and
-// any later edit are validated against these same bounds.
-const MIN_SCHEDULE_LEAD_MS = 5 * 60 * 1000;
+// Schedule Recharge upper bound only — a scheduled fulfillment time must not
+// be so far out that it's indistinguishable from never. There is no lower
+// bound: a customer picking "now" or any future time is valid, and a
+// date/time that's already due (now or in the past) is simply treated as an
+// immediate recharge downstream (see isScheduledForLater below and
+// runScheduledRechargeSweep) rather than rejected — both the initial pick
+// and any later edit are validated against this same bound.
 const MAX_SCHEDULE_LEAD_MS = 30 * 24 * 60 * 60 * 1000;
 
 function validateScheduledAt(scheduledAt: unknown): { error?: string; date?: Date } {
@@ -26,7 +28,6 @@ function validateScheduledAt(scheduledAt: unknown): { error?: string; date?: Dat
   const date = new Date(scheduledAt as string);
   if (Number.isNaN(date.getTime())) return { error: "scheduledAt is not a valid date/time" };
   const leadMs = date.getTime() - Date.now();
-  if (leadMs < MIN_SCHEDULE_LEAD_MS) return { error: "scheduledAt must be at least 5 minutes in the future" };
   if (leadMs > MAX_SCHEDULE_LEAD_MS) return { error: "scheduledAt must be within 30 days" };
   return { date };
 }

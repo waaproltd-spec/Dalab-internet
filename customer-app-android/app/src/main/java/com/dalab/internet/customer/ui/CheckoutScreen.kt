@@ -34,7 +34,6 @@ import com.dalab.internet.customer.queue.OrderCreateAction
 import com.dalab.internet.customer.queue.PendingActionQueue
 import com.dalab.internet.customer.queue.RetryClassifier
 import kotlinx.coroutines.launch
-import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
@@ -83,8 +82,10 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
     // dial + createOrder call below is unchanged) — this only lets the
     // customer defer WHEN the provider-side USSD/data delivery happens.
     // scheduledDate/scheduledTime are only meaningful while scheduleEnabled
-    // is on; the backend re-validates the same 5-minute-to-30-day bounds
-    // regardless of this client-side check.
+    // is on. Any date/time from now onward is valid — a choice that's
+    // already due by the time the order is created is simply treated as an
+    // immediate recharge by the backend, never rejected; the backend
+    // re-validates only the 30-day upper bound.
     var scheduleEnabled by remember { mutableStateOf(false) }
     var scheduledDate by remember { mutableStateOf<LocalDate?>(null) }
     var scheduledTime by remember { mutableStateOf<LocalTime?>(null) }
@@ -95,8 +96,6 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
         val time = scheduledTime
         if (date != null && time != null) LocalDateTime.of(date, time).atZone(ZoneId.systemDefault()).toInstant() else null
     }
-    val scheduleTooSoon = scheduleEnabled && scheduledInstant != null &&
-        scheduledInstant.isBefore(Instant.now().plusSeconds(5 * 60))
     val scheduleMissing = scheduleEnabled && scheduledInstant == null
 
     val compact = LocalConfiguration.current.screenHeightDp < 700
@@ -194,7 +193,7 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
             scheduledDate = scheduledDate,
             scheduledTime = scheduledTime,
             onPickDate = { showDatePicker = true },
-            showTooSoonError = attemptedSubmit && (scheduleTooSoon || scheduleMissing),
+            showMissingError = attemptedSubmit && scheduleMissing,
             compact = compact,
         )
 
@@ -228,7 +227,7 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
                     if (senderPhone.isBlank() || receiverPhone.isBlank()) {
                         return@clickable
                     }
-                    if (scheduleMissing || scheduleTooSoon) {
+                    if (scheduleMissing) {
                         return@clickable
                     }
                     error = null
@@ -384,7 +383,7 @@ private fun ScheduleRechargeSection(
     scheduledDate: LocalDate?,
     scheduledTime: LocalTime?,
     onPickDate: () -> Unit,
-    showTooSoonError: Boolean,
+    showMissingError: Boolean,
     compact: Boolean,
 ) {
     Surface(
@@ -437,12 +436,12 @@ private fun ScheduleRechargeSection(
                 ) {
                     Text(label, color = Color.White, fontSize = 13.sp, modifier = Modifier.weight(1f))
                 }
-                if (showTooSoonError) {
+                if (showMissingError) {
                     Spacer(Modifier.height(4.dp))
                     Text(
                         LocalizationManager.tr(
-                            "Choose a date/time at least 5 minutes from now",
-                            "Dooro taariikh/saacad ugu yaraan 5 daqiiqo hadda ka dib",
+                            "Choose a date & time",
+                            "Dooro taariikh iyo saacad",
                         ),
                         color = MaterialTheme.colorScheme.error,
                         fontSize = 11.sp,

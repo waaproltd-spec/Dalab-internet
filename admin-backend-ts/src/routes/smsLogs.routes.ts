@@ -4,7 +4,7 @@ import { query, queryOne } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
 import { recordActivity } from "../utils/activityLog.js";
-import { createPaymentTransaction } from "../utils/paymentTransactions.js";
+import { createPaymentTransaction, hasActivePaymentTransaction } from "../utils/paymentTransactions.js";
 import { broadcast } from "../realtime/orderEvents.js";
 
 export const smsLogsRouter = Router();
@@ -76,12 +76,12 @@ async function orderAlreadyFulfilled(orderId: string): Promise<boolean> {
  * recordActivity already treats a null adminId as valid (ON DELETE SET NULL).
  */
 async function logPaymentActivity(params: {
-  action: "payment_verified" | "payment_already_processed";
+  action: "payment_verified" | "payment_already_processed" | "duplicate_delivery_prevented";
   smsLogId: string;
   order: OrderMatch;
   transactionRef: string | null;
   paymentTimestamp: string;
-  status: "verified" | "already_processed";
+  status: "verified" | "already_processed" | "duplicate_blocked";
   requiresManualApproval?: boolean;
 }) {
   await recordActivity({
@@ -222,6 +222,18 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
   // existing manual verify-payment flow instead of the app auto-dialing.
   const requiresManualApproval = match ? await requiresManualApprovalFor(match.id) : false;
 
+  // Critical fix — prevent duplicate order processing. findMatchingOrder()
+  // matches an order purely by status='pending' + amount + phone; nothing
+  // "claims" the order at match time, so a second SMS with a different
+  // transaction_ref/body arriving before the Agent App's verify-payment call
+  // flips the order out of 'pending' could otherwise match this same order
+  // again and get its own 'pending' payment_transactions row created for it
+  // (this is the exact root cause of the duplicate Order ID rows reported).
+  // Proactively reject that here, before ever inserting a second active row.
+  if (match && (await hasActivePaymentTransaction(match.id))) {
+    return blockDuplicateDelivery(res, id, match, transactionRef ?? null, effectiveReceivedAt, requiresManualApproval);
+  }
+
   if (match) {
     await logPaymentActivity({
       action: "payment_verified",
@@ -235,11 +247,12 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
   }
 
   // The ledger row for this genuinely-new payment attempt — 'pending' until
-  // the Agent App's verify-payment/dial-attempt calls advance it. sms_logs'
-  // own unique indexes (checked above) already guarantee this transactionRef
-  // is new, so this insert always succeeds here — a null return would only
-  // mean a narrow, effectively-impossible race, logged rather than crashing.
-  await createPaymentTransaction({
+  // the Agent App's verify-payment/dial-attempt calls advance it. A null
+  // return means idx_payment_tx_order_active's atomic backstop (migration
+  // 028) caught a race the proactive check above missed — two SMS matching
+  // the same order in the same instant — so fall back to the identical
+  // duplicate-blocked path rather than silently dropping the record.
+  const txId = await createPaymentTransaction({
     smsLogId: id,
     orderId: match?.id ?? null,
     transactionRef: transactionRef ?? null,
@@ -249,9 +262,56 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
     status: "pending",
   });
 
+  if (txId == null && match) {
+    return blockDuplicateDelivery(res, id, match, transactionRef ?? null, effectiveReceivedAt, requiresManualApproval);
+  }
+
   broadcast({ type: "sms_log.created", smsLogId: id, orderId: match?.id ?? null });
   sendJson(res, 201, { id, matchedOrderId: match?.id ?? null, requiresManualApproval, duplicate: false, status: "new" });
 });
+
+/** Shared tail for both the proactive check and the unique-index backstop:
+ * records this specific attempt as its own 'duplicate_blocked' ledger row
+ * (so the audit trail shows every rejected re-delivery, not just the real
+ * payment), logs the required "Duplicate delivery prevented" activity entry,
+ * and responds with the same shape respondAlreadyProcessed already uses so
+ * the Agent App/dashboard don't need a third response shape to handle. */
+async function blockDuplicateDelivery(
+  res: Response,
+  smsLogId: string,
+  order: OrderMatch,
+  transactionRef: string | null,
+  paymentTimestamp: string,
+  requiresManualApproval: boolean
+) {
+  await logPaymentActivity({
+    action: "duplicate_delivery_prevented",
+    smsLogId,
+    order,
+    transactionRef,
+    paymentTimestamp,
+    status: "duplicate_blocked",
+    requiresManualApproval,
+  });
+  await createPaymentTransaction({
+    smsLogId,
+    orderId: order.id,
+    transactionRef,
+    customerPhone: order.sender_phone,
+    amount: order.amount,
+    paymentTimestamp,
+    status: "duplicate_blocked",
+  });
+  broadcast({ type: "sms_log.created", smsLogId, orderId: order.id });
+  sendJson(res, 200, {
+    id: smsLogId,
+    matchedOrderId: order.id,
+    requiresManualApproval,
+    duplicate: true,
+    orderAlreadyCompleted: await orderAlreadyFulfilled(order.id),
+    status: "duplicate_blocked",
+  });
+}
 
 smsLogsRouter.get("/admin/sms-logs", requireStaff(), async (req, res) => {
   const { agentId, matched, companyId, search, dateFrom, dateTo, limit } = req.query as Record<string, string | undefined>;
@@ -284,7 +344,7 @@ smsLogsRouter.get("/admin/sms-logs", requireStaff(), async (req, res) => {
 // Payment Transactions dashboard panel. Joined to companies/agent_devices
 // for display names rather than making the dashboard do a second round-trip.
 smsLogsRouter.get("/admin/payment-transactions", requireStaff(), async (req, res) => {
-  const { status, search, companyId, deviceId, simSlot, dateFrom, dateTo, limit, offset } = req.query as Record<string, string | undefined>;
+  const { status, search, companyId, deviceId, simSlot, dateFrom, dateTo, limit, offset, orderId } = req.query as Record<string, string | undefined>;
   const args: unknown[] = [];
   let sql = `
     SELECT pt.*, o.company_id AS order_company_id, c.name AS provider_name, d.name AS device_name
@@ -294,6 +354,7 @@ smsLogsRouter.get("/admin/payment-transactions", requireStaff(), async (req, res
     LEFT JOIN agent_devices d ON d.id = pt.agent_device_id
     WHERE 1=1`;
   if (status) { args.push(status); sql += ` AND pt.status=$${args.length}`; }
+  if (orderId) { args.push(orderId); sql += ` AND pt.order_id=$${args.length}`; }
   if (companyId) { args.push(companyId); sql += ` AND o.company_id=$${args.length}`; }
   if (deviceId) { args.push(deviceId); sql += ` AND pt.agent_device_id=$${args.length}`; }
   if (simSlot) { args.push(Number(simSlot)); sql += ` AND pt.sim_slot=$${args.length}`; }
@@ -327,6 +388,23 @@ smsLogsRouter.get("/admin/payment-transactions/stuck-count", requireStaff(), asy
      JOIN orders o ON o.id = pt.order_id
      WHERE pt.status = 'pending' AND o.status = 'in_progress'
        AND pt.created_at < now() - ($1 || ' minutes')::interval`,
+    [thresholdMinutes]
+  );
+  sendJson(res, 200, { count: Number(row?.count ?? 0), thresholdMinutes });
+});
+
+// Critical-fix warning badge: every payment_transactions row blocked as a
+// duplicate (mirrors stuck-count's exact shape) — this is what proves the
+// duplicate-order-processing guard actually caught something, so the
+// dashboard can surface it as a warning rather than the admin only finding
+// out from a customer complaint.
+smsLogsRouter.get("/admin/payment-transactions/duplicate-count", requireStaff(), async (req, res) => {
+  const thresholdMinutes = Math.min(Number(req.query.minutes) || 1440, 43200);
+  const row = await queryOne<{ count: string }>(
+    `SELECT COUNT(*) AS count
+     FROM payment_transactions
+     WHERE status = 'duplicate_blocked'
+       AND created_at > now() - ($1 || ' minutes')::interval`,
     [thresholdMinutes]
   );
   sendJson(res, 200, { count: Number(row?.count ?? 0), thresholdMinutes });
