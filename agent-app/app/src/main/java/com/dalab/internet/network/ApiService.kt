@@ -15,11 +15,22 @@ import retrofit2.Response
 import retrofit2.http.*
 
 data class DeviceLoginRequest(val deviceId: String)
+data class DiagnosticsEntryDto(
+    val tag: String,
+    val message: String,
+    val isError: Boolean,
+    val occurredAt: Long,
+)
 data class HeartbeatRequest(
     val batteryPercent: Int?,
     val networkOnline: Boolean,
     val sim1Present: Boolean?,
     val sim2Present: Boolean?,
+    // Reliability Dashboard: piggybacks the device's not-yet-delivered local
+    // DiagnosticsLog entries onto this same call rather than a separate
+    // endpoint/round-trip — best-effort, omitted (null/empty) when there's
+    // nothing new to report.
+    val recentDiagnostics: List<DiagnosticsEntryDto>? = null,
 )
 data class LoginResponse(val accessToken: String, val refreshToken: String, val agent: AgentProfile)
 data class RefreshRequest(val refreshToken: String)
