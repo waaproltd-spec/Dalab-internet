@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
-  LayoutGrid, Building2, Wallet, Package, ShoppingCart, Users, Gift,
+  LayoutGrid, Building2, Wallet, Package, ShoppingCart, Users,
   Bell, FileBarChart2, Settings, Search, Plus, Pencil, Trash2, Power,
   X, Check, TrendingUp, Wifi, DollarSign,
   Clock3, CheckCircle2, XCircle, Download, ShieldCheck, Menu, RefreshCw, Loader2,
@@ -522,7 +522,6 @@ const NAV = [
   { id: "orders", label: "Orders", icon: ShoppingCart },
   { id: "customers", label: "Customers", icon: Users },
   { id: "agents", label: "Agents", icon: UserCog },
-  { id: "macaash", label: "Macaash (Rewards)", icon: Gift },
   { id: "notifications", label: "Notifications", icon: Bell },
   { id: "promo-images", label: "Promo Images", icon: ImageIcon },
   { id: "devices", label: "Device & USSD", icon: SmartphoneNfc },
@@ -2876,58 +2875,6 @@ function AgentsSection({ companies, admin }) {
           </div>
         </Modal>
       )}
-    </div>
-  );
-}
-
-function Macaash({ customers }) {
-  const [rate, setRate] = useState(10);
-  return (
-    <div>
-      <div style={{ fontWeight: 800, fontSize: 17, color: INK, marginBottom: 4 }}>Macaash — rewards</div>
-      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>Manage how customers earn and redeem reward points.</div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-        <Card style={{ padding: 18 }}>
-          <div style={{ fontWeight: 700, fontSize: 13, color: INK, marginBottom: 10 }}>Earning rule</div>
-          <Field label="Points earned per $1 spent">
-            <input type="number" style={inputStyle} value={rate} onChange={(e) => setRate(e.target.value)} />
-          </Field>
-          <Button icon={Check}>Save rule</Button>
-        </Card>
-        <Card style={{ padding: 18 }}>
-          <div style={{ fontWeight: 700, fontSize: 13, color: INK, marginBottom: 10 }}>Program summary</div>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 8 }}>
-            <span style={{ color: MUTE }}>Total points issued</span>
-            <span style={{ fontWeight: 700, color: INK }}>{customers.reduce((s, c) => s + c.points, 0)}</span>
-          </div>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
-            <span style={{ color: MUTE }}>Customers enrolled</span>
-            <span style={{ fontWeight: 700, color: INK }}>{customers.length}</span>
-          </div>
-        </Card>
-      </div>
-
-      <Card style={{ padding: 0, overflow: "hidden", marginTop: 14 }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ background: "#FAFBFF" }}>
-              {["Customer", "Points balance", ""].map((h) => (
-                <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {customers.map((c) => (
-              <tr key={c.id} style={{ borderTop: `1px solid ${BORDER}` }}>
-                <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{c?.name || "Not provided"}</td>
-                <td style={{ padding: "10px 14px", fontSize: 13, color: GREEN, fontWeight: 700 }}>{c?.points ?? 0} pts</td>
-                <td style={{ padding: "10px 14px" }}><Button variant="ghost">Adjust</Button></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Card>
     </div>
   );
 }
@@ -6933,7 +6880,6 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "orders" && <Orders orders={orders} setOrders={setOrders} companies={companies} admin={admin} />}
           {active === "customers" && <Customers customers={customers} setCustomers={setCustomers} refreshCustomers={refreshCustomers} admin={admin} />}
           {active === "agents" && <AgentsSection companies={companies} admin={admin} />}
-          {active === "macaash" && <Macaash customers={customers} />}
           {active === "notifications" && <Notifications />}
           {active === "promo-images" && <PromoImages />}
           {active === "devices" && <DeviceUssdModule companies={companies} admin={admin} onPackagesChanged={refreshMissingTemplateCount} />}
