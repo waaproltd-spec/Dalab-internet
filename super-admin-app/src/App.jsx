@@ -219,6 +219,15 @@ const DalabAdminApi = {
   getScheduledCancellations: () => dalabAdminApiRequest("/admin/orders/scheduled-cancellations"),
   approveScheduledCancellation: (id) => dalabAdminApiRequest(`/admin/orders/${id}/scheduled-cancellations/approve`, { method: "POST" }),
   rejectScheduledCancellation: (id) => dalabAdminApiRequest(`/admin/orders/${id}/scheduled-cancellations/reject`, { method: "POST" }),
+  // Central Balance Management — real carrier-reported SIM balance per
+  // device+slot, auto-updated from incoming payment SMS server-side, with a
+  // manual override for corrections and for providers (Amtel) that send no
+  // payment SMS at all.
+  getSimBalances: () => dalabAdminApiRequest("/admin/sim-balances"),
+  getSimBalanceSummary: () => dalabAdminApiRequest("/admin/sim-balances/summary"),
+  getSimBalanceHistory: (deviceId, simSlot) => dalabAdminApiRequest(`/admin/sim-balances/${deviceId}/${simSlot}/history`),
+  updateSimBalance: (deviceId, simSlot, body) => dalabAdminApiRequest(`/admin/sim-balances/${deviceId}/${simSlot}`, { method: "PUT", body }),
+  getLowBalanceCount: () => dalabAdminApiRequest("/admin/sim-balances/low-balance-count"),
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -497,6 +506,7 @@ const orderBreakdown = [
 
 const NAV = [
   { id: "overview", label: "Overview", icon: LayoutGrid },
+  { id: "balance-dashboard", label: "Balance Dashboard", icon: DollarSign },
   { id: "companies", label: "Companies", icon: Building2 },
   { id: "payment-numbers", label: "Payment Numbers", icon: Wallet },
   { id: "provider-numbers", label: "Provider Numbers", icon: Radio },
@@ -803,6 +813,240 @@ function Overview({ companies, orders }) {
           ))}
         </div>
       </Card>
+    </div>
+  );
+}
+
+// Providers grouped in this fixed order for the Balance Dashboard, matching
+// the requested "Hormuud / Somtel / Somnet / Amtel" grouping regardless of
+// how the `companies` table happens to sort them.
+const BALANCE_PROVIDER_ORDER = ["hormuud", "somtel", "somnet", "amtel"];
+
+function BalanceDashboard({ admin }) {
+  const canManage = hasPermission(admin, "devices.manage");
+
+  const [rows, setRows] = useState([]);
+  const [summary, setSummary] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [editing, setEditing] = useState(null); // { deviceId, simSlot, ... } row being edited
+  const [editForm, setEditForm] = useState({ balance: "", threshold: "", phoneNumber: "" });
+  const [editError, setEditError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [historyFor, setHistoryFor] = useState(null); // row whose history modal is open
+  const [history, setHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  const fetchAll = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setLoading(true);
+    try {
+      const [balanceRows, summaryData] = await Promise.all([
+        DalabAdminApi.getSimBalances(),
+        DalabAdminApi.getSimBalanceSummary(),
+      ]);
+      setRows(balanceRows);
+      setSummary(summaryData);
+    } catch (err) {
+      console.error("Failed to load balance dashboard:", err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchAll(); }, []);
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    const unsubscribe = subscribeOrderEvents("/admin/orders/stream", { onEvent: fetchAll });
+    return () => unsubscribe();
+  }, []);
+  // Real-time-ish backstop in case an SSE event is ever missed — matches the
+  // 15s convention already used by the Devices panel for the same reason.
+  useEffect(() => {
+    const timer = setInterval(fetchAll, 15000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const grouped = useMemo(() => {
+    const byProvider = new Map(BALANCE_PROVIDER_ORDER.map((id) => [id, []]));
+    byProvider.set("unassigned", []);
+    for (const r of rows) {
+      const key = r.companyId && byProvider.has(r.companyId) ? r.companyId : "unassigned";
+      byProvider.get(key).push(r);
+    }
+    return byProvider;
+  }, [rows]);
+
+  const openEdit = (row) => {
+    setEditing(row);
+    setEditForm({ balance: String(row.balance ?? 0), threshold: String(row.lowBalanceThreshold ?? 5), phoneNumber: row.phoneNumber || "" });
+    setEditError("");
+  };
+
+  const saveEdit = async () => {
+    if (editForm.balance === "" || Number.isNaN(Number(editForm.balance))) return setEditError("Enter a valid balance.");
+    if (editForm.threshold !== "" && Number.isNaN(Number(editForm.threshold))) return setEditError("Enter a valid threshold.");
+    setSaving(true);
+    setEditError("");
+    try {
+      await DalabAdminApi.updateSimBalance(editing.deviceId, editing.simSlot, {
+        balance: Number(editForm.balance),
+        threshold: editForm.threshold !== "" ? Number(editForm.threshold) : undefined,
+        phoneNumber: editForm.phoneNumber.trim() || undefined,
+      });
+      setEditing(null);
+      fetchAll();
+    } catch (err) {
+      setEditError(err.message || "Couldn't update this SIM's balance.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const openHistory = async (row) => {
+    setHistoryFor(row);
+    setHistory([]);
+    setHistoryLoading(true);
+    try {
+      setHistory(await DalabAdminApi.getSimBalanceHistory(row.deviceId, row.simSlot));
+    } catch (err) {
+      console.error("Failed to load balance history:", err.message);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to view balances.</div>;
+  }
+
+  const providerTotal = (id) => summary?.byProvider?.find((p) => p.companyId === id)?.total ?? 0;
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
+        <SummaryMetricCard icon={DollarSign} label="Overall System Balance" value={`$${Number(summary?.totalBalance ?? 0).toFixed(2)}`} color={INDIGO} />
+        <SummaryMetricCard icon={ArrowDown} label="Received Today" value={`$${Number(summary?.totalReceivedToday ?? 0).toFixed(2)}`} color={GREEN} />
+        <SummaryMetricCard icon={ArrowUp} label="Spent Today" value={`$${Number(summary?.totalSpentToday ?? 0).toFixed(2)}`} color="#C81E2C" />
+        <SummaryMetricCard
+          icon={AlertTriangle}
+          label="Low-Balance SIMs"
+          value={rows.filter((r) => Number(r.balance) < Number(r.lowBalanceThreshold)).length}
+          color="#A9720A"
+          hint="Below their configured threshold"
+        />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginTop: 14 }}>
+        {BALANCE_PROVIDER_ORDER.map((id) => {
+          const label = { hormuud: "Hormuud", somtel: "Somtel", somnet: "Somnet", amtel: "Amtel" }[id];
+          return (
+            <Card key={id} style={{ padding: 16 }}>
+              <div style={{ fontSize: 11.5, fontWeight: 700, color: MUTE }}>{label.toUpperCase()}</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: INK, marginTop: 6 }}>${Number(providerTotal(id)).toFixed(2)}</div>
+              <div style={{ fontSize: 11, color: MUTE, marginTop: 2 }}>{grouped.get(id)?.length ?? 0} SIM{(grouped.get(id)?.length ?? 0) === 1 ? "" : "s"}</div>
+            </Card>
+          );
+        })}
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}>
+        <Button variant="ghost" icon={RefreshCw} onClick={fetchAll} spin={loading}>Refresh</Button>
+      </div>
+
+      {[...BALANCE_PROVIDER_ORDER, "unassigned"].map((id) => {
+        const list = grouped.get(id) || [];
+        if (list.length === 0) return null;
+        const label = { hormuud: "Hormuud", somtel: "Somtel", somnet: "Somnet", amtel: "Amtel", unassigned: "Not yet assigned to a provider" }[id];
+        return (
+          <Card key={id} style={{ padding: 18, marginTop: 14 }}>
+            <div style={{ fontWeight: 800, color: INK, fontSize: 14, marginBottom: 10 }}>{label}</div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                <thead>
+                  <tr style={{ textAlign: "left", color: MUTE, fontSize: 11 }}>
+                    <th style={{ padding: "6px 8px" }}>Phone Number</th>
+                    <th style={{ padding: "6px 8px" }}>Device / Agent</th>
+                    <th style={{ padding: "6px 8px" }}>SIM Slot</th>
+                    <th style={{ padding: "6px 8px" }}>Balance</th>
+                    <th style={{ padding: "6px 8px" }}>Last Update</th>
+                    <th style={{ padding: "6px 8px" }}>Status</th>
+                    <th style={{ padding: "6px 8px" }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {list.map((r) => {
+                    const low = Number(r.balance) < Number(r.lowBalanceThreshold);
+                    return (
+                      <tr key={`${r.deviceId}:${r.simSlot}`} style={{ borderTop: `1px solid ${BORDER}` }}>
+                        <td style={{ padding: "8px" }}>{r.phoneNumber || "—"}</td>
+                        <td style={{ padding: "8px" }}>{r.deviceName}</td>
+                        <td style={{ padding: "8px" }}>SIM {r.simSlot}</td>
+                        <td style={{ padding: "8px", fontWeight: 800, color: low ? "#C81E2C" : INK, background: low ? "#FCE7E8" : "transparent" }}>
+                          ${Number(r.balance).toFixed(2)}{low && " ⚠"}
+                        </td>
+                        <td style={{ padding: "8px", color: MUTE }}>{r.balanceUpdatedAt ? formatDateTime(r.balanceUpdatedAt) : "Never"}</td>
+                        <td style={{ padding: "8px" }}><Badge tone={r.online ? "green" : "gray"}>{r.online ? "Online" : "Offline"}</Badge></td>
+                        <td style={{ padding: "8px", whiteSpace: "nowrap" }}>
+                          <button onClick={() => openHistory(r)} style={{ background: "none", border: "none", color: INDIGO, fontWeight: 700, cursor: "pointer", fontSize: 12, marginRight: 10 }}>History</button>
+                          {canManage && (
+                            <button onClick={() => openEdit(r)} style={{ background: "none", border: "none", color: INDIGO, fontWeight: 700, cursor: "pointer", fontSize: 12 }}>Edit</button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        );
+      })}
+
+      {editing && (
+        <Modal title={`Edit Balance — ${editing.deviceName} · SIM ${editing.simSlot}`} onClose={() => setEditing(null)}>
+          <Field label="Balance ($)">
+            <input type="number" step="0.01" value={editForm.balance} onChange={(e) => setEditForm((f) => ({ ...f, balance: e.target.value }))} style={inputStyle} />
+          </Field>
+          <Field label="Low-balance alert threshold ($)">
+            <input type="number" step="0.01" value={editForm.threshold} onChange={(e) => setEditForm((f) => ({ ...f, threshold: e.target.value }))} style={inputStyle} />
+          </Field>
+          <Field label="Phone number">
+            <input value={editForm.phoneNumber} onChange={(e) => setEditForm((f) => ({ ...f, phoneNumber: e.target.value }))} style={inputStyle} />
+          </Field>
+          {editError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{editError}</div>}
+          <Button onClick={saveEdit} disabled={saving} style={{ width: "100%", justifyContent: "center" }}>{saving ? "Saving..." : "Save"}</Button>
+        </Modal>
+      )}
+
+      {historyFor && (
+        <Modal title={`Balance History — ${historyFor.deviceName} · SIM ${historyFor.simSlot}`} onClose={() => setHistoryFor(null)} width={520}>
+          {historyLoading ? (
+            <div style={{ fontSize: 12.5, color: MUTE }}>Loading...</div>
+          ) : history.length === 0 ? (
+            <div style={{ fontSize: 12.5, color: MUTE }}>No balance changes recorded yet for this SIM.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {history.map((h) => (
+                <div key={h.id} style={{ border: `1px solid ${BORDER}`, borderRadius: 10, padding: 10, fontSize: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <Badge tone={h.source === "manual" ? "blue" : "neutral"}>{h.source === "manual" ? "Manual" : "SMS"}</Badge>
+                    <span style={{ color: MUTE }}>{formatDateTime(h.createdAt)}</span>
+                  </div>
+                  <div style={{ marginTop: 6 }}>
+                    ${Number(h.previousBalance ?? 0).toFixed(2)} → <strong>${Number(h.newBalance).toFixed(2)}</strong>
+                    {h.changeAmount != null && (
+                      <span style={{ color: Number(h.changeAmount) < 0 ? "#C81E2C" : GREEN, marginLeft: 8 }}>
+                        ({Number(h.changeAmount) >= 0 ? "+" : ""}{Number(h.changeAmount).toFixed(2)})
+                      </span>
+                    )}
+                  </div>
+                  {h.orderId && <div style={{ color: MUTE, marginTop: 4 }}>Order: {h.orderId}</div>}
+                </div>
+              ))}
+            </div>
+          )}
+        </Modal>
+      )}
     </div>
   );
 }
@@ -6323,6 +6567,7 @@ function AdminDashboardShell({ admin, onLogout }) {
   const [customers, setCustomers] = useState(initialCustomers);
   const [stuckCount, setStuckCount] = useState(0);
   const [duplicateBlockedCount, setDuplicateBlockedCount] = useState(0);
+  const [lowBalanceCount, setLowBalanceCount] = useState(0);
   const [missingTemplateCount, setMissingTemplateCount] = useState(0);
 
   // Companies used to be mock-only everywhere (Companies/PaymentNumbers never
@@ -6388,6 +6633,25 @@ function AdminDashboardShell({ admin, onLogout }) {
   useEffect(() => {
     if (!DALAB_API_ENABLED) return;
     const unsubscribe = subscribeOrderEvents("/admin/orders/stream", { onEvent: refreshDuplicateBlockedCount });
+    return () => unsubscribe();
+  }, []);
+
+  // Central Balance Dashboard: same live-badge pattern as the two above —
+  // a SIM whose balance has dropped below its configured threshold needs
+  // the Super Admin's attention before it silently stops being able to pay
+  // out, not after a customer complains.
+  const refreshLowBalanceCount = async () => {
+    if (!DALAB_API_ENABLED) return;
+    try {
+      setLowBalanceCount((await DalabAdminApi.getLowBalanceCount()).count);
+    } catch (err) {
+      console.error("Failed to load low-balance SIM count:", err.message);
+    }
+  };
+  useEffect(() => { refreshLowBalanceCount(); }, []);
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    const unsubscribe = subscribeOrderEvents("/admin/orders/stream", { onEvent: refreshLowBalanceCount });
     return () => unsubscribe();
   }, []);
 
@@ -6459,6 +6723,11 @@ function AdminDashboardShell({ admin, onLogout }) {
                     )}
                   </span>
                 )}
+                {!collapsed && n.id === "balance-dashboard" && lowBalanceCount > 0 && (
+                  <span style={{ marginLeft: "auto" }} title="SIMs below their low-balance threshold">
+                    <Badge tone="red">{lowBalanceCount}</Badge>
+                  </span>
+                )}
                 {!collapsed && n.id === "packages" && missingTemplateCount > 0 && (
                   <span style={{ marginLeft: "auto" }} title="Packages with no matching USSD template">
                     <Badge tone="amber">{missingTemplateCount}</Badge>
@@ -6500,6 +6769,7 @@ function AdminDashboardShell({ admin, onLogout }) {
         <ConnectionStatusBar />
         <div style={{ padding: 22 }}>
           {active === "overview" && <Overview companies={companies} orders={orders} />}
+          {active === "balance-dashboard" && <BalanceDashboard admin={admin} />}
           {active === "companies" && <Companies companies={companies} setCompanies={setCompanies} refreshCompanies={refreshCompanies} admin={admin} />}
           {active === "payment-numbers" && <PaymentNumbers companies={companies} setCompanies={setCompanies} refreshCompanies={refreshCompanies} admin={admin} />}
           {active === "provider-numbers" && <ProviderNumbers companies={companies} refreshCompanies={refreshCompanies} admin={admin} onPackagesChanged={refreshMissingTemplateCount} />}

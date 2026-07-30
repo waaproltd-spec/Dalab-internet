@@ -5,6 +5,7 @@ import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
 import { recordActivity } from "../utils/activityLog.js";
 import { createPaymentTransaction, hasActivePaymentTransaction } from "../utils/paymentTransactions.js";
+import { extractBalanceFromSms, resolveCompanyIdByProviderName, resolveDeviceSlotForCompany, applyBalanceUpdate } from "../utils/simBalances.js";
 import { broadcast } from "../realtime/orderEvents.js";
 
 export const smsLogsRouter = Router();
@@ -216,6 +217,33 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
       ));
     if (existing) return respondAlreadyProcessed(res, existing, transactionRef ?? null, effectiveReceivedAt, parsedPhone, parsedAmount);
     throw err;
+  }
+
+  // Central Balance Dashboard: automatic balance detection. Best-effort and
+  // fully isolated from the payment/order pipeline above — a balance-parse
+  // or SIM-resolution failure here must never affect whether this SMS gets
+  // matched, deduped, or dialed. Runs regardless of match/duplicate outcome,
+  // since the carrier-reported balance is real information either way.
+  try {
+    const detected = extractBalanceFromSms(body);
+    if (detected) {
+      const companyId = match?.company_id ?? (await resolveCompanyIdByProviderName(detected.provider));
+      const slot = companyId ? await resolveDeviceSlotForCompany(companyId) : null;
+      if (slot) {
+        await applyBalanceUpdate({
+          deviceId: slot.deviceId,
+          simSlot: slot.simSlot,
+          newBalance: detected.balance,
+          companyId,
+          orderId: match?.id ?? null,
+          smsLogId: id,
+          source: "sms",
+        });
+      }
+    }
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("Balance auto-detection failed (non-fatal):", err);
   }
 
   // A company with automation off means the agent must tap through the

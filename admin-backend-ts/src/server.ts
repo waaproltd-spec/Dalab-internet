@@ -19,6 +19,7 @@ import { executionLogsRouter } from "./routes/executionLogs.routes.js";
 import { activityLogRouter } from "./routes/activityLog.routes.js";
 import { paymentWalletsRouter } from "./routes/paymentWallets.routes.js";
 import { commissionsRouter } from "./routes/commissions.routes.js";
+import { simBalancesRouter } from "./routes/simBalances.routes.js";
 import { pool } from "./db/pool.js";
 import { seedAll } from "./db/seed.js";
 
@@ -98,6 +99,7 @@ app.use(executionLogsRouter);
 app.use(activityLogRouter);
 app.use(paymentWalletsRouter);
 app.use(commissionsRouter);
+app.use(simBalancesRouter);
 
 app.use((_req: Request, res: Response) => {
   res.status(404).json({ error: "Not found" });
