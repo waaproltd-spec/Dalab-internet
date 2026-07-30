@@ -1058,6 +1058,30 @@ function orderStatusText(status, t) {
   return key ? t(key) : status;
 }
 
+// Local ("mock") push notification: there's no real Web Push backend (no
+// VAPID keys, no push-subscription storage), so this just asks the already-
+// registered service worker (see src/main.jsx) to show a notification from
+// the page itself the moment a pending/in_progress order is observed
+// flipping to completed. `tag` is the order reference so a repeat call for
+// the same order replaces rather than stacks. No-ops silently if the
+// browser doesn't support service workers or the customer hasn't granted
+// Notification permission (wired via the "Order updates" toggle in
+// NotificationsPrefScreen).
+async function notifyOrderStatusChange(order) {
+  if (typeof window === "undefined" || !("Notification" in window) || !("serviceWorker" in navigator)) return;
+  if (Notification.permission !== "granted") return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    await reg.showNotification("Dalab Internet", {
+      body: `Your order ${order.reference} is complete — your data bundle is ready.`,
+      tag: `order-${order.reference}`,
+      icon: "/favicon.png",
+    });
+  } catch {
+    // Service worker unavailable — notification just doesn't fire.
+  }
+}
+
 function StatusPill({ status }) {
   const { t } = useI18n();
   const s = ORDER_STATUS_STYLE[status] || ORDER_STATUS_STYLE.pending;
@@ -1355,6 +1379,9 @@ function OrderDetailsScreen({ order, onBack, onOrderUpdated }) {
         try {
           const fresh = await DalabApi.getOrder(current.reference);
           const merged = { ...current, status: fresh.status, ussdGenerated: fresh.ussdGenerated, completedAt: fresh.completedAt };
+          if (current.status !== "completed" && fresh.status === "completed") {
+            notifyOrderStatusChange(merged);
+          }
           setCurrent(merged);
           onOrderUpdated?.(merged);
         } catch (err) {
@@ -1756,15 +1783,29 @@ function SettingsScreen({ onBack, onLogout }) {
 }
 
 function NotificationsPrefScreen({ onBack }) {
-  const [orderUpdates, setOrderUpdates] = useState(true);
+  // Reflects real browser Notification permission rather than a fake local
+  // default — see notifyOrderStatusChange, which checks Notification.permission
+  // directly and is the actual source of truth this toggle is driving.
+  const [orderUpdates, setOrderUpdates] = useState(
+    typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted"
+  );
   const [promos, setPromos] = useState(true);
   const { t } = useI18n();
+
+  const toggleOrderUpdates = (value) => {
+    if (value && typeof window !== "undefined" && "Notification" in window) {
+      Notification.requestPermission().then((permission) => setOrderUpdates(permission === "granted"));
+    } else {
+      setOrderUpdates(false);
+    }
+  };
+
   return (
     <Screen>
       <StatusBar />
       <DarkHeader title={t("settingsNotifications")} onBack={onBack} />
       <div style={{ flex: 1, overflowY: "auto" }}>
-        <ToggleRow title={t("orderUpdates")} subtitle={t("orderUpdatesDesc")} checked={orderUpdates} onChange={setOrderUpdates} />
+        <ToggleRow title={t("orderUpdates")} subtitle={t("orderUpdatesDesc")} checked={orderUpdates} onChange={toggleOrderUpdates} />
         <ToggleRow title={t("promotions")} subtitle={t("promotionsDesc")} checked={promos} onChange={setPromos} />
       </div>
     </Screen>
