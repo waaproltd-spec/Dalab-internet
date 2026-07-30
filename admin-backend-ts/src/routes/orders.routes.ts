@@ -8,6 +8,7 @@ import { generateUssdForOrder } from "./ussd.routes.js";
 import { subscribe, broadcast } from "../realtime/orderEvents.js";
 import { recordActivity } from "../utils/activityLog.js";
 import { creditCommissionIfNeeded, reverseCommissionIfNeeded } from "../utils/commissions.js";
+import { creditReferralBonusIfNeeded, reverseReferralBonusIfNeeded } from "../utils/referrals.js";
 import { isAlreadyCompleted } from "../utils/paymentTransactions.js";
 
 export const ordersRouter = Router();
@@ -63,7 +64,7 @@ function maskOrders<T extends Record<string, any>>(orders: T[]): T[] {
 
 // ---------------- Customer ----------------
 ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
-  const { companyId, packageId, senderPhone, receiverPhone, paymentMethod, clientRequestId, scheduledAt } = req.body;
+  const { companyId, packageId, senderPhone, receiverPhone, paymentMethod, clientRequestId, scheduledAt, useLoyaltyPoints } = req.body;
   const company = await queryOne(`SELECT * FROM companies WHERE id=$1 AND deleted_at IS NULL`, [companyId]);
   if (!company) return sendJson(res, 404, { error: "Company not found" });
   if (company.status === "offline") return sendJson(res, 409, { error: `${company.name} is currently offline` });
@@ -78,21 +79,54 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
   if (scheduleCheck.error) return sendJson(res, 400, { error: scheduleCheck.error });
 
   const customer = await queryOne(`SELECT * FROM customers WHERE id=$1`, [req.auth!.sub]);
+
+  // Loyalty Points discount: reduces only the customer's payment amount
+  // (what gets collected via USSD), never provider_amount — the package
+  // itself, and what the provider is paid to deliver it, is unaffected; the
+  // customer is simply subsidizing part of their own payment with points
+  // they already earned. Points are debited immediately at order creation
+  // (the whole point of "spending" them), not deferred to completion.
+  let pointsToUse = 0;
+  let finalAmount = Number(pkg.price);
+  if (useLoyaltyPoints != null) {
+    if (typeof useLoyaltyPoints !== "number" || !Number.isInteger(useLoyaltyPoints) || useLoyaltyPoints < 0) {
+      return sendJson(res, 400, { error: "useLoyaltyPoints must be a non-negative integer" });
+    }
+    if (useLoyaltyPoints > (customer?.macaash_points ?? 0)) {
+      return sendJson(res, 400, { error: "You don't have enough Loyalty Points" });
+    }
+    if (useLoyaltyPoints > 0) {
+      const rule = await queryOne<{ points_per_dollar_discount: number }>(`SELECT points_per_dollar_discount FROM referral_reward_rules LIMIT 1`);
+      const pointsPerDollar = rule?.points_per_dollar_discount ?? 100;
+      const requestedDiscount = useLoyaltyPoints / pointsPerDollar;
+      const cappedDiscount = Math.min(requestedDiscount, Number(pkg.price));
+      pointsToUse = Math.round(cappedDiscount * pointsPerDollar); // only debit points actually applied, if capped
+      finalAmount = Math.round((Number(pkg.price) - cappedDiscount) * 100) / 100;
+    }
+  }
+
   const id = orderRef();
   try {
     await query(
       `INSERT INTO orders (id, customer_id, company_id, package_id, amount, provider_amount, status, sender_phone, receiver_phone, payment_method, channel, macaash_earned, client_request_id, scheduled_at)
        VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,'android',$10,$11,$12)`,
       [
-        id, req.auth!.sub, companyId, packageId, pkg.price, pkg.provider_amount ?? pkg.price,
+        id, req.auth!.sub, companyId, packageId, finalAmount, pkg.provider_amount ?? pkg.price,
         senderPhone || customer?.phone || null,
         receiverPhone || customer?.phone || null,
         paymentMethod || company.gateway || null,
-        Math.round(pkg.price * MACAASH_POINTS_PER_DOLLAR),
+        Math.round(finalAmount * MACAASH_POINTS_PER_DOLLAR),
         clientRequestId ?? null,
         scheduleCheck.date ?? null,
       ]
     );
+    if (pointsToUse > 0) {
+      await query(
+        `INSERT INTO macaash_transactions (id, customer_id, order_id, points, reason, kind) VALUES ($1,$2,$3,$4,$5,'redeemed')`,
+        [randomUUID(), req.auth!.sub, id, -pointsToUse, `Redeemed for a discount on order ${id}`]
+      );
+      await query(`UPDATE customers SET macaash_points = GREATEST(0, macaash_points - $1) WHERE id=$2`, [pointsToUse, req.auth!.sub]);
+    }
   } catch (err: any) {
     if (err?.code !== "23505" || err?.constraint !== "idx_orders_client_request_id") throw err;
     // A retried create (e.g. from the offline queue) with the same
@@ -367,6 +401,7 @@ async function completeOrderById(orderId: string): Promise<{ order: any; already
   }
   await creditMacaashIfNeeded(order);
   await creditCommissionIfNeeded(order);
+  await creditReferralBonusIfNeeded(order);
   broadcast({ type: "order.updated", orderId });
   await recordActivity({
     adminId: undefined,
@@ -622,6 +657,7 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
     if (result.length > 0) {
       await creditMacaashIfNeeded(order);
       await creditCommissionIfNeeded(order);
+      await creditReferralBonusIfNeeded(order);
     }
   } else if (status === "in_progress") {
     const result = await query(
@@ -747,6 +783,7 @@ async function reverseOrderInternal(orderId: string): Promise<{ ok: boolean; ord
     }
   }
   await reverseCommissionIfNeeded(orderId);
+  await reverseReferralBonusIfNeeded(orderId);
 
   broadcast({ type: "order.updated", orderId });
   return { ok: true, order };

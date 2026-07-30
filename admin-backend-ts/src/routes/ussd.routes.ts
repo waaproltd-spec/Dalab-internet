@@ -9,6 +9,7 @@ import { broadcast } from "../realtime/orderEvents.js";
 import { recordActivity } from "../utils/activityLog.js";
 import { markPaymentProcessing, markPaymentFinal } from "../utils/paymentTransactions.js";
 import { creditCommissionIfNeeded } from "../utils/commissions.js";
+import { creditReferralBonusIfNeeded } from "../utils/referrals.js";
 
 export const ussdRouter = Router();
 
@@ -620,6 +621,7 @@ ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (r
       }
       if (completed.length > 0) {
         await creditCommissionIfNeeded(order);
+        await creditReferralBonusIfNeeded(order);
       }
       // Only the call that actually flipped the order (completed.length > 0)
       // logs this — a retried/duplicate dial-attempt report never generates
