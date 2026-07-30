@@ -7,7 +7,7 @@ import {
   ArrowUp, ArrowDown, Eye, EyeOff, Lock, Mail, LogOut, ArrowLeft, Copy, Terminal, SmartphoneNfc,
   Smartphone, Radio, ChevronDown, ChevronRight, AlertTriangle, RotateCcw, UserCog, Tags,
   WifiOff, BatteryFull, BatteryMedium, BatteryLow, BatteryWarning,
-  Image as ImageIcon, Upload, MessageSquare, Database, Activity, History, CreditCard, PlayCircle
+  Image as ImageIcon, Upload, MessageSquare, Database, Activity, History, CreditCard, PlayCircle, Percent
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 
@@ -199,6 +199,18 @@ const DalabAdminApi = {
   },
   getPaymentTransactionTimeline: (id) => dalabAdminApiRequest(`/admin/payment-transactions/${id}/timeline`),
   getStuckPaymentCount: (minutes) => dalabAdminApiRequest(`/admin/payment-transactions/stuck-count${minutes ? `?minutes=${minutes}` : ""}`),
+  // Commission Management — the cut the company/Super Admin earns from a
+  // completed order, calculated automatically server-side; this dashboard
+  // only manages the rules and views the resulting records/summary.
+  getCommissionRules: () => dalabAdminApiRequest("/admin/commission-rules"),
+  createCommissionRule: (body) => dalabAdminApiRequest("/admin/commission-rules", { method: "POST", body }),
+  updateCommissionRule: (id, body) => dalabAdminApiRequest(`/admin/commission-rules/${id}`, { method: "PUT", body }),
+  updateCommissionRuleStatus: (id, enabled) => dalabAdminApiRequest(`/admin/commission-rules/${id}/status`, { method: "PUT", body: { enabled } }),
+  getCommissions: (filters = {}) => {
+    const qs = new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([, v]) => v))).toString();
+    return dalabAdminApiRequest(`/admin/commissions${qs ? `?${qs}` : ""}`);
+  },
+  getCommissionSummary: () => dalabAdminApiRequest("/admin/commissions/summary"),
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -214,6 +226,7 @@ const PERMISSION_OPTIONS = [
   { key: "devices.manage", label: "Manage devices & USSD" },
   { key: "settings.manage", label: "Manage system settings" },
   { key: "reports.export", label: "Export reports" },
+  { key: "commissions.manage", label: "Manage commission rules" },
 ];
 
 // Normalizes a GET /admin/companies row into the shape every section of this
@@ -491,6 +504,7 @@ const NAV = [
   { id: "devices", label: "Device & USSD", icon: SmartphoneNfc },
   { id: "sms-logs", label: "SMS Monitor", icon: MessageSquare },
   { id: "payment-transactions", label: "Payment Transactions", icon: Activity },
+  { id: "commissions", label: "Commissions", icon: Percent },
   { id: "execution-logs", label: "Execution Logs", icon: Terminal },
   { id: "reports", label: "Reports", icon: FileBarChart2 },
   { id: "roles", label: "Roles & Permissions", icon: ShieldCheck, superAdminOnly: true },
@@ -4414,6 +4428,403 @@ function explainFailure(message) {
   return hit ? hit.text : null;
 }
 
+const NEW_COMMISSION_RULE_FORM = { name: "", scopeType: "global", companyId: "", packageId: "", ruleType: "percentage", value: "" };
+
+// Commission = the money the company/Super Admin earns from a completed
+// order, calculated automatically server-side (see
+// admin-backend-ts/src/utils/commissions.ts) — this panel only manages the
+// rules that drive that calculation and views the resulting records/summary.
+function CommissionsPanel({ companies, packages, admin }) {
+  const canManage = hasPermission(admin, "commissions.manage");
+
+  const [summary, setSummary] = useState(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
+
+  const [rules, setRules] = useState([]);
+  const [rulesLoading, setRulesLoading] = useState(false);
+  const [editingRule, setEditingRule] = useState(null);
+  const [ruleForm, setRuleForm] = useState(NEW_COMMISSION_RULE_FORM);
+  const [ruleError, setRuleError] = useState("");
+  const [ruleSaving, setRuleSaving] = useState(false);
+
+  const [records, setRecords] = useState([]);
+  const [recordsLoading, setRecordsLoading] = useState(false);
+  const [companyFilter, setCompanyFilter] = useState("all");
+  const [kindFilter, setKindFilter] = useState("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [search, setSearch] = useState("");
+
+  const fetchSummary = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setSummaryLoading(true);
+    try {
+      setSummary(await DalabAdminApi.getCommissionSummary());
+    } catch (err) {
+      console.error("getCommissionSummary failed:", err.message);
+    } finally {
+      setSummaryLoading(false);
+    }
+  };
+
+  const fetchRules = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setRulesLoading(true);
+    try {
+      setRules(await DalabAdminApi.getCommissionRules());
+    } catch (err) {
+      console.error("getCommissionRules failed:", err.message);
+    } finally {
+      setRulesLoading(false);
+    }
+  };
+
+  const fetchRecords = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setRecordsLoading(true);
+    try {
+      const data = await DalabAdminApi.getCommissions({
+        companyId: companyFilter === "all" ? undefined : companyFilter,
+        kind: kindFilter === "all" ? undefined : kindFilter,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
+        search: search.trim() || undefined,
+      });
+      setRecords(data);
+    } catch (err) {
+      console.error("getCommissions failed:", err.message);
+    } finally {
+      setRecordsLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchSummary(); fetchRules(); }, []);
+  useEffect(() => { fetchRecords(); }, [companyFilter, kindFilter, dateFrom, dateTo]);
+  useEffect(() => {
+    const timer = setTimeout(fetchRecords, 350);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  const refreshAll = () => { fetchSummary(); fetchRules(); fetchRecords(); };
+
+  const openNewRule = () => { setEditingRule("new"); setRuleForm(NEW_COMMISSION_RULE_FORM); setRuleError(""); };
+  const openEditRule = (r) => {
+    setEditingRule(r.id);
+    setRuleForm({
+      name: r.name,
+      scopeType: r.scopeType,
+      companyId: r.companyId || "",
+      packageId: r.packageId || "",
+      ruleType: r.ruleType,
+      value: String(r.value),
+    });
+    setRuleError("");
+  };
+
+  const saveRule = async () => {
+    if (!ruleForm.name.trim()) return setRuleError("Name is required.");
+    if (ruleForm.scopeType === "company" && !ruleForm.companyId) return setRuleError("Choose a provider for a company-scoped rule.");
+    if (ruleForm.scopeType === "package" && !ruleForm.packageId) return setRuleError("Choose a package for a package-scoped rule.");
+    if (ruleForm.value === "" || Number(ruleForm.value) < 0) return setRuleError("Enter a valid non-negative value.");
+    if (ruleForm.ruleType === "percentage" && Number(ruleForm.value) > 100) return setRuleError("A percentage cannot exceed 100.");
+
+    setRuleSaving(true);
+    setRuleError("");
+    try {
+      const body = {
+        name: ruleForm.name.trim(),
+        scopeType: ruleForm.scopeType,
+        companyId: ruleForm.scopeType !== "global" ? ruleForm.companyId : undefined,
+        packageId: ruleForm.scopeType === "package" ? ruleForm.packageId : undefined,
+        ruleType: ruleForm.ruleType,
+        value: Number(ruleForm.value),
+      };
+      if (editingRule === "new") await DalabAdminApi.createCommissionRule(body);
+      else await DalabAdminApi.updateCommissionRule(editingRule, body);
+      setEditingRule(null);
+      refreshAll();
+    } catch (err) {
+      setRuleError(err.message || "Couldn't save this rule.");
+    } finally {
+      setRuleSaving(false);
+    }
+  };
+
+  const toggleRuleStatus = async (rule) => {
+    try {
+      await DalabAdminApi.updateCommissionRuleStatus(rule.id, !rule.enabled);
+      refreshAll();
+    } catch (err) {
+      console.error("updateCommissionRuleStatus failed:", err.message);
+    }
+  };
+
+  const scopedPackages = useMemo(
+    () => packages.filter((p) => p.companyId === ruleForm.companyId),
+    [packages, ruleForm.companyId],
+  );
+
+  const scopeLabel = (r) => {
+    if (r.scopeType === "global") return "Global";
+    if (r.scopeType === "company") return r.companyName || "Company";
+    return `${r.companyName || "?"} — ${r.packageName || "Package"}`;
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to view commissions.</div>;
+  }
+
+  const topCompany = summary?.byCompany?.[0];
+  const topPackage = summary?.byPackage?.[0];
+
+  return (
+    <div>
+      {/* Commission Dashboard: at-a-glance totals + top performer */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 14, marginBottom: 18 }}>
+        <Card style={{ padding: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ fontSize: 11.5, fontWeight: 700, color: MUTE }}>TOTAL COMMISSION EARNED</div>
+            <DollarSign size={15} color={MUTE} />
+          </div>
+          <div style={{ fontSize: 21, fontWeight: 800, color: INK, marginTop: 8 }}>
+            {summaryLoading && !summary ? "…" : `$${Number(summary?.totalCommission ?? 0).toFixed(2)}`}
+          </div>
+        </Card>
+        <Card style={{ padding: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ fontSize: 11.5, fontWeight: 700, color: MUTE }}>TODAY'S COMMISSION</div>
+            <TrendingUp size={15} color={MUTE} />
+          </div>
+          <div style={{ fontSize: 21, fontWeight: 800, color: INK, marginTop: 8 }}>
+            {summaryLoading && !summary ? "…" : `$${Number(summary?.todayCommission ?? 0).toFixed(2)}`}
+          </div>
+        </Card>
+        <Card style={{ padding: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ fontSize: 11.5, fontWeight: 700, color: MUTE }}>MONTHLY COMMISSION</div>
+            <TrendingUp size={15} color={MUTE} />
+          </div>
+          <div style={{ fontSize: 21, fontWeight: 800, color: INK, marginTop: 8 }}>
+            {summaryLoading && !summary ? "…" : `$${Number(summary?.monthCommission ?? 0).toFixed(2)}`}
+          </div>
+        </Card>
+        <Card style={{ padding: 16 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: MUTE }}>TOP PROVIDER</div>
+          <div style={{ fontSize: 15, fontWeight: 800, color: INK, marginTop: 8 }}>{topCompany?.companyName || "—"}</div>
+          {topCompany && <div style={{ fontSize: 11.5, color: GREEN, fontWeight: 700, marginTop: 2 }}>${Number(topCompany.total).toFixed(2)}</div>}
+        </Card>
+        <Card style={{ padding: 16 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: MUTE }}>TOP PACKAGE / SERVICE</div>
+          <div style={{ fontSize: 15, fontWeight: 800, color: INK, marginTop: 8 }}>{topPackage?.packageName || "—"}</div>
+          {topPackage && <div style={{ fontSize: 11.5, color: GREEN, fontWeight: 700, marginTop: 2 }}>${Number(topPackage.total).toFixed(2)}</div>}
+        </Card>
+      </div>
+
+      {/* Commission Rules */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ fontWeight: 800, fontSize: 15, color: INK }}>Commission Rules</div>
+        {canManage && <Button icon={Plus} onClick={openNewRule}>Add Rule</Button>}
+      </div>
+      <Card style={{ padding: 0, overflow: "hidden", marginBottom: 22 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Name</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Scope</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Type / Value</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Status</th>
+              {canManage && <th style={{ padding: "10px 14px" }} />}
+            </tr>
+          </thead>
+          <tbody>
+            {rulesLoading && rules.length === 0 && (
+              <tr><td colSpan={5} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>Loading…</td></tr>
+            )}
+            {rules.map((r) => (
+              <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK }}>{r.name}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{scopeLabel(r)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>
+                  {r.ruleType === "percentage" ? `${Number(r.value)}%` : `$${Number(r.value).toFixed(2)} fixed`}
+                </td>
+                <td style={{ padding: "10px 14px" }}>
+                  <Badge tone={r.enabled ? "green" : "gray"}>{r.enabled ? "Enabled" : "Disabled"}</Badge>
+                </td>
+                {canManage && (
+                  <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                    <button onClick={() => openEditRule(r)} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }} title="Edit">
+                      <Pencil size={15} color={SLATE} />
+                    </button>
+                    <button onClick={() => toggleRuleStatus(r)} style={{ background: "none", border: "none", cursor: "pointer" }} title={r.enabled ? "Disable" : "Enable"}>
+                      <Power size={15} color={r.enabled ? "#C81E2C" : GREEN} />
+                    </button>
+                  </td>
+                )}
+              </tr>
+            ))}
+            {!rulesLoading && rules.length === 0 && (
+              <tr><td colSpan={5} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No commission rules configured yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+
+      {/* Commission Records / History */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 16, flexWrap: "wrap" }}>
+        <div style={{ fontWeight: 800, fontSize: 15, color: INK }}>Commission History</div>
+        <Button
+          variant="ghost"
+          icon={Download}
+          onClick={() => exportToCsv(
+            `dalab-commissions-${Date.now()}.csv`,
+            [
+              { label: "Order ID", value: (r) => r.orderId },
+              { label: "Provider", value: (r) => r.companyName },
+              { label: "Package", value: (r) => r.packageName },
+              { label: "Order Amount", value: (r) => r.orderAmount },
+              { label: "Rule Type", value: (r) => r.ruleType },
+              { label: "Rule Value", value: (r) => r.ruleValue },
+              { label: "Commission Amount", value: (r) => r.commissionAmount },
+              { label: "Kind", value: (r) => r.kind },
+              { label: "Created", value: (r) => r.createdAt },
+            ],
+            records,
+          )}
+        >
+          Export CSV
+        </Button>
+      </div>
+
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ position: "relative", flex: "1 1 220px", maxWidth: 280 }}>
+          <Search size={14} color={MUTE} style={{ position: "absolute", left: 10, top: 10 }} />
+          <input
+            style={{ ...inputStyle, paddingLeft: 30, width: "100%" }}
+            placeholder="Search order ID"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <select value={companyFilter} onChange={(e) => setCompanyFilter(e.target.value)} style={{ ...inputStyle, width: 180 }}>
+          <option value="all">All providers</option>
+          {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        <select value={kindFilter} onChange={(e) => setKindFilter(e.target.value)} style={{ ...inputStyle, width: 150 }}>
+          <option value="all">Earned + Reversed</option>
+          <option value="earned">Earned only</option>
+          <option value="reversed">Reversed only</option>
+        </select>
+        <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} style={{ ...inputStyle, width: 150 }} title="From date" />
+        <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ ...inputStyle, width: 150 }} title="To date" />
+      </div>
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: "#FAFBFF" }}>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Order ID</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Provider</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Package</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Order Amount</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Commission</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Kind</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Created</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recordsLoading && records.length === 0 && (
+                Array.from({ length: 5 }).map((_, i) => (
+                  <tr key={`skeleton-${i}`} style={{ borderTop: `1px solid ${BORDER}` }}>
+                    {Array.from({ length: 7 }).map((__, j) => (
+                      <td key={j} style={{ padding: "12px 14px" }}>
+                        <div style={{ height: 12, borderRadius: 4, background: "#EEF0FB", width: j === 0 ? 90 : "70%" }} />
+                      </td>
+                    ))}
+                  </tr>
+                ))
+              )}
+              {records.map((r) => (
+                <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, color: INK }}>{r.orderId || "—"}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{r.companyName || "—"}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{r.packageName || "—"}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>${Number(r.orderAmount).toFixed(2)}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: Number(r.commissionAmount) < 0 ? "#C81E2C" : GREEN }}>
+                    ${Number(r.commissionAmount).toFixed(2)}
+                  </td>
+                  <td style={{ padding: "10px 14px" }}>
+                    <Badge tone={r.kind === "earned" ? "green" : "red"}>{r.kind === "earned" ? "Earned" : "Reversed"}</Badge>
+                  </td>
+                  <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(r.createdAt)}</td>
+                </tr>
+              ))}
+              {!recordsLoading && records.length === 0 && (
+                <tr><td colSpan={7} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No commission records yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      {editingRule && (
+        <Modal title={editingRule === "new" ? "Add Commission Rule" : "Edit Commission Rule"} onClose={() => setEditingRule(null)} width={460}>
+          <Field label="Name">
+            <input style={inputStyle} value={ruleForm.name} onChange={(e) => setRuleForm({ ...ruleForm, name: e.target.value })} placeholder="e.g. Default provider commission" />
+          </Field>
+          <Field label="Scope">
+            <select
+              style={inputStyle}
+              value={ruleForm.scopeType}
+              onChange={(e) => setRuleForm({ ...ruleForm, scopeType: e.target.value, companyId: "", packageId: "" })}
+            >
+              <option value="global">Global (applies to every order)</option>
+              <option value="company">Provider</option>
+              <option value="package">Package</option>
+            </select>
+          </Field>
+          {(ruleForm.scopeType === "company" || ruleForm.scopeType === "package") && (
+            <Field label="Provider">
+              <select style={inputStyle} value={ruleForm.companyId} onChange={(e) => setRuleForm({ ...ruleForm, companyId: e.target.value, packageId: "" })}>
+                <option value="">Choose a provider…</option>
+                {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </Field>
+          )}
+          {ruleForm.scopeType === "package" && (
+            <Field label="Package">
+              <select style={inputStyle} value={ruleForm.packageId} onChange={(e) => setRuleForm({ ...ruleForm, packageId: e.target.value })} disabled={!ruleForm.companyId}>
+                <option value="">{ruleForm.companyId ? "Choose a package…" : "Choose a provider first"}</option>
+                {scopedPackages.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </Field>
+          )}
+          <Field label="Commission type">
+            <select style={inputStyle} value={ruleForm.ruleType} onChange={(e) => setRuleForm({ ...ruleForm, ruleType: e.target.value })}>
+              <option value="percentage">Percentage of order amount</option>
+              <option value="fixed">Fixed amount</option>
+            </select>
+          </Field>
+          <Field label={ruleForm.ruleType === "percentage" ? "Percentage (%)" : "Fixed amount ($)"}>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              style={inputStyle}
+              value={ruleForm.value}
+              onChange={(e) => setRuleForm({ ...ruleForm, value: e.target.value })}
+            />
+          </Field>
+          {ruleError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{ruleError}</div>}
+          <Button onClick={saveRule} disabled={ruleSaving} style={{ width: "100%", justifyContent: "center" }}>
+            {ruleSaving ? "Saving…" : "Save Rule"}
+          </Button>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 function ExecutionLogs({ companies }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -5864,6 +6275,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "devices" && <DeviceUssdModule companies={companies} admin={admin} onPackagesChanged={refreshMissingTemplateCount} />}
           {active === "sms-logs" && <SmsLogs companies={companies} />}
           {active === "payment-transactions" && <PaymentTransactionsPanel companies={companies} />}
+          {active === "commissions" && <CommissionsPanel companies={companies} packages={packages} admin={admin} />}
           {active === "execution-logs" && <ExecutionLogs companies={companies} />}
           {active === "reports" && <Reports />}
           {active === "roles" && <RolesPermissions admin={admin} />}
