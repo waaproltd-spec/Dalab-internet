@@ -38,6 +38,7 @@ import com.dalab.internet.customer.network.ConnectionState
 import com.dalab.internet.customer.network.RealtimeClient
 import com.dalab.internet.customer.prefs.LocalizationManager
 import com.dalab.internet.customer.util.formatApiDateTime
+import com.dalab.internet.customer.util.parseApiDate
 import kotlinx.coroutines.launch
 
 private val HeaderStart = Color(0xFF1D2E8C)
@@ -223,24 +224,40 @@ private fun OrderRow(order: CustomerOrder, onClick: () -> Unit) {
         Column(horizontalAlignment = Alignment.End) {
             Text("$${"%.2f".format(order.amount)}", fontWeight = FontWeight.Bold, color = HeaderStart)
             Spacer(Modifier.height(4.dp))
-            StatusChip(order.status)
+            StatusChip(order.status, order.scheduledAt, order.ussdGenerated)
         }
     }
 }
 
 private data class StatusStyle(val label: String, val color: Color)
 
-private fun statusStyle(status: OrderStatus): StatusStyle = when (status) {
-    OrderStatus.PENDING -> StatusStyle("Awaiting Payment", Color(0xFFB8860B))
-    OrderStatus.IN_PROGRESS -> StatusStyle("Payment Confirmed", Color(0xFF1D6FE0))
-    OrderStatus.COMPLETED -> StatusStyle("Completed", Color(0xFF16A34A))
-    OrderStatus.FAILED -> StatusStyle("Failed", Color(0xFFDC2626))
-    OrderStatus.CANCELLED -> StatusStyle("Cancelled", Color(0xFF6B7280))
+private val SchedulePurple = Color(0xFF7C3AED)
+
+/**
+ * A paid, in-progress order whose scheduled_at is still in the future gets
+ * its own "Scheduled" label instead of "Payment Confirmed" -- fulfillment
+ * is deliberately deferred, not stalled. Every other status/branch is
+ * unchanged from before this distinction existed.
+ */
+private fun statusStyle(status: OrderStatus, scheduledAt: String? = null, ussdGenerated: String? = null): StatusStyle {
+    if (status == OrderStatus.IN_PROGRESS && ussdGenerated == null) {
+        val scheduledDate = parseApiDate(scheduledAt)
+        if (scheduledDate != null && scheduledDate.after(java.util.Date())) {
+            return StatusStyle(LocalizationManager.tr("Scheduled", "La qorsheeyay"), SchedulePurple)
+        }
+    }
+    return when (status) {
+        OrderStatus.PENDING -> StatusStyle("Awaiting Payment", Color(0xFFB8860B))
+        OrderStatus.IN_PROGRESS -> StatusStyle("Payment Confirmed", Color(0xFF1D6FE0))
+        OrderStatus.COMPLETED -> StatusStyle("Completed", Color(0xFF16A34A))
+        OrderStatus.FAILED -> StatusStyle("Failed", Color(0xFFDC2626))
+        OrderStatus.CANCELLED -> StatusStyle("Cancelled", Color(0xFF6B7280))
+    }
 }
 
 @Composable
-fun StatusChip(status: OrderStatus) {
-    val style = statusStyle(status)
+fun StatusChip(status: OrderStatus, scheduledAt: String? = null, ussdGenerated: String? = null) {
+    val style = statusStyle(status, scheduledAt, ussdGenerated)
     Surface(
         color = style.color.copy(alpha = 0.12f),
         shape = RoundedCornerShape(20.dp),

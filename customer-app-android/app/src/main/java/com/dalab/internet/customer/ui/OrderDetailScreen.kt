@@ -162,7 +162,7 @@ fun OrderDetailScreen(initialOrder: CustomerOrder, onBack: () -> Unit) {
                         )
                     }
                     Spacer(Modifier.width(8.dp))
-                    StatusChip(order.status)
+                    StatusChip(order.status, order.scheduledAt, order.ussdGenerated)
                 }
             }
             if (copied) {
@@ -202,7 +202,7 @@ fun OrderDetailScreen(initialOrder: CustomerOrder, onBack: () -> Unit) {
 
                     Spacer(Modifier.height(if (compact) 8.dp else 10.dp))
                     SectionLabel("STATUS")
-                    DetailRowCustom("Payment Status") { StatusChip(order.status) }
+                    DetailRowCustom("Payment Status") { StatusChip(order.status, order.scheduledAt, order.ussdGenerated) }
                     DetailRow("Date", formatApiDateTime(order.createdAt))
                 }
             }

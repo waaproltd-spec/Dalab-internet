@@ -577,6 +577,7 @@ function Badge({ children, tone = "neutral" }) {
     red: { bg: "#FCE7E8", fg: "#C81E2C" },
     blue: { bg: "#E5EBFF", fg: "#1D4ED8" },
     gray: { bg: "#F0F1F5", fg: "#5B6389" },
+    purple: { bg: "#F3EEFC", fg: "#7C3AED" },
   };
   const t = tones[tone];
   return (
@@ -641,15 +642,27 @@ function orderTone(status) {
 function orderStatusLabel(status) {
   return ORDER_STATUS_META[status]?.label ?? status;
 }
+// A paid, in_progress order whose scheduledAt is still in the future is
+// deliberately deferred, not stalled -- both label and tone say "Scheduled"
+// instead of the usual Processing/Delivering split below.
+function isScheduledAndNotDue(order) {
+  return order?.status === "in_progress" && !order?.ussdGenerated &&
+    order?.scheduledAt != null && new Date(order.scheduledAt) > new Date();
+}
 // Cosmetic-only split of "in_progress" into "Processing" (payment verified,
 // USSD not generated yet) vs "Delivering" (USSD generated, dial in flight) —
 // no schema/status-column change, purely how the same underlying state reads
 // to an admin. Falls back to the plain status label for every other status.
 function displayOrderStatus(order) {
+  if (isScheduledAndNotDue(order)) return "Scheduled";
   if (order?.status === "in_progress") {
     return order?.ussdGenerated ? "Delivering" : "Processing";
   }
   return orderStatusLabel(order?.status);
+}
+function displayOrderTone(order) {
+  if (isScheduledAndNotDue(order)) return "purple";
+  return orderTone(order?.status);
 }
 
 // Turns a GET /admin/orders/:id/delivery-status response into the specific
@@ -1959,7 +1972,7 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
             <div style={{ fontWeight: 700, fontSize: 14, color: INK }}>{order.packageName}</div>
             <div style={{ fontSize: 11.5, color: MUTE }}>{order.companyName}</div>
           </div>
-          <div style={{ marginLeft: "auto" }}><Badge tone={orderTone(localOrder.status)}>{displayOrderStatus(localOrder)}</Badge></div>
+          <div style={{ marginLeft: "auto" }}><Badge tone={displayOrderTone(localOrder)}>{displayOrderStatus(localOrder)}</Badge></div>
         </div>
         {localOrder.reversedAt && (
           <div style={{ marginTop: 10, fontSize: 11.5, color: "#A9720A", background: "#FFF8E8", border: "1px solid #F4E3B0", borderRadius: 8, padding: "6px 10px" }}>
@@ -2455,7 +2468,7 @@ function Orders({ orders, setOrders, companies, admin }) {
                     <div style={{ width: 8, height: 8, borderRadius: 4, background: o.companyColor || INDIGO, flexShrink: 0 }} />
                     <span style={{ fontWeight: 700, fontSize: 13.5, color: INK }}>{o.companyName}</span>
                   </div>
-                  <Badge tone={orderTone(o.status)}>{displayOrderStatus(o)}</Badge>
+                  <Badge tone={displayOrderTone(o)}>{displayOrderStatus(o)}</Badge>
                 </div>
 
                 <div style={{ fontSize: 14, fontWeight: 700, color: INK, marginTop: 8 }}>{o.packageName}</div>
@@ -5740,7 +5753,7 @@ function PendingRecoveryPanel() {
                     <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, color: INK }}>{o.id}</td>
                     <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{o.customerName || o.customerPhone || "—"}</td>
                     <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{o.packageName || "—"}</td>
-                    <td style={{ padding: "10px 14px" }}><Badge tone={orderTone(o.status)}>{displayOrderStatus(o)}</Badge></td>
+                    <td style={{ padding: "10px 14px" }}><Badge tone={displayOrderTone(o)}>{displayOrderStatus(o)}</Badge></td>
                     <td style={{ padding: "10px 14px" }}><Badge tone={meta.tone}>{meta.label}</Badge></td>
                     <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(o.createdAt)}</td>
                     <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
