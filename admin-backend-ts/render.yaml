@@ -1,13 +1,22 @@
 databases:
   - name: dalab-admin-db
-    plan: free
+    # Upgraded off the free tier: a free Postgres instance on Render also
+    # expires (deleted) after 30-90 days regardless of the web service's
+    # sleep behavior — paid removes both that expiry and any resource
+    # throttling shared with the free-tier pool.
+    plan: starter
     postgresMajorVersion: "16"
 
 services:
   - type: web
     name: dalab-admin-backend
     runtime: node
-    plan: free
+    # Upgraded off the free tier specifically to remove idle spin-down/
+    # cold-start delays — a free-tier instance sleeps after ~15 minutes of
+    # inactivity and can take tens of seconds to wake, which is what caused
+    # the intermittent heartbeat "Failed to connect" reports from the Agent
+    # App's Reliability Dashboard. A paid plan stays running continuously.
+    plan: starter
     # Installs deps, compiles TypeScript, then applies the SQL migration —
     # in that order, since migrate.js only exists after the build step.
     buildCommand: npm install && npm run build && npm run migrate
