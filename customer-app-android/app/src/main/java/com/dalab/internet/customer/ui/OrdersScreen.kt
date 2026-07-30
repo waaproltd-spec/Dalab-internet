@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.Circle
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -195,6 +196,27 @@ private fun OrderRow(order: CustomerOrder, onClick: () -> Unit) {
                 Icon(Icons.Filled.CalendarToday, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(11.dp))
                 Spacer(Modifier.width(4.dp))
                 Text(formatApiDateTime(order.createdAt), style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            }
+            if (order.scheduledAt != null) {
+                Spacer(Modifier.height(4.dp))
+                Surface(
+                    color = Color(0xFF7C3AED).copy(alpha = 0.12f),
+                    shape = RoundedCornerShape(20.dp),
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    ) {
+                        Icon(Icons.Filled.Schedule, contentDescription = null, tint = Color(0xFF7C3AED), modifier = Modifier.size(11.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            LocalizationManager.tr("Scheduled: ", "La qorsheeyay: ") + formatApiDateTime(order.scheduledAt),
+                            color = Color(0xFF7C3AED),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 10.sp,
+                        )
+                    }
+                }
             }
         }
         Spacer(Modifier.width(8.dp))
