@@ -8,7 +8,7 @@ import {
   Smartphone, Radio, ChevronDown, ChevronRight, AlertTriangle, RotateCcw, UserCog, Tags,
   WifiOff, BatteryFull, BatteryMedium, BatteryLow, BatteryWarning,
   Image as ImageIcon, Upload, MessageSquare, Database, Activity, History, CreditCard, PlayCircle, Percent,
-  MessageCircle, Lightbulb
+  MessageCircle, Lightbulb, Share2
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 
@@ -245,6 +245,11 @@ const DalabAdminApi = {
   getFeedbackCategories: () => dalabAdminApiRequest("/admin/feedback/categories"),
   getFeedbackPendingCount: () => dalabAdminApiRequest("/admin/feedback/pending-count"),
   updateFeedback: (id, body) => dalabAdminApiRequest(`/admin/feedback/${id}`, { method: "PUT", body }),
+  // Referral / Loyalty Points — reuses the existing Macaash balance/ledger;
+  // this dashboard only manages the reward rule and views referral activity.
+  getReferralRules: () => dalabAdminApiRequest("/admin/referral-rules"),
+  updateReferralRules: (body) => dalabAdminApiRequest("/admin/referral-rules", { method: "PUT", body }),
+  getReferrals: () => dalabAdminApiRequest("/admin/referrals"),
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -262,6 +267,7 @@ const PERMISSION_OPTIONS = [
   { key: "reports.export", label: "Export reports" },
   { key: "commissions.manage", label: "Manage commission rules" },
   { key: "feedback.manage", label: "Manage feedback & suggestions" },
+  { key: "referrals.manage", label: "Manage referral reward rules" },
 ];
 
 // Normalizes a GET /admin/companies row into the shape every section of this
@@ -541,6 +547,7 @@ const NAV = [
   { id: "sms-logs", label: "SMS Monitor", icon: MessageSquare },
   { id: "payment-transactions", label: "Payment Transactions", icon: Activity },
   { id: "commissions", label: "Commissions", icon: Percent },
+  { id: "referrals", label: "Referral Rewards", icon: Share2 },
   { id: "scheduled-cancellations", label: "Scheduled Cancellations", icon: AlertTriangle, superAdminOnly: true },
   { id: "pending-recovery", label: "Pending Recovery", icon: RotateCcw },
   { id: "execution-logs", label: "Execution Logs", icon: Terminal },
@@ -5374,6 +5381,145 @@ function FeedbackPanel({ admin }) {
   );
 }
 
+// Referral / Loyalty Points: reuses the existing Macaash balance/ledger as the
+// one points currency (per explicit product decision) — this panel only
+// configures the reward rule (points per successful referral purchase,
+// points per $1 discount) and shows read-only referral activity for oversight.
+function ReferralRewardsPanel({ admin }) {
+  const canManage = hasPermission(admin, "referrals.manage");
+
+  const [rule, setRule] = useState(null);
+  const [draft, setDraft] = useState({ pointsPerReferralPurchase: "", pointsPerDollarDiscount: "", enabled: true });
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const fetchAll = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setLoading(true);
+    try {
+      const [r, list] = await Promise.all([DalabAdminApi.getReferralRules(), DalabAdminApi.getReferrals()]);
+      setRule(r);
+      setDraft({
+        pointsPerReferralPurchase: String(r.pointsPerReferralPurchase),
+        pointsPerDollarDiscount: String(r.pointsPerDollarDiscount),
+        enabled: r.enabled,
+      });
+      setRows(list);
+    } catch (err) {
+      console.error("Failed to load referral rewards:", err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchAll(); }, []);
+
+  const saveRule = async () => {
+    const points = Number(draft.pointsPerReferralPurchase);
+    const perDollar = Number(draft.pointsPerDollarDiscount);
+    if (!Number.isFinite(points) || points < 0) return setError("Points per referral purchase must be a non-negative number.");
+    if (!Number.isFinite(perDollar) || perDollar <= 0) return setError("Points per dollar discount must be a positive number.");
+    setSaving(true);
+    setError("");
+    try {
+      const updated = await DalabAdminApi.updateReferralRules({
+        pointsPerReferralPurchase: points,
+        pointsPerDollarDiscount: perDollar,
+        enabled: draft.enabled,
+      });
+      setRule(updated);
+    } catch (err) {
+      setError(err.message || "Couldn't save the reward rule.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to view referral rewards.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ fontWeight: 800, fontSize: 15, color: INK, marginBottom: 12 }}>Reward Rule</div>
+      <Card style={{ padding: 18, marginBottom: 22, maxWidth: 520 }}>
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+          <div style={{ flex: "1 1 220px" }}>
+            <Field label="Points per successful referral purchase">
+              <input
+                type="number" min="0" style={inputStyle}
+                value={draft.pointsPerReferralPurchase}
+                onChange={(e) => setDraft({ ...draft, pointsPerReferralPurchase: e.target.value })}
+                disabled={!canManage}
+              />
+            </Field>
+          </div>
+          <div style={{ flex: "1 1 220px" }}>
+            <Field label="Points = $1 discount">
+              <input
+                type="number" min="1" style={inputStyle}
+                value={draft.pointsPerDollarDiscount}
+                onChange={(e) => setDraft({ ...draft, pointsPerDollarDiscount: e.target.value })}
+                disabled={!canManage}
+              />
+            </Field>
+          </div>
+        </div>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, fontSize: 12.5, color: INK }}>
+          <input type="checkbox" checked={draft.enabled} onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })} disabled={!canManage} />
+          Enabled — new referral purchases earn points
+        </label>
+        {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginTop: 10 }}>{error}</div>}
+        {canManage ? (
+          <Button onClick={saveRule} disabled={saving} style={{ marginTop: 14 }}>{saving ? "Saving…" : "Save Rule"}</Button>
+        ) : (
+          <div style={{ fontSize: 12, color: MUTE, marginTop: 10 }}>You don't have permission to change this rule.</div>
+        )}
+        {rule?.updatedAt && (
+          <div style={{ fontSize: 11, color: MUTE, marginTop: 10 }}>Last updated {formatDateTime(rule.updatedAt)}</div>
+        )}
+      </Card>
+
+      <div style={{ fontWeight: 800, fontSize: 15, color: INK, marginBottom: 12 }}>Referral Activity</div>
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: "#FAFBFF" }}>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Referrer</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Total Referrals</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Converted (Purchased)</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Points Paid (Net)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading && rows.length === 0 && (
+                <tr><td colSpan={4} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>Loading…</td></tr>
+              )}
+              {rows.map((r) => (
+                <tr key={r.referrerId} style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontWeight: 700 }}>
+                    {r.referrerName || "—"}
+                    <div style={{ fontSize: 11, color: MUTE, fontWeight: 400 }}>{r.referrerPhone}</div>
+                  </td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{r.totalReferrals}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{r.convertedReferrals}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: GREEN }}>{r.totalPointsPaid}</td>
+                </tr>
+              ))}
+              {!loading && rows.length === 0 && (
+                <tr><td colSpan={4} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No referral activity yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 // Schedule Recharge: a customer's cancellation request on a scheduled (already
 // paid) recharge never auto-refunds — it lands here for the Super Admin to
 // approve (bookkeeping reversal + Macaash clawback, same as "Reverse
@@ -7168,6 +7314,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "payment-transactions" && <PaymentTransactionsPanel companies={companies} />}
           {active === "commissions" && <CommissionsPanel companies={companies} packages={packages} admin={admin} />}
           {active === "feedback" && <FeedbackPanel admin={admin} />}
+          {active === "referrals" && <ReferralRewardsPanel admin={admin} />}
           {active === "scheduled-cancellations" && <ScheduledCancellationsPanel />}
           {active === "pending-recovery" && <PendingRecoveryPanel />}
           {active === "execution-logs" && <ExecutionLogs companies={companies} />}
