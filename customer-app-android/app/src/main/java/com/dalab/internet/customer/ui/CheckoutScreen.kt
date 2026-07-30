@@ -1,7 +1,5 @@
 package com.dalab.internet.customer.ui
 
-import android.content.Intent
-import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -34,6 +32,7 @@ import com.dalab.internet.customer.prefs.LocalizationManager
 import com.dalab.internet.customer.queue.OrderCreateAction
 import com.dalab.internet.customer.queue.PendingActionQueue
 import com.dalab.internet.customer.queue.RetryClassifier
+import com.dalab.internet.customer.util.PaymentDialUtil
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -79,8 +78,8 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
     val clientRequestId = remember { UUID.randomUUID().toString() }
     val scope = rememberCoroutineScope()
 
-    // Schedule Recharge: payment still happens immediately either way (the
-    // dial + createOrder call below is unchanged) — this only lets the
+    // Schedule Recharge: the order is still created immediately either way
+    // (the createOrder call below is unchanged) — this only lets the
     // customer defer WHEN the provider-side USSD/data delivery happens.
     // scheduledDate/scheduledTime are only meaningful while scheduleEnabled
     // is on. Any date/time from now onward is valid — a choice that's
@@ -98,6 +97,13 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
         if (date != null && time != null) LocalDateTime.of(date, time).atZone(ZoneId.systemDefault()).toInstant() else null
     }
     val scheduleMissing = scheduleEnabled && scheduledInstant == null
+    // When true, Pay Now still creates the order but skips the payment
+    // dial prompt — the customer pays later from Order Details once the
+    // scheduled time arrives (see PaymentDialUtil / OrderDetailScreen).
+    // A manual payment sent early outside this prompt still gets captured
+    // by the existing pipeline unchanged; this only controls whether THIS
+    // screen prompts for payment right now.
+    val isFutureScheduled = scheduleEnabled && scheduledInstant?.isAfter(java.time.Instant.now()) == true
 
     // Loyalty Points discount — entirely optional; omitted (useLoyaltyPoints
     // toggle off, or the customer has 0 points) behaves identically to
@@ -257,6 +263,17 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
                 fontSize = 12.sp,
             )
         }
+        if (isFutureScheduled) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                LocalizationManager.tr(
+                    "Please wait until your scheduled payment time before sending payment.",
+                    "Fadlan sug ilaa waqtiga lacag-bixinta ee la qorsheeyay ka hor inta aadan diri lacagta.",
+                ),
+                color = MutedText,
+                fontSize = 12.sp,
+            )
+        }
 
         Spacer(Modifier.weight(1f))
 
@@ -291,29 +308,15 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
                         useLoyaltyPoints = pointsToUse.takeIf { it > 0 },
                     )
                     scope.launch {
-                        // Re-fetch the wallet fresh rather than trusting whatever was
-                        // loaded when the payment-method screen first opened — a Super
-                        // Admin change mid-checkout must still take effect. The payment
-                        // number here is always the WALLET's OWN provider's number
-                        // (server-joined via payment_wallets.company_id), independent of
-                        // which company's package is being purchased — cross-provider
-                        // payment (pay via one telecom, buy from another) is intentional.
-                        val freshWallet = try {
-                            ApiClient.service.getPaymentWallets().body()?.firstOrNull { it.id == wallet.id }
-                        } catch (e: Exception) {
-                            null
-                        }
-                        val freshPrefix = freshWallet?.dialPrefix ?: wallet.dialPrefix
-                        val freshPayNumber = freshWallet?.paymentNumber?.takeIf { it.isNotBlank() }
-                            ?: wallet.paymentNumber?.takeIf { it.isNotBlank() }
-
-                        val dialTarget = if (freshPayNumber != null) {
-                            "*$freshPrefix*$freshPayNumber*${"%.2f".format(finalAmount)}#"
-                        } else {
-                            null
-                        }
-                        if (dialTarget != null) {
-                            context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(dialTarget))))
+                        // A future-scheduled recharge doesn't prompt for payment here —
+                        // the customer pays later from Order Details once the scheduled
+                        // time arrives (see PaymentDialUtil/OrderDetailScreen). The order
+                        // is still created below either way.
+                        if (!isFutureScheduled) {
+                            val dialIntent = PaymentDialUtil.resolveDialIntent(wallet, finalAmount)
+                            if (dialIntent != null) {
+                                context.startActivity(dialIntent)
+                            }
                         }
 
                         try {

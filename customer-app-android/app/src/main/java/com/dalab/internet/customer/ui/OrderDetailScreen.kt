@@ -33,7 +33,9 @@ import com.dalab.internet.customer.network.ApiClient
 import com.dalab.internet.customer.network.RealtimeClient
 import com.dalab.internet.customer.network.UpdateScheduleRequest
 import com.dalab.internet.customer.prefs.LocalizationManager
+import com.dalab.internet.customer.util.PaymentDialUtil
 import com.dalab.internet.customer.util.formatApiDateTime
+import com.dalab.internet.customer.util.parseApiDate
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -228,7 +230,75 @@ fun OrderDetailScreen(initialOrder: CustomerOrder, onBack: () -> Unit) {
                         val pendingExecution = order.ussdGenerated == null
                         val cancellationRequestedAt = order.cancellationRequestedAt
                         if (pendingExecution && cancellationRequestedAt == null) {
-                            Spacer(Modifier.height(10.dp))
+                            // Checkout skips the payment dial for a future-scheduled
+                            // order (see CheckoutScreen.kt) -- this is the only place
+                            // left to trigger it once the scheduled time arrives. A
+                            // 15s-ticking clock is UI-gating only: the backend's own
+                            // pipeline is what actually verifies/completes payment
+                            // whenever it's sent, so a wrong client clock is never a
+                            // correctness risk, only a display nuisance.
+                            if (order.status == OrderStatus.PENDING) {
+                                Spacer(Modifier.height(10.dp))
+                                var nowTick by remember { mutableStateOf(java.util.Date()) }
+                                LaunchedEffect(scheduledAt) {
+                                    while (true) {
+                                        kotlinx.coroutines.delay(15_000)
+                                        nowTick = java.util.Date()
+                                    }
+                                }
+                                val scheduledDate = remember(scheduledAt) { parseApiDate(scheduledAt) }
+                                val isDue = scheduledDate == null || !scheduledDate.after(nowTick)
+                                var payBusy by remember { mutableStateOf(false) }
+                                var payError by remember { mutableStateOf<String?>(null) }
+                                if (!isDue) {
+                                    Text(
+                                        LocalizationManager.tr(
+                                            "Please wait until your scheduled payment time before sending payment.",
+                                            "Fadlan sug ilaa waqtiga lacag-bixinta ee la qorsheeyay ka hor inta aadan diri lacagta.",
+                                        ),
+                                        color = Color.Gray,
+                                        fontSize = 12.sp,
+                                    )
+                                    Spacer(Modifier.height(8.dp))
+                                }
+                                if (payError != null) {
+                                    Text(payError!!, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                                    Spacer(Modifier.height(6.dp))
+                                }
+                                Button(
+                                    onClick = {
+                                        payBusy = true
+                                        payError = null
+                                        scope.launch {
+                                            try {
+                                                val wallet = ApiClient.service.getPaymentWallets().body()
+                                                    ?.firstOrNull { it.name == order.paymentMethod }
+                                                val dialIntent = wallet?.let { PaymentDialUtil.resolveDialIntent(it, order.amount) }
+                                                if (dialIntent != null) {
+                                                    context.startActivity(dialIntent)
+                                                } else {
+                                                    payError = LocalizationManager.tr(
+                                                        "Couldn't find your payment number. Please try again.",
+                                                        "Lama helin lambarka lacag-bixinta. Fadlan isku day mar kale.",
+                                                    )
+                                                }
+                                            } catch (e: Exception) {
+                                                payError = LocalizationManager.tr(
+                                                    "Couldn't start payment. Please try again.",
+                                                    "Lacag-bixinta lama bilaabi karin. Fadlan isku day mar kale.",
+                                                )
+                                            }
+                                            payBusy = false
+                                        }
+                                    },
+                                    enabled = isDue && !payBusy,
+                                    colors = ButtonDefaults.buttonColors(containerColor = SchedulePurple),
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text(LocalizationManager.tr("Pay Now", "Hadda Bixi"))
+                                }
+                                Spacer(Modifier.height(10.dp))
+                            }
                             if (scheduleActionError != null) {
                                 Text(scheduleActionError!!, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                                 Spacer(Modifier.height(6.dp))
