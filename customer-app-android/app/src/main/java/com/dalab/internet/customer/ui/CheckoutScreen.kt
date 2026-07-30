@@ -4,7 +4,9 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Call
@@ -144,6 +146,11 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
             Text("Confirm Order", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
         }
 
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState()),
+        ) {
         Spacer(Modifier.height(gap))
         Surface(
             color = PanelBg,
@@ -274,8 +281,9 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
                 fontSize = 12.sp,
             )
         }
+        } // end scrollable content Column
 
-        Spacer(Modifier.weight(1f))
+        Spacer(Modifier.height(gap))
 
         val payEnabled = !submitting && !queued
         Box(
