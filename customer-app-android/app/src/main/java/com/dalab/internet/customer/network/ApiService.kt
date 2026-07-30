@@ -36,9 +36,32 @@ data class CreateOrderRequest(
     // delivery. Omitted (null) means "process immediately," the default and
     // only behavior before this field existed.
     val scheduledAt: String? = null,
+    // Referral / Loyalty Points: optional discount applied at order creation.
+    // Omitted (null) means "don't redeem any points," identical to today.
+    val useLoyaltyPoints: Int? = null,
 )
 
 data class UpdateScheduleRequest(val scheduledAt: String)
+
+// Referral / Loyalty Points — reuses the existing Macaash balance/ledger as
+// the one points currency; see admin-backend-ts's referrals.routes.ts.
+data class ReferralEntry(
+    val id: String,
+    val name: String?,
+    val phone: String,
+    val joinedAt: String,
+    val hasCompletedPurchase: Boolean,
+)
+
+data class ReferralInfo(
+    val referralCode: String,
+    val referralLink: String,
+    val pointsBalance: Int,
+    val pointsEarnedFromReferrals: Int,
+    val pointsUsedForDiscounts: Int,
+    val pointsPerDollarDiscount: Int,
+    val referrals: List<ReferralEntry>,
+)
 
 /**
  * Mirrors admin-backend-ts's routes exactly (src/routes/ *.routes.ts) — the
@@ -119,4 +142,7 @@ interface ApiService {
 
     @POST("orders/{id}/request-cancellation")
     suspend fun requestCancellation(@Path("id") id: String): Response<CustomerOrder>
+
+    @GET("customers/me/referral")
+    suspend fun getReferralInfo(): Response<ReferralInfo>
 }

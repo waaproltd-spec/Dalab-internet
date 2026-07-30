@@ -29,6 +29,7 @@ import com.dalab.internet.customer.data.PackageItem
 import com.dalab.internet.customer.data.PaymentWallet
 import com.dalab.internet.customer.network.ApiClient
 import com.dalab.internet.customer.network.CreateOrderRequest
+import com.dalab.internet.customer.network.ReferralInfo
 import com.dalab.internet.customer.prefs.LocalizationManager
 import com.dalab.internet.customer.queue.OrderCreateAction
 import com.dalab.internet.customer.queue.PendingActionQueue
@@ -98,6 +99,27 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
     }
     val scheduleMissing = scheduleEnabled && scheduledInstant == null
 
+    // Loyalty Points discount — entirely optional; omitted (useLoyaltyPoints
+    // toggle off, or the customer has 0 points) behaves identically to
+    // before this feature existed. finalAmount mirrors the backend's own
+    // capping logic (POST /orders) so the amount dialed via USSD always
+    // matches what the backend will actually charge.
+    var referralInfo by remember { mutableStateOf<ReferralInfo?>(null) }
+    var useLoyaltyPoints by remember { mutableStateOf(false) }
+    var pointsInput by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) {
+        try {
+            referralInfo = ApiClient.service.getReferralInfo().body()
+        } catch (_: Exception) {
+            // No points UI shown if this fails — checkout still works exactly as before.
+        }
+    }
+    val pointsBalance = referralInfo?.pointsBalance ?: 0
+    val pointsPerDollar = referralInfo?.pointsPerDollarDiscount ?: 100
+    val pointsToUse = if (useLoyaltyPoints) (pointsInput.toIntOrNull() ?: 0).coerceIn(0, pointsBalance) else 0
+    val discountAmount = (pointsToUse.toDouble() / pointsPerDollar).coerceAtMost(pkg.price)
+    val finalAmount = (pkg.price - discountAmount).coerceAtLeast(0.0)
+
     val compact = LocalConfiguration.current.screenHeightDp < 700
     val outerPadding = if (compact) 14.dp else 20.dp
     val gap = if (compact) 12.dp else 18.dp
@@ -144,12 +166,21 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
                 val hasDiscount = pkg.oldPrice != null && pkg.oldPrice > pkg.price
                 Row(verticalAlignment = Alignment.Bottom) {
                     Text(
-                        "$${"%.2f".format(pkg.price)}",
+                        "$${"%.2f".format(finalAmount)}",
                         color = DalabGreen,
                         fontWeight = FontWeight.Black,
                         fontSize = if (compact) 26.sp else 30.sp,
                     )
-                    if (hasDiscount) {
+                    if (pointsToUse > 0) {
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            "$${"%.2f".format(pkg.price)}",
+                            color = MutedText,
+                            fontSize = if (compact) 15.sp else 17.sp,
+                            textDecoration = TextDecoration.LineThrough,
+                            modifier = Modifier.padding(bottom = 4.dp),
+                        )
+                    } else if (hasDiscount) {
                         Spacer(Modifier.width(10.dp))
                         Text(
                             "$${"%.2f".format(pkg.oldPrice)}",
@@ -197,6 +228,23 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
             compact = compact,
         )
 
+        if (pointsBalance > 0) {
+            Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
+            LoyaltyPointsSection(
+                pointsBalance = pointsBalance,
+                pointsPerDollar = pointsPerDollar,
+                enabled = useLoyaltyPoints,
+                onEnabledChange = { checked ->
+                    useLoyaltyPoints = checked
+                    if (!checked) pointsInput = ""
+                },
+                pointsInput = pointsInput,
+                onPointsInputChange = { pointsInput = it },
+                discountAmount = discountAmount,
+                compact = compact,
+            )
+        }
+
         if (error != null) {
             Spacer(Modifier.height(8.dp))
             Text(error!!, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
@@ -240,6 +288,7 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
                         paymentMethod = wallet.name,
                         clientRequestId = clientRequestId,
                         scheduledAt = scheduledInstant?.toString(),
+                        useLoyaltyPoints = pointsToUse.takeIf { it > 0 },
                     )
                     scope.launch {
                         // Re-fetch the wallet fresh rather than trusting whatever was
@@ -259,7 +308,7 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
                             ?: wallet.paymentNumber?.takeIf { it.isNotBlank() }
 
                         val dialTarget = if (freshPayNumber != null) {
-                            "*$freshPrefix*$freshPayNumber*${"%.2f".format(pkg.price)}#"
+                            "*$freshPrefix*$freshPayNumber*${"%.2f".format(finalAmount)}#"
                         } else {
                             null
                         }
@@ -445,6 +494,87 @@ private fun ScheduleRechargeSection(
                         ),
                         color = MaterialTheme.colorScheme.error,
                         fontSize = 11.sp,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Optional discount applied at order creation — reuses the customer's
+ * existing Macaash/Loyalty Points balance (GET /customers/me/referral).
+ * Hidden entirely when the customer has 0 points, so a customer who never
+ * earned any sees no change to this screen at all.
+ */
+@Composable
+private fun LoyaltyPointsSection(
+    pointsBalance: Int,
+    pointsPerDollar: Int,
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    pointsInput: String,
+    onPointsInputChange: (String) -> Unit,
+    discountAmount: Double,
+    compact: Boolean,
+) {
+    Surface(
+        color = PanelBg,
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, PanelBorder),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = if (compact) 10.dp else 14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        LocalizationManager.tr("Use Loyalty Points", "Isticmaal Dhibcaha Daacadnimada"),
+                        color = Color.White,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 14.sp,
+                    )
+                    Text(
+                        LocalizationManager.tr(
+                            "You have $pointsBalance points ($pointsPerDollar = \$1 discount)",
+                            "Waxaad haysataa $pointsBalance dhibco ($pointsPerDollar = \$1 dhimis)",
+                        ),
+                        color = MutedText,
+                        fontSize = 11.sp,
+                    )
+                }
+                Switch(
+                    checked = enabled,
+                    onCheckedChange = onEnabledChange,
+                    colors = SwitchDefaults.colors(checkedTrackColor = DalabGreen),
+                )
+            }
+            if (enabled) {
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = pointsInput,
+                    onValueChange = { text -> if (text.all(Char::isDigit)) onPointsInputChange(text) },
+                    placeholder = { Text("0", color = MutedText) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = DalabGreen,
+                        unfocusedBorderColor = PanelBorder,
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        cursorColor = DalabGreen,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (discountAmount > 0) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        LocalizationManager.tr(
+                            "Discount: -\$${"%.2f".format(discountAmount)}",
+                            "Dhimis: -\$${"%.2f".format(discountAmount)}",
+                        ),
+                        color = DalabGreen,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
                     )
                 }
             }
