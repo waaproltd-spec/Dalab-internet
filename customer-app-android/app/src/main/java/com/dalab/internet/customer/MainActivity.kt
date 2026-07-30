@@ -6,11 +6,15 @@ import android.net.Network
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Receipt
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Receipt
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -33,7 +37,9 @@ import com.dalab.internet.customer.ui.NotificationsScreen
 import com.dalab.internet.customer.ui.OrderDetailScreen
 import com.dalab.internet.customer.ui.OrdersScreen
 import com.dalab.internet.customer.ui.OtpLoginScreen
+import com.dalab.internet.customer.ui.BottomNavItem
 import com.dalab.internet.customer.ui.PaymentMethodScreen
+import com.dalab.internet.customer.ui.PremiumBottomNav
 import com.dalab.internet.customer.ui.ProfileScreen
 import com.dalab.internet.customer.ui.SettingsScreen
 import kotlinx.coroutines.CoroutineScope
@@ -187,37 +193,44 @@ private fun CustomerHome(
 
     Scaffold(
         bottomBar = {
-            NavigationBar {
-                NavigationBarItem(
-                    selected = tab == HomeTab.HOME,
-                    onClick = { tab = HomeTab.HOME },
-                    icon = { Icon(Icons.Filled.Home, contentDescription = "Home") },
-                    label = { Text(LocalizationManager.tr("Home", "Guriga")) },
-                )
-                NavigationBarItem(
-                    selected = tab == HomeTab.ORDERS,
-                    onClick = { tab = HomeTab.ORDERS },
-                    icon = { Icon(Icons.Filled.Receipt, contentDescription = "Orders") },
-                    label = { Text(LocalizationManager.tr("Orders", "Dalabyada")) },
-                )
-                NavigationBarItem(
-                    selected = tab == HomeTab.PROFILE,
-                    onClick = { tab = HomeTab.PROFILE },
-                    icon = { Icon(Icons.Filled.Person, contentDescription = "Profile") },
-                    label = { Text(LocalizationManager.tr("Profile", "Xisaabta")) },
-                )
-            }
+            PremiumBottomNav(
+                items = listOf(
+                    BottomNavItem(
+                        label = LocalizationManager.tr("Home", "Guriga"),
+                        selectedIcon = Icons.Filled.Home,
+                        unselectedIcon = Icons.Outlined.Home,
+                        selected = tab == HomeTab.HOME,
+                        onClick = { tab = HomeTab.HOME },
+                    ),
+                    BottomNavItem(
+                        label = LocalizationManager.tr("Orders", "Dalabyada"),
+                        selectedIcon = Icons.Filled.Receipt,
+                        unselectedIcon = Icons.Outlined.Receipt,
+                        selected = tab == HomeTab.ORDERS,
+                        onClick = { tab = HomeTab.ORDERS },
+                    ),
+                    BottomNavItem(
+                        label = LocalizationManager.tr("Profile", "Xisaabta"),
+                        selectedIcon = Icons.Filled.Person,
+                        unselectedIcon = Icons.Outlined.Person,
+                        selected = tab == HomeTab.PROFILE,
+                        onClick = { tab = HomeTab.PROFILE },
+                    ),
+                ),
+            )
         }
     ) { padding ->
         Box(modifier = Modifier.padding(padding)) {
-            when (tab) {
-                HomeTab.HOME -> HomeScreen(
-                    onOpenCompany = onOpenCompany,
-                    onOpenNotifications = { showNotifications = true },
-                    onOpenSettings = { showSettings = true },
-                )
-                HomeTab.ORDERS -> OrdersScreen(onOpenOrder = onOpenOrder)
-                HomeTab.PROFILE -> ProfileScreen(onLogout = onLogout, onOpenOrders = { tab = HomeTab.ORDERS })
+            Crossfade(targetState = tab, label = "homeTabCrossfade") { currentTab ->
+                when (currentTab) {
+                    HomeTab.HOME -> HomeScreen(
+                        onOpenCompany = onOpenCompany,
+                        onOpenNotifications = { showNotifications = true },
+                        onOpenSettings = { showSettings = true },
+                    )
+                    HomeTab.ORDERS -> OrdersScreen(onOpenOrder = onOpenOrder)
+                    HomeTab.PROFILE -> ProfileScreen(onLogout = onLogout, onOpenOrders = { tab = HomeTab.ORDERS })
+                }
             }
         }
     }
