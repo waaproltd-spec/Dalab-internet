@@ -79,10 +79,6 @@ dependencies {
     // loading/caching is actually needed.
     implementation("io.coil-kt:coil-compose:2.6.0")
 
-    // QR code generation for the payment bottom sheet — encodes the same
-    // USSD dial string already built for the wallet dial, client-side only.
-    implementation("com.google.zxing:core:3.5.3")
-
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
 }

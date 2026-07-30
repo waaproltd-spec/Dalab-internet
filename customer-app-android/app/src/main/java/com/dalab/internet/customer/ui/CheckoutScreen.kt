@@ -62,17 +62,7 @@ private val MutedText = Color(0xFF9CA3B8)
  * mid-checkout.
  */
 @Composable
-fun CheckoutScreen(
-    company: Company,
-    pkg: PackageItem,
-    wallet: PaymentWallet,
-    onBack: () -> Unit,
-    // dialTarget/finalAmount are passed through so the Payment Bottom Sheet
-    // (shown by the caller right after this) can display/re-dial the exact
-    // same USSD string this screen already resolved and auto-dialed once —
-    // never a second, independently-recomputed dial string.
-    onOrderCreated: (order: CustomerOrder, dialTarget: String?, finalAmount: Double) -> Unit,
-) {
+fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, onBack: () -> Unit, onOrderCreated: (CustomerOrder) -> Unit) {
     val context = LocalContext.current
     // Always start empty — never default to the logged-in account's phone or
     // any payment number. The customer must type the real sending/receiving
@@ -330,7 +320,7 @@ fun CheckoutScreen(
                             val response = RetryClassifier.requireSuccessful(ApiClient.service.createOrder(request))
                             val order = response.body()
                             if (order != null) {
-                                onOrderCreated(order, dialTarget, finalAmount)
+                                onOrderCreated(order)
                             } else {
                                 error = "Couldn't place this order. Please try again."
                             }
