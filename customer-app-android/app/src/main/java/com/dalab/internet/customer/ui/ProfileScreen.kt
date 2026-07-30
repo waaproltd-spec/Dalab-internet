@@ -1,6 +1,9 @@
 package com.dalab.internet.customer.ui
 
 import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
@@ -25,9 +28,11 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Logout
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.CardGiftcard
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -47,6 +52,7 @@ import androidx.compose.ui.unit.sp
 import com.dalab.internet.customer.auth.SessionManager
 import com.dalab.internet.customer.network.ApiClient
 import com.dalab.internet.customer.network.PinBody
+import com.dalab.internet.customer.network.ReferralInfo
 import com.dalab.internet.customer.network.UpdateProfileRequest
 import com.dalab.internet.customer.prefs.LocalizationManager
 import kotlinx.coroutines.launch
@@ -70,6 +76,8 @@ fun ProfileScreen(onLogout: () -> Unit, onOpenOrders: () -> Unit) {
     // Support since this session started.
     var isPinSet by remember { mutableStateOf(SessionManager.isPinSet()) }
     var contentVisible by remember { mutableStateOf(false) }
+    var referralInfo by remember { mutableStateOf<ReferralInfo?>(null) }
+    var showReferralHistory by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val compact = LocalConfiguration.current.screenHeightDp < 700
 
@@ -82,6 +90,11 @@ fun ProfileScreen(onLogout: () -> Unit, onOpenOrders: () -> Unit) {
             }
         } catch (_: Exception) {
             // Keep whatever was last known locally — not worth surfacing an error for.
+        }
+        try {
+            referralInfo = ApiClient.service.getReferralInfo().body()
+        } catch (_: Exception) {
+            // Loyalty Points card just stays hidden until the next visit — not worth an error dialog.
         }
     }
 
@@ -145,6 +158,27 @@ fun ProfileScreen(onLogout: () -> Unit, onOpenOrders: () -> Unit) {
                 enter = fadeIn(tween(350)) + slideInVertically(tween(350)) { it / 10 },
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
+                    referralInfo?.let { info ->
+                        LoyaltyPointsCard(
+                            info = info,
+                            onShare = {
+                                val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(
+                                        Intent.EXTRA_TEXT,
+                                        "Join me on DALAB Internet and get fast, reliable data packages! Sign up with my referral link: ${info.referralLink}",
+                                    )
+                                }
+                                context.startActivity(Intent.createChooser(shareIntent, "Share your referral link"))
+                            },
+                            onCopy = {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                clipboard.setPrimaryClip(ClipData.newPlainText("Referral link", info.referralLink))
+                            },
+                            onViewHistory = { showReferralHistory = true },
+                        )
+                        Spacer(Modifier.height(16.dp))
+                    }
                     Surface(
                         shape = RoundedCornerShape(20.dp),
                         color = MaterialTheme.colorScheme.surface,
@@ -439,6 +473,149 @@ fun ProfileScreen(onLogout: () -> Unit, onOpenOrders: () -> Unit) {
                 TextButton(onClick = { closeDialog() }, enabled = !saving) { Text("Cancel") }
             },
         )
+    }
+
+    if (showReferralHistory) {
+        AlertDialog(
+            onDismissRequest = { showReferralHistory = false },
+            title = { Text(LocalizationManager.tr("Referral History", "Taariikhda Wadaagida")) },
+            text = {
+                val entries = referralInfo?.referrals.orEmpty()
+                if (entries.isEmpty()) {
+                    Text(
+                        LocalizationManager.tr(
+                            "No one has joined with your referral link yet.",
+                            "Wali qofna ma isticmaalin xiriirkaaga wadaagida.",
+                        ),
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                        entries.forEach { entry ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(entry.name?.takeIf { it.isNotBlank() } ?: entry.phone, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                                    Text(entry.phone, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Text(
+                                    if (entry.hasCompletedPurchase) {
+                                        LocalizationManager.tr("Purchased", "Wax soo iibsaday")
+                                    } else {
+                                        LocalizationManager.tr("Joined", "Ku biiray")
+                                    },
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = if (entry.hasCompletedPurchase) HeaderEnd else MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Divider()
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showReferralHistory = false }) { Text("Close") }
+            },
+        )
+    }
+}
+
+/** Loyalty Points summary card: balance, referral link (share/copy), earned
+ * vs. used, and an entry point into the full referral history dialog.
+ * Reuses the existing Macaash balance/ledger server-side — this card is
+ * purely a presentation layer over GET /customers/me/referral. */
+@Composable
+private fun LoyaltyPointsCard(info: ReferralInfo, onShare: () -> Unit, onCopy: () -> Unit, onViewHistory: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surface,
+        modifier = Modifier.fillMaxWidth().shadow(3.dp, RoundedCornerShape(20.dp)),
+    ) {
+        Column(modifier = Modifier.padding(18.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(HeaderEnd.copy(alpha = 0.14f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Filled.CardGiftcard, contentDescription = null, tint = HeaderEnd, modifier = Modifier.size(18.dp))
+                }
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    LocalizationManager.tr("Loyalty Points", "Dhibcaha Daacadnimada"),
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp,
+                )
+            }
+            Spacer(Modifier.height(14.dp))
+            Text("${info.pointsBalance}", fontWeight = FontWeight.Bold, fontSize = 30.sp, color = HeaderEnd)
+            Text(
+                LocalizationManager.tr("points available", "dhibco diyaar ah"),
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(14.dp))
+            Row(modifier = Modifier.fillMaxWidth()) {
+                LoyaltyStat(
+                    label = LocalizationManager.tr("Earned", "La helay"),
+                    value = "${info.pointsEarnedFromReferrals}",
+                    modifier = Modifier.weight(1f),
+                )
+                LoyaltyStat(
+                    label = LocalizationManager.tr("Used for discounts", "Loo isticmaalay dhimis"),
+                    value = "${info.pointsUsedForDiscounts}",
+                    modifier = Modifier.weight(1f),
+                )
+                LoyaltyStat(
+                    label = LocalizationManager.tr("Referred", "La wadaagay"),
+                    value = "${info.referrals.size}",
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Spacer(Modifier.height(14.dp))
+            Text(
+                LocalizationManager.tr("Your referral link", "Xiriirkaaga wadaagida"),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(HeaderEnd.copy(alpha = 0.08f))
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(info.referralCode, modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                IconButton(onClick = onCopy, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Filled.ContentCopy, contentDescription = "Copy", tint = HeaderEnd, modifier = Modifier.size(18.dp))
+                }
+                Spacer(Modifier.width(4.dp))
+                IconButton(onClick = onShare, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Filled.Share, contentDescription = "Share", tint = HeaderEnd, modifier = Modifier.size(18.dp))
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            TextButton(onClick = onViewHistory, modifier = Modifier.fillMaxWidth()) {
+                Text(LocalizationManager.tr("View Referral History", "Eeg Taariikhda Wadaagida"))
+            }
+        }
+    }
+}
+
+@Composable
+private fun LoyaltyStat(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(value, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+        Text(label, fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
     }
 }
 
