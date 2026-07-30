@@ -82,9 +82,15 @@ fun PremiumBottomNav(items: List<BottomNavItem>) {
             .padding(horizontal = 20.dp, vertical = 16.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Row(
+        // Decorative glass layer only — shadow/gradient/blur/border live here,
+        // entirely separate from the icon/label content below. Blurring this
+        // box alone (rather than wrapping the Row that contains it) is what
+        // keeps the icons and labels sharp: a blur modifier blurs everything
+        // drawn inside it, so it must never wrap real content.
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
+                .height(72.dp)
                 .shadow(
                     elevation = 18.dp,
                     shape = RoundedCornerShape(28.dp),
@@ -99,7 +105,12 @@ fun PremiumBottomNav(items: List<BottomNavItem>) {
                     width = 1.dp,
                     brush = Brush.linearGradient(listOf(Color.White.copy(alpha = 0.35f), Color.White.copy(alpha = 0.05f))),
                     shape = RoundedCornerShape(28.dp),
-                )
+                ),
+        )
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
                 .height(72.dp)
                 .padding(horizontal = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
