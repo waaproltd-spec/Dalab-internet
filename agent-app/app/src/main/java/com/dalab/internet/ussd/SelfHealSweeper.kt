@@ -74,7 +74,7 @@ object SelfHealSweeper {
                 DiagnosticsLog.record(
                     "self_heal_sweep",
                     "Order ${order.id} self-heal dial result: ${result.outcome}${result.responseMessage?.let { " — $it" } ?: ""}",
-                    isError = result.outcome != DialOutcome.SUCCESS,
+                    isError = result.outcome != DialOutcome.SUCCESS && result.outcome != DialOutcome.DUPLICATE_SKIPPED,
                 )
             } finally {
                 mutex.withLock { inFlight.remove(order.id) }

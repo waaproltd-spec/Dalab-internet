@@ -11,6 +11,8 @@ import com.dalab.internet.network.VerifyPaymentRequest
 import com.dalab.internet.queue.PendingActionQueue
 import com.dalab.internet.queue.RetryClassifier
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 
 /** Gson-serialized payload for a queued dial-attempt audit replay — carries
@@ -42,6 +44,22 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
     private val dialer = UssdDialer(context)
 
     suspend fun processMatchedOrder(orderId: String, smsLogId: String?): DialResult {
+        if (!claimOrder(orderId)) {
+            DiagnosticsLog.record(
+                "duplicate_dial_guard",
+                "Order $orderId is already being processed by another in-flight call on this device (e.g. a concurrent self-heal sweep or manual retry) — skipping to prevent a duplicate recharge.",
+                isError = false,
+            )
+            return DialResult(DialOutcome.DUPLICATE_SKIPPED, "Already being processed — skipped to avoid a duplicate recharge.")
+        }
+        try {
+            return processMatchedOrderLocked(orderId, smsLogId)
+        } finally {
+            releaseOrder(orderId)
+        }
+    }
+
+    private suspend fun processMatchedOrderLocked(orderId: String, smsLogId: String?): DialResult {
         // Step 1: verify payment (pending -> in_progress), which also triggers
         // the backend's own USSD string generation (see dalab-backend.zip,
         // routes/orders.js -> generateUssdForOrder).
@@ -108,6 +126,22 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
      * this resolving it from SimRoutingRepository/the template override.
      */
     suspend fun executeManually(orderId: String, forcedSimSlot: Int): DialResult {
+        if (!claimOrder(orderId)) {
+            DiagnosticsLog.record(
+                "duplicate_dial_guard",
+                "Order $orderId is already being processed by another in-flight call on this device (e.g. a concurrent self-heal sweep or the automatic SMS-triggered path) — skipping to prevent a duplicate recharge.",
+                isError = false,
+            )
+            return DialResult(DialOutcome.DUPLICATE_SKIPPED, "Already being processed — skipped to avoid a duplicate recharge.")
+        }
+        try {
+            return executeManuallyLocked(orderId, forcedSimSlot)
+        } finally {
+            releaseOrder(orderId)
+        }
+    }
+
+    private suspend fun executeManuallyLocked(orderId: String, forcedSimSlot: Int): DialResult {
         val verifyResponse = try {
             RetryClassifier.requireSuccessful(ApiClient.service.verifyPayment(orderId, VerifyPaymentRequest(null)))
         } catch (e: Exception) {
@@ -228,6 +262,27 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
     }
 
     companion object {
+        // Process-wide (not per-instance): OrderDetailScreen, OrdersListScreen,
+        // SmsUploadFlow, and SelfHealSweeper each construct their own
+        // UssdOrchestrator instance, so an instance-level lock would do
+        // nothing to stop two of them racing on the SAME orderId at the same
+        // time -- confirmed root cause of a real incident where one payment
+        // produced two real USSD dials/deductions (the direct SMS-triggered
+        // path and a concurrent self-heal sweep both passed the existing
+        // already-COMPLETED check, since neither dial had finished yet, and
+        // both proceeded to physically dial). This is the single choke point
+        // both processMatchedOrder and executeManually now go through.
+        private val inFlightMutex = Mutex()
+        private val inFlightOrderIds = mutableSetOf<String>()
+
+        private suspend fun claimOrder(orderId: String): Boolean = inFlightMutex.withLock {
+            if (orderId in inFlightOrderIds) false else { inFlightOrderIds.add(orderId); true }
+        }
+
+        private suspend fun releaseOrder(orderId: String) {
+            inFlightMutex.withLock { inFlightOrderIds.remove(orderId) }
+        }
+
         /** Replays a queued [DialAttemptAuditAction] — called by QueueDrainer.
          * Lets any exception propagate so the caller can classify it via
          * RetryClassifier (retryable -> keep queued, terminal -> drop). */
