@@ -1,31 +1,41 @@
 package com.dalab.internet.customer.util
 
 import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
-/**
- * Formats an API timestamp for display. admin-backend-ts (Postgres) returns
- * full ISO 8601 ("2026-07-25T08:34:50.000Z"). Falls back to the raw string
- * if parsing fails, so a display bug is never a crash.
- */
-fun formatApiDateTime(raw: String?): String {
-    if (raw.isNullOrBlank()) return "—"
+private val API_DATE_FORMATS = listOf(
+    "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
+    "yyyy-MM-dd'T'HH:mm:ss'Z'",
+    "yyyy-MM-dd HH:mm:ss",
+)
 
-    val inputFormats = listOf(
-        "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
-        "yyyy-MM-dd'T'HH:mm:ss'Z'",
-        "yyyy-MM-dd HH:mm:ss",
-    )
-    for (pattern in inputFormats) {
+/**
+ * Parses an API timestamp. admin-backend-ts (Postgres) returns full ISO 8601
+ * ("2026-07-25T08:34:50.000Z"). Returns null (never throws) if none of the
+ * known formats match, so a parsing gap is a no-op, never a crash.
+ */
+fun parseApiDate(raw: String?): Date? {
+    if (raw.isNullOrBlank()) return null
+    for (pattern in API_DATE_FORMATS) {
         try {
             val parser = SimpleDateFormat(pattern, Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
-            val date = parser.parse(raw) ?: continue
-            val output = SimpleDateFormat("MMM d, yyyy 'at' h:mm a", Locale.US)
-            return output.format(date)
+            return parser.parse(raw) ?: continue
         } catch (_: Exception) {
             continue
         }
     }
-    return raw // never crash the UI over a date string we couldn't parse
+    return null
+}
+
+/**
+ * Formats an API timestamp for display. Falls back to the raw string if
+ * parsing fails, so a display bug is never a crash.
+ */
+fun formatApiDateTime(raw: String?): String {
+    if (raw.isNullOrBlank()) return "—"
+    val date = parseApiDate(raw) ?: return raw
+    val output = SimpleDateFormat("MMM d, yyyy 'at' h:mm a", Locale.US)
+    return output.format(date)
 }
