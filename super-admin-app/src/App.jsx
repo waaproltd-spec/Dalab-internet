@@ -1280,11 +1280,17 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
       </div>
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
+        {/* This table has enough columns (MB/Min/SMS/Validity/Provider Amt/
+            Status) that it overflows a phone-width viewport; without this
+            scroll wrapper the Card's own overflow:"hidden" (needed for its
+            rounded corners) would clip the trailing Edit/Delete column
+            instead of letting you scroll to it. */}
+        <div style={{ overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: "#FAFBFF" }}>
               {["Package", "Company", "Old price", "Price", "Provider Amt", "MB", "Min", "SMS", "Validity", ...(DALAB_API_ENABLED ? ["Status"] : []), ""].map((h) => (
-                <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
+                <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700, whiteSpace: "nowrap" }}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -1320,6 +1326,7 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
             )}
           </tbody>
         </table>
+        </div>
       </Card>
 
       {editing && (
