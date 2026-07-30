@@ -7,6 +7,11 @@
          is open (see sms/OtpSmsListener.kt) — registered dynamically for that
          window only, never a manifest-declared always-on receiver. -->
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <!-- Only used to detect and label a device's active SIMs (e.g. "SIM 1:
+         Hormuud Telecom") in the payment bottom sheet's dual-SIM picker
+         before dialing via ACTION_DIAL — requested at runtime only when that
+         dialog would actually be shown; never used to place calls directly. -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
 
     <application
         android:name=".DalabCustomerApp"
