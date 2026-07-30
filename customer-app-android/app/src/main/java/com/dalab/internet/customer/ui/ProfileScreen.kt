@@ -21,15 +21,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Call
-import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.CardGiftcard
@@ -60,11 +57,10 @@ import kotlinx.coroutines.launch
 private val HeaderStart = Color(0xFF1D2E8C)
 private val HeaderEnd = Color(0xFF16A34A)
 private val DangerRed = Color(0xFFDC2626)
-private const val SUPPORT_PHONE = "252610338686"
 private const val PACKAGE_NAME = "com.dalab.internet.customer"
 
 @Composable
-fun ProfileScreen(onLogout: () -> Unit, onOpenOrders: () -> Unit) {
+fun ProfileScreen(onLogout: () -> Unit) {
     val context = LocalContext.current
     var customer by remember { mutableStateOf(SessionManager.currentCustomer()) }
     var showEditDialog by remember { mutableStateOf(false) }
@@ -186,11 +182,6 @@ fun ProfileScreen(onLogout: () -> Unit, onOpenOrders: () -> Unit) {
                     ) {
                         Column(modifier = Modifier.padding(vertical = 4.dp)) {
                             ProfileMenuRow(
-                                icon = Icons.Filled.Receipt,
-                                label = LocalizationManager.tr("My Orders", "Dalabyadayda"),
-                                onClick = onOpenOrders,
-                            )
-                            ProfileMenuRow(
                                 icon = Icons.Filled.Lock,
                                 label = if (isPinSet) {
                                     LocalizationManager.tr("Login PIN", "PIN-ka Gelitaanka")
@@ -198,20 +189,6 @@ fun ProfileScreen(onLogout: () -> Unit, onOpenOrders: () -> Unit) {
                                     LocalizationManager.tr("Create Login PIN", "Samee PIN Gelitaan")
                                 },
                                 onClick = { showPinDialog = true },
-                            )
-                            ProfileMenuRow(
-                                icon = Icons.Filled.Call,
-                                label = "Call Us",
-                                onClick = {
-                                    context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$SUPPORT_PHONE")))
-                                },
-                            )
-                            ProfileMenuRow(
-                                icon = Icons.Filled.Chat,
-                                label = "WhatsApp",
-                                onClick = {
-                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$SUPPORT_PHONE")))
-                                },
                             )
                             ProfileMenuRow(
                                 icon = Icons.Filled.Star,
@@ -224,20 +201,6 @@ fun ProfileScreen(onLogout: () -> Unit, onOpenOrders: () -> Unit) {
                                             Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=$PACKAGE_NAME"))
                                         )
                                     }
-                                },
-                            )
-                            ProfileMenuRow(
-                                icon = Icons.Filled.Share,
-                                label = LocalizationManager.tr("Share with Friends", "La wadaag Saaxiibada"),
-                                onClick = {
-                                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                        type = "text/plain"
-                                        putExtra(
-                                            Intent.EXTRA_TEXT,
-                                            "Buy internet packages fast with DALAB Internet: https://play.google.com/store/apps/details?id=$PACKAGE_NAME",
-                                        )
-                                    }
-                                    context.startActivity(Intent.createChooser(shareIntent, "Share DALAB Internet"))
                                 },
                                 showDivider = false,
                             )
