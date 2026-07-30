@@ -38,7 +38,6 @@ import com.dalab.internet.customer.ui.OrderDetailScreen
 import com.dalab.internet.customer.ui.OrdersScreen
 import com.dalab.internet.customer.ui.OtpLoginScreen
 import com.dalab.internet.customer.ui.BottomNavItem
-import com.dalab.internet.customer.ui.PaymentBottomSheet
 import com.dalab.internet.customer.ui.PaymentMethodScreen
 import com.dalab.internet.customer.ui.PremiumBottomNav
 import com.dalab.internet.customer.ui.ProfileScreen
@@ -112,11 +111,6 @@ private fun CustomerApp() {
     var selectedWallet by remember { mutableStateOf<PaymentWallet?>(null) }
     var selectedOrder by remember { mutableStateOf<CustomerOrder?>(null) }
 
-    // Modern Payment Bottom Sheet: shown as an overlay right after an order
-    // is created, on top of whatever screen it navigates to next (Order
-    // Detail) — never a separate Screen state, so it doesn't affect back-nav.
-    var paymentSheetState by remember { mutableStateOf<Triple<CustomerOrder, String?, Double>?>(null) }
-
     when (screen) {
         Screen.LOGIN -> OtpLoginScreen(onLoggedIn = { screen = Screen.HOME })
 
@@ -166,11 +160,7 @@ private fun CustomerApp() {
                     pkg = pkg,
                     wallet = wallet,
                     onBack = { screen = Screen.PAYMENT_METHOD },
-                    onOrderCreated = { order, dialTarget, finalAmount ->
-                        selectedOrder = order
-                        screen = Screen.ORDER_DETAIL
-                        paymentSheetState = Triple(order, dialTarget, finalAmount)
-                    },
+                    onOrderCreated = { order -> selectedOrder = order; screen = Screen.ORDER_DETAIL },
                 )
             }
         }
@@ -178,17 +168,6 @@ private fun CustomerApp() {
         Screen.ORDER_DETAIL -> selectedOrder?.let { order ->
             OrderDetailScreen(initialOrder = order, onBack = { screen = Screen.HOME })
         }
-    }
-
-    paymentSheetState?.let { (order, dialTarget, finalAmount) ->
-        PaymentBottomSheet(
-            initialOrder = order,
-            packageName = checkoutSelection?.second?.name ?: order.packageName,
-            amount = finalAmount,
-            dialTarget = dialTarget,
-            onDismiss = { paymentSheetState = null },
-            onCompleted = { paymentSheetState = null },
-        )
     }
 }
 
