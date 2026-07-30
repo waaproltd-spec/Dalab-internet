@@ -247,7 +247,7 @@ private fun PermissionStatusRow(label: String, ok: Boolean, okLabel: String, not
  * (hides the section entirely) on a manufacturer with no known screen for
  * this, rather than guessing at a component that doesn't exist.
  */
-private fun resolveOemAutostartIntent(context: Context): Intent? {
+internal fun resolveOemAutostartIntent(context: Context): Intent? {
     val candidates: List<Pair<String, String>> = when (Build.MANUFACTURER.lowercase()) {
         "xiaomi" -> listOf("com.miui.securitycenter" to "com.miui.permcenter.autostart.AutoStartManagementActivity")
         "huawei", "honor" -> listOf(

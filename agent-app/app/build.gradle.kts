@@ -64,6 +64,10 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended:1.6.7")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.0")
+    // Backstop for AgentBackgroundService: survives process death outside of a
+    // reboot (Doze/OEM kill) since WorkManager's own scheduler can restart it
+    // even when the app's own process is gone.
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
 
     implementation("com.squareup.retrofit2:retrofit:2.11.0")
     implementation("com.squareup.retrofit2:converter-gson:2.11.0")

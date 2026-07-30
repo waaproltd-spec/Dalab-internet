@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -43,6 +44,7 @@ import com.dalab.internet.ui.OrderDetailScreen
 import com.dalab.internet.ui.OrdersListScreen
 import com.dalab.internet.ui.PackagesScreen
 import com.dalab.internet.ui.PermissionsStatusScreen
+import com.dalab.internet.ui.ReliabilitySetupScreen
 import com.dalab.internet.ui.ReportsScreen
 import com.dalab.internet.ui.SmsPermissionScreen
 import com.dalab.internet.ui.TransactionHistoryScreen
@@ -107,7 +109,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, DIAGNOSTICS, PERMISSIONS_STATUS }
+private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, DIAGNOSTICS, PERMISSIONS_STATUS }
 private enum class HomeTab { ORDERS, SALES, CUSTOMERS, REPORTS, MORE }
 
 @Composable
@@ -119,14 +121,25 @@ private fun AgentApp() {
         ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
     }
 
+    // Battery-optimization exemption is the #1 real-world cause of stale
+    // heartbeats / SMS monitoring silently stopping — this is checked once
+    // per cold start (not on every recomposition) so ReliabilitySetupScreen
+    // is shown once per app launch until it's actually granted.
+    fun batteryUnrestricted(): Boolean {
+        val powerManager = context.getSystemService(PowerManager::class.java) ?: return true
+        return powerManager.isIgnoringBatteryOptimizations(context.packageName)
+    }
+
     // There is no login screen: once a device is chosen, the app authenticates
     // itself against whichever agent is assigned to it (see AutoLoginScreen).
     // A session normally outlives the app (it's only ever cleared by an
     // explicit backend revocation), so on every subsequent open this resolves
-    // straight to HOME with no network round-trip at all.
+    // straight to HOME (or RELIABILITY_SETUP first, if still unexempted) with
+    // no network round-trip at all.
     fun nextScreen() = when {
         !DeviceIdentity.isSet() -> Screen.DEVICE_SETUP
         !SessionManager.isLoggedIn() -> Screen.AUTHENTICATING
+        !batteryUnrestricted() -> Screen.RELIABILITY_SETUP
         else -> Screen.HOME
     }
 
@@ -184,10 +197,12 @@ private fun AgentApp() {
         Screen.AUTHENTICATING -> AutoLoginScreen(
             onSuccess = {
                 AgentBackgroundService.start(context)
-                screen = Screen.HOME
+                screen = if (batteryUnrestricted()) Screen.HOME else Screen.RELIABILITY_SETUP
             },
             onChooseDifferentDevice = { screen = Screen.DEVICE_SETUP },
         )
+
+        Screen.RELIABILITY_SETUP -> ReliabilitySetupScreen(onContinue = { screen = Screen.HOME })
 
         Screen.HOME -> AgentHome(
             onOpenOrder = { order -> selectedOrder = order; screen = Screen.ORDER_DETAIL },

@@ -173,6 +173,33 @@ class AgentBackgroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
+    // Several OEM ROMs (MIUI, ColorOS, FuntouchOS, etc.) kill every background
+    // process of an app the instant its task is swiped from Recents,
+    // regardless of this service's lack of android:stopWithTask and its
+    // START_STICKY return value. This schedules a near-immediate restart via
+    // AlarmManager (no special "exact alarm" permission needed) as a fast
+    // path — the WorkManager watchdog below only checks every ~15 minutes.
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        try {
+            val restartIntent = Intent(applicationContext, AgentBackgroundService::class.java)
+            val flags = android.app.PendingIntent.FLAG_ONE_SHOT or android.app.PendingIntent.FLAG_IMMUTABLE
+            val pendingIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                android.app.PendingIntent.getForegroundService(applicationContext, 0, restartIntent, flags)
+            } else {
+                android.app.PendingIntent.getService(applicationContext, 0, restartIntent, flags)
+            }
+            val alarmManager = getSystemService(Context.ALARM_SERVICE) as? android.app.AlarmManager
+            alarmManager?.setAndAllowWhileIdle(
+                android.app.AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                android.os.SystemClock.elapsedRealtime() + 1_000L,
+                pendingIntent,
+            )
+        } catch (e: Exception) {
+            DiagnosticsLog.record("background_service_task_removed", "Restart scheduling failed: ${e.stackTraceToString().take(2000)}")
+        }
+    }
+
     override fun onDestroy() {
         networkCallback?.let {
             (getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager)?.unregisterNetworkCallback(it)
@@ -209,9 +236,14 @@ class AgentBackgroundService : Service() {
             if (deviceId != null && SessionManager.isLoggedIn()) {
                 try {
                     ApiClient.service.sendHeartbeat(deviceId, buildHeartbeat())
-                } catch (_: Exception) {
+                } catch (e: Exception) {
                     // Best-effort — the next tick tries again; a dropped heartbeat
-                    // just shows as a stale "last seen" on the dashboard.
+                    // just shows as a stale "last seen" on the dashboard. Now
+                    // logged locally too (previously silent) so a technician
+                    // debugging a stale-heartbeat report has on-device evidence
+                    // of network/backend failures vs. the process having been
+                    // killed outright (which would leave no trace here at all).
+                    DiagnosticsLog.record("heartbeat_loop", "sendHeartbeat failed: ${e.stackTraceToString().take(2000)}")
                 }
             }
             delay(HEARTBEAT_INTERVAL_MS)
@@ -365,6 +397,10 @@ class AgentBackgroundService : Service() {
             } else {
                 context.startService(intent)
             }
+            // Single choke point: every call site that starts this service
+            // (MainActivity on cold start, AutoLoginScreen on success,
+            // BootReceiver after a reboot) also gets the watchdog for free.
+            HeartbeatWatchdogWorker.schedule(context)
         }
 
         fun stop(context: Context) {

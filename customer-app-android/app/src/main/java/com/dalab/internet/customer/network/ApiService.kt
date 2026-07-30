@@ -31,7 +31,14 @@ data class CreateOrderRequest(
     val receiverPhone: String? = null,
     val paymentMethod: String? = null,
     val clientRequestId: String? = null,
+    // Schedule Recharge: ISO-8601 timestamp string. Payment still happens
+    // immediately either way — this only defers the provider-side USSD/data
+    // delivery. Omitted (null) means "process immediately," the default and
+    // only behavior before this field existed.
+    val scheduledAt: String? = null,
 )
+
+data class UpdateScheduleRequest(val scheduledAt: String)
 
 /**
  * Mirrors admin-backend-ts's routes exactly (src/routes/ *.routes.ts) — the
@@ -103,4 +110,13 @@ interface ApiService {
 
     @GET("orders/{id}")
     suspend fun getOrder(@Path("id") id: String): Response<CustomerOrder>
+
+    // Schedule Recharge: both only succeed while the order's schedule hasn't
+    // executed yet (ussd_generated still null) and no cancellation request is
+    // already pending — the backend enforces this, not just the UI.
+    @PUT("orders/{id}/schedule")
+    suspend fun updateSchedule(@Path("id") id: String, @Body body: UpdateScheduleRequest): Response<CustomerOrder>
+
+    @POST("orders/{id}/request-cancellation")
+    suspend fun requestCancellation(@Path("id") id: String): Response<CustomerOrder>
 }

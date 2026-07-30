@@ -34,6 +34,14 @@ import com.dalab.internet.customer.queue.OrderCreateAction
 import com.dalab.internet.customer.queue.PendingActionQueue
 import com.dalab.internet.customer.queue.RetryClassifier
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.LocalTime
+import java.time.ZoneId
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 import java.util.UUID
 
 private val DalabGreen = Color(0xFF16A34A)
@@ -70,6 +78,26 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
     var queued by remember { mutableStateOf(false) }
     val clientRequestId = remember { UUID.randomUUID().toString() }
     val scope = rememberCoroutineScope()
+
+    // Schedule Recharge: payment still happens immediately either way (the
+    // dial + createOrder call below is unchanged) — this only lets the
+    // customer defer WHEN the provider-side USSD/data delivery happens.
+    // scheduledDate/scheduledTime are only meaningful while scheduleEnabled
+    // is on; the backend re-validates the same 5-minute-to-30-day bounds
+    // regardless of this client-side check.
+    var scheduleEnabled by remember { mutableStateOf(false) }
+    var scheduledDate by remember { mutableStateOf<LocalDate?>(null) }
+    var scheduledTime by remember { mutableStateOf<LocalTime?>(null) }
+    var showDatePicker by remember { mutableStateOf(false) }
+    var showTimePicker by remember { mutableStateOf(false) }
+    val scheduledInstant = remember(scheduledDate, scheduledTime) {
+        val date = scheduledDate
+        val time = scheduledTime
+        if (date != null && time != null) LocalDateTime.of(date, time).atZone(ZoneId.systemDefault()).toInstant() else null
+    }
+    val scheduleTooSoon = scheduleEnabled && scheduledInstant != null &&
+        scheduledInstant.isBefore(Instant.now().plusSeconds(5 * 60))
+    val scheduleMissing = scheduleEnabled && scheduledInstant == null
 
     val compact = LocalConfiguration.current.screenHeightDp < 700
     val outerPadding = if (compact) 14.dp else 20.dp
@@ -153,6 +181,23 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
             compact = compact,
         )
 
+        Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
+        ScheduleRechargeSection(
+            enabled = scheduleEnabled,
+            onEnabledChange = { checked ->
+                scheduleEnabled = checked
+                if (!checked) {
+                    scheduledDate = null
+                    scheduledTime = null
+                }
+            },
+            scheduledDate = scheduledDate,
+            scheduledTime = scheduledTime,
+            onPickDate = { showDatePicker = true },
+            showTooSoonError = attemptedSubmit && (scheduleTooSoon || scheduleMissing),
+            compact = compact,
+        )
+
         if (error != null) {
             Spacer(Modifier.height(8.dp))
             Text(error!!, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
@@ -183,6 +228,9 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
                     if (senderPhone.isBlank() || receiverPhone.isBlank()) {
                         return@clickable
                     }
+                    if (scheduleMissing || scheduleTooSoon) {
+                        return@clickable
+                    }
                     error = null
                     submitting = true
                     val request = CreateOrderRequest(
@@ -192,6 +240,7 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
                         receiverPhone = receiverPhone.trim(),
                         paymentMethod = wallet.name,
                         clientRequestId = clientRequestId,
+                        scheduledAt = scheduledInstant?.toString(),
                     )
                     scope.launch {
                         // Re-fetch the wallet fresh rather than trusting whatever was
@@ -260,6 +309,29 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
             }
         }
     }
+
+    if (showDatePicker) {
+        ScheduleDatePickerDialog(
+            initialDate = scheduledDate,
+            onDismiss = { showDatePicker = false },
+            onDatePicked = { picked ->
+                scheduledDate = picked
+                showDatePicker = false
+                showTimePicker = true
+            },
+        )
+    }
+
+    if (showTimePicker) {
+        ScheduleTimePickerDialog(
+            initialTime = scheduledTime,
+            onDismiss = { showTimePicker = false },
+            onTimePicked = { picked ->
+                scheduledTime = picked
+                showTimePicker = false
+            },
+        )
+    }
 }
 
 @Composable
@@ -294,6 +366,90 @@ private fun PhoneInputField(
                 .fillMaxWidth()
                 .height(if (compact) 54.dp else 58.dp),
         )
+    }
+}
+
+/**
+ * Optional toggle deferring WHEN the provider-side USSD/data delivery
+ * happens — payment itself is unaffected, still collected immediately via
+ * the existing wallet-dial flow above. When enabled, tapping the date row
+ * opens a date picker, then (via onPickDate -> showDatePicker in the
+ * caller) a time picker; the chosen date/time is formatted for display here
+ * but combined into a single Instant by the caller.
+ */
+@Composable
+private fun ScheduleRechargeSection(
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    scheduledDate: LocalDate?,
+    scheduledTime: LocalTime?,
+    onPickDate: () -> Unit,
+    showTooSoonError: Boolean,
+    compact: Boolean,
+) {
+    Surface(
+        color = PanelBg,
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, PanelBorder),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = if (compact) 10.dp else 14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        LocalizationManager.tr("Schedule Recharge", "Jadwal Dib-u-shubid"),
+                        color = Color.White,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 14.sp,
+                    )
+                    Text(
+                        LocalizationManager.tr(
+                            "Pay now, deliver later at a time you choose",
+                            "Bixi hadda, keen wakhtiga aad doorato",
+                        ),
+                        color = MutedText,
+                        fontSize = 11.sp,
+                    )
+                }
+                Switch(
+                    checked = enabled,
+                    onCheckedChange = onEnabledChange,
+                    colors = SwitchDefaults.colors(checkedTrackColor = DalabGreen),
+                )
+            }
+            if (enabled) {
+                Spacer(Modifier.height(8.dp))
+                val label = if (scheduledDate != null && scheduledTime != null) {
+                    val dateText = scheduledDate.format(DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM))
+                    val timeText = scheduledTime.format(DateTimeFormatter.ofPattern("h:mm a"))
+                    "$dateText  •  $timeText"
+                } else {
+                    LocalizationManager.tr("Tap to choose date & time", "Taabo si aad u dooratid taariikhda & saacadda")
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(ScreenBg)
+                        .clickable(onClick = onPickDate)
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                ) {
+                    Text(label, color = Color.White, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                }
+                if (showTooSoonError) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        LocalizationManager.tr(
+                            "Choose a date/time at least 5 minutes from now",
+                            "Dooro taariikh/saacad ugu yaraan 5 daqiiqo hadda ka dib",
+                        ),
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 11.sp,
+                    )
+                }
+            }
+        }
     }
 }
 

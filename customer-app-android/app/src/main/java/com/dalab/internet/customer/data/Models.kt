@@ -112,4 +112,13 @@ data class CustomerOrder(
     val ussdGenerated: String? = null,
     val createdAt: String,
     val completedAt: String? = null,
+    // Schedule Recharge fields — all null for the vast majority of orders
+    // (never scheduled). scheduledAt: when fulfillment is deferred until.
+    // cancellationRequestedAt: customer asked to cancel a still-pending
+    // schedule. cancellationDecision: null while awaiting Super Admin
+    // review, else "approved" (order was cancelled/reversed) or "rejected"
+    // (recharge proceeds as originally scheduled).
+    val scheduledAt: String? = null,
+    val cancellationRequestedAt: String? = null,
+    val cancellationDecision: String? = null,
 )

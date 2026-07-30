@@ -2,6 +2,7 @@ package com.dalab.internet.queue
 
 import android.content.Context
 import com.dalab.internet.diagnostics.DiagnosticsLog
+import com.dalab.internet.network.ApiClient
 import com.dalab.internet.sms.SmsUploadAction
 import com.dalab.internet.sms.SmsUploadFlow
 import com.dalab.internet.sms.UploadOutcome
@@ -16,15 +17,26 @@ import java.util.UUID
  * from AgentBackgroundService both on an immediate connectivity-restored
  * callback and on a periodic fallback tick, so a payment/audit record queued
  * while offline resolves automatically without the agent doing anything.
+ *
+ * Items are replayed strictly one at a time in this same for-loop (never in
+ * parallel), and each SALE_CREATE only leaves the queue once its own request
+ * has actually succeeded (or is confirmed a terminal rejection) — so a batch
+ * of queued sales is sent, and confirmed, one order at a time, exactly as if
+ * the agent were tapping "Create Sale" repeatedly by hand once back online.
  */
 object QueueDrainer {
 
     suspend fun drainAll(context: Context) {
+        val hadPendingSales = PendingActionQueue.all().any { it.type == PendingActionQueue.Type.SALE_CREATE }
+        if (hadPendingSales) PendingSalesSyncStatus.markSyncing()
+
         // Snapshot at the start of this pass — anything enqueued mid-drain
         // (e.g. a fresh SMS arriving right now) is picked up on the next pass.
         for (action in PendingActionQueue.all()) {
             drainOne(context, action)
         }
+
+        if (hadPendingSales) PendingSalesSyncStatus.markDrainResult()
     }
 
     private suspend fun drainOne(context: Context, action: PendingActionQueue.PendingAction) {
@@ -37,11 +49,16 @@ object QueueDrainer {
                     PendingActionQueue.remove(action.id)
                 }
                 PendingActionQueue.Type.VOUCHER_CONFIRMATION -> drainVoucherConfirmation(action)
+                PendingActionQueue.Type.SALE_CREATE -> {
+                    val payload = PendingActionQueue.payloadOf<SaleCreateAction>(action)
+                    RetryClassifier.requireSuccessful(ApiClient.service.createSale(payload.request))
+                    PendingActionQueue.remove(action.id)
+                }
             }
         } catch (e: Exception) {
-            // Only DIAL_ATTEMPT_AUDIT's replay can throw here — SMS_UPLOAD and
-            // VERIFY_PAYMENT classify their own outcome via the sealed
-            // UploadOutcome instead of exceptions.
+            // Only DIAL_ATTEMPT_AUDIT's and SALE_CREATE's replay can throw
+            // here — SMS_UPLOAD and VERIFY_PAYMENT classify their own outcome
+            // via the sealed UploadOutcome instead of exceptions.
             if (RetryClassifier.isRetryable(e)) {
                 PendingActionQueue.markAttempt(action.id, e.message)
             } else {
