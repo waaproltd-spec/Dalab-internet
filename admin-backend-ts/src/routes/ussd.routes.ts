@@ -497,12 +497,35 @@ ussdRouter.post("/agent/devices/:id/heartbeat", requireAuth("agent"), async (req
   if (agent?.device_id !== req.params.id) {
     return sendJson(res, 403, { error: "You can only report health for your own assigned device." });
   }
-  const { batteryPercent, networkOnline, sim1Present, sim2Present } = req.body;
+  const { batteryPercent, networkOnline, sim1Present, sim2Present, recentDiagnostics } = req.body;
   const result = await query(
     `UPDATE agent_devices SET battery_percent=$1, network_online=$2, sim1_present=$3, sim2_present=$4, last_heartbeat_at=now() WHERE id=$5 RETURNING id`,
     [batteryPercent ?? null, networkOnline !== false, sim1Present ?? null, sim2Present ?? null, req.params.id]
   );
   if (result.length === 0) return sendJson(res, 404, { error: "Device not found" });
+
+  // Reliability Dashboard: diagnostics upload piggybacks on the heartbeat
+  // that's already ticking every ~60s, rather than a separate endpoint/call.
+  // Best-effort by design — a failure here must never fail the heartbeat
+  // itself (the device's own local DiagnosticsLog keeps the entries either
+  // way, and the Agent App retries the same unsynced entries next tick).
+  if (Array.isArray(recentDiagnostics) && recentDiagnostics.length > 0) {
+    try {
+      const rows = recentDiagnostics.slice(0, 50) as { tag?: unknown; message?: unknown; isError?: unknown; occurredAt?: unknown }[];
+      for (const entry of rows) {
+        if (typeof entry.tag !== "string" || typeof entry.message !== "string") continue;
+        const occurredAt = typeof entry.occurredAt === "number" ? new Date(entry.occurredAt) : new Date();
+        await query(
+          `INSERT INTO agent_diagnostics_log (id, device_id, tag, message, is_error, occurred_at) VALUES ($1,$2,$3,$4,$5,$6)`,
+          [randomUUID(), req.params.id, entry.tag, entry.message, entry.isError !== false, occurredAt]
+        );
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("Failed to persist agent diagnostics batch:", (err as Error).message);
+    }
+  }
+
   sendJson(res, 200, { received: true });
 });
 

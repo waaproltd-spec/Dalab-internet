@@ -44,11 +44,31 @@ export async function createPaymentTransaction(params: {
     return id;
   } catch (err: any) {
     // A concurrent request already created the active (non-duplicate_blocked)
-    // row for this exact transaction_ref — this attempt is itself the
+    // row for this exact transaction_ref, OR (idx_payment_tx_order_active)
+    // this order already has an active row from a different transaction_ref
+    // — the exact race that let two SMS with different refs both match the
+    // same still-pending order. Either way this attempt is itself the
     // duplicate. Not an error: report it as blocked rather than throwing.
-    if (err?.code !== "23505" || err?.constraint !== "idx_payment_tx_ref_active") throw err;
+    if (
+      err?.code !== "23505" ||
+      (err?.constraint !== "idx_payment_tx_ref_active" && err?.constraint !== "idx_payment_tx_order_active")
+    ) {
+      throw err;
+    }
     return null;
   }
+}
+
+/** True if this order already has any non-terminal-duplicate payment_transactions
+ * row (pending/processing/completed/failed) — used to proactively reject a
+ * second SMS match for the same order BEFORE attempting the insert, so the
+ * common case never even relies on the unique-index race to catch it. */
+export async function hasActivePaymentTransaction(orderId: string): Promise<boolean> {
+  const row = await queryOne<{ id: string }>(
+    `SELECT id FROM payment_transactions WHERE order_id=$1 AND status <> 'duplicate_blocked' LIMIT 1`,
+    [orderId]
+  );
+  return row != null;
 }
 
 /** Called once a dial attempt actually starts — the point at which we know

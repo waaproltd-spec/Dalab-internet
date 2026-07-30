@@ -22,8 +22,10 @@ import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.auth.LoginResult
 import com.dalab.internet.auth.SessionManager
 import com.dalab.internet.diagnostics.DiagnosticsLog
+import com.dalab.internet.diagnostics.HeartbeatStats
 import com.dalab.internet.network.AgentEventBus
 import com.dalab.internet.network.ApiClient
+import com.dalab.internet.network.DiagnosticsEntryDto
 import com.dalab.internet.network.HeartbeatRequest
 import com.dalab.internet.network.RealtimeClient
 import com.dalab.internet.queue.QueueDrainer
@@ -234,8 +236,16 @@ class AgentBackgroundService : Service() {
         while (currentScope.isActive) {
             val deviceId = DeviceIdentity.deviceId()
             if (deviceId != null && SessionManager.isLoggedIn()) {
+                // Snapshot before the call, not after — an entry recorded by
+                // this very tick's own failure path below must wait for the
+                // *next* tick to go out, same as any other pending entry.
+                val pendingDiagnostics = DiagnosticsLog.unsyncedEntries()
                 try {
-                    ApiClient.service.sendHeartbeat(deviceId, buildHeartbeat())
+                    ApiClient.service.sendHeartbeat(deviceId, buildHeartbeat(pendingDiagnostics))
+                    HeartbeatStats.recordSuccess()
+                    if (pendingDiagnostics.isNotEmpty()) {
+                        DiagnosticsLog.markSyncedUpTo(pendingDiagnostics.last().timestamp)
+                    }
                 } catch (e: Exception) {
                     // Best-effort — the next tick tries again; a dropped heartbeat
                     // just shows as a stale "last seen" on the dashboard. Now
@@ -243,6 +253,7 @@ class AgentBackgroundService : Service() {
                     // debugging a stale-heartbeat report has on-device evidence
                     // of network/backend failures vs. the process having been
                     // killed outright (which would leave no trace here at all).
+                    HeartbeatStats.recordFailure(e.message ?: e.javaClass.simpleName)
                     DiagnosticsLog.record("heartbeat_loop", "sendHeartbeat failed: ${e.stackTraceToString().take(2000)}")
                 }
             }
@@ -300,7 +311,7 @@ class AgentBackgroundService : Service() {
         }
     }
 
-    private fun buildHeartbeat(): HeartbeatRequest {
+    private fun buildHeartbeat(pendingDiagnostics: List<DiagnosticsLog.Entry>): HeartbeatRequest {
         val battery = readBatteryPercent()
         val online = isNetworkOnline()
         val sims = UssdDialer(this).listActiveSims()
@@ -311,6 +322,9 @@ class AgentBackgroundService : Service() {
             networkOnline = online,
             sim1Present = sim1Present,
             sim2Present = sim2Present,
+            recentDiagnostics = pendingDiagnostics.takeIf { it.isNotEmpty() }?.map {
+                DiagnosticsEntryDto(tag = it.tag, message = it.message, isError = it.isError, occurredAt = it.timestamp)
+            },
         )
     }
 

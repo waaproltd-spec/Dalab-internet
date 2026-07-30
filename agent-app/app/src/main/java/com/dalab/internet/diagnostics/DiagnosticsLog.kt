@@ -16,7 +16,9 @@ import com.google.gson.reflect.TypeToken
 object DiagnosticsLog {
     private const val PREFS = "dalab_agent_diagnostics"
     private const val KEY_ENTRIES = "entries"
+    private const val KEY_SYNCED_UP_TO = "synced_up_to"
     private const val MAX_ENTRIES = 200
+    private const val MAX_UPLOAD_BATCH = 20
 
     data class Entry(
         val timestamp: Long,
@@ -68,6 +70,28 @@ object DiagnosticsLog {
     @Synchronized
     fun clear() {
         prefs.edit().remove(KEY_ENTRIES).apply()
+    }
+
+    /**
+     * Reliability Dashboard: entries not yet delivered to the backend,
+     * oldest-unsynced-first (unlike [all]'s newest-first order) and capped
+     * so a single heartbeat's payload stays small. Oldest-first matters:
+     * [markSyncedUpTo] advances a single high-water-mark timestamp, so
+     * skipping straight to the newest entries here would permanently strand
+     * any older unsynced ones in the gap between the old and new mark.
+     * "Delivered" only means "attached to a heartbeat call that itself
+     * succeeded" — a device stuck offline just keeps accumulating locally.
+     */
+    @Synchronized
+    fun unsyncedEntries(): List<Entry> {
+        val syncedUpTo = prefs.getLong(KEY_SYNCED_UP_TO, 0)
+        return readAll().filter { it.timestamp > syncedUpTo }.sortedBy { it.timestamp }.take(MAX_UPLOAD_BATCH)
+    }
+
+    @Synchronized
+    fun markSyncedUpTo(timestamp: Long) {
+        val current = prefs.getLong(KEY_SYNCED_UP_TO, 0)
+        if (timestamp > current) prefs.edit().putLong(KEY_SYNCED_UP_TO, timestamp).apply()
     }
 
     private fun readAll(): MutableList<Entry> {

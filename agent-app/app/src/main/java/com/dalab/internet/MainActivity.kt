@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.PointOfSale
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Sell
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -31,6 +32,7 @@ import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.auth.SessionManager
 import com.dalab.internet.data.Order
 import com.dalab.internet.diagnostics.DiagnosticsLog
+import com.dalab.internet.diagnostics.HeartbeatStats
 import com.dalab.internet.queue.PendingActionQueue
 import com.dalab.internet.service.AgentBackgroundService
 import com.dalab.internet.sms.SmsInboxScanner
@@ -44,6 +46,7 @@ import com.dalab.internet.ui.OrderDetailScreen
 import com.dalab.internet.ui.OrdersListScreen
 import com.dalab.internet.ui.PackagesScreen
 import com.dalab.internet.ui.PermissionsStatusScreen
+import com.dalab.internet.ui.ReliabilityDashboardScreen
 import com.dalab.internet.ui.ReliabilitySetupScreen
 import com.dalab.internet.ui.ReportsScreen
 import com.dalab.internet.ui.SmsPermissionScreen
@@ -65,6 +68,7 @@ class MainActivity : ComponentActivity() {
         safely("sms_listener_init") { SmsListenerState.init(this) }
         safely("pending_queue_init") { PendingActionQueue.init(this) }
         safely("diagnostics_init") { DiagnosticsLog.init(this) }
+        safely("heartbeat_stats_init") { HeartbeatStats.init(this) }
         safely("notification_channel_init") { createNotificationChannel() }
 
         val loggedIn = try { SessionManager.isLoggedIn() } catch (e: Exception) {
@@ -109,7 +113,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, DIAGNOSTICS, PERMISSIONS_STATUS }
+private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD }
 private enum class HomeTab { ORDERS, SALES, CUSTOMERS, REPORTS, MORE }
 
 @Composable
@@ -211,6 +215,7 @@ private fun AgentApp() {
             onOpenDeviceSetup = { screen = Screen.DEVICE_SETUP },
             onOpenDiagnostics = { screen = Screen.DIAGNOSTICS },
             onOpenPermissionsStatus = { screen = Screen.PERMISSIONS_STATUS },
+            onOpenReliabilityDashboard = { screen = Screen.RELIABILITY_DASHBOARD },
         )
 
         Screen.ORDER_DETAIL -> selectedOrder?.let { order ->
@@ -228,6 +233,8 @@ private fun AgentApp() {
         Screen.DIAGNOSTICS -> DiagnosticsScreen(onBack = { screen = Screen.HOME })
 
         Screen.PERMISSIONS_STATUS -> PermissionsStatusScreen(onBack = { screen = Screen.HOME })
+
+        Screen.RELIABILITY_DASHBOARD -> ReliabilityDashboardScreen(onBack = { screen = Screen.HOME })
     }
 }
 
@@ -247,6 +254,7 @@ private fun AgentHome(
     onOpenDeviceSetup: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onOpenPermissionsStatus: () -> Unit,
+    onOpenReliabilityDashboard: () -> Unit,
 ) {
     var tab by remember { mutableStateOf(HomeTab.ORDERS) }
 
@@ -298,6 +306,7 @@ private fun AgentHome(
                     onOpenDeviceSetup = onOpenDeviceSetup,
                     onOpenDiagnostics = onOpenDiagnostics,
                     onOpenPermissionsStatus = onOpenPermissionsStatus,
+                    onOpenReliabilityDashboard = onOpenReliabilityDashboard,
                 )
             }
         }
@@ -311,6 +320,7 @@ private fun MoreScreen(
     onOpenDeviceSetup: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onOpenPermissionsStatus: () -> Unit,
+    onOpenReliabilityDashboard: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         ListItem(
@@ -346,6 +356,13 @@ private fun MoreScreen(
             supportingContent = { Text("SMS + background service status for this device") },
             leadingContent = { Icon(Icons.Filled.Security, contentDescription = null) },
             modifier = Modifier.clickable(onClick = onOpenPermissionsStatus),
+        )
+        Divider()
+        ListItem(
+            headlineContent = { Text("Reliability Dashboard") },
+            supportingContent = { Text("Foreground service, heartbeat, SMS reader, connectivity, and offline queue — live") },
+            leadingContent = { Icon(Icons.Filled.Speed, contentDescription = null) },
+            modifier = Modifier.clickable(onClick = onOpenReliabilityDashboard),
         )
     }
 }
