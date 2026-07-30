@@ -228,6 +228,12 @@ const DalabAdminApi = {
   getSimBalanceHistory: (deviceId, simSlot) => dalabAdminApiRequest(`/admin/sim-balances/${deviceId}/${simSlot}/history`),
   updateSimBalance: (deviceId, simSlot, body) => dalabAdminApiRequest(`/admin/sim-balances/${deviceId}/${simSlot}`, { method: "PUT", body }),
   getLowBalanceCount: () => dalabAdminApiRequest("/admin/sim-balances/low-balance-count"),
+  // Manual Recovery — orders stuck on a temporary problem (agent offline,
+  // internet error, USSD failure, SIM issue, server timeout) that stay
+  // Pending/In Progress rather than being cancelled, until a Super Admin
+  // fixes the underlying issue and sends the SAME order back to the agent.
+  getPendingRecovery: () => dalabAdminApiRequest("/admin/orders/pending-recovery"),
+  recoverOrder: (id) => dalabAdminApiRequest(`/admin/orders/${id}/recover`, { method: "POST" }),
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -524,6 +530,7 @@ const NAV = [
   { id: "payment-transactions", label: "Payment Transactions", icon: Activity },
   { id: "commissions", label: "Commissions", icon: Percent },
   { id: "scheduled-cancellations", label: "Scheduled Cancellations", icon: AlertTriangle, superAdminOnly: true },
+  { id: "pending-recovery", label: "Pending Recovery", icon: RotateCcw },
   { id: "execution-logs", label: "Execution Logs", icon: Terminal },
   { id: "reports", label: "Reports", icon: FileBarChart2 },
   { id: "roles", label: "Roles & Permissions", icon: ShieldCheck, superAdminOnly: true },
@@ -5282,6 +5289,130 @@ function ScheduledCancellationsPanel() {
   );
 }
 
+// Every reason is derived server-side from real signals (payment ledger,
+// USSD generation result, latest dial attempt, device heartbeat staleness)
+// — never a fabricated status. Tones roughly rank severity: blue for "still
+// working as designed, just waiting", amber for "needs the agent device to
+// come back", red for a config/hardware gap that needs fixing.
+const STUCK_REASON_META = {
+  payment_verification_waiting: { label: "Payment Verification Waiting", tone: "blue" },
+  ussd_generation_failed: { label: "USSD Generation Failed", tone: "red" },
+  sim_not_available: { label: "SIM Not Available", tone: "red" },
+  internet_error: { label: "Internet Error", tone: "amber" },
+  agent_offline: { label: "Agent Offline", tone: "amber" },
+  server_timeout: { label: "Server Timeout", tone: "amber" },
+};
+
+function PendingRecoveryPanel() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [actingId, setActingId] = useState(null);
+  const [actionError, setActionError] = useState({});
+
+  const fetchRows = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setLoading(true);
+    setError("");
+    try {
+      setRows(await DalabAdminApi.getPendingRecovery());
+    } catch (err) {
+      setError(err.message || "Could not load orders awaiting recovery.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchRows(); }, []);
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    const unsubscribe = subscribeOrderEvents("/admin/orders/stream", { onEvent: fetchRows });
+    return () => unsubscribe();
+  }, []);
+  useEffect(() => {
+    const timer = setInterval(fetchRows, 15000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const sendToAgent = async (order) => {
+    setActingId(order.id);
+    setActionError((m) => ({ ...m, [order.id]: "" }));
+    try {
+      await DalabAdminApi.recoverOrder(order.id);
+      fetchRows();
+    } catch (err) {
+      setActionError((m) => ({ ...m, [order.id]: err.message || "Could not send this order back to the agent." }));
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to view pending recovery.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 16, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Pending Recovery</div>
+          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>
+            Orders stuck on a temporary problem — never cancelled or deleted. Once the underlying issue is fixed (agent back online, SIM available, connectivity restored), click Send to Agent to resend the SAME order for delivery.
+          </div>
+        </div>
+        <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={fetchRows} disabled={loading}>Refresh</Button>
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: "#FAFBFF" }}>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Order ID</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Customer</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Package</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Status</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Reason</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Stuck Since</th>
+                <th style={{ padding: "10px 14px" }} />
+              </tr>
+            </thead>
+            <tbody>
+              {loading && rows.length === 0 && (
+                <tr><td colSpan={7} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>Loading…</td></tr>
+              )}
+              {rows.map((o) => {
+                const meta = STUCK_REASON_META[o.stuckReason] || { label: o.stuckReason, tone: "neutral" };
+                return (
+                  <tr key={o.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                    <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, color: INK }}>{o.id}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{o.customerName || o.customerPhone || "—"}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{o.packageName || "—"}</td>
+                    <td style={{ padding: "10px 14px" }}><Badge tone={orderTone(o.status)}>{displayOrderStatus(o)}</Badge></td>
+                    <td style={{ padding: "10px 14px" }}><Badge tone={meta.tone}>{meta.label}</Badge></td>
+                    <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(o.createdAt)}</td>
+                    <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                      {actionError[o.id] && <div style={{ color: "#C81E2C", fontSize: 11, marginBottom: 4 }}>{actionError[o.id]}</div>}
+                      <Button variant="primary" disabled={actingId === o.id} onClick={() => sendToAgent(o)}>
+                        {actingId === o.id ? "Sending..." : "Send to Agent"}
+                      </Button>
+                    </td>
+                  </tr>
+                );
+              })}
+              {!loading && rows.length === 0 && (
+                <tr><td colSpan={7} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No orders currently need manual recovery.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 function ExecutionLogs({ companies }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -6568,6 +6699,7 @@ function AdminDashboardShell({ admin, onLogout }) {
   const [stuckCount, setStuckCount] = useState(0);
   const [duplicateBlockedCount, setDuplicateBlockedCount] = useState(0);
   const [lowBalanceCount, setLowBalanceCount] = useState(0);
+  const [pendingRecoveryCount, setPendingRecoveryCount] = useState(0);
   const [missingTemplateCount, setMissingTemplateCount] = useState(0);
 
   // Companies used to be mock-only everywhere (Companies/PaymentNumbers never
@@ -6655,6 +6787,23 @@ function AdminDashboardShell({ admin, onLogout }) {
     return () => unsubscribe();
   }, []);
 
+  // Manual Recovery: same live-badge pattern — a stuck order sitting
+  // unnoticed is exactly what this whole feature exists to prevent.
+  const refreshPendingRecoveryCount = async () => {
+    if (!DALAB_API_ENABLED) return;
+    try {
+      setPendingRecoveryCount((await DalabAdminApi.getPendingRecovery()).length);
+    } catch (err) {
+      console.error("Failed to load pending recovery count:", err.message);
+    }
+  };
+  useEffect(() => { refreshPendingRecoveryCount(); }, []);
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    const unsubscribe = subscribeOrderEvents("/admin/orders/stream", { onEvent: refreshPendingRecoveryCount });
+    return () => unsubscribe();
+  }, []);
+
   // Proactive: catches a package with no way to resolve a USSD template
   // (root cause of orders getting stuck at generation time) at the point of
   // configuration, instead of waiting for a real customer payment to reveal
@@ -6728,6 +6877,11 @@ function AdminDashboardShell({ admin, onLogout }) {
                     <Badge tone="red">{lowBalanceCount}</Badge>
                   </span>
                 )}
+                {!collapsed && n.id === "pending-recovery" && pendingRecoveryCount > 0 && (
+                  <span style={{ marginLeft: "auto" }} title="Orders awaiting manual recovery">
+                    <Badge tone="amber">{pendingRecoveryCount}</Badge>
+                  </span>
+                )}
                 {!collapsed && n.id === "packages" && missingTemplateCount > 0 && (
                   <span style={{ marginLeft: "auto" }} title="Packages with no matching USSD template">
                     <Badge tone="amber">{missingTemplateCount}</Badge>
@@ -6787,6 +6941,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "payment-transactions" && <PaymentTransactionsPanel companies={companies} />}
           {active === "commissions" && <CommissionsPanel companies={companies} packages={packages} admin={admin} />}
           {active === "scheduled-cancellations" && <ScheduledCancellationsPanel />}
+          {active === "pending-recovery" && <PendingRecoveryPanel />}
           {active === "execution-logs" && <ExecutionLogs companies={companies} />}
           {active === "reports" && <Reports />}
           {active === "roles" && <RolesPermissions admin={admin} />}

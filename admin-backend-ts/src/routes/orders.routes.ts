@@ -8,6 +8,7 @@ import { generateUssdForOrder } from "./ussd.routes.js";
 import { subscribe, broadcast } from "../realtime/orderEvents.js";
 import { recordActivity } from "../utils/activityLog.js";
 import { creditCommissionIfNeeded, reverseCommissionIfNeeded } from "../utils/commissions.js";
+import { isAlreadyCompleted } from "../utils/paymentTransactions.js";
 
 export const ordersRouter = Router();
 
@@ -506,6 +507,66 @@ ordersRouter.get("/admin/orders/scheduled-cancellations", requireAuth("super_adm
   sendJson(res, 200, maskOrders(rows));
 });
 
+// Manual Recovery: a coded, human-readable reason for exactly why one order
+// is stuck, derived entirely from signals that already exist elsewhere in
+// this codebase (payment_transactions, ussd_generation_failed_reason, the
+// latest dial attempt's own response_message, and the responsible device's
+// heartbeat staleness — the same check delivery-status already makes) —
+// never a fabricated status, always read from real state. Returns null when
+// the order isn't actually stuck by any of these signals (e.g. a payment
+// hasn't even been matched yet), which the caller uses to exclude it.
+async function classifyStuckReason(order: any): Promise<string | null> {
+  if (order.status === "pending") {
+    const hasPayment = await queryOne(`SELECT id FROM payment_transactions WHERE order_id=$1 LIMIT 1`, [order.id]);
+    return hasPayment ? "payment_verification_waiting" : null;
+  }
+  if (order.status !== "in_progress") return null;
+
+  if (!order.ussd_generated) return "ussd_generation_failed";
+
+  const lastAttempt = await queryOne<{ status: string; response_message: string | null }>(
+    `SELECT status, response_message FROM ussd_dial_attempts WHERE order_id=$1 ORDER BY attempt_number DESC LIMIT 1`,
+    [order.id]
+  );
+  if (lastAttempt && lastAttempt.status === "failed") {
+    const msg = (lastAttempt.response_message ?? "").toLowerCase();
+    if (msg.includes("sim")) return "sim_not_available";
+    if (msg.includes("network") || msg.includes("timeout") || msg.includes("connection")) return "internet_error";
+    return "server_timeout";
+  }
+
+  const device = await queryOne<{ last_heartbeat_at: string | null }>(
+    `SELECT d.last_heartbeat_at FROM sim_routing sr JOIN agent_devices d ON d.id = sr.device_id
+     WHERE sr.company_id=$1 ORDER BY sr.priority ASC LIMIT 1`,
+    [order.company_id]
+  );
+  if (!device) return "sim_not_available";
+  const lastHeartbeatAt = device.last_heartbeat_at ? new Date(device.last_heartbeat_at).getTime() : null;
+  const stale = lastHeartbeatAt == null || Date.now() - lastHeartbeatAt > DEVICE_STALE_MS;
+  return stale ? "agent_offline" : "server_timeout";
+}
+
+// Manual Recovery Dashboard: every order that's genuinely stuck (not just
+// mid-flight in the normal automatic pipeline — the 5-minute floor gives
+// that a fair chance to finish first) and eligible for manual "Send to
+// Agent" recovery. Registered before the "/:id" route below for the same
+// reason every other literal-path route above already is.
+ordersRouter.get("/admin/orders/pending-recovery", requireStaff(), async (_req, res) => {
+  const candidates = await query<any>(
+    `${ORDER_LIST_SELECT}
+     WHERE o.status IN ('pending','in_progress')
+       AND o.created_at < now() - interval '5 minutes'
+       AND o.cancellation_requested_at IS NULL
+       AND (o.scheduled_at IS NULL OR o.scheduled_at <= now())
+     ORDER BY o.created_at ASC
+     LIMIT 200`
+  );
+  const withReasons = await Promise.all(
+    candidates.map(async (o) => ({ ...o, stuck_reason: await classifyStuckReason(o) }))
+  );
+  sendJson(res, 200, maskOrders(withReasons.filter((o) => o.stuck_reason != null)));
+});
+
 ordersRouter.get("/admin/orders/:id", requireStaff(), async (req, res) => {
   const order = await loadOrder(req.params.id);
   if (!order) return sendJson(res, 404, { error: "Order not found" });
@@ -586,6 +647,67 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
   }
   broadcast({ type: "order.updated", orderId: req.params.id });
   sendJson(res, 200, maskOrder(await loadOrder(req.params.id)));
+});
+
+// Manual Recovery — "Send to Agent". Never creates a new order: this is the
+// exact same order row, the same customer, the same package, the same
+// verified payment record, moved forward in place. A pending order with a
+// matched payment is atomically advanced to in_progress and USSD is
+// generated exactly the way verify-payment itself would have; an
+// in_progress order that never got its USSD string is regenerated; either
+// way, broadcasting order.updated is what actually gets it dialed — the
+// Agent App's own self-heal sweep (already triggered by this exact SSE
+// event, already idempotent via payment_transactions'/ussd_dial_attempts'
+// existing guards) picks it up and dials it, so this endpoint never pushes
+// a dial command itself and never duplicates anything already guaranteed
+// duplicate-safe elsewhere.
+ordersRouter.post("/admin/orders/:id/recover", requirePermission("orders.manage"), async (req, res) => {
+  const order = await queryOne<any>(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
+  if (!order) return sendJson(res, 404, { error: "Order not found" });
+
+  if (!["pending", "in_progress"].includes(order.status)) {
+    return sendJson(res, 409, { error: `Order status '${order.status}' is not eligible for manual recovery.` });
+  }
+  if (await isAlreadyCompleted(order.id)) {
+    return sendJson(res, 409, { error: "This order's payment has already completed — nothing to recover." });
+  }
+  if (order.cancellation_requested_at) {
+    return sendJson(res, 409, { error: "This order has a pending cancellation request — resolve that first." });
+  }
+  if (order.scheduled_at && new Date(order.scheduled_at).getTime() > Date.now()) {
+    return sendJson(res, 409, { error: "This order is scheduled for a future time — it is not stuck." });
+  }
+  const hasPayment = await queryOne(`SELECT id FROM payment_transactions WHERE order_id=$1 LIMIT 1`, [order.id]);
+  if (!hasPayment) {
+    return sendJson(res, 400, { error: "No verified payment found for this order — nothing to recover." });
+  }
+
+  let genResult: { error?: string } | undefined;
+  if (order.status === "pending") {
+    const flipped = await query(
+      `UPDATE orders SET status='in_progress', updated_at=now() WHERE id=$1 AND status='pending' RETURNING id`,
+      [order.id]
+    );
+    if (flipped.length > 0) {
+      genResult = await generateUssdForOrder(order, req.auth!.sub);
+      await query(`UPDATE orders SET ussd_generation_failed_reason=$1 WHERE id=$2`, [genResult.error ?? null, order.id]);
+    }
+  } else if (!order.ussd_generated) {
+    genResult = await generateUssdForOrder(order, req.auth!.sub);
+    await query(`UPDATE orders SET ussd_generation_failed_reason=$1 WHERE id=$2`, [genResult.error ?? null, order.id]);
+  }
+
+  broadcast({ type: "order.updated", orderId: order.id });
+  const updated = await loadOrder(order.id);
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "manual_recovery_triggered",
+    entityType: "order",
+    entityId: order.id,
+    oldValue: { status: order.status },
+    newValue: { status: (updated as any)?.status, ussdGenerationError: genResult?.error ?? null },
+  });
+  sendJson(res, 200, maskOrder(updated));
 });
 
 // Internal bookkeeping reversal only — there is no payment gateway here to
