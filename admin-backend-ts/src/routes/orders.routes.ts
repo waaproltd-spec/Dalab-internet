@@ -7,6 +7,7 @@ import { sendJson } from "../utils/camelCase.js";
 import { generateUssdForOrder } from "./ussd.routes.js";
 import { subscribe, broadcast } from "../realtime/orderEvents.js";
 import { recordActivity } from "../utils/activityLog.js";
+import { creditCommissionIfNeeded, reverseCommissionIfNeeded } from "../utils/commissions.js";
 
 export const ordersRouter = Router();
 
@@ -363,6 +364,7 @@ async function completeOrderById(orderId: string): Promise<{ order: any; already
     return { order, alreadyCompleted: order.status === "completed" };
   }
   await creditMacaashIfNeeded(order);
+  await creditCommissionIfNeeded(order);
   broadcast({ type: "order.updated", orderId });
   await recordActivity({
     adminId: undefined,
@@ -553,7 +555,10 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
       `UPDATE orders SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1 AND status != 'completed' RETURNING id`,
       [req.params.id]
     );
-    if (result.length > 0) await creditMacaashIfNeeded(order);
+    if (result.length > 0) {
+      await creditMacaashIfNeeded(order);
+      await creditCommissionIfNeeded(order);
+    }
   } else if (status === "in_progress") {
     const result = await query(
       `UPDATE orders SET status='in_progress', updated_at=now() WHERE id=$1 AND status != 'in_progress' RETURNING id`,
@@ -616,6 +621,7 @@ async function reverseOrderInternal(orderId: string): Promise<{ ok: boolean; ord
       // defense-in-depth no-op rather than a 500 if it ever does.
     }
   }
+  await reverseCommissionIfNeeded(orderId);
 
   broadcast({ type: "order.updated", orderId });
   return { ok: true, order };

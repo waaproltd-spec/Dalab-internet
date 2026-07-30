@@ -8,6 +8,7 @@ import { sendJson } from "../utils/camelCase.js";
 import { broadcast } from "../realtime/orderEvents.js";
 import { recordActivity } from "../utils/activityLog.js";
 import { markPaymentProcessing, markPaymentFinal } from "../utils/paymentTransactions.js";
+import { creditCommissionIfNeeded } from "../utils/commissions.js";
 
 export const ussdRouter = Router();
 
@@ -593,6 +594,9 @@ ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (r
           if (err?.code !== "23505" || err?.constraint !== "idx_macaash_tx_order_earn") throw err;
           // already credited by a concurrent call — no-op
         }
+      }
+      if (completed.length > 0) {
+        await creditCommissionIfNeeded(order);
       }
       // Only the call that actually flipped the order (completed.length > 0)
       // logs this — a retried/duplicate dial-attempt report never generates
