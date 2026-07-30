@@ -5,8 +5,10 @@ import android.content.ClipboardManager
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ContentCopy
@@ -18,6 +20,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -103,44 +106,75 @@ fun OrderDetailScreen(initialOrder: CustomerOrder, onBack: () -> Unit) {
             )
         }
     ) { padding ->
+        val compact = LocalConfiguration.current.screenHeightDp < 700
+        val heroLogoSize = if (compact) 44.dp else 52.dp
+        val heroPadding = if (compact) 14.dp else 18.dp
+        val cardPadding = if (compact) 14.dp else 16.dp
+        val outerPadding = if (compact) 14.dp else 16.dp
+
         Column(
-            modifier = Modifier.padding(padding).padding(20.dp).fillMaxSize(),
-            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = outerPadding, vertical = outerPadding.times(0.75f)),
         ) {
-            Box(
-                modifier = Modifier
-                    .size(72.dp)
-                    .clip(CircleShape)
-                    .background(if (logoRes != null) Color.White else DalabIndigo),
-                contentAlignment = Alignment.Center,
-            ) {
-                if (logoRes != null) {
-                    Image(
-                        painter = painterResource(id = logoRes),
-                        contentDescription = order.companyName,
-                        modifier = Modifier.size(72.dp).clip(CircleShape),
-                    )
-                } else {
-                    Text(order.companyName.take(1).uppercase(), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 26.sp)
+            // Compact hero: logo + name/company/status all on one tight row
+            // instead of a tall stacked block, so this alone takes a fraction
+            // of the vertical space the previous design did.
+            Surface(color = Color(0xFFF6F7FC), shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = heroPadding, vertical = heroPadding.times(0.85f)),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(heroLogoSize)
+                            .clip(CircleShape)
+                            .background(if (logoRes != null) Color.White else DalabIndigo),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (logoRes != null) {
+                            Image(
+                                painter = painterResource(id = logoRes),
+                                contentDescription = order.companyName,
+                                modifier = Modifier.size(heroLogoSize).clip(CircleShape),
+                            )
+                        } else {
+                            Text(order.companyName.take(1).uppercase(), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                        }
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            order.packageName,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = if (compact) 15.sp else 16.sp,
+                            maxLines = 1,
+                        )
+                        Text(
+                            order.companyName,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray,
+                            maxLines = 1,
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    StatusChip(order.status)
                 }
             }
-            Spacer(Modifier.height(10.dp))
-            Text(order.packageName, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-            Text(order.companyName, style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
-            Spacer(Modifier.height(12.dp))
-            StatusChip(order.status)
             if (copied) {
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(4.dp))
                 Text("Reference copied to clipboard", style = MaterialTheme.typography.labelSmall, color = DalabIndigo)
                 LaunchedEffect(copied) {
                     kotlinx.coroutines.delay(1500)
                     copied = false
                 }
             }
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(if (compact) 10.dp else 12.dp))
 
             Surface(color = Color(0xFFF6F7FC), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(18.dp)) {
+                Column(modifier = Modifier.padding(cardPadding)) {
                     SectionLabel("SERVICE DETAILS")
                     DetailRowCustom("Reference") {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -164,7 +198,7 @@ fun OrderDetailScreen(initialOrder: CustomerOrder, onBack: () -> Unit) {
                     DetailRow("Payment Method", order.paymentMethod ?: "—")
                     DetailRow("Amount", "$${"%.2f".format(order.amount)}")
 
-                    Spacer(Modifier.height(14.dp))
+                    Spacer(Modifier.height(if (compact) 8.dp else 10.dp))
                     SectionLabel("STATUS")
                     DetailRowCustom("Payment Status") { StatusChip(order.status) }
                     DetailRow("Date", formatApiDateTime(order.createdAt))
@@ -173,9 +207,9 @@ fun OrderDetailScreen(initialOrder: CustomerOrder, onBack: () -> Unit) {
 
             val scheduledAt = order.scheduledAt
             if (scheduledAt != null) {
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(10.dp))
                 Surface(color = Color(0xFFF3EEFC), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(18.dp)) {
+                    Column(modifier = Modifier.padding(cardPadding)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Filled.Schedule, contentDescription = null, tint = SchedulePurple, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(6.dp))
@@ -274,8 +308,13 @@ fun OrderDetailScreen(initialOrder: CustomerOrder, onBack: () -> Unit) {
                 }
             }
 
-            Spacer(Modifier.height(12.dp))
-            Text(statusMessage(order.status), style = MaterialTheme.typography.bodyMedium)
+            Spacer(Modifier.height(10.dp))
+            Text(
+                statusMessage(order.status),
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.Gray,
+            )
+            Spacer(Modifier.height(16.dp))
         }
     }
 
