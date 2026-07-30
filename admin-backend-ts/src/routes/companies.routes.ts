@@ -16,7 +16,7 @@ export const packagesRouter = Router();
 // routes — logo_data is only ever read by the dedicated .../logo route below
 // (raw bytes, not through sendJson); has_logo is a cheap boolean so the
 // dashboard/apps know whether to point an <img> at that route at all.
-const COMPANY_COLUMNS = `id, name, group_number, color_hex, logo_url, status, gateway, payment_number, payment_ussd_template, ussd_code, visible_customer_app, visible_agent_app, auto_process_enabled, slug, description, sort_order, (logo_data IS NOT NULL) AS has_logo, created_at, updated_at`;
+const COMPANY_COLUMNS = `id, name, group_number, color_hex, logo_url, status, gateway, payment_number, payment_ussd_template, provider_number, ussd_code, visible_customer_app, visible_agent_app, auto_process_enabled, slug, description, sort_order, (logo_data IS NOT NULL) AS has_logo, created_at, updated_at`;
 
 // provider_amount is the internal cost actually requested from the telecom
 // via USSD — it can differ from the customer-facing price (e.g. a
@@ -148,6 +148,31 @@ companiesRouter.put("/admin/companies/:id/payment-number", requireAuth("super_ad
     entityId: req.params.id,
     oldValue: { paymentNumber: existing.payment_number, paymentUssdTemplate: existing.payment_ussd_template },
     newValue: { paymentNumber, paymentUssdTemplate },
+  });
+  sendJson(res, 200, await queryOne(`SELECT ${COMPANY_COLUMNS} FROM companies WHERE id=$1`, [req.params.id]));
+});
+
+// Deliberately a fully independent endpoint/column from payment-number above
+// — this is the number embedded in the outgoing USSD request to the telecom
+// provider during fulfillment (see generateUssdForOrder's {providerNumber}
+// substitution in ussd.routes.ts), never the customer's payment-collection
+// number. The two must never share a write path, so a save here can never
+// overwrite payment_number and vice versa.
+companiesRouter.put("/admin/companies/:id/provider-number", requireAuth("super_admin"), async (req, res) => {
+  const existing = await queryOne(`SELECT provider_number FROM companies WHERE id=$1`, [req.params.id]);
+  if (!existing) return sendJson(res, 404, { error: "Company not found" });
+  const providerNumber = req.body.providerNumber ?? existing.provider_number ?? "";
+  if (providerNumber && !/^\d{6,15}$/.test(String(providerNumber))) {
+    return sendJson(res, 400, { error: "providerNumber must be 6-15 digits" });
+  }
+  await query(`UPDATE companies SET provider_number=$1, updated_at=now() WHERE id=$2`, [providerNumber, req.params.id]);
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "update_provider_number",
+    entityType: "company",
+    entityId: req.params.id,
+    oldValue: { providerNumber: existing.provider_number },
+    newValue: { providerNumber },
   });
   sendJson(res, 200, await queryOne(`SELECT ${COMPANY_COLUMNS} FROM companies WHERE id=$1`, [req.params.id]));
 });
