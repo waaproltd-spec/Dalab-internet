@@ -160,8 +160,24 @@ fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenNotifications: () -> Unit
                         }
                     }
 
+                    // Companies already arrive from the backend in a fixed,
+                    // admin-controlled order (GET /companies?audience=customer
+                    // sorts by group_number, sort_order, name) — today that's
+                    // exactly Hormuud, Somnet, Somtel, Amtel, so this 3-column
+                    // grid's first row is those three and the second row
+                    // starts with Amtel, with any newly added company simply
+                    // appended after. GridCells.Fixed(3) alone would already
+                    // leave a partial last row's remaining columns visually
+                    // blank; the explicit placeholder items below just make
+                    // that "balanced grid" behavior deliberate in code rather
+                    // than an implicit side effect, and keep working
+                    // automatically as the company count grows or shrinks.
                     items(companies, key = { it.id }) { company ->
                         CompanyCard(company = company, onClick = { onOpenCompany(company) })
+                    }
+                    val remainder = companies.size % 3
+                    if (companies.isNotEmpty() && remainder != 0) {
+                        items(3 - remainder) { Spacer(Modifier.fillMaxWidth()) }
                     }
 
                     item(span = { GridItemSpan(maxLineSpan) }) { Spacer(Modifier.height(72.dp)) }
