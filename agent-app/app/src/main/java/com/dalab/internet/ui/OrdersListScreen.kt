@@ -467,14 +467,8 @@ fun StatusChip(order: Order) {
     // "in_progress" is one status in the data model, but reads better to an
     // agent split into whether the USSD string has actually been generated
     // yet (dial about to/already in flight) vs. still waiting on that step —
-    // cosmetic only, no change to the underlying OrderStatus. A paid order
-    // whose scheduledAt is still in the future is deliberately deferred, not
-    // stalled, so it gets its own "Scheduled" label instead of "Processing".
-    val scheduledDate = remember(order.scheduledAt) { com.dalab.internet.util.parseApiDate(order.scheduledAt) }
-    val isScheduledAndNotDue = order.status == OrderStatus.IN_PROGRESS && order.ussdGenerated == null &&
-        scheduledDate != null && scheduledDate.after(Date())
+    // cosmetic only, no change to the underlying OrderStatus.
     val label = when {
-        isScheduledAndNotDue -> "Scheduled"
         order.status == OrderStatus.PENDING -> "Pending"
         order.status == OrderStatus.IN_PROGRESS -> if (order.ussdGenerated != null) "Delivering" else "Processing"
         order.status == OrderStatus.COMPLETED -> "Completed"

@@ -12,8 +12,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -31,19 +29,11 @@ import com.dalab.internet.customer.data.OrderStatus
 import com.dalab.internet.customer.data.companyLogoRes
 import com.dalab.internet.customer.network.ApiClient
 import com.dalab.internet.customer.network.RealtimeClient
-import com.dalab.internet.customer.network.UpdateScheduleRequest
 import com.dalab.internet.customer.prefs.LocalizationManager
-import com.dalab.internet.customer.util.PaymentDialUtil
 import com.dalab.internet.customer.util.formatApiDateTime
-import com.dalab.internet.customer.util.parseApiDate
 import kotlinx.coroutines.launch
-import java.time.LocalDate
-import java.time.LocalDateTime
-import java.time.LocalTime
-import java.time.ZoneId
 
 private val DalabIndigo = Color(0xFF1D2E8C)
-private val SchedulePurple = Color(0xFF7C3AED)
 
 /**
  * Starts from the order object the caller already has (avoids a blank
@@ -59,17 +49,6 @@ fun OrderDetailScreen(initialOrder: CustomerOrder, onBack: () -> Unit) {
     var copied by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-
-    // Schedule Recharge: edit / cancel, only meaningful while the schedule
-    // hasn't executed yet (ussdGenerated still null) and no cancellation
-    // request is already pending — the backend re-enforces both conditions.
-    var showDatePicker by remember { mutableStateOf(false) }
-    var showTimePicker by remember { mutableStateOf(false) }
-    var editDate by remember { mutableStateOf<LocalDate?>(null) }
-    var editTime by remember { mutableStateOf<LocalTime?>(null) }
-    var scheduleActionBusy by remember { mutableStateOf(false) }
-    var scheduleActionError by remember { mutableStateOf<String?>(null) }
-    var scheduleActionMessage by remember { mutableStateOf<String?>(null) }
 
     fun refresh() {
         scope.launch {
@@ -162,7 +141,7 @@ fun OrderDetailScreen(initialOrder: CustomerOrder, onBack: () -> Unit) {
                         )
                     }
                     Spacer(Modifier.width(8.dp))
-                    StatusChip(order.status, order.scheduledAt, order.ussdGenerated)
+                    StatusChip(order.status)
                 }
             }
             if (copied) {
@@ -202,179 +181,8 @@ fun OrderDetailScreen(initialOrder: CustomerOrder, onBack: () -> Unit) {
 
                     Spacer(Modifier.height(if (compact) 8.dp else 10.dp))
                     SectionLabel("STATUS")
-                    DetailRowCustom("Payment Status") { StatusChip(order.status, order.scheduledAt, order.ussdGenerated) }
+                    DetailRowCustom("Payment Status") { StatusChip(order.status) }
                     DetailRow("Date", formatApiDateTime(order.createdAt))
-                }
-            }
-
-            val scheduledAt = order.scheduledAt
-            if (scheduledAt != null) {
-                Spacer(Modifier.height(10.dp))
-                Surface(color = Color(0xFFF3EEFC), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(cardPadding)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Filled.Schedule, contentDescription = null, tint = SchedulePurple, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                LocalizationManager.tr("Scheduled Recharge", "Dib-u-shubid la qorsheeyay"),
-                                fontWeight = FontWeight.Bold,
-                                color = SchedulePurple,
-                            )
-                        }
-                        Spacer(Modifier.height(6.dp))
-                        DetailRow(
-                            LocalizationManager.tr("Scheduled for", "Waqtiga la qorsheeyay"),
-                            formatApiDateTime(scheduledAt),
-                        )
-
-                        val pendingExecution = order.ussdGenerated == null
-                        val cancellationRequestedAt = order.cancellationRequestedAt
-                        if (pendingExecution && cancellationRequestedAt == null) {
-                            // Checkout skips the payment dial for a future-scheduled
-                            // order (see CheckoutScreen.kt) -- this is the only place
-                            // left to trigger it once the scheduled time arrives. A
-                            // 15s-ticking clock is UI-gating only: the backend's own
-                            // pipeline is what actually verifies/completes payment
-                            // whenever it's sent, so a wrong client clock is never a
-                            // correctness risk, only a display nuisance.
-                            if (order.status == OrderStatus.PENDING) {
-                                Spacer(Modifier.height(10.dp))
-                                var nowTick by remember { mutableStateOf(java.util.Date()) }
-                                LaunchedEffect(scheduledAt) {
-                                    while (true) {
-                                        kotlinx.coroutines.delay(15_000)
-                                        nowTick = java.util.Date()
-                                    }
-                                }
-                                val scheduledDate = remember(scheduledAt) { parseApiDate(scheduledAt) }
-                                val isDue = scheduledDate == null || !scheduledDate.after(nowTick)
-                                var payBusy by remember { mutableStateOf(false) }
-                                var payError by remember { mutableStateOf<String?>(null) }
-                                if (!isDue) {
-                                    Text(
-                                        LocalizationManager.tr(
-                                            "Please wait until your scheduled payment time before sending payment.",
-                                            "Fadlan sug ilaa waqtiga lacag-bixinta ee la qorsheeyay ka hor inta aadan diri lacagta.",
-                                        ),
-                                        color = Color.Gray,
-                                        fontSize = 12.sp,
-                                    )
-                                    Spacer(Modifier.height(8.dp))
-                                }
-                                if (payError != null) {
-                                    Text(payError!!, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-                                    Spacer(Modifier.height(6.dp))
-                                }
-                                Button(
-                                    onClick = {
-                                        payBusy = true
-                                        payError = null
-                                        scope.launch {
-                                            try {
-                                                val wallet = ApiClient.service.getPaymentWallets().body()
-                                                    ?.firstOrNull { it.name == order.paymentMethod }
-                                                val dialIntent = wallet?.let { PaymentDialUtil.resolveDialIntent(it, order.amount) }
-                                                if (dialIntent != null) {
-                                                    context.startActivity(dialIntent)
-                                                } else {
-                                                    payError = LocalizationManager.tr(
-                                                        "Couldn't find your payment number. Please try again.",
-                                                        "Lama helin lambarka lacag-bixinta. Fadlan isku day mar kale.",
-                                                    )
-                                                }
-                                            } catch (e: Exception) {
-                                                payError = LocalizationManager.tr(
-                                                    "Couldn't start payment. Please try again.",
-                                                    "Lacag-bixinta lama bilaabi karin. Fadlan isku day mar kale.",
-                                                )
-                                            }
-                                            payBusy = false
-                                        }
-                                    },
-                                    enabled = isDue && !payBusy,
-                                    colors = ButtonDefaults.buttonColors(containerColor = SchedulePurple),
-                                    modifier = Modifier.fillMaxWidth(),
-                                ) {
-                                    Text(LocalizationManager.tr("Send Money", "Dir Lacagta"))
-                                }
-                                Spacer(Modifier.height(10.dp))
-                            }
-                            if (scheduleActionError != null) {
-                                Text(scheduleActionError!!, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-                                Spacer(Modifier.height(6.dp))
-                            }
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                OutlinedButton(
-                                    onClick = {
-                                        editDate = LocalDate.now()
-                                        editTime = LocalTime.now()
-                                        showDatePicker = true
-                                    },
-                                    enabled = !scheduleActionBusy,
-                                    modifier = Modifier.weight(1f),
-                                ) {
-                                    Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(Modifier.width(6.dp))
-                                    Text(LocalizationManager.tr("Edit", "Wax ka beddel"))
-                                }
-                                OutlinedButton(
-                                    onClick = {
-                                        scheduleActionBusy = true
-                                        scheduleActionError = null
-                                        scope.launch {
-                                            try {
-                                                val response = ApiClient.service.requestCancellation(order.id)
-                                                if (response.isSuccessful) {
-                                                    response.body()?.let { order = it }
-                                                    scheduleActionMessage = LocalizationManager.tr(
-                                                        "Cancellation requested — awaiting Super Admin review.",
-                                                        "Waa la codsaday joojinta — waxay sugeysaa dib u eegis Super Admin.",
-                                                    )
-                                                } else {
-                                                    scheduleActionError = LocalizationManager.tr(
-                                                        "Couldn't submit cancellation. Please try again.",
-                                                        "Waa suurtagal in joojintu maqan tahay. Fadlan isku day mar kale.",
-                                                    )
-                                                }
-                                            } catch (e: Exception) {
-                                                scheduleActionError = LocalizationManager.tr(
-                                                    "Couldn't submit cancellation. Please try again.",
-                                                    "Waa suurtagal in joojintu maqan tahay. Fadlan isku day mar kale.",
-                                                )
-                                            }
-                                            scheduleActionBusy = false
-                                        }
-                                    },
-                                    enabled = !scheduleActionBusy,
-                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                                    modifier = Modifier.weight(1f),
-                                ) {
-                                    Text(LocalizationManager.tr("Request Cancellation", "Codso Joojinta"))
-                                }
-                            }
-                            if (scheduleActionMessage != null) {
-                                Spacer(Modifier.height(6.dp))
-                                Text(scheduleActionMessage!!, color = DalabIndigo, fontSize = 12.sp)
-                            }
-                        } else if (cancellationRequestedAt != null) {
-                            Spacer(Modifier.height(8.dp))
-                            val (label, color) = when (order.cancellationDecision) {
-                                "approved" -> LocalizationManager.tr(
-                                    "Cancellation approved — this order was reversed.",
-                                    "Joojinta waa la aqbalay — dalabkan waa la celiyay.",
-                                ) to Color(0xFFDC2626)
-                                "rejected" -> LocalizationManager.tr(
-                                    "Cancellation rejected — the recharge will proceed as scheduled.",
-                                    "Joojinta waa la diiday — dib-u-shubidu waxay socon doontaa sida la qorsheeyay.",
-                                ) to Color(0xFF16A34A)
-                                else -> LocalizationManager.tr(
-                                    "Cancellation requested — awaiting Super Admin review.",
-                                    "Waa la codsaday joojinta — waxay sugeysaa dib u eegis Super Admin.",
-                                ) to Color(0xFFB8860B)
-                            }
-                            Text(label, color = color, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                        }
-                    }
                 }
             }
 
@@ -386,54 +194,6 @@ fun OrderDetailScreen(initialOrder: CustomerOrder, onBack: () -> Unit) {
             )
             Spacer(Modifier.height(16.dp))
         }
-    }
-
-    if (showDatePicker) {
-        ScheduleDatePickerDialog(
-            initialDate = editDate,
-            onDismiss = { showDatePicker = false },
-            onDatePicked = { picked ->
-                editDate = picked
-                showDatePicker = false
-                showTimePicker = true
-            },
-        )
-    }
-
-    if (showTimePicker) {
-        ScheduleTimePickerDialog(
-            initialTime = editTime,
-            onDismiss = { showTimePicker = false },
-            onTimePicked = { picked ->
-                editTime = picked
-                showTimePicker = false
-                val date = editDate
-                if (date != null) {
-                    val instant = LocalDateTime.of(date, picked).atZone(ZoneId.systemDefault()).toInstant()
-                    scheduleActionBusy = true
-                    scheduleActionError = null
-                    scope.launch {
-                        try {
-                            val response = ApiClient.service.updateSchedule(order.id, UpdateScheduleRequest(instant.toString()))
-                            if (response.isSuccessful) {
-                                response.body()?.let { order = it }
-                            } else {
-                                scheduleActionError = LocalizationManager.tr(
-                                    "Couldn't update the schedule. Please try again.",
-                                    "Ma suurtagalin in la cusboonaysiiyo qorshaha. Fadlan isku day mar kale.",
-                                )
-                            }
-                        } catch (e: Exception) {
-                            scheduleActionError = LocalizationManager.tr(
-                                "Couldn't update the schedule. Please try again.",
-                                "Ma suurtagalin in la cusboonaysiiyo qorshaha. Fadlan isku day mar kale.",
-                            )
-                        }
-                        scheduleActionBusy = false
-                    }
-                }
-            },
-        )
     }
 }
 
