@@ -42,9 +42,11 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.dalab.internet.customer.R
 import com.dalab.internet.customer.auth.SessionManager
 import com.dalab.internet.customer.data.Company
 import com.dalab.internet.customer.data.PromoImage
@@ -199,7 +201,23 @@ fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenNotifications: () -> Unit
             title = { Text(LocalizationManager.tr("Need help?", "Ma u baahan tahay caawimaad?")) },
             text = {
                 Column {
-                    Text(LocalizationManager.tr("Reach DALAB Internet support directly:", "La xiriir taageerada DALAB Internet:"))
+                    Image(
+                        painter = painterResource(R.drawable.support_agent),
+                        contentDescription = null,
+                        modifier = Modifier
+                            .align(Alignment.CenterHorizontally)
+                            .size(84.dp)
+                            .clip(CircleShape),
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        LocalizationManager.tr(
+                            "Our customer service team is ready for you. Please choose one of the options below.",
+                            "Kooxdayada adeegga macaamiisha ayaa diyaar kuu ah. Fadlan dooro mid ka mid ah xulashooyinka hoose.",
+                        ),
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                     Spacer(Modifier.height(12.dp))
                     SupportActionRow(
                         icon = Icons.Filled.Call,
