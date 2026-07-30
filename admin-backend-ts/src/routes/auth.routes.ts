@@ -63,7 +63,22 @@ authRouter.post("/auth/otp/verify", rateLimit("otp-verify", 10, 15 * 60 * 1000),
 
   let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
   if (!customer) {
-    customer = await queryOne(`INSERT INTO customers (id, phone) VALUES ($1,$2) RETURNING *`, [randomUUID(), phone]);
+    // Referral relationship is fixed once, at account creation, from the
+    // referral code the Customer App may have picked up from a shared
+    // referral link — never reassigned afterward, and never set for an
+    // already-existing account (re-verifying an OTP is a login, not a
+    // registration). An unrecognized/self/omitted code is silently ignored
+    // rather than blocking registration.
+    const referralCode = String(req.body.referralCode ?? "").trim();
+    let referredBy: string | null = null;
+    if (referralCode) {
+      const referrer = await queryOne<{ id: string }>(`SELECT id FROM customers WHERE referral_code=$1`, [referralCode]);
+      if (referrer) referredBy = referrer.id;
+    }
+    customer = await queryOne(
+      `INSERT INTO customers (id, phone, referred_by_customer_id) VALUES ($1,$2,$3) RETURNING *`,
+      [randomUUID(), phone, referredBy]
+    );
   }
   if (customer!.status === "blocked") return sendJson(res, 403, { error: "This account has been blocked" });
 
