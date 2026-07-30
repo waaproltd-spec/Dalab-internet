@@ -211,6 +211,11 @@ const DalabAdminApi = {
     return dalabAdminApiRequest(`/admin/commissions${qs ? `?${qs}` : ""}`);
   },
   getCommissionSummary: () => dalabAdminApiRequest("/admin/commissions/summary"),
+  // Schedule Recharge: a customer's cancellation request never auto-refunds —
+  // it's a Super-Admin-only review item (server-enforced, not just hidden here).
+  getScheduledCancellations: () => dalabAdminApiRequest("/admin/orders/scheduled-cancellations"),
+  approveScheduledCancellation: (id) => dalabAdminApiRequest(`/admin/orders/${id}/scheduled-cancellations/approve`, { method: "POST" }),
+  rejectScheduledCancellation: (id) => dalabAdminApiRequest(`/admin/orders/${id}/scheduled-cancellations/reject`, { method: "POST" }),
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -505,6 +510,7 @@ const NAV = [
   { id: "sms-logs", label: "SMS Monitor", icon: MessageSquare },
   { id: "payment-transactions", label: "Payment Transactions", icon: Activity },
   { id: "commissions", label: "Commissions", icon: Percent },
+  { id: "scheduled-cancellations", label: "Scheduled Cancellations", icon: AlertTriangle, superAdminOnly: true },
   { id: "execution-logs", label: "Execution Logs", icon: Terminal },
   { id: "reports", label: "Reports", icon: FileBarChart2 },
   { id: "roles", label: "Roles & Permissions", icon: ShieldCheck, superAdminOnly: true },
@@ -4825,6 +4831,125 @@ function CommissionsPanel({ companies, packages, admin }) {
   );
 }
 
+// Schedule Recharge: a customer's cancellation request on a scheduled (already
+// paid) recharge never auto-refunds — it lands here for the Super Admin to
+// approve (bookkeeping reversal + Macaash clawback, same as "Reverse
+// transaction" elsewhere) or reject (the recharge proceeds as originally
+// scheduled). Server-enforced Super-Admin-only, not just hidden client-side.
+function ScheduledCancellationsPanel() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [actingId, setActingId] = useState(null);
+
+  const fetchRows = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setLoading(true);
+    setError("");
+    try {
+      setRows(await DalabAdminApi.getScheduledCancellations());
+    } catch (err) {
+      setError(err.message || "Could not load scheduled cancellation requests.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchRows(); }, []);
+  useEffect(() => {
+    const timer = setInterval(fetchRows, 8000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const approve = async (order) => {
+    if (!window.confirm(`Approve cancellation for order ${order.id}? This reverses the order and claws back any Macaash points earned — it does not move real money, since there is no payment gateway to call.`)) return;
+    setActingId(order.id);
+    try {
+      await DalabAdminApi.approveScheduledCancellation(order.id);
+      fetchRows();
+    } catch (err) {
+      setError(err.message || "Could not approve this cancellation.");
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  const reject = async (order) => {
+    if (!window.confirm(`Reject cancellation for order ${order.id}? The recharge will proceed as originally scheduled.`)) return;
+    setActingId(order.id);
+    try {
+      await DalabAdminApi.rejectScheduledCancellation(order.id);
+      fetchRows();
+    } catch (err) {
+      setError(err.message || "Could not reject this cancellation.");
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to view scheduled cancellations.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 16, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Scheduled Cancellations</div>
+          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>
+            Customer requests to cancel a scheduled recharge before it executes. Approving reverses the order (bookkeeping only, no real refund); rejecting lets it proceed as scheduled.
+          </div>
+        </div>
+        <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={fetchRows} disabled={loading}>Refresh</Button>
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: "#FAFBFF" }}>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Order ID</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Customer</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Provider</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Package</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Amount</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Scheduled For</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Requested</th>
+                <th style={{ padding: "10px 14px" }} />
+              </tr>
+            </thead>
+            <tbody>
+              {loading && rows.length === 0 && (
+                <tr><td colSpan={8} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>Loading…</td></tr>
+              )}
+              {rows.map((o) => (
+                <tr key={o.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, color: INK }}>{o.id}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{o.customerName || o.customerPhone || "—"}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{o.companyName || "—"}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{o.packageName || "—"}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: GREEN, fontWeight: 700 }}>${Number(o.amount).toFixed(2)}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(o.scheduledAt)}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(o.cancellationRequestedAt)}</td>
+                  <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                    <Button variant="danger" style={{ marginRight: 8 }} disabled={actingId === o.id} onClick={() => approve(o)}>Approve</Button>
+                    <Button variant="ghost" disabled={actingId === o.id} onClick={() => reject(o)}>Reject</Button>
+                  </td>
+                </tr>
+              ))}
+              {!loading && rows.length === 0 && (
+                <tr><td colSpan={8} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No pending cancellation requests.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 function ExecutionLogs({ companies }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -6276,6 +6401,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "sms-logs" && <SmsLogs companies={companies} />}
           {active === "payment-transactions" && <PaymentTransactionsPanel companies={companies} />}
           {active === "commissions" && <CommissionsPanel companies={companies} packages={packages} admin={admin} />}
+          {active === "scheduled-cancellations" && <ScheduledCancellationsPanel />}
           {active === "execution-logs" && <ExecutionLogs companies={companies} />}
           {active === "reports" && <Reports />}
           {active === "roles" && <RolesPermissions admin={admin} />}
