@@ -9,7 +9,8 @@ export type OrderEvent =
   | { type: "order.created" | "order.updated"; orderId: string }
   | { type: "sms_log.created"; smsLogId: string; orderId: string | null }
   | { type: "payment_transaction.updated"; paymentTransactionId: string; orderId: string | null }
-  | { type: "catalog.updated" };
+  | { type: "catalog.updated" }
+  | { type: "sim_balance.updated"; deviceId: string; simSlot: number };
 
 const subscribers = new Set<Response>();
 
