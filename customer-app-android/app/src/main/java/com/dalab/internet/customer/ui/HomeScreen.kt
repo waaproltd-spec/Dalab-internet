@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.RateReview
 import androidx.compose.material.icons.filled.Settings
@@ -56,6 +57,11 @@ import kotlinx.coroutines.launch
 import java.util.Calendar
 
 private const val SUPPORT_PHONE = "252610338686"
+// Same Tawk.to property/widget already embedded on the web app
+// (customer-app/index.html) — tawk.to's own hosted chat-page URL format for
+// that pair, opened in the device's default browser via ACTION_VIEW rather
+// than embedded (no WebView, no native SDK), per explicit instruction.
+private const val TAWK_CHAT_URL = "https://tawk.to/chat/6a693e6e50dea81d4cf37935/1julhnokc"
 private val HeaderStart = Color(0xFF1D2E8C)
 private val HeaderEnd = Color(0xFF16A34A)
 
@@ -184,6 +190,15 @@ fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenNotifications: () -> Unit
                         label = "Call Us",
                         onClick = {
                             context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$SUPPORT_PHONE")))
+                            showSupport = false
+                        },
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    SupportActionRow(
+                        icon = Icons.Filled.Headphones,
+                        label = "Live Chat",
+                        onClick = {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(TAWK_CHAT_URL)))
                             showSupport = false
                         },
                     )
