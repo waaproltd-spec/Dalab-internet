@@ -51,6 +51,7 @@ import com.dalab.internet.customer.data.companyLogoRes
 import com.dalab.internet.customer.network.ApiClient
 import com.dalab.internet.customer.network.RealtimeClient
 import com.dalab.internet.customer.prefs.LocalizationManager
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Calendar
 
@@ -288,18 +289,31 @@ private fun SupportActionRow(icon: androidx.compose.ui.graphics.vector.ImageVect
 }
 
 /**
- * Super Admin-uploaded promotional images (up to 5), shown as a swipeable
- * carousel — customers can only view these, never upload. Each page loads
- * its image from GET /promo-images/{id}/image via Coil (the one place this
- * app needs async remote image loading; provider logos are bundled local
- * drawables instead). Recommended upload size is 1280x658 (the dashboard's
- * upload copy states this too) — the pager uses that exact aspect ratio so
- * a correctly-sized image is never cropped/distorted.
+ * Super Admin-uploaded promotional images (up to 5), shown as a carousel
+ * that auto-rotates every few seconds — customers can only view these,
+ * never upload, and can still swipe manually at any time (the auto-rotate
+ * loop just keys off whatever page is current, so a manual swipe is never
+ * fought, only continued from). Each page loads its image from
+ * GET /promo-images/{id}/image via Coil (the one place this app needs async
+ * remote image loading; provider logos are bundled local drawables instead).
+ * Recommended upload size is 1280x658 (the dashboard's upload copy states
+ * this too) — the pager uses that exact aspect ratio so a correctly-sized
+ * image is never cropped/distorted.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PromoImageCarousel(images: List<PromoImage>) {
     val pagerState = rememberPagerState(pageCount = { images.size })
+
+    LaunchedEffect(pagerState, images.size) {
+        if (images.size <= 1) return@LaunchedEffect
+        while (true) {
+            delay(4000)
+            val nextPage = (pagerState.currentPage + 1) % images.size
+            pagerState.animateScrollToPage(nextPage)
+        }
+    }
+
     Column(modifier = Modifier.padding(bottom = 4.dp)) {
         HorizontalPager(
             state = pagerState,
