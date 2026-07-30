@@ -198,27 +198,28 @@ fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenNotifications: () -> Unit
     if (showSupport) {
         AlertDialog(
             onDismissRequest = { showSupport = false },
-            title = { Text(LocalizationManager.tr("Need help?", "Ma u baahan tahay caawimaad?")) },
+            shape = RoundedCornerShape(28.dp),
             text = {
-                Column {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Image(
                         painter = painterResource(R.drawable.support_agent),
                         contentDescription = null,
                         modifier = Modifier
-                            .align(Alignment.CenterHorizontally)
-                            .size(84.dp)
+                            .size(88.dp)
                             .clip(CircleShape),
                     )
                     Spacer(Modifier.height(12.dp))
                     Text(
                         LocalizationManager.tr(
-                            "Our customer service team is ready for you. Please choose one of the options below.",
-                            "Kooxdayada adeegga macaamiisha ayaa diyaar kuu ah. Fadlan dooro mid ka mid ah xulashooyinka hoose.",
+                            "Welcome to DALAB INTERNET Support. Please choose how you'd like to reach us.",
+                            "Ku soo dhowow Adeegga Taageerada DALAB INTERNET. Fadlan dooro habka aad nala soo xiriirayso.",
                         ),
                         textAlign = TextAlign.Center,
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(16.dp))
                     SupportActionRow(
                         icon = Icons.Filled.Call,
                         label = "Call Us",
