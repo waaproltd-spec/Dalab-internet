@@ -11,11 +11,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.Color
 import com.dalab.internet.data.Company
 import com.dalab.internet.data.Order
 import com.dalab.internet.data.PackageItem
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.CreateSaleRequest
+import com.dalab.internet.queue.PendingActionQueue
+import com.dalab.internet.queue.PendingSalesSyncStatus
+import com.dalab.internet.queue.RetryClassifier
+import com.dalab.internet.queue.SaleCreateAction
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -42,7 +48,10 @@ fun NewSaleScreen() {
     var submitting by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var successOrders by remember { mutableStateOf<List<Order>?>(null) }
+    var queuedPackages by remember { mutableStateOf<List<PackageItem>>(emptyList()) }
     val scope = rememberCoroutineScope()
+    val syncState by PendingSalesSyncStatus.state.collectAsState()
+    val syncPendingCount by PendingSalesSyncStatus.pendingCount.collectAsState()
 
     LaunchedEffect(Unit) {
         try {
@@ -74,6 +83,7 @@ fun NewSaleScreen() {
         receiverPhone = ""
         paymentMethod = ""
         successOrders = null
+        queuedPackages = emptyList()
         error = null
     }
 
@@ -83,9 +93,15 @@ fun NewSaleScreen() {
     Scaffold(topBar = { TopAppBar(title = { Text("New Sale") }) }) { padding ->
         val orders = successOrders
         if (orders != null) {
-            SaleConfirmation(orders = orders, onNewSale = { reset() })
+            SaleConfirmation(orders = orders, queuedPackages = queuedPackages, onNewSale = { reset() })
         } else {
             LazyColumn(modifier = Modifier.padding(padding).fillMaxSize().padding(16.dp)) {
+                if (syncState != PendingSalesSyncStatus.State.IDLE) {
+                    item {
+                        SyncStatusBanner(state = syncState, pendingCount = syncPendingCount)
+                        Spacer(Modifier.height(12.dp))
+                    }
+                }
                 item {
                     Text("1. Provider", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(8.dp))
@@ -177,38 +193,65 @@ fun NewSaleScreen() {
                                 submitting = true
                                 scope.launch {
                                     val created = mutableListOf<Order>()
+                                    val queued = mutableListOf<PackageItem>()
                                     var failure: String? = null
+                                    // Once one package in this batch fails for a
+                                    // connectivity reason, every remaining package
+                                    // would fail identically — queue the rest
+                                    // immediately instead of hammering the network
+                                    // once per package only to get the same result.
+                                    var offlineFromHereOn = false
                                     for (pkg in selectedPackages) {
-                                        try {
-                                            val response = ApiClient.service.createSale(
-                                                CreateSaleRequest(
-                                                    customerPhone = customerPhone.trim(),
-                                                    companyId = selectedCompany!!.id,
-                                                    packageId = pkg.id,
-                                                    receiverPhone = receiverPhone.trim().ifBlank { null },
-                                                    paymentMethod = paymentMethod.trim().ifBlank { null },
-                                                    // One idempotency key per package, not shared across the
-                                                    // batch — each package is its own order, so collapsing
-                                                    // them under one key would dedup all but the first.
-                                                    clientRequestId = UUID.randomUUID().toString(),
-                                                )
+                                        val request = CreateSaleRequest(
+                                            customerPhone = customerPhone.trim(),
+                                            companyId = selectedCompany!!.id,
+                                            packageId = pkg.id,
+                                            receiverPhone = receiverPhone.trim().ifBlank { null },
+                                            paymentMethod = paymentMethod.trim().ifBlank { null },
+                                            // One idempotency key per package, not shared across the
+                                            // batch — each package is its own order, so collapsing
+                                            // them under one key would dedup all but the first. This
+                                            // same id is reused if the request has to be queued and
+                                            // replayed later, so a retry can never create a duplicate.
+                                            clientRequestId = UUID.randomUUID().toString(),
+                                        )
+                                        if (offlineFromHereOn) {
+                                            PendingActionQueue.enqueueIfAbsent(
+                                                request.clientRequestId!!, PendingActionQueue.Type.SALE_CREATE, SaleCreateAction(request, pkg.name),
                                             )
+                                            queued += pkg
+                                            continue
+                                        }
+                                        try {
+                                            val response = RetryClassifier.requireSuccessful(ApiClient.service.createSale(request))
                                             val order = response.body()
-                                            if (response.isSuccessful && order != null) {
+                                            if (order != null) {
                                                 created += order
                                             } else {
                                                 failure = "Couldn't create a sale for ${pkg.name} — stopped after ${created.size} of ${selectedPackages.size}."
                                                 break
                                             }
-                                        } catch (_: Exception) {
-                                            failure = "Network error while creating a sale for ${pkg.name} — stopped after ${created.size} of ${selectedPackages.size}."
-                                            break
+                                        } catch (e: Exception) {
+                                            if (RetryClassifier.isRetryable(e)) {
+                                                PendingActionQueue.enqueueIfAbsent(
+                                                    request.clientRequestId!!, PendingActionQueue.Type.SALE_CREATE, SaleCreateAction(request, pkg.name),
+                                                )
+                                                queued += pkg
+                                                offlineFromHereOn = true
+                                                PendingSalesSyncStatus.markQueued()
+                                            } else {
+                                                failure = "Couldn't create a sale for ${pkg.name} — stopped after ${created.size} of ${selectedPackages.size}."
+                                                break
+                                            }
                                         }
                                     }
-                                    if (created.isNotEmpty()) {
+                                    if (failure != null) {
+                                        error = failure
+                                    } else if (created.isNotEmpty() || queued.isNotEmpty()) {
                                         successOrders = created
+                                        queuedPackages = queued
                                     } else {
-                                        error = failure ?: "Couldn't create the sale — check the details and try again."
+                                        error = "Couldn't create the sale — check the details and try again."
                                     }
                                     submitting = false
                                 }
@@ -269,29 +312,82 @@ private fun PackageOption(pkg: PackageItem, selected: Boolean, onClick: () -> Un
 }
 
 @Composable
-private fun SaleConfirmation(orders: List<Order>, onNewSale: () -> Unit) {
+private fun SaleConfirmation(orders: List<Order>, queuedPackages: List<PackageItem>, onNewSale: () -> Unit) {
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Text(
-            if (orders.size > 1) "${orders.size} sales created" else "Sale created",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold,
-        )
-        Spacer(Modifier.height(12.dp))
-        orders.forEach { order ->
-            Text("Order ${order.id}", style = MaterialTheme.typography.bodyLarge)
-            Text("${order.companyName} · ${order.packageName} · $${"%.2f".format(order.amount)}", style = MaterialTheme.typography.bodyMedium)
-            Spacer(Modifier.height(8.dp))
+        if (orders.isNotEmpty()) {
+            Text(
+                if (orders.size > 1) "${orders.size} sales created" else "Sale created",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(12.dp))
+            orders.forEach { order ->
+                Text("Order ${order.id}", style = MaterialTheme.typography.bodyLarge)
+                Text("${order.companyName} · ${order.packageName} · $${"%.2f".format(order.amount)}", style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(8.dp))
+            }
+            Spacer(Modifier.height(16.dp))
+            Text(
+                "These orders are now pending — verify them from the Orders tab once payment comes in.",
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
-        Spacer(Modifier.height(16.dp))
-        Text(
-            "These orders are now pending — verify them from the Orders tab once payment comes in.",
-            style = MaterialTheme.typography.bodySmall,
-        )
+        if (queuedPackages.isNotEmpty()) {
+            if (orders.isNotEmpty()) Spacer(Modifier.height(20.dp))
+            Surface(color = Color(0xFFFFF3CD), shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        "You're offline — ${queuedPackages.size} sale${if (queuedPackages.size == 1) "" else "s"} queued",
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF7A5B00),
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    queuedPackages.forEach { pkg -> Text("• ${pkg.name}", color = Color(0xFF7A5B00)) }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "These will be sent automatically, one at a time, the moment this device reconnects.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF7A5B00),
+                    )
+                }
+            }
+        }
         Spacer(Modifier.height(20.dp))
         Button(onClick = onNewSale) { Text("Start another sale") }
+    }
+}
+
+@Composable
+private fun SyncStatusBanner(state: PendingSalesSyncStatus.State, pendingCount: Int) {
+    val (bg, fg, label) = when (state) {
+        PendingSalesSyncStatus.State.OFFLINE -> Triple(
+            Color(0xFFFFF3CD), Color(0xFF7A5B00),
+            "Offline — $pendingCount sale${if (pendingCount == 1) "" else "s"} waiting to send",
+        )
+        PendingSalesSyncStatus.State.SYNCING -> Triple(
+            Color(0xFFD6E4FF), Color(0xFF1D2E8C),
+            "Syncing $pendingCount pending sale${if (pendingCount == 1) "" else "s"}…",
+        )
+        PendingSalesSyncStatus.State.COMPLETED -> Triple(
+            Color(0xFFDCFCE7), Color(0xFF16A34A),
+            "All pending sales synced",
+        )
+        PendingSalesSyncStatus.State.IDLE -> return
+    }
+    Surface(color = bg, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (state == PendingSalesSyncStatus.State.SYNCING) {
+                CircularProgressIndicator(color = fg, strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(10.dp))
+            }
+            Text(label, color = fg, fontWeight = FontWeight.Medium, style = MaterialTheme.typography.bodySmall)
+        }
     }
 }
