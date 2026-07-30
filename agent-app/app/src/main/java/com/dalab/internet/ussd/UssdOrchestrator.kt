@@ -2,6 +2,7 @@ package com.dalab.internet.ussd
 
 import android.content.Context
 import com.dalab.internet.auth.DeviceIdentity
+import com.dalab.internet.data.OrderStatus
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.DialAttemptResultRequest
@@ -56,6 +57,15 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
             return DialResult(outcome, "Could not reach server to verify payment: ${e.message}")
         }
         val order = verifyResponse.body() ?: return DialResult(DialOutcome.FAILED, "Verify-payment returned no order.")
+        // verify-payment's CAS is idempotent on status (a second call for an
+        // already-completed order is a no-op that just returns current
+        // state) — but the returned order still carries its old
+        // ussdGenerated string, so without this check the code below would
+        // dial AGAIN for an order that already finished. This is the exact
+        // mechanism that turned one real payment into 3 real USSD debits.
+        if (order.status == OrderStatus.COMPLETED) {
+            return DialResult(DialOutcome.SUCCESS, "Order already completed — skipping redundant dial.")
+        }
         val ussdString = order.ussdGenerated
             ?: return DialResult(DialOutcome.FAILED, "No USSD template matched this order — check USSD Services in the dashboard.")
 
@@ -106,6 +116,9 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
             return DialResult(outcome, "Could not reach server to verify payment: ${e.message}")
         }
         val order = verifyResponse.body() ?: return DialResult(DialOutcome.FAILED, "Verify-payment returned no order.")
+        if (order.status == OrderStatus.COMPLETED) {
+            return DialResult(DialOutcome.SUCCESS, "Order already completed — skipping redundant dial.")
+        }
         val ussdString = order.ussdGenerated
             ?: return DialResult(DialOutcome.FAILED, "No USSD template matched this order — check USSD Services in the dashboard.")
         return dialWithRetry(orderId, forcedSimSlot, ussdString)
@@ -156,7 +169,23 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
             if (lastResult.outcome != DialOutcome.FAILED && lastResult.outcome != DialOutcome.TIMEOUT) {
                 return lastResult // permission/config/no-SIM problems — don't retry blindly
             }
-            if (attempt < maxAttempts) delay(2000L * attempt) // simple linear backoff between USSD retries
+            if (attempt < maxAttempts) {
+                delay(2000L * attempt) // simple linear backoff between USSD retries
+                // A concurrent path (a second SMS match, another device, or the
+                // self-heal sweep) may have already completed this order while
+                // this attempt was failing/timing out locally — re-check before
+                // burning another real USSD session on the carrier. Fails open
+                // (keeps retrying) on any network error here, so a flaky status
+                // check can never itself cause a genuine payment to go undialed.
+                val alreadyCompleted = try {
+                    ApiClient.service.getOrder(orderId).body()?.status == OrderStatus.COMPLETED
+                } catch (_: Exception) {
+                    false
+                }
+                if (alreadyCompleted) {
+                    return DialResult(DialOutcome.SUCCESS, "Order already completed — skipping remaining retries.")
+                }
+            }
         }
         return lastResult
     }
