@@ -8,7 +8,7 @@ android {
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.dalab.internet.customer"
+        applicationId = "com.dalab.internet"
         minSdk = 26
         targetSdk = 34
         versionCode = 1
