@@ -40,16 +40,25 @@ object PendingActionQueue {
     @Synchronized
     fun init(context: Context) {
         if (::prefs.isInitialized) return
-        val masterKey = MasterKey.Builder(context.applicationContext)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build()
-        prefs = EncryptedSharedPreferences.create(
-            context.applicationContext,
-            PREFS,
-            masterKey,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-        )
+        // This is a best-effort offline-retry cache, not the app's core purpose --
+        // it must never be able to take down app startup. Falls back to a plain
+        // (unencrypted) prefs file if the encrypted store can't initialize for any
+        // reason on a given device/OS combination, instead of crashing before any
+        // screen ever shows.
+        prefs = try {
+            val masterKey = MasterKey.Builder(context.applicationContext)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+            EncryptedSharedPreferences.create(
+                context.applicationContext,
+                PREFS,
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+            )
+        } catch (_: Exception) {
+            context.applicationContext.getSharedPreferences("${PREFS}_fallback", Context.MODE_PRIVATE)
+        }
     }
 
     @Synchronized
