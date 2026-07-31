@@ -1,0 +1,14 @@
+{
+  "name": "com.sahal.data",
+  "version": "1.0.0",
+  "description": "SAHAL DATA backend API — customer, agent, and super admin clients share this one service and database.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test --test-concurrency=1"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}
