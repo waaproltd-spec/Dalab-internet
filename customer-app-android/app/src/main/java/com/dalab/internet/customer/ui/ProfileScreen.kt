@@ -108,13 +108,12 @@ fun ProfileScreen(onLogout: () -> Unit) {
         }
     }
 
-    Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState()),
-        ) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .verticalScroll(rememberScrollState()),
+    ) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -241,7 +240,6 @@ fun ProfileScreen(onLogout: () -> Unit) {
                 }
             }
         }
-    }
 
     if (showEditDialog) {
         var draftName by remember { mutableStateOf(customer?.name ?: "") }
