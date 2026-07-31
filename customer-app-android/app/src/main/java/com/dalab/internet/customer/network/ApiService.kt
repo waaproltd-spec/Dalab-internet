@@ -56,6 +56,24 @@ data class ReferralInfo(
     val referrals: List<ReferralEntry>,
 )
 
+// Each field is null when that link is unconfigured or disabled — see
+// GET /settings/public (admin-backend-ts/src/routes/settings.routes.ts).
+data class SocialLinks(
+    val whatsappNumber: String? = null,
+    val phoneNumber: String? = null,
+    val facebookUrl: String? = null,
+    val instagramUrl: String? = null,
+    val tiktokUrl: String? = null,
+    val email: String? = null,
+    val playStoreUrl: String? = null,
+)
+
+data class PublicSettings(
+    val appName: String? = null,
+    val supportPhone: String? = null,
+    val socialLinks: SocialLinks = SocialLinks(),
+)
+
 /**
  * Mirrors admin-backend-ts's routes exactly (src/routes/ *.routes.ts) — the
  * production backend for this whole project. Base URL and auth header
@@ -129,4 +147,11 @@ interface ApiService {
 
     @GET("customers/me/referral")
     suspend fun getReferralInfo(): Response<ReferralInfo>
+
+    // Social Media Links (Super Admin: Settings -> Social Media Links) — a
+    // field is null whenever it's either unconfigured or switched off, so
+    // the Profile screen can hide/disable that button with no guessing.
+    // No auth required, matches the endpoint's own public design.
+    @GET("settings/public")
+    suspend fun getPublicSettings(): Response<PublicSettings>
 }
