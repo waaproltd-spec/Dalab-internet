@@ -7,7 +7,7 @@ name: Build Sahal Data Customer App APK
 # generate/set it).
 on:
   push:
-    branches: [main, claude/sahal-elblcd]
+    branches: [main]
     paths:
       - "sahal-data-customer-app-android/**"
   workflow_dispatch: {}
