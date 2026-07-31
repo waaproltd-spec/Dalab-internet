@@ -1,0 +1,76 @@
+name: Build Sahal Data Agent App APK
+
+# Runs on every push to main that touches this module, and can also be
+# triggered manually from the Actions tab. Uses GitHub's own Gradle setup
+# action rather than this project's gradlew, and always builds a debug APK;
+# also builds a signed release APK when the SAHAL_AGENT_KEYSTORE_BASE64
+# secret is configured (see sahal-data-agent-app/README.md for how to
+# generate/set it).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sahal-data-agent-app/**"
+  workflow_dispatch: {}
+
+defaults:
+  run:
+    working-directory: sahal-data-agent-app
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: sahal-data-agent-debug-apk
+          path: sahal-data-agent-app/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Decode release keystore
+        id: keystore
+        env:
+          SAHAL_AGENT_KEYSTORE_BASE64: ${{ secrets.SAHAL_AGENT_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$SAHAL_AGENT_KEYSTORE_BASE64" ]; then
+            echo "No SAHAL_AGENT_KEYSTORE_BASE64 secret set — skipping release signing."
+            exit 0
+          fi
+          echo "$SAHAL_AGENT_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/agent-release.jks"
+          echo "path=$RUNNER_TEMP/agent-release.jks" >> "$GITHUB_OUTPUT"
+
+      - name: Build release APK
+        if: ${{ steps.keystore.outputs.path != '' }}
+        env:
+          AGENT_KEYSTORE_PATH: ${{ steps.keystore.outputs.path }}
+          AGENT_KEYSTORE_PASSWORD: ${{ secrets.SAHAL_AGENT_KEYSTORE_PASSWORD }}
+          AGENT_KEY_ALIAS: ${{ secrets.SAHAL_AGENT_KEY_ALIAS }}
+          AGENT_KEY_PASSWORD: ${{ secrets.SAHAL_AGENT_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Upload release APK
+        if: ${{ steps.keystore.outputs.path != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: sahal-data-agent-release-apk
+          path: sahal-data-agent-app/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error

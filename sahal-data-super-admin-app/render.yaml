@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: sahal-data-super-admin-dashboard
+    runtime: static
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      # Baked in at build time by Vite — point this at the real backend URL.
+      # Must exactly match one of the origins the backend's CORS_ORIGIN
+      # allows (see ../sahal-data-admin-backend-ts/render.yaml), or dashboard
+      # logins will fail with a CORS error even though the API itself is
+      # reachable.
+      - key: VITE_API_BASE_URL
+        value: https://sahal-data-2.onrender.com
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

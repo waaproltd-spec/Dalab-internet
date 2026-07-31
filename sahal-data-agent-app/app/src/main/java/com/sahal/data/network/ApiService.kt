@@ -1,0 +1,160 @@
+package com.sahal.data.network
+
+import com.sahal.data.data.AgentDevice
+import com.sahal.data.data.AgentProfile
+import com.sahal.data.data.AgentReport
+import com.sahal.data.data.Company
+import com.sahal.data.data.CustomerSummary
+import com.sahal.data.data.Order
+import com.sahal.data.data.PackageItem
+import com.sahal.data.data.SmsLogEntry
+import com.sahal.data.data.Transaction
+import com.sahal.data.data.AgentNotification
+import com.sahal.data.ussd.SimRoutingEntry
+import retrofit2.Response
+import retrofit2.http.*
+
+data class DeviceLoginRequest(val deviceId: String)
+data class DiagnosticsEntryDto(
+    val tag: String,
+    val message: String,
+    val isError: Boolean,
+    val occurredAt: Long,
+)
+data class HeartbeatRequest(
+    val batteryPercent: Int?,
+    val networkOnline: Boolean,
+    val sim1Present: Boolean?,
+    val sim2Present: Boolean?,
+    // Reliability Dashboard: piggybacks the device's not-yet-delivered local
+    // DiagnosticsLog entries onto this same call rather than a separate
+    // endpoint/round-trip — best-effort, omitted (null/empty) when there's
+    // nothing new to report.
+    val recentDiagnostics: List<DiagnosticsEntryDto>? = null,
+)
+data class LoginResponse(val accessToken: String, val refreshToken: String, val agent: AgentProfile)
+data class RefreshRequest(val refreshToken: String)
+data class RefreshResponse(val accessToken: String, val refreshToken: String)
+data class VerifyPaymentRequest(val smsLogId: String? = null)
+data class SmsLogUploadResponse(
+    val id: String,
+    val matchedOrderId: String?,
+    val requiresManualApproval: Boolean = false,
+    // See admin-backend-ts smsLogs.routes.ts: duplicate/status reflect the
+    // server's transaction_ref (or sender+body+minute) dedup check — a
+    // duplicate payment is rejected as "already_processed" rather than
+    // being matched/dialed a second time.
+    val duplicate: Boolean = false,
+    val status: String? = null,
+    val orderAlreadyCompleted: Boolean = false,
+)
+data class VoucherConfirmationRequest(val receiverPhone: String, val amount: Double, val provider: String)
+data class VoucherConfirmationResponse(val matched: Boolean, val orderId: String? = null, val alreadyCompleted: Boolean = false)
+data class DialAttemptStartRequest(val simSlot: Int?, val ussdString: String, val attemptNumber: Int)
+data class DialAttemptStartResponse(val id: String)
+data class DialAttemptResultRequest(val status: String, val responseMessage: String?)
+data class DialAttemptResultResponse(val id: String, val status: String)
+data class CreateCustomerRequest(val phone: String, val name: String? = null)
+data class CreateSaleRequest(
+    val customerPhone: String,
+    val companyId: String,
+    val packageId: String,
+    val receiverPhone: String? = null,
+    val paymentMethod: String? = null,
+    val clientRequestId: String? = null,
+)
+
+/**
+ * Mirrors the backend architecture doc, §4 "Agent-facing", and the real
+ * implementation in sahal-data-backend.zip (src/routes/ *.js) — every path and body
+ * shape here matches what that server actually returns, verified against its
+ * test suite. Base URL and auth header (Authorization: Bearer <token>) are
+ * attached in ApiClient's OkHttp interceptor, not here — this interface only
+ * describes the routes/shapes.
+ */
+interface ApiService {
+
+    @POST("agent/auth/device-login")
+    suspend fun deviceLogin(@Body body: DeviceLoginRequest): Response<LoginResponse>
+
+    @POST("auth/refresh")
+    suspend fun refresh(@Body body: RefreshRequest): Response<RefreshResponse>
+
+    @GET("agent/orders")
+    suspend fun getOrders(@Query("status") status: String? = null): Response<List<Order>>
+
+    // Orders that reached in_progress with a USSD string generated but were
+    // never actually dialed — e.g. generation failed at verify-payment time
+    // and a Super Admin fixed the missing template/PIN afterward. Drained by
+    // SelfHealSweeper so that fix alone is enough, with no manual "Dial Now"
+    // tap required.
+    @GET("agent/orders/self-heal-candidates")
+    suspend fun getSelfHealCandidates(): Response<List<Order>>
+
+    @GET("agent/orders/{id}")
+    suspend fun getOrder(@Path("id") id: String): Response<Order>
+
+    @POST("agent/orders/{id}/verify-payment")
+    suspend fun verifyPayment(
+        @Path("id") id: String,
+        @Body body: VerifyPaymentRequest,
+    ): Response<Order>
+
+    @POST("agent/orders/{id}/complete")
+    suspend fun completeOrder(@Path("id") id: String): Response<Order>
+
+    @GET("agent/transactions")
+    suspend fun getTransactions(@Query("range") range: String? = null): Response<List<Transaction>>
+
+    @POST("agent/sms-logs")
+    suspend fun uploadSmsLog(@Body body: SmsLogEntry): Response<SmsLogUploadResponse>
+
+    @POST("agent/orders/voucher-confirmation")
+    suspend fun reportVoucherConfirmation(@Body body: VoucherConfirmationRequest): Response<VoucherConfirmationResponse>
+
+    @GET("agent/notifications")
+    suspend fun getNotifications(): Response<List<AgentNotification>>
+
+    @GET("agent/sim-routing")
+    suspend fun getSimRouting(@Query("deviceId") deviceId: String? = null): Response<List<SimRoutingEntry>>
+
+    @POST("agent/orders/{id}/dial-attempts")
+    suspend fun startDialAttempt(@Path("id") orderId: String, @Body body: DialAttemptStartRequest): Response<DialAttemptStartResponse>
+
+    @PUT("agent/dial-attempts/{attemptId}")
+    suspend fun reportDialResult(@Path("attemptId") attemptId: String, @Body body: DialAttemptResultRequest): Response<DialAttemptResultResponse>
+
+    // ---------------- Device identity & health (dual-mobile reliability) ----------------
+
+    @GET("agent/devices")
+    suspend fun getDevices(): Response<List<AgentDevice>>
+
+    @POST("agent/devices/{id}/heartbeat")
+    suspend fun sendHeartbeat(@Path("id") deviceId: String, @Body body: HeartbeatRequest): Response<Unit>
+
+    // ---------------- Customer management (walk-in sales) ----------------
+
+    @GET("agent/customers")
+    suspend fun getCustomers(@Query("search") search: String? = null): Response<List<CustomerSummary>>
+
+    @POST("agent/customers")
+    suspend fun createCustomer(@Body body: CreateCustomerRequest): Response<CustomerSummary>
+
+    // ---------------- Packages catalog (for sales + browsing) ----------------
+
+    @GET("companies")
+    suspend fun getCompanies(): Response<List<Company>>
+
+    @GET("companies/{id}/packages")
+    suspend fun getPackages(@Path("id") companyId: String): Response<List<PackageItem>>
+
+    // ---------------- Sales ----------------
+
+    @POST("agent/orders")
+    suspend fun createSale(@Body body: CreateSaleRequest): Response<Order>
+
+    // ---------------- Reports ----------------
+
+    @GET("agent/reports")
+    suspend fun getReports(@Query("range") range: String? = null): Response<AgentReport>
+}

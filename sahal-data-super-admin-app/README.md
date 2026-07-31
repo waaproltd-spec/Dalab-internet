@@ -1,0 +1,38 @@
+# SAHAL DATA — Super Admin Dashboard
+
+This is the Super Admin App / Restricted Portal (login screen: "Super Admin
+Login", subtitle "Sahal Data Management Console"). There is no separate
+mobile Super Admin app in this project — this single web dashboard is the
+Super Admin interface, covering Overview, Companies, Payment Numbers,
+Packages, Orders, Customers, Macaash, Notifications, Banners, USSD Services,
+SIM Routing Setup, Reports, and Settings.
+
+**Primary backend: `sahal-data-admin-backend-ts`** (Node.js + Express + TypeScript
++ PostgreSQL) — the one production backend for the whole project. The
+earlier SQLite backend is legacy/reference only; don't point this dashboard
+at both.
+
+```bash
+npm install
+cp .env.example .env
+npm run dev
+```
+
+Set `VITE_API_BASE_URL` in `.env` to the deployed TS backend's URL to switch
+from demo/mock data to the live API. Default seeded login:
+`admin@example.com` / `ChangeMe123!` (or whatever `SEED_SUPER_ADMIN_EMAIL` /
+`SEED_SUPER_ADMIN_PASSWORD` were set to on the backend — change immediately
+after first login). Build for production with `npm run build` (output in
+`dist/`).
+
+## Deploy
+
+`render.yaml` in this directory defines this as a Render static site
+(`sahal-data-super-admin-dashboard`) — connect it as its own Blueprint
+(root directory `sahal-data-super-admin-app`) in Render's dashboard, or
+create the static site manually with build command
+`npm install && npm run build` and publish directory `dist`. Either way,
+set `VITE_API_BASE_URL` to the backend's real URL, and make sure that
+exact origin is included in the backend's `CORS_ORIGIN` (see
+`sahal-data-admin-backend-ts/render.yaml`) — the two must match or
+dashboard logins will fail with a CORS error.
