@@ -6,7 +6,6 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -57,6 +56,7 @@ import com.dalab.internet.customer.auth.SessionManager
 import com.dalab.internet.customer.network.ApiClient
 import com.dalab.internet.customer.network.PinBody
 import com.dalab.internet.customer.network.ReferralInfo
+import com.dalab.internet.customer.network.SocialLinks
 import com.dalab.internet.customer.network.UpdateProfileRequest
 import com.dalab.internet.customer.prefs.LocalizationManager
 import kotlinx.coroutines.launch
@@ -66,11 +66,6 @@ private val HeaderEnd = Color(0xFF16A34A)
 private val DangerRed = Color(0xFFDC2626)
 private val DalabGreen = Color(0xFF16A34A)
 private const val PACKAGE_NAME = "com.dalab.internet.customer"
-// Same support number used in HomeScreen's support dialog.
-private const val SUPPORT_PHONE = "252610338686"
-// Facebook/Instagram/TikTok page links and a support email are not yet
-// configured — these three stay as "coming soon" taps (never a fabricated
-// URL) until the real links are provided.
 
 @Composable
 fun ProfileScreen(onLogout: () -> Unit) {
@@ -87,6 +82,7 @@ fun ProfileScreen(onLogout: () -> Unit) {
     var contentVisible by remember { mutableStateOf(false) }
     var referralInfo by remember { mutableStateOf<ReferralInfo?>(null) }
     var showReferralHistory by remember { mutableStateOf(false) }
+    var socialLinks by remember { mutableStateOf(SocialLinks()) }
     val scope = rememberCoroutineScope()
     val compact = LocalConfiguration.current.screenHeightDp < 700
 
@@ -104,6 +100,11 @@ fun ProfileScreen(onLogout: () -> Unit) {
             referralInfo = ApiClient.service.getReferralInfo().body()
         } catch (_: Exception) {
             // Loyalty Points card just stays hidden until the next visit — not worth an error dialog.
+        }
+        try {
+            ApiClient.service.getPublicSettings().body()?.let { socialLinks = it.socialLinks }
+        } catch (_: Exception) {
+            // Follow Us section just stays hidden until the next visit — not worth an error dialog.
         }
     }
 
@@ -233,7 +234,7 @@ fun ProfileScreen(onLogout: () -> Unit) {
                         onClick = { showDeleteConfirm = true },
                     )
                     Spacer(Modifier.height(20.dp))
-                    FollowUsSection(context = context)
+                    FollowUsSection(context = context, links = socialLinks)
                     Spacer(Modifier.height(18.dp))
                     PoweredBySection()
                     Spacer(Modifier.height(16.dp))
@@ -600,17 +601,75 @@ private fun LoyaltyStat(label: String, value: String, modifier: Modifier = Modif
 }
 
 /**
- * "Follow us on social media" — a green header bar over a 3x3 grid of round
- * icon buttons, mirroring the reference design. WhatsApp/Call/Share/Play
- * Store already have real destinations in this app; Facebook/Instagram/
- * TikTok/Email don't have a configured link yet, so they show a short
- * "coming soon" message instead of guessing a URL.
+ * "Follow us on social media" — a green header bar over a grid of round icon
+ * buttons. Every destination here is driven entirely by GET /settings/public
+ * (Super Admin: Settings -> Social Media Links) — a link that's unconfigured
+ * or switched off there is simply absent from [links], so its button never
+ * renders at all rather than guessing a URL or showing a dead "coming soon"
+ * state. "Share" is the one generic, always-available action (a plain
+ * Android share intent, not tied to any configured link).
  */
 @Composable
-private fun FollowUsSection(context: Context) {
-    fun notConfigured() {
-        Toast.makeText(context, "This link isn't set up yet.", Toast.LENGTH_SHORT).show()
+private fun FollowUsSection(context: Context, links: SocialLinks) {
+    data class SocialAction(
+        val icon: ImageVector? = null,
+        val label: String? = null,
+        val contentDescription: String,
+        val onClick: () -> Unit,
+    )
+
+    val actions = buildList {
+        links.whatsappNumber?.let { number ->
+            add(SocialAction(icon = Icons.Filled.Chat, contentDescription = "WhatsApp") {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/${number.filter(Char::isDigit)}")))
+            })
+        }
+        links.phoneNumber?.let { number ->
+            add(SocialAction(icon = Icons.Filled.Call, contentDescription = "Call") {
+                context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$number")))
+            })
+        }
+        links.facebookUrl?.let { url ->
+            add(SocialAction(label = "f", contentDescription = "Facebook") {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            })
+        }
+        links.instagramUrl?.let { url ->
+            add(SocialAction(icon = Icons.Filled.CameraAlt, contentDescription = "Instagram") {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            })
+        }
+        links.tiktokUrl?.let { url ->
+            add(SocialAction(icon = Icons.Filled.MusicNote, contentDescription = "TikTok") {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            })
+        }
+        links.email?.let { address ->
+            add(SocialAction(icon = Icons.Filled.Email, contentDescription = "Email") {
+                context.startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:$address")))
+            })
+        }
+        links.playStoreUrl?.let { url ->
+            add(SocialAction(icon = Icons.Filled.GetApp, contentDescription = "Play Store") {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            })
+        }
+        add(SocialAction(icon = Icons.Filled.Share, contentDescription = "Share") {
+            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(
+                    Intent.EXTRA_TEXT,
+                    "Check out DALAB Internet: ${links.playStoreUrl ?: "https://play.google.com/store/apps/details?id=$PACKAGE_NAME"}",
+                )
+            }
+            context.startActivity(Intent.createChooser(shareIntent, "Share DALAB Internet"))
+        })
     }
+
+    // Share is always present, so this only happens if the backend call
+    // itself failed (offline, cold-starting server) — nothing to render yet.
+    if (actions.size <= 1) return
+
     Surface(
         shape = RoundedCornerShape(20.dp),
         color = MaterialTheme.colorScheme.surface,
@@ -635,65 +694,17 @@ private fun FollowUsSection(context: Context) {
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    SocialIconButton(label = "f", contentDescription = "Facebook", onClick = { notConfigured() })
-                    SocialIconButton(icon = Icons.Filled.CameraAlt, contentDescription = "Instagram", onClick = { notConfigured() })
-                    SocialIconButton(icon = Icons.Filled.MusicNote, contentDescription = "TikTok", onClick = { notConfigured() })
-                }
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    SocialIconButton(
-                        icon = Icons.Filled.Chat,
-                        contentDescription = "WhatsApp",
-                        onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$SUPPORT_PHONE"))) },
-                    )
-                    SocialIconButton(icon = Icons.Filled.Email, contentDescription = "Email", onClick = { notConfigured() })
-                    SocialIconButton(
-                        icon = Icons.Filled.Share,
-                        contentDescription = "Share",
-                        onClick = {
-                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(
-                                    Intent.EXTRA_TEXT,
-                                    "Check out DALAB Internet: https://play.google.com/store/apps/details?id=$PACKAGE_NAME",
-                                )
-                            }
-                            context.startActivity(Intent.createChooser(shareIntent, "Share DALAB Internet"))
-                        },
-                    )
-                }
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    SocialIconButton(
-                        icon = Icons.Filled.Call,
-                        contentDescription = "Call",
-                        onClick = { context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$SUPPORT_PHONE"))) },
-                    )
-                    SocialIconButton(
-                        icon = Icons.Filled.GetApp,
-                        contentDescription = "Play Store",
-                        onClick = {
-                            try {
-                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$PACKAGE_NAME")))
-                            } catch (_: ActivityNotFoundException) {
-                                context.startActivity(
-                                    Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=$PACKAGE_NAME"))
-                                )
-                            }
-                        },
-                    )
-                    SocialIconButton(
-                        icon = Icons.Filled.Star,
-                        contentDescription = "Rate",
-                        onClick = {
-                            try {
-                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$PACKAGE_NAME")))
-                            } catch (_: ActivityNotFoundException) {
-                                context.startActivity(
-                                    Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=$PACKAGE_NAME"))
-                                )
-                            }
-                        },
-                    )
+                actions.chunked(3).forEach { rowActions ->
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        rowActions.forEach { action ->
+                            SocialIconButton(
+                                icon = action.icon,
+                                label = action.label,
+                                contentDescription = action.contentDescription,
+                                onClick = action.onClick,
+                            )
+                        }
+                    }
                 }
             }
         }

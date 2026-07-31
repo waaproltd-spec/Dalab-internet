@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { query, queryOne } from "../db/pool.js";
+import { query } from "../db/pool.js";
 import { requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
@@ -21,7 +21,37 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   otp_expiry_minutes: "2",
   maintenance_mode: "false",
   macaash_points_per_dollar: "10",
+  // Social Media Links (Settings -> Social Media Links). Each link has its
+  // own free-text value plus an independent "_enabled" toggle, so a Super
+  // Admin can temporarily hide a channel without erasing the configured
+  // value. GET /settings/public only ever returns a link when it's both
+  // enabled AND has a non-empty value — everything else surfaces as null so
+  // the Customer App can hide/disable that button with no guessing.
+  social_whatsapp_number: "252610338686",
+  social_whatsapp_enabled: "true",
+  social_phone_number: "252610338686",
+  social_phone_enabled: "true",
+  social_facebook_url: "",
+  social_facebook_enabled: "true",
+  social_instagram_url: "",
+  social_instagram_enabled: "true",
+  social_tiktok_url: "",
+  social_tiktok_enabled: "true",
+  social_email: "",
+  social_email_enabled: "true",
+  social_play_store_url: "https://play.google.com/store/apps/details?id=com.dalab.internet.customer",
+  social_play_store_enabled: "true",
 };
+
+const SOCIAL_LINK_FIELDS = [
+  { key: "whatsappNumber", value: "social_whatsapp_number", enabled: "social_whatsapp_enabled" },
+  { key: "phoneNumber", value: "social_phone_number", enabled: "social_phone_enabled" },
+  { key: "facebookUrl", value: "social_facebook_url", enabled: "social_facebook_enabled" },
+  { key: "instagramUrl", value: "social_instagram_url", enabled: "social_instagram_enabled" },
+  { key: "tiktokUrl", value: "social_tiktok_url", enabled: "social_tiktok_enabled" },
+  { key: "email", value: "social_email", enabled: "social_email_enabled" },
+  { key: "playStoreUrl", value: "social_play_store_url", enabled: "social_play_store_enabled" },
+] as const;
 
 settingsRouter.get("/admin/settings", requireStaff(), async (_req, res) => {
   const rows = await query<{ key: string; value: string; updated_at: string }>(`SELECT * FROM system_settings`);
@@ -48,11 +78,22 @@ settingsRouter.put("/admin/settings/:key", requirePermission("settings.manage"),
 
 settingsRouter.get("/settings/public", async (_req, res) => {
   // A small subset safe to expose to customer/agent apps without auth —
-  // e.g. so the Customer App can show the configured support number.
-  const row = await queryOne(`SELECT value FROM system_settings WHERE key='support_phone'`);
-  const appName = await queryOne(`SELECT value FROM system_settings WHERE key='app_name'`);
+  // e.g. so the Customer App can show the configured support number and
+  // social media links.
+  const rows = await query<{ key: string; value: string }>(`SELECT key, value FROM system_settings`);
+  const merged = { ...DEFAULT_SETTINGS };
+  for (const r of rows) merged[r.key] = r.value;
+
+  const socialLinks: Record<string, string | null> = {};
+  for (const field of SOCIAL_LINK_FIELDS) {
+    const enabled = merged[field.enabled] !== "false";
+    const value = merged[field.value]?.trim();
+    socialLinks[field.key] = enabled && value ? value : null;
+  }
+
   sendJson(res, 200, {
-    appName: appName?.value ?? DEFAULT_SETTINGS.app_name,
-    supportPhone: row?.value ?? DEFAULT_SETTINGS.support_phone,
+    appName: merged.app_name,
+    supportPhone: merged.support_phone,
+    socialLinks,
   });
 });

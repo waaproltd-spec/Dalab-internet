@@ -84,6 +84,11 @@ const DalabAdminApi = {
   resetPassword: (token, newPassword) => dalabAdminApiRequest("/admin/auth/reset-password", { method: "POST", body: { token, newPassword } }),
   changePassword: (currentPassword, newPassword) => dalabAdminApiRequest("/admin/auth/change-password", { method: "POST", body: { currentPassword, newPassword } }),
   getDashboardStats: () => dalabAdminApiRequest("/admin/dashboard/stats"),
+  // Key/value system settings store — Social Media Links (Settings ->
+  // Social Media Links) is just 14 keys (7 values + 7 "_enabled" toggles)
+  // in this same generic store, not a dedicated table/endpoint.
+  getSettings: () => dalabAdminApiRequest("/admin/settings"),
+  updateSetting: (key, value) => dalabAdminApiRequest(`/admin/settings/${key}`, { method: "PUT", body: { value } }),
   getCompanies: () => dalabAdminApiRequest("/admin/companies"),
   createCompany: (body) => dalabAdminApiRequest("/admin/companies", { method: "POST", body }),
   updateCompany: (id, body) => dalabAdminApiRequest(`/admin/companies/${id}`, { method: "PUT", body }),
@@ -6128,6 +6133,128 @@ function Reports() {
   );
 }
 
+const SOCIAL_LINK_DEFS = [
+  { key: "whatsapp", label: "WhatsApp Number", valueKey: "social_whatsapp_number", enabledKey: "social_whatsapp_enabled", placeholder: "252610338686" },
+  { key: "phone", label: "Phone Number", valueKey: "social_phone_number", enabledKey: "social_phone_enabled", placeholder: "252610338686" },
+  { key: "facebook", label: "Facebook URL", valueKey: "social_facebook_url", enabledKey: "social_facebook_enabled", placeholder: "https://facebook.com/YourPage" },
+  { key: "instagram", label: "Instagram URL", valueKey: "social_instagram_url", enabledKey: "social_instagram_enabled", placeholder: "https://instagram.com/yourpage" },
+  { key: "tiktok", label: "TikTok URL", valueKey: "social_tiktok_url", enabledKey: "social_tiktok_enabled", placeholder: "https://tiktok.com/@yourpage" },
+  { key: "email", label: "Email Address", valueKey: "social_email", enabledKey: "social_email_enabled", placeholder: "support@waaproltd.com" },
+  { key: "playstore", label: "Play Store URL", valueKey: "social_play_store_url", enabledKey: "social_play_store_enabled", placeholder: "https://play.google.com/store/apps/details?id=..." },
+];
+
+/**
+ * Backed by the same generic system_settings key/value store every other
+ * Settings tab uses (14 keys here: 7 link values + 7 independent "_enabled"
+ * toggles) -- no dedicated table. GET /settings/public (Customer App) only
+ * ever returns a link when it's both enabled and non-empty, so toggling one
+ * off here hides it from the app without erasing the configured value.
+ */
+function SocialMediaLinksPanel() {
+  const [drafts, setDrafts] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState({});
+  const [savedKey, setSavedKey] = useState(null);
+  const [error, setError] = useState("");
+  const [loaded, setLoaded] = useState(false);
+
+  // GET /admin/settings camelCases every key server-side (sendJson ->
+  // toCamelCase) — reads must go through the same conversion, while writes
+  // (PUT /admin/settings/:key) use the raw snake_case key verbatim, since
+  // that's what DEFAULT_SETTINGS on the backend is keyed by.
+  const toCamel = (s) => s.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+
+  const fetchSettings = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setLoading(true);
+    setError("");
+    try {
+      const data = await DalabAdminApi.getSettings();
+      const next = {};
+      SOCIAL_LINK_DEFS.forEach((def) => {
+        next[def.valueKey] = data[toCamel(def.valueKey)] ?? "";
+        next[def.enabledKey] = data[toCamel(def.enabledKey)] !== "false";
+      });
+      setDrafts(next);
+      setLoaded(true);
+    } catch (err) {
+      setError(err.message || "Could not load settings.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { fetchSettings(); }, []);
+
+  const saveLink = async (def) => {
+    setSaving((s) => ({ ...s, [def.key]: true }));
+    setError("");
+    try {
+      await DalabAdminApi.updateSetting(def.valueKey, (drafts[def.valueKey] ?? "").trim());
+      await DalabAdminApi.updateSetting(def.enabledKey, drafts[def.enabledKey] ? "true" : "false");
+      setSavedKey(def.key);
+      setTimeout(() => setSavedKey((k) => (k === def.key ? null : k)), 2000);
+    } catch (err) {
+      setError(err.message || `Could not save ${def.label}.`);
+    } finally {
+      setSaving((s) => ({ ...s, [def.key]: false }));
+    }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage social media links.</div>;
+  }
+
+  return (
+    <Card style={{ padding: 18, maxWidth: 560 }}>
+      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 16 }}>
+        These power the "Follow us" section and support buttons in the Customer App's Profile screen. A link left blank, or switched off here, is hidden from customers automatically — no app update needed.
+      </div>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {loading && !loaded ? (
+        <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>
+      ) : (
+        SOCIAL_LINK_DEFS.map((def, i) => {
+          const value = drafts[def.valueKey] ?? "";
+          const enabled = drafts[def.enabledKey] ?? true;
+          const status = !value.trim() ? { label: "Not configured", tone: "gray" } : enabled ? { label: "Active", tone: "green" } : { label: "Inactive", tone: "gray" };
+          return (
+            <div key={def.key} style={{ marginBottom: 16, paddingBottom: 16, borderBottom: i < SOCIAL_LINK_DEFS.length - 1 ? `1px solid ${BORDER}` : "none" }}>
+              <Field label={def.label}>
+                <input
+                  style={inputStyle}
+                  placeholder={def.placeholder}
+                  value={value}
+                  onChange={(e) => setDrafts((d) => ({ ...d, [def.valueKey]: e.target.value }))}
+                />
+              </Field>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: SLATE, cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={enabled}
+                    onChange={(e) => setDrafts((d) => ({ ...d, [def.enabledKey]: e.target.checked }))}
+                  />
+                  Active
+                  <Badge tone={status.tone}>{status.label}</Badge>
+                </label>
+                <Button
+                  variant="ghost"
+                  icon={saving[def.key] ? Loader2 : Check}
+                  spin={saving[def.key]}
+                  disabled={saving[def.key]}
+                  onClick={() => saveLink(def)}
+                >
+                  {saving[def.key] ? "Saving..." : savedKey === def.key ? "Saved" : "Save"}
+                </Button>
+              </div>
+            </div>
+          );
+        })
+      )}
+    </Card>
+  );
+}
+
 function SettingsPanel() {
   const [tab, setTab] = useState("general");
   return (
@@ -6137,6 +6264,7 @@ function SettingsPanel() {
         {[
           { id: "general", label: "General" },
           { id: "otp", label: "SMS OTP" },
+          { id: "social", label: "Social Media Links" },
           { id: "security", label: "Security" },
         ].map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)} style={{
@@ -6165,6 +6293,7 @@ function SettingsPanel() {
           <Button icon={Check}>Save changes</Button>
         </Card>
       )}
+      {tab === "social" && <SocialMediaLinksPanel />}
       {tab === "security" && <ChangePasswordCard />}
     </div>
   );
