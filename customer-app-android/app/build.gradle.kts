@@ -5,12 +5,12 @@ plugins {
 
 android {
     namespace = "com.dalab.internet.customer"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.dalab.internet"
         minSdk = 26
-        targetSdk = 34
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0.0"
     }
