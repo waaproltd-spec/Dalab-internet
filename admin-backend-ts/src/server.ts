@@ -108,6 +108,39 @@ const PRIVACY_POLICY_HTML = `<!doctype html>
 </html>
 `;
 
+// Static "how to delete your account" page, referenced from the Play
+// Console's Data Safety "Delete account URL" field for anyone who needs to
+// request deletion without the app installed. In-app deletion (Profile ->
+// Delete Account, ApiService.deleteAccount()) already exists and is
+// immediate/permanent — this page documents both paths.
+const DELETE_ACCOUNT_HTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Delete Your Account — DALAB INTERNET</title>
+<style>
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; max-width: 720px; margin: 0 auto; padding: 32px 20px 80px; line-height: 1.6; color: #1a1a2e; }
+  h1 { font-size: 1.6rem; }
+  h2 { font-size: 1.15rem; margin-top: 2em; }
+  p, li { color: #333; }
+</style>
+</head>
+<body>
+<h1>Delete Your Account — DALAB INTERNET</h1>
+
+<h2>Option 1: Delete in the app (immediate)</h2>
+<p>Open the DALAB INTERNET app, go to <strong>Profile → Delete Account</strong>, and confirm. Your account is deleted immediately and permanently — this cannot be undone.</p>
+
+<h2>Option 2: Request deletion without the app</h2>
+<p>If you no longer have the app installed, contact WAAPROLTD support with the phone number registered on your account and ask for it to be deleted. We will verify your identity and delete your account within a reasonable time.</p>
+
+<h2>What gets deleted</h2>
+<p>Your account profile (name and phone number) and login credentials are permanently deleted. Records of completed orders and payments may be retained for a limited period as required for accounting, fraud-prevention, and legal obligations, after which they are also removed.</p>
+</body>
+</html>
+`;
+
 const app = express();
 
 // Render sits in front of this app as a single reverse-proxy hop — trusting
@@ -155,6 +188,11 @@ app.get("/health", async (_req, res) => {
 app.get("/privacy-policy", (_req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.status(200).send(PRIVACY_POLICY_HTML);
+});
+
+app.get("/delete-account", (_req, res) => {
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.status(200).send(DELETE_ACCOUNT_HTML);
 });
 
 app.use(authRouter);
