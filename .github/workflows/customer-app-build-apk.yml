@@ -72,3 +72,20 @@ jobs:
           name: dalab-customer-release-apk
           path: customer-app-android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
+
+      - name: Build release AAB (Play Store)
+        if: ${{ steps.keystore.outputs.path != '' }}
+        env:
+          CUSTOMER_KEYSTORE_PATH: ${{ steps.keystore.outputs.path }}
+          CUSTOMER_KEYSTORE_PASSWORD: ${{ secrets.CUSTOMER_KEYSTORE_PASSWORD }}
+          CUSTOMER_KEY_ALIAS: ${{ secrets.CUSTOMER_KEY_ALIAS }}
+          CUSTOMER_KEY_PASSWORD: ${{ secrets.CUSTOMER_KEY_PASSWORD }}
+        run: gradle bundleRelease --no-daemon
+
+      - name: Upload release AAB
+        if: ${{ steps.keystore.outputs.path != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dalab-customer-release-aab
+          path: customer-app-android/app/build/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
