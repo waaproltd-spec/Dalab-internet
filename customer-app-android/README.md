@@ -67,12 +67,13 @@ Android SDK path if building from Android Studio/a local Gradle install.
   `EncryptedSharedPreferences` (dependency already listed in
   `app/build.gradle.kts`) before shipping, since it's holding JWTs.
 
-## Release APK
+## Release APK / AAB
 
-`build-apk.yml` builds and uploads a signed **release** APK on every push to
-`main` that touches `customer-app-android/`, alongside the debug build.
-Signing needs four repository secrets (Settings → Secrets and variables →
-Actions):
+`build-apk.yml` builds and uploads a signed **release** APK and a signed
+**release AAB** (`.aab`, the format Google Play Console requires for
+uploads) on every push to `main` that touches `customer-app-android/`,
+alongside the debug build. Signing needs four repository secrets
+(Settings → Secrets and variables → Actions):
 
 - `CUSTOMER_KEYSTORE_BASE64` — your release keystore (`.jks`/`.keystore`), base64-encoded
 - `CUSTOMER_KEYSTORE_PASSWORD`
