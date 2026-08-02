@@ -87,8 +87,8 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
   const id = orderRef();
   try {
     await query(
-      `INSERT INTO orders (id, customer_id, company_id, package_id, amount, provider_amount, status, sender_phone, receiver_phone, payment_method, channel, macaash_earned, client_request_id)
-       VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,'android',$10,$11)`,
+      `INSERT INTO orders (id, customer_id, company_id, package_id, amount, provider_amount, status, sender_phone, receiver_phone, payment_method, channel, macaash_earned, client_request_id, payment_number_used)
+       VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,'android',$10,$11,$12)`,
       [
         id, req.auth!.sub, companyId, packageId, finalAmount, pkg.provider_amount ?? pkg.price,
         senderPhone || customer?.phone || null,
@@ -96,6 +96,10 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
         paymentMethod || company.gateway || null,
         Math.round(finalAmount * MACAASH_POINTS_PER_DOLLAR),
         clientRequestId ?? null,
+        // Snapshotted at creation time — company.payment_number could change
+        // later, but the receipt should always reflect what the customer
+        // was actually told to pay to.
+        company.payment_number ?? null,
       ]
     );
     if (pointsToUse > 0) {
