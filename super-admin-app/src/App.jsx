@@ -148,6 +148,11 @@ const DalabAdminApi = {
   updateCompanyVisibility: (id, visibleCustomerApp, visibleAgentApp) => dalabAdminApiRequest(`/admin/companies/${id}/visibility`, { method: "PUT", body: { visibleCustomerApp, visibleAgentApp } }),
   updatePaymentNumber: (id, paymentNumber, paymentUssdTemplate) => dalabAdminApiRequest(`/admin/companies/${id}/payment-number`, { method: "PUT", body: { paymentNumber, paymentUssdTemplate } }),
   updateProviderNumber: (id, providerNumber) => dalabAdminApiRequest(`/admin/companies/${id}/provider-number`, { method: "PUT", body: { providerNumber } }),
+  getCompanyPaymentMethods: (companyId) => dalabAdminApiRequest(`/admin/companies/${companyId}/payment-methods`),
+  createCompanyPaymentMethod: (companyId, body) => dalabAdminApiRequest(`/admin/companies/${companyId}/payment-methods`, { method: "POST", body }),
+  updateCompanyPaymentMethod: (id, body) => dalabAdminApiRequest(`/admin/payment-methods/${id}`, { method: "PUT", body }),
+  setCompanyPaymentMethodStatus: (id, enabled) => dalabAdminApiRequest(`/admin/payment-methods/${id}/status`, { method: "PUT", body: { enabled } }),
+  deleteCompanyPaymentMethod: (id) => dalabAdminApiRequest(`/admin/payment-methods/${id}`, { method: "DELETE" }),
   getPackages: (companyId) => dalabAdminApiRequest(`/admin/packages${companyId ? `?companyId=${companyId}` : ""}`),
   createPackage: (body) => dalabAdminApiRequest("/admin/packages", { method: "POST", body }),
   updatePackage: (id, body) => dalabAdminApiRequest(`/admin/packages/${id}`, { method: "PUT", body }),
@@ -4026,6 +4031,9 @@ function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged
   const [templateEditing, setTemplateEditing] = useState(null); // { companyId, id: 'new'|templateId }
   const [templateForm, setTemplateForm] = useState({});
   const [packagesForTemplateCompany, setPackagesForTemplateCompany] = useState([]);
+  const [paymentMethods, setPaymentMethods] = useState({}); // companyId -> [method, ...]
+  const [methodEditing, setMethodEditing] = useState(null); // { companyId, id: 'new'|methodId }
+  const [methodForm, setMethodForm] = useState({});
 
   // Only meaningful once the template already has a real id (edit mode) —
   // a brand-new template has nothing for a package to link to yet.
@@ -4059,16 +4067,18 @@ function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged
     if (!DALAB_API_ENABLED || companies.length === 0) return;
     setError("");
     try {
-      const [pinPairs, routeRows, deviceRows, templateRows] = await Promise.all([
+      const [pinPairs, routeRows, deviceRows, templateRows, methodPairs] = await Promise.all([
         Promise.all(companies.map((c) => DalabAdminApi.getUssdPinStatus(c.id).then((r) => [c.id, r.isSet]))),
         DalabAdminApi.getSimRouting(),
         DalabAdminApi.getAgentDevices(),
         DalabAdminApi.getUssdTemplates(),
+        Promise.all(companies.map((c) => DalabAdminApi.getCompanyPaymentMethods(c.id).then((r) => [c.id, r]))),
       ]);
       setPinStatuses(Object.fromEntries(pinPairs));
       setRoutes(routeRows);
       setDevices(deviceRows);
       setTemplates(templateRows);
+      setPaymentMethods(Object.fromEntries(methodPairs));
     } catch (err) {
       setError(err.message || "Could not load provider settings.");
     }
@@ -4077,6 +4087,56 @@ function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged
 
   const routesFor = (companyId) => routes.filter((r) => r.companyId === companyId).sort((a, b) => a.priority - b.priority);
   const templatesFor = (companyId) => templates.filter((t) => t.companyId === companyId);
+  const methodsFor = (companyId) => paymentMethods[companyId] || [];
+
+  const openNewMethod = (companyId) => {
+    setMethodForm({ method: "", label: "", paymentNumber: "", ussdTemplate: "", sortOrder: methodsFor(companyId).length + 1 });
+    setMethodEditing({ companyId, id: "new" });
+  };
+  const openEditMethod = (companyId, m) => { setMethodForm({ ...m }); setMethodEditing({ companyId, id: m.id }); };
+
+  const saveMethod = async () => {
+    if (!methodForm.label || (methodEditing.id === "new" && !methodForm.method)) {
+      alert("Method id and label are required.");
+      return;
+    }
+    try {
+      if (methodEditing.id === "new") {
+        await DalabAdminApi.createCompanyPaymentMethod(methodEditing.companyId, methodForm);
+      } else {
+        await DalabAdminApi.updateCompanyPaymentMethod(methodEditing.id, methodForm);
+      }
+      const rows = await DalabAdminApi.getCompanyPaymentMethods(methodEditing.companyId);
+      setPaymentMethods((prev) => ({ ...prev, [methodEditing.companyId]: rows }));
+      setMessage("Settings saved successfully. This payment method's USSD code is live for new orders.");
+    } catch (err) {
+      alert(err.message || "Could not save payment method.");
+      return;
+    }
+    setMethodEditing(null);
+  };
+
+  const toggleMethodStatus = async (companyId, m) => {
+    const next = !m.enabled;
+    setPaymentMethods((prev) => ({ ...prev, [companyId]: (prev[companyId] || []).map((x) => (x.id === m.id ? { ...x, enabled: next } : x)) }));
+    try {
+      await DalabAdminApi.setCompanyPaymentMethodStatus(m.id, next);
+    } catch (err) {
+      const rows = await DalabAdminApi.getCompanyPaymentMethods(companyId);
+      setPaymentMethods((prev) => ({ ...prev, [companyId]: rows }));
+    }
+  };
+
+  const removeMethod = async (companyId, m) => {
+    if (!window.confirm(`Delete "${m.label}"? Customers will no longer be able to pay this way for ${companies.find((c) => c.id === companyId)?.name || "this company"}.`)) return;
+    setPaymentMethods((prev) => ({ ...prev, [companyId]: (prev[companyId] || []).filter((x) => x.id !== m.id) }));
+    try {
+      await DalabAdminApi.deleteCompanyPaymentMethod(m.id);
+    } catch (err) {
+      const rows = await DalabAdminApi.getCompanyPaymentMethods(companyId);
+      setPaymentMethods((prev) => ({ ...prev, [companyId]: rows }));
+    }
+  };
 
   const saveNumber = async (company) => {
     const value = (numberDrafts[company.id] ?? (company.payNumber === "Not set" ? "" : company.payNumber)).trim();
@@ -4346,6 +4406,42 @@ function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged
 
               <div style={{ marginTop: 16 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: SLATE }}>PAYMENT METHODS (EVC Plus, eDahab, JEEB, ...)</div>
+                  {canManageSecrets && <Button variant="ghost" icon={Plus} onClick={() => openNewMethod(c.id)}>Add payment method</Button>}
+                </div>
+                <div style={{ fontSize: 11, color: MUTE, marginBottom: 8 }}>
+                  Each method has its own collection number and USSD dial code — the Customer App asks which of these to pay with, and dials the matching code. Leave empty to keep using the single Payment Number/USSD Template above.
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {methodsFor(c.id).map((m) => (
+                    <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, border: `1px solid ${BORDER}` }}>
+                      <span style={{ fontSize: 12.5, fontWeight: 700, color: INK, width: 110, flexShrink: 0 }}>{m.label}</span>
+                      <span style={{ fontSize: 12, color: SLATE, fontFamily: "monospace", width: 110, flexShrink: 0 }}>{m.paymentNumber || "no number"}</span>
+                      <span style={{ flex: 1, fontSize: 12, color: SLATE, fontFamily: "monospace" }}>{m.ussdTemplate || "no template"}</span>
+                      <Badge tone={m.enabled ? "green" : "gray"}>{m.enabled ? "Enabled" : "Disabled"}</Badge>
+                      {canManageSecrets && (
+                        <>
+                          <button onClick={() => toggleMethodStatus(c.id, m)} title={m.enabled ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                            <Power size={14} color={m.enabled ? GREEN : "#C81E2C"} />
+                          </button>
+                          <button onClick={() => openEditMethod(c.id, m)} title="Edit" style={{ background: "none", border: "none", cursor: "pointer" }}>
+                            <Pencil size={14} color={INDIGO} />
+                          </button>
+                          <button onClick={() => removeMethod(c.id, m)} title="Delete" style={{ background: "none", border: "none", cursor: "pointer" }}>
+                            <Trash2 size={14} color="#C81E2C" />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                  {methodsFor(c.id).length === 0 && (
+                    <div style={{ fontSize: 12, color: MUTE, padding: "8px 10px" }}>No payment methods configured for {c.name} yet — falling back to the single Payment Number/USSD Template above.</div>
+                  )}
+                </div>
+              </div>
+
+              <div style={{ marginTop: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                   <div style={{ fontSize: 12, fontWeight: 700, color: SLATE }}>USSD TEMPLATE(S)</div>
                   {canManageSecrets && <Button variant="ghost" icon={Plus} onClick={() => openNewTemplate(c.id)}>Add template</Button>}
                 </div>
@@ -4379,6 +4475,35 @@ function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged
           );
         })}
       </div>
+
+      {methodEditing && (
+        <Modal title={methodEditing.id === "new" ? "Add payment method" : "Edit payment method"} onClose={() => setMethodEditing(null)} width={440}>
+          {methodEditing.id === "new" && (
+            <Field label="Method id (used internally, e.g. evc, edahab, jeeb)">
+              <input style={{ ...inputStyle, fontFamily: "monospace" }} value={methodForm.method || ""} onChange={(e) => setMethodForm({ ...methodForm, method: e.target.value.trim().toLowerCase().replace(/\s+/g, "_") })} placeholder="evc" />
+            </Field>
+          )}
+          <Field label="Label (shown to customers)">
+            <input style={inputStyle} value={methodForm.label || ""} onChange={(e) => setMethodForm({ ...methodForm, label: e.target.value })} placeholder="e.g. EVC Plus" />
+          </Field>
+          <Field label="Payment/collection number for this method">
+            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={methodForm.paymentNumber || ""} onChange={(e) => setMethodForm({ ...methodForm, paymentNumber: e.target.value.replace(/\D/g, "") })} placeholder="e.g. 0610338686" />
+          </Field>
+          <Field label="USSD template for this method">
+            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={methodForm.ussdTemplate || ""} onChange={(e) => setMethodForm({ ...methodForm, ussdTemplate: e.target.value })} placeholder="e.g. *712*0610338686*{amount}#" />
+          </Field>
+          <div style={{ fontSize: 11, color: MUTE, marginTop: -8, marginBottom: 14 }}>
+            <code>{"{amount}"}</code> is substituted with the package price when the Customer App dials. This is the code dialed when a customer picks this specific method for {companies.find((c) => c.id === methodEditing.companyId)?.name} — independent of every other company's methods.
+          </div>
+          <Field label="Sort Order">
+            <input type="number" style={inputStyle} value={methodForm.sortOrder ?? 0} onChange={(e) => setMethodForm({ ...methodForm, sortOrder: Number(e.target.value) })} />
+          </Field>
+          <div style={{ display: "flex", gap: 10 }}>
+            <Button onClick={saveMethod}>Save</Button>
+            <Button variant="ghost" onClick={() => setMethodEditing(null)}>Cancel</Button>
+          </div>
+        </Modal>
+      )}
 
       {templateEditing && (
         <Modal title={templateEditing.id === "new" ? "Add USSD template" : "Edit USSD template"} onClose={() => setTemplateEditing(null)} width={460}>
