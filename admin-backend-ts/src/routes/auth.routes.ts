@@ -41,10 +41,15 @@ authRouter.post("/auth/otp/request", rateLimit("otp-request", 5, 15 * 60 * 1000)
   const otpExpiryMinutes = Math.min(30, Math.max(1, Number(settingsMap.otp_expiry_minutes) || 2));
 
   const code = generateOtp(otpLength);
-  const expiresAt = new Date(Date.now() + otpExpiryMinutes * 60_000);
+  // expires_at is computed by Postgres itself (now() + interval), not Node's
+  // Date.now() — /auth/otp/verify's own expiry check also runs in Postgres
+  // (expires_at > now()), so keeping both sides on the same clock rules out
+  // a valid, freshly-issued code ever reading as already-expired due to
+  // clock drift between the app server and the database.
   await query(
-    `INSERT INTO otp_codes (id, phone, code_hash, expires_at) VALUES ($1,$2,$3,$4)`,
-    [randomUUID(), phone, createHash("sha256").update(code).digest("hex"), expiresAt]
+    `INSERT INTO otp_codes (id, phone, code_hash, expires_at)
+     VALUES ($1,$2,$3, now() + ($4 || ' minutes')::interval)`,
+    [randomUUID(), phone, createHash("sha256").update(code).digest("hex"), otpExpiryMinutes]
   );
   // eslint-disable-next-line no-console
   console.log(`[SMS GATEWAY SIM] OTP for ${phone}: ${code}`); // real gateway integration goes here
