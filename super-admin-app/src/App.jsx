@@ -8,7 +8,7 @@ import {
   Smartphone, Radio, ChevronDown, ChevronRight, AlertTriangle, RotateCcw, UserCog, Tags,
   WifiOff, BatteryFull, BatteryMedium, BatteryLow, BatteryWarning,
   Image as ImageIcon, Upload, MessageSquare, Database, Activity, History, CreditCard, PlayCircle, Percent,
-  MessageCircle, Lightbulb, Share2
+  MessageCircle, Lightbulb, Share2, KeyRound
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 
@@ -186,6 +186,7 @@ const DalabAdminApi = {
   getCustomerPinStatus: (id) => dalabAdminApiRequest(`/admin/customers/${id}/pin-status`),
   setCustomerPin: (id, pin) => dalabAdminApiRequest(`/admin/customers/${id}/pin`, { method: "PUT", body: { pin } }),
   resetCustomerPin: (id) => dalabAdminApiRequest(`/admin/customers/${id}/pin`, { method: "DELETE" }),
+  resetCustomerPassword: (id) => dalabAdminApiRequest(`/admin/customers/${id}/reset-password`, { method: "PUT" }),
   // Promo Images — up to 5 promotional images shown as a carousel on the
   // Customer App Home screen. Images are uploaded as data URIs (base64)
   // rather than multipart form data, since dalabAdminApiRequest already
@@ -2579,6 +2580,13 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
   const [pinDraft, setPinDraft] = useState("");
   const [pinError, setPinError] = useState("");
   const [pinSaving, setPinSaving] = useState(false);
+  // No self-service "forgot password" (no email/SMS gateway to deliver a
+  // reset link/code) — this is the only way a locked-out customer gets back
+  // in. passwordResetResult holds the one-time plaintext temp password so
+  // it can be shown to the admin to relay out-of-band; it's never stored or
+  // logged anywhere else.
+  const [passwordSaving, setPasswordSaving] = useState(null); // customer id currently resetting | null
+  const [passwordResetResult, setPasswordResetResult] = useState(null); // { customer, tempPassword } | null
   const canManage = hasPermission(admin, "customers.manage");
   // Not delegable via customers.manage — only the Super Admin role itself,
   // matching the backend's requireAuth("super_admin") on every PIN route.
@@ -2626,6 +2634,20 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
       await refreshCustomers(search || undefined);
     } catch (err) {
       alert(err.message || "Could not delete customer.");
+    }
+  };
+
+  const resetPassword = async (c) => {
+    if (!window.confirm(`Reset ${c.name || c.phone}'s password? They'll need the new temporary password to sign in again.`)) return;
+    setPasswordSaving(c.id);
+    try {
+      const result = await DalabAdminApi.resetCustomerPassword(c.id);
+      setCustomers((prev) => prev.map((x) => (x.id === c.id ? { ...x, hasPassword: true } : x)));
+      setPasswordResetResult({ customer: c, tempPassword: result.tempPassword });
+    } catch (err) {
+      alert(err.message || "Could not reset password.");
+    } finally {
+      setPasswordSaving(null);
     }
   };
 
@@ -2717,6 +2739,16 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
                       </button>
                     </>
                   )}
+                  {canManagePin && (
+                    <button
+                      onClick={() => resetPassword(c)}
+                      disabled={passwordSaving === c.id}
+                      title="Reset this customer's password (they'll need it relayed out-of-band — there's no self-service reset)"
+                      style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}
+                    >
+                      {passwordSaving === c.id ? <Loader2 size={14} color={MUTE} className="animate-spin" /> : <KeyRound size={14} color={INDIGO} />}
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}
@@ -2770,6 +2802,28 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
             )}
             <Button variant="ghost" onClick={() => setPinTarget(null)} disabled={pinSaving}>Cancel</Button>
           </div>
+        </Modal>
+      )}
+
+      {passwordResetResult && (
+        <Modal title={`Password reset — ${passwordResetResult.customer.name || passwordResetResult.customer.phone}`} onClose={() => setPasswordResetResult(null)}>
+          <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>
+            Relay this temporary password to the customer yourself (call, WhatsApp, etc.) — there's no automatic delivery.
+            It's shown here once and can't be retrieved again after you close this dialog.
+          </div>
+          <Field label="Temporary password">
+            <div style={{ display: "flex", gap: 8 }}>
+              <input readOnly style={{ ...inputStyle, fontFamily: "monospace", fontWeight: 700 }} value={passwordResetResult.tempPassword} onFocus={(e) => e.target.select()} />
+              <Button
+                variant="ghost"
+                icon={Copy}
+                onClick={() => navigator.clipboard?.writeText(passwordResetResult.tempPassword)}
+              >
+                Copy
+              </Button>
+            </div>
+          </Field>
+          <Button onClick={() => setPasswordResetResult(null)}>Done</Button>
         </Modal>
       )}
     </div>
