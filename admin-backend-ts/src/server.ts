@@ -1,3 +1,9 @@
+// Must be imported before any routes are registered — patches Express 4 so a
+// rejected promise/thrown error inside an async route handler reaches the
+// error-handling middleware below via next(err) instead of leaving the
+// request hanging forever with no response (Express 4 doesn't do this on its
+// own; Express 5 does, but that's a larger upgrade than this fix warrants).
+import "express-async-errors";
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
 import { authRouter, seedSuperAdmin } from "./routes/auth.routes.js";
