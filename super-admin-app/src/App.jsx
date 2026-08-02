@@ -43,8 +43,40 @@ const DALAB_API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
 const DALAB_API_ENABLED = Boolean(DALAB_API_BASE_URL);
 
 let dalabAdminAccessToken = null;
+let dalabAdminRefreshToken = null;
+// Set by AdminDashboard (the module's only stateful consumer) so this plain
+// module-level function can kick the user back to the login screen when the
+// refresh token itself is no longer valid — nothing else in this file holds
+// a reference to React state.
+let dalabAdminOnAuthExpired = null;
+// Shared by every concurrent request that hits a 401 at once, so a burst of
+// simultaneous calls (e.g. a page loading several sections together) triggers
+// exactly one /auth/refresh call rather than one per request.
+let dalabAdminRefreshPromise = null;
 
-async function dalabAdminApiRequest(path, { method = "GET", body } = {}) {
+async function refreshAdminTokens() {
+  if (!dalabAdminRefreshToken) throw new Error("No refresh token available");
+  if (!dalabAdminRefreshPromise) {
+    dalabAdminRefreshPromise = fetch(`${DALAB_API_BASE_URL}/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refreshToken: dalabAdminRefreshToken }),
+    })
+      .then(async (res) => {
+        const json = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(json?.error || "Session expired");
+        dalabAdminAccessToken = json.accessToken;
+        dalabAdminRefreshToken = json.refreshToken;
+        return json.accessToken;
+      })
+      .finally(() => {
+        dalabAdminRefreshPromise = null;
+      });
+  }
+  return dalabAdminRefreshPromise;
+}
+
+async function dalabAdminApiRequest(path, { method = "GET", body, _isRetry = false } = {}) {
   if (!DALAB_API_ENABLED) throw new Error("DALAB API not configured (DALAB_API_BASE_URL is empty)");
   const headers = { "Content-Type": "application/json" };
   if (dalabAdminAccessToken) headers.Authorization = `Bearer ${dalabAdminAccessToken}`;
@@ -70,6 +102,24 @@ async function dalabAdminApiRequest(path, { method = "GET", body } = {}) {
     throw new Error("Could not reach the server. Check your connection and try again.");
   } finally {
     clearTimeout(timeoutId);
+  }
+  // The access token is short-lived (15 minutes) by design, so a 401 mid-
+  // session — the admin still has the dashboard open, just switched to a
+  // section like Provider Numbers after being idle elsewhere — is expected,
+  // not a real auth failure. Refresh once and replay the original request
+  // instead of surfacing "Invalid or expired token" to the admin. Login
+  // itself never carries a token, so a 401 there is a real bad-credentials
+  // error and skips this entirely.
+  if (res.status === 401 && !_isRetry && dalabAdminRefreshToken && path !== "/admin/auth/login") {
+    try {
+      await refreshAdminTokens();
+      return dalabAdminApiRequest(path, { method, body, _isRetry: true });
+    } catch {
+      dalabAdminAccessToken = null;
+      dalabAdminRefreshToken = null;
+      dalabAdminOnAuthExpired?.();
+      throw new Error("Your session has expired. Please log in again.");
+    }
   }
   const json = await res.json().catch(() => null);
   if (!res.ok) throw new Error(json?.error || `Request failed (${res.status})`);
@@ -7138,6 +7188,7 @@ function AdminLoginScreen({ onLoggedIn }) {
       }
       const result = await DalabAdminApi.login(trimmedEmail, password);
       dalabAdminAccessToken = result.accessToken;
+      dalabAdminRefreshToken = result.refreshToken;
       onLoggedIn(result.admin);
     } catch (err) {
       setError(err.message || "Invalid email or password.");
@@ -7583,6 +7634,17 @@ function AdminDashboardShell({ admin, onLogout }) {
 export default function AdminDashboard() {
   const [admin, setAdmin] = useState(null);
 
+  // Lets the module-level request helper (dalabAdminApiRequest) drop the
+  // admin back to the login screen when a token refresh itself fails — the
+  // refresh token was invalid/expired/revoked, so no amount of retrying
+  // will recover this session.
+  useEffect(() => {
+    dalabAdminOnAuthExpired = () => setAdmin(null);
+    return () => {
+      dalabAdminOnAuthExpired = null;
+    };
+  }, []);
+
   if (!admin) {
     return <AdminLoginScreen onLoggedIn={setAdmin} />;
   }
@@ -7592,6 +7654,7 @@ export default function AdminDashboard() {
       admin={admin}
       onLogout={() => {
         dalabAdminAccessToken = null;
+        dalabAdminRefreshToken = null;
         setAdmin(null);
       }}
     />

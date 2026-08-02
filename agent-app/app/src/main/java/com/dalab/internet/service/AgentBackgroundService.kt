@@ -288,9 +288,10 @@ class AgentBackgroundService : Service() {
         HeartbeatStats.recordFailure(lastReason)
     }
 
-    // Routing changes are admin-driven and rare (nothing like heartbeat's need for
-    // a 60s cadence), so this runs on its own slower interval rather than piggybacking
-    // on every heartbeat tick — a dashboard routing change still takes effect without
+    // Runs on its own timer rather than piggybacking on the heartbeat tick
+    // (a separate concern — device telemetry vs. provider routing — even
+    // though they currently share the same cadence), so a dashboard
+    // routing change reaches the device within about a minute without
     // requiring the agent to restart the app.
     private suspend fun simRoutingRefreshLoop() {
         val currentScope = scope ?: return
@@ -424,7 +425,10 @@ class AgentBackgroundService : Service() {
         private const val HEARTBEAT_INTERVAL_MS = 60_000L
         private const val HEARTBEAT_MAX_ATTEMPTS = 4
         private const val HEARTBEAT_RETRY_BASE_DELAY_MS = 2_000L
-        private const val SIM_ROUTING_REFRESH_INTERVAL_MS = 5 * 60_000L
+        // Matches HEARTBEAT_INTERVAL_MS's cadence — a Super Admin routing
+        // change (which device/SIM slot handles a provider) now reaches a
+        // device within about a minute instead of five.
+        private const val SIM_ROUTING_REFRESH_INTERVAL_MS = HEARTBEAT_INTERVAL_MS
         private const val QUEUE_DRAIN_INTERVAL_MS = 2 * 60_000L
         private const val SELF_HEAL_SWEEP_INTERVAL_MS = 3 * 60_000L
 
