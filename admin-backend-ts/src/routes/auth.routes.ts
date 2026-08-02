@@ -31,10 +31,20 @@ authRouter.post("/auth/otp/request", rateLimit("otp-request", 5, 15 * 60 * 1000)
   if (!/^\+?\d{6,15}$/.test(phone)) {
     return sendJson(res, 400, { error: "Provide a valid phone number" });
   }
-  const code = generateOtp();
+  const settingsRows = await query<{ key: string; value: string }>(
+    `SELECT key, value FROM system_settings WHERE key IN ('otp_length', 'otp_expiry_minutes')`
+  );
+  const settingsMap = Object.fromEntries(settingsRows.map((r) => [r.key, r.value]));
+  // Clamped rather than trusted outright — a bad value saved in Settings
+  // (e.g. "0" or "500") must not be able to produce a broken/unusable OTP.
+  const otpLength = Math.min(8, Math.max(4, Number(settingsMap.otp_length) || 4));
+  const otpExpiryMinutes = Math.min(30, Math.max(1, Number(settingsMap.otp_expiry_minutes) || 2));
+
+  const code = generateOtp(otpLength);
+  const expiresAt = new Date(Date.now() + otpExpiryMinutes * 60_000);
   await query(
-    `INSERT INTO otp_codes (id, phone, code_hash, expires_at) VALUES ($1,$2,$3, now() + interval '2 minutes')`,
-    [randomUUID(), phone, createHash("sha256").update(code).digest("hex")]
+    `INSERT INTO otp_codes (id, phone, code_hash, expires_at) VALUES ($1,$2,$3,$4)`,
+    [randomUUID(), phone, createHash("sha256").update(code).digest("hex"), expiresAt]
   );
   // eslint-disable-next-line no-console
   console.log(`[SMS GATEWAY SIM] OTP for ${phone}: ${code}`); // real gateway integration goes here

@@ -15,6 +15,7 @@ export const settingsRouter = Router();
  */
 const DEFAULT_SETTINGS: Record<string, string> = {
   app_name: "DALAB INTERNET",
+  app_slogan: "Internet you can trust.",
   support_phone: "",
   support_email: "",
   otp_length: "4",

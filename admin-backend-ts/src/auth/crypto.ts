@@ -89,6 +89,10 @@ export function isValidPin(pin: string): boolean {
   return /^\d{3,8}$/.test(pin);
 }
 
-export function generateOtp(): string {
-  return String(randomInt(1000, 10000));
+/** `length` comes from the configurable `otp_length` system setting — the
+ * caller is responsible for clamping it to a sane range before calling. */
+export function generateOtp(length = 4): string {
+  const min = 10 ** (length - 1);
+  const max = 10 ** length;
+  return String(randomInt(min, max));
 }

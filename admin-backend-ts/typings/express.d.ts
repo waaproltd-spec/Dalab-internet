@@ -1,6 +1,7 @@
 declare module "express" {
   export interface Request {
     body: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    path: string;
     params: Record<string, string>;
     query: Record<string, string | string[] | undefined>;
     headers: Record<string, string | undefined>;
