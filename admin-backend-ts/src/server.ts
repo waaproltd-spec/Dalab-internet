@@ -9,6 +9,7 @@ import cors from "cors";
 import { authRouter, seedSuperAdmin } from "./routes/auth.routes.js";
 import { usersRouter } from "./routes/users.routes.js";
 import { companiesRouter, packagesRouter } from "./routes/companies.routes.js";
+import { companyPaymentMethodsRouter } from "./routes/companyPaymentMethods.routes.js";
 import { categoriesRouter } from "./routes/categories.routes.js";
 import { ordersRouter } from "./routes/orders.routes.js";
 import { customersRouter } from "./routes/customers.routes.js";
@@ -226,6 +227,7 @@ app.use(async (req: Request, res: Response, next: NextFunction) => {
 app.use(authRouter);
 app.use(usersRouter);
 app.use(companiesRouter);
+app.use(companyPaymentMethodsRouter);
 app.use(packagesRouter);
 app.use(categoriesRouter);
 app.use(ordersRouter);

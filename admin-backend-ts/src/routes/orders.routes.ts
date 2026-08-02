@@ -46,7 +46,7 @@ function maskOrders<T extends Record<string, any>>(orders: T[]): T[] {
 
 // ---------------- Customer ----------------
 ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
-  const { companyId, packageId, senderPhone, receiverPhone, paymentMethod, clientRequestId, useLoyaltyPoints } = req.body;
+  const { companyId, packageId, senderPhone, receiverPhone, paymentMethod, paymentMethodId, clientRequestId, useLoyaltyPoints } = req.body;
   const company = await queryOne(`SELECT * FROM companies WHERE id=$1 AND deleted_at IS NULL`, [companyId]);
   if (!company) return sendJson(res, 404, { error: "Company not found" });
   if (company.status === "offline") return sendJson(res, 409, { error: `${company.name} is currently offline` });
@@ -55,6 +55,20 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
   if (!pkg) return sendJson(res, 404, { error: "Package not found" });
   if (pkg.company_id !== companyId) {
     return sendJson(res, 400, { error: "Package does not belong to the selected company" });
+  }
+
+  // When the customer picked one of this company's configured payment
+  // methods (EVC Plus / eDahab / JEEB / ...), its own number and USSD
+  // template are what actually get dialed — never the single legacy
+  // company.payment_number/payment_ussd_template, which only apply when a
+  // company has no configured methods yet.
+  let selectedMethod: { id: string; label: string; payment_number: string | null; ussd_template: string | null } | null = null;
+  if (paymentMethodId) {
+    selectedMethod = await queryOne(
+      `SELECT id, label, payment_number, ussd_template FROM company_payment_methods WHERE id=$1 AND company_id=$2 AND enabled=true`,
+      [paymentMethodId, companyId]
+    );
+    if (!selectedMethod) return sendJson(res, 404, { error: "Payment method not found for this company" });
   }
 
   const customer = await queryOne(`SELECT * FROM customers WHERE id=$1`, [req.auth!.sub]);
@@ -87,19 +101,22 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
   const id = orderRef();
   try {
     await query(
-      `INSERT INTO orders (id, customer_id, company_id, package_id, amount, provider_amount, status, sender_phone, receiver_phone, payment_method, channel, macaash_earned, client_request_id, payment_number_used)
-       VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,'android',$10,$11,$12)`,
+      `INSERT INTO orders (id, customer_id, company_id, package_id, amount, provider_amount, status, sender_phone, receiver_phone, payment_method, channel, macaash_earned, client_request_id, payment_number_used, payment_ussd_template_used, payment_method_id)
+       VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,'android',$10,$11,$12,$13,$14)`,
       [
         id, req.auth!.sub, companyId, packageId, finalAmount, pkg.provider_amount ?? pkg.price,
         senderPhone || customer?.phone || null,
         receiverPhone || customer?.phone || null,
-        paymentMethod || company.gateway || null,
+        selectedMethod?.label || paymentMethod || company.gateway || null,
         Math.round(finalAmount * MACAASH_POINTS_PER_DOLLAR),
         clientRequestId ?? null,
-        // Snapshotted at creation time — company.payment_number could change
-        // later, but the receipt should always reflect what the customer
-        // was actually told to pay to.
-        company.payment_number ?? null,
+        // Snapshotted at creation time — company.payment_number (or the
+        // selected method's own number) could change later, but the receipt
+        // should always reflect what the customer was actually told to pay
+        // to.
+        selectedMethod?.payment_number || company.payment_number || null,
+        selectedMethod?.ussd_template || company.payment_ussd_template || null,
+        selectedMethod?.id ?? null,
       ]
     );
     if (pointsToUse > 0) {
