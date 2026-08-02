@@ -11,7 +11,7 @@ export const customersRouter = Router();
 // pin_hash must never reach any client — explicit column list (plus a
 // derived pinSet boolean) rather than SELECT *, same convention already
 // used for pin_encrypted on companies.
-const ADMIN_CUSTOMER_COLUMNS = `id, phone, name, status, macaash_points, created_at, (pin_hash IS NOT NULL) AS pin_set`;
+const ADMIN_CUSTOMER_COLUMNS = `id, phone, name, email, status, macaash_points, created_at, (pin_hash IS NOT NULL) AS pin_set, (password_hash IS NOT NULL) AS has_password`;
 
 customersRouter.get("/admin/customers", requireStaff(), async (req, res) => {
   const { search } = req.query;
@@ -81,6 +81,32 @@ customersRouter.delete("/admin/customers/:id/pin", requireAuth("super_admin"), a
   sendJson(res, 200, { message: "PIN reset", isSet: false });
 });
 
+// ---------------- Customer password reset (Super Admin only) ----------------
+// There's no self-service "forgot password" flow — no email/SMS gateway is
+// wired up to deliver a reset link/code to the customer directly (same
+// reasoning as the PIN reset above). Support directs a locked-out customer
+// here instead: a Super Admin generates a fresh temporary password and
+// relays it out-of-band (phone call, WhatsApp, etc.); the customer is
+// expected to change it from inside the app afterward. Returned in the
+// response exactly once — never stored or logged in plaintext anywhere,
+// same pattern the old test-mode OTP/admin-reset-token stand-ins used
+// before this had a real out-of-band channel to rely on.
+function generateTempPassword(): string {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+  let out = "";
+  for (let i = 0; i < 10; i++) out += alphabet[Math.floor(Math.random() * alphabet.length)];
+  return out;
+}
+
+customersRouter.put("/admin/customers/:id/reset-password", requireAuth("super_admin"), async (req, res) => {
+  const existing = await queryOne(`SELECT id FROM customers WHERE id=$1`, [req.params.id]);
+  if (!existing) return sendJson(res, 404, { error: "Customer not found" });
+  const tempPassword = generateTempPassword();
+  const passwordHash = await hashPassword(tempPassword);
+  await query(`UPDATE customers SET password_hash=$1 WHERE id=$2`, [passwordHash, req.params.id]);
+  sendJson(res, 200, { message: "Password reset", tempPassword });
+});
+
 // Blocked by ON DELETE RESTRICT from orders if the customer has order
 // history — surfaced as a friendly 409 suggesting block instead, since a
 // hard delete there would corrupt receipts/reports.
@@ -129,7 +155,7 @@ customersRouter.post("/agent/customers", requireAuth("agent"), async (req, res) 
 });
 
 // ---------------- Customer: own profile ----------------
-const CUSTOMER_PROFILE_COLUMNS = "id, phone, name, macaash_points, created_at";
+const CUSTOMER_PROFILE_COLUMNS = "id, phone, name, email, macaash_points, created_at";
 
 customersRouter.get("/customer/profile", requireAuth("customer"), async (req, res) => {
   const customer = await queryOne(`SELECT ${CUSTOMER_PROFILE_COLUMNS} FROM customers WHERE id=$1`, [req.auth!.sub]);
@@ -164,10 +190,10 @@ customersRouter.delete("/customer/profile", requireAuth("customer"), async (req,
 // ---------------- Customer: optional self-service login PIN ----------------
 // Entirely additive, on the same pin_hash column the Super Admin routes above
 // manage. Optional by design: a customer with no PIN set is completely
-// unaffected — /auth/otp/verify already reports pinSet=false and the app
-// skips straight past any PIN prompt. Setting one here is the customer
-// choosing to add a lightweight extra step of their own accord; the OTP
-// login flow itself (phone -> code -> tokens) is never touched by any of this.
+// unaffected — /auth/login already reports pinSet=false and the app skips
+// straight past any PIN prompt. Setting one here is the customer choosing to
+// add a lightweight extra step of their own accord; the password login flow
+// itself (phone/email + password -> tokens) is never touched by any of this.
 customersRouter.get("/customer/pin-status", requireAuth("customer"), async (req, res) => {
   const customer = await queryOne<{ pin_hash: string | null }>(`SELECT pin_hash FROM customers WHERE id=$1`, [req.auth!.sub]);
   if (!customer) return sendJson(res, 404, { error: "Customer not found" });
@@ -176,7 +202,7 @@ customersRouter.get("/customer/pin-status", requireAuth("customer"), async (req,
 
 // Same handler covers both "create" and "change" for the same reason the
 // Super Admin route does — being authenticated as this customer (via the
-// OTP-issued token) is already the proof of ownership needed to set a new one.
+// login-issued token) is already the proof of ownership needed to set a new one.
 customersRouter.put("/customer/pin", requireAuth("customer"), async (req, res) => {
   const { pin } = req.body;
   if (!isValidPin(String(pin ?? ""))) return sendJson(res, 400, { error: "PIN must be 4-8 digits" });
@@ -193,10 +219,10 @@ customersRouter.delete("/customer/pin", requireAuth("customer"), async (req, res
   sendJson(res, 200, { message: "PIN removed", isSet: false });
 });
 
-// Called right after OTP login (using the token /auth/otp/verify already
-// issued) to check the PIN the customer just typed — this is a UX gate on
-// top of an already-fully-authenticated session, not a second factor that
-// blocks token issuance; a wrong PIN here never invalidates the tokens.
+// Called right after login (using the token /auth/login already issued) to
+// check the PIN the customer just typed — this is a UX gate on top of an
+// already-fully-authenticated session, not a second factor that blocks
+// token issuance; a wrong PIN here never invalidates the tokens.
 customersRouter.post("/customer/pin/verify", requireAuth("customer"), async (req, res) => {
   const customer = await queryOne<{ pin_hash: string | null }>(`SELECT pin_hash FROM customers WHERE id=$1`, [req.auth!.sub]);
   if (!customer) return sendJson(res, 404, { error: "Customer not found" });
