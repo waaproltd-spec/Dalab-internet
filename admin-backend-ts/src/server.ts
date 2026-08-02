@@ -1,3 +1,9 @@
+// Must be imported before any routes are registered — patches Express 4 so a
+// rejected promise/thrown error inside an async route handler reaches the
+// error-handling middleware below via next(err) instead of leaving the
+// request hanging forever with no response (Express 4 doesn't do this on its
+// own; Express 5 does, but that's a larger upgrade than this fix warrants).
+import "express-async-errors";
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
 import { authRouter, seedSuperAdmin } from "./routes/auth.routes.js";
@@ -22,8 +28,9 @@ import { commissionsRouter } from "./routes/commissions.routes.js";
 import { simBalancesRouter } from "./routes/simBalances.routes.js";
 import { feedbackRouter } from "./routes/feedback.routes.js";
 import { referralsRouter } from "./routes/referrals.routes.js";
-import { pool } from "./db/pool.js";
+import { pool, queryOne } from "./db/pool.js";
 import { seedAll } from "./db/seed.js";
+import { sendJson } from "./utils/camelCase.js";
 
 // Express 4 route handlers here are plain `async (req, res) => {...}` with no
 // wrapper — a promise rejection inside one (e.g. an uncaught DB error) never
@@ -193,6 +200,27 @@ app.get("/privacy-policy", (_req, res) => {
 app.get("/delete-account", (_req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.status(200).send(DELETE_ACCOUNT_HTML);
+});
+
+// Enforces the `maintenance_mode` system setting (previously stored but
+// never read). Admin routes always pass through — staff must be able to
+// keep managing the system, and to turn maintenance mode back off, while
+// it's on. Customer/agent-facing routes get a clear 503 instead of
+// whatever half-broken behavior they'd otherwise hit mid-maintenance.
+app.use(async (req: Request, res: Response, next: NextFunction) => {
+  if (
+    req.path.startsWith("/admin") ||
+    req.path === "/health" ||
+    req.path === "/privacy-policy" ||
+    req.path === "/delete-account"
+  ) {
+    return next();
+  }
+  const row = await queryOne<{ value: string }>(`SELECT value FROM system_settings WHERE key='maintenance_mode'`);
+  if (row?.value === "true") {
+    return sendJson(res, 503, { error: "DALAB INTERNET is temporarily under maintenance. Please try again shortly." });
+  }
+  next();
 });
 
 app.use(authRouter);

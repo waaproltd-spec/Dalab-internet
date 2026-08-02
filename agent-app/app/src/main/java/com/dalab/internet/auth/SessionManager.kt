@@ -2,12 +2,16 @@ package com.dalab.internet.auth
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import com.dalab.internet.data.AgentProfile
 
 /**
- * Stores the agent's JWT access/refresh tokens and profile. In production, prefer
- * EncryptedSharedPreferences (androidx.security.crypto) over plain SharedPreferences
- * for anything holding tokens — plain prefs are shown here for clarity/brevity.
+ * Stores the agent's JWT access/refresh tokens and profile in
+ * EncryptedSharedPreferences (androidx.security.crypto) — the tokens are
+ * encrypted at rest with a key held in the Android Keystore, not
+ * recoverable by just pulling the app's shared_prefs XML off a rooted/
+ * backed-up device the way plain SharedPreferences would be.
  */
 object SessionManager {
     private const val PREFS = "dalab_agent_session"
@@ -21,7 +25,17 @@ object SessionManager {
 
     fun init(context: Context) {
         if (::prefs.isInitialized) return
-        prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val appContext = context.applicationContext
+        val masterKey = MasterKey.Builder(appContext)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        prefs = EncryptedSharedPreferences.create(
+            appContext,
+            PREFS,
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+        )
     }
 
     fun saveSession(accessToken: String, refreshToken: String, profile: AgentProfile) {

@@ -322,7 +322,7 @@ async function creditMacaashIfNeeded(order: any) {
  * signal can complete the order first; whichever loses the race just gets
  * 0 rows back from the guarded UPDATE and is treated as a no-op, not an error.
  */
-async function completeOrderById(orderId: string): Promise<{ order: any; alreadyCompleted: boolean } | null> {
+async function completeOrderById(orderId: string): Promise<{ order: any; success: boolean; alreadyCompleted: boolean } | null> {
   const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [orderId]);
   if (!order) return null;
 
@@ -331,7 +331,9 @@ async function completeOrderById(orderId: string): Promise<{ order: any; already
     [orderId]
   );
   if (result.length === 0) {
-    return { order, alreadyCompleted: order.status === "completed" };
+    // order here is the pre-update snapshot, so this reflects the status
+    // that was already true going into this call, not a race we lost.
+    return { order, success: order.status === "completed", alreadyCompleted: order.status === "completed" };
   }
   await creditMacaashIfNeeded(order);
   await creditCommissionIfNeeded(order);
@@ -354,14 +356,14 @@ async function completeOrderById(orderId: string): Promise<{ order: any; already
       status: "completed",
     },
   });
-  return { order, alreadyCompleted: false };
+  return { order, success: true, alreadyCompleted: false };
 }
 
 ordersRouter.post("/agent/orders/:id/complete", requireAuth("agent"), async (req, res) => {
   const result = await completeOrderById(req.params.id);
   if (!result) return sendJson(res, 404, { error: "Order not found" });
-  if (result.order.status !== "completed" && !result.alreadyCompleted) {
-    return sendJson(res, 409, { error: "Order must be in progress before it can be completed" });
+  if (!result.success) {
+    return sendJson(res, 409, { error: `Cannot complete an order in status '${result.order.status}'` });
   }
   sendJson(res, 200, await loadOrder(req.params.id));
 });

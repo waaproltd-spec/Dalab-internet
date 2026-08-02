@@ -16,6 +16,10 @@ notificationsRouter.post("/admin/notifications/send", requireStaff(), async (req
   sendJson(res, 201, { id, type, title, body });
 });
 
+notificationsRouter.get("/admin/notifications", requireStaff(), async (_req, res) => {
+  sendJson(res, 200, await query(`SELECT * FROM notifications ORDER BY sent_at DESC LIMIT 100`));
+});
+
 notificationsRouter.get("/agent/notifications", requireAuth("agent"), async (_req, res) => {
   sendJson(res, 200, await query(`SELECT * FROM notifications ORDER BY sent_at DESC LIMIT 50`));
 });

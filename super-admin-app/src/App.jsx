@@ -141,6 +141,7 @@ const DalabAdminApi = {
   deletePromoImage: (id) => dalabAdminApiRequest(`/admin/promo-images/${id}`, { method: "DELETE" }),
   promoImageUrl: (id) => `${DALAB_API_BASE_URL}/promo-images/${id}/image`,
   sendNotification: (type, title, body) => dalabAdminApiRequest("/admin/notifications/send", { method: "POST", body: { type, title, body } }),
+  getAdminNotifications: () => dalabAdminApiRequest("/admin/notifications"),
   getReports: (range) => dalabAdminApiRequest(`/admin/reports?range=${range}`),
   // USSD Services
   getUssdTemplates: (companyId) => dalabAdminApiRequest(`/admin/ussd-templates${companyId ? `?companyId=${companyId}` : ""}`),
@@ -6047,17 +6048,44 @@ function SmsLogs({ companies }) {
   );
 }
 
-function Notifications() {
-  const [sent, setSent] = useState([
-    { id: 1, type: "Promotion", title: "20% off Anfac Plus this weekend", date: "2026-07-23" },
-    { id: 2, type: "Maintenance", title: "Somtel payments unavailable 1–2 AM", date: "2026-07-20" },
-  ]);
-  const [form, setForm] = useState({ type: "Push Notification", title: "", body: "" });
+const NOTIFICATION_TYPE_LABEL = { push: "Push Notification", promotion: "Promotion", maintenance: "Maintenance Message" };
 
-  const send = () => {
-    if (!form.title) return;
-    setSent((prev) => [{ id: Date.now(), type: form.type, title: form.title, date: "2026-07-25" }, ...prev]);
-    setForm({ type: "Push Notification", title: "", body: "" });
+function Notifications() {
+  const [sent, setSent] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(true);
+  const [historyError, setHistoryError] = useState("");
+  const [form, setForm] = useState({ type: "push", title: "", body: "" });
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState("");
+
+  const fetchHistory = () => {
+    if (!DALAB_API_ENABLED) { setLoadingHistory(false); return; }
+    setLoadingHistory(true);
+    setHistoryError("");
+    DalabAdminApi.getAdminNotifications()
+      .then((rows) => setSent(rows))
+      .catch((err) => setHistoryError(err.message || "Could not load sent history."))
+      .finally(() => setLoadingHistory(false));
+  };
+  useEffect(fetchHistory, []);
+
+  const send = async () => {
+    if (!form.title || sending) return;
+    setSending(true);
+    setSendError("");
+    try {
+      // Delivery is DB-record-only for now — no FCM/APNs push infrastructure
+      // is wired up yet, so this reaches the notifications table (and
+      // whatever in-app "Notifications" screen polls it) but not an actual
+      // phone push until that infra exists.
+      await DalabAdminApi.sendNotification(form.type, form.title, form.body);
+      setForm({ type: "push", title: "", body: "" });
+      fetchHistory();
+    } catch (err) {
+      setSendError(err.message || "Could not send notification.");
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
@@ -6066,11 +6094,15 @@ function Notifications() {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1.2fr", gap: 14 }}>
         <Card style={{ padding: 18 }}>
           <div style={{ fontWeight: 700, fontSize: 13, color: INK, marginBottom: 10 }}>Compose</div>
+          <div style={{ fontSize: 11.5, color: MUTE, marginBottom: 12 }}>
+            Stored and shown in-app to customers/agents. No push (FCM/APNs) infrastructure is connected yet, so this doesn't reach a phone that has the app closed.
+          </div>
+          {sendError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{sendError}</div>}
           <Field label="Type">
             <select style={inputStyle} value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
-              <option>Push Notification</option>
-              <option>Promotion</option>
-              <option>Maintenance Message</option>
+              <option value="push">Push Notification</option>
+              <option value="promotion">Promotion</option>
+              <option value="maintenance">Maintenance Message</option>
             </select>
           </Field>
           <Field label="Title">
@@ -6079,19 +6111,31 @@ function Notifications() {
           <Field label="Message">
             <textarea style={{ ...inputStyle, minHeight: 80, resize: "vertical" }} value={form.body} onChange={(e) => setForm({ ...form, body: e.target.value })} />
           </Field>
-          <Button icon={Bell} onClick={send}>Send to all customers</Button>
+          <Button icon={sending ? Loader2 : Bell} spin={sending} disabled={sending || !form.title} onClick={send}>
+            {sending ? "Sending..." : "Send to all customers"}
+          </Button>
         </Card>
         <Card style={{ padding: 0, overflow: "hidden" }}>
           <div style={{ padding: "14px 16px", fontWeight: 700, fontSize: 13, color: INK, borderBottom: `1px solid ${BORDER}` }}>Sent history</div>
-          {sent.map((s) => (
-            <div key={s.id} style={{ padding: "12px 16px", borderBottom: `1px solid ${BORDER}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div>
-                <div style={{ fontWeight: 700, fontSize: 13, color: INK }}>{s.title}</div>
-                <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>{s.date}</div>
+          {!DALAB_API_ENABLED ? (
+            <div style={{ padding: 16, fontSize: 12.5, color: MUTE }}>Connect DALAB_API_BASE_URL to a deployed backend to view sent history.</div>
+          ) : historyError ? (
+            <div style={{ padding: 16, color: "#C81E2C", fontSize: 12.5 }}>{historyError}</div>
+          ) : loadingHistory ? (
+            <div style={{ padding: 16, fontSize: 12.5, color: MUTE }}>Loading…</div>
+          ) : sent.length === 0 ? (
+            <div style={{ padding: 16, fontSize: 12.5, color: MUTE }}>Nothing sent yet.</div>
+          ) : (
+            sent.map((s) => (
+              <div key={s.id} style={{ padding: "12px 16px", borderBottom: `1px solid ${BORDER}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 13, color: INK }}>{s.title}</div>
+                  <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>{formatDateTime(s.sentAt)}</div>
+                </div>
+                <Badge>{NOTIFICATION_TYPE_LABEL[s.type] ?? s.type}</Badge>
               </div>
-              <Badge>{s.type}</Badge>
-            </div>
-          ))}
+            ))
+          )}
         </Card>
       </div>
     </div>
@@ -6100,13 +6144,53 @@ function Notifications() {
 
 function Reports() {
   const [range, setRange] = useState("Monthly");
+  const [series, setSeries] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) { setLoading(false); return; }
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    DalabAdminApi.getReports(range.toLowerCase())
+      .then((data) => {
+        if (cancelled) return;
+        setSeries(
+          (data.series || []).map((row) => ({
+            day: formatDateTime(row.day).split(",")[0] ?? row.day,
+            sales: Number(row.sales) || 0,
+            orders: Number(row.orders) || 0,
+          }))
+        );
+      })
+      .catch((err) => { if (!cancelled) setError(err.message || "Could not load report data."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [range]);
+
+  const exportCsv = () => {
+    exportToCsv(`dalab-report-${range.toLowerCase()}.csv`, [
+      { label: "Day", value: (r) => r.day },
+      { label: "Sales", value: (r) => r.sales },
+      { label: "Orders", value: (r) => r.orders },
+    ], series);
+  };
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
         <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Reports</div>
         <div style={{ display: "flex", gap: 8 }}>
-          <Button variant="ghost" icon={Download}>Export PDF</Button>
-          <Button variant="ghost" icon={Download}>Export Excel</Button>
+          <Button variant="ghost" icon={Download} disabled={!series.length} onClick={exportCsv}>Export CSV</Button>
+          <Button
+            variant="ghost"
+            icon={Download}
+            disabled
+            title="PDF/XLSX export needs a library added to the backend — use Export CSV for now"
+          >
+            Export PDF/Excel
+          </Button>
         </div>
       </div>
       <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
@@ -6119,15 +6203,25 @@ function Reports() {
       </div>
       <Card style={{ padding: 18 }}>
         <div style={{ fontWeight: 700, fontSize: 13, color: INK, marginBottom: 8 }}>{range} sales report</div>
-        <ResponsiveContainer width="100%" height={260}>
-          <BarChart data={salesTrend}>
-            <CartesianGrid stroke="#EEF0FB" vertical={false} />
-            <XAxis dataKey="day" tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
-            <YAxis tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
-            <Tooltip />
-            <Bar dataKey="sales" fill={INDIGO} radius={[6, 6, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
+        {!DALAB_API_ENABLED ? (
+          <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to load real report data.</div>
+        ) : error ? (
+          <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div>
+        ) : loading ? (
+          <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Loading…</div>
+        ) : series.length === 0 ? (
+          <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>No completed orders in this range yet.</div>
+        ) : (
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={series}>
+              <CartesianGrid stroke="#EEF0FB" vertical={false} />
+              <XAxis dataKey="day" tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
+              <Tooltip />
+              <Bar dataKey="sales" fill={INDIGO} radius={[6, 6, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        )}
       </Card>
     </div>
   );
@@ -6255,6 +6349,170 @@ function SocialMediaLinksPanel() {
   );
 }
 
+// GET /admin/settings camelCases every key server-side (sendJson ->
+// toCamelCase) — reads must go through the same conversion, while writes
+// (PUT /admin/settings/:key) use the raw snake_case key verbatim, since
+// that's what DEFAULT_SETTINGS on the backend is keyed by. Same convention
+// as SocialMediaLinksPanel above.
+function settingsToCamel(s) {
+  return s.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+}
+
+function GeneralSettingsPanel() {
+  const [drafts, setDrafts] = useState({ app_name: "", app_slogan: "", support_phone: "", support_email: "", maintenance_mode: false });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) { setLoading(false); return; }
+    (async () => {
+      try {
+        const data = await DalabAdminApi.getSettings();
+        setDrafts({
+          app_name: data[settingsToCamel("app_name")] ?? "",
+          app_slogan: data[settingsToCamel("app_slogan")] ?? "",
+          support_phone: data[settingsToCamel("support_phone")] ?? "",
+          support_email: data[settingsToCamel("support_email")] ?? "",
+          maintenance_mode: data[settingsToCamel("maintenance_mode")] === "true",
+        });
+      } catch (err) {
+        setError(err.message || "Could not load settings.");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      await DalabAdminApi.updateSetting("app_name", drafts.app_name.trim());
+      await DalabAdminApi.updateSetting("app_slogan", drafts.app_slogan.trim());
+      await DalabAdminApi.updateSetting("support_phone", drafts.support_phone.trim());
+      await DalabAdminApi.updateSetting("support_email", drafts.support_email.trim());
+      await DalabAdminApi.updateSetting("maintenance_mode", drafts.maintenance_mode ? "true" : "false");
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      setError(err.message || "Could not save settings.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage settings.</div>;
+  }
+  if (loading) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Loading…</div>;
+  }
+
+  return (
+    <Card style={{ padding: 18, maxWidth: 480 }}>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      <Field label="App name">
+        <input style={inputStyle} value={drafts.app_name} onChange={(e) => setDrafts((d) => ({ ...d, app_name: e.target.value }))} />
+      </Field>
+      <Field label="Slogan">
+        <input style={inputStyle} value={drafts.app_slogan} onChange={(e) => setDrafts((d) => ({ ...d, app_slogan: e.target.value }))} />
+      </Field>
+      <Field label="Support phone number">
+        <input style={inputStyle} value={drafts.support_phone} onChange={(e) => setDrafts((d) => ({ ...d, support_phone: e.target.value }))} />
+      </Field>
+      <Field label="Support email">
+        <input style={inputStyle} value={drafts.support_email} onChange={(e) => setDrafts((d) => ({ ...d, support_email: e.target.value }))} />
+      </Field>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+        <input
+          type="checkbox"
+          id="maintenance"
+          checked={drafts.maintenance_mode}
+          onChange={(e) => setDrafts((d) => ({ ...d, maintenance_mode: e.target.checked }))}
+        />
+        <label htmlFor="maintenance" style={{ fontSize: 13, color: SLATE }}>
+          Maintenance mode — blocks Customer/Agent App traffic with a 503 until turned off
+        </label>
+      </div>
+      <Button icon={saving ? Loader2 : Check} spin={saving} disabled={saving} onClick={save}>
+        {saving ? "Saving..." : saved ? "Saved" : "Save changes"}
+      </Button>
+    </Card>
+  );
+}
+
+function OtpSettingsPanel() {
+  const [drafts, setDrafts] = useState({ otp_length: "4", otp_expiry_minutes: "2" });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) { setLoading(false); return; }
+    (async () => {
+      try {
+        const data = await DalabAdminApi.getSettings();
+        setDrafts({
+          otp_length: data[settingsToCamel("otp_length")] ?? "4",
+          otp_expiry_minutes: data[settingsToCamel("otp_expiry_minutes")] ?? "2",
+        });
+      } catch (err) {
+        setError(err.message || "Could not load settings.");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      // Clamped client-side too, matching the backend's own clamp — keeps
+      // the field from silently saving a value the backend would ignore.
+      const length = Math.min(8, Math.max(4, Number(drafts.otp_length) || 4));
+      const expiry = Math.min(30, Math.max(1, Number(drafts.otp_expiry_minutes) || 2));
+      await DalabAdminApi.updateSetting("otp_length", String(length));
+      await DalabAdminApi.updateSetting("otp_expiry_minutes", String(expiry));
+      setDrafts({ otp_length: String(length), otp_expiry_minutes: String(expiry) });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      setError(err.message || "Could not save settings.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage settings.</div>;
+  }
+  if (loading) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Loading…</div>;
+  }
+
+  return (
+    <Card style={{ padding: 18, maxWidth: 480 }}>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 16 }}>
+        No SMS gateway is connected yet, so the Customer App currently shows the OTP code directly for testing. These settings still control the real code length and expiry once a gateway is wired up.
+      </div>
+      <Field label="OTP length (digits, 4-8)">
+        <input style={inputStyle} type="number" min={4} max={8} value={drafts.otp_length} onChange={(e) => setDrafts((d) => ({ ...d, otp_length: e.target.value }))} />
+      </Field>
+      <Field label="OTP expiry (minutes, 1-30)">
+        <input style={inputStyle} type="number" min={1} max={30} value={drafts.otp_expiry_minutes} onChange={(e) => setDrafts((d) => ({ ...d, otp_expiry_minutes: e.target.value }))} />
+      </Field>
+      <Button icon={saving ? Loader2 : Check} spin={saving} disabled={saving} onClick={save}>
+        {saving ? "Saving..." : saved ? "Saved" : "Save changes"}
+      </Button>
+    </Card>
+  );
+}
+
 function SettingsPanel() {
   const [tab, setTab] = useState("general");
   return (
@@ -6274,25 +6532,8 @@ function SettingsPanel() {
         ))}
       </div>
 
-      {tab === "general" && (
-        <Card style={{ padding: 18, maxWidth: 480 }}>
-          <Field label="App name"><input style={inputStyle} defaultValue="DALAB INTERNET" /></Field>
-          <Field label="Slogan"><input style={inputStyle} defaultValue="Internet you can trust." /></Field>
-          <Field label="Support phone number"><input style={inputStyle} defaultValue="0610808086" /></Field>
-          <Button icon={Check}>Save changes</Button>
-        </Card>
-      )}
-      {tab === "otp" && (
-        <Card style={{ padding: 18, maxWidth: 480 }}>
-          <Field label="OTP length"><input style={inputStyle} defaultValue="4" /></Field>
-          <Field label="OTP expiry (seconds)"><input style={inputStyle} defaultValue="120" /></Field>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
-            <input type="checkbox" defaultChecked id="resend" />
-            <label htmlFor="resend" style={{ fontSize: 13, color: SLATE }}>Allow "Resend code"</label>
-          </div>
-          <Button icon={Check}>Save changes</Button>
-        </Card>
-      )}
+      {tab === "general" && <GeneralSettingsPanel />}
+      {tab === "otp" && <OtpSettingsPanel />}
       {tab === "social" && <SocialMediaLinksPanel />}
       {tab === "security" && <ChangePasswordCard />}
     </div>
