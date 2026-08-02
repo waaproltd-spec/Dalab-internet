@@ -9,7 +9,6 @@ import { requireAuth } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
 import { Role } from "../types/index.js";
 import { rateLimit } from "../auth/rateLimit.js";
-import { sendOtpSms } from "../utils/smsGateway.js";
 
 export const authRouter = Router();
 
@@ -52,29 +51,14 @@ authRouter.post("/auth/otp/request", rateLimit("otp-request", 5, 15 * 60 * 1000)
      VALUES ($1,$2,$3, now() + ($4 || ' minutes')::interval)`,
     [randomUUID(), phone, createHash("sha256").update(code).digest("hex"), otpExpiryMinutes]
   );
-  const smsResult = await sendOtpSms(phone, code);
-  if (smsResult === "sent") {
-    // Real gateway configured and the SMS genuinely went out — the code is
-    // only ever delivered out-of-band via SMS from here on, never echoed
-    // back in the response.
-    return sendJson(res, 200, { message: "OTP sent" });
-  }
-  if (smsResult === "failed") {
-    // Gateway is configured but this specific send failed (bad number,
-    // network error, insuficient balance, ...) — do NOT fall back to
-    // revealing the code in the response, since that would leak a real OTP
-    // into an API payload as a matter of course whenever the gateway
-    // hiccups. Surface a clear, retryable error instead.
-    return sendJson(res, 502, { error: "Could not send the verification SMS. Please try again." });
-  }
+  // eslint-disable-next-line no-console
+  console.log(`[SMS GATEWAY SIM] OTP for ${phone}: ${code}`); // real gateway integration goes here
 
   // No SMS gateway is connected yet — per explicit product decision, the code
   // is returned directly in the response so the Customer App can display it
   // to the customer itself, rather than the flow depending on SMS delivery
   // that doesn't exist. Once a real gateway is wired up, stop returning
   // `otpCode` here so the code is only ever delivered out-of-band via SMS.
-  // eslint-disable-next-line no-console
-  console.log(`[SMS GATEWAY SIM] OTP for ${phone}: ${code}`);
   sendJson(res, 200, { message: "OTP sent", otpCode: code });
 });
 
