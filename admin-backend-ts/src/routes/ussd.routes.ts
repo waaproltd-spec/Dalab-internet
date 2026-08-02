@@ -27,7 +27,7 @@ ussdRouter.get("/admin/companies/:id/pin-status", requireStaff(), async (req, re
 
 ussdRouter.put("/admin/companies/:id/pin", requireAuth("super_admin"), async (req, res) => {
   const { pin } = req.body;
-  if (!isValidPin(String(pin ?? ""))) return sendJson(res, 400, { error: "PIN must be 3-8 digits" });
+  if (!isValidPin(String(pin ?? ""))) return sendJson(res, 400, { error: "PIN must be 4-8 digits" });
   const existing = await queryOne(`SELECT pin_encrypted FROM companies WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Company not found" });
   await query(`UPDATE companies SET pin_encrypted=$1, updated_at=now() WHERE id=$2`, [encrypt(pin), req.params.id]);

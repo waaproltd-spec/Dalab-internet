@@ -86,7 +86,7 @@ export function isStrongPassword(password: string): boolean {
 }
 
 export function isValidPin(pin: string): boolean {
-  return /^\d{3,8}$/.test(pin);
+  return /^\d{4,8}$/.test(pin);
 }
 
 /** `length` comes from the configurable `otp_length` system setting — the

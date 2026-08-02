@@ -62,7 +62,7 @@ customersRouter.get("/admin/customers/:id/pin-status", requireAuth("super_admin"
 // yet or already is; setting a new value works identically either way.
 customersRouter.put("/admin/customers/:id/pin", requireAuth("super_admin"), async (req, res) => {
   const { pin } = req.body;
-  if (!isValidPin(String(pin ?? ""))) return sendJson(res, 400, { error: "PIN must be 3-8 digits" });
+  if (!isValidPin(String(pin ?? ""))) return sendJson(res, 400, { error: "PIN must be 4-8 digits" });
   const existing = await queryOne(`SELECT id FROM customers WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Customer not found" });
   const pinHash = await hashPassword(String(pin));
@@ -179,7 +179,7 @@ customersRouter.get("/customer/pin-status", requireAuth("customer"), async (req,
 // OTP-issued token) is already the proof of ownership needed to set a new one.
 customersRouter.put("/customer/pin", requireAuth("customer"), async (req, res) => {
   const { pin } = req.body;
-  if (!isValidPin(String(pin ?? ""))) return sendJson(res, 400, { error: "PIN must be 3-8 digits" });
+  if (!isValidPin(String(pin ?? ""))) return sendJson(res, 400, { error: "PIN must be 4-8 digits" });
   const pinHash = await hashPassword(String(pin));
   await query(`UPDATE customers SET pin_hash=$1 WHERE id=$2`, [pinHash, req.auth!.sub]);
   sendJson(res, 200, { message: "PIN saved", isSet: true });
