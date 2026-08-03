@@ -148,9 +148,13 @@ object PaymentSmsParsers {
         SomnetEvcPlusParser,
     )
 
-    fun parse(sender: String, body: String, receivedAt: String): SmsLogEntry? {
+    // simSlot is attached via copy() after a parser matches, rather than
+    // threaded through every PaymentSmsParser.tryParse signature — it's
+    // metadata about which SIM the broadcast arrived on, not something any
+    // individual provider's text format has a say in.
+    fun parse(sender: String, body: String, receivedAt: String, simSlot: Int? = null): SmsLogEntry? {
         for (parser in ALL) {
-            parser.tryParse(sender, body, receivedAt)?.let { return it }
+            parser.tryParse(sender, body, receivedAt)?.let { return it.copy(simSlot = simSlot) }
         }
         return null
     }

@@ -1,9 +1,13 @@
 package com.dalab.internet.sms
 
+import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.provider.Telephony
+import android.telephony.SubscriptionManager
+import androidx.core.content.ContextCompat
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.queue.PendingActionQueue
 import kotlinx.coroutines.CoroutineScope
@@ -65,7 +69,8 @@ class SmsReceiver : BroadcastReceiver() {
         }
 
         val (parsed, voucherSent) = try {
-            val p = PaymentSmsParsers.parse(sender, body, receivedAt)
+            val simSlot = resolveSimSlot(context, intent)
+            val p = PaymentSmsParsers.parse(sender, body, receivedAt, simSlot)
             val v = if (p == null) VoucherSentParsers.parse(sender, body) else null
             p to v
         } catch (e: Exception) {
@@ -140,6 +145,42 @@ class SmsReceiver : BroadcastReceiver() {
                 pendingResult.finish()
             }
         }
+    }
+}
+
+/**
+ * Which physical SIM slot (1 or 2) received this SMS, for payment-number
+ * verification on a dual-SIM payment device (see SmsLogEntry.simSlot) — a
+ * payment device's two SIMs each have their own payment number (e.g. EVC
+ * Plus vs eDahab), so knowing only the device isn't enough to tell which
+ * one a given confirmation SMS actually landed on.
+ *
+ * Android's SMS_RECEIVED broadcast carries a "subscription" extra (the
+ * subscriptionId that received it) on dual-SIM devices since Android 5.1 —
+ * not officially part of the public Intent contract, but the standard AOSP
+ * extra every major OEM has shipped for a decade, and the only source for
+ * this information short of manufacturer-specific APIs. Resolved to a
+ * 1-based slot index (matching ussd_templates.sim_slot's existing
+ * convention) via SubscriptionManager. Returns null — never throws — on
+ * anything that stops this from working (single-SIM device, missing
+ * READ_PHONE_STATE, no subscription extra on this OEM/API level); the
+ * backend falls back to device-level-only matching in that case rather
+ * than losing the payment match entirely.
+ */
+private fun resolveSimSlot(context: Context, intent: Intent): Int? {
+    return try {
+        val subscriptionId = intent.extras?.getInt("subscription", -1) ?: -1
+        if (subscriptionId <= 0) return null
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+            return null
+        }
+        val subscriptionManager = context.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as? SubscriptionManager ?: return null
+        @Suppress("MissingPermission")
+        val info = subscriptionManager.getActiveSubscriptionInfo(subscriptionId) ?: return null
+        info.simSlotIndex + 1 // AOSP reports 0-based; convert once here so every downstream consumer only ever sees 1-based slots
+    } catch (e: Exception) {
+        DiagnosticsLog.record("sms_receiver_sim_slot", "Failed to resolve SIM slot: ${e.message}", isError = false)
+        null
     }
 }
 

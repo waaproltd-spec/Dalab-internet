@@ -16,27 +16,49 @@ function normalizePhone(phone: string | null | undefined): string {
   return String(phone ?? "").replace(/\D/g, "").slice(-9);
 }
 
-type OrderMatch = { id: string; sender_phone: string | null; receiver_phone: string | null; amount: number; company_id: string };
+type OrderMatch = {
+  id: string;
+  sender_phone: string | null;
+  receiver_phone: string | null;
+  amount: number;
+  company_id: string;
+  payment_method_id: string | null;
+};
 
 /**
- * Cross-network by design: the telecom that RECEIVED the payment has no
- * bearing on which PROVIDER's order it fulfills — a customer can pay via
- * any network for a package on any other. Matches by amount + normalized
- * customer phone only, never by provider. No phone match -> returns null
- * rather than guessing across possibly-different customers by amount alone.
+ * Matches by amount + normalized customer phone, same as before. No phone
+ * match -> returns null rather than guessing across possibly-different
+ * customers by amount alone.
  *
- * Two safeguards against a real payment being silently absorbed by the
- * WRONG order (same customer, same amount, but a different attempt):
+ * Payment-number verification: when the matched order used one of a
+ * company's specific payment methods (payment_method_id set — EVC Plus vs
+ * eDahab vs JEEB, each its own telco/SIM), the SMS must have arrived
+ * through the exact device (and, if the method specifies one, the exact
+ * SIM slot on that device — a single payment phone commonly holds two
+ * payment SIMs) a Super Admin assigned to collect for that method
+ * (company_payment_methods.device_id/sim_slot) — otherwise it's treated
+ * the same as no match at all, and the order simply stays 'pending' rather
+ * than being silently completed by a payment that landed on the wrong
+ * number. A method with no device assigned yet behaves the same way (never
+ * trusted by default). Legacy companies with no per-method payment methods
+ * configured (payment_method_id null) keep the original cross-network
+ * behavior — there's no specific number to verify against yet.
+ *
+ * Two further safeguards against a real payment being silently absorbed by
+ * the WRONG order (same customer, same amount, but a different attempt):
  *  - MATCH_WINDOW_HOURS excludes anything older than a day — a payment SMS
  *    arriving now is confirming something the customer just did, not an
  *    order they gave up on yesterday. This is also what keeps oldest-first
  *    matching (below) safe: a stale/abandoned order can only "win" future
  *    payments of that amount for up to this window, never indefinitely.
- *  - Within that window, the OLDEST pending order wins (`created_at ASC`)
- *    — when a customer has several pending orders for the same amount
- *    (e.g. re-visiting Checkout more than once before paying), the payment
- *    they actually send should complete the one they created first, not
- *    leave it stranded while a newer duplicate jumps the queue.
+ *  - Within that window, the OLDEST eligible pending order wins
+ *    (`created_at ASC`) — when a customer has several pending orders for
+ *    the same amount (e.g. re-visiting Checkout more than once before
+ *    paying), the payment they actually send should complete the one they
+ *    created first, not leave it stranded while a newer duplicate jumps
+ *    the queue. A candidate that fails the device check is skipped in
+ *    favor of the next-oldest one that passes, rather than blocking the
+ *    whole match on an order for a different payment method.
  *  - The candidate SELECT runs inside a transaction with
  *    `FOR UPDATE SKIP LOCKED` so two payment SMS arriving at the same
  *    instant can't both be handed the same locked-in-flight candidate row
@@ -47,7 +69,12 @@ type OrderMatch = { id: string; sender_phone: string | null; receiver_phone: str
  */
 const MATCH_WINDOW_HOURS = 24;
 
-async function findMatchingOrder(parsedAmount: number | undefined, parsedPhone: string | undefined): Promise<OrderMatch | null> {
+async function findMatchingOrder(
+  parsedAmount: number | undefined,
+  parsedPhone: string | undefined,
+  uploadingAgentId: string,
+  uploadingSimSlot: number | null | undefined
+): Promise<OrderMatch | null> {
   if (parsedAmount == null || !parsedPhone) return null;
   const target = normalizePhone(parsedPhone);
   if (!target) return null;
@@ -55,7 +82,7 @@ async function findMatchingOrder(parsedAmount: number | undefined, parsedPhone: 
   const candidates = await withTransaction((client) =>
     client
       .query<OrderMatch>(
-        `SELECT id, sender_phone, receiver_phone, amount, company_id FROM orders
+        `SELECT id, sender_phone, receiver_phone, amount, company_id, payment_method_id FROM orders
          WHERE status='pending' AND ABS(amount - $1) < 0.01 AND created_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
          ORDER BY created_at ASC
          FOR UPDATE SKIP LOCKED`,
@@ -63,7 +90,29 @@ async function findMatchingOrder(parsedAmount: number | undefined, parsedPhone: 
       )
       .then((r) => r.rows)
   );
-  return candidates.find((o) => normalizePhone(o.sender_phone) === target) ?? null;
+  const phoneMatches = candidates.filter((o) => normalizePhone(o.sender_phone) === target);
+  if (phoneMatches.length === 0) return null;
+
+  const uploadingAgent = await queryOne<{ device_id: string | null }>(`SELECT device_id FROM agents WHERE id=$1`, [uploadingAgentId]);
+  const uploadingDeviceId = uploadingAgent?.device_id ?? null;
+
+  for (const candidate of phoneMatches) {
+    if (!candidate.payment_method_id) return candidate; // legacy company, no specific number to verify against
+    const method = await queryOne<{ device_id: string | null; sim_slot: number | null }>(
+      `SELECT device_id, sim_slot FROM company_payment_methods WHERE id=$1`,
+      [candidate.payment_method_id]
+    );
+    if (!method?.device_id || method.device_id !== uploadingDeviceId) continue;
+    // A payment device commonly has two SIMs, each its own payment number
+    // (EVC Plus vs eDahab) — when the method specifies which slot, the
+    // upload must have resolved the SAME slot to count as verified; a
+    // method with no slot configured (single-SIM payment device, or not
+    // narrowed down yet) only needs the device to match, same as before
+    // slot-level tracking existed.
+    if (method.sim_slot != null && method.sim_slot !== uploadingSimSlot) continue;
+    return candidate;
+  }
+  return null; // every amount+phone match was on the wrong (or unassigned) device/SIM — stays pending, never falsely completed
 }
 
 async function requiresManualApprovalFor(orderId: string): Promise<boolean> {
@@ -176,7 +225,7 @@ async function respondAlreadyProcessed(
 }
 
 smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => {
-  const { sender, body, parsedProvider, parsedAmount, parsedPhone, receivedAt, transactionRef } = req.body;
+  const { sender, body, parsedProvider, parsedAmount, parsedPhone, receivedAt, transactionRef, simSlot } = req.body;
   if (!sender || !body) return sendJson(res, 400, { error: "sender and body are required" });
 
   const effectiveReceivedAt = receivedAt ?? new Date().toISOString();
@@ -195,7 +244,7 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
     if (existingByRef) return respondAlreadyProcessed(res, existingByRef, transactionRef, effectiveReceivedAt, parsedPhone, parsedAmount);
   }
 
-  const match = await findMatchingOrder(parsedAmount, parsedPhone);
+  const match = await findMatchingOrder(parsedAmount, parsedPhone, req.auth!.sub, simSlot);
   const id = randomUUID();
   // Resolved once in JS (rather than left to SQL's now()) so the dedup
   // lookup below, if the insert conflicts, checks the exact same instant
@@ -203,9 +252,9 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
   // different truncated minute than the row that actually won.
   try {
     await query(
-      `INSERT INTO sms_logs (id, agent_id, sender, body, parsed_provider, parsed_amount, parsed_phone, matched_order_id, received_at, transaction_ref)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-      [id, req.auth!.sub, sender, body, parsedProvider ?? null, parsedAmount ?? null, parsedPhone ?? null, match?.id ?? null, effectiveReceivedAt, transactionRef ?? null]
+      `INSERT INTO sms_logs (id, agent_id, sender, body, parsed_provider, parsed_amount, parsed_phone, matched_order_id, received_at, transaction_ref, sim_slot)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [id, req.auth!.sub, sender, body, parsedProvider ?? null, parsedAmount ?? null, parsedPhone ?? null, match?.id ?? null, effectiveReceivedAt, transactionRef ?? null, simSlot ?? null]
     );
   } catch (err: any) {
     if (err?.code !== "23505") throw err;

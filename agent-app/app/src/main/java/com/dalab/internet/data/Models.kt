@@ -65,6 +65,14 @@ data class SmsLogEntry(
     // Null for formats with no such field; the server falls back to its
     // existing sender+body+minute dedup in that case.
     val transactionRef: String? = null,
+    // Which physical SIM slot (1 or 2 — matches ussd_templates.sim_slot's
+    // existing 1-based convention) on THIS device actually received the
+    // SMS, resolved from the incoming broadcast's subscription id (see
+    // SmsReceiver.resolveSimSlot). Null when it can't be determined
+    // (single-SIM device, missing READ_PHONE_STATE, older/OEM broadcast
+    // with no subscription extra) — the backend then falls back to
+    // device-level matching only.
+    val simSlot: Int? = null,
 )
 
 data class Transaction(
