@@ -28,6 +28,19 @@ android {
                 keyPassword = System.getenv("AGENT_KEY_PASSWORD")
             }
         }
+        // Without this, AGP falls back to auto-generating ~/.android/debug.keystore
+        // on whatever machine is building — fine locally where that file persists,
+        // but CI runners are ephemeral, so every workflow run got a brand-new random
+        // debug key and every debug APK became unable to update the last one
+        // ("App not installed"). A committed, fixed debug key (standard
+        // androiddebugkey/android credentials — not a secret, every default debug
+        // keystore uses the same ones) keeps every debug build's signature stable.
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {
@@ -38,6 +51,9 @@ android {
             if (!System.getenv("AGENT_KEYSTORE_PATH").isNullOrBlank()) {
                 signingConfig = signingConfigs.getByName("release")
             }
+        }
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
