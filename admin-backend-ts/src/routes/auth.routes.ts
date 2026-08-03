@@ -127,6 +127,55 @@ authRouter.post("/auth/login", rateLimit("customer-login", 10, 15 * 60 * 1000), 
   });
 });
 
+// ---------------- Customer: passwordless name + phone identity ----------------
+// The Customer App's entire auth flow: first launch asks for Full Name +
+// Phone Number only, no password/PIN/OTP ever. This single endpoint both
+// creates a brand-new account and signs back into an existing one — the
+// phone number is the sole identifier, deliberately unverified (no OTP), so
+// re-entering the same number on a reinstall/new device restores the same
+// account by design. Never touches password_hash, so it can't collide with
+// /auth/register's password-claiming flow for the same row.
+authRouter.post("/auth/identify", rateLimit("customer-identify", 20, 15 * 60 * 1000), async (req, res) => {
+  const phone = normalizeCustomerPhone(req.body.phone);
+  const name = req.body.name ? String(req.body.name).trim() : "";
+  if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid phone number" });
+  if (!name) return sendJson(res, 400, { error: "Full name is required" });
+
+  let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
+  if (customer) {
+    if (customer.status === "blocked") return sendJson(res, 403, { error: "This account has been blocked" });
+    // Only fills in a missing name — never overwrites a name the customer
+    // (or an admin) already set, since a later device re-entering the same
+    // phone shouldn't silently rename an existing profile.
+    if (!customer.name) {
+      await query(`UPDATE customers SET name=$1 WHERE id=$2`, [name, customer.id]);
+      customer = await queryOne(`SELECT * FROM customers WHERE id=$1`, [customer.id]);
+    }
+  } else {
+    customer = await queryOne(`INSERT INTO customers (id, phone, name) VALUES ($1,$2,$3) RETURNING *`, [randomUUID(), phone, name]);
+  }
+
+  const tokens = await issueTokens(customer!.id, "customer");
+  sendJson(res, 200, {
+    ...tokens,
+    customer: { id: customer!.id, phone: customer!.phone, name: customer!.name, email: customer!.email },
+    pinSet: Boolean(customer!.pin_hash),
+  });
+});
+
+// Best-effort session teardown for the Customer App's explicit "Log out" —
+// revokes just this one refresh token (same token_hash lookup /auth/refresh
+// already uses) so it can't be replayed; a missing/already-invalid token is
+// still a 200, since the client is clearing its local session either way.
+authRouter.post("/auth/logout", async (req, res) => {
+  const refreshToken = String(req.body.refreshToken ?? "");
+  if (refreshToken) {
+    const tokenHash = createHash("sha256").update(refreshToken).digest("hex");
+    await query(`UPDATE refresh_tokens SET revoked=true WHERE token_hash=$1`, [tokenHash]);
+  }
+  sendJson(res, 200, { message: "Logged out" });
+});
+
 // ---------------- Agent login (fully automatic — no credentials at all) ----------------
 // The Agent App has no login screen: it authenticates itself using whichever
 // agent the Super Admin has assigned to this physical device (agents.device_id,
