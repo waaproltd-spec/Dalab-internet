@@ -4,11 +4,21 @@ plugins {
 }
 
 android {
+    // Kotlin source package/namespace stays com.dalab.internet — unrelated to
+    // the applicationId below, and renaming it would mean touching every
+    // source file's package declaration for no reason.
     namespace = "com.dalab.internet"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.dalab.internet"
+        // Was "com.dalab.internet" — identical to the Customer App's Android
+        // applicationId. Two different apps sharing one applicationId means
+        // Android treats installing either one as an "update" to whichever
+        // is already on the device; since they're unrelated apps with
+        // different signing keys, that update is always rejected outright
+        // ("App not installed"), and the Agent App could never actually get
+        // installed on a device that already has the Customer App on it.
+        applicationId = "com.dalab.agent"
         minSdk = 26
         targetSdk = 34
         versionCode = 1
