@@ -10,6 +10,7 @@ import { recordActivity } from "../utils/activityLog.js";
 import { creditCommissionIfNeeded, reverseCommissionIfNeeded } from "../utils/commissions.js";
 import { creditReferralBonusIfNeeded, reverseReferralBonusIfNeeded } from "../utils/referrals.js";
 import { isAlreadyCompleted } from "../utils/paymentTransactions.js";
+import { rateLimit } from "../auth/rateLimit.js";
 
 export const ordersRouter = Router();
 
@@ -177,6 +178,111 @@ ordersRouter.get("/orders/stream", requireAuth("customer"), async (req, res) => 
 ordersRouter.get("/orders/:id", requireAuth("customer"), async (req, res) => {
   const order = await loadOrder(req.params.id);
   if (!order || (order as any).customer_id !== req.auth!.sub) return sendJson(res, 404, { error: "Order not found" });
+  sendJson(res, 200, maskOrder(order));
+});
+
+// ---------------- Guest (Customer App — no account at all) ----------------
+// The Customer App has no login/password/OTP. A `customers` row still gets
+// found-or-created by phone number behind the scenes — same pattern the
+// agent-initiated /agent/orders endpoint below already uses — purely so
+// orders/points/PIN stay consistent with the rest of the schema; it is
+// never surfaced to the app as an account, and there is no loyalty-points
+// redemption here (that requires knowing "my" balance, which requires login).
+ordersRouter.post("/guest/orders", rateLimit("guest-order-create", 20, 15 * 60 * 1000), async (req, res) => {
+  const { companyId, packageId, customerPhone, senderPhone, receiverPhone, paymentMethod, paymentMethodId, clientRequestId } = req.body;
+  const phone = String(customerPhone ?? receiverPhone ?? "").trim();
+  if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid phone number" });
+
+  const company = await queryOne(`SELECT * FROM companies WHERE id=$1 AND deleted_at IS NULL`, [companyId]);
+  if (!company) return sendJson(res, 404, { error: "Company not found" });
+  if (company.status === "offline") return sendJson(res, 409, { error: `${company.name} is currently offline` });
+
+  const pkg = await queryOne(`SELECT * FROM packages WHERE id=$1 AND active=true`, [packageId]);
+  if (!pkg) return sendJson(res, 404, { error: "Package not found" });
+  if (pkg.company_id !== companyId) {
+    return sendJson(res, 400, { error: "Package does not belong to the selected company" });
+  }
+
+  let selectedMethod: { id: string; label: string; payment_number: string | null; ussd_template: string | null } | null = null;
+  if (paymentMethodId) {
+    selectedMethod = await queryOne(
+      `SELECT id, label, payment_number, ussd_template FROM company_payment_methods WHERE id=$1 AND company_id=$2 AND enabled=true`,
+      [paymentMethodId, companyId]
+    );
+    if (!selectedMethod) return sendJson(res, 404, { error: "Payment method not found for this company" });
+  }
+
+  let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
+  if (!customer) {
+    customer = await queryOne(`INSERT INTO customers (id, phone) VALUES ($1,$2) RETURNING *`, [randomUUID(), phone]);
+  }
+  if (customer!.status === "blocked") return sendJson(res, 403, { error: "This account has been blocked" });
+
+  const id = orderRef();
+  try {
+    await query(
+      `INSERT INTO orders (id, customer_id, company_id, package_id, amount, provider_amount, status, sender_phone, receiver_phone, payment_method, channel, macaash_earned, client_request_id, payment_number_used, payment_ussd_template_used, payment_method_id)
+       VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,'android',$10,$11,$12,$13,$14)`,
+      [
+        id, customer!.id, companyId, packageId, pkg.price, pkg.provider_amount ?? pkg.price,
+        senderPhone || phone,
+        receiverPhone || phone,
+        selectedMethod?.label || paymentMethod || company.gateway || null,
+        Math.round(Number(pkg.price) * MACAASH_POINTS_PER_DOLLAR),
+        clientRequestId ?? null,
+        selectedMethod?.payment_number || company.payment_number || null,
+        selectedMethod?.ussd_template || company.payment_ussd_template || null,
+        selectedMethod?.id ?? null,
+      ]
+    );
+  } catch (err: any) {
+    if (err?.code !== "23505") throw err;
+    if (err?.constraint === "idx_orders_client_request_id") {
+      const existing = await queryOne<{ id: string }>(`SELECT id FROM orders WHERE client_request_id=$1`, [clientRequestId]);
+      return sendJson(res, 200, maskOrder(await loadOrder(existing!.id)));
+    }
+    if (err?.constraint === "idx_orders_pending_content_dedup") {
+      const existing = await queryOne<{ id: string }>(
+        `SELECT id FROM orders WHERE customer_id=$1 AND company_id=$2 AND package_id=$3 AND amount=$4 AND status='pending'`,
+        [customer!.id, companyId, packageId, pkg.price]
+      );
+      if (existing) return sendJson(res, 200, maskOrder(await loadOrder(existing.id)));
+    }
+    throw err;
+  }
+  broadcast({ type: "order.created", orderId: id });
+  sendJson(res, 201, maskOrder(await loadOrder(id)));
+});
+
+// Real-time order feed for the Customer App's guest checkout — same
+// subscribe/broadcast pub/sub as every other role's stream. No auth to key
+// off of, but the broadcast payload is just {type, orderId}; the app
+// re-fetches whichever order(s) it cares about rather than trusting it.
+// Registered before "/guest/orders/:id" so "stream" isn't swallowed as an
+// :id param.
+ordersRouter.get("/guest/orders/stream", (req, res) => {
+  const unsubscribe = subscribe(res);
+  req.on("close", unsubscribe);
+});
+
+// "Track my order": the only way a customer with no account can find their
+// own orders again after leaving the post-checkout screen. Registered
+// before "/guest/orders/:id" for the same reason as "/stream" above.
+ordersRouter.get("/guest/orders/by-phone/:phone", rateLimit("guest-order-lookup", 20, 15 * 60 * 1000), async (req, res) => {
+  const phone = String(req.params.phone ?? "").trim();
+  if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid phone number" });
+  const customer = await queryOne<{ id: string }>(`SELECT id FROM customers WHERE phone=$1`, [phone]);
+  if (!customer) return sendJson(res, 200, []);
+  const rows = await query(
+    `${ORDER_LIST_SELECT} WHERE o.customer_id=$1 ORDER BY o.created_at DESC LIMIT 20`,
+    [customer.id]
+  );
+  sendJson(res, 200, maskOrders(rows));
+});
+
+ordersRouter.get("/guest/orders/:id", async (req, res) => {
+  const order = await loadOrder(req.params.id);
+  if (!order) return sendJson(res, 404, { error: "Order not found" });
   sendJson(res, 200, maskOrder(order));
 });
 
