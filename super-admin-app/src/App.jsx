@@ -4914,7 +4914,14 @@ function PaymentTransactionsPanel({ companies }) {
                     {timeline.order.id} — {timeline.order.customerName || timeline.order.customerPhone} — {timeline.order.packageName} — <Badge tone="neutral">{timeline.order.status}</Badge>
                   </div>
                 ) : (
-                  <div style={{ fontSize: 12.5, color: MUTE, marginTop: 4 }}>No linked order.</div>
+                  <div style={{ fontSize: 12.5, color: MUTE, marginTop: 4 }}>
+                    No linked order.
+                    {timeline.smsLog?.matchFailureReason && (
+                      <div style={{ color: "#C81E2C", fontWeight: 600, marginTop: 4 }}>
+                        {timeline.smsLog.matchFailureReason}
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
 

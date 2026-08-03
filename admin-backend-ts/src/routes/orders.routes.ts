@@ -380,27 +380,33 @@ ordersRouter.get("/agent/orders/:id", requireAuth("agent"), async (req, res) => 
   sendJson(res, 200, order);
 });
 
-ordersRouter.post("/agent/orders/:id/verify-payment", requireAuth("agent"), async (req, res) => {
-  const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
-  if (!order) return sendJson(res, 404, { error: "Order not found" });
-
+/**
+ * The atomic pending -> in_progress transition + USSD generation shared by
+ * the live verify-payment endpoint below and resweepUnmatchedSmsLogs
+ * (smsLogs.routes.ts) — a retroactive match found later for an SMS that
+ * initially landed with no candidate order needs to run exactly the same
+ * approval step a live agent call would, so the existing self-heal-
+ * candidates poll picks up the resulting in_progress+ussd_generated order
+ * and dials it automatically, with no separate "push a dial instruction"
+ * mechanism needed.
+ */
+export async function verifyOrderAndGenerateUssd(
+  order: any,
+  agentId: string | null
+): Promise<{ ok: true } | { ok: false; alreadyProcessed: boolean }> {
   // Atomic compare-and-swap: only ever one caller of two concurrent/retried
   // requests actually flips pending -> in_progress, so USSD generation can
   // never be double-triggered for the same order.
   const result = await query(
     `UPDATE orders SET status='in_progress', agent_id=$1, updated_at=now() WHERE id=$2 AND status='pending' RETURNING id`,
-    [req.auth!.sub, order.id]
+    [agentId, order.id]
   );
   if (result.length === 0) {
-    // Already verified by this or a concurrent request — idempotent no-op,
-    // return current state rather than erroring a retrying client.
-    if (order.status !== "pending") return sendJson(res, 200, await loadOrder(order.id));
-    return sendJson(res, 409, { error: `Cannot verify an order in status '${order.status}'` });
+    // Already verified by this or a concurrent request — idempotent no-op
+    // for the caller to report, rather than erroring a retrying client.
+    return { ok: false, alreadyProcessed: order.status !== "pending" };
   }
 
-  if (req.body.smsLogId) {
-    await query(`UPDATE sms_logs SET matched_order_id=$1 WHERE id=$2`, [order.id, req.body.smsLogId]);
-  }
   // Order approved — auto-generate the USSD dialer string. A missing PIN or
   // template isn't fatal to the approval itself; ussd_generated just stays
   // null until an admin sets one up, visible on the order detail either way.
@@ -423,6 +429,22 @@ ordersRouter.post("/agent/orders/:id/verify-payment", requireAuth("agent"), asyn
     });
   }
   broadcast({ type: "order.updated", orderId: order.id });
+  return { ok: true };
+}
+
+ordersRouter.post("/agent/orders/:id/verify-payment", requireAuth("agent"), async (req, res) => {
+  const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
+  if (!order) return sendJson(res, 404, { error: "Order not found" });
+
+  if (req.body.smsLogId) {
+    await query(`UPDATE sms_logs SET matched_order_id=$1 WHERE id=$2`, [order.id, req.body.smsLogId]);
+  }
+
+  const result = await verifyOrderAndGenerateUssd(order, req.auth!.sub);
+  if (!result.ok) {
+    if (result.alreadyProcessed) return sendJson(res, 200, await loadOrder(order.id));
+    return sendJson(res, 409, { error: `Cannot verify an order in status '${order.status}'` });
+  }
   sendJson(res, 200, await loadOrder(order.id));
 });
 

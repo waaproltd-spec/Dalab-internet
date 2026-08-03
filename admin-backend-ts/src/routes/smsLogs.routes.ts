@@ -4,9 +4,15 @@ import { query, queryOne, withTransaction } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
 import { recordActivity } from "../utils/activityLog.js";
-import { createPaymentTransaction, hasActivePaymentTransaction } from "../utils/paymentTransactions.js";
+import {
+  createPaymentTransaction,
+  hasActivePaymentTransaction,
+  linkPaymentTransactionToOrder,
+  markPaymentTransactionDuplicateForSms,
+} from "../utils/paymentTransactions.js";
 import { extractBalanceFromSms, resolveCompanyIdByProviderName, resolveDeviceSlotForCompany, applyBalanceUpdate } from "../utils/simBalances.js";
 import { broadcast } from "../realtime/orderEvents.js";
+import { verifyOrderAndGenerateUssd } from "./orders.routes.js";
 
 export const smsLogsRouter = Router();
 
@@ -69,15 +75,28 @@ type OrderMatch = {
  */
 const MATCH_WINDOW_HOURS = 24;
 
+type MatchResult = { order: OrderMatch | null; reason: string | null };
+
+/**
+ * findMatchingOrder's reject paths used to return a bare null — indistinguishable
+ * on the dashboard between "no candidate order at all" and "a real order was
+ * found but rejected by the device/SIM-slot guardrail below." reason gives
+ * every rejection a plain-language explanation, persisted onto the sms_logs
+ * row itself (match_failure_reason, migration 037) so a Super Admin can see
+ * WHY without cross-referencing agents.device_id and
+ * company_payment_methods.device_id/sim_slot by hand.
+ */
 async function findMatchingOrder(
   parsedAmount: number | undefined,
   parsedPhone: string | undefined,
   uploadingAgentId: string,
   uploadingSimSlot: number | null | undefined
-): Promise<OrderMatch | null> {
-  if (parsedAmount == null || !parsedPhone) return null;
+): Promise<MatchResult> {
+  if (parsedAmount == null || !parsedPhone) {
+    return { order: null, reason: "SMS did not parse a usable amount and/or sender phone number" };
+  }
   const target = normalizePhone(parsedPhone);
-  if (!target) return null;
+  if (!target) return { order: null, reason: "Parsed phone number had no digits after normalization" };
 
   const candidates = await withTransaction((client) =>
     client
@@ -90,29 +109,50 @@ async function findMatchingOrder(
       )
       .then((r) => r.rows)
   );
+  if (candidates.length === 0) {
+    return { order: null, reason: `No pending order for $${parsedAmount} in the last ${MATCH_WINDOW_HOURS}h` };
+  }
   const phoneMatches = candidates.filter((o) => normalizePhone(o.sender_phone) === target);
-  if (phoneMatches.length === 0) return null;
+  if (phoneMatches.length === 0) {
+    return {
+      order: null,
+      reason: `${candidates.length} pending order(s) for $${parsedAmount} in the last ${MATCH_WINDOW_HOURS}h, but none for phone ...${target}`,
+    };
+  }
 
   const uploadingAgent = await queryOne<{ device_id: string | null }>(`SELECT device_id FROM agents WHERE id=$1`, [uploadingAgentId]);
   const uploadingDeviceId = uploadingAgent?.device_id ?? null;
 
+  const skipped: string[] = [];
   for (const candidate of phoneMatches) {
-    if (!candidate.payment_method_id) return candidate; // legacy company, no specific number to verify against
+    if (!candidate.payment_method_id) return { order: candidate, reason: null }; // legacy company, no specific number to verify against
     const method = await queryOne<{ device_id: string | null; sim_slot: number | null }>(
       `SELECT device_id, sim_slot FROM company_payment_methods WHERE id=$1`,
       [candidate.payment_method_id]
     );
-    if (!method?.device_id || method.device_id !== uploadingDeviceId) continue;
+    if (!method?.device_id) {
+      skipped.push(`order ${candidate.id}: its payment method has no device assigned yet`);
+      continue;
+    }
+    if (method.device_id !== uploadingDeviceId) {
+      skipped.push(`order ${candidate.id}: expects device ${method.device_id}, this SMS arrived on device ${uploadingDeviceId ?? "(agent has no device_id set)"}`);
+      continue;
+    }
     // A payment device commonly has two SIMs, each its own payment number
     // (EVC Plus vs eDahab) — when the method specifies which slot, the
     // upload must have resolved the SAME slot to count as verified; a
     // method with no slot configured (single-SIM payment device, or not
     // narrowed down yet) only needs the device to match, same as before
     // slot-level tracking existed.
-    if (method.sim_slot != null && method.sim_slot !== uploadingSimSlot) continue;
-    return candidate;
+    if (method.sim_slot != null && method.sim_slot !== uploadingSimSlot) {
+      skipped.push(`order ${candidate.id}: expects SIM slot ${method.sim_slot}, this SMS arrived on slot ${uploadingSimSlot ?? "(unresolved)"}`);
+      continue;
+    }
+    return { order: candidate, reason: null };
   }
-  return null; // every amount+phone match was on the wrong (or unassigned) device/SIM — stays pending, never falsely completed
+  // Every amount+phone match was on the wrong (or unassigned) device/SIM —
+  // stays pending, never falsely completed.
+  return { order: null, reason: `Matched by amount+phone but rejected by device/SIM verification — ${skipped.join("; ")}` };
 }
 
 async function requiresManualApprovalFor(orderId: string): Promise<boolean> {
@@ -244,7 +284,7 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
     if (existingByRef) return respondAlreadyProcessed(res, existingByRef, transactionRef, effectiveReceivedAt, parsedPhone, parsedAmount);
   }
 
-  const match = await findMatchingOrder(parsedAmount, parsedPhone, req.auth!.sub, simSlot);
+  const { order: match, reason: matchFailureReason } = await findMatchingOrder(parsedAmount, parsedPhone, req.auth!.sub, simSlot);
   const id = randomUUID();
   // Resolved once in JS (rather than left to SQL's now()) so the dedup
   // lookup below, if the insert conflicts, checks the exact same instant
@@ -252,9 +292,9 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
   // different truncated minute than the row that actually won.
   try {
     await query(
-      `INSERT INTO sms_logs (id, agent_id, sender, body, parsed_provider, parsed_amount, parsed_phone, matched_order_id, received_at, transaction_ref, sim_slot)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-      [id, req.auth!.sub, sender, body, parsedProvider ?? null, parsedAmount ?? null, parsedPhone ?? null, match?.id ?? null, effectiveReceivedAt, transactionRef ?? null, simSlot ?? null]
+      `INSERT INTO sms_logs (id, agent_id, sender, body, parsed_provider, parsed_amount, parsed_phone, matched_order_id, received_at, transaction_ref, sim_slot, match_failure_reason)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+      [id, req.auth!.sub, sender, body, parsedProvider ?? null, parsedAmount ?? null, parsedPhone ?? null, match?.id ?? null, effectiveReceivedAt, transactionRef ?? null, simSlot ?? null, match ? null : matchFailureReason]
     );
   } catch (err: any) {
     if (err?.code !== "23505") throw err;
@@ -358,6 +398,113 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
   broadcast({ type: "sms_log.created", smsLogId: id, orderId: match?.id ?? null });
   sendJson(res, 201, { id, matchedOrderId: match?.id ?? null, requiresManualApproval, duplicate: false, status: "new" });
 });
+
+type OrphanedSmsRow = {
+  id: string;
+  agent_id: string;
+  parsed_amount: number | null;
+  parsed_phone: string | null;
+  sim_slot: number | null;
+  transaction_ref: string | null;
+  received_at: string;
+};
+
+/**
+ * findMatchingOrder only ever runs once, at upload time — if the matching
+ * order simply doesn't exist yet (the SMS beat the order-creation call, or
+ * arrived before a Super Admin finished assigning a payment method's
+ * device/SIM slot), that SMS was permanently orphaned: matched_order_id is
+ * written once at INSERT and never revisited by anything else in this
+ * codebase. This re-attempts findMatchingOrder for every still-unmatched
+ * SMS in the match window, and — on a fresh match — runs the exact same
+ * link -> activity-log -> verify -> generate-USSD chain the live upload
+ * path runs inline, so a delayed match still ends up fully processed
+ * automatically (the existing self-heal-candidates poll then dials it,
+ * same as any other in_progress+ussd_generated order).
+ *
+ * Best-effort per-row: one bad row's exception is logged and skipped
+ * rather than aborting the whole sweep (mirrors selfHealStuckOrders'
+ * try/catch convention in ussd.routes.ts).
+ */
+export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; stillUnmatched: number }> {
+  const orphans = await query<OrphanedSmsRow>(
+    `SELECT id, agent_id, parsed_amount, parsed_phone, sim_slot, transaction_ref, received_at FROM sms_logs
+     WHERE matched_order_id IS NULL AND received_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
+     ORDER BY received_at ASC`
+  );
+  let relinked = 0;
+  for (const sms of orphans) {
+    try {
+      const { order: match, reason } = await findMatchingOrder(sms.parsed_amount ?? undefined, sms.parsed_phone ?? undefined, sms.agent_id, sms.sim_slot);
+      if (!match) {
+        await query(`UPDATE sms_logs SET match_failure_reason=$1 WHERE id=$2`, [reason, sms.id]);
+        continue;
+      }
+      // Atomically claim this row — a concurrent live upload or another
+      // sweep pass may have linked it (or a different SMS to this same
+      // order) in the meantime; only proceed if we're the one that wins.
+      const claimed = await query<{ id: string }>(
+        `UPDATE sms_logs SET matched_order_id=$1, match_failure_reason=NULL WHERE id=$2 AND matched_order_id IS NULL RETURNING id`,
+        [match.id, sms.id]
+      );
+      if (claimed.length === 0) continue;
+
+      const requiresManualApproval = await requiresManualApprovalFor(match.id);
+      if (await hasActivePaymentTransaction(match.id)) {
+        // The order this SMS now matches was fulfilled by a different
+        // payment between its original upload and this sweep pass —
+        // record it as a blocked duplicate, same as the live path does.
+        await markPaymentTransactionDuplicateForSms(sms.id, match.id);
+        await logPaymentActivity({
+          action: "duplicate_delivery_prevented",
+          smsLogId: sms.id,
+          order: match,
+          transactionRef: sms.transaction_ref,
+          paymentTimestamp: sms.received_at,
+          status: "duplicate_blocked",
+          requiresManualApproval,
+        });
+        broadcast({ type: "sms_log.created", smsLogId: sms.id, orderId: match.id });
+        continue;
+      }
+
+      await linkPaymentTransactionToOrder(sms.id, match.id);
+      await logPaymentActivity({
+        action: "payment_verified",
+        smsLogId: sms.id,
+        order: match,
+        transactionRef: sms.transaction_ref,
+        paymentTimestamp: sms.received_at,
+        status: "verified",
+        requiresManualApproval,
+      });
+      if (!requiresManualApproval) {
+        const orderRow = await queryOne<any>(`SELECT * FROM orders WHERE id=$1`, [match.id]);
+        if (orderRow) await verifyOrderAndGenerateUssd(orderRow, sms.agent_id);
+      }
+      broadcast({ type: "sms_log.created", smsLogId: sms.id, orderId: match.id });
+      relinked++;
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`resweepUnmatchedSmsLogs failed for sms_log ${sms.id}:`, (err as Error).message);
+    }
+  }
+  return { relinked, stillUnmatched: orphans.length - relinked };
+}
+
+// Every 30s — frequent enough that a delayed match (the order simply
+// hadn't been created yet when the SMS first arrived, or a Super Admin
+// just fixed a payment method's device/SIM assignment) resolves within
+// seconds, without needing a bespoke "please retry this one" trigger from
+// every place that could unblock it. Bounded to MATCH_WINDOW_HOURS worth
+// of rows and best-effort (never throws), so this can't grow unbounded or
+// take the process down.
+setInterval(() => {
+  resweepUnmatchedSmsLogs().catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error("resweepUnmatchedSmsLogs sweep failed:", (err as Error).message);
+  });
+}, 30_000);
 
 /** Shared tail for both the proactive check and the unique-index backstop:
  * records this specific attempt as its own 'duplicate_blocked' ledger row

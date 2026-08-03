@@ -106,6 +106,43 @@ export async function markPaymentFinal(orderId: string, status: "completed" | "f
   }
 }
 
+/** Retroactively points an existing SMS's ledger row at the order a delayed
+ * re-match (resweepUnmatchedSmsLogs, smsLogs.routes.ts) just found for it —
+ * createPaymentTransaction already ran with order_id=null at upload time
+ * (a payment_transactions row always gets created, matched or not), so this
+ * is an UPDATE, not an INSERT. Guarded to only ever touch that specific
+ * still-'pending', still-unlinked row — never a row that has since
+ * progressed (a live agent call reaching it first always wins). */
+export async function linkPaymentTransactionToOrder(smsLogId: string, orderId: string): Promise<string | null> {
+  const rows = await query<{ id: string }>(
+    `UPDATE payment_transactions SET order_id=$1, updated_at=now()
+     WHERE sms_log_id=$2 AND order_id IS NULL AND status='pending'
+     RETURNING id`,
+    [orderId, smsLogId]
+  );
+  if (rows.length === 0) return null;
+  broadcast({ type: "payment_transaction.updated", paymentTransactionId: rows[0].id, orderId });
+  return rows[0].id;
+}
+
+/** Same idea as linkPaymentTransactionToOrder, but the retroactive match
+ * landed on an order that already has an active transaction from a
+ * different SMS (a real race: the order got fulfilled by a different
+ * payment between this SMS's original upload and this resweep pass) — mark
+ * this row duplicate_blocked instead of pending, exactly like the live
+ * upload path's own duplicate handling. */
+export async function markPaymentTransactionDuplicateForSms(smsLogId: string, orderId: string): Promise<string | null> {
+  const rows = await query<{ id: string }>(
+    `UPDATE payment_transactions SET order_id=$1, status='duplicate_blocked', updated_at=now()
+     WHERE sms_log_id=$2 AND order_id IS NULL AND status='pending'
+     RETURNING id`,
+    [orderId, smsLogId]
+  );
+  if (rows.length === 0) return null;
+  broadcast({ type: "payment_transaction.updated", paymentTransactionId: rows[0].id, orderId });
+  return rows[0].id;
+}
+
 /** True if this order already has a payment_transactions row that reached a
  * terminal, successful state — used as an extra guard right before a dial
  * attempt starts, on top of the order's own status check, so "is another
