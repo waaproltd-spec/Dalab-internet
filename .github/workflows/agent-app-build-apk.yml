@@ -2,9 +2,11 @@ name: Build Agent App APK
 
 # Runs on every push to main that touches this module, and can also be
 # triggered manually from the Actions tab. Uses GitHub's own Gradle setup
-# action rather than this project's gradlew, and always builds a debug APK;
-# also builds a signed release APK when the AGENT_KEYSTORE_BASE64 secret is
-# configured (see agent-app/README.md for how to generate/set it).
+# action rather than this project's gradlew, and builds both a debug APK
+# and a signed release APK. Release signing uses the AGENT_KEYSTORE_BASE64
+# secret when configured (see agent-app/README.md), otherwise Gradle falls
+# back to the committed agent-app/app/release.keystore — either way
+# `assembleRelease` always produces a signed, installable APK.
 on:
   push:
     branches: [main]
@@ -58,7 +60,6 @@ jobs:
           echo "path=$RUNNER_TEMP/agent-release.jks" >> "$GITHUB_OUTPUT"
 
       - name: Build release APK
-        if: ${{ steps.keystore.outputs.path != '' }}
         env:
           AGENT_KEYSTORE_PATH: ${{ steps.keystore.outputs.path }}
           AGENT_KEYSTORE_PASSWORD: ${{ secrets.AGENT_KEYSTORE_PASSWORD }}
@@ -67,7 +68,6 @@ jobs:
         run: gradle assembleRelease --no-daemon
 
       - name: Upload release APK
-        if: ${{ steps.keystore.outputs.path != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: dalab-agent-release-apk

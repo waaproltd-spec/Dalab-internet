@@ -26,9 +26,17 @@ android {
     }
 
     signingConfigs {
-        // Populated from env vars in CI (see .github/workflows/build-apk.yml);
-        // release signing is skipped locally if these aren't set, which just
-        // falls back to an unsigned release build.
+        // A real secret keystore (AGENT_KEYSTORE_* env vars, see
+        // agent-app-build-apk.yml) is used when configured; until then this
+        // config was empty, so `assembleRelease` silently produced an
+        // *unsigned* APK. Android's installer refuses to install an
+        // unsigned APK on any device — that's exactly the "won't install on
+        // other phones" report. Falling back to a committed, persistent
+        // release keystore instead means `assembleRelease` always produces
+        // a signed, installable APK. This app is only ever sideloaded onto
+        // agent phones directly (never published to the Play Store), so
+        // keeping the signing key in the repo is an acceptable tradeoff —
+        // the same one already made for the debug keystore just below.
         create("release") {
             val storeFilePath = System.getenv("AGENT_KEYSTORE_PATH")
             if (!storeFilePath.isNullOrBlank()) {
@@ -36,6 +44,11 @@ android {
                 storePassword = System.getenv("AGENT_KEYSTORE_PASSWORD")
                 keyAlias = System.getenv("AGENT_KEY_ALIAS")
                 keyPassword = System.getenv("AGENT_KEY_PASSWORD")
+            } else {
+                storeFile = file("release.keystore")
+                storePassword = "dalabagent123"
+                keyAlias = "dalabagent"
+                keyPassword = "dalabagent123"
             }
         }
         // Without this, AGP falls back to auto-generating ~/.android/debug.keystore
@@ -58,9 +71,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            if (!System.getenv("AGENT_KEYSTORE_PATH").isNullOrBlank()) {
-                signingConfig = signingConfigs.getByName("release")
-            }
+            signingConfig = signingConfigs.getByName("release")
         }
         debug {
             signingConfig = signingConfigs.getByName("debug")
