@@ -383,6 +383,27 @@ ussdRouter.get("/admin/agent-devices", requireStaff(), async (_req, res) => {
   sendJson(res, 200, withSims);
 });
 
+// agent_diagnostics_log is otherwise write-only (POST .../heartbeat inserts
+// into it, nothing ever reads it back) -- this is what actually makes a
+// device's failure history diagnosable server-side, grouped by the same
+// category tags the Agent App's heartbeat retry loop now records
+// (heartbeat_failed_dns/tls/timeout/connection/http_*/unknown), not just a
+// raw success/failure count with no explanation.
+ussdRouter.get("/admin/agent-devices/:id/diagnostics", requireStaff(), async (req, res) => {
+  const summary = await query(
+    `SELECT tag, COUNT(*) AS count FROM agent_diagnostics_log
+     WHERE device_id=$1 AND occurred_at > now() - interval '7 days'
+     GROUP BY tag ORDER BY COUNT(*) DESC`,
+    [req.params.id]
+  );
+  const recent = await query(
+    `SELECT tag, message, is_error, occurred_at FROM agent_diagnostics_log
+     WHERE device_id=$1 ORDER BY occurred_at DESC LIMIT 50`,
+    [req.params.id]
+  );
+  sendJson(res, 200, { summary, recent });
+});
+
 ussdRouter.post("/admin/agent-devices", requirePermission("devices.manage"), async (req, res) => {
   const { name, description } = req.body;
   if (!name) return sendJson(res, 400, { error: "name is required" });

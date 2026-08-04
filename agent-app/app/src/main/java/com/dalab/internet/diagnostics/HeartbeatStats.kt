@@ -17,6 +17,10 @@ object HeartbeatStats {
     private const val KEY_LAST_SUCCESS_AT = "last_success_at"
     private const val KEY_LAST_FAILURE_AT = "last_failure_at"
     private const val KEY_LAST_ERROR = "last_error"
+    // Open-ended prefix rather than a fixed set of keys - HeartbeatFailureClassifier
+    // can emit categories like "http_404"/"http_500" for distinct status codes,
+    // and SharedPreferences has no trouble holding however many of these show up.
+    private const val KEY_CATEGORY_COUNT_PREFIX = "failure_count_"
 
     private lateinit var prefs: SharedPreferences
 
@@ -35,10 +39,16 @@ object HeartbeatStats {
             .apply()
     }
 
+    // Total failureCount() stays the source of truth for the Reliability
+    // Dashboard's existing "Failed" line - the per-category counter is
+    // purely additive detail, so a failure is never lost from the total
+    // even for a category this app version doesn't otherwise recognize.
     @Synchronized
-    fun recordFailure(error: String?) {
+    fun recordFailure(category: String, error: String?) {
+        val categoryKey = KEY_CATEGORY_COUNT_PREFIX + category
         prefs.edit()
             .putInt(KEY_FAILURE_COUNT, failureCount() + 1)
+            .putInt(categoryKey, prefs.getInt(categoryKey, 0) + 1)
             .putLong(KEY_LAST_FAILURE_AT, System.currentTimeMillis())
             .putString(KEY_LAST_ERROR, error?.take(500))
             .apply()
@@ -49,4 +59,12 @@ object HeartbeatStats {
     fun lastSuccessAt(): Long? = prefs.getLong(KEY_LAST_SUCCESS_AT, -1).takeIf { it >= 0 }
     fun lastFailureAt(): Long? = prefs.getLong(KEY_LAST_FAILURE_AT, -1).takeIf { it >= 0 }
     fun lastError(): String? = prefs.getString(KEY_LAST_ERROR, null)
+
+    fun failureCountsByCategory(): Map<String, Int> =
+        prefs.all
+            .filterKeys { it.startsWith(KEY_CATEGORY_COUNT_PREFIX) }
+            .mapNotNull { (key, value) ->
+                (value as? Int)?.let { key.removePrefix(KEY_CATEGORY_COUNT_PREFIX) to it }
+            }
+            .toMap()
 }

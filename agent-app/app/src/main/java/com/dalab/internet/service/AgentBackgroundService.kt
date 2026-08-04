@@ -26,6 +26,7 @@ import com.dalab.internet.diagnostics.HeartbeatStats
 import com.dalab.internet.network.AgentEventBus
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.DiagnosticsEntryDto
+import com.dalab.internet.network.HeartbeatFailure
 import com.dalab.internet.network.HeartbeatFailureClassifier
 import com.dalab.internet.network.HeartbeatRequest
 import com.dalab.internet.network.RealtimeClient
@@ -281,7 +282,7 @@ class AgentBackgroundService : Service() {
      * independent triggers/loops and are unaffected by heartbeat health.
      */
     private suspend fun sendHeartbeatWithRetry(deviceId: String, pendingDiagnostics: List<DiagnosticsLog.Entry>) {
-        var lastReason = "Not attempted"
+        var lastFailure = HeartbeatFailure("unknown", "Not attempted")
         for (attempt in 1..HEARTBEAT_MAX_ATTEMPTS) {
             try {
                 RetryClassifier.requireSuccessful(ApiClient.service.sendHeartbeat(deviceId, buildHeartbeat(pendingDiagnostics)))
@@ -291,10 +292,14 @@ class AgentBackgroundService : Service() {
                 }
                 return
             } catch (e: Exception) {
-                lastReason = HeartbeatFailureClassifier.classify(e)
+                lastFailure = HeartbeatFailureClassifier.classify(e)
+                // Tagged by category (not a generic "heartbeat_loop" label) so
+                // these entries - once uploaded via recentDiagnostics - are
+                // groupable server-side too, and so a per-category breakdown
+                // survives even past DiagnosticsLog's own 200-entry cap.
                 DiagnosticsLog.record(
-                    "heartbeat_loop",
-                    "Heartbeat attempt $attempt/$HEARTBEAT_MAX_ATTEMPTS failed: $lastReason",
+                    "heartbeat_failed_${lastFailure.category}",
+                    "Heartbeat attempt $attempt/$HEARTBEAT_MAX_ATTEMPTS failed: ${lastFailure.message}",
                 )
                 if (attempt < HEARTBEAT_MAX_ATTEMPTS) delay(HEARTBEAT_RETRY_BASE_DELAY_MS * (1L shl (attempt - 1)))
             }
@@ -302,7 +307,7 @@ class AgentBackgroundService : Service() {
         // Best-effort — the next regular tick tries again automatically (this
         // loop never stops on failure); a dropped heartbeat just shows as a
         // stale "last seen" on the dashboard in the meantime.
-        HeartbeatStats.recordFailure(lastReason)
+        HeartbeatStats.recordFailure(lastFailure.category, lastFailure.message)
     }
 
     // Runs on its own timer rather than piggybacking on the heartbeat tick
