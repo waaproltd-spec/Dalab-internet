@@ -87,6 +87,35 @@ data class Transaction(
     val completedAt: String,
 )
 
+/** GET /agent/wallet-balances — one row per SIM slot (1 and 2) on this
+ * agent's own device, regardless of whether a real balance has been
+ * recorded yet (providerName/phoneNumber/balance are null/0 until the
+ * first real payment SMS or a manual override sets them). */
+data class WalletBalanceEntry(
+    val simSlot: Int,
+    val companyId: String? = null,
+    val providerName: String? = null,
+    val colorHex: String? = null,
+    val phoneNumber: String? = null,
+    val balance: Double = 0.0,
+    val lowBalanceThreshold: Double = 5.0,
+    val balanceUpdatedAt: String? = null,
+)
+
+/** GET /agent/payment-transactions — every payment_transactions row this
+ * agent's own SMS uploads produced, matched or not, dialed or not. */
+data class AgentPaymentTransaction(
+    val id: String,
+    val orderId: String? = null,
+    val customerPhone: String? = null,
+    val amount: Double? = null,
+    // "pending" | "processing" | "completed" | "failed" | "duplicate_blocked"
+    val status: String,
+    val createdAt: String,
+    val smsSender: String? = null,
+    val providerName: String? = null,
+)
+
 data class AgentProfile(
     val id: String,
     val name: String,

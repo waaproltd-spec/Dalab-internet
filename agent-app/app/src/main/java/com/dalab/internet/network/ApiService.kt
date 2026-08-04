@@ -10,6 +10,8 @@ import com.dalab.internet.data.PackageItem
 import com.dalab.internet.data.SmsLogEntry
 import com.dalab.internet.data.Transaction
 import com.dalab.internet.data.AgentNotification
+import com.dalab.internet.data.AgentPaymentTransaction
+import com.dalab.internet.data.WalletBalanceEntry
 import com.dalab.internet.ussd.SimRoutingEntry
 import retrofit2.Response
 import retrofit2.http.*
@@ -110,6 +112,14 @@ interface ApiService {
 
     @GET("agent/transactions")
     suspend fun getTransactions(@Query("range") range: String? = null): Response<List<Transaction>>
+
+    // ---------------- Wallet Balances dashboard ----------------
+
+    @GET("agent/wallet-balances")
+    suspend fun getWalletBalances(): Response<List<WalletBalanceEntry>>
+
+    @GET("agent/payment-transactions")
+    suspend fun getAgentPaymentTransactions(@Query("limit") limit: Int? = null): Response<List<AgentPaymentTransaction>>
 
     @POST("agent/sms-logs")
     suspend fun uploadSmsLog(@Body body: SmsLogEntry): Response<SmsLogUploadResponse>

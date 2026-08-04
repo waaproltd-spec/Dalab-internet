@@ -636,6 +636,34 @@ smsLogsRouter.get("/admin/payment-transactions", requireStaff(), async (req, res
   sendJson(res, 200, await query(sql, args));
 });
 
+// Agent App's own "Latest Transactions" dashboard — every payment_transactions
+// row this agent's own SMS uploads produced (matched or not, dialed or not),
+// newest first. Scoped by sms_logs.agent_id rather than
+// payment_transactions.agent_device_id: the latter is only set once a dial
+// attempt actually starts (markPaymentProcessing), so a still-'pending' row
+// — an SMS that arrived but hasn't been dialed/matched yet — would otherwise
+// be invisible here even though it's exactly the kind of row this dashboard
+// exists to surface. sms_logs.agent_id is set once, at upload time, and never
+// changes, so it's a stable "this came from my phone" identity throughout
+// the whole pending -> processing -> completed/failed/duplicate_blocked
+// lifecycle.
+smsLogsRouter.get("/agent/payment-transactions", requireAuth("agent"), async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 100, 500);
+  const rows = await query(
+    `SELECT pt.id, pt.order_id, pt.customer_phone, pt.amount, pt.status, pt.created_at,
+            sl.sender AS sms_sender, c.name AS provider_name
+     FROM payment_transactions pt
+     JOIN sms_logs sl ON sl.id = pt.sms_log_id
+     LEFT JOIN orders o ON o.id = pt.order_id
+     LEFT JOIN companies c ON c.id = o.company_id
+     WHERE sl.agent_id = $1
+     ORDER BY pt.created_at DESC
+     LIMIT $2`,
+    [req.auth!.sub, limit]
+  );
+  sendJson(res, 200, rows);
+});
+
 // "Stuck" is precise, not a guess: payment_transactions.status only ever
 // leaves 'pending' when a dial attempt is actually logged (markPaymentProcessing,
 // called from POST /agent/orders/:id/dial-attempts). So a transaction still
