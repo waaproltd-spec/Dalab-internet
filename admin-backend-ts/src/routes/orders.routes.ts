@@ -141,11 +141,38 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
       // company+package+amount (e.g. re-visiting Checkout without paying) —
       // reuse it instead of creating a duplicate sibling order that a future
       // payment could otherwise leave stranded.
+      //
+      // BUT this request's own sender/receiver phone and payment method are
+      // what the customer just typed/picked on THIS visit — possibly a
+      // correction of a typo from the earlier attempt that created the row
+      // being reused. Silently returning the old row unchanged (as this used
+      // to do) meant payment/SMS matching kept comparing against a stale
+      // phone number the customer had already corrected, with no way to fix
+      // it short of contacting an admin. Stamp this visit's values onto the
+      // reused row before returning it, so the row that gets reused always
+      // reflects what the customer most recently entered — the same values
+      // that would have been written had the INSERT above not conflicted.
       const existing = await queryOne<{ id: string }>(
         `SELECT id FROM orders WHERE customer_id=$1 AND company_id=$2 AND package_id=$3 AND amount=$4 AND status='pending'`,
         [req.auth!.sub, companyId, packageId, finalAmount]
       );
-      if (existing) return sendJson(res, 200, maskOrder(await loadOrder(existing.id)));
+      if (existing) {
+        await query(
+          `UPDATE orders SET sender_phone=$1, receiver_phone=$2, payment_method=$3, payment_method_id=$4,
+             payment_number_used=$5, payment_ussd_template_used=$6, updated_at=now()
+           WHERE id=$7 AND status='pending'`,
+          [
+            senderPhone || customer?.phone || null,
+            receiverPhone || customer?.phone || null,
+            selectedMethod?.label || paymentMethod || company.gateway || null,
+            selectedMethod?.id ?? null,
+            selectedMethod?.payment_number || company.payment_number || null,
+            selectedMethod?.ussd_template || company.payment_ussd_template || null,
+            existing.id,
+          ]
+        );
+        return sendJson(res, 200, maskOrder(await loadOrder(existing.id)));
+      }
     }
     throw err;
   }
@@ -242,11 +269,36 @@ ordersRouter.post("/guest/orders", rateLimit("guest-order-create", 20, 15 * 60 *
       return sendJson(res, 200, maskOrder(await loadOrder(existing!.id)));
     }
     if (err?.constraint === "idx_orders_pending_content_dedup") {
+      // Same bug/fix as the authenticated /orders route above: this reused
+      // row must reflect the sender/receiver phone (and payment method) the
+      // customer entered on THIS visit, not whatever was typed the first
+      // time this exact company+package+amount was ordered — otherwise a
+      // customer who typos "Mobile Number Sent From" once, then buys the
+      // same package again with the correct number, silently keeps getting
+      // matched against the wrong, uncorrectable phone number forever. This
+      // is the Customer App's actual order-creation endpoint (see
+      // dalab_api.dart), so this is the fix that matters in practice.
       const existing = await queryOne<{ id: string }>(
         `SELECT id FROM orders WHERE customer_id=$1 AND company_id=$2 AND package_id=$3 AND amount=$4 AND status='pending'`,
         [customer!.id, companyId, packageId, pkg.price]
       );
-      if (existing) return sendJson(res, 200, maskOrder(await loadOrder(existing.id)));
+      if (existing) {
+        await query(
+          `UPDATE orders SET sender_phone=$1, receiver_phone=$2, payment_method=$3, payment_method_id=$4,
+             payment_number_used=$5, payment_ussd_template_used=$6, updated_at=now()
+           WHERE id=$7 AND status='pending'`,
+          [
+            senderPhone || phone,
+            receiverPhone || phone,
+            selectedMethod?.label || paymentMethod || company.gateway || null,
+            selectedMethod?.id ?? null,
+            selectedMethod?.payment_number || company.payment_number || null,
+            selectedMethod?.ussd_template || company.payment_ussd_template || null,
+            existing.id,
+          ]
+        );
+        return sendJson(res, 200, maskOrder(await loadOrder(existing.id)));
+      }
     }
     throw err;
   }
