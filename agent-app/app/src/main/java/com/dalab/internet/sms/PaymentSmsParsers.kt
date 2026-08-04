@@ -7,10 +7,18 @@ import com.dalab.internet.data.SmsLogEntry
  * provider's exact SMS format is confirmed with a real sample, and register
  * it in [PaymentSmsParsers.ALL] — nothing else needs to change.
  *
- * Amtel deliberately has no parser here: Amtel doesn't send payment
- * confirmation SMS at all (it's used for data transfer/service delivery
- * only), so there's nothing to parse — Amtel orders are verified through
- * the data-delivery/service API flow instead of SMS matching.
+ * Amtel has no parser here YET. The original assumption (Amtel doesn't send
+ * payment confirmation SMS — data transfer/service delivery only, verified
+ * through a separate "data-delivery/service API flow") was never actually
+ * implemented anywhere in this codebase, and Amtel now has a live
+ * "Evc plus"-labeled company_payment_methods entry that dials a USSD payment
+ * code exactly like Hormuud/Somnet/Somtel — meaning real Amtel payments have
+ * no automatic verification path at all right now and get stuck 'pending'
+ * forever. SmsReceiver.kt's unrecognized-payment-SMS branch uploads any
+ * Amtel-looking SMS unparsed (see PAYMENT_LOOKING_KEYWORDS) so it's at least
+ * visible in the backend's SMS Logs instead of silently vanishing; once a
+ * real Amtel confirmation SMS sample is captured there, add a parser here
+ * the same way HormuudEvcPlusParser etc. were added.
  */
 interface PaymentSmsParser {
     val senders: List<String>

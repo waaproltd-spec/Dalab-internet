@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.provider.Telephony
 import android.telephony.SubscriptionManager
 import androidx.core.content.ContextCompat
+import com.dalab.internet.data.SmsLogEntry
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.queue.PendingActionQueue
 import kotlinx.coroutines.CoroutineScope
@@ -84,13 +85,42 @@ class SmsReceiver : BroadcastReceiver() {
             // like a payment confirmation (mentions money/a provider keyword)
             // yet matched no parser is exactly the failure mode "some payment
             // SMS aren't picked up" describes — e.g. a provider slightly
-            // changed their message wording. Previously this was
-            // indistinguishable from "no SMS arrived at all".
+            // changed their message wording, or (Amtel) a provider with no
+            // parser registered at all (see PaymentSmsParsers.kt). Previously
+            // this was only written to the LOCAL Diagnostics log and then
+            // dropped — invisible to the backend/admin dashboard, so a real
+            // customer payment in an unrecognized format vanished with no
+            // audit trail anywhere a Super Admin could see it, and the order
+            // it belonged to was left stuck 'pending' forever with nothing to
+            // explain why. Uploading it unparsed (amount/phone left null,
+            // same as any other unmatched SMS) puts the raw sender/body in
+            // the backend's SMS Logs instead, where match_failure_reason
+            // already explains it as unmatched — giving staff a real captured
+            // sample to write a correct parser from, instead of guessing.
             if (looksLikePaymentSms(body)) {
                 DiagnosticsLog.record(
                     "sms_receiver_unrecognized",
-                    "Payment-looking SMS from '$sender' matched no parser: ${body.take(160)}",
+                    "Payment-looking SMS from '$sender' matched no parser — uploading unparsed for visibility: ${body.take(160)}",
                 )
+                val simSlot = resolveSimSlot(context, intent)
+                val unparsedEntry = SmsLogEntry(sender = sender, body = body, receivedAt = receivedAt, simSlot = simSlot)
+                val pendingResult = goAsync()
+                val appContext = context.applicationContext
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        if (SmsUploadFlow.uploadAndProcess(appContext, unparsedEntry) is UploadOutcome.RetryableUpload) {
+                            PendingActionQueue.enqueue(
+                                id = UUID.randomUUID().toString(),
+                                type = PendingActionQueue.Type.SMS_UPLOAD,
+                                payload = SmsUploadAction(unparsedEntry),
+                            )
+                        }
+                    } catch (e: Exception) {
+                        DiagnosticsLog.record("sms_receiver_process", "Failed uploading unparsed payment SMS: ${e.stackTraceToString().take(2000)}")
+                    } finally {
+                        pendingResult.finish()
+                    }
+                }
             }
             return
         }
@@ -190,7 +220,7 @@ private fun resolveSimSlot(context: Context, intent: Intent): Int? {
  * through this receiver. */
 private val PAYMENT_LOOKING_KEYWORDS = listOf(
     "heshay", "ka heshay", "dollar", "aqanoosiga", "edahab", "e-dahab",
-    "evcplus", "evc plus", "somnet", "haraagagu", "haraagaaga",
+    "evcplus", "evc plus", "somnet", "haraagagu", "haraagaaga", "amtel",
 )
 
 private fun looksLikePaymentSms(body: String): Boolean {
