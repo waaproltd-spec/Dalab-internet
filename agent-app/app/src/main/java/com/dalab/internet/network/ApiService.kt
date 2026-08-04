@@ -52,7 +52,12 @@ data class VoucherConfirmationRequest(val receiverPhone: String, val amount: Dou
 data class VoucherConfirmationResponse(val matched: Boolean, val orderId: String? = null, val alreadyCompleted: Boolean = false)
 data class DialAttemptStartRequest(val simSlot: Int?, val ussdString: String, val attemptNumber: Int)
 data class DialAttemptStartResponse(val id: String)
-data class DialAttemptResultRequest(val status: String, val responseMessage: String?)
+// isFinalAttempt: true when this is the last outcome this order will get
+// (success, a non-retryable failure, or the last of maxAttempts retries) —
+// the backend only marks the order 'failed' when this is true, so a
+// mid-retry attempt reported as failed/ambiguous doesn't show the customer
+// "Failed" moments before a later retry might still succeed.
+data class DialAttemptResultRequest(val status: String, val responseMessage: String?, val isFinalAttempt: Boolean = true)
 data class DialAttemptResultResponse(val id: String, val status: String)
 data class CreateCustomerRequest(val phone: String, val name: String? = null)
 data class CreateSaleRequest(

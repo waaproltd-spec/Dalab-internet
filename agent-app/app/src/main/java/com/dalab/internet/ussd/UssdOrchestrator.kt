@@ -28,6 +28,12 @@ data class DialAttemptAuditAction(
     val attemptNumber: Int,
     val status: String,
     val responseMessage: String?,
+    // Whether this is the last attempt this order will get (success, a
+    // non-retryable outcome, or the final of maxAttempts retries) — see
+    // dialWithRetry. The backend only marks the order 'failed' when this is
+    // true, so a first-attempt failure that's about to be retried doesn't
+    // show the customer "Failed" moments before a retry might succeed.
+    val isFinalAttempt: Boolean = true,
 )
 
 /**
@@ -197,15 +203,20 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
                     }
                 }
             }
-            reportDialResult(orderId, simSlot, ussdString, attempt, attemptId, lastResult)
+            // Whether THIS attempt is the last one the order will ever get —
+            // a non-retryable outcome (anything but FAILED/TIMEOUT/AMBIGUOUS)
+            // is final on the spot; a retryable one is only final once
+            // maxAttempts is reached. Computed before reporting so the
+            // backend never marks the order 'failed' on attempt 1 of 3 while
+            // a retry is still about to run — see PUT /agent/dial-attempts.
+            val retryable = lastResult.outcome == DialOutcome.FAILED ||
+                lastResult.outcome == DialOutcome.TIMEOUT ||
+                lastResult.outcome == DialOutcome.AMBIGUOUS
+            val isFinalAttempt = !retryable || attempt == maxAttempts
+            reportDialResult(orderId, simSlot, ussdString, attempt, attemptId, lastResult, isFinalAttempt)
 
             if (lastResult.outcome == DialOutcome.SUCCESS) return lastResult
-            // AMBIGUOUS retries the same as FAILED/TIMEOUT — a response that
-            // reads like an error/timeout is worth one more real attempt, in
-            // case the carrier just had a bad response that round; it must
-            // never fall into the "don't retry" branch below and get treated
-            // as a config/permission problem it isn't.
-            if (lastResult.outcome != DialOutcome.FAILED && lastResult.outcome != DialOutcome.TIMEOUT && lastResult.outcome != DialOutcome.AMBIGUOUS) {
+            if (!retryable) {
                 return lastResult // permission/config/no-SIM problems — don't retry blindly
             }
             if (attempt < maxAttempts) {
@@ -243,7 +254,7 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
 
     private suspend fun reportDialResult(
         orderId: String, simSlot: Int, ussdString: String, attemptNumber: Int,
-        attemptId: String?, result: DialResult,
+        attemptId: String?, result: DialResult, isFinalAttempt: Boolean,
     ) {
         // "ambiguous" is reported as its own status, distinct from both
         // "success" and "failed" — the backend only ever completes an order
@@ -258,7 +269,10 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         }
         if (attemptId != null) {
             try {
-                ApiClient.service.reportDialResult(attemptId, DialAttemptResultRequest(status, result.responseMessage))
+                ApiClient.service.reportDialResult(
+                    attemptId,
+                    DialAttemptResultRequest(status, result.responseMessage, isFinalAttempt),
+                )
                 return // both logging calls succeeded online — nothing to queue
             } catch (_: Exception) {
                 // fall through — queue a full start+report replay below
@@ -272,7 +286,7 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         PendingActionQueue.enqueue(
             id = UUID.randomUUID().toString(),
             type = PendingActionQueue.Type.DIAL_ATTEMPT_AUDIT,
-            payload = DialAttemptAuditAction(orderId, simSlot, ussdString, attemptNumber, status, result.responseMessage),
+            payload = DialAttemptAuditAction(orderId, simSlot, ussdString, attemptNumber, status, result.responseMessage, isFinalAttempt),
         )
     }
 
@@ -310,7 +324,10 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
             )
             val attemptId = startResponse.body()?.id ?: error("startDialAttempt returned no id")
             RetryClassifier.requireSuccessful(
-                ApiClient.service.reportDialResult(attemptId, DialAttemptResultRequest(action.status, action.responseMessage))
+                ApiClient.service.reportDialResult(
+                    attemptId,
+                    DialAttemptResultRequest(action.status, action.responseMessage, action.isFinalAttempt),
+                )
             )
         }
     }

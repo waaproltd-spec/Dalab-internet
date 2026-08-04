@@ -582,7 +582,10 @@ ussdRouter.post("/agent/orders/:id/dial-attempts", requireAuth("agent"), async (
 });
 
 ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (req, res) => {
-  const { status, responseMessage } = req.body;
+  const { status, responseMessage, isFinalAttempt } = req.body;
+  // Older Agent App builds never send this field — default true so their
+  // (already-correct-for-them, single-attempt) behavior is unchanged.
+  const finalAttempt = isFinalAttempt !== false;
   // 'ambiguous': the Agent App's Android USSD callback fired (it got SOME
   // response text back from the carrier), but the text itself reads like a
   // failure/error/timeout rather than a genuine top-up confirmation — see
@@ -657,9 +660,19 @@ ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (r
     }
     await markPaymentFinal(attempt.order_id, "completed");
   } else {
-    await query(`UPDATE orders SET status='failed', updated_at=now() WHERE id=$1 AND status != 'completed'`, [attempt.order_id]);
-    // Not necessarily final — UssdOrchestrator may still retry, which calls
-    // markPaymentProcessing again and can still move this to 'completed'.
+    // Only mark the ORDER failed once this is genuinely the last attempt —
+    // UssdOrchestrator reports every attempt as it happens (see
+    // dialWithRetry in the Agent App), including the first of up to 3
+    // retries. Flipping orders.status='failed' on attempt 1 showed the
+    // customer "Failed" while a retry was still about to run seconds later;
+    // now the order stays at its current status (still 'in_progress') until
+    // either a retry succeeds or every attempt is exhausted.
+    if (finalAttempt) {
+      await query(`UPDATE orders SET status='failed', updated_at=now() WHERE id=$1 AND status != 'completed'`, [attempt.order_id]);
+    }
+    // markPaymentFinal itself is not necessarily final — UssdOrchestrator may
+    // still retry, which calls markPaymentProcessing again and can still
+    // move this to 'completed'.
     await markPaymentFinal(attempt.order_id, "failed");
   }
   broadcast({ type: "order.updated", orderId: attempt.order_id });
