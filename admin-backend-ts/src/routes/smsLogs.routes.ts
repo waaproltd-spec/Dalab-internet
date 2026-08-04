@@ -38,17 +38,26 @@ type OrderMatch = {
  *
  * Payment-number verification: when the matched order used one of a
  * company's specific payment methods (payment_method_id set — EVC Plus vs
- * eDahab vs JEEB, each its own telco/SIM), the SMS must have arrived
- * through the exact device (and, if the method specifies one, the exact
- * SIM slot on that device — a single payment phone commonly holds two
- * payment SIMs) a Super Admin assigned to collect for that method
- * (company_payment_methods.device_id/sim_slot) — otherwise it's treated
- * the same as no match at all, and the order simply stays 'pending' rather
+ * eDahab vs JEEB, each its own telco/SIM) and that method already has a
+ * known device/SIM slot (company_payment_methods.device_id/sim_slot), the
+ * SMS must have arrived through that exact device (and, if the method
+ * specifies one, the exact SIM slot on that device — a single payment
+ * phone commonly holds two payment SIMs) — otherwise it's treated the
+ * same as no match at all, and the order simply stays 'pending' rather
  * than being silently completed by a payment that landed on the wrong
- * number. A method with no device assigned yet behaves the same way (never
- * trusted by default). Legacy companies with no per-method payment methods
- * configured (payment_method_id null) keep the original cross-network
- * behavior — there's no specific number to verify against yet.
+ * number.
+ *
+ * A method with no device linked YET is accepted (never rejected for that
+ * reason alone — same trust level as a legacy company below) and the
+ * device/slot this SMS actually arrived on is auto-linked onto that
+ * payment method right here, since a real amount+phone-matched payment
+ * just proved that's where it's collected. There is no admin UI step for
+ * this — every method links itself the moment its first real payment
+ * comes in, and every payment after that is strictly verified against the
+ * link it just learned. Legacy companies with no per-method payment
+ * methods configured (payment_method_id null) keep the original
+ * cross-network behavior — there's no specific number to verify against
+ * yet.
  *
  * Two further safeguards against a real payment being silently absorbed by
  * the WRONG order (same customer, same amount, but a different attempt):
@@ -130,9 +139,27 @@ async function findMatchingOrder(
       `SELECT device_id, sim_slot FROM company_payment_methods WHERE id=$1`,
       [candidate.payment_method_id]
     );
-    if (!method?.device_id) {
-      skipped.push(`order ${candidate.id}: its payment method has no device assigned yet`);
+    if (!method) {
+      skipped.push(`order ${candidate.id}: its payment method record (${candidate.payment_method_id}) no longer exists`);
       continue;
+    }
+    if (!method.device_id) {
+      // Not yet linked to a device — accept (same trust level as the
+      // legacy-company path above) and auto-link this payment method to
+      // the device/slot this SMS just arrived on, since a real
+      // amount+phone-matched payment is concrete proof that's where it's
+      // collected. Every payment after this one is strictly verified
+      // against the link just learned here. If the uploading agent has no
+      // device_id of its own yet, there's nothing to link — still accept
+      // the match rather than strand the order, but leave the method
+      // unlinked for the next SMS to try again.
+      if (uploadingDeviceId) {
+        await query(
+          `UPDATE company_payment_methods SET device_id=$1, sim_slot=COALESCE(sim_slot, $2) WHERE id=$3`,
+          [uploadingDeviceId, uploadingSimSlot ?? null, candidate.payment_method_id]
+        );
+      }
+      return { order: candidate, reason: null };
     }
     if (method.device_id !== uploadingDeviceId) {
       skipped.push(`order ${candidate.id}: expects device ${method.device_id}, this SMS arrived on device ${uploadingDeviceId ?? "(agent has no device_id set)"}`);
@@ -411,11 +438,10 @@ type OrphanedSmsRow = {
 
 /**
  * findMatchingOrder only ever runs once, at upload time — if the matching
- * order simply doesn't exist yet (the SMS beat the order-creation call, or
- * arrived before a Super Admin finished assigning a payment method's
- * device/SIM slot), that SMS was permanently orphaned: matched_order_id is
- * written once at INSERT and never revisited by anything else in this
- * codebase. This re-attempts findMatchingOrder for every still-unmatched
+ * order simply doesn't exist yet (the SMS beat the order-creation call),
+ * that SMS was permanently orphaned: matched_order_id is written once at
+ * INSERT and never revisited by anything else in this codebase. This
+ * re-attempts findMatchingOrder for every still-unmatched
  * SMS in the match window, and — on a fresh match — runs the exact same
  * link -> activity-log -> verify -> generate-USSD chain the live upload
  * path runs inline, so a delayed match still ends up fully processed
