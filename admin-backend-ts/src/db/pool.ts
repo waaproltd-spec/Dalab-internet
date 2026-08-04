@@ -18,6 +18,16 @@ function buildConfig(): PoolConfig {
     connectionString: process.env.DATABASE_URL,
     ssl: process.env.PGSSL === "false" ? false : { rejectUnauthorized: false },
     max: Number(process.env.PG_POOL_MAX ?? 10),
+    // Previously unset, so a query that couldn't get a free connection (pool
+    // contention) or got stuck server-side just hung forever — nothing threw,
+    // nothing rejected, nothing logged, and the customer app's own 45s
+    // client-side timeout was the only thing that ever ended the wait. These
+    // three keep every failure mode bounded well under that 45s so a real,
+    // specific error actually reaches the client and gets logged (see
+    // query()'s catch block below) instead of silently hanging.
+    connectionTimeoutMillis: 10_000, // max wait for a free connection from the pool
+    statement_timeout: 15_000, // Postgres-side per-query cutoff (session SET on connect)
+    query_timeout: 20_000, // client-side belt-and-suspenders
   };
 }
 
@@ -31,8 +41,24 @@ pool.on("error", (err) => {
 });
 
 export async function query<T = any>(text: string, params?: unknown[]): Promise<T[]> {
-  const result = await pool.query(text, params);
-  return result.rows as T[];
+  const startedAt = Date.now();
+  try {
+    const result = await pool.query(text, params);
+    return result.rows as T[];
+  } catch (err) {
+    // The one place every route's DB call passes through — logging here
+    // once covers every route instead of scattering try/catch per handler.
+    // Query text only (truncated), never params, so a phone number/PIN/token
+    // passed as a bound parameter never ends up in a log line.
+    const elapsedMs = Date.now() - startedAt;
+    const message = err instanceof Error ? err.message : String(err);
+    const code = (err as { code?: string })?.code;
+    // eslint-disable-next-line no-console
+    console.error(
+      `Query failed after ${elapsedMs}ms${code ? ` (${code})` : ""}: ${message} -- ${text.slice(0, 120)}`
+    );
+    throw err;
+  }
 }
 
 export async function queryOne<T = any>(text: string, params?: unknown[]): Promise<T | null> {

@@ -3,6 +3,9 @@ declare module "pg" {
     connectionString?: string;
     ssl?: boolean | { rejectUnauthorized: boolean };
     max?: number;
+    connectionTimeoutMillis?: number;
+    statement_timeout?: number;
+    query_timeout?: number;
   }
   export interface QueryResult<T = any> { // eslint-disable-line @typescript-eslint/no-explicit-any
     rows: T[];
