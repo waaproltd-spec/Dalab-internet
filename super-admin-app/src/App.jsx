@@ -8,7 +8,7 @@ import {
   Smartphone, Radio, ChevronDown, ChevronRight, AlertTriangle, RotateCcw, UserCog, Tags,
   WifiOff, BatteryFull, BatteryMedium, BatteryLow, BatteryWarning,
   Image as ImageIcon, Upload, MessageSquare, Database, Activity, History, CreditCard, PlayCircle, Percent,
-  MessageCircle, Lightbulb, Share2, KeyRound
+  MessageCircle, Lightbulb, Share2, KeyRound, ExternalLink
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 
@@ -6469,15 +6469,60 @@ function Reports() {
   );
 }
 
+// `type` drives both client-side validation and the row's "Test" action —
+// phone/whatsapp dial or open wa.me, url opens the link, email opens a
+// mailto:. Order matches how a Super Admin actually thinks about this panel
+// (call/chat channels first, then social profiles, then the rest).
 const SOCIAL_LINK_DEFS = [
-  { key: "whatsapp", label: "WhatsApp Number", valueKey: "social_whatsapp_number", enabledKey: "social_whatsapp_enabled", placeholder: "252610338686" },
-  { key: "phone", label: "Phone Number", valueKey: "social_phone_number", enabledKey: "social_phone_enabled", placeholder: "252610338686" },
-  { key: "facebook", label: "Facebook URL", valueKey: "social_facebook_url", enabledKey: "social_facebook_enabled", placeholder: "https://facebook.com/YourPage" },
-  { key: "instagram", label: "Instagram URL", valueKey: "social_instagram_url", enabledKey: "social_instagram_enabled", placeholder: "https://instagram.com/yourpage" },
-  { key: "tiktok", label: "TikTok URL", valueKey: "social_tiktok_url", enabledKey: "social_tiktok_enabled", placeholder: "https://tiktok.com/@yourpage" },
-  { key: "email", label: "Email Address", valueKey: "social_email", enabledKey: "social_email_enabled", placeholder: "support@waaproltd.com" },
-  { key: "playstore", label: "Play Store URL", valueKey: "social_play_store_url", enabledKey: "social_play_store_enabled", placeholder: "https://play.google.com/store/apps/details?id=..." },
+  { key: "phone", label: "Call Phone Number", valueKey: "social_phone_number", enabledKey: "social_phone_enabled", placeholder: "252610338686", type: "phone", testLabel: "Test Call" },
+  { key: "whatsapp", label: "WhatsApp Number", valueKey: "social_whatsapp_number", enabledKey: "social_whatsapp_enabled", placeholder: "252610338686", type: "whatsapp", testLabel: "Test WhatsApp" },
+  { key: "facebook", label: "Facebook URL", valueKey: "social_facebook_url", enabledKey: "social_facebook_enabled", placeholder: "https://facebook.com/YourPage", type: "url", testLabel: "Open Facebook" },
+  { key: "telegram", label: "Telegram URL", valueKey: "social_telegram_url", enabledKey: "social_telegram_enabled", placeholder: "https://t.me/yourchannel", type: "url", testLabel: "Open Telegram" },
+  { key: "tiktok", label: "TikTok URL", valueKey: "social_tiktok_url", enabledKey: "social_tiktok_enabled", placeholder: "https://tiktok.com/@yourpage", type: "url", testLabel: "Open TikTok" },
+  { key: "instagram", label: "Instagram URL", valueKey: "social_instagram_url", enabledKey: "social_instagram_enabled", placeholder: "https://instagram.com/yourpage", type: "url", testLabel: "Open Instagram" },
+  { key: "website", label: "Website URL", valueKey: "social_website_url", enabledKey: "social_website_enabled", placeholder: "https://yourwebsite.com", type: "url", testLabel: "Open Website" },
+  { key: "playstore", label: "Play Store URL", valueKey: "social_play_store_url", enabledKey: "social_play_store_enabled", placeholder: "https://play.google.com/store/apps/details?id=...", type: "url", testLabel: "Open Play Store" },
+  { key: "email", label: "Support Email", valueKey: "social_email", enabledKey: "social_email_enabled", placeholder: "support@waaproltd.com", type: "email", testLabel: "Test Email" },
 ];
+
+// Mirrors the backend's own validateSettingValue (settings.routes.ts) —
+// duplicated deliberately rather than round-tripping to the server on every
+// keystroke, so the error shows up immediately as the admin types. Blank is
+// always valid (every one of these fields is optional; blank = "not
+// configured", not "invalid").
+const SOCIAL_PHONE_PATTERN = /^\+?\d{6,15}$/;
+const SOCIAL_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function validateSocialLinkValue(type, value) {
+  const v = value.trim();
+  if (!v) return null;
+  if (type === "phone" || type === "whatsapp") {
+    return SOCIAL_PHONE_PATTERN.test(v) ? null : "Enter a valid phone number (digits only, optionally starting with +).";
+  }
+  if (type === "url") {
+    try {
+      const u = new URL(v);
+      if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("bad protocol");
+      return null;
+    } catch {
+      return "Enter a valid URL starting with http:// or https://.";
+    }
+  }
+  if (type === "email") {
+    return SOCIAL_EMAIL_PATTERN.test(v) ? null : "Enter a valid email address.";
+  }
+  return null;
+}
+
+// Opens the same action a customer's tap would trigger, so a Super Admin can
+// confirm a saved number/link actually works before customers ever see it.
+function testSocialLinkValue(type, value) {
+  const v = value.trim();
+  if (!v) return;
+  if (type === "phone") window.open(`tel:+${v.replace(/\D/g, "")}`, "_self");
+  else if (type === "whatsapp") window.open(`https://wa.me/${v.replace(/\D/g, "")}`, "_blank", "noopener,noreferrer");
+  else if (type === "email") window.open(`mailto:${v}`, "_self");
+  else window.open(v, "_blank", "noopener,noreferrer");
+}
 
 /**
  * Backed by the same generic system_settings key/value store every other
@@ -6522,10 +6567,16 @@ function SocialMediaLinksPanel() {
   useEffect(() => { fetchSettings(); }, []);
 
   const saveLink = async (def) => {
+    const value = (drafts[def.valueKey] ?? "").trim();
+    const validationError = validateSocialLinkValue(def.type, value);
+    if (validationError) {
+      setError(`${def.label}: ${validationError}`);
+      return;
+    }
     setSaving((s) => ({ ...s, [def.key]: true }));
     setError("");
     try {
-      await DalabAdminApi.updateSetting(def.valueKey, (drafts[def.valueKey] ?? "").trim());
+      await DalabAdminApi.updateSetting(def.valueKey, value);
       await DalabAdminApi.updateSetting(def.enabledKey, drafts[def.enabledKey] ? "true" : "false");
       setSavedKey(def.key);
       setTimeout(() => setSavedKey((k) => (k === def.key ? null : k)), 2000);
@@ -6537,13 +6588,13 @@ function SocialMediaLinksPanel() {
   };
 
   if (!DALAB_API_ENABLED) {
-    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage social media links.</div>;
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage support and social media links.</div>;
   }
 
   return (
-    <Card style={{ padding: 18, maxWidth: 560 }}>
+    <Card style={{ padding: 18, maxWidth: 560, width: "100%" }}>
       <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 16 }}>
-        These power the "Follow us" section and support buttons in the Customer App's Profile screen. A link left blank, or switched off here, is hidden from customers automatically — no app update needed.
+        These power the "Follow us" section and support buttons in the Customer App's Profile screen. A link left blank, or switched off here, is hidden from customers automatically — no app update needed. Every change here is recorded in the Activity Log.
       </div>
       {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
       {loading && !loaded ? (
@@ -6553,17 +6604,19 @@ function SocialMediaLinksPanel() {
           const value = drafts[def.valueKey] ?? "";
           const enabled = drafts[def.enabledKey] ?? true;
           const status = !value.trim() ? { label: "Not configured", tone: "gray" } : enabled ? { label: "Active", tone: "green" } : { label: "Inactive", tone: "gray" };
+          const fieldError = validateSocialLinkValue(def.type, value);
           return (
             <div key={def.key} style={{ marginBottom: 16, paddingBottom: 16, borderBottom: i < SOCIAL_LINK_DEFS.length - 1 ? `1px solid ${BORDER}` : "none" }}>
               <Field label={def.label}>
                 <input
-                  style={inputStyle}
+                  style={{ ...inputStyle, ...(fieldError ? { borderColor: "#C81E2C" } : {}) }}
                   placeholder={def.placeholder}
                   value={value}
                   onChange={(e) => setDrafts((d) => ({ ...d, [def.valueKey]: e.target.value }))}
                 />
               </Field>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              {fieldError && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: -8, marginBottom: 10 }}>{fieldError}</div>}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
                 <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: SLATE, cursor: "pointer" }}>
                   <input
                     type="checkbox"
@@ -6573,15 +6626,25 @@ function SocialMediaLinksPanel() {
                   Active
                   <Badge tone={status.tone}>{status.label}</Badge>
                 </label>
-                <Button
-                  variant="ghost"
-                  icon={saving[def.key] ? Loader2 : Check}
-                  spin={saving[def.key]}
-                  disabled={saving[def.key]}
-                  onClick={() => saveLink(def)}
-                >
-                  {saving[def.key] ? "Saving..." : savedKey === def.key ? "Saved" : "Save"}
-                </Button>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <Button
+                    variant="ghost"
+                    icon={ExternalLink}
+                    disabled={!value.trim() || !!fieldError}
+                    onClick={() => testSocialLinkValue(def.type, value)}
+                  >
+                    {def.testLabel}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    icon={saving[def.key] ? Loader2 : Check}
+                    spin={saving[def.key]}
+                    disabled={saving[def.key] || !!fieldError}
+                    onClick={() => saveLink(def)}
+                  >
+                    {saving[def.key] ? "Saving..." : savedKey === def.key ? "Saved" : "Save"}
+                  </Button>
+                </div>
               </div>
             </div>
           );
@@ -6764,7 +6827,7 @@ function SettingsPanel() {
         {[
           { id: "general", label: "General" },
           { id: "otp", label: "SMS OTP" },
-          { id: "social", label: "Social Media Links" },
+          { id: "social", label: "Support & Social Media" },
           { id: "security", label: "Security" },
         ].map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)} style={{
@@ -7008,6 +7071,7 @@ function ActivityLogPanel() {
     payment_verified: "Payment verified — matched to order",
     payment_completed: "Payment completed — order fulfilled",
     payment_already_processed: "Duplicate payment rejected",
+    setting_updated: "Updated a system setting",
   }[action] || action);
 
   const paymentStatusTone = (status) => ({
@@ -7037,6 +7101,7 @@ function ActivityLogPanel() {
           { id: "ussd_template", label: "USSD Templates" },
           { id: "payment_wallet", label: "Payment Wallets" },
           { id: "payment_transaction", label: "Payment Transactions" },
+          { id: "system_setting", label: "Support & Social Media" },
         ].map((f) => (
           <button key={f.id} onClick={() => setEntityFilter(f.id)} style={{
             padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
