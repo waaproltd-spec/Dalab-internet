@@ -10,6 +10,7 @@ import { recordActivity } from "../utils/activityLog.js";
 import { markPaymentProcessing, markPaymentFinal } from "../utils/paymentTransactions.js";
 import { creditCommissionIfNeeded } from "../utils/commissions.js";
 import { creditReferralBonusIfNeeded } from "../utils/referrals.js";
+import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
 
 export const ussdRouter = Router();
 
@@ -371,7 +372,7 @@ ussdRouter.post("/admin/orders/:id/generate-ussd", requireStaff(), async (req, r
 // ---------------- Multi-Device Configuration ----------------
 
 ussdRouter.get("/admin/agent-devices", requireStaff(), async (_req, res) => {
-  const devices = await query(`SELECT * FROM agent_devices ORDER BY name`);
+  const devices = await query(`SELECT d.*, ${DEVICE_ONLINE_SQL} AS online FROM agent_devices d ORDER BY d.name`);
   const routing = await query(
     `SELECT sr.*, c.name AS company_name, c.color_hex AS company_color FROM sim_routing sr JOIN companies c ON c.id=sr.company_id`
   );
@@ -496,6 +497,23 @@ ussdRouter.get("/agent/devices", async (_req, res) => {
 ussdRouter.post("/agent/devices/:id/heartbeat", requireAuth("agent"), async (req, res) => {
   const agent = await queryOne<{ device_id: string | null }>(`SELECT device_id FROM agents WHERE id=$1`, [req.auth!.sub]);
   if (agent?.device_id !== req.params.id) {
+    // Otherwise this rejection leaves zero trace anywhere — last_heartbeat_at
+    // simply stops updating and the device looks "offline" with no visible
+    // reason. A session/device-reassignment mismatch is exactly the kind of
+    // thing that would silently do that, so it's worth a diagnostics row on
+    // the TARGET device (req.params.id) even though the caller isn't
+    // authorized for it — that's the device a Super Admin would actually be
+    // looking at on the Reliability Dashboard when investigating.
+    await query(
+      `INSERT INTO agent_diagnostics_log (id, device_id, tag, message, is_error, occurred_at) VALUES ($1,$2,$3,$4,$5,now())`,
+      [
+        randomUUID(),
+        req.params.id,
+        "heartbeat_rejected",
+        `Heartbeat rejected: agent ${req.auth!.sub} is assigned to device ${agent?.device_id ?? "none"}, not ${req.params.id}.`,
+        true,
+      ]
+    ).catch(() => {});
     return sendJson(res, 403, { error: "You can only report health for your own assigned device." });
   }
   const { batteryPercent, networkOnline, sim1Present, sim2Present, recentDiagnostics } = req.body;

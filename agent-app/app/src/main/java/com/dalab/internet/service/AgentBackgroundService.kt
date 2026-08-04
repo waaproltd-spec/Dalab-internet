@@ -220,11 +220,28 @@ class AgentBackgroundService : Service() {
     // Immediate drain the moment connectivity comes back, rather than waiting
     // up to a full queueDrainLoop() interval — the periodic loop is only the
     // backstop for connectivity flaps this callback misses.
+    //
+    // Also the moment to reconnect the SSE stream and sweep for missed work:
+    // realtimeClient may still be sitting mid-backoff (up to 30s) from
+    // whatever caused the drop, and reconnecting only re-arms it for FUTURE
+    // events anyway — there's no replay of anything broadcast while this
+    // device was offline. A device that comes back online without this would
+    // otherwise wait out its own SSE backoff and then up to 3 more minutes
+    // for the periodic self-heal sweep before a payment verified while it
+    // was offline actually gets dialed.
     private fun registerConnectivityCallback(scope: CoroutineScope) {
         val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 scope.launch { QueueDrainer.drainAll(applicationContext) }
+                scope.launch { realtimeClient?.connect() }
+                scope.launch {
+                    try {
+                        SelfHealSweeper.sweep(applicationContext)
+                    } catch (e: Exception) {
+                        DiagnosticsLog.record("self_heal_sweep", "Network-available sweep failed: ${e.stackTraceToString().take(2000)}")
+                    }
+                }
             }
         }
         connectivityManager.registerDefaultNetworkCallback(callback)

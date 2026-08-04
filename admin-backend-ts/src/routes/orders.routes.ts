@@ -11,6 +11,7 @@ import { creditCommissionIfNeeded, reverseCommissionIfNeeded } from "../utils/co
 import { creditReferralBonusIfNeeded, reverseReferralBonusIfNeeded } from "../utils/referrals.js";
 import { isAlreadyCompleted } from "../utils/paymentTransactions.js";
 import { rateLimit } from "../auth/rateLimit.js";
+import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
 
 export const ordersRouter = Router();
 
@@ -441,6 +442,14 @@ ordersRouter.get("/agent/orders/:id", requireAuth("agent"), async (req, res) => 
  * candidates poll picks up the resulting in_progress+ussd_generated order
  * and dials it automatically, with no separate "push a dial instruction"
  * mechanism needed.
+ *
+ * Deliberately never checks the responsible device's online/heartbeat
+ * status before doing any of this — a verified payment must always reach
+ * in_progress+ussd_generated regardless of whether that device happens to
+ * be reachable right now. If it isn't, self-heal-candidates + the Agent
+ * App's own sweep (on reconnect and periodically) is what picks the order
+ * back up the moment it's actually online again; this function is not the
+ * place to add an "is the device up" gate.
  */
 export async function verifyOrderAndGenerateUssd(
   order: any,
@@ -713,15 +722,13 @@ async function classifyStuckReason(order: any): Promise<string | null> {
     return "server_timeout";
   }
 
-  const device = await queryOne<{ last_heartbeat_at: string | null }>(
-    `SELECT d.last_heartbeat_at FROM sim_routing sr JOIN agent_devices d ON d.id = sr.device_id
+  const device = await queryOne<{ online: boolean }>(
+    `SELECT ${DEVICE_ONLINE_SQL} AS online FROM sim_routing sr JOIN agent_devices d ON d.id = sr.device_id
      WHERE sr.company_id=$1 ORDER BY sr.priority ASC LIMIT 1`,
     [order.company_id]
   );
   if (!device) return "sim_not_available";
-  const lastHeartbeatAt = device.last_heartbeat_at ? new Date(device.last_heartbeat_at).getTime() : null;
-  const stale = lastHeartbeatAt == null || Date.now() - lastHeartbeatAt > DEVICE_STALE_MS;
-  return stale ? "agent_offline" : "server_timeout";
+  return device.online ? "server_timeout" : "agent_offline";
 }
 
 // Manual Recovery Dashboard: every order that's genuinely stuck (not just
@@ -752,17 +759,16 @@ ordersRouter.get("/admin/orders/:id", requireStaff(), async (req, res) => {
 // For an order that's verified + USSD-generated but has zero dial attempts
 // (the "delivering, but nobody's dialed it yet" state) — tells the dashboard
 // whether that's because no device is configured to handle this company at
-// all, or because the responsible device's heartbeat has gone stale, rather
-// than leaving that ambiguous. Same "no heartbeat in >5 min = stale"
-// threshold already used by the Devices panel's own staleness badge.
-const DEVICE_STALE_MS = 5 * 60 * 1000;
-
+// all, or because the responsible device is offline, rather than leaving
+// that ambiguous. Uses the same DEVICE_ONLINE_SQL formula as every other
+// online-status check in the backend, so this never disagrees with the
+// Devices panel's own badge for the same device.
 ordersRouter.get("/admin/orders/:id/delivery-status", requireStaff(), async (req, res) => {
   const order = await queryOne(`SELECT company_id FROM orders WHERE id=$1`, [req.params.id]);
   if (!order) return sendJson(res, 404, { error: "Order not found" });
 
   const devices = await query(
-    `SELECT d.name, d.last_heartbeat_at
+    `SELECT d.name, d.last_heartbeat_at, ${DEVICE_ONLINE_SQL} AS online
      FROM sim_routing sr JOIN agent_devices d ON d.id = sr.device_id
      WHERE sr.company_id=$1
      ORDER BY sr.priority ASC`,
@@ -772,11 +778,9 @@ ordersRouter.get("/admin/orders/:id/delivery-status", requireStaff(), async (req
     return sendJson(res, 200, { hasRouting: false, device: null });
   }
   const top = devices[0];
-  const lastHeartbeatAt = top.last_heartbeat_at ? new Date(top.last_heartbeat_at) : null;
-  const stale = !lastHeartbeatAt || Date.now() - lastHeartbeatAt.getTime() > DEVICE_STALE_MS;
   sendJson(res, 200, {
     hasRouting: true,
-    device: { name: top.name, lastHeartbeatAt: top.last_heartbeat_at, stale },
+    device: { name: top.name, lastHeartbeatAt: top.last_heartbeat_at, stale: !top.online },
   });
 });
 
