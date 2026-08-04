@@ -157,6 +157,25 @@ const app = express();
 // the rate limiter below depends on to not be trivially bypassable.
 app.set("trust proxy", 1);
 
+// Fires the instant a request reaches Express, and again when the response
+// actually finishes -- if something downstream hangs, the "-->" line still
+// proves the request arrived; a missing "<--" line pinpoints that it never
+// completed, instead of the total silence today that leaves "did this even
+// reach the server" as an open question during an incident. Method+path+
+// status+duration only, never headers/body, so nothing sensitive is logged.
+// Registered before express.json()/cors() so it's ahead of every other
+// possible failure point in the chain.
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const startedAt = Date.now();
+  // eslint-disable-next-line no-console
+  console.log(`--> ${req.method} ${req.path}`);
+  res.on("finish", () => {
+    // eslint-disable-next-line no-console
+    console.log(`<-- ${req.method} ${req.path} ${res.statusCode} ${Date.now() - startedAt}ms`);
+  });
+  next();
+});
+
 if (!process.env.CORS_ORIGIN && process.env.NODE_ENV === "production") {
   throw new Error("CORS_ORIGIN is not set. Refusing to start in production wide open to any origin.");
 }
