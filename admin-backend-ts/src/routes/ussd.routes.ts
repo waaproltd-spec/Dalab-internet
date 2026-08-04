@@ -583,7 +583,16 @@ ussdRouter.post("/agent/orders/:id/dial-attempts", requireAuth("agent"), async (
 
 ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (req, res) => {
   const { status, responseMessage } = req.body;
-  if (!["success", "failed"].includes(status)) return sendJson(res, 400, { error: "status must be success or failed" });
+  // 'ambiguous': the Agent App's Android USSD callback fired (it got SOME
+  // response text back from the carrier), but the text itself reads like a
+  // failure/error/timeout rather than a genuine top-up confirmation — see
+  // UssdDialer.looksLikeFailureResponse. Recorded distinctly from 'failed' so
+  // the raw carrier text is visible (Payment History / Dial Attempts), but
+  // deliberately excluded from the 'success' branch below so it can never
+  // complete an order the way a real confirmation does.
+  if (!["success", "failed", "ambiguous"].includes(status)) {
+    return sendJson(res, 400, { error: "status must be success, failed, or ambiguous" });
+  }
 
   // Atomic compare-and-swap: only the first report of a given attempt ever
   // runs the order-completion side effects below — a duplicate/retried

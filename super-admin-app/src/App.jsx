@@ -5771,6 +5771,12 @@ const STUCK_REASON_META = {
   internet_error: { label: "Internet Error", tone: "amber" },
   agent_offline: { label: "Agent Offline", tone: "amber" },
   server_timeout: { label: "Server Timeout", tone: "amber" },
+  // The carrier sent back a USSD response, but its text read like a
+  // failure/timeout rather than a genuine confirmation — see
+  // classifyStuckReason (orders.routes.ts) and UssdDialer.kt's
+  // looksLikeFailureResponse. Red: needs a human to check the raw response
+  // text (Payment History) and decide, same severity as a config gap.
+  delivery_response_ambiguous: { label: "Delivery Response Ambiguous", tone: "red" },
 };
 
 function PendingRecoveryPanel() {

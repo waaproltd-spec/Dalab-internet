@@ -699,6 +699,13 @@ async function classifyStuckReason(order: any): Promise<string | null> {
     `SELECT status, response_message FROM ussd_dial_attempts WHERE order_id=$1 ORDER BY attempt_number DESC LIMIT 1`,
     [order.id]
   );
+  // 'ambiguous': the carrier sent back a response, but its text read like a
+  // failure/timeout rather than a genuine confirmation (see UssdDialer.kt's
+  // looksLikeFailureResponse) — distinct from 'failed' so staff see the real
+  // reason instead of this falling through to a misleading device-heartbeat
+  // guess (sim_not_available/agent_offline/server_timeout) below, none of
+  // which describe what actually happened here.
+  if (lastAttempt && lastAttempt.status === "ambiguous") return "delivery_response_ambiguous";
   if (lastAttempt && lastAttempt.status === "failed") {
     const msg = (lastAttempt.response_message ?? "").toLowerCase();
     if (msg.includes("sim")) return "sim_not_available";

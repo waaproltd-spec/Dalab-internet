@@ -200,7 +200,12 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
             reportDialResult(orderId, simSlot, ussdString, attempt, attemptId, lastResult)
 
             if (lastResult.outcome == DialOutcome.SUCCESS) return lastResult
-            if (lastResult.outcome != DialOutcome.FAILED && lastResult.outcome != DialOutcome.TIMEOUT) {
+            // AMBIGUOUS retries the same as FAILED/TIMEOUT — a response that
+            // reads like an error/timeout is worth one more real attempt, in
+            // case the carrier just had a bad response that round; it must
+            // never fall into the "don't retry" branch below and get treated
+            // as a config/permission problem it isn't.
+            if (lastResult.outcome != DialOutcome.FAILED && lastResult.outcome != DialOutcome.TIMEOUT && lastResult.outcome != DialOutcome.AMBIGUOUS) {
                 return lastResult // permission/config/no-SIM problems — don't retry blindly
             }
             if (attempt < maxAttempts) {
@@ -240,7 +245,17 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         orderId: String, simSlot: Int, ussdString: String, attemptNumber: Int,
         attemptId: String?, result: DialResult,
     ) {
-        val status = if (result.outcome == DialOutcome.SUCCESS) "success" else "failed"
+        // "ambiguous" is reported as its own status, distinct from both
+        // "success" and "failed" — the backend only ever completes an order
+        // on "success" (see ussd.routes.ts), so a response that merely LOOKS
+        // like a response (as opposed to a genuine carrier confirmation)
+        // can never silently complete an order, while still being clearly
+        // recorded (with its raw text) instead of collapsed into "failed".
+        val status = when (result.outcome) {
+            DialOutcome.SUCCESS -> "success"
+            DialOutcome.AMBIGUOUS -> "ambiguous"
+            else -> "failed"
+        }
         if (attemptId != null) {
             try {
                 ApiClient.service.reportDialResult(attemptId, DialAttemptResultRequest(status, result.responseMessage))

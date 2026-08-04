@@ -22,7 +22,16 @@ data class DeviceSimSlot(
 // DUPLICATE_SKIPPED: another in-flight call on this device is already
 // processing this exact order (see UssdOrchestrator's per-order dial lock) --
 // distinct from SUCCESS/FAILED since no dial decision was made here at all.
-enum class DialOutcome { SUCCESS, FAILED, TIMEOUT, NO_SIM_CONFIGURED, NO_SIM_PRESENT, PERMISSION_DENIED, NETWORK_UNAVAILABLE, DUPLICATE_SKIPPED }
+//
+// AMBIGUOUS: Android's TelephonyManager.UssdResponseCallback.onReceiveUssdResponse()
+// fired — meaning the OS received SOME text back from the carrier — but the
+// text itself reads like a failure/error/timeout, not a top-up confirmation
+// (see UssdDialer.looksLikeFailureResponse). The OS callback alone can't
+// distinguish "the carrier confirmed the top-up" from "the carrier sent back
+// an error message"; both look identical at the Android API level. Treated
+// like FAILED/TIMEOUT for retry purposes, but kept as its own outcome so the
+// backend never silently completes an order on it (see reportDialResult).
+enum class DialOutcome { SUCCESS, AMBIGUOUS, FAILED, TIMEOUT, NO_SIM_CONFIGURED, NO_SIM_PRESENT, PERMISSION_DENIED, NETWORK_UNAVAILABLE, DUPLICATE_SKIPPED }
 
 data class DialResult(
     val outcome: DialOutcome,

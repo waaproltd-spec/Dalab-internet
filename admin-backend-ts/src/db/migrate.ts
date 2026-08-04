@@ -52,6 +52,7 @@ async function migrate() {
     "035_customer_password_auth.sql",
     "036_payment_method_device.sql",
     "037_sms_match_diagnostics.sql",
+    "038_dial_attempt_ambiguous_status.sql",
   ];
   for (const file of files) {
     const sql = readFileSync(path.join(__dirname, "migrations", file), "utf8");

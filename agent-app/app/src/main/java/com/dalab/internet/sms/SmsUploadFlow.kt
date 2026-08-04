@@ -164,6 +164,7 @@ object SmsUploadFlow {
         )
         val (title, text) = when (outcome) {
             DialOutcome.SUCCESS -> "Order $orderId completed" to "USSD confirmed automatically."
+            DialOutcome.AMBIGUOUS -> "Check order $orderId" to (detail ?: "The carrier's response didn't clearly confirm the top-up — verify manually.")
             DialOutcome.NO_SIM_CONFIGURED -> "Action needed: order $orderId" to "No SIM routing configured for this provider — set it up in SIM Routing."
             DialOutcome.NO_SIM_PRESENT -> "Action needed: order $orderId" to "Configured SIM isn't inserted in this device."
             DialOutcome.PERMISSION_DENIED -> "Action needed: order $orderId" to "Phone/SMS permission missing — dialing couldn't run."
