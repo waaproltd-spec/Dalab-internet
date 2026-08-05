@@ -61,11 +61,25 @@ type OrderMatch = {
  *
  * Two further safeguards against a real payment being silently absorbed by
  * the WRONG order (same customer, same amount, but a different attempt):
- *  - MATCH_WINDOW_HOURS excludes anything older than a day — a payment SMS
- *    arriving now is confirming something the customer just did, not an
- *    order they gave up on yesterday. This is also what keeps oldest-first
- *    matching (below) safe: a stale/abandoned order can only "win" future
- *    payments of that amount for up to this window, never indefinitely.
+ *  - MATCH_WINDOW_HOURS excludes anything not touched in the last day — a
+ *    payment SMS arriving now is confirming something the customer just
+ *    did, not an order they gave up on long ago. This is also what keeps
+ *    oldest-first matching (below) safe: a stale/abandoned order can only
+ *    "win" future payments of that amount for up to this window, never
+ *    indefinitely.
+ *    Filtered on updated_at, not created_at: the guest/orders create route
+ *    above silently REUSES an existing 'pending' row (same customer+
+ *    company+package+amount) via idx_orders_pending_content_dedup instead
+ *    of inserting a new one when a customer re-attempts checkout — it
+ *    bumps updated_at but deliberately leaves created_at as the original
+ *    creation time (an immutable audit trail). Filtering on created_at
+ *    made a customer's brand-new checkout attempt today invisible to
+ *    matching if the row being reused was first created days earlier —
+ *    confirmed via a real order stuck 'pending' since its original
+ *    creation, reused today, whose same-day payment SMS still got "No
+ *    pending order... in the last 24h" because created_at never moved.
+ *    updated_at is the right freshness signal here since it's exactly what
+ *    the reuse path (and every real status transition) already bumps.
  *  - Within that window, the OLDEST eligible pending order wins
  *    (`created_at ASC`) — when a customer has several pending orders for
  *    the same amount (e.g. re-visiting Checkout more than once before
@@ -111,7 +125,7 @@ async function findMatchingOrder(
     client
       .query<OrderMatch>(
         `SELECT id, sender_phone, receiver_phone, amount, company_id, payment_method_id FROM orders
-         WHERE status='pending' AND ABS(amount - $1) < 0.01 AND created_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
+         WHERE status='pending' AND ABS(amount - $1) < 0.01 AND updated_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
          ORDER BY created_at ASC
          FOR UPDATE SKIP LOCKED`,
         [parsedAmount]
