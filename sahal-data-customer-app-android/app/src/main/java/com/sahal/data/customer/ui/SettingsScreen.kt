@@ -29,8 +29,8 @@ import com.sahal.data.customer.prefs.LocalizationManager
 import com.sahal.data.customer.prefs.ThemeManager
 import com.sahal.data.customer.prefs.ThemeMode
 
-private val HeaderStart = Color(0xFF1D2E8C)
-private val HeaderEnd = Color(0xFF16A34A)
+private val HeaderStart = Color(0xFF1B368D)
+private val HeaderEnd = Color(0xFFE99D13)
 
 /**
  * Theme (Light/Dark) and language (English/Somali) preferences, persisted

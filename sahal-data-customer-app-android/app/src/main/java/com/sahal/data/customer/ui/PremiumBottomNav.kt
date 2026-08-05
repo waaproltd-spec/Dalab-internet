@@ -44,7 +44,7 @@ import androidx.compose.ui.unit.sp
 // Same brand blue used everywhere else in the app (ui/Theme.kt's SahalDataIndigo /
 // dark-theme primary) so the nav bar's gradient stays on-brand rather than
 // introducing an unrelated color pair.
-private val GlassStart = Color(0xFF1D2E8C)
+private val GlassStart = Color(0xFF1B368D)
 private val GlassEnd = Color(0xFF4C63D6)
 private val GlowColor = Color(0xFF6C8CFF)
 

@@ -61,10 +61,10 @@ import com.sahal.data.customer.network.UpdateProfileRequest
 import com.sahal.data.customer.prefs.LocalizationManager
 import kotlinx.coroutines.launch
 
-private val HeaderStart = Color(0xFF1D2E8C)
-private val HeaderEnd = Color(0xFF16A34A)
+private val HeaderStart = Color(0xFF1B368D)
+private val HeaderEnd = Color(0xFFE99D13)
 private val DangerRed = Color(0xFFDC2626)
-private val SahalDataGreen = Color(0xFF16A34A)
+private val SahalDataOrange = Color(0xFFE99D13)
 private const val PACKAGE_NAME = "com.sahal.data.customer"
 
 @Composable
@@ -678,7 +678,7 @@ private fun FollowUsSection(context: Context, links: SocialLinks) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
-                    .background(SahalDataGreen)
+                    .background(SahalDataOrange)
                     .padding(horizontal = 18.dp, vertical = 14.dp),
             ) {
                 Text(
@@ -720,14 +720,14 @@ private fun SocialIconButton(
         modifier = Modifier
             .size(48.dp)
             .clip(CircleShape)
-            .border(1.5.dp, SahalDataGreen, CircleShape)
+            .border(1.5.dp, SahalDataOrange, CircleShape)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         if (icon != null) {
-            Icon(icon, contentDescription = contentDescription, tint = SahalDataGreen, modifier = Modifier.size(22.dp))
+            Icon(icon, contentDescription = contentDescription, tint = SahalDataOrange, modifier = Modifier.size(22.dp))
         } else if (label != null) {
-            Text(label, color = SahalDataGreen, fontWeight = FontWeight.Black, fontSize = 18.sp)
+            Text(label, color = SahalDataOrange, fontWeight = FontWeight.Black, fontSize = 18.sp)
         }
     }
 }

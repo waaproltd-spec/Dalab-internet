@@ -55,7 +55,7 @@ fun CompanyPackagesScreen(
         try {
             Color(android.graphics.Color.parseColor(company.colorHex))
         } catch (_: Exception) {
-            Color(0xFF1D2E8C)
+            Color(0xFF1B368D)
         }
     }
     val scope = rememberCoroutineScope()
@@ -170,7 +170,7 @@ private fun PackageCard(pkg: PackageItem, brandColor: Color, logoRes: Int?, enab
                     Text(
                         "$${"%.2f".format(pkg.price)}",
                         fontWeight = FontWeight.Bold,
-                        color = Color(0xFF16A34A),
+                        color = Color(0xFFE99D13),
                     )
                 }
                 val details = buildList {
@@ -183,7 +183,7 @@ private fun PackageCard(pkg: PackageItem, brandColor: Color, logoRes: Int?, enab
                     Spacer(Modifier.height(6.dp))
                     details.forEach { (icon, label) ->
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 1.dp)) {
-                            Icon(icon, contentDescription = null, tint = Color(0xFF16A34A), modifier = Modifier.size(15.dp))
+                            Icon(icon, contentDescription = null, tint = Color(0xFFE99D13), modifier = Modifier.size(15.dp))
                             Spacer(Modifier.width(6.dp))
                             Text(label, style = MaterialTheme.typography.bodySmall)
                         }

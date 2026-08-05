@@ -23,7 +23,7 @@ import com.sahal.data.customer.data.PaymentWallet
 import com.sahal.data.customer.data.walletLogoRes
 import com.sahal.data.customer.network.ApiClient
 
-private val SahalDataGreen = Color(0xFF16A34A)
+private val SahalDataOrange = Color(0xFFE99D13)
 private val ScreenBg = Color(0xFF0B0F1E)
 private val PanelBg = Color(0xFF141A2E)
 private val PanelBorder = Color(0xFF232B45)
@@ -96,7 +96,7 @@ fun PaymentMethodScreen(company: Company, pkg: PackageItem, onBack: () -> Unit, 
                                 modifier = Modifier
                                     .size(44.dp)
                                     .clip(RoundedCornerShape(12.dp))
-                                    .background(parseColorOrDefault(wallet.colorHex, SahalDataGreen)),
+                                    .background(parseColorOrDefault(wallet.colorHex, SahalDataOrange)),
                                 contentAlignment = Alignment.Center,
                             ) {
                                 if (walletLogo != null) {

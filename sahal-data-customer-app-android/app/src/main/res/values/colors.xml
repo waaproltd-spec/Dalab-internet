@@ -1,7 +1,7 @@
 <resources>
-    <color name="sahal_data_indigo">#1D2E8C</color>
-    <color name="sahal_data_indigo_dark">#16209E</color>
-    <color name="sahal_data_green">#16A34A</color>
+    <color name="sahal_data_blue">#1B368D</color>
+    <color name="sahal_data_blue_dark">#132766</color>
+    <color name="sahal_data_orange">#E99D13</color>
     <color name="sahal_data_ink">#0B1240</color>
     <color name="sahal_data_bg">#F5F6FB</color>
     <color name="white">#FFFFFF</color>

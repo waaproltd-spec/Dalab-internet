@@ -47,12 +47,16 @@ secrets — see each app's README under "Release APK".
 
 ## Branding assets
 
-Launcher icons, the web favicons, and the Super Admin dashboard logo are a
-generated Sahal Data mark — a white "S" with ascending green signal bars on
-an indigo badge — in the Sahal Data brand colors (indigo `#1D2E8C`/`#16209E`
-gradient, green `#22B24C`, matching the color values the original project
-already used). Swap them for professional artwork whenever you have it —
-see each app's `res/mipmap-*` (Android) or `public/` (web) folder.
+Launcher icons, the web favicons, the Super Admin dashboard logo, and the
+customer web app's login/OTP screens all use the Sahal Data brand mark — a
+two-tone swirl "S" (blue `#1B368D`, orange `#E99D13`) — see
+`sahal-data-branding/` for the source artwork and the full brand palette.
+Every app's primary chrome (buttons, headers, active nav, gradients) was
+re-themed to this blue/orange palette; existing green/red/amber status
+and third-party payment-provider colors were deliberately left alone (see
+`sahal-data-branding/README.md` for why). Swap the mark for professional
+artwork whenever you have it — see each app's `res/mipmap-*` (Android) or
+`public/` (web) folder for where the generated PNGs live.
 
 One thing that was **not** duplicated: the customer web app's Tawk.to live
 chat widget (`sahal-data-customer-app/index.html`) still points at the

@@ -33,7 +33,7 @@ import com.sahal.data.customer.prefs.LocalizationManager
 import com.sahal.data.customer.util.formatApiDateTime
 import kotlinx.coroutines.launch
 
-private val SahalDataIndigo = Color(0xFF1D2E8C)
+private val SahalDataIndigo = Color(0xFF1B368D)
 
 /**
  * Starts from the order object the caller already has (avoids a blank

@@ -14,7 +14,7 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, 
 
 // ---- SAHAL DATA / Admin design tokens ----
 const INK = "#0B1240";
-const INDIGO = "#1D2E8C";
+const INDIGO = "#1B368D";
 const INDIGO_SOFT = "#EEF0FB";
 const GREEN = "#16A34A";
 const SLATE = "#5B6389";
@@ -336,7 +336,7 @@ function normalizeCompany(c) {
     id: c.id,
     name: c.name,
     group: c.groupNumber,
-    color: c.colorHex || "#1D2E8C",
+    color: c.colorHex || "#1B368D",
     status: c.status === "online" ? "enabled" : "disabled",
     payNumber: c.paymentNumber || "Not set",
     providerNumber: c.providerNumber || "Not set",
@@ -738,7 +738,7 @@ function Card({ children, style }) {
 
 function Button({ children, onClick, variant = "primary", icon: Icon, style, disabled, spin }) {
   const variants = {
-    primary: { background: `linear-gradient(90deg,${INDIGO},#2A3FC0)`, color: "#fff", border: "none" },
+    primary: { background: `linear-gradient(90deg,${INDIGO},#274ECC)`, color: "#fff", border: "none" },
     ghost: { background: "#fff", color: INDIGO, border: `1px solid ${BORDER}` },
     danger: { background: "#fff", color: "#C81E2C", border: "1px solid #F3D3D6" },
     subtle: { background: INDIGO_SOFT, color: INDIGO, border: "none" },
@@ -1136,7 +1136,7 @@ function BalanceDashboard({ admin }) {
   );
 }
 
-const NEW_COMPANY_FORM = { name: "", group: 1, color: "#1D2E8C", slug: "", description: "", sortOrder: 0, status: "enabled", logoBase64: null };
+const NEW_COMPANY_FORM = { name: "", group: 1, color: "#1B368D", slug: "", description: "", sortOrder: 0, status: "enabled", logoBase64: null };
 
 function Companies({ companies, setCompanies, refreshCompanies, admin }) {
   const [editing, setEditing] = useState(null);
@@ -1309,7 +1309,7 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
 
           <Field label="Provider logo (image)">
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{ width: 44, height: 44, borderRadius: 10, background: form.color || "#1D2E8C", display: "flex", alignItems: "center", justifyContent: "center", padding: 6, overflow: "hidden", flexShrink: 0 }}>
+              <div style={{ width: 44, height: 44, borderRadius: 10, background: form.color || "#1B368D", display: "flex", alignItems: "center", justifyContent: "center", padding: 6, overflow: "hidden", flexShrink: 0 }}>
                 {form.logoBase64 ? (
                   <img src={form.logoBase64} alt="Logo preview" style={{ maxHeight: "100%", maxWidth: "100%", objectFit: "contain" }} />
                 ) : editing !== "new" && form.hasLogo ? (
@@ -2084,7 +2084,7 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
         <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>USSD DIALER</div>
         {order.ussdGenerated ? (
           <div style={{ background: "#0B1240", borderRadius: 10, padding: 12, marginTop: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-            <span style={{ color: "#22B24C", fontFamily: "monospace", fontSize: 13.5, fontWeight: 700, wordBreak: "break-all" }}>{order.ussdGenerated}</span>
+            <span style={{ color: "#E99D13", fontFamily: "monospace", fontSize: 13.5, fontWeight: 700, wordBreak: "break-all" }}>{order.ussdGenerated}</span>
             <button
               onClick={() => navigator.clipboard?.writeText(order.ussdGenerated)}
               title="Copy"

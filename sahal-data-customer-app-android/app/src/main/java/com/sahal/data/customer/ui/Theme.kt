@@ -6,11 +6,11 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
-private val BrandGreen = Color(0xFF16A34A)
+private val BrandOrange = Color(0xFFE99D13)
 
 private val LightColors = lightColorScheme(
-    primary = Color(0xFF1D2E8C),
-    secondary = BrandGreen,
+    primary = Color(0xFF1B368D),
+    secondary = BrandOrange,
     background = Color(0xFFF7F8FC),
     surface = Color.White,
     onBackground = Color(0xFF14162B),
@@ -19,7 +19,7 @@ private val LightColors = lightColorScheme(
 
 private val DarkColors = darkColorScheme(
     primary = Color(0xFF8C9BF0),
-    secondary = BrandGreen,
+    secondary = BrandOrange,
     background = Color(0xFF0B0F1E),
     surface = Color(0xFF141A2E),
     onBackground = Color(0xFFE7E9F5),

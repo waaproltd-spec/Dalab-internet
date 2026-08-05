@@ -39,8 +39,8 @@ import com.sahal.data.customer.prefs.LocalizationManager
 import com.sahal.data.customer.util.formatApiDateTime
 import kotlinx.coroutines.launch
 
-private val HeaderStart = Color(0xFF1D2E8C)
-private val HeaderEnd = Color(0xFF16A34A)
+private val HeaderStart = Color(0xFF1B368D)
+private val HeaderEnd = Color(0xFFE99D13)
 
 /** The customer's own order history / tracking — GET /orders. */
 @Composable

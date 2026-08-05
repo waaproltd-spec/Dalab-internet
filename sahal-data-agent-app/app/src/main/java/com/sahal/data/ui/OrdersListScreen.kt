@@ -45,8 +45,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private val SahalIndigo = Color(0xFF1D2E8C)
-private val SahalGreen = Color(0xFF16A34A)
+private val SahalBlue = Color(0xFF1B368D)
+private val SahalOrange = Color(0xFFE99D13)
 
 private enum class OrdersFilter(val label: String, val apiStatus: String?) {
     PENDING("Pending", "pending"),
@@ -263,7 +263,7 @@ private fun AgentHomeHeader(
         modifier = Modifier
             .fillMaxWidth()
             .background(
-                Brush.linearGradient(listOf(SahalIndigo, SahalGreen)),
+                Brush.linearGradient(listOf(SahalBlue, SahalOrange)),
                 shape = RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp),
             )
             .padding(20.dp),
@@ -345,7 +345,7 @@ private fun AgentHomeHeader(
 private fun HomeStatCard(label: String, value: String, modifier: Modifier = Modifier) {
     Surface(color = Color.White, shape = RoundedCornerShape(14.dp), modifier = modifier) {
         Column(modifier = Modifier.padding(14.dp)) {
-            Text(value, color = SahalIndigo, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
+            Text(value, color = SahalBlue, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
             Text(label, color = Color.Gray, style = MaterialTheme.typography.labelSmall)
         }
     }
@@ -369,7 +369,7 @@ private fun RecentActivityCard(orders: List<Order>) {
                 "Recent Activity",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
-                color = SahalIndigo,
+                color = SahalBlue,
             )
             Spacer(Modifier.height(10.dp))
             orders.forEachIndexed { index, order ->
@@ -383,7 +383,7 @@ private fun RecentActivityCard(orders: List<Order>) {
                         Text(order.companyName, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                     }
                     Column(horizontalAlignment = Alignment.End) {
-                        Text("$${"%.2f".format(order.amount)}", fontWeight = FontWeight.Bold, color = SahalGreen)
+                        Text("$${"%.2f".format(order.amount)}", fontWeight = FontWeight.Bold, color = SahalOrange)
                         Spacer(Modifier.height(4.dp))
                         StatusChip(order)
                     }

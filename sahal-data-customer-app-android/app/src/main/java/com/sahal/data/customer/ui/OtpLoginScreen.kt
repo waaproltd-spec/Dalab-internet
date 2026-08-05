@@ -51,8 +51,8 @@ import kotlinx.coroutines.launch
 private enum class OtpStep { PHONE, CODE, PIN, NAME }
 
 // Same SAHAL DATA brand colors used elsewhere in this app (HomeScreen's banner gradient).
-private val SahalDataIndigo = Color(0xFF1D2E8C)
-private val SahalDataGreen = Color(0xFF16A34A)
+private val SahalDataIndigo = Color(0xFF1B368D)
+private val SahalDataOrange = Color(0xFFE99D13)
 private val ScreenBackground = Color(0xFFF6F7FC)
 private val FieldBorder = Color(0xFFD8DCEF)
 
@@ -99,7 +99,7 @@ fun OtpLoginScreen(onLoggedIn: () -> Unit) {
                 "Welcome to",
                 fontSize = 15.sp,
                 fontWeight = FontWeight.SemiBold,
-                color = SahalDataGreen,
+                color = SahalDataOrange,
             )
             Spacer(Modifier.height(4.dp))
         }
@@ -109,7 +109,7 @@ fun OtpLoginScreen(onLoggedIn: () -> Unit) {
         Text(
             "Internet you can trust.",
             style = TextStyle(
-                brush = Brush.horizontalGradient(listOf(SahalDataIndigo, SahalDataGreen)),
+                brush = Brush.horizontalGradient(listOf(SahalDataIndigo, SahalDataOrange)),
                 fontSize = 24.sp,
                 fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center,
@@ -287,14 +287,14 @@ private fun BrandHeader() {
         modifier = Modifier
             .size(64.dp)
             .clip(CircleShape)
-            .background(Brush.horizontalGradient(listOf(SahalDataIndigo, SahalDataGreen))),
+            .background(Brush.horizontalGradient(listOf(SahalDataIndigo, SahalDataOrange))),
         contentAlignment = Alignment.Center,
     ) {
         Icon(Icons.Filled.Wifi, contentDescription = null, tint = Color.White, modifier = Modifier.size(32.dp))
     }
     Spacer(Modifier.height(14.dp))
     Text("SAHAL DATA", fontSize = 32.sp, fontWeight = FontWeight.Black, color = SahalDataIndigo, letterSpacing = 0.5.sp)
-    Text("INTERNET", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = SahalDataGreen, letterSpacing = 4.sp)
+    Text("INTERNET", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = SahalDataOrange, letterSpacing = 4.sp)
 }
 
 /** Somalia-only today — a static display pill (not a real multi-country
@@ -312,11 +312,11 @@ private fun CountrySelectorRow() {
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
             ) {
-                Icon(Icons.Filled.Public, contentDescription = null, tint = SahalDataGreen, modifier = Modifier.size(18.dp))
+                Icon(Icons.Filled.Public, contentDescription = null, tint = SahalDataOrange, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
-                Text("Somalia", fontWeight = FontWeight.SemiBold, color = SahalDataGreen, fontSize = 14.sp)
+                Text("Somalia", fontWeight = FontWeight.SemiBold, color = SahalDataOrange, fontSize = 14.sp)
                 Spacer(Modifier.width(6.dp))
-                Icon(Icons.Filled.ExpandMore, contentDescription = null, tint = SahalDataGreen, modifier = Modifier.size(18.dp))
+                Icon(Icons.Filled.ExpandMore, contentDescription = null, tint = SahalDataOrange, modifier = Modifier.size(18.dp))
             }
         }
     }
@@ -354,7 +354,7 @@ private fun LoginIllustration() {
                             modifier = Modifier
                                 .size(7.dp)
                                 .clip(CircleShape)
-                                .background(if (i < 2) SahalDataGreen else FieldBorder),
+                                .background(if (i < 2) SahalDataOrange else FieldBorder),
                         )
                     }
                 }
@@ -365,7 +365,7 @@ private fun LoginIllustration() {
                 .align(Alignment.TopStart)
                 .size(36.dp)
                 .clip(CircleShape)
-                .background(SahalDataGreen),
+                .background(SahalDataOrange),
             contentAlignment = Alignment.Center,
         ) {
             Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
@@ -376,10 +376,10 @@ private fun LoginIllustration() {
                 .size(40.dp)
                 .clip(CircleShape)
                 .background(Color.White)
-                .border(2.dp, SahalDataGreen, CircleShape),
+                .border(2.dp, SahalDataOrange, CircleShape),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(Icons.Filled.Shield, contentDescription = null, tint = SahalDataGreen, modifier = Modifier.size(20.dp))
+            Icon(Icons.Filled.Shield, contentDescription = null, tint = SahalDataOrange, modifier = Modifier.size(20.dp))
         }
     }
 }
@@ -504,7 +504,7 @@ private fun GradientButton(text: String, enabled: Boolean, onClick: () -> Unit) 
             .fillMaxWidth()
             .height(56.dp)
             .clip(RoundedCornerShape(28.dp))
-            .background(if (enabled) SahalDataGreen else Color(0xFFBDC2E0))
+            .background(if (enabled) SahalDataOrange else Color(0xFFBDC2E0))
             .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
         contentAlignment = Alignment.Center,
     ) {

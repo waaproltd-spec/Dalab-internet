@@ -284,9 +284,7 @@ function useI18n() {
 }
 
 // ---- Design tokens ----
-// Primary: Sahal Data Indigo #1D2E8C  Accent: Sahal Data Green #22B24C
-// Kept close to the existing brand equity (blue triangle mark, green signal),
-// since the brief is a rebrand, not a new identity.
+// Primary: Sahal Data Blue #1B368D  Accent: Sahal Data Orange #E99D13
 
 // ---- API client ----
 // Set this to a deployed backend's URL (see sahal-data-backend.zip) to switch this
@@ -426,7 +424,7 @@ const BANNERS = [
     id: "bnr-2",
     title: "Weekend Data Bonus",
     subtitle: "Get 20% extra MB on Anfac Plus, Fri–Sun",
-    gradient: "linear-gradient(135deg,#1D2E8C,#2A3FC0)",
+    gradient: "linear-gradient(135deg,#1B368D,#274ECC)",
   },
 ];
 
@@ -447,21 +445,14 @@ function Logo({ size = 96 }) {
         width: size,
         height: size,
         borderRadius: size * 0.28,
-        background: "linear-gradient(160deg,#2436A8,#16209E)",
+        background: "#fff",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        boxShadow: "0 12px 30px -8px rgba(29,46,140,0.55)",
+        boxShadow: "0 12px 30px -8px rgba(27,54,141,0.35)",
       }}
     >
-      <svg width={size * 0.6} height={size * 0.6} viewBox="0 0 100 100">
-        <polygon points="50,10 15,85 85,85" fill="#fff" />
-        <polygon points="50,10 60,32 42,32" fill="#22B24C" />
-        <circle cx="60" cy="60" r="8" fill="#22B24C" />
-        <path d="M60 60 Q75 50 78 32" stroke="#fff" strokeWidth="7" fill="none" strokeLinecap="round" />
-        <path d="M60 60 Q80 55 90 45" stroke="#fff" strokeWidth="7" fill="none" strokeLinecap="round" />
-        <polygon points="70,68 90,60 84,82" fill="#22B24C" />
-      </svg>
+      <img src="/logo-mark.png" alt="Sahal Data" style={{ width: "78%", height: "78%", objectFit: "contain" }} />
     </div>
   );
 }
@@ -524,7 +515,7 @@ function BottomNav({ active, onNav }) {
               flexDirection: "column",
               alignItems: "center",
               gap: 4,
-              color: isActive ? "#1D2E8C" : colors.textMuted,
+              color: isActive ? "#1B368D" : colors.textMuted,
               cursor: "pointer",
             }}
           >
@@ -557,7 +548,7 @@ function SupportButton({ onClick }) {
         cursor: "pointer",
       }}
     >
-      <Headphones size={22} color="#22B24C" />
+      <Headphones size={22} color="#E99D13" />
     </button>
   );
 }
@@ -574,7 +565,7 @@ function SplashLogin({ onLogin }) {
       <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", padding: "36px 28px 0" }}>
         <Logo />
         <div style={{ marginTop: 18, fontSize: 26, fontWeight: 800, color: colors.text, letterSpacing: 1 }}>SAHAL DATA</div>
-        <div style={{ fontSize: 11, letterSpacing: 3, color: "#1D2E8C", fontWeight: 700, marginTop: 2 }}>{t("loginTagline").toUpperCase()}</div>
+        <div style={{ fontSize: 11, letterSpacing: 3, color: "#1B368D", fontWeight: 700, marginTop: 2 }}>{t("loginTagline").toUpperCase()}</div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "22px 0", color: colors.textMuted, fontSize: 13 }}>
           <div style={{ width: 44, height: 1, background: colors.border }} />
           {t("loginTagline")}
@@ -583,7 +574,7 @@ function SplashLogin({ onLogin }) {
         <div style={{ width: "100%", background: colors.surface, borderRadius: 20, padding: 20, boxShadow: "0 2px 14px rgba(20,30,90,0.06)" }}>
           <div style={{ fontSize: 14, color: colors.textSubtle, marginBottom: 10 }}>{t("loginPhoneLabel")}</div>
           <div style={{ display: "flex", gap: 8 }}>
-            <div style={{ background: colors.surfaceAlt, borderRadius: 14, padding: "12px 12px", fontWeight: 700, color: "#1D2E8C" }}>+252</div>
+            <div style={{ background: colors.surfaceAlt, borderRadius: 14, padding: "12px 12px", fontWeight: 700, color: "#1B368D" }}>+252</div>
             <input
               value={phone}
               onChange={(e) => setPhone(e.target.value.replace(/\D/g, ""))}
@@ -599,7 +590,7 @@ function SplashLogin({ onLogin }) {
               padding: "14px 0",
               borderRadius: 14,
               border: "none",
-              background: phone.length >= 6 ? "linear-gradient(90deg,#1D2E8C,#2A3FC0)" : "#C6CCE6",
+              background: phone.length >= 6 ? "linear-gradient(90deg,#1B368D,#274ECC)" : "#C6CCE6",
               color: "#fff",
               fontWeight: 700,
               fontSize: 15,
@@ -686,7 +677,7 @@ function OtpScreen({ phone, onVerified, onBack }) {
       <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", alignItems: "center", padding: "20px 26px 0" }}>
         <Logo size={84} />
         <div style={{ marginTop: 14, fontSize: 24, fontWeight: 800, color: colors.text, letterSpacing: 0.5 }}>{t("otpTitle")}</div>
-        <div style={{ fontSize: 11, letterSpacing: 3, color: "#1D2E8C", fontWeight: 700, marginTop: 2 }}>{t("otpSubtitle")}</div>
+        <div style={{ fontSize: 11, letterSpacing: 3, color: "#1B368D", fontWeight: 700, marginTop: 2 }}>{t("otpSubtitle")}</div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "16px 0 4px", color: colors.textMuted, fontSize: 12.5 }}>
           <div style={{ width: 36, height: 1, background: colors.border }} />
@@ -698,14 +689,14 @@ function OtpScreen({ phone, onVerified, onBack }) {
 
         {SAHAL_DATA_API_ENABLED ? (
           <div style={{ width: "100%", background: colors.surfaceAlt, borderRadius: 18, padding: 20, marginTop: 16, textAlign: "center" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#1D2E8C", fontWeight: 700, fontSize: 14, justifyContent: "center" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#1B368D", fontWeight: 700, fontSize: 14, justifyContent: "center" }}>
               <ShieldCheck size={18} /> {t("otpSentBySms")}
             </div>
             <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 8 }}>{t("otpEnterSms")}</div>
           </div>
         ) : (
           <div style={{ width: "100%", background: colors.surfaceAlt, borderRadius: 18, padding: 20, marginTop: 16 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#1D2E8C", fontWeight: 700, fontSize: 14, justifyContent: "center" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#1B368D", fontWeight: 700, fontSize: 14, justifyContent: "center" }}>
               <ShieldCheck size={18} /> {t("otpCodeIs")}
             </div>
             <div style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 16 }}>
@@ -715,7 +706,7 @@ function OtpScreen({ phone, onVerified, onBack }) {
                   style={{
                     width: 46, height: 54, borderRadius: 12, background: colors.elevated,
                     display: "flex", alignItems: "center", justifyContent: "center",
-                    fontSize: 24, fontWeight: 800, color: "#1D2E8C",
+                    fontSize: 24, fontWeight: 800, color: "#1B368D",
                   }}
                 >
                   {d}
@@ -754,7 +745,7 @@ function OtpScreen({ phone, onVerified, onBack }) {
         </div>
 
         <div style={{ width: "100%", display: "flex", justifyContent: "flex-end" }}>
-          <button onClick={resend} style={{ background: "none", border: "none", color: "#1D2E8C", fontWeight: 600, fontSize: 13, marginTop: 14, cursor: "pointer" }}>
+          <button onClick={resend} style={{ background: "none", border: "none", color: "#1B368D", fontWeight: 600, fontSize: 13, marginTop: 14, cursor: "pointer" }}>
             {t("otpResend")}
           </button>
         </div>
@@ -769,7 +760,7 @@ function OtpScreen({ phone, onVerified, onBack }) {
             padding: "14px 0",
             borderRadius: 14,
             border: "none",
-            background: full && !verifying ? "linear-gradient(90deg,#1D2E8C,#2A3FC0)" : "#C6CCE6",
+            background: full && !verifying ? "linear-gradient(90deg,#1B368D,#274ECC)" : "#C6CCE6",
             color: "#fff",
             fontWeight: 700,
             fontSize: 15,
@@ -828,7 +819,7 @@ function HomeScreen({ onSelectProvider, onNav, onSupport }) {
                   height: 6,
                   borderRadius: 3,
                   border: "none",
-                  background: i === bannerIdx ? "#1D2E8C" : colors.border,
+                  background: i === bannerIdx ? "#1B368D" : colors.border,
                   cursor: "pointer",
                   transition: "width .2s",
                   padding: 0,
@@ -893,8 +884,8 @@ function ProviderCard({ p, onClick }) {
             {t("offline")}
           </span>
         ) : (
-          <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700, color: "#16A34A" }}>
-            <span style={{ width: 6, height: 6, borderRadius: 3, background: "#16A34A" }} />
+          <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700, color: "#E99D13" }}>
+            <span style={{ width: 6, height: 6, borderRadius: 3, background: "#E99D13" }} />
             {t("online")}
           </span>
         )}
@@ -1014,7 +1005,7 @@ function PackagesScreen({ providerId, categoryId, onBack, onBuy }) {
               <div style={{ fontWeight: 700, color: colors.text, fontSize: 15 }}>{pkg?.name || "Package"}</div>
               <div style={{ marginTop: 2 }}>
                 <span style={{ textDecoration: "line-through", color: colors.textMuted, fontSize: 13, marginRight: 8 }}>${pkg.old.toFixed(2)}</span>
-                <span style={{ color: "#16A34A", fontWeight: 800, fontSize: 16 }}>${pkg.price.toFixed(2)}</span>
+                <span style={{ color: "#E99D13", fontWeight: 800, fontSize: 16 }}>${pkg.price.toFixed(2)}</span>
               </div>
               <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 5 }}>
                 {pkg.desc.split(",").map((fragment) => {
@@ -1032,7 +1023,7 @@ function PackagesScreen({ providerId, categoryId, onBack, onBuy }) {
                 style={{
                   marginTop: 8,
                   border: "none",
-                  background: "#1D2E8C",
+                  background: "#1B368D",
                   color: "#fff",
                   fontWeight: 700,
                   fontSize: 12.5,
@@ -1223,7 +1214,7 @@ function ReceiptScreen({ order, onDone }) {
       <div style={{ flex: 1, overflowY: "auto", padding: "22px 24px" }}>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginTop: 6 }}>
           <div style={{ width: 64, height: 64, borderRadius: 32, background: "#E4F7EA", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <CheckCircle2 size={32} color="#16A34A" />
+            <CheckCircle2 size={32} color="#E99D13" />
           </div>
           <div style={{ fontWeight: 800, fontSize: 18, color: colors.text, marginTop: 12 }}>{t("paymentSuccessful")}</div>
           <div style={{ fontSize: 12.5, color: colors.textMuted, marginTop: 2 }}>{order?.pkg?.name || "Package"} {t("activatedOn")} {provider?.name || "provider"}</div>
@@ -1248,7 +1239,7 @@ function ReceiptScreen({ order, onDone }) {
           </div>
           <div style={{ borderTop: `1px dashed ${colors.border}`, marginTop: 12, paddingTop: 12, display: "flex", justifyContent: "space-between" }}>
             <span style={{ color: colors.text, fontWeight: 700 }}>{t("totalPaid")}</span>
-            <span style={{ color: "#16A34A", fontWeight: 800, fontSize: 16 }}>${order.pkg.price.toFixed(2)}</span>
+            <span style={{ color: "#E99D13", fontWeight: 800, fontSize: 16 }}>${order.pkg.price.toFixed(2)}</span>
           </div>
         </div>
 
@@ -1260,7 +1251,7 @@ function ReceiptScreen({ order, onDone }) {
             borderRadius: 12,
             border: `1px solid ${colors.border}`,
             background: colors.surface,
-            color: "#1D2E8C",
+            color: "#1B368D",
             fontWeight: 700,
             fontSize: 13.5,
             display: "flex",
@@ -1281,7 +1272,7 @@ function ReceiptScreen({ order, onDone }) {
             padding: "14px 0",
             borderRadius: 14,
             border: "none",
-            background: "linear-gradient(90deg,#1D2E8C,#2A3FC0)",
+            background: "linear-gradient(90deg,#1B368D,#274ECC)",
             color: "#fff",
             fontWeight: 700,
             fontSize: 15,
@@ -1531,7 +1522,7 @@ function OrderDetailsScreen({ order, onBack, onOrderUpdated }) {
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <span style={{ fontSize: 12.5, color: colors.text, fontWeight: 700, fontFamily: "monospace" }}>{current.transactionId || current.reference}</span>
               <button onClick={copyTxnId} title={t("copyTransactionId")} style={{ background: "none", border: "none", cursor: "pointer", display: "flex" }}>
-                {copied ? <CheckCircle2 size={14} color="#16A34A" /> : <Copy size={14} color={colors.textMuted} />}
+                {copied ? <CheckCircle2 size={14} color="#E99D13" /> : <Copy size={14} color={colors.textMuted} />}
               </button>
             </div>
           </div>
@@ -1540,7 +1531,7 @@ function OrderDetailsScreen({ order, onBack, onOrderUpdated }) {
 
         {current.ussdGenerated && (
           <div style={{ background: "#0B1240", borderRadius: 12, padding: 12, marginTop: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-            <span style={{ color: "#22B24C", fontFamily: "monospace", fontSize: 12.5, fontWeight: 700, wordBreak: "break-all" }}>{current.ussdGenerated}</span>
+            <span style={{ color: "#E99D13", fontFamily: "monospace", fontSize: 12.5, fontWeight: 700, wordBreak: "break-all" }}>{current.ussdGenerated}</span>
           </div>
         )}
 
@@ -1548,13 +1539,13 @@ function OrderDetailsScreen({ order, onBack, onOrderUpdated }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 18 }}>
           <button
             onClick={downloadReceipt}
-            style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%", padding: "13px 0", borderRadius: 12, border: `1px solid ${colors.border}`, background: colors.surface, color: "#1D2E8C", fontWeight: 700, fontSize: 13.5, cursor: "pointer" }}
+            style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%", padding: "13px 0", borderRadius: 12, border: `1px solid ${colors.border}`, background: colors.surface, color: "#1B368D", fontWeight: 700, fontSize: 13.5, cursor: "pointer" }}
           >
             <Printer size={16} /> {t("downloadReceiptPdf")}
           </button>
           <button
             onClick={shareReceipt}
-            style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%", padding: "13px 0", borderRadius: 12, border: "none", background: "linear-gradient(90deg,#1D2E8C,#2A3FC0)", color: "#fff", fontWeight: 700, fontSize: 13.5, cursor: "pointer" }}
+            style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%", padding: "13px 0", borderRadius: 12, border: "none", background: "linear-gradient(90deg,#1B368D,#274ECC)", color: "#fff", fontWeight: 700, fontSize: 13.5, cursor: "pointer" }}
           >
             <Share2 size={16} /> {t("shareReceipt")}
           </button>
@@ -1608,9 +1599,9 @@ function ProfileMain({ onNavigate, onDeleteRequest, onNav }) {
         <div style={{ background: colors.surface, borderRadius: 18, padding: "24px 16px", display: "flex", flexDirection: "column", alignItems: "center", boxShadow: "0 2px 10px rgba(20,30,90,0.05)" }}>
           <div style={{ position: "relative" }}>
             <div style={{ width: 84, height: 84, borderRadius: 42, background: "#DCEBFF", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <User size={40} color="#1D2E8C" />
+              <User size={40} color="#1B368D" />
             </div>
-            <div style={{ position: "absolute", right: -2, bottom: -2, width: 28, height: 28, borderRadius: 14, background: "#16A34A", display: "flex", alignItems: "center", justifyContent: "center", border: `3px solid ${colors.surface}` }}>
+            <div style={{ position: "absolute", right: -2, bottom: -2, width: 28, height: 28, borderRadius: 14, background: "#E99D13", display: "flex", alignItems: "center", justifyContent: "center", border: `3px solid ${colors.surface}` }}>
               <Pencil size={12} color="#fff" />
             </div>
           </div>
@@ -1652,7 +1643,7 @@ function ToggleRow({ title, subtitle, checked, onChange }) {
         onClick={() => onChange(!checked)}
         style={{
           width: 44, height: 26, borderRadius: 13, border: "none", cursor: "pointer",
-          background: checked ? "#16A34A" : colors.border, position: "relative", flexShrink: 0, transition: "background .2s",
+          background: checked ? "#E99D13" : colors.border, position: "relative", flexShrink: 0, transition: "background .2s",
         }}
       >
         <div style={{
@@ -1687,17 +1678,17 @@ function ThemeOptionRow({ mode, label, icon: Icon, selected, onSelect, colors })
       onClick={onSelect}
       style={{
         width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "12px 14px",
-        borderRadius: 12, border: `1.5px solid ${selected ? "#1D2E8C" : colors.border}`,
-        background: selected ? "#1D2E8C11" : "transparent", cursor: "pointer", marginBottom: 8,
+        borderRadius: 12, border: `1.5px solid ${selected ? "#1B368D" : colors.border}`,
+        background: selected ? "#1B368D11" : "transparent", cursor: "pointer", marginBottom: 8,
       }}
     >
-      <Icon size={18} color={selected ? "#1D2E8C" : colors.textSubtle} />
+      <Icon size={18} color={selected ? "#1B368D" : colors.textSubtle} />
       <span style={{ flex: 1, textAlign: "left", fontSize: 14, fontWeight: 600, color: colors.text }}>{label}</span>
       <div style={{
-        width: 18, height: 18, borderRadius: 9, border: `2px solid ${selected ? "#1D2E8C" : colors.border}`,
+        width: 18, height: 18, borderRadius: 9, border: `2px solid ${selected ? "#1B368D" : colors.border}`,
         display: "flex", alignItems: "center", justifyContent: "center",
       }}>
-        {selected && <div style={{ width: 9, height: 9, borderRadius: 5, background: "#1D2E8C" }} />}
+        {selected && <div style={{ width: 9, height: 9, borderRadius: 5, background: "#1B368D" }} />}
       </div>
     </button>
   );
@@ -1736,8 +1727,8 @@ function SettingsScreen({ onBack, onLogout }) {
                 style={{
                   flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
                   padding: "12px 0", borderRadius: 12, cursor: "pointer",
-                  border: `1.5px solid ${lang === l.code ? "#1D2E8C" : colors.border}`,
-                  background: lang === l.code ? "#1D2E8C11" : "transparent",
+                  border: `1.5px solid ${lang === l.code ? "#1B368D" : colors.border}`,
+                  background: lang === l.code ? "#1B368D11" : "transparent",
                   fontSize: 14, fontWeight: 700, color: colors.text,
                 }}
               >
@@ -1865,8 +1856,8 @@ function IssueSheet({ selected, onSelect, onClose }) {
                 style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 20px", background: "none", border: "none", borderBottom: `1px solid ${colors.divider}`, cursor: "pointer", textAlign: "left" }}
               >
                 <span style={{ fontSize: 14.5, color: colors.text }}>{opt}</span>
-                <div style={{ width: 20, height: 20, borderRadius: 10, border: `2px solid ${selected === key ? "#1D2E8C" : colors.border}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  {selected === key && <div style={{ width: 10, height: 10, borderRadius: 5, background: "#1D2E8C" }} />}
+                <div style={{ width: 20, height: 20, borderRadius: 10, border: `2px solid ${selected === key ? "#1B368D" : colors.border}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  {selected === key && <div style={{ width: 10, height: 10, borderRadius: 5, background: "#1B368D" }} />}
                 </div>
               </button>
             );
@@ -1894,7 +1885,7 @@ function FeedbackScreen({ onBack }) {
         <DarkHeader title={t("feedbackTitle")} onBack={onBack} />
         <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 30, textAlign: "center" }}>
           <div style={{ width: 64, height: 64, borderRadius: 32, background: "#E4F7EA", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <CheckCircle2 size={32} color="#16A34A" />
+            <CheckCircle2 size={32} color="#E99D13" />
           </div>
           <div style={{ fontWeight: 800, fontSize: 16, color: colors.text, marginTop: 14 }}>{t("thanksForFeedback")}</div>
           <div style={{ fontSize: 13, color: colors.textMuted, marginTop: 4 }}>{t("teamWillReview")}</div>
@@ -1927,7 +1918,7 @@ function FeedbackScreen({ onBack }) {
       <DarkHeader title={t("feedbackTitle")} onBack={onBack} />
       <div style={{ flex: 1, overflowY: "auto", padding: "22px 20px", display: "flex", flexDirection: "column", alignItems: "center" }}>
         <div style={{ width: 80, height: 80, borderRadius: 40, background: colors.surfaceAlt, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <User size={38} color="#1D2E8C" />
+          <User size={38} color="#1B368D" />
         </div>
         <div style={{ marginTop: 10, fontSize: 16, fontWeight: 800, color: colors.text }}>Yaaain</div>
 
@@ -1977,7 +1968,7 @@ function ReferralScreen({ onBack }) {
       <StatusBar />
       <DarkHeader title={t("referralTitle")} onBack={onBack} />
       <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", padding: "40px 30px 0", textAlign: "center" }}>
-        <Gift size={90} color="#16A34A" strokeWidth={1.3} />
+        <Gift size={90} color="#E99D13" strokeWidth={1.3} />
         <div style={{ fontSize: 19, fontWeight: 800, color: colors.text, marginTop: 20 }}>{t("inviteFriendsTitle")}</div>
         <div style={{ fontSize: 13.5, color: colors.textMuted, marginTop: 10, lineHeight: 1.6 }}>
           {t("inviteFriendsBody")}
@@ -2010,7 +2001,7 @@ function RateModal({ onClose }) {
         </div>
         <div style={{ display: "flex", gap: 10, marginTop: 22 }}>
           <button onClick={onClose} style={{ flex: 1, padding: "12px 0", borderRadius: 12, border: `1px solid ${colors.border}`, background: colors.surface, color: colors.textSubtle, fontWeight: 700, fontSize: 13.5, cursor: "pointer" }}>{t("notNow")}</button>
-          <button onClick={onClose} style={{ flex: 1, padding: "12px 0", borderRadius: 12, border: "none", background: "#1D2E8C", color: "#fff", fontWeight: 700, fontSize: 13.5, cursor: "pointer" }}>{t("submit")}</button>
+          <button onClick={onClose} style={{ flex: 1, padding: "12px 0", borderRadius: 12, border: "none", background: "#1B368D", color: "#fff", fontWeight: 700, fontSize: 13.5, cursor: "pointer" }}>{t("submit")}</button>
         </div>
       </div>
     </div>
@@ -2024,12 +2015,12 @@ function DeleteConfirmModal({ onCancel, onConfirm }) {
     <div style={{ position: "absolute", inset: 0, background: "rgba(11,18,64,0.5)", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 40, overflow: "hidden", padding: 24 }}>
       <div style={{ background: colors.surface, borderRadius: 20, padding: 26, width: "100%", textAlign: "center" }}>
         <div style={{ width: 56, height: 56, borderRadius: 28, background: "#E4F7EA", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto" }}>
-          <Info size={26} color="#16A34A" />
+          <Info size={26} color="#E99D13" />
         </div>
-        <div style={{ fontWeight: 800, fontSize: 17, color: "#16A34A", marginTop: 14 }}>{t("deleteConfirmTitle")}</div>
+        <div style={{ fontWeight: 800, fontSize: 17, color: "#E99D13", marginTop: 14 }}>{t("deleteConfirmTitle")}</div>
         <div style={{ fontSize: 13, color: colors.textSubtle, marginTop: 8, lineHeight: 1.6 }}>{t("deleteConfirmBody")}</div>
         <div style={{ display: "flex", gap: 12, marginTop: 22 }}>
-          <button onClick={onConfirm} style={{ flex: 1, padding: "12px 0", borderRadius: 24, border: "none", background: "#16A34A", color: "#fff", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>{t("deleteYes")}</button>
+          <button onClick={onConfirm} style={{ flex: 1, padding: "12px 0", borderRadius: 24, border: "none", background: "#E99D13", color: "#fff", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>{t("deleteYes")}</button>
           <button onClick={onCancel} style={{ flex: 1, padding: "12px 0", borderRadius: 24, border: "none", background: "#DC2626", color: "#fff", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>{t("deleteNo")}</button>
         </div>
       </div>
@@ -2097,10 +2088,10 @@ function SupportSheet({ onClose }) {
         </div>
         <div style={{ fontSize: 13, color: colors.textSubtle, marginTop: 6 }}>0610808086</div>
         <div style={{ display: "flex", gap: 12, marginTop: 16 }}>
-          <div style={{ flex: 1, background: "#1D2E8C", borderRadius: 14, padding: "14px 0", textAlign: "center", color: "#fff", fontWeight: 700, display: "flex", gap: 8, justifyContent: "center", alignItems: "center" }}>
+          <div style={{ flex: 1, background: "#1B368D", borderRadius: 14, padding: "14px 0", textAlign: "center", color: "#fff", fontWeight: 700, display: "flex", gap: 8, justifyContent: "center", alignItems: "center" }}>
             <Phone size={16} /> {t("supportCall")}
           </div>
-          <div style={{ flex: 1, background: "#16A34A", borderRadius: 14, padding: "14px 0", textAlign: "center", color: "#fff", fontWeight: 700, display: "flex", gap: 8, justifyContent: "center", alignItems: "center" }}>
+          <div style={{ flex: 1, background: "#E99D13", borderRadius: 14, padding: "14px 0", textAlign: "center", color: "#fff", fontWeight: 700, display: "flex", gap: 8, justifyContent: "center", alignItems: "center" }}>
             <MessageSquare size={16} /> {t("supportWhatsapp")}
           </div>
         </div>

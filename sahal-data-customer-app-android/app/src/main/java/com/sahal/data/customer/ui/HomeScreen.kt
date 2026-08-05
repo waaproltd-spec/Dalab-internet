@@ -64,8 +64,8 @@ private const val SUPPORT_PHONE = "252610338686"
 // that pair, opened in the device's default browser via ACTION_VIEW rather
 // than embedded (no WebView, no native SDK), per explicit instruction.
 private const val TAWK_CHAT_URL = "https://tawk.to/chat/6a693e6e50dea81d4cf37935/1julhnokc"
-private val HeaderStart = Color(0xFF1D2E8C)
-private val HeaderEnd = Color(0xFF16A34A)
+private val HeaderStart = Color(0xFF1B368D)
+private val HeaderEnd = Color(0xFFE99D13)
 
 private fun greeting(): Pair<String, String> {
     val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
@@ -332,7 +332,7 @@ private fun SupportActionRow(icon: androidx.compose.ui.graphics.vector.ImageVect
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, contentDescription = null, tint = Color(0xFF1D2E8C), modifier = Modifier.size(20.dp))
+        Icon(icon, contentDescription = null, tint = Color(0xFF1B368D), modifier = Modifier.size(20.dp))
         Spacer(Modifier.width(12.dp))
         Text(label, fontWeight = FontWeight.SemiBold)
     }

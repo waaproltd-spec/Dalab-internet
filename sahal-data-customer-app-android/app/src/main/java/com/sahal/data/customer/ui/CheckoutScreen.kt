@@ -38,7 +38,7 @@ import com.sahal.data.customer.util.PaymentDialUtil
 import kotlinx.coroutines.launch
 import java.util.UUID
 
-private val SahalDataGreen = Color(0xFF16A34A)
+private val SahalDataOrange = Color(0xFFE99D13)
 private val ScreenBg = Color(0xFF0B0F1E)
 private val PanelBg = Color(0xFF141A2E)
 private val PanelBorder = Color(0xFF232B45)
@@ -146,7 +146,7 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
                 Row(verticalAlignment = Alignment.Bottom) {
                     Text(
                         "$${"%.2f".format(finalAmount)}",
-                        color = SahalDataGreen,
+                        color = SahalDataOrange,
                         fontWeight = FontWeight.Black,
                         fontSize = if (compact) 26.sp else 30.sp,
                     )
@@ -215,7 +215,7 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
             Spacer(Modifier.height(8.dp))
             Text(
                 "You're offline — this order will be placed automatically once you're back online.",
-                color = SahalDataGreen,
+                color = SahalDataOrange,
                 fontSize = 12.sp,
             )
         }
@@ -230,7 +230,7 @@ fun CheckoutScreen(company: Company, pkg: PackageItem, wallet: PaymentWallet, on
                 .height(buttonHeight)
                 .clip(RoundedCornerShape(28.dp))
                 .background(
-                    if (payEnabled) Brush.horizontalGradient(listOf(SahalDataGreen, Color(0xFF0F9E76)))
+                    if (payEnabled) Brush.horizontalGradient(listOf(SahalDataOrange, Color(0xFFC68510)))
                     else Brush.horizontalGradient(listOf(Color(0xFF3A4257), Color(0xFF3A4257)))
                 )
                 .clickable(enabled = payEnabled) {
@@ -322,11 +322,11 @@ private fun PhoneInputField(
             } else null,
             shape = RoundedCornerShape(14.dp),
             colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = SahalDataGreen,
+                focusedBorderColor = SahalDataOrange,
                 unfocusedBorderColor = PanelBorder,
                 focusedTextColor = Color.White,
                 unfocusedTextColor = Color.White,
-                cursorColor = SahalDataGreen,
+                cursorColor = SahalDataOrange,
             ),
             modifier = Modifier
                 .fillMaxWidth()
@@ -379,7 +379,7 @@ private fun LoyaltyPointsSection(
                 Switch(
                     checked = enabled,
                     onCheckedChange = onEnabledChange,
-                    colors = SwitchDefaults.colors(checkedTrackColor = SahalDataGreen),
+                    colors = SwitchDefaults.colors(checkedTrackColor = SahalDataOrange),
                 )
             }
             if (enabled) {
@@ -391,11 +391,11 @@ private fun LoyaltyPointsSection(
                     singleLine = true,
                     shape = RoundedCornerShape(12.dp),
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = SahalDataGreen,
+                        focusedBorderColor = SahalDataOrange,
                         unfocusedBorderColor = PanelBorder,
                         focusedTextColor = Color.White,
                         unfocusedTextColor = Color.White,
-                        cursorColor = SahalDataGreen,
+                        cursorColor = SahalDataOrange,
                     ),
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -406,7 +406,7 @@ private fun LoyaltyPointsSection(
                             "Discount: -\$${"%.2f".format(discountAmount)}",
                             "Dhimis: -\$${"%.2f".format(discountAmount)}",
                         ),
-                        color = SahalDataGreen,
+                        color = SahalDataOrange,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                     )

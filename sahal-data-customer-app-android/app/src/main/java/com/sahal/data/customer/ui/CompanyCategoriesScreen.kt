@@ -52,7 +52,7 @@ fun CompanyCategoriesScreen(company: Company, onBack: () -> Unit, onSelectCatego
         try {
             Color(android.graphics.Color.parseColor(company.colorHex))
         } catch (_: Exception) {
-            Color(0xFF1D2E8C)
+            Color(0xFF1B368D)
         }
     }
     val scope = rememberCoroutineScope()
