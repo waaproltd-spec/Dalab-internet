@@ -7,9 +7,9 @@ every app in this rebrand — a two-tone swirl "S" (blue `#1B368D`, orange
 All launcher icons, favicons, and the Super Admin dashboard logo are
 generated from this single file by compositing it onto a white
 rounded-square (or circle, for Android's `_round` variants) at the size
-each platform needs — see `sahal-data-customer-app/public/logo-mark.png`
-for the transparent, un-composited copy embedded directly in the customer
-web app's login/OTP screens.
+each platform needs. The Sahal Data Customer App (Flutter, in the
+`dalab-internet-2` repo) uses a copy of this same mark and palette — see
+its own `assets/` folder and theme file.
 
 ## Brand colors
 

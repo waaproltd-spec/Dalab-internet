@@ -15,54 +15,52 @@ and behavior as the original — only the brand and identifiers changed.
 |---|---|
 | [`sahal-data-admin-backend-ts/`](sahal-data-admin-backend-ts) | **Primary production backend.** Node.js + Express + TypeScript + PostgreSQL. Auth (customer OTP, staff/agent password login), companies/packages/orders, customers, agents, reports, settings, USSD templates, SIM routing, Macaash, banners, notifications. |
 | [`sahal-data-backend/`](sahal-data-backend) | Legacy/reference backend (Node.js + `node:sqlite`, no external deps). Same route surface as `sahal-data-admin-backend-ts`, kept for reference only — not used in production. |
-| [`sahal-data-customer-app/`](sahal-data-customer-app) | Customer-facing web app (React + Vite). Browse packages, place orders, track Macaash points. |
-| [`sahal-data-customer-app-android/`](sahal-data-customer-app-android) | Native Android counterpart to `sahal-data-customer-app` (Kotlin + Jetpack Compose, package `com.sahal.data.customer`) — OTP account creation/login, buy packages, choose a payment method, track orders/history, Macaash balance. |
 | [`sahal-data-super-admin-app/`](sahal-data-super-admin-app) | Super Admin web dashboard (React + Vite). Companies, payment numbers, packages, orders, customers, Macaash, notifications, banners, USSD services, SIM routing setup, reports, settings. |
 | [`sahal-data-agent-app/`](sahal-data-agent-app) | Native Android app (Kotlin + Jetpack Compose, package `com.sahal.data`) for field agents — login, customer management, walk-in sales, package catalog, order verification/completion, transaction history, an SMS listener that matches payment-confirmation messages to pending orders, and the agent's own sales reports. |
 
+**Customer App:** the real, current Sahal Data Customer App is a Flutter
+rebuild and lives in the `waaproltd-spec/dalab-internet-2` repo, at
+`sahal-data-customer-app/` — see that repo's README. The React web app and
+native Kotlin app that used to live here (`sahal-data-customer-app/`,
+`sahal-data-customer-app-android/`) were rebrands of an older, superseded
+customer app and have been removed.
+
 ## Backend
 
-All frontends and both native Android apps point at `sahal-data-admin-backend-ts`
-by default at the placeholder URL `https://sahal-data-2.onrender.com/` — this
-is **not a live deployment**; deploy `sahal-data-admin-backend-ts` yourself
-(see its README/`render.yaml`) and update `BASE_URL` /
-`VITE_API_BASE_URL` in each client to the real deployed URL. The plain
-`sahal-data-backend/` package is legacy/reference only and should not be used
-alongside it. This backend and its database are entirely separate from the
-original project's backend — no data or infrastructure is shared.
+Every frontend here points at `sahal-data-admin-backend-ts` by default at
+the placeholder URL `https://sahal-data-2.onrender.com/` — this is **not a
+live deployment**; deploy `sahal-data-admin-backend-ts` yourself (see its
+README/`render.yaml`) and update `BASE_URL` / `VITE_API_BASE_URL` in each
+client to the real deployed URL. The plain `sahal-data-backend/` package is
+legacy/reference only and should not be used alongside it. This backend and
+its database are entirely separate from the original project's backend — no
+data or infrastructure is shared. The Sahal Data Customer App (in
+`dalab-internet-2`) points at this same backend.
 
-## Android apps / CI
+## Android app / CI
 
-`sahal-data-agent-app` and `sahal-data-customer-app-android` are each
-standalone Gradle projects with their own application IDs
-(`com.sahal.agent` and `com.sahal.data` / namespace `com.sahal.data.customer`
-respectively — mirroring the original's own applicationId scheme), so both
-can be installed side by side on the same device, and alongside the original
-project's apps, without conflict. Root-level GitHub Actions workflows
-(`.github/workflows/sahal-data-agent-app-build-apk.yml`,
-`.github/workflows/sahal-data-customer-app-build-apk.yml`) build an
-installable debug APK on every push to `main` that touches the respective
-app, and a signed release APK once you've configured that app's keystore
-secrets — see each app's README under "Release APK".
+`sahal-data-agent-app` is a standalone Gradle project with its own
+application ID (`com.sahal.agent`, mirroring the original's own
+applicationId scheme), so it can be installed side by side with the
+original project's apps without conflict. The root-level GitHub Actions
+workflow (`.github/workflows/sahal-data-agent-app-build-apk.yml`) builds an
+installable debug APK on every push to `main` that touches it, and a
+signed release APK once you've configured its keystore secrets — see its
+README under "Release APK".
 
 ## Branding assets
 
-Launcher icons, the web favicons, the Super Admin dashboard logo, and the
-customer web app's login/OTP screens all use the Sahal Data brand mark — a
-two-tone swirl "S" (blue `#1B368D`, orange `#E99D13`) — see
-`sahal-data-branding/` for the source artwork and the full brand palette.
-Every app's primary chrome (buttons, headers, active nav, gradients) was
-re-themed to this blue/orange palette; existing green/red/amber status
-and third-party payment-provider colors were deliberately left alone (see
-`sahal-data-branding/README.md` for why). Swap the mark for professional
-artwork whenever you have it — see each app's `res/mipmap-*` (Android) or
-`public/` (web) folder for where the generated PNGs live.
-
-One thing that was **not** duplicated: the customer web app's Tawk.to live
-chat widget (`sahal-data-customer-app/index.html`) still points at the
-original project's Tawk.to account ID, since generating a new one requires an
-actual Tawk.to account. Replace `s1.src` in that file with your own Tawk.to
-embed URL before relying on live chat support.
+Launcher icons and the Super Admin dashboard logo/favicon all use the Sahal
+Data brand mark — a two-tone swirl "S" (blue `#1B368D`, orange `#E99D13`)
+— see `sahal-data-branding/` for the source artwork and the full brand
+palette. Every app's primary chrome (buttons, headers, active nav,
+gradients) was re-themed to this blue/orange palette; existing green/red/
+amber status and third-party payment-provider colors were deliberately
+left alone (see `sahal-data-branding/README.md` for why). Swap the mark
+for professional artwork whenever you have it — see each app's
+`res/mipmap-*` (Android) or `public/` (web) folder for where the generated
+PNGs live. The Customer App (in `dalab-internet-2`) uses the same mark and
+palette — see its own README/branding notes.
 
 ## Getting started
 

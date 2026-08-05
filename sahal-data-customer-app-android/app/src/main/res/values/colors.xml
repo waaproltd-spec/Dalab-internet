@@ -1,9 +1,0 @@
-<resources>
-    <color name="sahal_data_blue">#1B368D</color>
-    <color name="sahal_data_blue_dark">#132766</color>
-    <color name="sahal_data_orange">#E99D13</color>
-    <color name="sahal_data_ink">#0B1240</color>
-    <color name="sahal_data_bg">#F5F6FB</color>
-    <color name="white">#FFFFFF</color>
-    <color name="black">#000000</color>
-</resources>
