@@ -3,7 +3,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { query, queryOne } from "../db/pool.js";
 import {
   hashPassword, verifyPassword, signAccessToken, signRefreshToken, verifyToken,
-  isValidEmail, isStrongPassword, generateOtp, REFRESH_TTL_MS,
+  isValidEmail, isStrongPassword, REFRESH_TTL_MS,
 } from "../auth/crypto.js";
 import { requireAuth } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
@@ -25,50 +25,57 @@ async function issueTokens(subjectId: string, role: Role) {
   return { accessToken, refreshToken };
 }
 
-// ---------------- Customer: OTP login ----------------
-authRouter.post("/auth/otp/request", rateLimit("otp-request", 5, 15 * 60 * 1000), async (req, res) => {
-  const phone = String(req.body.phone ?? "").trim();
-  if (!/^\+?\d{6,15}$/.test(phone)) {
-    return sendJson(res, 400, { error: "Provide a valid phone number" });
+// ---------------- Customer: phone/email + password login ----------------
+// Replaces the old SMS-OTP login entirely. Phone stays the required, unique
+// identifier (same as before); email is optional and, when set, is a second
+// way to look the account up here. Passwords are bcrypt-hashed exactly like
+// admin_users.password_hash / customers.pin_hash (see auth/crypto.ts) — no
+// new hashing scheme introduced.
+function normalizeCustomerPhone(raw: unknown): string {
+  return String(raw ?? "").trim();
+}
+
+authRouter.post("/auth/register", rateLimit("customer-register", 10, 15 * 60 * 1000), async (req, res) => {
+  const phone = normalizeCustomerPhone(req.body.phone);
+  const password = String(req.body.password ?? "");
+  const name = req.body.name ? String(req.body.name).trim() : null;
+  const email = req.body.email ? String(req.body.email).trim().toLowerCase() : null;
+  if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid phone number" });
+  if (!isStrongPassword(password)) {
+    return sendJson(res, 400, { error: "Password must be at least 8 characters and include a letter, a number, and a symbol" });
   }
-  const code = generateOtp();
-  await query(
-    `INSERT INTO otp_codes (id, phone, code_hash, expires_at) VALUES ($1,$2,$3, now() + interval '2 minutes')`,
-    [randomUUID(), phone, createHash("sha256").update(code).digest("hex")]
-  );
-  // eslint-disable-next-line no-console
-  console.log(`[SMS GATEWAY SIM] OTP for ${phone}: ${code}`); // real gateway integration goes here
+  if (email && !isValidEmail(email)) return sendJson(res, 400, { error: "Provide a valid email" });
 
-  // No SMS gateway is connected yet — per explicit product decision, the code
-  // is returned directly in the response so the Customer App can display it
-  // to the customer itself, rather than the flow depending on SMS delivery
-  // that doesn't exist. Once a real gateway is wired up, stop returning
-  // `otpCode` here so the code is only ever delivered out-of-band via SMS.
-  sendJson(res, 200, { message: "OTP sent", otpCode: code });
-});
-
-authRouter.post("/auth/otp/verify", rateLimit("otp-verify", 10, 15 * 60 * 1000), async (req, res) => {
-  const phone = String(req.body.phone ?? "").trim();
-  const code = String(req.body.code ?? "").trim();
-  if (!phone || !code) return sendJson(res, 400, { error: "phone and code are required" });
-
-  const codeHash = createHash("sha256").update(code).digest("hex");
-  const row = await queryOne(
-    `SELECT * FROM otp_codes WHERE phone=$1 AND consumed=false AND expires_at > now() AND code_hash=$2
-     ORDER BY created_at DESC LIMIT 1`,
-    [phone, codeHash]
-  );
-  if (!row) return sendJson(res, 401, { error: "Invalid or expired code" });
-  await query(`UPDATE otp_codes SET consumed=true WHERE id=$1`, [row.id]);
-
+  const passwordHash = await hashPassword(password);
   let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
-  if (!customer) {
+
+  if (customer) {
+    // A row for this phone already exists — either a genuine "already
+    // registered, go sign in instead" case, or (far more common right now)
+    // a customer created under the old OTP-only flow who has never had a
+    // password. Claiming that existing row (rather than erroring, or
+    // inserting a duplicate) is exactly how this migration keeps every
+    // historical order/points balance/PIN attached to the same account.
+    if (customer.password_hash) {
+      return sendJson(res, 409, { error: "An account with this phone number already exists. Please sign in instead." });
+    }
+    if (email) {
+      const emailTaken = await queryOne(`SELECT id FROM customers WHERE email=$1 AND id<>$2`, [email, customer.id]);
+      if (emailTaken) return sendJson(res, 409, { error: "An account with this email already exists." });
+    }
+    await query(
+      `UPDATE customers SET password_hash=$1, name=COALESCE($2, name), email=COALESCE($3, email) WHERE id=$4`,
+      [passwordHash, name, email, customer.id]
+    );
+    customer = await queryOne(`SELECT * FROM customers WHERE id=$1`, [customer.id]);
+  } else {
+    if (email && (await queryOne(`SELECT id FROM customers WHERE email=$1`, [email]))) {
+      return sendJson(res, 409, { error: "An account with this email already exists." });
+    }
     // Referral relationship is fixed once, at account creation, from the
     // referral code the Customer App may have picked up from a shared
-    // referral link — never reassigned afterward, and never set for an
-    // already-existing account (re-verifying an OTP is a login, not a
-    // registration). An unrecognized/self/omitted code is silently ignored
-    // rather than blocking registration.
+    // referral link — never reassigned afterward. An unrecognized/self/
+    // omitted code is silently ignored rather than blocking registration.
     const referralCode = String(req.body.referralCode ?? "").trim();
     let referredBy: string | null = null;
     if (referralCode) {
@@ -76,23 +83,97 @@ authRouter.post("/auth/otp/verify", rateLimit("otp-verify", 10, 15 * 60 * 1000),
       if (referrer) referredBy = referrer.id;
     }
     customer = await queryOne(
-      `INSERT INTO customers (id, phone, referred_by_customer_id) VALUES ($1,$2,$3) RETURNING *`,
-      [randomUUID(), phone, referredBy]
+      `INSERT INTO customers (id, phone, name, email, password_hash, referred_by_customer_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [randomUUID(), phone, name, email, passwordHash, referredBy]
     );
   }
-  if (customer!.status === "blocked") return sendJson(res, 403, { error: "This account has been blocked" });
 
   const tokens = await issueTokens(customer!.id, "customer");
-  // pinSet is additive — existing clients that ignore it see no behavior
-  // change; it only tells a client whether to prompt for the customer's
-  // OPTIONAL self-service PIN (see customers.routes.ts) after this same OTP
-  // login succeeds. The OTP flow itself (phone -> code -> tokens) is
-  // completely unchanged either way.
-  sendJson(res, 200, {
+  sendJson(res, 201, {
     ...tokens,
-    customer: { id: customer!.id, phone: customer!.phone, name: customer!.name },
+    customer: { id: customer!.id, phone: customer!.phone, name: customer!.name, email: customer!.email },
     pinSet: Boolean(customer!.pin_hash),
   });
+});
+
+authRouter.post("/auth/login", rateLimit("customer-login", 10, 15 * 60 * 1000), async (req, res) => {
+  const identifier = String(req.body.identifier ?? req.body.phone ?? req.body.email ?? "").trim();
+  const password = String(req.body.password ?? "");
+  if (!identifier || !password) return sendJson(res, 400, { error: "phone/email and password are required" });
+
+  const isEmail = identifier.includes("@");
+  const customer = await queryOne(
+    isEmail ? `SELECT * FROM customers WHERE email=$1` : `SELECT * FROM customers WHERE phone=$1`,
+    [isEmail ? identifier.toLowerCase() : identifier]
+  );
+  // Same generic message whether the account doesn't exist, has no password
+  // yet, or the password is simply wrong — never reveal which case it is.
+  const genericError = () => sendJson(res, 401, { error: "Invalid phone/email or password" });
+  if (!customer) return genericError();
+  if (!customer.password_hash) {
+    // A legacy OTP-era account that's never set a password — tell the
+    // Customer App to route to Create Account (same phone number), which
+    // claims this exact row rather than making the customer feel locked out.
+    return sendJson(res, 401, { error: "This account hasn't set up a password yet. Please create your account to continue.", needsPasswordSetup: true });
+  }
+  if (!(await verifyPassword(password, customer.password_hash))) return genericError();
+  if (customer.status === "blocked") return sendJson(res, 403, { error: "This account has been blocked" });
+
+  const tokens = await issueTokens(customer.id, "customer");
+  sendJson(res, 200, {
+    ...tokens,
+    customer: { id: customer.id, phone: customer.phone, name: customer.name, email: customer.email },
+    pinSet: Boolean(customer.pin_hash),
+  });
+});
+
+// ---------------- Customer: passwordless name + phone identity ----------------
+// The Customer App's entire auth flow: first launch asks for Full Name +
+// Phone Number only, no password/PIN/OTP ever. This single endpoint both
+// creates a brand-new account and signs back into an existing one — the
+// phone number is the sole identifier, deliberately unverified (no OTP), so
+// re-entering the same number on a reinstall/new device restores the same
+// account by design. Never touches password_hash, so it can't collide with
+// /auth/register's password-claiming flow for the same row.
+authRouter.post("/auth/identify", rateLimit("customer-identify", 20, 15 * 60 * 1000), async (req, res) => {
+  const phone = normalizeCustomerPhone(req.body.phone);
+  const name = req.body.name ? String(req.body.name).trim() : "";
+  if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid phone number" });
+  if (!name) return sendJson(res, 400, { error: "Full name is required" });
+
+  let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
+  if (customer) {
+    if (customer.status === "blocked") return sendJson(res, 403, { error: "This account has been blocked" });
+    // Only fills in a missing name — never overwrites a name the customer
+    // (or an admin) already set, since a later device re-entering the same
+    // phone shouldn't silently rename an existing profile.
+    if (!customer.name) {
+      await query(`UPDATE customers SET name=$1 WHERE id=$2`, [name, customer.id]);
+      customer = await queryOne(`SELECT * FROM customers WHERE id=$1`, [customer.id]);
+    }
+  } else {
+    customer = await queryOne(`INSERT INTO customers (id, phone, name) VALUES ($1,$2,$3) RETURNING *`, [randomUUID(), phone, name]);
+  }
+
+  const tokens = await issueTokens(customer!.id, "customer");
+  sendJson(res, 200, {
+    ...tokens,
+    customer: { id: customer!.id, phone: customer!.phone, name: customer!.name, email: customer!.email },
+    pinSet: Boolean(customer!.pin_hash),
+  });
+});
+
+// Best-effort session teardown for the Customer App's explicit "Log out" —
+// revokes just this one refresh token (same token_hash lookup /auth/refresh
+// already uses) so it can't be replayed; a missing/already-invalid token is
+// still a 200, since the client is clearing its local session either way.
+authRouter.post("/auth/logout", async (req, res) => {
+  const refreshToken = String(req.body.refreshToken ?? "");
+  if (refreshToken) {
+    const tokenHash = createHash("sha256").update(refreshToken).digest("hex");
+    await query(`UPDATE refresh_tokens SET revoked=true WHERE token_hash=$1`, [tokenHash]);
+  }
+  sendJson(res, 200, { message: "Logged out" });
 });
 
 // ---------------- Agent login (fully automatic — no credentials at all) ----------------

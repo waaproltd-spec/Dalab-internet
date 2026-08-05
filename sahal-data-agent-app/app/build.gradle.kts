@@ -4,21 +4,39 @@ plugins {
 }
 
 android {
+    // Kotlin source package/namespace stays com.sahal.data — unrelated to
+    // the applicationId below, and renaming it would mean touching every
+    // source file's package declaration for no reason.
     namespace = "com.sahal.data"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.sahal.data"
+        // Was "com.sahal.data" — identical to the Customer App's Android
+        // applicationId. Two different apps sharing one applicationId means
+        // Android treats installing either one as an "update" to whichever
+        // is already on the device; since they're unrelated apps with
+        // different signing keys, that update is always rejected outright
+        // ("App not installed"), and the Agent App could never actually get
+        // installed on a device that already has the Customer App on it.
+        applicationId = "com.sahal.agent"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.9.5.89"
     }
 
     signingConfigs {
-        // Populated from env vars in CI (see .github/workflows/build-apk.yml);
-        // release signing is skipped locally if these aren't set, which just
-        // falls back to an unsigned release build.
+        // A real secret keystore (AGENT_KEYSTORE_* env vars, see
+        // sahal-data-agent-app-build-apk.yml) is used when configured; until
+        // then this config was empty, so `assembleRelease` silently produced
+        // an *unsigned* APK. Android's installer refuses to install an
+        // unsigned APK on any device — that's exactly the "won't install on
+        // other phones" report. Falling back to a committed, persistent
+        // release keystore instead means `assembleRelease` always produces
+        // a signed, installable APK. This app is only ever sideloaded onto
+        // agent phones directly (never published to the Play Store), so
+        // keeping the signing key in the repo is an acceptable tradeoff —
+        // the same one already made for the debug keystore just below.
         create("release") {
             val storeFilePath = System.getenv("AGENT_KEYSTORE_PATH")
             if (!storeFilePath.isNullOrBlank()) {
@@ -26,7 +44,25 @@ android {
                 storePassword = System.getenv("AGENT_KEYSTORE_PASSWORD")
                 keyAlias = System.getenv("AGENT_KEY_ALIAS")
                 keyPassword = System.getenv("AGENT_KEY_PASSWORD")
+            } else {
+                storeFile = file("release.keystore")
+                storePassword = "sahalagent123"
+                keyAlias = "sahalagent"
+                keyPassword = "sahalagent123"
             }
+        }
+        // Without this, AGP falls back to auto-generating ~/.android/debug.keystore
+        // on whatever machine is building — fine locally where that file persists,
+        // but CI runners are ephemeral, so every workflow run got a brand-new random
+        // debug key and every debug APK became unable to update the last one
+        // ("App not installed"). A committed, fixed debug key (standard
+        // androiddebugkey/android credentials — not a secret, every default debug
+        // keystore uses the same ones) keeps every debug build's signature stable.
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
         }
     }
 
@@ -35,9 +71,10 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            if (!System.getenv("AGENT_KEYSTORE_PATH").isNullOrBlank()) {
-                signingConfig = signingConfigs.getByName("release")
-            }
+            signingConfig = signingConfigs.getByName("release")
+        }
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 

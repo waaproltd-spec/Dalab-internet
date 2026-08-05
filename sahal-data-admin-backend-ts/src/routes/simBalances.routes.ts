@@ -1,12 +1,41 @@
 import { Router } from "express";
 import { query, queryOne } from "../db/pool.js";
-import { requireStaff } from "../auth/middleware.js";
+import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { recordActivity } from "../utils/activityLog.js";
 import { applyBalanceUpdate } from "../utils/simBalances.js";
 
 export const simBalancesRouter = Router();
+
+// Agent App's own "Wallet Balances" dashboard — the same SIM-balance data
+// the Super Admin's Balance Dashboard shows (see SIM_BALANCE_LIST_SQL
+// below), scoped to just the calling agent's own device. An agent with no
+// device assigned yet (device_id null) has nothing to show — empty list,
+// not an error.
+simBalancesRouter.get("/agent/wallet-balances", requireAuth("agent"), async (req, res) => {
+  const agent = await queryOne<{ device_id: string | null }>(`SELECT device_id FROM agents WHERE id=$1`, [req.auth!.sub]);
+  if (!agent?.device_id) return sendJson(res, 200, []);
+  const rows = await query(
+    `SELECT
+       slot.n AS sim_slot,
+       COALESCE(sb.company_id, sr.company_id) AS company_id,
+       COALESCE(c2.name, c.name) AS provider_name,
+       COALESCE(c2.color_hex, c.color_hex) AS color_hex,
+       COALESCE(sb.phone_number, c.payment_number) AS phone_number,
+       COALESCE(sb.balance, 0) AS balance,
+       COALESCE(sb.low_balance_threshold, 5) AS low_balance_threshold,
+       sb.updated_at AS balance_updated_at
+     FROM (VALUES (1),(2)) AS slot(n)
+     LEFT JOIN sim_balances sb ON sb.device_id = $1 AND sb.sim_slot = slot.n
+     LEFT JOIN sim_routing sr ON sr.device_id = $1 AND sr.sim_slot = slot.n
+     LEFT JOIN companies c ON c.id = sr.company_id
+     LEFT JOIN companies c2 ON c2.id = sb.company_id
+     ORDER BY slot.n`,
+    [agent.device_id]
+  );
+  sendJson(res, 200, rows);
+});
 
 // Every physical SIM slot (1 and 2) on every registered device, whenever
 // that slot isn't confirmed absent (sim1Present/sim2Present is TRUE or

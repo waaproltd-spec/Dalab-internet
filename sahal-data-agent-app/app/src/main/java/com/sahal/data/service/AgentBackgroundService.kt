@@ -26,6 +26,7 @@ import com.sahal.data.diagnostics.HeartbeatStats
 import com.sahal.data.network.AgentEventBus
 import com.sahal.data.network.ApiClient
 import com.sahal.data.network.DiagnosticsEntryDto
+import com.sahal.data.network.HeartbeatFailure
 import com.sahal.data.network.HeartbeatFailureClassifier
 import com.sahal.data.network.HeartbeatRequest
 import com.sahal.data.network.RealtimeClient
@@ -220,11 +221,28 @@ class AgentBackgroundService : Service() {
     // Immediate drain the moment connectivity comes back, rather than waiting
     // up to a full queueDrainLoop() interval — the periodic loop is only the
     // backstop for connectivity flaps this callback misses.
+    //
+    // Also the moment to reconnect the SSE stream and sweep for missed work:
+    // realtimeClient may still be sitting mid-backoff (up to 30s) from
+    // whatever caused the drop, and reconnecting only re-arms it for FUTURE
+    // events anyway — there's no replay of anything broadcast while this
+    // device was offline. A device that comes back online without this would
+    // otherwise wait out its own SSE backoff and then up to 3 more minutes
+    // for the periodic self-heal sweep before a payment verified while it
+    // was offline actually gets dialed.
     private fun registerConnectivityCallback(scope: CoroutineScope) {
         val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 scope.launch { QueueDrainer.drainAll(applicationContext) }
+                scope.launch { realtimeClient?.connect() }
+                scope.launch {
+                    try {
+                        SelfHealSweeper.sweep(applicationContext)
+                    } catch (e: Exception) {
+                        DiagnosticsLog.record("self_heal_sweep", "Network-available sweep failed: ${e.stackTraceToString().take(2000)}")
+                    }
+                }
             }
         }
         connectivityManager.registerDefaultNetworkCallback(callback)
@@ -264,7 +282,7 @@ class AgentBackgroundService : Service() {
      * independent triggers/loops and are unaffected by heartbeat health.
      */
     private suspend fun sendHeartbeatWithRetry(deviceId: String, pendingDiagnostics: List<DiagnosticsLog.Entry>) {
-        var lastReason = "Not attempted"
+        var lastFailure = HeartbeatFailure("unknown", "Not attempted")
         for (attempt in 1..HEARTBEAT_MAX_ATTEMPTS) {
             try {
                 RetryClassifier.requireSuccessful(ApiClient.service.sendHeartbeat(deviceId, buildHeartbeat(pendingDiagnostics)))
@@ -274,10 +292,14 @@ class AgentBackgroundService : Service() {
                 }
                 return
             } catch (e: Exception) {
-                lastReason = HeartbeatFailureClassifier.classify(e)
+                lastFailure = HeartbeatFailureClassifier.classify(e)
+                // Tagged by category (not a generic "heartbeat_loop" label) so
+                // these entries - once uploaded via recentDiagnostics - are
+                // groupable server-side too, and so a per-category breakdown
+                // survives even past DiagnosticsLog's own 200-entry cap.
                 DiagnosticsLog.record(
-                    "heartbeat_loop",
-                    "Heartbeat attempt $attempt/$HEARTBEAT_MAX_ATTEMPTS failed: $lastReason",
+                    "heartbeat_failed_${lastFailure.category}",
+                    "Heartbeat attempt $attempt/$HEARTBEAT_MAX_ATTEMPTS failed: ${lastFailure.message}",
                 )
                 if (attempt < HEARTBEAT_MAX_ATTEMPTS) delay(HEARTBEAT_RETRY_BASE_DELAY_MS * (1L shl (attempt - 1)))
             }
@@ -285,12 +307,13 @@ class AgentBackgroundService : Service() {
         // Best-effort — the next regular tick tries again automatically (this
         // loop never stops on failure); a dropped heartbeat just shows as a
         // stale "last seen" on the dashboard in the meantime.
-        HeartbeatStats.recordFailure(lastReason)
+        HeartbeatStats.recordFailure(lastFailure.category, lastFailure.message)
     }
 
-    // Routing changes are admin-driven and rare (nothing like heartbeat's need for
-    // a 60s cadence), so this runs on its own slower interval rather than piggybacking
-    // on every heartbeat tick — a dashboard routing change still takes effect without
+    // Runs on its own timer rather than piggybacking on the heartbeat tick
+    // (a separate concern — device telemetry vs. provider routing — even
+    // though they currently share the same cadence), so a dashboard
+    // routing change reaches the device within about a minute without
     // requiring the agent to restart the app.
     private suspend fun simRoutingRefreshLoop() {
         val currentScope = scope ?: return
@@ -424,7 +447,10 @@ class AgentBackgroundService : Service() {
         private const val HEARTBEAT_INTERVAL_MS = 60_000L
         private const val HEARTBEAT_MAX_ATTEMPTS = 4
         private const val HEARTBEAT_RETRY_BASE_DELAY_MS = 2_000L
-        private const val SIM_ROUTING_REFRESH_INTERVAL_MS = 5 * 60_000L
+        // Matches HEARTBEAT_INTERVAL_MS's cadence — a Super Admin routing
+        // change (which device/SIM slot handles a provider) now reaches a
+        // device within about a minute instead of five.
+        private const val SIM_ROUTING_REFRESH_INTERVAL_MS = HEARTBEAT_INTERVAL_MS
         private const val QUEUE_DRAIN_INTERVAL_MS = 2 * 60_000L
         private const val SELF_HEAL_SWEEP_INTERVAL_MS = 3 * 60_000L
 

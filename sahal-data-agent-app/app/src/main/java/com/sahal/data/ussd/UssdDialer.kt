@@ -116,7 +116,17 @@ class UssdDialer(private val context: Context) {
                         if (resumed) return
                         resumed = true
                         handler.removeCallbacks(timeoutRunnable)
-                        continuation.resume(DialResult(DialOutcome.SUCCESS, response.toString()))
+                        val text = response.toString()
+                        // onReceiveUssdResponse firing only means the OS got SOME
+                        // text back from the carrier — it says nothing about
+                        // whether that text actually confirms the top-up. A
+                        // carrier response reading e.g. "insufficient balance" or
+                        // a generic timeout/error message triggers this exact
+                        // callback the same as a genuine success message would,
+                        // so it must not be treated as SUCCESS without checking
+                        // the text itself.
+                        val outcome = if (looksLikeFailureResponse(text)) DialOutcome.AMBIGUOUS else DialOutcome.SUCCESS
+                        continuation.resume(DialResult(outcome, text))
                     }
 
                     override fun onReceiveUssdResponseFailed(telephonyManager: TelephonyManager, request: String, failureCode: Int) {
@@ -143,4 +153,31 @@ class UssdDialer(private val context: Context) {
             if (wakeLock?.isHeld == true) wakeLock.release()
         }
     }
+}
+
+/**
+ * Cheap, deliberately conservative check: does this USSD response text read
+ * like a failure/error/timeout rather than a genuine top-up confirmation?
+ * NOT exhaustive (no confirmed real "success" vs "failure" sample text was
+ * available when this was written — same caveat as
+ * SmsReceiver.PAYMENT_LOOKING_KEYWORDS) — this is a negative filter, not a
+ * positive-match allowlist, so it only ever downgrades a response that
+ * contains one of these red flags; it can never misclassify a genuine
+ * confirmation it hasn't seen the wording of. Expand this list as real
+ * ambiguous/failure responses are observed in production (see the Payment
+ * History dial-attempt log, which now records every AMBIGUOUS response's raw
+ * text for exactly this purpose). Blank/empty text is also treated as
+ * ambiguous — a real confirmation always has some content.
+ */
+private val FAILURE_RESPONSE_KEYWORDS = listOf(
+    "error", "fail", "timeout", "timed out", "invalid", "incorrect",
+    "insufficient", "try again", "unable", "sorry", "declined", "cancelled",
+    "canceled", "expired", "denied", "not available", "busy", "khalad",
+)
+
+fun looksLikeFailureResponse(text: String): Boolean {
+    val trimmed = text.trim()
+    if (trimmed.isEmpty()) return true
+    val lower = trimmed.lowercase()
+    return FAILURE_RESPONSE_KEYWORDS.any { lower.contains(it) }
 }

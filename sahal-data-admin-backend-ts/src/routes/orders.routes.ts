@@ -10,6 +10,8 @@ import { recordActivity } from "../utils/activityLog.js";
 import { creditCommissionIfNeeded, reverseCommissionIfNeeded } from "../utils/commissions.js";
 import { creditReferralBonusIfNeeded, reverseReferralBonusIfNeeded } from "../utils/referrals.js";
 import { isAlreadyCompleted } from "../utils/paymentTransactions.js";
+import { rateLimit } from "../auth/rateLimit.js";
+import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
 
 export const ordersRouter = Router();
 
@@ -46,7 +48,7 @@ function maskOrders<T extends Record<string, any>>(orders: T[]): T[] {
 
 // ---------------- Customer ----------------
 ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
-  const { companyId, packageId, senderPhone, receiverPhone, paymentMethod, clientRequestId, useLoyaltyPoints } = req.body;
+  const { companyId, packageId, senderPhone, receiverPhone, paymentMethod, paymentMethodId, clientRequestId, useLoyaltyPoints } = req.body;
   const company = await queryOne(`SELECT * FROM companies WHERE id=$1 AND deleted_at IS NULL`, [companyId]);
   if (!company) return sendJson(res, 404, { error: "Company not found" });
   if (company.status === "offline") return sendJson(res, 409, { error: `${company.name} is currently offline` });
@@ -55,6 +57,20 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
   if (!pkg) return sendJson(res, 404, { error: "Package not found" });
   if (pkg.company_id !== companyId) {
     return sendJson(res, 400, { error: "Package does not belong to the selected company" });
+  }
+
+  // When the customer picked one of this company's configured payment
+  // methods (EVC Plus / eDahab / JEEB / ...), its own number and USSD
+  // template are what actually get dialed — never the single legacy
+  // company.payment_number/payment_ussd_template, which only apply when a
+  // company has no configured methods yet.
+  let selectedMethod: { id: string; label: string; payment_number: string | null; ussd_template: string | null } | null = null;
+  if (paymentMethodId) {
+    selectedMethod = await queryOne(
+      `SELECT id, label, payment_number, ussd_template FROM company_payment_methods WHERE id=$1 AND company_id=$2 AND enabled=true`,
+      [paymentMethodId, companyId]
+    );
+    if (!selectedMethod) return sendJson(res, 404, { error: "Payment method not found for this company" });
   }
 
   const customer = await queryOne(`SELECT * FROM customers WHERE id=$1`, [req.auth!.sub]);
@@ -87,15 +103,22 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
   const id = orderRef();
   try {
     await query(
-      `INSERT INTO orders (id, customer_id, company_id, package_id, amount, provider_amount, status, sender_phone, receiver_phone, payment_method, channel, macaash_earned, client_request_id)
-       VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,'android',$10,$11)`,
+      `INSERT INTO orders (id, customer_id, company_id, package_id, amount, provider_amount, status, sender_phone, receiver_phone, payment_method, channel, macaash_earned, client_request_id, payment_number_used, payment_ussd_template_used, payment_method_id)
+       VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,'android',$10,$11,$12,$13,$14)`,
       [
         id, req.auth!.sub, companyId, packageId, finalAmount, pkg.provider_amount ?? pkg.price,
         senderPhone || customer?.phone || null,
         receiverPhone || customer?.phone || null,
-        paymentMethod || company.gateway || null,
+        selectedMethod?.label || paymentMethod || company.gateway || null,
         Math.round(finalAmount * MACAASH_POINTS_PER_DOLLAR),
         clientRequestId ?? null,
+        // Snapshotted at creation time — company.payment_number (or the
+        // selected method's own number) could change later, but the receipt
+        // should always reflect what the customer was actually told to pay
+        // to.
+        selectedMethod?.payment_number || company.payment_number || null,
+        selectedMethod?.ussd_template || company.payment_ussd_template || null,
+        selectedMethod?.id ?? null,
       ]
     );
     if (pointsToUse > 0) {
@@ -119,11 +142,38 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
       // company+package+amount (e.g. re-visiting Checkout without paying) —
       // reuse it instead of creating a duplicate sibling order that a future
       // payment could otherwise leave stranded.
+      //
+      // BUT this request's own sender/receiver phone and payment method are
+      // what the customer just typed/picked on THIS visit — possibly a
+      // correction of a typo from the earlier attempt that created the row
+      // being reused. Silently returning the old row unchanged (as this used
+      // to do) meant payment/SMS matching kept comparing against a stale
+      // phone number the customer had already corrected, with no way to fix
+      // it short of contacting an admin. Stamp this visit's values onto the
+      // reused row before returning it, so the row that gets reused always
+      // reflects what the customer most recently entered — the same values
+      // that would have been written had the INSERT above not conflicted.
       const existing = await queryOne<{ id: string }>(
         `SELECT id FROM orders WHERE customer_id=$1 AND company_id=$2 AND package_id=$3 AND amount=$4 AND status='pending'`,
         [req.auth!.sub, companyId, packageId, finalAmount]
       );
-      if (existing) return sendJson(res, 200, maskOrder(await loadOrder(existing.id)));
+      if (existing) {
+        await query(
+          `UPDATE orders SET sender_phone=$1, receiver_phone=$2, payment_method=$3, payment_method_id=$4,
+             payment_number_used=$5, payment_ussd_template_used=$6, updated_at=now()
+           WHERE id=$7 AND status='pending'`,
+          [
+            senderPhone || customer?.phone || null,
+            receiverPhone || customer?.phone || null,
+            selectedMethod?.label || paymentMethod || company.gateway || null,
+            selectedMethod?.id ?? null,
+            selectedMethod?.payment_number || company.payment_number || null,
+            selectedMethod?.ussd_template || company.payment_ussd_template || null,
+            existing.id,
+          ]
+        );
+        return sendJson(res, 200, maskOrder(await loadOrder(existing.id)));
+      }
     }
     throw err;
   }
@@ -156,6 +206,136 @@ ordersRouter.get("/orders/stream", requireAuth("customer"), async (req, res) => 
 ordersRouter.get("/orders/:id", requireAuth("customer"), async (req, res) => {
   const order = await loadOrder(req.params.id);
   if (!order || (order as any).customer_id !== req.auth!.sub) return sendJson(res, 404, { error: "Order not found" });
+  sendJson(res, 200, maskOrder(order));
+});
+
+// ---------------- Guest (Customer App — no account at all) ----------------
+// The Customer App has no login/password/OTP. A `customers` row still gets
+// found-or-created by phone number behind the scenes — same pattern the
+// agent-initiated /agent/orders endpoint below already uses — purely so
+// orders/points/PIN stay consistent with the rest of the schema; it is
+// never surfaced to the app as an account, and there is no loyalty-points
+// redemption here (that requires knowing "my" balance, which requires login).
+ordersRouter.post("/guest/orders", rateLimit("guest-order-create", 20, 15 * 60 * 1000), async (req, res) => {
+  const { companyId, packageId, customerPhone, senderPhone, receiverPhone, paymentMethod, paymentMethodId, clientRequestId } = req.body;
+  const phone = String(customerPhone ?? receiverPhone ?? "").trim();
+  if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid phone number" });
+
+  const company = await queryOne(`SELECT * FROM companies WHERE id=$1 AND deleted_at IS NULL`, [companyId]);
+  if (!company) return sendJson(res, 404, { error: "Company not found" });
+  if (company.status === "offline") return sendJson(res, 409, { error: `${company.name} is currently offline` });
+
+  const pkg = await queryOne(`SELECT * FROM packages WHERE id=$1 AND active=true`, [packageId]);
+  if (!pkg) return sendJson(res, 404, { error: "Package not found" });
+  if (pkg.company_id !== companyId) {
+    return sendJson(res, 400, { error: "Package does not belong to the selected company" });
+  }
+
+  let selectedMethod: { id: string; label: string; payment_number: string | null; ussd_template: string | null } | null = null;
+  if (paymentMethodId) {
+    selectedMethod = await queryOne(
+      `SELECT id, label, payment_number, ussd_template FROM company_payment_methods WHERE id=$1 AND company_id=$2 AND enabled=true`,
+      [paymentMethodId, companyId]
+    );
+    if (!selectedMethod) return sendJson(res, 404, { error: "Payment method not found for this company" });
+  }
+
+  let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
+  if (!customer) {
+    customer = await queryOne(`INSERT INTO customers (id, phone) VALUES ($1,$2) RETURNING *`, [randomUUID(), phone]);
+  }
+  if (customer!.status === "blocked") return sendJson(res, 403, { error: "This account has been blocked" });
+
+  const id = orderRef();
+  try {
+    await query(
+      `INSERT INTO orders (id, customer_id, company_id, package_id, amount, provider_amount, status, sender_phone, receiver_phone, payment_method, channel, macaash_earned, client_request_id, payment_number_used, payment_ussd_template_used, payment_method_id)
+       VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,'android',$10,$11,$12,$13,$14)`,
+      [
+        id, customer!.id, companyId, packageId, pkg.price, pkg.provider_amount ?? pkg.price,
+        senderPhone || phone,
+        receiverPhone || phone,
+        selectedMethod?.label || paymentMethod || company.gateway || null,
+        Math.round(Number(pkg.price) * MACAASH_POINTS_PER_DOLLAR),
+        clientRequestId ?? null,
+        selectedMethod?.payment_number || company.payment_number || null,
+        selectedMethod?.ussd_template || company.payment_ussd_template || null,
+        selectedMethod?.id ?? null,
+      ]
+    );
+  } catch (err: any) {
+    if (err?.code !== "23505") throw err;
+    if (err?.constraint === "idx_orders_client_request_id") {
+      const existing = await queryOne<{ id: string }>(`SELECT id FROM orders WHERE client_request_id=$1`, [clientRequestId]);
+      return sendJson(res, 200, maskOrder(await loadOrder(existing!.id)));
+    }
+    if (err?.constraint === "idx_orders_pending_content_dedup") {
+      // Same bug/fix as the authenticated /orders route above: this reused
+      // row must reflect the sender/receiver phone (and payment method) the
+      // customer entered on THIS visit, not whatever was typed the first
+      // time this exact company+package+amount was ordered — otherwise a
+      // customer who typos "Mobile Number Sent From" once, then buys the
+      // same package again with the correct number, silently keeps getting
+      // matched against the wrong, uncorrectable phone number forever. This
+      // is the Customer App's actual order-creation endpoint (see
+      // sahal_data_api.dart), so this is the fix that matters in practice.
+      const existing = await queryOne<{ id: string }>(
+        `SELECT id FROM orders WHERE customer_id=$1 AND company_id=$2 AND package_id=$3 AND amount=$4 AND status='pending'`,
+        [customer!.id, companyId, packageId, pkg.price]
+      );
+      if (existing) {
+        await query(
+          `UPDATE orders SET sender_phone=$1, receiver_phone=$2, payment_method=$3, payment_method_id=$4,
+             payment_number_used=$5, payment_ussd_template_used=$6, updated_at=now()
+           WHERE id=$7 AND status='pending'`,
+          [
+            senderPhone || phone,
+            receiverPhone || phone,
+            selectedMethod?.label || paymentMethod || company.gateway || null,
+            selectedMethod?.id ?? null,
+            selectedMethod?.payment_number || company.payment_number || null,
+            selectedMethod?.ussd_template || company.payment_ussd_template || null,
+            existing.id,
+          ]
+        );
+        return sendJson(res, 200, maskOrder(await loadOrder(existing.id)));
+      }
+    }
+    throw err;
+  }
+  broadcast({ type: "order.created", orderId: id });
+  sendJson(res, 201, maskOrder(await loadOrder(id)));
+});
+
+// Real-time order feed for the Customer App's guest checkout — same
+// subscribe/broadcast pub/sub as every other role's stream. No auth to key
+// off of, but the broadcast payload is just {type, orderId}; the app
+// re-fetches whichever order(s) it cares about rather than trusting it.
+// Registered before "/guest/orders/:id" so "stream" isn't swallowed as an
+// :id param.
+ordersRouter.get("/guest/orders/stream", (req, res) => {
+  const unsubscribe = subscribe(res);
+  req.on("close", unsubscribe);
+});
+
+// "Track my order": the only way a customer with no account can find their
+// own orders again after leaving the post-checkout screen. Registered
+// before "/guest/orders/:id" for the same reason as "/stream" above.
+ordersRouter.get("/guest/orders/by-phone/:phone", rateLimit("guest-order-lookup", 20, 15 * 60 * 1000), async (req, res) => {
+  const phone = String(req.params.phone ?? "").trim();
+  if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid phone number" });
+  const customer = await queryOne<{ id: string }>(`SELECT id FROM customers WHERE phone=$1`, [phone]);
+  if (!customer) return sendJson(res, 200, []);
+  const rows = await query(
+    `${ORDER_LIST_SELECT} WHERE o.customer_id=$1 ORDER BY o.created_at DESC LIMIT 20`,
+    [customer.id]
+  );
+  sendJson(res, 200, maskOrders(rows));
+});
+
+ordersRouter.get("/guest/orders/:id", async (req, res) => {
+  const order = await loadOrder(req.params.id);
+  if (!order) return sendJson(res, 404, { error: "Order not found" });
   sendJson(res, 200, maskOrder(order));
 });
 
@@ -253,27 +433,41 @@ ordersRouter.get("/agent/orders/:id", requireAuth("agent"), async (req, res) => 
   sendJson(res, 200, order);
 });
 
-ordersRouter.post("/agent/orders/:id/verify-payment", requireAuth("agent"), async (req, res) => {
-  const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
-  if (!order) return sendJson(res, 404, { error: "Order not found" });
-
+/**
+ * The atomic pending -> in_progress transition + USSD generation shared by
+ * the live verify-payment endpoint below and resweepUnmatchedSmsLogs
+ * (smsLogs.routes.ts) — a retroactive match found later for an SMS that
+ * initially landed with no candidate order needs to run exactly the same
+ * approval step a live agent call would, so the existing self-heal-
+ * candidates poll picks up the resulting in_progress+ussd_generated order
+ * and dials it automatically, with no separate "push a dial instruction"
+ * mechanism needed.
+ *
+ * Deliberately never checks the responsible device's online/heartbeat
+ * status before doing any of this — a verified payment must always reach
+ * in_progress+ussd_generated regardless of whether that device happens to
+ * be reachable right now. If it isn't, self-heal-candidates + the Agent
+ * App's own sweep (on reconnect and periodically) is what picks the order
+ * back up the moment it's actually online again; this function is not the
+ * place to add an "is the device up" gate.
+ */
+export async function verifyOrderAndGenerateUssd(
+  order: any,
+  agentId: string | null
+): Promise<{ ok: true } | { ok: false; alreadyProcessed: boolean }> {
   // Atomic compare-and-swap: only ever one caller of two concurrent/retried
   // requests actually flips pending -> in_progress, so USSD generation can
   // never be double-triggered for the same order.
   const result = await query(
     `UPDATE orders SET status='in_progress', agent_id=$1, updated_at=now() WHERE id=$2 AND status='pending' RETURNING id`,
-    [req.auth!.sub, order.id]
+    [agentId, order.id]
   );
   if (result.length === 0) {
-    // Already verified by this or a concurrent request — idempotent no-op,
-    // return current state rather than erroring a retrying client.
-    if (order.status !== "pending") return sendJson(res, 200, await loadOrder(order.id));
-    return sendJson(res, 409, { error: `Cannot verify an order in status '${order.status}'` });
+    // Already verified by this or a concurrent request — idempotent no-op
+    // for the caller to report, rather than erroring a retrying client.
+    return { ok: false, alreadyProcessed: order.status !== "pending" };
   }
 
-  if (req.body.smsLogId) {
-    await query(`UPDATE sms_logs SET matched_order_id=$1 WHERE id=$2`, [order.id, req.body.smsLogId]);
-  }
   // Order approved — auto-generate the USSD dialer string. A missing PIN or
   // template isn't fatal to the approval itself; ussd_generated just stays
   // null until an admin sets one up, visible on the order detail either way.
@@ -296,6 +490,22 @@ ordersRouter.post("/agent/orders/:id/verify-payment", requireAuth("agent"), asyn
     });
   }
   broadcast({ type: "order.updated", orderId: order.id });
+  return { ok: true };
+}
+
+ordersRouter.post("/agent/orders/:id/verify-payment", requireAuth("agent"), async (req, res) => {
+  const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
+  if (!order) return sendJson(res, 404, { error: "Order not found" });
+
+  if (req.body.smsLogId) {
+    await query(`UPDATE sms_logs SET matched_order_id=$1 WHERE id=$2`, [order.id, req.body.smsLogId]);
+  }
+
+  const result = await verifyOrderAndGenerateUssd(order, req.auth!.sub);
+  if (!result.ok) {
+    if (result.alreadyProcessed) return sendJson(res, 200, await loadOrder(order.id));
+    return sendJson(res, 409, { error: `Cannot verify an order in status '${order.status}'` });
+  }
   sendJson(res, 200, await loadOrder(order.id));
 });
 
@@ -322,7 +532,7 @@ async function creditMacaashIfNeeded(order: any) {
  * signal can complete the order first; whichever loses the race just gets
  * 0 rows back from the guarded UPDATE and is treated as a no-op, not an error.
  */
-async function completeOrderById(orderId: string): Promise<{ order: any; alreadyCompleted: boolean } | null> {
+async function completeOrderById(orderId: string): Promise<{ order: any; success: boolean; alreadyCompleted: boolean } | null> {
   const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [orderId]);
   if (!order) return null;
 
@@ -331,7 +541,9 @@ async function completeOrderById(orderId: string): Promise<{ order: any; already
     [orderId]
   );
   if (result.length === 0) {
-    return { order, alreadyCompleted: order.status === "completed" };
+    // order here is the pre-update snapshot, so this reflects the status
+    // that was already true going into this call, not a race we lost.
+    return { order, success: order.status === "completed", alreadyCompleted: order.status === "completed" };
   }
   await creditMacaashIfNeeded(order);
   await creditCommissionIfNeeded(order);
@@ -354,14 +566,14 @@ async function completeOrderById(orderId: string): Promise<{ order: any; already
       status: "completed",
     },
   });
-  return { order, alreadyCompleted: false };
+  return { order, success: true, alreadyCompleted: false };
 }
 
 ordersRouter.post("/agent/orders/:id/complete", requireAuth("agent"), async (req, res) => {
   const result = await completeOrderById(req.params.id);
   if (!result) return sendJson(res, 404, { error: "Order not found" });
-  if (result.order.status !== "completed" && !result.alreadyCompleted) {
-    return sendJson(res, 409, { error: "Order must be in progress before it can be completed" });
+  if (!result.success) {
+    return sendJson(res, 409, { error: `Cannot complete an order in status '${result.order.status}'` });
   }
   sendJson(res, 200, await loadOrder(req.params.id));
 });
@@ -496,6 +708,13 @@ async function classifyStuckReason(order: any): Promise<string | null> {
     `SELECT status, response_message FROM ussd_dial_attempts WHERE order_id=$1 ORDER BY attempt_number DESC LIMIT 1`,
     [order.id]
   );
+  // 'ambiguous': the carrier sent back a response, but its text read like a
+  // failure/timeout rather than a genuine confirmation (see UssdDialer.kt's
+  // looksLikeFailureResponse) — distinct from 'failed' so staff see the real
+  // reason instead of this falling through to a misleading device-heartbeat
+  // guess (sim_not_available/agent_offline/server_timeout) below, none of
+  // which describe what actually happened here.
+  if (lastAttempt && lastAttempt.status === "ambiguous") return "delivery_response_ambiguous";
   if (lastAttempt && lastAttempt.status === "failed") {
     const msg = (lastAttempt.response_message ?? "").toLowerCase();
     if (msg.includes("sim")) return "sim_not_available";
@@ -503,15 +722,13 @@ async function classifyStuckReason(order: any): Promise<string | null> {
     return "server_timeout";
   }
 
-  const device = await queryOne<{ last_heartbeat_at: string | null }>(
-    `SELECT d.last_heartbeat_at FROM sim_routing sr JOIN agent_devices d ON d.id = sr.device_id
+  const device = await queryOne<{ online: boolean }>(
+    `SELECT ${DEVICE_ONLINE_SQL} AS online FROM sim_routing sr JOIN agent_devices d ON d.id = sr.device_id
      WHERE sr.company_id=$1 ORDER BY sr.priority ASC LIMIT 1`,
     [order.company_id]
   );
   if (!device) return "sim_not_available";
-  const lastHeartbeatAt = device.last_heartbeat_at ? new Date(device.last_heartbeat_at).getTime() : null;
-  const stale = lastHeartbeatAt == null || Date.now() - lastHeartbeatAt > DEVICE_STALE_MS;
-  return stale ? "agent_offline" : "server_timeout";
+  return device.online ? "server_timeout" : "agent_offline";
 }
 
 // Manual Recovery Dashboard: every order that's genuinely stuck (not just
@@ -542,17 +759,16 @@ ordersRouter.get("/admin/orders/:id", requireStaff(), async (req, res) => {
 // For an order that's verified + USSD-generated but has zero dial attempts
 // (the "delivering, but nobody's dialed it yet" state) — tells the dashboard
 // whether that's because no device is configured to handle this company at
-// all, or because the responsible device's heartbeat has gone stale, rather
-// than leaving that ambiguous. Same "no heartbeat in >5 min = stale"
-// threshold already used by the Devices panel's own staleness badge.
-const DEVICE_STALE_MS = 5 * 60 * 1000;
-
+// all, or because the responsible device is offline, rather than leaving
+// that ambiguous. Uses the same DEVICE_ONLINE_SQL formula as every other
+// online-status check in the backend, so this never disagrees with the
+// Devices panel's own badge for the same device.
 ordersRouter.get("/admin/orders/:id/delivery-status", requireStaff(), async (req, res) => {
   const order = await queryOne(`SELECT company_id FROM orders WHERE id=$1`, [req.params.id]);
   if (!order) return sendJson(res, 404, { error: "Order not found" });
 
   const devices = await query(
-    `SELECT d.name, d.last_heartbeat_at
+    `SELECT d.name, d.last_heartbeat_at, ${DEVICE_ONLINE_SQL} AS online
      FROM sim_routing sr JOIN agent_devices d ON d.id = sr.device_id
      WHERE sr.company_id=$1
      ORDER BY sr.priority ASC`,
@@ -562,11 +778,9 @@ ordersRouter.get("/admin/orders/:id/delivery-status", requireStaff(), async (req
     return sendJson(res, 200, { hasRouting: false, device: null });
   }
   const top = devices[0];
-  const lastHeartbeatAt = top.last_heartbeat_at ? new Date(top.last_heartbeat_at) : null;
-  const stale = !lastHeartbeatAt || Date.now() - lastHeartbeatAt.getTime() > DEVICE_STALE_MS;
   sendJson(res, 200, {
     hasRouting: true,
-    device: { name: top.name, lastHeartbeatAt: top.last_heartbeat_at, stale },
+    device: { name: top.name, lastHeartbeatAt: top.last_heartbeat_at, stale: !top.online },
   });
 });
 

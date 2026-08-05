@@ -10,6 +10,7 @@ import { recordActivity } from "../utils/activityLog.js";
 import { markPaymentProcessing, markPaymentFinal } from "../utils/paymentTransactions.js";
 import { creditCommissionIfNeeded } from "../utils/commissions.js";
 import { creditReferralBonusIfNeeded } from "../utils/referrals.js";
+import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
 
 export const ussdRouter = Router();
 
@@ -27,7 +28,7 @@ ussdRouter.get("/admin/companies/:id/pin-status", requireStaff(), async (req, re
 
 ussdRouter.put("/admin/companies/:id/pin", requireAuth("super_admin"), async (req, res) => {
   const { pin } = req.body;
-  if (!isValidPin(String(pin ?? ""))) return sendJson(res, 400, { error: "PIN must be 3-8 digits" });
+  if (!isValidPin(String(pin ?? ""))) return sendJson(res, 400, { error: "PIN must be 4-8 digits" });
   const existing = await queryOne(`SELECT pin_encrypted FROM companies WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Company not found" });
   await query(`UPDATE companies SET pin_encrypted=$1, updated_at=now() WHERE id=$2`, [encrypt(pin), req.params.id]);
@@ -371,7 +372,7 @@ ussdRouter.post("/admin/orders/:id/generate-ussd", requireStaff(), async (req, r
 // ---------------- Multi-Device Configuration ----------------
 
 ussdRouter.get("/admin/agent-devices", requireStaff(), async (_req, res) => {
-  const devices = await query(`SELECT * FROM agent_devices ORDER BY name`);
+  const devices = await query(`SELECT d.*, ${DEVICE_ONLINE_SQL} AS online FROM agent_devices d ORDER BY d.name`);
   const routing = await query(
     `SELECT sr.*, c.name AS company_name, c.color_hex AS company_color FROM sim_routing sr JOIN companies c ON c.id=sr.company_id`
   );
@@ -380,6 +381,27 @@ ussdRouter.get("/admin/agent-devices", requireStaff(), async (_req, res) => {
     sims: routing.filter((r: any) => r.device_id === d.id).sort((a: any, b: any) => a.sim_slot - b.sim_slot),
   }));
   sendJson(res, 200, withSims);
+});
+
+// agent_diagnostics_log is otherwise write-only (POST .../heartbeat inserts
+// into it, nothing ever reads it back) -- this is what actually makes a
+// device's failure history diagnosable server-side, grouped by the same
+// category tags the Agent App's heartbeat retry loop now records
+// (heartbeat_failed_dns/tls/timeout/connection/http_*/unknown), not just a
+// raw success/failure count with no explanation.
+ussdRouter.get("/admin/agent-devices/:id/diagnostics", requireStaff(), async (req, res) => {
+  const summary = await query(
+    `SELECT tag, COUNT(*) AS count FROM agent_diagnostics_log
+     WHERE device_id=$1 AND occurred_at > now() - interval '7 days'
+     GROUP BY tag ORDER BY COUNT(*) DESC`,
+    [req.params.id]
+  );
+  const recent = await query(
+    `SELECT tag, message, is_error, occurred_at FROM agent_diagnostics_log
+     WHERE device_id=$1 ORDER BY occurred_at DESC LIMIT 50`,
+    [req.params.id]
+  );
+  sendJson(res, 200, { summary, recent });
 });
 
 ussdRouter.post("/admin/agent-devices", requirePermission("devices.manage"), async (req, res) => {
@@ -496,6 +518,23 @@ ussdRouter.get("/agent/devices", async (_req, res) => {
 ussdRouter.post("/agent/devices/:id/heartbeat", requireAuth("agent"), async (req, res) => {
   const agent = await queryOne<{ device_id: string | null }>(`SELECT device_id FROM agents WHERE id=$1`, [req.auth!.sub]);
   if (agent?.device_id !== req.params.id) {
+    // Otherwise this rejection leaves zero trace anywhere — last_heartbeat_at
+    // simply stops updating and the device looks "offline" with no visible
+    // reason. A session/device-reassignment mismatch is exactly the kind of
+    // thing that would silently do that, so it's worth a diagnostics row on
+    // the TARGET device (req.params.id) even though the caller isn't
+    // authorized for it — that's the device a Super Admin would actually be
+    // looking at on the Reliability Dashboard when investigating.
+    await query(
+      `INSERT INTO agent_diagnostics_log (id, device_id, tag, message, is_error, occurred_at) VALUES ($1,$2,$3,$4,$5,now())`,
+      [
+        randomUUID(),
+        req.params.id,
+        "heartbeat_rejected",
+        `Heartbeat rejected: agent ${req.auth!.sub} is assigned to device ${agent?.device_id ?? "none"}, not ${req.params.id}.`,
+        true,
+      ]
+    ).catch(() => {});
     return sendJson(res, 403, { error: "You can only report health for your own assigned device." });
   }
   const { batteryPercent, networkOnline, sim1Present, sim2Present, recentDiagnostics } = req.body;
@@ -582,8 +621,20 @@ ussdRouter.post("/agent/orders/:id/dial-attempts", requireAuth("agent"), async (
 });
 
 ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (req, res) => {
-  const { status, responseMessage } = req.body;
-  if (!["success", "failed"].includes(status)) return sendJson(res, 400, { error: "status must be success or failed" });
+  const { status, responseMessage, isFinalAttempt } = req.body;
+  // Older Agent App builds never send this field — default true so their
+  // (already-correct-for-them, single-attempt) behavior is unchanged.
+  const finalAttempt = isFinalAttempt !== false;
+  // 'ambiguous': the Agent App's Android USSD callback fired (it got SOME
+  // response text back from the carrier), but the text itself reads like a
+  // failure/error/timeout rather than a genuine top-up confirmation — see
+  // UssdDialer.looksLikeFailureResponse. Recorded distinctly from 'failed' so
+  // the raw carrier text is visible (Payment History / Dial Attempts), but
+  // deliberately excluded from the 'success' branch below so it can never
+  // complete an order the way a real confirmation does.
+  if (!["success", "failed", "ambiguous"].includes(status)) {
+    return sendJson(res, 400, { error: "status must be success, failed, or ambiguous" });
+  }
 
   // Atomic compare-and-swap: only the first report of a given attempt ever
   // runs the order-completion side effects below — a duplicate/retried
@@ -648,9 +699,19 @@ ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (r
     }
     await markPaymentFinal(attempt.order_id, "completed");
   } else {
-    await query(`UPDATE orders SET status='failed', updated_at=now() WHERE id=$1 AND status != 'completed'`, [attempt.order_id]);
-    // Not necessarily final — UssdOrchestrator may still retry, which calls
-    // markPaymentProcessing again and can still move this to 'completed'.
+    // Only mark the ORDER failed once this is genuinely the last attempt —
+    // UssdOrchestrator reports every attempt as it happens (see
+    // dialWithRetry in the Agent App), including the first of up to 3
+    // retries. Flipping orders.status='failed' on attempt 1 showed the
+    // customer "Failed" while a retry was still about to run seconds later;
+    // now the order stays at its current status (still 'in_progress') until
+    // either a retry succeeds or every attempt is exhausted.
+    if (finalAttempt) {
+      await query(`UPDATE orders SET status='failed', updated_at=now() WHERE id=$1 AND status != 'completed'`, [attempt.order_id]);
+    }
+    // markPaymentFinal itself is not necessarily final — UssdOrchestrator may
+    // still retry, which calls markPaymentProcessing again and can still
+    // move this to 'completed'.
     await markPaymentFinal(attempt.order_id, "failed");
   }
   broadcast({ type: "order.updated", orderId: attempt.order_id });

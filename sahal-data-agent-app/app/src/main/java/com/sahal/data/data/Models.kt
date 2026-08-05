@@ -65,6 +65,14 @@ data class SmsLogEntry(
     // Null for formats with no such field; the server falls back to its
     // existing sender+body+minute dedup in that case.
     val transactionRef: String? = null,
+    // Which physical SIM slot (1 or 2 — matches ussd_templates.sim_slot's
+    // existing 1-based convention) on THIS device actually received the
+    // SMS, resolved from the incoming broadcast's subscription id (see
+    // SmsReceiver.resolveSimSlot). Null when it can't be determined
+    // (single-SIM device, missing READ_PHONE_STATE, older/OEM broadcast
+    // with no subscription extra) — the backend then falls back to
+    // device-level matching only.
+    val simSlot: Int? = null,
 )
 
 data class Transaction(
@@ -77,6 +85,35 @@ data class Transaction(
     val companyName: String,
     val amount: Double,
     val completedAt: String,
+)
+
+/** GET /agent/wallet-balances — one row per SIM slot (1 and 2) on this
+ * agent's own device, regardless of whether a real balance has been
+ * recorded yet (providerName/phoneNumber/balance are null/0 until the
+ * first real payment SMS or a manual override sets them). */
+data class WalletBalanceEntry(
+    val simSlot: Int,
+    val companyId: String? = null,
+    val providerName: String? = null,
+    val colorHex: String? = null,
+    val phoneNumber: String? = null,
+    val balance: Double = 0.0,
+    val lowBalanceThreshold: Double = 5.0,
+    val balanceUpdatedAt: String? = null,
+)
+
+/** GET /agent/payment-transactions — every payment_transactions row this
+ * agent's own SMS uploads produced, matched or not, dialed or not. */
+data class AgentPaymentTransaction(
+    val id: String,
+    val orderId: String? = null,
+    val customerPhone: String? = null,
+    val amount: Double? = null,
+    // "pending" | "processing" | "completed" | "failed" | "duplicate_blocked"
+    val status: String,
+    val createdAt: String,
+    val smsSender: String? = null,
+    val providerName: String? = null,
 )
 
 data class AgentProfile(

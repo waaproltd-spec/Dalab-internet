@@ -87,6 +87,9 @@ fun ReliabilityDashboardScreen(onBack: () -> Unit) {
     val heartbeatFailure = remember(tick) { HeartbeatStats.failureCount() }
     val lastHeartbeatAt = remember(tick) { HeartbeatStats.lastSuccessAt() }
     val lastHeartbeatError = remember(tick) { HeartbeatStats.lastError() }
+    val heartbeatFailuresByCategory = remember(tick) {
+        HeartbeatStats.failureCountsByCategory().entries.sortedByDescending { it.value }
+    }
 
     // Not a new low-level Android capability — a plain-language combination
     // of the two things that actually keep this process alive through Doze/
@@ -174,6 +177,12 @@ fun ReliabilityDashboardScreen(onBack: () -> Unit) {
                     )
                     StatLine("Successful", "$heartbeatSuccess")
                     StatLine("Failed", "$heartbeatFailure")
+                    if (heartbeatFailuresByCategory.isNotEmpty()) {
+                        Spacer(Modifier.height(4.dp))
+                        heartbeatFailuresByCategory.forEach { (category, count) ->
+                            StatLine("  $category", "$count")
+                        }
+                    }
                     if (lastHeartbeatError != null) {
                         Spacer(Modifier.height(6.dp))
                         Text("Last error: $lastHeartbeatError", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)

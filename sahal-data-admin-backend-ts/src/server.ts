@@ -1,8 +1,15 @@
+// Must be imported before any routes are registered — patches Express 4 so a
+// rejected promise/thrown error inside an async route handler reaches the
+// error-handling middleware below via next(err) instead of leaving the
+// request hanging forever with no response (Express 4 doesn't do this on its
+// own; Express 5 does, but that's a larger upgrade than this fix warrants).
+import "express-async-errors";
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
 import { authRouter, seedSuperAdmin } from "./routes/auth.routes.js";
 import { usersRouter } from "./routes/users.routes.js";
 import { companiesRouter, packagesRouter } from "./routes/companies.routes.js";
+import { companyPaymentMethodsRouter } from "./routes/companyPaymentMethods.routes.js";
 import { categoriesRouter } from "./routes/categories.routes.js";
 import { ordersRouter } from "./routes/orders.routes.js";
 import { customersRouter } from "./routes/customers.routes.js";
@@ -22,8 +29,9 @@ import { commissionsRouter } from "./routes/commissions.routes.js";
 import { simBalancesRouter } from "./routes/simBalances.routes.js";
 import { feedbackRouter } from "./routes/feedback.routes.js";
 import { referralsRouter } from "./routes/referrals.routes.js";
-import { pool } from "./db/pool.js";
+import { pool, queryOne } from "./db/pool.js";
 import { seedAll } from "./db/seed.js";
+import { sendJson } from "./utils/camelCase.js";
 
 // Express 4 route handlers here are plain `async (req, res) => {...}` with no
 // wrapper — a promise rejection inside one (e.g. an uncaught DB error) never
@@ -149,6 +157,25 @@ const app = express();
 // the rate limiter below depends on to not be trivially bypassable.
 app.set("trust proxy", 1);
 
+// Fires the instant a request reaches Express, and again when the response
+// actually finishes -- if something downstream hangs, the "-->" line still
+// proves the request arrived; a missing "<--" line pinpoints that it never
+// completed, instead of the total silence today that leaves "did this even
+// reach the server" as an open question during an incident. Method+path+
+// status+duration only, never headers/body, so nothing sensitive is logged.
+// Registered before express.json()/cors() so it's ahead of every other
+// possible failure point in the chain.
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const startedAt = Date.now();
+  // eslint-disable-next-line no-console
+  console.log(`--> ${req.method} ${req.path}`);
+  res.on("finish", () => {
+    // eslint-disable-next-line no-console
+    console.log(`<-- ${req.method} ${req.path} ${res.statusCode} ${Date.now() - startedAt}ms`);
+  });
+  next();
+});
+
 if (!process.env.CORS_ORIGIN && process.env.NODE_ENV === "production") {
   throw new Error("CORS_ORIGIN is not set. Refusing to start in production wide open to any origin.");
 }
@@ -195,9 +222,31 @@ app.get("/delete-account", (_req, res) => {
   res.status(200).send(DELETE_ACCOUNT_HTML);
 });
 
+// Enforces the `maintenance_mode` system setting (previously stored but
+// never read). Admin routes always pass through — staff must be able to
+// keep managing the system, and to turn maintenance mode back off, while
+// it's on. Customer/agent-facing routes get a clear 503 instead of
+// whatever half-broken behavior they'd otherwise hit mid-maintenance.
+app.use(async (req: Request, res: Response, next: NextFunction) => {
+  if (
+    req.path.startsWith("/admin") ||
+    req.path === "/health" ||
+    req.path === "/privacy-policy" ||
+    req.path === "/delete-account"
+  ) {
+    return next();
+  }
+  const row = await queryOne<{ value: string }>(`SELECT value FROM system_settings WHERE key='maintenance_mode'`);
+  if (row?.value === "true") {
+    return sendJson(res, 503, { error: "SAHAL DATA is temporarily under maintenance. Please try again shortly." });
+  }
+  next();
+});
+
 app.use(authRouter);
 app.use(usersRouter);
 app.use(companiesRouter);
+app.use(companyPaymentMethodsRouter);
 app.use(packagesRouter);
 app.use(categoriesRouter);
 app.use(ordersRouter);

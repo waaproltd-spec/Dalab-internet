@@ -1,6 +1,8 @@
 declare module "express" {
   export interface Request {
     body: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    method: string;
+    path: string;
     params: Record<string, string>;
     query: Record<string, string | string[] | undefined>;
     headers: Record<string, string | undefined>;
@@ -12,6 +14,7 @@ declare module "express" {
     ip?: string;
   }
   export interface Response {
+    statusCode: number;
     status(code: number): Response;
     json(body: unknown): Response;
     send(body?: unknown): Response;
@@ -19,6 +22,7 @@ declare module "express" {
     write(chunk: string): boolean;
     flushHeaders(): void;
     setHeader(name: string, value: string): void;
+    on(event: "finish", listener: () => void): void;
   }
   export type NextFunction = (err?: unknown) => void;
   export type RequestHandler = (req: Request, res: Response, next: NextFunction) => void | Promise<void>;

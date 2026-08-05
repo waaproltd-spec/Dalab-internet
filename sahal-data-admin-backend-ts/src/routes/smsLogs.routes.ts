@@ -4,9 +4,15 @@ import { query, queryOne, withTransaction } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
 import { recordActivity } from "../utils/activityLog.js";
-import { createPaymentTransaction, hasActivePaymentTransaction } from "../utils/paymentTransactions.js";
+import {
+  createPaymentTransaction,
+  hasActivePaymentTransaction,
+  linkPaymentTransactionToOrder,
+  markPaymentTransactionDuplicateForSms,
+} from "../utils/paymentTransactions.js";
 import { extractBalanceFromSms, resolveCompanyIdByProviderName, resolveDeviceSlotForCompany, applyBalanceUpdate } from "../utils/simBalances.js";
 import { broadcast } from "../realtime/orderEvents.js";
+import { verifyOrderAndGenerateUssd } from "./orders.routes.js";
 
 export const smsLogsRouter = Router();
 
@@ -16,27 +22,72 @@ function normalizePhone(phone: string | null | undefined): string {
   return String(phone ?? "").replace(/\D/g, "").slice(-9);
 }
 
-type OrderMatch = { id: string; sender_phone: string | null; receiver_phone: string | null; amount: number; company_id: string };
+type OrderMatch = {
+  id: string;
+  sender_phone: string | null;
+  receiver_phone: string | null;
+  amount: number;
+  company_id: string;
+  payment_method_id: string | null;
+};
 
 /**
- * Cross-network by design: the telecom that RECEIVED the payment has no
- * bearing on which PROVIDER's order it fulfills — a customer can pay via
- * any network for a package on any other. Matches by amount + normalized
- * customer phone only, never by provider. No phone match -> returns null
- * rather than guessing across possibly-different customers by amount alone.
+ * Matches by amount + normalized customer phone, same as before. No phone
+ * match -> returns null rather than guessing across possibly-different
+ * customers by amount alone.
  *
- * Two safeguards against a real payment being silently absorbed by the
- * WRONG order (same customer, same amount, but a different attempt):
- *  - MATCH_WINDOW_HOURS excludes anything older than a day — a payment SMS
- *    arriving now is confirming something the customer just did, not an
- *    order they gave up on yesterday. This is also what keeps oldest-first
- *    matching (below) safe: a stale/abandoned order can only "win" future
- *    payments of that amount for up to this window, never indefinitely.
- *  - Within that window, the OLDEST pending order wins (`created_at ASC`)
- *    — when a customer has several pending orders for the same amount
- *    (e.g. re-visiting Checkout more than once before paying), the payment
- *    they actually send should complete the one they created first, not
- *    leave it stranded while a newer duplicate jumps the queue.
+ * Payment-number verification: when the matched order used one of a
+ * company's specific payment methods (payment_method_id set — EVC Plus vs
+ * eDahab vs JEEB, each its own telco/SIM) and that method already has a
+ * known device/SIM slot (company_payment_methods.device_id/sim_slot), the
+ * SMS must have arrived through that exact device (and, if the method
+ * specifies one, the exact SIM slot on that device — a single payment
+ * phone commonly holds two payment SIMs) — otherwise it's treated the
+ * same as no match at all, and the order simply stays 'pending' rather
+ * than being silently completed by a payment that landed on the wrong
+ * number.
+ *
+ * A method with no device linked YET is accepted (never rejected for that
+ * reason alone — same trust level as a legacy company below) and the
+ * device/slot this SMS actually arrived on is auto-linked onto that
+ * payment method right here, since a real amount+phone-matched payment
+ * just proved that's where it's collected. There is no admin UI step for
+ * this — every method links itself the moment its first real payment
+ * comes in, and every payment after that is strictly verified against the
+ * link it just learned. Legacy companies with no per-method payment
+ * methods configured (payment_method_id null) keep the original
+ * cross-network behavior — there's no specific number to verify against
+ * yet.
+ *
+ * Two further safeguards against a real payment being silently absorbed by
+ * the WRONG order (same customer, same amount, but a different attempt):
+ *  - MATCH_WINDOW_HOURS excludes anything not touched in the last day — a
+ *    payment SMS arriving now is confirming something the customer just
+ *    did, not an order they gave up on long ago. This is also what keeps
+ *    oldest-first matching (below) safe: a stale/abandoned order can only
+ *    "win" future payments of that amount for up to this window, never
+ *    indefinitely.
+ *    Filtered on updated_at, not created_at: the guest/orders create route
+ *    above silently REUSES an existing 'pending' row (same customer+
+ *    company+package+amount) via idx_orders_pending_content_dedup instead
+ *    of inserting a new one when a customer re-attempts checkout — it
+ *    bumps updated_at but deliberately leaves created_at as the original
+ *    creation time (an immutable audit trail). Filtering on created_at
+ *    made a customer's brand-new checkout attempt today invisible to
+ *    matching if the row being reused was first created days earlier —
+ *    confirmed via a real order stuck 'pending' since its original
+ *    creation, reused today, whose same-day payment SMS still got "No
+ *    pending order... in the last 24h" because created_at never moved.
+ *    updated_at is the right freshness signal here since it's exactly what
+ *    the reuse path (and every real status transition) already bumps.
+ *  - Within that window, the OLDEST eligible pending order wins
+ *    (`created_at ASC`) — when a customer has several pending orders for
+ *    the same amount (e.g. re-visiting Checkout more than once before
+ *    paying), the payment they actually send should complete the one they
+ *    created first, not leave it stranded while a newer duplicate jumps
+ *    the queue. A candidate that fails the device check is skipped in
+ *    favor of the next-oldest one that passes, rather than blocking the
+ *    whole match on an order for a different payment method.
  *  - The candidate SELECT runs inside a transaction with
  *    `FOR UPDATE SKIP LOCKED` so two payment SMS arriving at the same
  *    instant can't both be handed the same locked-in-flight candidate row
@@ -47,23 +98,102 @@ type OrderMatch = { id: string; sender_phone: string | null; receiver_phone: str
  */
 const MATCH_WINDOW_HOURS = 24;
 
-async function findMatchingOrder(parsedAmount: number | undefined, parsedPhone: string | undefined): Promise<OrderMatch | null> {
-  if (parsedAmount == null || !parsedPhone) return null;
+type MatchResult = { order: OrderMatch | null; reason: string | null };
+
+/**
+ * findMatchingOrder's reject paths used to return a bare null — indistinguishable
+ * on the dashboard between "no candidate order at all" and "a real order was
+ * found but rejected by the device/SIM-slot guardrail below." reason gives
+ * every rejection a plain-language explanation, persisted onto the sms_logs
+ * row itself (match_failure_reason, migration 037) so a Super Admin can see
+ * WHY without cross-referencing agents.device_id and
+ * company_payment_methods.device_id/sim_slot by hand.
+ */
+async function findMatchingOrder(
+  parsedAmount: number | undefined,
+  parsedPhone: string | undefined,
+  uploadingAgentId: string,
+  uploadingSimSlot: number | null | undefined
+): Promise<MatchResult> {
+  if (parsedAmount == null || !parsedPhone) {
+    return { order: null, reason: "SMS did not parse a usable amount and/or sender phone number" };
+  }
   const target = normalizePhone(parsedPhone);
-  if (!target) return null;
+  if (!target) return { order: null, reason: "Parsed phone number had no digits after normalization" };
 
   const candidates = await withTransaction((client) =>
     client
       .query<OrderMatch>(
-        `SELECT id, sender_phone, receiver_phone, amount, company_id FROM orders
-         WHERE status='pending' AND ABS(amount - $1) < 0.01 AND created_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
+        `SELECT id, sender_phone, receiver_phone, amount, company_id, payment_method_id FROM orders
+         WHERE status='pending' AND ABS(amount - $1) < 0.01 AND updated_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
          ORDER BY created_at ASC
          FOR UPDATE SKIP LOCKED`,
         [parsedAmount]
       )
       .then((r) => r.rows)
   );
-  return candidates.find((o) => normalizePhone(o.sender_phone) === target) ?? null;
+  if (candidates.length === 0) {
+    return { order: null, reason: `No pending order for $${parsedAmount} in the last ${MATCH_WINDOW_HOURS}h` };
+  }
+  const phoneMatches = candidates.filter((o) => normalizePhone(o.sender_phone) === target);
+  if (phoneMatches.length === 0) {
+    return {
+      order: null,
+      reason: `${candidates.length} pending order(s) for $${parsedAmount} in the last ${MATCH_WINDOW_HOURS}h, but none for phone ...${target}`,
+    };
+  }
+
+  const uploadingAgent = await queryOne<{ device_id: string | null }>(`SELECT device_id FROM agents WHERE id=$1`, [uploadingAgentId]);
+  const uploadingDeviceId = uploadingAgent?.device_id ?? null;
+
+  const skipped: string[] = [];
+  for (const candidate of phoneMatches) {
+    if (!candidate.payment_method_id) return { order: candidate, reason: null }; // legacy company, no specific number to verify against
+    const method = await queryOne<{ device_id: string | null; sim_slot: number | null }>(
+      `SELECT device_id, sim_slot FROM company_payment_methods WHERE id=$1`,
+      [candidate.payment_method_id]
+    );
+    if (!method) {
+      skipped.push(`order ${candidate.id}: its payment method record (${candidate.payment_method_id}) no longer exists`);
+      continue;
+    }
+    if (!method.device_id) {
+      // Not yet linked to a device — accept (same trust level as the
+      // legacy-company path above) and auto-link this payment method to
+      // the device/slot this SMS just arrived on, since a real
+      // amount+phone-matched payment is concrete proof that's where it's
+      // collected. Every payment after this one is strictly verified
+      // against the link just learned here. If the uploading agent has no
+      // device_id of its own yet, there's nothing to link — still accept
+      // the match rather than strand the order, but leave the method
+      // unlinked for the next SMS to try again.
+      if (uploadingDeviceId) {
+        await query(
+          `UPDATE company_payment_methods SET device_id=$1, sim_slot=COALESCE(sim_slot, $2) WHERE id=$3`,
+          [uploadingDeviceId, uploadingSimSlot ?? null, candidate.payment_method_id]
+        );
+      }
+      return { order: candidate, reason: null };
+    }
+    if (method.device_id !== uploadingDeviceId) {
+      skipped.push(`order ${candidate.id}: expects device ${method.device_id}, this SMS arrived on device ${uploadingDeviceId ?? "(agent has no device_id set)"}`);
+      continue;
+    }
+    // A payment device commonly has two SIMs, each its own payment number
+    // (EVC Plus vs eDahab) — when the method specifies which slot, the
+    // upload must have resolved the SAME slot to count as verified; a
+    // method with no slot configured (single-SIM payment device, or not
+    // narrowed down yet) only needs the device to match, same as before
+    // slot-level tracking existed.
+    if (method.sim_slot != null && method.sim_slot !== uploadingSimSlot) {
+      skipped.push(`order ${candidate.id}: expects SIM slot ${method.sim_slot}, this SMS arrived on slot ${uploadingSimSlot ?? "(unresolved)"}`);
+      continue;
+    }
+    return { order: candidate, reason: null };
+  }
+  // Every amount+phone match was on the wrong (or unassigned) device/SIM —
+  // stays pending, never falsely completed.
+  return { order: null, reason: `Matched by amount+phone but rejected by device/SIM verification — ${skipped.join("; ")}` };
 }
 
 async function requiresManualApprovalFor(orderId: string): Promise<boolean> {
@@ -176,7 +306,7 @@ async function respondAlreadyProcessed(
 }
 
 smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => {
-  const { sender, body, parsedProvider, parsedAmount, parsedPhone, receivedAt, transactionRef } = req.body;
+  const { sender, body, parsedProvider, parsedAmount, parsedPhone, receivedAt, transactionRef, simSlot } = req.body;
   if (!sender || !body) return sendJson(res, 400, { error: "sender and body are required" });
 
   const effectiveReceivedAt = receivedAt ?? new Date().toISOString();
@@ -195,7 +325,7 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
     if (existingByRef) return respondAlreadyProcessed(res, existingByRef, transactionRef, effectiveReceivedAt, parsedPhone, parsedAmount);
   }
 
-  const match = await findMatchingOrder(parsedAmount, parsedPhone);
+  const { order: match, reason: matchFailureReason } = await findMatchingOrder(parsedAmount, parsedPhone, req.auth!.sub, simSlot);
   const id = randomUUID();
   // Resolved once in JS (rather than left to SQL's now()) so the dedup
   // lookup below, if the insert conflicts, checks the exact same instant
@@ -203,9 +333,9 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
   // different truncated minute than the row that actually won.
   try {
     await query(
-      `INSERT INTO sms_logs (id, agent_id, sender, body, parsed_provider, parsed_amount, parsed_phone, matched_order_id, received_at, transaction_ref)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-      [id, req.auth!.sub, sender, body, parsedProvider ?? null, parsedAmount ?? null, parsedPhone ?? null, match?.id ?? null, effectiveReceivedAt, transactionRef ?? null]
+      `INSERT INTO sms_logs (id, agent_id, sender, body, parsed_provider, parsed_amount, parsed_phone, matched_order_id, received_at, transaction_ref, sim_slot, match_failure_reason)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+      [id, req.auth!.sub, sender, body, parsedProvider ?? null, parsedAmount ?? null, parsedPhone ?? null, match?.id ?? null, effectiveReceivedAt, transactionRef ?? null, simSlot ?? null, match ? null : matchFailureReason]
     );
   } catch (err: any) {
     if (err?.code !== "23505") throw err;
@@ -310,6 +440,112 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
   sendJson(res, 201, { id, matchedOrderId: match?.id ?? null, requiresManualApproval, duplicate: false, status: "new" });
 });
 
+type OrphanedSmsRow = {
+  id: string;
+  agent_id: string;
+  parsed_amount: number | null;
+  parsed_phone: string | null;
+  sim_slot: number | null;
+  transaction_ref: string | null;
+  received_at: string;
+};
+
+/**
+ * findMatchingOrder only ever runs once, at upload time — if the matching
+ * order simply doesn't exist yet (the SMS beat the order-creation call),
+ * that SMS was permanently orphaned: matched_order_id is written once at
+ * INSERT and never revisited by anything else in this codebase. This
+ * re-attempts findMatchingOrder for every still-unmatched
+ * SMS in the match window, and — on a fresh match — runs the exact same
+ * link -> activity-log -> verify -> generate-USSD chain the live upload
+ * path runs inline, so a delayed match still ends up fully processed
+ * automatically (the existing self-heal-candidates poll then dials it,
+ * same as any other in_progress+ussd_generated order).
+ *
+ * Best-effort per-row: one bad row's exception is logged and skipped
+ * rather than aborting the whole sweep (mirrors selfHealStuckOrders'
+ * try/catch convention in ussd.routes.ts).
+ */
+export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; stillUnmatched: number }> {
+  const orphans = await query<OrphanedSmsRow>(
+    `SELECT id, agent_id, parsed_amount, parsed_phone, sim_slot, transaction_ref, received_at FROM sms_logs
+     WHERE matched_order_id IS NULL AND received_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
+     ORDER BY received_at ASC`
+  );
+  let relinked = 0;
+  for (const sms of orphans) {
+    try {
+      const { order: match, reason } = await findMatchingOrder(sms.parsed_amount ?? undefined, sms.parsed_phone ?? undefined, sms.agent_id, sms.sim_slot);
+      if (!match) {
+        await query(`UPDATE sms_logs SET match_failure_reason=$1 WHERE id=$2`, [reason, sms.id]);
+        continue;
+      }
+      // Atomically claim this row — a concurrent live upload or another
+      // sweep pass may have linked it (or a different SMS to this same
+      // order) in the meantime; only proceed if we're the one that wins.
+      const claimed = await query<{ id: string }>(
+        `UPDATE sms_logs SET matched_order_id=$1, match_failure_reason=NULL WHERE id=$2 AND matched_order_id IS NULL RETURNING id`,
+        [match.id, sms.id]
+      );
+      if (claimed.length === 0) continue;
+
+      const requiresManualApproval = await requiresManualApprovalFor(match.id);
+      if (await hasActivePaymentTransaction(match.id)) {
+        // The order this SMS now matches was fulfilled by a different
+        // payment between its original upload and this sweep pass —
+        // record it as a blocked duplicate, same as the live path does.
+        await markPaymentTransactionDuplicateForSms(sms.id, match.id);
+        await logPaymentActivity({
+          action: "duplicate_delivery_prevented",
+          smsLogId: sms.id,
+          order: match,
+          transactionRef: sms.transaction_ref,
+          paymentTimestamp: sms.received_at,
+          status: "duplicate_blocked",
+          requiresManualApproval,
+        });
+        broadcast({ type: "sms_log.created", smsLogId: sms.id, orderId: match.id });
+        continue;
+      }
+
+      await linkPaymentTransactionToOrder(sms.id, match.id);
+      await logPaymentActivity({
+        action: "payment_verified",
+        smsLogId: sms.id,
+        order: match,
+        transactionRef: sms.transaction_ref,
+        paymentTimestamp: sms.received_at,
+        status: "verified",
+        requiresManualApproval,
+      });
+      if (!requiresManualApproval) {
+        const orderRow = await queryOne<any>(`SELECT * FROM orders WHERE id=$1`, [match.id]);
+        if (orderRow) await verifyOrderAndGenerateUssd(orderRow, sms.agent_id);
+      }
+      broadcast({ type: "sms_log.created", smsLogId: sms.id, orderId: match.id });
+      relinked++;
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`resweepUnmatchedSmsLogs failed for sms_log ${sms.id}:`, (err as Error).message);
+    }
+  }
+  return { relinked, stillUnmatched: orphans.length - relinked };
+}
+
+// Every 30s — frequent enough that a delayed match (the order simply
+// hadn't been created yet when the SMS first arrived, or a Super Admin
+// just fixed a payment method's device/SIM assignment) resolves within
+// seconds, without needing a bespoke "please retry this one" trigger from
+// every place that could unblock it. Bounded to MATCH_WINDOW_HOURS worth
+// of rows and best-effort (never throws), so this can't grow unbounded or
+// take the process down.
+setInterval(() => {
+  resweepUnmatchedSmsLogs().catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error("resweepUnmatchedSmsLogs sweep failed:", (err as Error).message);
+  });
+}, 30_000);
+
 /** Shared tail for both the proactive check and the unique-index backstop:
  * records this specific attempt as its own 'duplicate_blocked' ledger row
  * (so the audit trail shows every rejected re-delivery, not just the real
@@ -412,6 +648,34 @@ smsLogsRouter.get("/admin/payment-transactions", requireStaff(), async (req, res
   sql += ` ORDER BY pt.created_at DESC LIMIT $${args.length}`;
   if (offset) { args.push(Number(offset)); sql += ` OFFSET $${args.length}`; }
   sendJson(res, 200, await query(sql, args));
+});
+
+// Agent App's own "Latest Transactions" dashboard — every payment_transactions
+// row this agent's own SMS uploads produced (matched or not, dialed or not),
+// newest first. Scoped by sms_logs.agent_id rather than
+// payment_transactions.agent_device_id: the latter is only set once a dial
+// attempt actually starts (markPaymentProcessing), so a still-'pending' row
+// — an SMS that arrived but hasn't been dialed/matched yet — would otherwise
+// be invisible here even though it's exactly the kind of row this dashboard
+// exists to surface. sms_logs.agent_id is set once, at upload time, and never
+// changes, so it's a stable "this came from my phone" identity throughout
+// the whole pending -> processing -> completed/failed/duplicate_blocked
+// lifecycle.
+smsLogsRouter.get("/agent/payment-transactions", requireAuth("agent"), async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 100, 500);
+  const rows = await query(
+    `SELECT pt.id, pt.order_id, pt.customer_phone, pt.amount, pt.status, pt.created_at,
+            sl.sender AS sms_sender, c.name AS provider_name
+     FROM payment_transactions pt
+     JOIN sms_logs sl ON sl.id = pt.sms_log_id
+     LEFT JOIN orders o ON o.id = pt.order_id
+     LEFT JOIN companies c ON c.id = o.company_id
+     WHERE sl.agent_id = $1
+     ORDER BY pt.created_at DESC
+     LIMIT $2`,
+    [req.auth!.sub, limit]
+  );
+  sendJson(res, 200, rows);
 });
 
 // "Stuck" is precise, not a guess: payment_transactions.status only ever

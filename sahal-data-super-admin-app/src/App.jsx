@@ -8,7 +8,7 @@ import {
   Smartphone, Radio, ChevronDown, ChevronRight, AlertTriangle, RotateCcw, UserCog, Tags,
   WifiOff, BatteryFull, BatteryMedium, BatteryLow, BatteryWarning,
   Image as ImageIcon, Upload, MessageSquare, Database, Activity, History, CreditCard, PlayCircle, Percent,
-  MessageCircle, Lightbulb, Share2
+  MessageCircle, Lightbulb, Share2, KeyRound, ExternalLink
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 
@@ -43,8 +43,40 @@ const SAHAL_DATA_API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
 const SAHAL_DATA_API_ENABLED = Boolean(SAHAL_DATA_API_BASE_URL);
 
 let sahalDataAdminAccessToken = null;
+let sahalDataAdminRefreshToken = null;
+// Set by AdminDashboard (the module's only stateful consumer) so this plain
+// module-level function can kick the user back to the login screen when the
+// refresh token itself is no longer valid — nothing else in this file holds
+// a reference to React state.
+let sahalDataAdminOnAuthExpired = null;
+// Shared by every concurrent request that hits a 401 at once, so a burst of
+// simultaneous calls (e.g. a page loading several sections together) triggers
+// exactly one /auth/refresh call rather than one per request.
+let sahalDataAdminRefreshPromise = null;
 
-async function sahalDataAdminApiRequest(path, { method = "GET", body } = {}) {
+async function refreshAdminTokens() {
+  if (!sahalDataAdminRefreshToken) throw new Error("No refresh token available");
+  if (!sahalDataAdminRefreshPromise) {
+    sahalDataAdminRefreshPromise = fetch(`${SAHAL_DATA_API_BASE_URL}/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refreshToken: sahalDataAdminRefreshToken }),
+    })
+      .then(async (res) => {
+        const json = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(json?.error || "Session expired");
+        sahalDataAdminAccessToken = json.accessToken;
+        sahalDataAdminRefreshToken = json.refreshToken;
+        return json.accessToken;
+      })
+      .finally(() => {
+        sahalDataAdminRefreshPromise = null;
+      });
+  }
+  return sahalDataAdminRefreshPromise;
+}
+
+async function sahalDataAdminApiRequest(path, { method = "GET", body, _isRetry = false } = {}) {
   if (!SAHAL_DATA_API_ENABLED) throw new Error("SAHAL DATA API not configured (SAHAL_DATA_API_BASE_URL is empty)");
   const headers = { "Content-Type": "application/json" };
   if (sahalDataAdminAccessToken) headers.Authorization = `Bearer ${sahalDataAdminAccessToken}`;
@@ -70,6 +102,24 @@ async function sahalDataAdminApiRequest(path, { method = "GET", body } = {}) {
     throw new Error("Could not reach the server. Check your connection and try again.");
   } finally {
     clearTimeout(timeoutId);
+  }
+  // The access token is short-lived (15 minutes) by design, so a 401 mid-
+  // session — the admin still has the dashboard open, just switched to a
+  // section like Provider Numbers after being idle elsewhere — is expected,
+  // not a real auth failure. Refresh once and replay the original request
+  // instead of surfacing "Invalid or expired token" to the admin. Login
+  // itself never carries a token, so a 401 there is a real bad-credentials
+  // error and skips this entirely.
+  if (res.status === 401 && !_isRetry && sahalDataAdminRefreshToken && path !== "/admin/auth/login") {
+    try {
+      await refreshAdminTokens();
+      return sahalDataAdminApiRequest(path, { method, body, _isRetry: true });
+    } catch {
+      sahalDataAdminAccessToken = null;
+      sahalDataAdminRefreshToken = null;
+      sahalDataAdminOnAuthExpired?.();
+      throw new Error("Your session has expired. Please log in again.");
+    }
   }
   const json = await res.json().catch(() => null);
   if (!res.ok) throw new Error(json?.error || `Request failed (${res.status})`);
@@ -98,6 +148,11 @@ const SahalDataAdminApi = {
   updateCompanyVisibility: (id, visibleCustomerApp, visibleAgentApp) => sahalDataAdminApiRequest(`/admin/companies/${id}/visibility`, { method: "PUT", body: { visibleCustomerApp, visibleAgentApp } }),
   updatePaymentNumber: (id, paymentNumber, paymentUssdTemplate) => sahalDataAdminApiRequest(`/admin/companies/${id}/payment-number`, { method: "PUT", body: { paymentNumber, paymentUssdTemplate } }),
   updateProviderNumber: (id, providerNumber) => sahalDataAdminApiRequest(`/admin/companies/${id}/provider-number`, { method: "PUT", body: { providerNumber } }),
+  getCompanyPaymentMethods: (companyId) => sahalDataAdminApiRequest(`/admin/companies/${companyId}/payment-methods`),
+  createCompanyPaymentMethod: (companyId, body) => sahalDataAdminApiRequest(`/admin/companies/${companyId}/payment-methods`, { method: "POST", body }),
+  updateCompanyPaymentMethod: (id, body) => sahalDataAdminApiRequest(`/admin/payment-methods/${id}`, { method: "PUT", body }),
+  setCompanyPaymentMethodStatus: (id, enabled) => sahalDataAdminApiRequest(`/admin/payment-methods/${id}/status`, { method: "PUT", body: { enabled } }),
+  deleteCompanyPaymentMethod: (id) => sahalDataAdminApiRequest(`/admin/payment-methods/${id}`, { method: "DELETE" }),
   getPackages: (companyId) => sahalDataAdminApiRequest(`/admin/packages${companyId ? `?companyId=${companyId}` : ""}`),
   createPackage: (body) => sahalDataAdminApiRequest("/admin/packages", { method: "POST", body }),
   updatePackage: (id, body) => sahalDataAdminApiRequest(`/admin/packages/${id}`, { method: "PUT", body }),
@@ -131,6 +186,7 @@ const SahalDataAdminApi = {
   getCustomerPinStatus: (id) => sahalDataAdminApiRequest(`/admin/customers/${id}/pin-status`),
   setCustomerPin: (id, pin) => sahalDataAdminApiRequest(`/admin/customers/${id}/pin`, { method: "PUT", body: { pin } }),
   resetCustomerPin: (id) => sahalDataAdminApiRequest(`/admin/customers/${id}/pin`, { method: "DELETE" }),
+  resetCustomerPassword: (id) => sahalDataAdminApiRequest(`/admin/customers/${id}/reset-password`, { method: "PUT" }),
   // Promo Images — up to 5 promotional images shown as a carousel on the
   // Customer App Home screen. Images are uploaded as data URIs (base64)
   // rather than multipart form data, since sahalDataAdminApiRequest already
@@ -141,6 +197,7 @@ const SahalDataAdminApi = {
   deletePromoImage: (id) => sahalDataAdminApiRequest(`/admin/promo-images/${id}`, { method: "DELETE" }),
   promoImageUrl: (id) => `${SAHAL_DATA_API_BASE_URL}/promo-images/${id}/image`,
   sendNotification: (type, title, body) => sahalDataAdminApiRequest("/admin/notifications/send", { method: "POST", body: { type, title, body } }),
+  getAdminNotifications: () => sahalDataAdminApiRequest("/admin/notifications"),
   getReports: (range) => sahalDataAdminApiRequest(`/admin/reports?range=${range}`),
   // USSD Services
   getUssdTemplates: (companyId) => sahalDataAdminApiRequest(`/admin/ussd-templates${companyId ? `?companyId=${companyId}` : ""}`),
@@ -2523,6 +2580,13 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
   const [pinDraft, setPinDraft] = useState("");
   const [pinError, setPinError] = useState("");
   const [pinSaving, setPinSaving] = useState(false);
+  // No self-service "forgot password" (no email/SMS gateway to deliver a
+  // reset link/code) — this is the only way a locked-out customer gets back
+  // in. passwordResetResult holds the one-time plaintext temp password so
+  // it can be shown to the admin to relay out-of-band; it's never stored or
+  // logged anywhere else.
+  const [passwordSaving, setPasswordSaving] = useState(null); // customer id currently resetting | null
+  const [passwordResetResult, setPasswordResetResult] = useState(null); // { customer, tempPassword } | null
   const canManage = hasPermission(admin, "customers.manage");
   // Not delegable via customers.manage — only the Super Admin role itself,
   // matching the backend's requireAuth("super_admin") on every PIN route.
@@ -2570,6 +2634,20 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
       await refreshCustomers(search || undefined);
     } catch (err) {
       alert(err.message || "Could not delete customer.");
+    }
+  };
+
+  const resetPassword = async (c) => {
+    if (!window.confirm(`Reset ${c.name || c.phone}'s password? They'll need the new temporary password to sign in again.`)) return;
+    setPasswordSaving(c.id);
+    try {
+      const result = await SahalDataAdminApi.resetCustomerPassword(c.id);
+      setCustomers((prev) => prev.map((x) => (x.id === c.id ? { ...x, hasPassword: true } : x)));
+      setPasswordResetResult({ customer: c, tempPassword: result.tempPassword });
+    } catch (err) {
+      alert(err.message || "Could not reset password.");
+    } finally {
+      setPasswordSaving(null);
     }
   };
 
@@ -2661,6 +2739,16 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
                       </button>
                     </>
                   )}
+                  {canManagePin && (
+                    <button
+                      onClick={() => resetPassword(c)}
+                      disabled={passwordSaving === c.id}
+                      title="Reset this customer's password (they'll need it relayed out-of-band — there's no self-service reset)"
+                      style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}
+                    >
+                      {passwordSaving === c.id ? <Loader2 size={14} color={MUTE} className="animate-spin" /> : <KeyRound size={14} color={INDIGO} />}
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}
@@ -2714,6 +2802,28 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
             )}
             <Button variant="ghost" onClick={() => setPinTarget(null)} disabled={pinSaving}>Cancel</Button>
           </div>
+        </Modal>
+      )}
+
+      {passwordResetResult && (
+        <Modal title={`Password reset — ${passwordResetResult.customer.name || passwordResetResult.customer.phone}`} onClose={() => setPasswordResetResult(null)}>
+          <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>
+            Relay this temporary password to the customer yourself (call, WhatsApp, etc.) — there's no automatic delivery.
+            It's shown here once and can't be retrieved again after you close this dialog.
+          </div>
+          <Field label="Temporary password">
+            <div style={{ display: "flex", gap: 8 }}>
+              <input readOnly style={{ ...inputStyle, fontFamily: "monospace", fontWeight: 700 }} value={passwordResetResult.tempPassword} onFocus={(e) => e.target.select()} />
+              <Button
+                variant="ghost"
+                icon={Copy}
+                onClick={() => navigator.clipboard?.writeText(passwordResetResult.tempPassword)}
+              >
+                Copy
+              </Button>
+            </div>
+          </Field>
+          <Button onClick={() => setPasswordResetResult(null)}>Done</Button>
         </Modal>
       )}
     </div>
@@ -3975,6 +4085,9 @@ function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged
   const [templateEditing, setTemplateEditing] = useState(null); // { companyId, id: 'new'|templateId }
   const [templateForm, setTemplateForm] = useState({});
   const [packagesForTemplateCompany, setPackagesForTemplateCompany] = useState([]);
+  const [paymentMethods, setPaymentMethods] = useState({}); // companyId -> [method, ...]
+  const [methodEditing, setMethodEditing] = useState(null); // { companyId, id: 'new'|methodId }
+  const [methodForm, setMethodForm] = useState({});
 
   // Only meaningful once the template already has a real id (edit mode) —
   // a brand-new template has nothing for a package to link to yet.
@@ -4008,16 +4121,18 @@ function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged
     if (!SAHAL_DATA_API_ENABLED || companies.length === 0) return;
     setError("");
     try {
-      const [pinPairs, routeRows, deviceRows, templateRows] = await Promise.all([
+      const [pinPairs, routeRows, deviceRows, templateRows, methodPairs] = await Promise.all([
         Promise.all(companies.map((c) => SahalDataAdminApi.getUssdPinStatus(c.id).then((r) => [c.id, r.isSet]))),
         SahalDataAdminApi.getSimRouting(),
         SahalDataAdminApi.getAgentDevices(),
         SahalDataAdminApi.getUssdTemplates(),
+        Promise.all(companies.map((c) => SahalDataAdminApi.getCompanyPaymentMethods(c.id).then((r) => [c.id, r]))),
       ]);
       setPinStatuses(Object.fromEntries(pinPairs));
       setRoutes(routeRows);
       setDevices(deviceRows);
       setTemplates(templateRows);
+      setPaymentMethods(Object.fromEntries(methodPairs));
     } catch (err) {
       setError(err.message || "Could not load provider settings.");
     }
@@ -4026,6 +4141,56 @@ function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged
 
   const routesFor = (companyId) => routes.filter((r) => r.companyId === companyId).sort((a, b) => a.priority - b.priority);
   const templatesFor = (companyId) => templates.filter((t) => t.companyId === companyId);
+  const methodsFor = (companyId) => paymentMethods[companyId] || [];
+
+  const openNewMethod = (companyId) => {
+    setMethodForm({ method: "", label: "", paymentNumber: "", ussdTemplate: "", sortOrder: methodsFor(companyId).length + 1 });
+    setMethodEditing({ companyId, id: "new" });
+  };
+  const openEditMethod = (companyId, m) => { setMethodForm({ ...m }); setMethodEditing({ companyId, id: m.id }); };
+
+  const saveMethod = async () => {
+    if (!methodForm.label || (methodEditing.id === "new" && !methodForm.method)) {
+      alert("Method id and label are required.");
+      return;
+    }
+    try {
+      if (methodEditing.id === "new") {
+        await SahalDataAdminApi.createCompanyPaymentMethod(methodEditing.companyId, methodForm);
+      } else {
+        await SahalDataAdminApi.updateCompanyPaymentMethod(methodEditing.id, methodForm);
+      }
+      const rows = await SahalDataAdminApi.getCompanyPaymentMethods(methodEditing.companyId);
+      setPaymentMethods((prev) => ({ ...prev, [methodEditing.companyId]: rows }));
+      setMessage("Settings saved successfully. This payment method's USSD code is live for new orders.");
+    } catch (err) {
+      alert(err.message || "Could not save payment method.");
+      return;
+    }
+    setMethodEditing(null);
+  };
+
+  const toggleMethodStatus = async (companyId, m) => {
+    const next = !m.enabled;
+    setPaymentMethods((prev) => ({ ...prev, [companyId]: (prev[companyId] || []).map((x) => (x.id === m.id ? { ...x, enabled: next } : x)) }));
+    try {
+      await SahalDataAdminApi.setCompanyPaymentMethodStatus(m.id, next);
+    } catch (err) {
+      const rows = await SahalDataAdminApi.getCompanyPaymentMethods(companyId);
+      setPaymentMethods((prev) => ({ ...prev, [companyId]: rows }));
+    }
+  };
+
+  const removeMethod = async (companyId, m) => {
+    if (!window.confirm(`Delete "${m.label}"? Customers will no longer be able to pay this way for ${companies.find((c) => c.id === companyId)?.name || "this company"}.`)) return;
+    setPaymentMethods((prev) => ({ ...prev, [companyId]: (prev[companyId] || []).filter((x) => x.id !== m.id) }));
+    try {
+      await SahalDataAdminApi.deleteCompanyPaymentMethod(m.id);
+    } catch (err) {
+      const rows = await SahalDataAdminApi.getCompanyPaymentMethods(companyId);
+      setPaymentMethods((prev) => ({ ...prev, [companyId]: rows }));
+    }
+  };
 
   const saveNumber = async (company) => {
     const value = (numberDrafts[company.id] ?? (company.payNumber === "Not set" ? "" : company.payNumber)).trim();
@@ -4295,6 +4460,42 @@ function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged
 
               <div style={{ marginTop: 16 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: SLATE }}>PAYMENT METHODS (EVC Plus, eDahab, JEEB, ...)</div>
+                  {canManageSecrets && <Button variant="ghost" icon={Plus} onClick={() => openNewMethod(c.id)}>Add payment method</Button>}
+                </div>
+                <div style={{ fontSize: 11, color: MUTE, marginBottom: 8 }}>
+                  Each method has its own collection number and USSD dial code — the Customer App asks which of these to pay with, and dials the matching code. Leave empty to keep using the single Payment Number/USSD Template above.
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {methodsFor(c.id).map((m) => (
+                    <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, border: `1px solid ${BORDER}` }}>
+                      <span style={{ fontSize: 12.5, fontWeight: 700, color: INK, width: 110, flexShrink: 0 }}>{m.label}</span>
+                      <span style={{ fontSize: 12, color: SLATE, fontFamily: "monospace", width: 110, flexShrink: 0 }}>{m.paymentNumber || "no number"}</span>
+                      <span style={{ flex: 1, fontSize: 12, color: SLATE, fontFamily: "monospace" }}>{m.ussdTemplate || "no template"}</span>
+                      <Badge tone={m.enabled ? "green" : "gray"}>{m.enabled ? "Enabled" : "Disabled"}</Badge>
+                      {canManageSecrets && (
+                        <>
+                          <button onClick={() => toggleMethodStatus(c.id, m)} title={m.enabled ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                            <Power size={14} color={m.enabled ? GREEN : "#C81E2C"} />
+                          </button>
+                          <button onClick={() => openEditMethod(c.id, m)} title="Edit" style={{ background: "none", border: "none", cursor: "pointer" }}>
+                            <Pencil size={14} color={INDIGO} />
+                          </button>
+                          <button onClick={() => removeMethod(c.id, m)} title="Delete" style={{ background: "none", border: "none", cursor: "pointer" }}>
+                            <Trash2 size={14} color="#C81E2C" />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                  {methodsFor(c.id).length === 0 && (
+                    <div style={{ fontSize: 12, color: MUTE, padding: "8px 10px" }}>No payment methods configured for {c.name} yet — falling back to the single Payment Number/USSD Template above.</div>
+                  )}
+                </div>
+              </div>
+
+              <div style={{ marginTop: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                   <div style={{ fontSize: 12, fontWeight: 700, color: SLATE }}>USSD TEMPLATE(S)</div>
                   {canManageSecrets && <Button variant="ghost" icon={Plus} onClick={() => openNewTemplate(c.id)}>Add template</Button>}
                 </div>
@@ -4328,6 +4529,35 @@ function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged
           );
         })}
       </div>
+
+      {methodEditing && (
+        <Modal title={methodEditing.id === "new" ? "Add payment method" : "Edit payment method"} onClose={() => setMethodEditing(null)} width={440}>
+          {methodEditing.id === "new" && (
+            <Field label="Method id (used internally, e.g. evc, edahab, jeeb)">
+              <input style={{ ...inputStyle, fontFamily: "monospace" }} value={methodForm.method || ""} onChange={(e) => setMethodForm({ ...methodForm, method: e.target.value.trim().toLowerCase().replace(/\s+/g, "_") })} placeholder="evc" />
+            </Field>
+          )}
+          <Field label="Label (shown to customers)">
+            <input style={inputStyle} value={methodForm.label || ""} onChange={(e) => setMethodForm({ ...methodForm, label: e.target.value })} placeholder="e.g. EVC Plus" />
+          </Field>
+          <Field label="Payment/collection number for this method">
+            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={methodForm.paymentNumber || ""} onChange={(e) => setMethodForm({ ...methodForm, paymentNumber: e.target.value.replace(/\D/g, "") })} placeholder="e.g. 0610338686" />
+          </Field>
+          <Field label="USSD template for this method">
+            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={methodForm.ussdTemplate || ""} onChange={(e) => setMethodForm({ ...methodForm, ussdTemplate: e.target.value })} placeholder="e.g. *712*0610338686*{amount}#" />
+          </Field>
+          <div style={{ fontSize: 11, color: MUTE, marginTop: -8, marginBottom: 14 }}>
+            <code>{"{amount}"}</code> is substituted with the package price when the Customer App dials. This is the code dialed when a customer picks this specific method for {companies.find((c) => c.id === methodEditing.companyId)?.name} — independent of every other company's methods.
+          </div>
+          <Field label="Sort Order">
+            <input type="number" style={inputStyle} value={methodForm.sortOrder ?? 0} onChange={(e) => setMethodForm({ ...methodForm, sortOrder: Number(e.target.value) })} />
+          </Field>
+          <div style={{ display: "flex", gap: 10 }}>
+            <Button onClick={saveMethod}>Save</Button>
+            <Button variant="ghost" onClick={() => setMethodEditing(null)}>Cancel</Button>
+          </div>
+        </Modal>
+      )}
 
       {templateEditing && (
         <Modal title={templateEditing.id === "new" ? "Add USSD template" : "Edit USSD template"} onClose={() => setTemplateEditing(null)} width={460}>
@@ -4684,7 +4914,14 @@ function PaymentTransactionsPanel({ companies }) {
                     {timeline.order.id} — {timeline.order.customerName || timeline.order.customerPhone} — {timeline.order.packageName} — <Badge tone="neutral">{timeline.order.status}</Badge>
                   </div>
                 ) : (
-                  <div style={{ fontSize: 12.5, color: MUTE, marginTop: 4 }}>No linked order.</div>
+                  <div style={{ fontSize: 12.5, color: MUTE, marginTop: 4 }}>
+                    No linked order.
+                    {timeline.smsLog?.matchFailureReason && (
+                      <div style={{ color: "#C81E2C", fontWeight: 600, marginTop: 4 }}>
+                        {timeline.smsLog.matchFailureReason}
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
 
@@ -5534,6 +5771,12 @@ const STUCK_REASON_META = {
   internet_error: { label: "Internet Error", tone: "amber" },
   agent_offline: { label: "Agent Offline", tone: "amber" },
   server_timeout: { label: "Server Timeout", tone: "amber" },
+  // The carrier sent back a USSD response, but its text read like a
+  // failure/timeout rather than a genuine confirmation — see
+  // classifyStuckReason (orders.routes.ts) and UssdDialer.kt's
+  // looksLikeFailureResponse. Red: needs a human to check the raw response
+  // text (Payment History) and decide, same severity as a config gap.
+  delivery_response_ambiguous: { label: "Delivery Response Ambiguous", tone: "red" },
 };
 
 function PendingRecoveryPanel() {
@@ -6047,17 +6290,44 @@ function SmsLogs({ companies }) {
   );
 }
 
-function Notifications() {
-  const [sent, setSent] = useState([
-    { id: 1, type: "Promotion", title: "20% off Anfac Plus this weekend", date: "2026-07-23" },
-    { id: 2, type: "Maintenance", title: "Somtel payments unavailable 1–2 AM", date: "2026-07-20" },
-  ]);
-  const [form, setForm] = useState({ type: "Push Notification", title: "", body: "" });
+const NOTIFICATION_TYPE_LABEL = { push: "Push Notification", promotion: "Promotion", maintenance: "Maintenance Message" };
 
-  const send = () => {
-    if (!form.title) return;
-    setSent((prev) => [{ id: Date.now(), type: form.type, title: form.title, date: "2026-07-25" }, ...prev]);
-    setForm({ type: "Push Notification", title: "", body: "" });
+function Notifications() {
+  const [sent, setSent] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(true);
+  const [historyError, setHistoryError] = useState("");
+  const [form, setForm] = useState({ type: "push", title: "", body: "" });
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState("");
+
+  const fetchHistory = () => {
+    if (!SAHAL_DATA_API_ENABLED) { setLoadingHistory(false); return; }
+    setLoadingHistory(true);
+    setHistoryError("");
+    SahalDataAdminApi.getAdminNotifications()
+      .then((rows) => setSent(rows))
+      .catch((err) => setHistoryError(err.message || "Could not load sent history."))
+      .finally(() => setLoadingHistory(false));
+  };
+  useEffect(fetchHistory, []);
+
+  const send = async () => {
+    if (!form.title || sending) return;
+    setSending(true);
+    setSendError("");
+    try {
+      // Delivery is DB-record-only for now — no FCM/APNs push infrastructure
+      // is wired up yet, so this reaches the notifications table (and
+      // whatever in-app "Notifications" screen polls it) but not an actual
+      // phone push until that infra exists.
+      await SahalDataAdminApi.sendNotification(form.type, form.title, form.body);
+      setForm({ type: "push", title: "", body: "" });
+      fetchHistory();
+    } catch (err) {
+      setSendError(err.message || "Could not send notification.");
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
@@ -6066,11 +6336,15 @@ function Notifications() {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1.2fr", gap: 14 }}>
         <Card style={{ padding: 18 }}>
           <div style={{ fontWeight: 700, fontSize: 13, color: INK, marginBottom: 10 }}>Compose</div>
+          <div style={{ fontSize: 11.5, color: MUTE, marginBottom: 12 }}>
+            Stored and shown in-app to customers/agents. No push (FCM/APNs) infrastructure is connected yet, so this doesn't reach a phone that has the app closed.
+          </div>
+          {sendError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{sendError}</div>}
           <Field label="Type">
             <select style={inputStyle} value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
-              <option>Push Notification</option>
-              <option>Promotion</option>
-              <option>Maintenance Message</option>
+              <option value="push">Push Notification</option>
+              <option value="promotion">Promotion</option>
+              <option value="maintenance">Maintenance Message</option>
             </select>
           </Field>
           <Field label="Title">
@@ -6079,19 +6353,31 @@ function Notifications() {
           <Field label="Message">
             <textarea style={{ ...inputStyle, minHeight: 80, resize: "vertical" }} value={form.body} onChange={(e) => setForm({ ...form, body: e.target.value })} />
           </Field>
-          <Button icon={Bell} onClick={send}>Send to all customers</Button>
+          <Button icon={sending ? Loader2 : Bell} spin={sending} disabled={sending || !form.title} onClick={send}>
+            {sending ? "Sending..." : "Send to all customers"}
+          </Button>
         </Card>
         <Card style={{ padding: 0, overflow: "hidden" }}>
           <div style={{ padding: "14px 16px", fontWeight: 700, fontSize: 13, color: INK, borderBottom: `1px solid ${BORDER}` }}>Sent history</div>
-          {sent.map((s) => (
-            <div key={s.id} style={{ padding: "12px 16px", borderBottom: `1px solid ${BORDER}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div>
-                <div style={{ fontWeight: 700, fontSize: 13, color: INK }}>{s.title}</div>
-                <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>{s.date}</div>
+          {!SAHAL_DATA_API_ENABLED ? (
+            <div style={{ padding: 16, fontSize: 12.5, color: MUTE }}>Connect SAHAL_DATA_API_BASE_URL to a deployed backend to view sent history.</div>
+          ) : historyError ? (
+            <div style={{ padding: 16, color: "#C81E2C", fontSize: 12.5 }}>{historyError}</div>
+          ) : loadingHistory ? (
+            <div style={{ padding: 16, fontSize: 12.5, color: MUTE }}>Loading…</div>
+          ) : sent.length === 0 ? (
+            <div style={{ padding: 16, fontSize: 12.5, color: MUTE }}>Nothing sent yet.</div>
+          ) : (
+            sent.map((s) => (
+              <div key={s.id} style={{ padding: "12px 16px", borderBottom: `1px solid ${BORDER}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 13, color: INK }}>{s.title}</div>
+                  <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>{formatDateTime(s.sentAt)}</div>
+                </div>
+                <Badge>{NOTIFICATION_TYPE_LABEL[s.type] ?? s.type}</Badge>
               </div>
-              <Badge>{s.type}</Badge>
-            </div>
-          ))}
+            ))
+          )}
         </Card>
       </div>
     </div>
@@ -6100,13 +6386,53 @@ function Notifications() {
 
 function Reports() {
   const [range, setRange] = useState("Monthly");
+  const [series, setSeries] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!SAHAL_DATA_API_ENABLED) { setLoading(false); return; }
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    SahalDataAdminApi.getReports(range.toLowerCase())
+      .then((data) => {
+        if (cancelled) return;
+        setSeries(
+          (data.series || []).map((row) => ({
+            day: formatDateTime(row.day).split(",")[0] ?? row.day,
+            sales: Number(row.sales) || 0,
+            orders: Number(row.orders) || 0,
+          }))
+        );
+      })
+      .catch((err) => { if (!cancelled) setError(err.message || "Could not load report data."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [range]);
+
+  const exportCsv = () => {
+    exportToCsv(`sahal-data-report-${range.toLowerCase()}.csv`, [
+      { label: "Day", value: (r) => r.day },
+      { label: "Sales", value: (r) => r.sales },
+      { label: "Orders", value: (r) => r.orders },
+    ], series);
+  };
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
         <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Reports</div>
         <div style={{ display: "flex", gap: 8 }}>
-          <Button variant="ghost" icon={Download}>Export PDF</Button>
-          <Button variant="ghost" icon={Download}>Export Excel</Button>
+          <Button variant="ghost" icon={Download} disabled={!series.length} onClick={exportCsv}>Export CSV</Button>
+          <Button
+            variant="ghost"
+            icon={Download}
+            disabled
+            title="PDF/XLSX export needs a library added to the backend — use Export CSV for now"
+          >
+            Export PDF/Excel
+          </Button>
         </div>
       </div>
       <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
@@ -6119,29 +6445,84 @@ function Reports() {
       </div>
       <Card style={{ padding: 18 }}>
         <div style={{ fontWeight: 700, fontSize: 13, color: INK, marginBottom: 8 }}>{range} sales report</div>
-        <ResponsiveContainer width="100%" height={260}>
-          <BarChart data={salesTrend}>
-            <CartesianGrid stroke="#EEF0FB" vertical={false} />
-            <XAxis dataKey="day" tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
-            <YAxis tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
-            <Tooltip />
-            <Bar dataKey="sales" fill={INDIGO} radius={[6, 6, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
+        {!SAHAL_DATA_API_ENABLED ? (
+          <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect SAHAL_DATA_API_BASE_URL to a deployed backend to load real report data.</div>
+        ) : error ? (
+          <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div>
+        ) : loading ? (
+          <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Loading…</div>
+        ) : series.length === 0 ? (
+          <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>No completed orders in this range yet.</div>
+        ) : (
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={series}>
+              <CartesianGrid stroke="#EEF0FB" vertical={false} />
+              <XAxis dataKey="day" tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
+              <Tooltip />
+              <Bar dataKey="sales" fill={INDIGO} radius={[6, 6, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        )}
       </Card>
     </div>
   );
 }
 
+// `type` drives both client-side validation and the row's "Test" action —
+// phone/whatsapp dial or open wa.me, url opens the link, email opens a
+// mailto:. Order matches how a Super Admin actually thinks about this panel
+// (call/chat channels first, then social profiles, then the rest).
 const SOCIAL_LINK_DEFS = [
-  { key: "whatsapp", label: "WhatsApp Number", valueKey: "social_whatsapp_number", enabledKey: "social_whatsapp_enabled", placeholder: "252610338686" },
-  { key: "phone", label: "Phone Number", valueKey: "social_phone_number", enabledKey: "social_phone_enabled", placeholder: "252610338686" },
-  { key: "facebook", label: "Facebook URL", valueKey: "social_facebook_url", enabledKey: "social_facebook_enabled", placeholder: "https://facebook.com/YourPage" },
-  { key: "instagram", label: "Instagram URL", valueKey: "social_instagram_url", enabledKey: "social_instagram_enabled", placeholder: "https://instagram.com/yourpage" },
-  { key: "tiktok", label: "TikTok URL", valueKey: "social_tiktok_url", enabledKey: "social_tiktok_enabled", placeholder: "https://tiktok.com/@yourpage" },
-  { key: "email", label: "Email Address", valueKey: "social_email", enabledKey: "social_email_enabled", placeholder: "support@waaproltd.com" },
-  { key: "playstore", label: "Play Store URL", valueKey: "social_play_store_url", enabledKey: "social_play_store_enabled", placeholder: "https://play.google.com/store/apps/details?id=..." },
+  { key: "phone", label: "Call Phone Number", valueKey: "social_phone_number", enabledKey: "social_phone_enabled", placeholder: "252610338686", type: "phone", testLabel: "Test Call" },
+  { key: "whatsapp", label: "WhatsApp Number", valueKey: "social_whatsapp_number", enabledKey: "social_whatsapp_enabled", placeholder: "252610338686", type: "whatsapp", testLabel: "Test WhatsApp" },
+  { key: "facebook", label: "Facebook URL", valueKey: "social_facebook_url", enabledKey: "social_facebook_enabled", placeholder: "https://facebook.com/YourPage", type: "url", testLabel: "Open Facebook" },
+  { key: "telegram", label: "Telegram URL", valueKey: "social_telegram_url", enabledKey: "social_telegram_enabled", placeholder: "https://t.me/yourchannel", type: "url", testLabel: "Open Telegram" },
+  { key: "tiktok", label: "TikTok URL", valueKey: "social_tiktok_url", enabledKey: "social_tiktok_enabled", placeholder: "https://tiktok.com/@yourpage", type: "url", testLabel: "Open TikTok" },
+  { key: "instagram", label: "Instagram URL", valueKey: "social_instagram_url", enabledKey: "social_instagram_enabled", placeholder: "https://instagram.com/yourpage", type: "url", testLabel: "Open Instagram" },
+  { key: "website", label: "Website URL", valueKey: "social_website_url", enabledKey: "social_website_enabled", placeholder: "https://yourwebsite.com", type: "url", testLabel: "Open Website" },
+  { key: "playstore", label: "Play Store URL", valueKey: "social_play_store_url", enabledKey: "social_play_store_enabled", placeholder: "https://play.google.com/store/apps/details?id=...", type: "url", testLabel: "Open Play Store" },
+  { key: "email", label: "Support Email", valueKey: "social_email", enabledKey: "social_email_enabled", placeholder: "support@waaproltd.com", type: "email", testLabel: "Test Email" },
 ];
+
+// Mirrors the backend's own validateSettingValue (settings.routes.ts) —
+// duplicated deliberately rather than round-tripping to the server on every
+// keystroke, so the error shows up immediately as the admin types. Blank is
+// always valid (every one of these fields is optional; blank = "not
+// configured", not "invalid").
+const SOCIAL_PHONE_PATTERN = /^\+?\d{6,15}$/;
+const SOCIAL_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function validateSocialLinkValue(type, value) {
+  const v = value.trim();
+  if (!v) return null;
+  if (type === "phone" || type === "whatsapp") {
+    return SOCIAL_PHONE_PATTERN.test(v) ? null : "Enter a valid phone number (digits only, optionally starting with +).";
+  }
+  if (type === "url") {
+    try {
+      const u = new URL(v);
+      if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("bad protocol");
+      return null;
+    } catch {
+      return "Enter a valid URL starting with http:// or https://.";
+    }
+  }
+  if (type === "email") {
+    return SOCIAL_EMAIL_PATTERN.test(v) ? null : "Enter a valid email address.";
+  }
+  return null;
+}
+
+// Opens the same action a customer's tap would trigger, so a Super Admin can
+// confirm a saved number/link actually works before customers ever see it.
+function testSocialLinkValue(type, value) {
+  const v = value.trim();
+  if (!v) return;
+  if (type === "phone") window.open(`tel:+${v.replace(/\D/g, "")}`, "_self");
+  else if (type === "whatsapp") window.open(`https://wa.me/${v.replace(/\D/g, "")}`, "_blank", "noopener,noreferrer");
+  else if (type === "email") window.open(`mailto:${v}`, "_self");
+  else window.open(v, "_blank", "noopener,noreferrer");
+}
 
 /**
  * Backed by the same generic system_settings key/value store every other
@@ -6186,10 +6567,16 @@ function SocialMediaLinksPanel() {
   useEffect(() => { fetchSettings(); }, []);
 
   const saveLink = async (def) => {
+    const value = (drafts[def.valueKey] ?? "").trim();
+    const validationError = validateSocialLinkValue(def.type, value);
+    if (validationError) {
+      setError(`${def.label}: ${validationError}`);
+      return;
+    }
     setSaving((s) => ({ ...s, [def.key]: true }));
     setError("");
     try {
-      await SahalDataAdminApi.updateSetting(def.valueKey, (drafts[def.valueKey] ?? "").trim());
+      await SahalDataAdminApi.updateSetting(def.valueKey, value);
       await SahalDataAdminApi.updateSetting(def.enabledKey, drafts[def.enabledKey] ? "true" : "false");
       setSavedKey(def.key);
       setTimeout(() => setSavedKey((k) => (k === def.key ? null : k)), 2000);
@@ -6201,13 +6588,13 @@ function SocialMediaLinksPanel() {
   };
 
   if (!SAHAL_DATA_API_ENABLED) {
-    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect SAHAL_DATA_API_BASE_URL to a deployed backend to manage social media links.</div>;
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect SAHAL_DATA_API_BASE_URL to a deployed backend to manage support and social media links.</div>;
   }
 
   return (
-    <Card style={{ padding: 18, maxWidth: 560 }}>
+    <Card style={{ padding: 18, maxWidth: 560, width: "100%" }}>
       <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 16 }}>
-        These power the "Follow us" section and support buttons in the Customer App's Profile screen. A link left blank, or switched off here, is hidden from customers automatically — no app update needed.
+        These power the "Follow us" section and support buttons in the Customer App's Profile screen. A link left blank, or switched off here, is hidden from customers automatically — no app update needed. Every change here is recorded in the Activity Log.
       </div>
       {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
       {loading && !loaded ? (
@@ -6217,17 +6604,19 @@ function SocialMediaLinksPanel() {
           const value = drafts[def.valueKey] ?? "";
           const enabled = drafts[def.enabledKey] ?? true;
           const status = !value.trim() ? { label: "Not configured", tone: "gray" } : enabled ? { label: "Active", tone: "green" } : { label: "Inactive", tone: "gray" };
+          const fieldError = validateSocialLinkValue(def.type, value);
           return (
             <div key={def.key} style={{ marginBottom: 16, paddingBottom: 16, borderBottom: i < SOCIAL_LINK_DEFS.length - 1 ? `1px solid ${BORDER}` : "none" }}>
               <Field label={def.label}>
                 <input
-                  style={inputStyle}
+                  style={{ ...inputStyle, ...(fieldError ? { borderColor: "#C81E2C" } : {}) }}
                   placeholder={def.placeholder}
                   value={value}
                   onChange={(e) => setDrafts((d) => ({ ...d, [def.valueKey]: e.target.value }))}
                 />
               </Field>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              {fieldError && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: -8, marginBottom: 10 }}>{fieldError}</div>}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
                 <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: SLATE, cursor: "pointer" }}>
                   <input
                     type="checkbox"
@@ -6237,20 +6626,194 @@ function SocialMediaLinksPanel() {
                   Active
                   <Badge tone={status.tone}>{status.label}</Badge>
                 </label>
-                <Button
-                  variant="ghost"
-                  icon={saving[def.key] ? Loader2 : Check}
-                  spin={saving[def.key]}
-                  disabled={saving[def.key]}
-                  onClick={() => saveLink(def)}
-                >
-                  {saving[def.key] ? "Saving..." : savedKey === def.key ? "Saved" : "Save"}
-                </Button>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <Button
+                    variant="ghost"
+                    icon={ExternalLink}
+                    disabled={!value.trim() || !!fieldError}
+                    onClick={() => testSocialLinkValue(def.type, value)}
+                  >
+                    {def.testLabel}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    icon={saving[def.key] ? Loader2 : Check}
+                    spin={saving[def.key]}
+                    disabled={saving[def.key] || !!fieldError}
+                    onClick={() => saveLink(def)}
+                  >
+                    {saving[def.key] ? "Saving..." : savedKey === def.key ? "Saved" : "Save"}
+                  </Button>
+                </div>
               </div>
             </div>
           );
         })
       )}
+    </Card>
+  );
+}
+
+// GET /admin/settings camelCases every key server-side (sendJson ->
+// toCamelCase) — reads must go through the same conversion, while writes
+// (PUT /admin/settings/:key) use the raw snake_case key verbatim, since
+// that's what DEFAULT_SETTINGS on the backend is keyed by. Same convention
+// as SocialMediaLinksPanel above.
+function settingsToCamel(s) {
+  return s.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+}
+
+function GeneralSettingsPanel() {
+  const [drafts, setDrafts] = useState({ app_name: "", app_slogan: "", support_phone: "", support_email: "", maintenance_mode: false });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!SAHAL_DATA_API_ENABLED) { setLoading(false); return; }
+    (async () => {
+      try {
+        const data = await SahalDataAdminApi.getSettings();
+        setDrafts({
+          app_name: data[settingsToCamel("app_name")] ?? "",
+          app_slogan: data[settingsToCamel("app_slogan")] ?? "",
+          support_phone: data[settingsToCamel("support_phone")] ?? "",
+          support_email: data[settingsToCamel("support_email")] ?? "",
+          maintenance_mode: data[settingsToCamel("maintenance_mode")] === "true",
+        });
+      } catch (err) {
+        setError(err.message || "Could not load settings.");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      await SahalDataAdminApi.updateSetting("app_name", drafts.app_name.trim());
+      await SahalDataAdminApi.updateSetting("app_slogan", drafts.app_slogan.trim());
+      await SahalDataAdminApi.updateSetting("support_phone", drafts.support_phone.trim());
+      await SahalDataAdminApi.updateSetting("support_email", drafts.support_email.trim());
+      await SahalDataAdminApi.updateSetting("maintenance_mode", drafts.maintenance_mode ? "true" : "false");
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      setError(err.message || "Could not save settings.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!SAHAL_DATA_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect SAHAL_DATA_API_BASE_URL to a deployed backend to manage settings.</div>;
+  }
+  if (loading) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Loading…</div>;
+  }
+
+  return (
+    <Card style={{ padding: 18, maxWidth: 480 }}>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      <Field label="App name">
+        <input style={inputStyle} value={drafts.app_name} onChange={(e) => setDrafts((d) => ({ ...d, app_name: e.target.value }))} />
+      </Field>
+      <Field label="Slogan">
+        <input style={inputStyle} value={drafts.app_slogan} onChange={(e) => setDrafts((d) => ({ ...d, app_slogan: e.target.value }))} />
+      </Field>
+      <Field label="Support phone number">
+        <input style={inputStyle} value={drafts.support_phone} onChange={(e) => setDrafts((d) => ({ ...d, support_phone: e.target.value }))} />
+      </Field>
+      <Field label="Support email">
+        <input style={inputStyle} value={drafts.support_email} onChange={(e) => setDrafts((d) => ({ ...d, support_email: e.target.value }))} />
+      </Field>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+        <input
+          type="checkbox"
+          id="maintenance"
+          checked={drafts.maintenance_mode}
+          onChange={(e) => setDrafts((d) => ({ ...d, maintenance_mode: e.target.checked }))}
+        />
+        <label htmlFor="maintenance" style={{ fontSize: 13, color: SLATE }}>
+          Maintenance mode — blocks Customer/Agent App traffic with a 503 until turned off
+        </label>
+      </div>
+      <Button icon={saving ? Loader2 : Check} spin={saving} disabled={saving} onClick={save}>
+        {saving ? "Saving..." : saved ? "Saved" : "Save changes"}
+      </Button>
+    </Card>
+  );
+}
+
+function OtpSettingsPanel() {
+  const [drafts, setDrafts] = useState({ otp_length: "4", otp_expiry_minutes: "2" });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!SAHAL_DATA_API_ENABLED) { setLoading(false); return; }
+    (async () => {
+      try {
+        const data = await SahalDataAdminApi.getSettings();
+        setDrafts({
+          otp_length: data[settingsToCamel("otp_length")] ?? "4",
+          otp_expiry_minutes: data[settingsToCamel("otp_expiry_minutes")] ?? "2",
+        });
+      } catch (err) {
+        setError(err.message || "Could not load settings.");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      // Clamped client-side too, matching the backend's own clamp — keeps
+      // the field from silently saving a value the backend would ignore.
+      const length = Math.min(8, Math.max(4, Number(drafts.otp_length) || 4));
+      const expiry = Math.min(30, Math.max(1, Number(drafts.otp_expiry_minutes) || 2));
+      await SahalDataAdminApi.updateSetting("otp_length", String(length));
+      await SahalDataAdminApi.updateSetting("otp_expiry_minutes", String(expiry));
+      setDrafts({ otp_length: String(length), otp_expiry_minutes: String(expiry) });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      setError(err.message || "Could not save settings.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!SAHAL_DATA_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect SAHAL_DATA_API_BASE_URL to a deployed backend to manage settings.</div>;
+  }
+  if (loading) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Loading…</div>;
+  }
+
+  return (
+    <Card style={{ padding: 18, maxWidth: 480 }}>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 16 }}>
+        No SMS gateway is connected yet, so the Customer App currently shows the OTP code directly for testing. These settings still control the real code length and expiry once a gateway is wired up.
+      </div>
+      <Field label="OTP length (digits, 4-8)">
+        <input style={inputStyle} type="number" min={4} max={8} value={drafts.otp_length} onChange={(e) => setDrafts((d) => ({ ...d, otp_length: e.target.value }))} />
+      </Field>
+      <Field label="OTP expiry (minutes, 1-30)">
+        <input style={inputStyle} type="number" min={1} max={30} value={drafts.otp_expiry_minutes} onChange={(e) => setDrafts((d) => ({ ...d, otp_expiry_minutes: e.target.value }))} />
+      </Field>
+      <Button icon={saving ? Loader2 : Check} spin={saving} disabled={saving} onClick={save}>
+        {saving ? "Saving..." : saved ? "Saved" : "Save changes"}
+      </Button>
     </Card>
   );
 }
@@ -6264,7 +6827,7 @@ function SettingsPanel() {
         {[
           { id: "general", label: "General" },
           { id: "otp", label: "SMS OTP" },
-          { id: "social", label: "Social Media Links" },
+          { id: "social", label: "Support & Social Media" },
           { id: "security", label: "Security" },
         ].map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)} style={{
@@ -6274,25 +6837,8 @@ function SettingsPanel() {
         ))}
       </div>
 
-      {tab === "general" && (
-        <Card style={{ padding: 18, maxWidth: 480 }}>
-          <Field label="App name"><input style={inputStyle} defaultValue="SAHAL DATA" /></Field>
-          <Field label="Slogan"><input style={inputStyle} defaultValue="Internet you can trust." /></Field>
-          <Field label="Support phone number"><input style={inputStyle} defaultValue="0610808086" /></Field>
-          <Button icon={Check}>Save changes</Button>
-        </Card>
-      )}
-      {tab === "otp" && (
-        <Card style={{ padding: 18, maxWidth: 480 }}>
-          <Field label="OTP length"><input style={inputStyle} defaultValue="4" /></Field>
-          <Field label="OTP expiry (seconds)"><input style={inputStyle} defaultValue="120" /></Field>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
-            <input type="checkbox" defaultChecked id="resend" />
-            <label htmlFor="resend" style={{ fontSize: 13, color: SLATE }}>Allow "Resend code"</label>
-          </div>
-          <Button icon={Check}>Save changes</Button>
-        </Card>
-      )}
+      {tab === "general" && <GeneralSettingsPanel />}
+      {tab === "otp" && <OtpSettingsPanel />}
       {tab === "social" && <SocialMediaLinksPanel />}
       {tab === "security" && <ChangePasswordCard />}
     </div>
@@ -6525,6 +7071,7 @@ function ActivityLogPanel() {
     payment_verified: "Payment verified — matched to order",
     payment_completed: "Payment completed — order fulfilled",
     payment_already_processed: "Duplicate payment rejected",
+    setting_updated: "Updated a system setting",
   }[action] || action);
 
   const paymentStatusTone = (status) => ({
@@ -6554,6 +7101,7 @@ function ActivityLogPanel() {
           { id: "ussd_template", label: "USSD Templates" },
           { id: "payment_wallet", label: "Payment Wallets" },
           { id: "payment_transaction", label: "Payment Transactions" },
+          { id: "system_setting", label: "Support & Social Media" },
         ].map((f) => (
           <button key={f.id} onClick={() => setEntityFilter(f.id)} style={{
             padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
@@ -6897,6 +7445,7 @@ function AdminLoginScreen({ onLoggedIn }) {
       }
       const result = await SahalDataAdminApi.login(trimmedEmail, password);
       sahalDataAdminAccessToken = result.accessToken;
+      sahalDataAdminRefreshToken = result.refreshToken;
       onLoggedIn(result.admin);
     } catch (err) {
       setError(err.message || "Invalid email or password.");
@@ -7342,6 +7891,17 @@ function AdminDashboardShell({ admin, onLogout }) {
 export default function AdminDashboard() {
   const [admin, setAdmin] = useState(null);
 
+  // Lets the module-level request helper (sahalDataAdminApiRequest) drop the
+  // admin back to the login screen when a token refresh itself fails — the
+  // refresh token was invalid/expired/revoked, so no amount of retrying
+  // will recover this session.
+  useEffect(() => {
+    sahalDataAdminOnAuthExpired = () => setAdmin(null);
+    return () => {
+      sahalDataAdminOnAuthExpired = null;
+    };
+  }, []);
+
   if (!admin) {
     return <AdminLoginScreen onLoggedIn={setAdmin} />;
   }
@@ -7351,6 +7911,7 @@ export default function AdminDashboard() {
       admin={admin}
       onLogout={() => {
         sahalDataAdminAccessToken = null;
+        sahalDataAdminRefreshToken = null;
         setAdmin(null);
       }}
     />

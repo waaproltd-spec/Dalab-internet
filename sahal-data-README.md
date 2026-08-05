@@ -35,10 +35,10 @@ original project's backend — no data or infrastructure is shared.
 
 `sahal-data-agent-app` and `sahal-data-customer-app-android` are each
 standalone Gradle projects with their own application IDs
-(`com.sahal.data` and `com.sahal.data` / namespace `com.sahal.data.customer`
+(`com.sahal.agent` and `com.sahal.data` / namespace `com.sahal.data.customer`
 respectively — mirroring the original's own applicationId scheme), so both
-can be installed on the same device as the original project's apps
-without conflict. Root-level GitHub Actions workflows
+can be installed side by side on the same device, and alongside the original
+project's apps, without conflict. Root-level GitHub Actions workflows
 (`.github/workflows/sahal-data-agent-app-build-apk.yml`,
 `.github/workflows/sahal-data-customer-app-build-apk.yml`) build an
 installable debug APK on every push to `main` that touches the respective
@@ -47,11 +47,12 @@ secrets — see each app's README under "Release APK".
 
 ## Branding assets
 
-Launcher icons, the web favicon, and the Super Admin dashboard logo are
-simple generated "SD" monogram placeholders in the Sahal Data brand colors
-(indigo `#1D2E8C` / green `#16A34A`/`#22B24C`, matching the color values the
-original project already used). Swap them for real artwork whenever you have
-it — see each app's `res/mipmap-*` (Android) or `public/` (web) folder.
+Launcher icons, the web favicons, and the Super Admin dashboard logo are a
+generated Sahal Data mark — a white "S" with ascending green signal bars on
+an indigo badge — in the Sahal Data brand colors (indigo `#1D2E8C`/`#16209E`
+gradient, green `#22B24C`, matching the color values the original project
+already used). Swap them for professional artwork whenever you have it —
+see each app's `res/mipmap-*` (Android) or `public/` (web) folder.
 
 One thing that was **not** duplicated: the customer web app's Tawk.to live
 chat widget (`sahal-data-customer-app/index.html`) still points at the

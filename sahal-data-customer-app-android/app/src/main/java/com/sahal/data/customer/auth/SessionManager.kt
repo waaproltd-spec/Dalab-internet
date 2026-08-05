@@ -2,13 +2,17 @@ package com.sahal.data.customer.auth
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import com.sahal.data.customer.data.CustomerProfile
 
 /**
- * Stores the customer's JWT access/refresh tokens and profile. In production,
- * prefer EncryptedSharedPreferences (androidx.security.crypto) over plain
- * SharedPreferences for anything holding tokens — plain prefs are shown here
- * for clarity/brevity, matching the same trade-off the Agent App makes.
+ * Stores the customer's JWT access/refresh tokens and profile in
+ * EncryptedSharedPreferences (androidx.security.crypto) — the tokens are
+ * encrypted at rest with a key held in the Android Keystore, not
+ * recoverable by just pulling the app's shared_prefs XML off a rooted/
+ * backed-up device the way plain SharedPreferences would be. Matches the
+ * same approach the Agent App uses.
  */
 object SessionManager {
     private const val PREFS = "sahal_data_customer_session"
@@ -23,7 +27,17 @@ object SessionManager {
 
     fun init(context: Context) {
         if (::prefs.isInitialized) return
-        prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val appContext = context.applicationContext
+        val masterKey = MasterKey.Builder(appContext)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        prefs = EncryptedSharedPreferences.create(
+            appContext,
+            PREFS,
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+        )
     }
 
     fun saveSession(accessToken: String, refreshToken: String, profile: CustomerProfile, pinSet: Boolean = false) {

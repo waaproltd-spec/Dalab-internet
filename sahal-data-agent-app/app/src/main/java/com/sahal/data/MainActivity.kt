@@ -13,6 +13,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.History
@@ -51,6 +52,7 @@ import com.sahal.data.ui.ReliabilitySetupScreen
 import com.sahal.data.ui.ReportsScreen
 import com.sahal.data.ui.SmsPermissionScreen
 import com.sahal.data.ui.TransactionHistoryScreen
+import com.sahal.data.ui.WalletDashboardScreen
 import kotlinx.coroutines.launch
 
 private val SMS_PERMISSIONS = arrayOf(Manifest.permission.RECEIVE_SMS, Manifest.permission.READ_SMS)
@@ -113,7 +115,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD }
+private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD }
 private enum class HomeTab { ORDERS, SALES, CUSTOMERS, REPORTS, MORE }
 
 @Composable
@@ -212,6 +214,7 @@ private fun AgentApp() {
             onOpenOrder = { order -> selectedOrder = order; screen = Screen.ORDER_DETAIL },
             onOpenPackages = { screen = Screen.PACKAGES },
             onOpenTransactions = { screen = Screen.TRANSACTIONS },
+            onOpenWallet = { screen = Screen.WALLET },
             onOpenDeviceSetup = { screen = Screen.DEVICE_SETUP },
             onOpenDiagnostics = { screen = Screen.DIAGNOSTICS },
             onOpenPermissionsStatus = { screen = Screen.PERMISSIONS_STATUS },
@@ -229,6 +232,8 @@ private fun AgentApp() {
         Screen.PACKAGES -> PackagesScreen(onBack = { screen = Screen.HOME })
 
         Screen.TRANSACTIONS -> TransactionHistoryScreen(onBack = { screen = Screen.HOME })
+
+        Screen.WALLET -> WalletDashboardScreen(onBack = { screen = Screen.HOME })
 
         Screen.DIAGNOSTICS -> DiagnosticsScreen(onBack = { screen = Screen.HOME })
 
@@ -251,6 +256,7 @@ private fun AgentHome(
     onOpenOrder: (Order) -> Unit,
     onOpenPackages: () -> Unit,
     onOpenTransactions: () -> Unit,
+    onOpenWallet: () -> Unit,
     onOpenDeviceSetup: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onOpenPermissionsStatus: () -> Unit,
@@ -303,6 +309,7 @@ private fun AgentHome(
                 HomeTab.MORE -> MoreScreen(
                     onOpenPackages = onOpenPackages,
                     onOpenTransactions = onOpenTransactions,
+                    onOpenWallet = onOpenWallet,
                     onOpenDeviceSetup = onOpenDeviceSetup,
                     onOpenDiagnostics = onOpenDiagnostics,
                     onOpenPermissionsStatus = onOpenPermissionsStatus,
@@ -317,12 +324,20 @@ private fun AgentHome(
 private fun MoreScreen(
     onOpenPackages: () -> Unit,
     onOpenTransactions: () -> Unit,
+    onOpenWallet: () -> Unit,
     onOpenDeviceSetup: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onOpenPermissionsStatus: () -> Unit,
     onOpenReliabilityDashboard: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
+        ListItem(
+            headlineContent = { Text("Wallet Balances") },
+            supportingContent = { Text("Provider balances and live payment transactions") },
+            leadingContent = { Icon(Icons.Filled.AccountBalanceWallet, contentDescription = null) },
+            modifier = Modifier.clickable(onClick = onOpenWallet),
+        )
+        Divider()
         ListItem(
             headlineContent = { Text("Packages") },
             supportingContent = { Text("Browse the full catalog and pricing") },

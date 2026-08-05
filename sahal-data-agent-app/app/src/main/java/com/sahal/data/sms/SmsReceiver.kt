@@ -1,9 +1,14 @@
 package com.sahal.data.sms
 
+import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.provider.Telephony
+import android.telephony.SubscriptionManager
+import androidx.core.content.ContextCompat
+import com.sahal.data.data.SmsLogEntry
 import com.sahal.data.diagnostics.DiagnosticsLog
 import com.sahal.data.queue.PendingActionQueue
 import kotlinx.coroutines.CoroutineScope
@@ -65,7 +70,8 @@ class SmsReceiver : BroadcastReceiver() {
         }
 
         val (parsed, voucherSent) = try {
-            val p = PaymentSmsParsers.parse(sender, body, receivedAt)
+            val simSlot = resolveSimSlot(context, intent)
+            val p = PaymentSmsParsers.parse(sender, body, receivedAt, simSlot)
             val v = if (p == null) VoucherSentParsers.parse(sender, body) else null
             p to v
         } catch (e: Exception) {
@@ -79,13 +85,42 @@ class SmsReceiver : BroadcastReceiver() {
             // like a payment confirmation (mentions money/a provider keyword)
             // yet matched no parser is exactly the failure mode "some payment
             // SMS aren't picked up" describes — e.g. a provider slightly
-            // changed their message wording. Previously this was
-            // indistinguishable from "no SMS arrived at all".
+            // changed their message wording, or (Amtel) a provider with no
+            // parser registered at all (see PaymentSmsParsers.kt). Previously
+            // this was only written to the LOCAL Diagnostics log and then
+            // dropped — invisible to the backend/admin dashboard, so a real
+            // customer payment in an unrecognized format vanished with no
+            // audit trail anywhere a Super Admin could see it, and the order
+            // it belonged to was left stuck 'pending' forever with nothing to
+            // explain why. Uploading it unparsed (amount/phone left null,
+            // same as any other unmatched SMS) puts the raw sender/body in
+            // the backend's SMS Logs instead, where match_failure_reason
+            // already explains it as unmatched — giving staff a real captured
+            // sample to write a correct parser from, instead of guessing.
             if (looksLikePaymentSms(body)) {
                 DiagnosticsLog.record(
                     "sms_receiver_unrecognized",
-                    "Payment-looking SMS from '$sender' matched no parser: ${body.take(160)}",
+                    "Payment-looking SMS from '$sender' matched no parser — uploading unparsed for visibility: ${body.take(160)}",
                 )
+                val simSlot = resolveSimSlot(context, intent)
+                val unparsedEntry = SmsLogEntry(sender = sender, body = body, receivedAt = receivedAt, simSlot = simSlot)
+                val pendingResult = goAsync()
+                val appContext = context.applicationContext
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        if (SmsUploadFlow.uploadAndProcess(appContext, unparsedEntry) is UploadOutcome.RetryableUpload) {
+                            PendingActionQueue.enqueue(
+                                id = UUID.randomUUID().toString(),
+                                type = PendingActionQueue.Type.SMS_UPLOAD,
+                                payload = SmsUploadAction(unparsedEntry),
+                            )
+                        }
+                    } catch (e: Exception) {
+                        DiagnosticsLog.record("sms_receiver_process", "Failed uploading unparsed payment SMS: ${e.stackTraceToString().take(2000)}")
+                    } finally {
+                        pendingResult.finish()
+                    }
+                }
             }
             return
         }
@@ -143,13 +178,49 @@ class SmsReceiver : BroadcastReceiver() {
     }
 }
 
+/**
+ * Which physical SIM slot (1 or 2) received this SMS, for payment-number
+ * verification on a dual-SIM payment device (see SmsLogEntry.simSlot) — a
+ * payment device's two SIMs each have their own payment number (e.g. EVC
+ * Plus vs eDahab), so knowing only the device isn't enough to tell which
+ * one a given confirmation SMS actually landed on.
+ *
+ * Android's SMS_RECEIVED broadcast carries a "subscription" extra (the
+ * subscriptionId that received it) on dual-SIM devices since Android 5.1 —
+ * not officially part of the public Intent contract, but the standard AOSP
+ * extra every major OEM has shipped for a decade, and the only source for
+ * this information short of manufacturer-specific APIs. Resolved to a
+ * 1-based slot index (matching ussd_templates.sim_slot's existing
+ * convention) via SubscriptionManager. Returns null — never throws — on
+ * anything that stops this from working (single-SIM device, missing
+ * READ_PHONE_STATE, no subscription extra on this OEM/API level); the
+ * backend falls back to device-level-only matching in that case rather
+ * than losing the payment match entirely.
+ */
+private fun resolveSimSlot(context: Context, intent: Intent): Int? {
+    return try {
+        val subscriptionId = intent.extras?.getInt("subscription", -1) ?: -1
+        if (subscriptionId <= 0) return null
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+            return null
+        }
+        val subscriptionManager = context.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as? SubscriptionManager ?: return null
+        @Suppress("MissingPermission")
+        val info = subscriptionManager.getActiveSubscriptionInfo(subscriptionId) ?: return null
+        info.simSlotIndex + 1 // AOSP reports 0-based; convert once here so every downstream consumer only ever sees 1-based slots
+    } catch (e: Exception) {
+        DiagnosticsLog.record("sms_receiver_sim_slot", "Failed to resolve SIM slot: ${e.message}", isError = false)
+        null
+    }
+}
+
 /** Cheap heuristic, not a parser — used only to decide whether an
  * unrecognized SMS is worth a diagnostics entry (see the unparsed-SMS branch
  * above) without logging every ordinary personal text/OTP that passes
  * through this receiver. */
 private val PAYMENT_LOOKING_KEYWORDS = listOf(
     "heshay", "ka heshay", "dollar", "aqanoosiga", "edahab", "e-dahab",
-    "evcplus", "evc plus", "somnet", "haraagagu", "haraagaaga",
+    "evcplus", "evc plus", "somnet", "haraagagu", "haraagaaga", "amtel",
 )
 
 private fun looksLikePaymentSms(body: String): Boolean {
