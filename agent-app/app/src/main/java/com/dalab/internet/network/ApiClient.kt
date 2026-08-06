@@ -18,7 +18,12 @@ object ApiClient {
     // Android emulator, use "http://10.0.2.2:4000/" (the emulator's alias
     // for the host's localhost); from a physical device on the same LAN,
     // use the host machine's LAN IP instead.
-    const val BASE_URL = "https://dalab-internet-2.onrender.com/"
+    //
+    // Points at api.waaproltd.com (a custom domain on the same, unchanged
+    // Render backend) rather than the raw onrender.com address specifically
+    // so a future server migration only requires repointing DNS, not
+    // redistributing this app to every agent device.
+    const val BASE_URL = "https://api.waaproltd.com/"
 
     private val authInterceptor = Interceptor { chain ->
         val token = SessionManager.accessToken()

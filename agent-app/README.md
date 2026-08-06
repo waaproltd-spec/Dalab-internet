@@ -1,8 +1,8 @@
 # DALAB Agent App — Android module
 
 A real Kotlin + Jetpack Compose Android app, wired to the deployed production
-backend (`admin-backend-ts`, at `https://dalab-internet-2.onrender.com/` —
-see `ApiClient.kt`). It's a standalone Gradle project (own `gradlew`,
+backend (`admin-backend-ts`, at `https://api.waaproltd.com/` — see
+`ApiClient.kt`). It's a standalone Gradle project (own `gradlew`,
 `settings.gradle.kts`) — open `agent-app/` directly in Android Studio, or build
 it headlessly via the GitHub Actions workflow below.
 
