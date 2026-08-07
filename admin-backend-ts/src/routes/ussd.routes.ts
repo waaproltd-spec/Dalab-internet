@@ -10,6 +10,7 @@ import { recordActivity } from "../utils/activityLog.js";
 import { markPaymentProcessing, markPaymentFinal } from "../utils/paymentTransactions.js";
 import { creditCommissionIfNeeded } from "../utils/commissions.js";
 import { creditReferralBonusIfNeeded } from "../utils/referrals.js";
+import { refundRedeemedPointsIfNeeded } from "../utils/loyaltyPoints.js";
 import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
 
 export const ussdRouter = Router();
@@ -707,7 +708,11 @@ ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (r
     // now the order stays at its current status (still 'in_progress') until
     // either a retry succeeds or every attempt is exhausted.
     if (finalAttempt) {
-      await query(`UPDATE orders SET status='failed', updated_at=now() WHERE id=$1 AND status != 'completed'`, [attempt.order_id]);
+      const failed = await query(
+        `UPDATE orders SET status='failed', updated_at=now() WHERE id=$1 AND status != 'completed' RETURNING id`,
+        [attempt.order_id]
+      );
+      if (failed.length > 0) await refundRedeemedPointsIfNeeded(attempt.order_id);
     }
     // markPaymentFinal itself is not necessarily final — UssdOrchestrator may
     // still retry, which calls markPaymentProcessing again and can still

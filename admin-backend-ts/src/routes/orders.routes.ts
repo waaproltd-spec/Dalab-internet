@@ -9,6 +9,7 @@ import { subscribe, broadcast } from "../realtime/orderEvents.js";
 import { recordActivity } from "../utils/activityLog.js";
 import { creditCommissionIfNeeded, reverseCommissionIfNeeded } from "../utils/commissions.js";
 import { creditReferralBonusIfNeeded, reverseReferralBonusIfNeeded } from "../utils/referrals.js";
+import { refundRedeemedPointsIfNeeded } from "../utils/loyaltyPoints.js";
 import { isAlreadyCompleted } from "../utils/paymentTransactions.js";
 import { rateLimit } from "../auth/rateLimit.js";
 import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
@@ -825,6 +826,7 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
     }
   } else {
     await query(`UPDATE orders SET status=$1, updated_at=now() WHERE id=$2`, [status, req.params.id]);
+    if (status === "failed" || status === "cancelled") await refundRedeemedPointsIfNeeded(req.params.id);
   }
   broadcast({ type: "order.updated", orderId: req.params.id });
   sendJson(res, 200, maskOrder(await loadOrder(req.params.id)));
@@ -919,6 +921,7 @@ async function reverseOrderInternal(orderId: string): Promise<{ ok: boolean; ord
   }
   await reverseCommissionIfNeeded(orderId);
   await reverseReferralBonusIfNeeded(orderId);
+  await refundRedeemedPointsIfNeeded(orderId);
 
   broadcast({ type: "order.updated", orderId });
   return { ok: true, order };

@@ -211,12 +211,30 @@ authRouter.post("/auth/customer/signup", rateLimit("customer-pin-signup", 10, 15
     // Claims the existing (PIN-less) row exactly like /auth/register does
     // for password_hash — keeps every historical order/points balance
     // attached to the same account instead of creating a duplicate.
+    // Deliberately does NOT touch referred_by_customer_id even if a
+    // referralCode was passed here — this phone already had an account
+    // before today, so it isn't a genuine new referral, and letting a
+    // pre-existing row "claim" a referral code on demand would be a free
+    // way to farm bonuses.
     await query(`UPDATE customers SET pin_hash=$1, name=COALESCE(name, $2) WHERE id=$3`, [pinHash, name, customer.id]);
     customer = await queryOne(`SELECT * FROM customers WHERE id=$1`, [customer.id]);
   } else {
+    // Only a genuinely brand-new phone number can be credited as a
+    // referral — resolved here (not trusted from the client as an id)
+    // and silently ignored if the code doesn't match a real, active
+    // referrer, same as /auth/register's referral handling.
+    const referralCode = req.body.referralCode ? String(req.body.referralCode).trim() : "";
+    let referredBy: string | null = null;
+    if (referralCode) {
+      const referrer = await queryOne<{ id: string; status: string }>(
+        `SELECT id, status FROM customers WHERE referral_code=$1`,
+        [referralCode]
+      );
+      if (referrer && referrer.status !== "blocked") referredBy = referrer.id;
+    }
     customer = await queryOne(
-      `INSERT INTO customers (id, phone, name, pin_hash) VALUES ($1,$2,$3,$4) RETURNING *`,
-      [randomUUID(), phone, name, pinHash]
+      `INSERT INTO customers (id, phone, name, pin_hash, referred_by_customer_id) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [randomUUID(), phone, name, pinHash, referredBy]
     );
   }
 
