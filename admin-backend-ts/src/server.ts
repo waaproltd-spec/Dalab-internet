@@ -29,6 +29,7 @@ import { commissionsRouter } from "./routes/commissions.routes.js";
 import { simBalancesRouter } from "./routes/simBalances.routes.js";
 import { feedbackRouter } from "./routes/feedback.routes.js";
 import { referralsRouter } from "./routes/referrals.routes.js";
+import { financeRouter } from "./routes/finance.routes.js";
 import { pool, queryOne } from "./db/pool.js";
 import { seedAll } from "./db/seed.js";
 import { sendJson } from "./utils/camelCase.js";
@@ -267,6 +268,7 @@ app.use(commissionsRouter);
 app.use(simBalancesRouter);
 app.use(feedbackRouter);
 app.use(referralsRouter);
+app.use(financeRouter);
 
 app.use((_req: Request, res: Response) => {
   res.status(404).json({ error: "Not found" });

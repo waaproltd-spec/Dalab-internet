@@ -15,6 +15,7 @@ declare module "pg" {
     query<T = any>(text: string, params?: unknown[]): Promise<QueryResult<T>>; // eslint-disable-line @typescript-eslint/no-explicit-any
     connect(): Promise<PoolClient>;
     on(event: "error", listener: (err: Error) => void): void;
+    on(event: "connect", listener: (client: PoolClient) => void): void;
     end(): Promise<void>;
   }
   export interface PoolClient {

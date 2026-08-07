@@ -8,7 +8,7 @@ import {
   Smartphone, Radio, ChevronDown, ChevronRight, AlertTriangle, RotateCcw, UserCog, Tags,
   WifiOff, BatteryFull, BatteryMedium, BatteryLow, BatteryWarning,
   Image as ImageIcon, Upload, MessageSquare, Database, Activity, History, CreditCard, PlayCircle, Percent,
-  MessageCircle, Lightbulb, Share2, KeyRound, ExternalLink
+  MessageCircle, Lightbulb, Share2, KeyRound, ExternalLink, PiggyBank, Landmark, Trash
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 
@@ -311,6 +311,20 @@ const DalabAdminApi = {
   getReferralRules: () => dalabAdminApiRequest("/admin/referral-rules"),
   updateReferralRules: (body) => dalabAdminApiRequest("/admin/referral-rules", { method: "PUT", body }),
   getReferrals: () => dalabAdminApiRequest("/admin/referrals"),
+  // Financial Overview — Money Received -> Data Cost -> Other Money Out ->
+  // Remaining Balance, plus the real SIM wallet balance. Every number comes
+  // from orders/finance_expenses/sim_balances; from/to are optional ISO date
+  // bounds, all-time when omitted.
+  getFinanceOverview: (from, to) => {
+    const qs = new URLSearchParams(Object.fromEntries(Object.entries({ from, to }).filter(([, v]) => v))).toString();
+    return dalabAdminApiRequest(`/admin/finance/overview${qs ? `?${qs}` : ""}`);
+  },
+  getFinanceExpenses: (filters = {}) => {
+    const qs = new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([, v]) => v))).toString();
+    return dalabAdminApiRequest(`/admin/finance/expenses${qs ? `?${qs}` : ""}`);
+  },
+  createFinanceExpense: (body) => dalabAdminApiRequest("/admin/finance/expenses", { method: "POST", body }),
+  deleteFinanceExpense: (id) => dalabAdminApiRequest(`/admin/finance/expenses/${id}`, { method: "DELETE" }),
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -329,6 +343,7 @@ const PERMISSION_OPTIONS = [
   { key: "commissions.manage", label: "Manage commission rules" },
   { key: "feedback.manage", label: "Manage feedback & suggestions" },
   { key: "referrals.manage", label: "Manage referral reward rules" },
+  { key: "finance.manage", label: "Manage financial expenses" },
 ];
 
 // Normalizes a GET /admin/companies row into the shape every section of this
@@ -521,7 +536,7 @@ function ConnectionStatusBar() {
         <Clock3 size={14} color={MUTE} />
         <div>
           <div style={{ fontSize: 10, color: MUTE, fontWeight: 700, letterSpacing: 0.3 }}>LAST SYNC TIME</div>
-          <div style={{ fontSize: 12, fontWeight: 700, color: INK }}>{lastSyncAt ? lastSyncAt.toLocaleTimeString() : "—"}</div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: INK }}>{lastSyncAt ? formatSomaliaTime(lastSyncAt) : "—"}</div>
         </div>
       </div>
     </div>
@@ -591,6 +606,7 @@ const orderBreakdown = [
 
 const NAV = [
   { id: "overview", label: "Overview", icon: LayoutGrid },
+  { id: "financial-overview", label: "Financial Overview", icon: PiggyBank, superAdminOnly: true },
   { id: "balance-dashboard", label: "Balance Dashboard", icon: DollarSign },
   { id: "companies", label: "Companies", icon: Building2 },
   { id: "payment-numbers", label: "Payment Numbers", icon: Wallet },
@@ -646,6 +662,15 @@ function Badge({ children, tone = "neutral" }) {
   );
 }
 
+// Every admin sees the same Somalia time regardless of what timezone their
+// own browser/OS happens to be set to — pinning the IANA zone explicitly
+// (rather than passing `undefined`/omitting `timeZone`, which uses the
+// browser's local zone) is what makes that true, and using a named zone
+// instead of manually adding hours means it stays correct with zero extra
+// logic (Africa/Mogadishu has no DST, but the zone data — not a hardcoded
+// offset — is what's authoritative here).
+const SOMALIA_TIME_ZONE = "Africa/Mogadishu";
+
 // Handles both backends' timestamp formats: the SQLite backend returns a
 // plain "2026-07-25 08:34:50" string, the Postgres backend returns a full
 // ISO 8601 string ("2026-07-25T08:34:50.000Z", from a real Date object
@@ -657,7 +682,20 @@ function formatDateTime(value) {
   if (!value) return "—";
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return String(value); // fall back to raw value rather than "Invalid Date"
-  return d.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: SOMALIA_TIME_ZONE,
+  });
+}
+
+// Same Somalia-pinned conversion, time-only — for the "Synced HH:MM" style
+// labels that only ever show the current moment, not a stored timestamp.
+function formatSomaliaTime(date) {
+  return date.toLocaleTimeString(undefined, { timeZone: SOMALIA_TIME_ZONE });
 }
 
 // Generic client-side CSV export — every export button in this app builds
@@ -1134,6 +1172,210 @@ function BalanceDashboard({ admin }) {
               ))}
             </div>
           )}
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// Financial Overview — Money Received -> Data Cost -> Other Money Out ->
+// Remaining Balance, plus the real SIM wallet balance, sourced entirely
+// from GET /admin/finance/overview (real orders/finance_expenses/
+// sim_balances — no mock numbers). Super-Admin-only nav entry; "Other Money
+// Out" (finance_expenses) is manageable by anyone holding the
+// `finance.manage` permission, same delegation pattern as commissions and
+// referral rules.
+function FinancialOverview({ admin }) {
+  const canManage = hasPermission(admin, "finance.manage");
+
+  const [overview, setOverview] = useState(null);
+  const [expenses, setExpenses] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [addForm, setAddForm] = useState({ amount: "", category: "", note: "" });
+  const [addError, setAddError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const fetchAll = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setLoading(true);
+    try {
+      const [overviewData, expenseRows] = await Promise.all([
+        DalabAdminApi.getFinanceOverview(dateFrom || undefined, dateTo || undefined),
+        DalabAdminApi.getFinanceExpenses({ from: dateFrom || undefined, to: dateTo || undefined }),
+      ]);
+      setOverview(overviewData);
+      setExpenses(expenseRows);
+    } catch (err) {
+      console.error("Failed to load financial overview:", err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchAll(); }, [dateFrom, dateTo]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const openAdd = () => {
+    setAddForm({ amount: "", category: "", note: "" });
+    setAddError("");
+    setAdding(true);
+  };
+
+  const saveExpense = async () => {
+    const amount = Number(addForm.amount);
+    if (!addForm.amount || Number.isNaN(amount) || amount <= 0) return setAddError("Enter a valid amount greater than 0.");
+    if (!addForm.category.trim()) return setAddError("Category is required.");
+    setSaving(true);
+    setAddError("");
+    try {
+      await DalabAdminApi.createFinanceExpense({ amount, category: addForm.category.trim(), note: addForm.note.trim() || undefined });
+      setAdding(false);
+      fetchAll();
+    } catch (err) {
+      setAddError(err.message || "Couldn't save this expense.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const deleteExpense = async (row) => {
+    if (!window.confirm(`Remove this ${row.category} expense of $${Number(row.amount).toFixed(2)}?`)) return;
+    try {
+      await DalabAdminApi.deleteFinanceExpense(row.id);
+      fetchAll();
+    } catch (err) {
+      alert(err.message || "Couldn't remove this expense.");
+    }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to view the financial overview.</div>;
+  }
+
+  const money = (v) => `$${Number(v ?? 0).toFixed(2)}`;
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} style={{ ...inputStyle, width: 150 }} title="From date" />
+          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ ...inputStyle, width: 150 }} title="To date" />
+          {(dateFrom || dateTo) && (
+            <Button variant="ghost" onClick={() => { setDateFrom(""); setDateTo(""); }}>All Time</Button>
+          )}
+        </div>
+        <Button variant="ghost" icon={RefreshCw} onClick={fetchAll} spin={loading}>Refresh</Button>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
+        <SummaryMetricCard icon={Landmark} label="Total Money Available" value={money(overview?.totalMoneyAvailable)} color={INDIGO} hint="Sum of all SIM wallet balances" />
+        <SummaryMetricCard icon={ArrowDown} label="Total Money Received" value={money(overview?.moneyReceived)} color={GREEN} hint="From completed customer payments" />
+        <SummaryMetricCard icon={ArrowUp} label="Total Money Out" value={money(overview?.totalMoneyOut)} color="#C81E2C" hint="Data cost + other expenses" />
+        <SummaryMetricCard icon={Wifi} label="Total Data Cost" value={money(overview?.totalDataCost)} color="#A9720A" hint="Paid to providers via USSD" />
+        <SummaryMetricCard icon={Wallet} label="Current Wallet Balance" value={money(overview?.currentWalletBalance)} color={INDIGO} hint="Real, carrier-reported SIM balance" />
+        <SummaryMetricCard icon={PiggyBank} label="Remaining Balance" value={money(overview?.remainingBalance)} color={overview?.remainingBalance < 0 ? "#C81E2C" : GREEN} hint="Received minus total money out" />
+        <SummaryMetricCard icon={TrendingUp} label="Profit / Earnings" value={money(overview?.profit)} color={overview?.profit < 0 ? "#C81E2C" : GREEN} hint="Received minus total money out" />
+      </div>
+
+      <Card style={{ padding: 18, marginTop: 14 }}>
+        <div style={{ fontWeight: 800, color: INK, fontSize: 14, marginBottom: 14 }}>Money Flow</div>
+        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+          {[
+            { label: "Customer Payments", value: overview?.moneyReceived, color: GREEN },
+            { label: "Data Cost", value: -(overview?.totalDataCost ?? 0), color: "#A9720A" },
+            { label: "Other Expenses", value: -(overview?.otherMoneyOut ?? 0), color: "#C81E2C" },
+            { label: "Remaining Balance", value: overview?.remainingBalance, color: INDIGO },
+          ].map((step, i, arr) => (
+            <React.Fragment key={step.label}>
+              <div style={{ background: "#FAFBFF", border: `1px solid ${BORDER}`, borderRadius: 12, padding: "10px 14px", minWidth: 150 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: MUTE }}>{step.label}</div>
+                <div style={{ fontSize: 15, fontWeight: 800, color: step.color, marginTop: 2 }}>
+                  {step.value < 0 ? "-" : ""}{money(Math.abs(step.value ?? 0))}
+                </div>
+              </div>
+              {i < arr.length - 1 && <ChevronRight size={18} color={MUTE} />}
+            </React.Fragment>
+          ))}
+        </div>
+      </Card>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 14 }}>
+        {[{ label: "Today", data: overview?.today }, { label: "This Month", data: overview?.month }].map(({ label, data }) => (
+          <Card key={label} style={{ padding: 16 }}>
+            <div style={{ fontWeight: 800, color: INK, fontSize: 13, marginBottom: 10 }}>{label}</div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: SLATE, marginBottom: 6 }}>
+              <span>Received</span><span style={{ color: GREEN, fontWeight: 700 }}>{money(data?.moneyReceived)}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: SLATE, marginBottom: 6 }}>
+              <span>Data Cost</span><span style={{ color: "#A9720A", fontWeight: 700 }}>{money(data?.dataCost)}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: SLATE, marginBottom: 6 }}>
+              <span>Other Money Out</span><span style={{ color: "#C81E2C", fontWeight: 700 }}>{money(data?.otherMoneyOut)}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: INK, fontWeight: 800, paddingTop: 6, borderTop: `1px solid ${BORDER}` }}>
+              <span>Remaining</span><span>{money(data?.remainingBalance)}</span>
+            </div>
+          </Card>
+        ))}
+      </div>
+
+      <Card style={{ padding: 18, marginTop: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div style={{ fontWeight: 800, color: INK, fontSize: 14 }}>Other Money Out — Expense Log</div>
+          {canManage && <Button icon={Plus} onClick={openAdd}>Log Expense</Button>}
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: "#FAFBFF" }}>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Category</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Amount</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Note</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Logged By</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Date</th>
+                {canManage && <th style={{ padding: "10px 14px" }} />}
+              </tr>
+            </thead>
+            <tbody>
+              {expenses.map((e) => (
+                <tr key={e.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontWeight: 600 }}>{e.category}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: "#C81E2C", fontWeight: 700 }}>{money(e.amount)}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12, color: SLATE }}>{e.note || "—"}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE }}>{e.createdByEmail || "—"}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(e.createdAt)}</td>
+                  {canManage && (
+                    <td style={{ padding: "10px 14px" }}>
+                      <button onClick={() => deleteExpense(e)} style={{ background: "none", border: "none", cursor: "pointer" }} title="Remove">
+                        <Trash size={15} color={MUTE} />
+                      </button>
+                    </td>
+                  )}
+                </tr>
+              ))}
+              {expenses.length === 0 && !loading && (
+                <tr><td colSpan={canManage ? 6 : 5} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No expenses logged{dateFrom || dateTo ? " in this range" : " yet"}.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      {adding && (
+        <Modal title="Log an Expense" onClose={() => setAdding(false)}>
+          <Field label="Amount ($)">
+            <input type="number" min="0" step="0.01" value={addForm.amount} onChange={(e) => setAddForm({ ...addForm, amount: e.target.value })} style={inputStyle} placeholder="0.00" />
+          </Field>
+          <Field label="Category">
+            <input value={addForm.category} onChange={(e) => setAddForm({ ...addForm, category: e.target.value })} style={inputStyle} placeholder="e.g. SIM top-up, refund, staff cost" />
+          </Field>
+          <Field label="Note (optional)">
+            <input value={addForm.note} onChange={(e) => setAddForm({ ...addForm, note: e.target.value })} style={inputStyle} placeholder="Details for this expense" />
+          </Field>
+          {addError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{addError}</div>}
+          <Button onClick={saveExpense} disabled={saving} style={{ width: "100%", justifyContent: "center" }}>{saving ? "Saving…" : "Save Expense"}</Button>
         </Modal>
       )}
     </div>
@@ -2398,7 +2640,7 @@ function Orders({ orders, setOrders, companies, admin }) {
               <Radio size={12} /> {live ? "Live" : `Polling every ${ORDERS_POLL_INTERVAL_MS / 1000}s`}
             </span>
           )}
-          <span style={{ fontSize: 11, color: MUTE }}>Synced {lastSynced.toLocaleTimeString()}</span>
+          <span style={{ fontSize: 11, color: MUTE }}>Synced {formatSomaliaTime(lastSynced)}</span>
           <Button variant="ghost" icon={refreshing ? Loader2 : RefreshCw} spin={refreshing} onClick={manualRefresh} disabled={refreshing}>
             {refreshing ? "Refreshing..." : "Refresh"}
           </Button>
@@ -4775,7 +5017,7 @@ function PaymentTransactionsPanel({ companies }) {
           <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 700, color: GREEN }}>
             <Radio size={12} color={GREEN} /> Auto-refreshing every 8s
           </span>
-          {lastSynced && <span style={{ fontSize: 11, color: MUTE }}>Synced {lastSynced.toLocaleTimeString()}</span>}
+          {lastSynced && <span style={{ fontSize: 11, color: MUTE }}>Synced {formatSomaliaTime(lastSynced)}</span>}
           <Button
             variant="ghost"
             icon={Download}
@@ -5974,7 +6216,7 @@ function ExecutionLogs({ companies }) {
           <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 700, color: GREEN }}>
             <Radio size={12} color={GREEN} /> Auto-refreshing every 10s
           </span>
-          {lastSynced && <span style={{ fontSize: 11, color: MUTE }}>Synced {lastSynced.toLocaleTimeString()}</span>}
+          {lastSynced && <span style={{ fontSize: 11, color: MUTE }}>Synced {formatSomaliaTime(lastSynced)}</span>}
           <Button
             variant="ghost"
             icon={Download}
@@ -6221,7 +6463,7 @@ function SmsLogs({ companies }) {
           <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 700, color: GREEN }}>
             <Radio size={12} color={GREEN} /> Auto-refreshing every 10s
           </span>
-          {lastSynced && <span style={{ fontSize: 11, color: MUTE }}>Synced {lastSynced.toLocaleTimeString()}</span>}
+          {lastSynced && <span style={{ fontSize: 11, color: MUTE }}>Synced {formatSomaliaTime(lastSynced)}</span>}
           <Button
             variant="ghost"
             icon={Download}
@@ -7929,6 +8171,7 @@ function AdminDashboardShell({ admin, onLogout }) {
         <ConnectionStatusBar />
         <div style={{ padding: 22 }}>
           {active === "overview" && <Overview companies={companies} orders={orders} />}
+          {active === "financial-overview" && <FinancialOverview admin={admin} />}
           {active === "balance-dashboard" && <BalanceDashboard admin={admin} />}
           {active === "companies" && <Companies companies={companies} setCompanies={setCompanies} refreshCompanies={refreshCompanies} admin={admin} />}
           {active === "payment-numbers" && <PaymentNumbers companies={companies} setCompanies={setCompanies} refreshCompanies={refreshCompanies} admin={admin} />}

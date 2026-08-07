@@ -33,6 +33,23 @@ function buildConfig(): PoolConfig {
 
 export const pool = new Pool(buildConfig());
 
+// Every session (not just column storage) needs to agree Somalia's calendar
+// day is the one that matters: TIMESTAMPTZ columns already store an absolute
+// UTC instant regardless of session timezone, but now()/CURRENT_DATE/date()/
+// date_trunc('day', ...) all resolve using the session's TimeZone setting —
+// left at Postgres's default (UTC), "today"/day-bucketed queries (Reports,
+// dashboard stats, SIM balance summaries, Financial Overview) split the day
+// at UTC midnight instead of Mogadishu midnight, which reads as activity
+// landing on the wrong day for anything after ~9pm EAT. Setting it once per
+// connection fixes every such query at the source instead of sprinkling
+// `AT TIME ZONE 'Africa/Mogadishu'` through each one.
+pool.on("connect", (client) => {
+  client.query("SET TIME ZONE 'Africa/Mogadishu'").catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error("Failed to set session time zone:", (err as Error).message);
+  });
+});
+
 pool.on("error", (err) => {
   // A background/idle client error should never crash the whole process —
   // log it and let the pool recover, which is pg's documented behavior.
