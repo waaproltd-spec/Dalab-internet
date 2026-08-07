@@ -218,6 +218,10 @@ const DalabAdminApi = {
     const qs = new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([, v]) => v))).toString();
     return dalabAdminApiRequest(`/admin/sms-logs${qs ? `?${qs}` : ""}`);
   },
+  // Manual approval — a Super Admin who has read an unmatched SMS and
+  // confirmed by eye that it's the payment for a specific order links it by
+  // hand instead of waiting on (or in place of) automatic matching.
+  linkSmsToOrder: (smsLogId, orderId) => dalabAdminApiRequest(`/admin/sms-logs/${smsLogId}/link-order`, { method: "POST", body: { orderId } }),
   regenerateUssd: (orderId) => dalabAdminApiRequest(`/admin/orders/${orderId}/generate-ussd`, { method: "POST" }),
   reverseOrder: (id) => dalabAdminApiRequest(`/admin/orders/${id}/reverse`, { method: "POST" }),
   // Device & USSD module
@@ -6107,6 +6111,38 @@ function SmsLogs({ companies }) {
   const [sortKey, setSortKey] = useState("receivedAt");
   const [sortDir, setSortDir] = useState("desc");
   const [lastSynced, setLastSynced] = useState(null);
+  // Manual approval — an unmatched SMS's Order ID input, and per-row
+  // link/send state, keyed by sms log id. Doesn't depend on automatic
+  // matching at all: a Super Admin who has read the SMS and confirms it's
+  // the payment for a specific order can link it and send it to the agent
+  // by hand, whether or not the automatic matcher ever found it.
+  const [linkInputs, setLinkInputs] = useState({});
+  const [linkState, setLinkState] = useState({});
+
+  const linkToOrder = async (sms) => {
+    const orderId = (linkInputs[sms.id] || "").trim();
+    if (!orderId) return;
+    setLinkState((s) => ({ ...s, [sms.id]: { ...s[sms.id], working: true, error: "" } }));
+    try {
+      await DalabAdminApi.linkSmsToOrder(sms.id, orderId);
+      setLinkState((s) => ({ ...s, [sms.id]: { working: false, error: "", linked: true, linkedOrderId: orderId } }));
+      fetchLogs();
+    } catch (err) {
+      setLinkState((s) => ({ ...s, [sms.id]: { ...s[sms.id], working: false, error: err.message || "Could not link this SMS to that order." } }));
+    }
+  };
+
+  const sendLinkedToAgent = async (sms) => {
+    const orderId = linkState[sms.id]?.linkedOrderId;
+    if (!orderId) return;
+    setLinkState((s) => ({ ...s, [sms.id]: { ...s[sms.id], sending: true, sendError: "" } }));
+    try {
+      await DalabAdminApi.recoverOrder(orderId);
+      setLinkState((s) => ({ ...s, [sms.id]: { ...s[sms.id], sending: false, sentToAgent: true } }));
+    } catch (err) {
+      setLinkState((s) => ({ ...s, [sms.id]: { ...s[sms.id], sending: false, sendError: err.message || "Could not send this order to the agent." } }));
+    }
+  };
 
   const fetchLogs = async () => {
     if (!DALAB_API_ENABLED) return;
@@ -6274,9 +6310,49 @@ function SmsLogs({ companies }) {
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE }}>{r.parsedPhone || "—"}</td>
                 <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, fontFamily: "monospace" }}>{r.transactionRef || "—"}</td>
                 <td style={{ padding: "10px 14px" }}>
-                  {r.matchedOrderId
-                    ? <Badge tone="green">{r.matchedOrderId}</Badge>
-                    : <Badge tone="amber">Unmatched</Badge>}
+                  {r.matchedOrderId ? (
+                    <Badge tone="green">{r.matchedOrderId}</Badge>
+                  ) : linkState[r.id]?.linked ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-start" }}>
+                      <Badge tone="green">{linkState[r.id].linkedOrderId}</Badge>
+                      {linkState[r.id].sentToAgent ? (
+                        <span style={{ fontSize: 11, color: GREEN, fontWeight: 700 }}>Sent to agent</span>
+                      ) : (
+                        <Button
+                          variant="ghost"
+                          disabled={linkState[r.id].sending}
+                          onClick={() => sendLinkedToAgent(r)}
+                        >
+                          {linkState[r.id].sending ? "Sending…" : "Send to Agent"}
+                        </Button>
+                      )}
+                      {linkState[r.id].sendError && (
+                        <span style={{ fontSize: 11, color: "#C81E2C", maxWidth: 200 }}>{linkState[r.id].sendError}</span>
+                      )}
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-start", minWidth: 170 }}>
+                      <Badge tone="amber">Unmatched</Badge>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <input
+                          style={{ ...inputStyle, width: 110, padding: "5px 8px", fontSize: 11 }}
+                          placeholder="Order ID"
+                          value={linkInputs[r.id] || ""}
+                          onChange={(e) => setLinkInputs((s) => ({ ...s, [r.id]: e.target.value }))}
+                        />
+                        <Button
+                          variant="ghost"
+                          disabled={!(linkInputs[r.id] || "").trim() || linkState[r.id]?.working}
+                          onClick={() => linkToOrder(r)}
+                        >
+                          {linkState[r.id]?.working ? "Linking…" : "Link"}
+                        </Button>
+                      </div>
+                      {linkState[r.id]?.error && (
+                        <span style={{ fontSize: 11, color: "#C81E2C", maxWidth: 200 }}>{linkState[r.id].error}</span>
+                      )}
+                    </div>
+                  )}
                 </td>
               </tr>
             ))}

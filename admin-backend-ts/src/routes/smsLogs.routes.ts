@@ -2,6 +2,7 @@ import { Router, Response } from "express";
 import { randomUUID } from "node:crypto";
 import { query, queryOne, withTransaction } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
+import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { recordActivity } from "../utils/activityLog.js";
 import {
@@ -614,6 +615,90 @@ smsLogsRouter.get("/admin/sms-logs", requireStaff(), async (req, res) => {
   const cappedLimit = Math.min(Number(limit) || 200, 1000);
   sql += ` ORDER BY sl.received_at DESC LIMIT ${cappedLimit}`;
   sendJson(res, 200, await query(sql, args));
+});
+
+// Manual approval for an SMS the automatic matcher never linked to an order
+// (findMatchingOrder found no eligible order at upload time, and the 15s
+// resweep hasn't found one either — e.g. the customer's declared sending
+// number doesn't quite match what the SMS shows). A Super Admin who has
+// read the raw SMS text and confirms it really is the payment for a
+// specific order can point it at that order manually — the exact same
+// linkPaymentTransactionToOrder call the automatic resweep makes, just
+// admin-triggered instead of matcher-triggered. This only links the
+// payment ledger; it never dials anything itself — actually notifying the
+// Agent App still requires the separate, explicit "Send to Agent" call
+// (POST /admin/orders/:id/recover, below in orders.routes.ts), which now
+// works immediately afterward since it only requires a linked payment.
+smsLogsRouter.post("/admin/sms-logs/:id/link-order", requirePermission("orders.manage"), async (req, res) => {
+  const { orderId } = req.body;
+  if (!orderId) return sendJson(res, 400, { error: "orderId is required" });
+
+  const sms = await queryOne<any>(`SELECT * FROM sms_logs WHERE id=$1`, [req.params.id]);
+  if (!sms) return sendJson(res, 404, { error: "SMS log not found" });
+  if (sms.matched_order_id) {
+    return sendJson(res, 409, { error: `This SMS is already linked to order ${sms.matched_order_id}.` });
+  }
+
+  const order = await queryOne<any>(`SELECT * FROM orders WHERE id=$1`, [orderId]);
+  if (!order) return sendJson(res, 404, { error: "Order not found" });
+  if (!["pending", "in_progress"].includes(order.status)) {
+    return sendJson(res, 409, { error: `Order status '${order.status}' can't accept a payment link.` });
+  }
+
+  // Atomic claim, same guard the automatic resweep uses — this row may have
+  // matched automatically, or been linked by a concurrent admin request, in
+  // the instant between the check above and here.
+  const claimed = await query<{ id: string }>(
+    `UPDATE sms_logs SET matched_order_id=$1, match_failure_reason=NULL WHERE id=$2 AND matched_order_id IS NULL RETURNING id`,
+    [orderId, req.params.id]
+  );
+  if (claimed.length === 0) {
+    return sendJson(res, 409, { error: "This SMS was just linked by another request — refresh and try again." });
+  }
+
+  const requiresManualApproval = await requiresManualApprovalFor(orderId);
+
+  if (await hasActivePaymentTransaction(orderId)) {
+    // Same real race the live upload path and the resweep both guard
+    // against: this order was fulfilled by a different payment between the
+    // admin loading this screen and clicking Link.
+    await markPaymentTransactionDuplicateForSms(sms.id, orderId);
+    await logPaymentActivity({
+      action: "duplicate_delivery_prevented",
+      smsLogId: sms.id,
+      order,
+      transactionRef: sms.transaction_ref,
+      paymentTimestamp: sms.received_at,
+      status: "duplicate_blocked",
+      requiresManualApproval,
+    });
+    broadcast({ type: "sms_log.created", smsLogId: sms.id, orderId });
+    return sendJson(res, 409, {
+      error: "This order already has an active payment linked to it — this SMS was recorded as a blocked duplicate instead.",
+    });
+  }
+
+  await linkPaymentTransactionToOrder(sms.id, orderId);
+  await logPaymentActivity({
+    action: "payment_verified",
+    smsLogId: sms.id,
+    order,
+    transactionRef: sms.transaction_ref,
+    paymentTimestamp: sms.received_at,
+    status: "verified",
+    requiresManualApproval,
+  });
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "sms_manually_linked",
+    entityType: "order",
+    entityId: orderId,
+    oldValue: null,
+    newValue: { smsLogId: sms.id, parsedAmount: sms.parsed_amount, parsedPhone: sms.parsed_phone },
+  });
+  broadcast({ type: "sms_log.created", smsLogId: sms.id, orderId });
+
+  sendJson(res, 200, { ok: true, orderId, smsLogId: sms.id });
 });
 
 // The duplicate-prevention ledger's read side — search/filter/sort for the
