@@ -451,8 +451,13 @@ class AgentBackgroundService : Service() {
         // change (which device/SIM slot handles a provider) now reaches a
         // device within about a minute instead of five.
         private const val SIM_ROUTING_REFRESH_INTERVAL_MS = HEARTBEAT_INTERVAL_MS
-        private const val QUEUE_DRAIN_INTERVAL_MS = 2 * 60_000L
-        private const val SELF_HEAL_SWEEP_INTERVAL_MS = 3 * 60_000L
+        // Tightened from 2min/3min — these only run after something already
+        // went wrong (a dropped connection, the process dying mid-dial), so
+        // a shorter interval speeds up recovery without touching the normal
+        // synchronous upload->match->verify->dial path, which already has
+        // zero artificial delay in it.
+        private const val QUEUE_DRAIN_INTERVAL_MS = 45_000L
+        private const val SELF_HEAL_SWEEP_INTERVAL_MS = 60_000L
 
         /** Read from PermissionsStatusScreen to show "Foreground Service: Active/Inactive". */
         @Volatile

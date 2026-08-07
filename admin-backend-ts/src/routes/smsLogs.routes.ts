@@ -532,19 +532,19 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
   return { relinked, stillUnmatched: orphans.length - relinked };
 }
 
-// Every 30s — frequent enough that a delayed match (the order simply
-// hadn't been created yet when the SMS first arrived, or a Super Admin
-// just fixed a payment method's device/SIM assignment) resolves within
-// seconds, without needing a bespoke "please retry this one" trigger from
-// every place that could unblock it. Bounded to MATCH_WINDOW_HOURS worth
-// of rows and best-effort (never throws), so this can't grow unbounded or
-// take the process down.
+// Every 15s (tightened from 30s) — frequent enough that a delayed match
+// (the order simply hadn't been created yet when the SMS first arrived, or
+// a Super Admin just fixed a payment method's device/SIM assignment)
+// resolves within seconds, without needing a bespoke "please retry this
+// one" trigger from every place that could unblock it. Bounded to
+// MATCH_WINDOW_HOURS worth of rows and best-effort (never throws), so this
+// can't grow unbounded or take the process down.
 setInterval(() => {
   resweepUnmatchedSmsLogs().catch((err) => {
     // eslint-disable-next-line no-console
     console.error("resweepUnmatchedSmsLogs sweep failed:", (err as Error).message);
   });
-}, 30_000);
+}, 15_000);
 
 /** Shared tail for both the proactive check and the unique-index backstop:
  * records this specific attempt as its own 'duplicate_blocked' ledger row
