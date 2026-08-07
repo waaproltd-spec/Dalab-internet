@@ -163,6 +163,90 @@ authRouter.post("/auth/identify", rateLimit("customer-identify", 20, 15 * 60 * 1
   });
 });
 
+// ---------------- Customer: name + phone + mandatory 4-digit PIN ----------------
+// A second, PIN-gated Customer App auth model living alongside
+// /auth/identify above rather than replacing it — same customers table and
+// pin_hash column (shared with the Super Admin PIN-reset routes and the
+// optional self-service PIN in customers.routes.ts), but here the PIN is
+// the credential itself: signup requires setting one, and login refuses to
+// issue tokens at all on a wrong PIN (unlike POST /customer/pin/verify's
+// post-login UX-only check). check-phone lets the Customer App decide
+// which screen to show without a blind guess — a phone that exists but has
+// no PIN yet (e.g. a legacy /auth/identify row) still routes to "create a
+// PIN", not "enter one that was never set".
+function isFourDigitPin(pin: string): boolean {
+  return /^\d{4}$/.test(pin);
+}
+
+authRouter.post("/auth/customer/check-phone", rateLimit("customer-check-phone", 30, 15 * 60 * 1000), async (req, res) => {
+  const phone = normalizeCustomerPhone(req.body.phone);
+  if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid phone number" });
+  const customer = await queryOne<{ name: string | null; pin_hash: string | null }>(
+    `SELECT name, pin_hash FROM customers WHERE phone=$1`,
+    [phone]
+  );
+  sendJson(res, 200, {
+    exists: Boolean(customer),
+    pinSet: Boolean(customer?.pin_hash),
+    name: customer?.name ?? null,
+  });
+});
+
+authRouter.post("/auth/customer/signup", rateLimit("customer-pin-signup", 10, 15 * 60 * 1000), async (req, res) => {
+  const phone = normalizeCustomerPhone(req.body.phone);
+  const name = req.body.name ? String(req.body.name).trim() : "";
+  const pin = String(req.body.pin ?? "");
+  if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid phone number" });
+  if (!name) return sendJson(res, 400, { error: "Full name is required" });
+  if (!isFourDigitPin(pin)) return sendJson(res, 400, { error: "PIN must be exactly 4 digits" });
+
+  let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
+  if (customer?.pin_hash) {
+    return sendJson(res, 409, { error: "An account with this phone number already exists. Please sign in instead." });
+  }
+  if (customer?.status === "blocked") return sendJson(res, 403, { error: "This account has been blocked" });
+
+  const pinHash = await hashPassword(pin);
+  if (customer) {
+    // Claims the existing (PIN-less) row exactly like /auth/register does
+    // for password_hash — keeps every historical order/points balance
+    // attached to the same account instead of creating a duplicate.
+    await query(`UPDATE customers SET pin_hash=$1, name=COALESCE(name, $2) WHERE id=$3`, [pinHash, name, customer.id]);
+    customer = await queryOne(`SELECT * FROM customers WHERE id=$1`, [customer.id]);
+  } else {
+    customer = await queryOne(
+      `INSERT INTO customers (id, phone, name, pin_hash) VALUES ($1,$2,$3,$4) RETURNING *`,
+      [randomUUID(), phone, name, pinHash]
+    );
+  }
+
+  const tokens = await issueTokens(customer!.id, "customer");
+  sendJson(res, 201, {
+    ...tokens,
+    customer: { id: customer!.id, phone: customer!.phone, name: customer!.name, email: customer!.email },
+  });
+});
+
+authRouter.post("/auth/customer/login", rateLimit("customer-pin-login", 10, 15 * 60 * 1000), async (req, res) => {
+  const phone = normalizeCustomerPhone(req.body.phone);
+  const pin = String(req.body.pin ?? "");
+  if (!phone || !pin) return sendJson(res, 400, { error: "phone and pin are required" });
+
+  const customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
+  // Same generic message whether the phone isn't registered, has no PIN
+  // yet, or the PIN is simply wrong — never reveal which case it is.
+  const genericError = () => sendJson(res, 401, { error: "Invalid phone number or PIN" });
+  if (!customer || !customer.pin_hash) return genericError();
+  if (!(await verifyPassword(pin, customer.pin_hash))) return genericError();
+  if (customer.status === "blocked") return sendJson(res, 403, { error: "This account has been blocked" });
+
+  const tokens = await issueTokens(customer.id, "customer");
+  sendJson(res, 200, {
+    ...tokens,
+    customer: { id: customer.id, phone: customer.phone, name: customer.name, email: customer.email },
+  });
+});
+
 // Best-effort session teardown for the Customer App's explicit "Log out" —
 // revokes just this one refresh token (same token_hash lookup /auth/refresh
 // already uses) so it can't be replayed; a missing/already-invalid token is

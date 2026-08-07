@@ -200,12 +200,23 @@ customersRouter.get("/customer/pin-status", requireAuth("customer"), async (req,
   sendJson(res, 200, { isSet: Boolean(customer.pin_hash) });
 });
 
-// Same handler covers both "create" and "change" for the same reason the
-// Super Admin route does — being authenticated as this customer (via the
-// login-issued token) is already the proof of ownership needed to set a new one.
+// Same handler covers both "create" (no pin_hash yet — the auth token alone
+// is proof of ownership) and "change" (a pin_hash already exists — also
+// requires currentPin, matching the Profile "Change PIN" UX rather than
+// letting a bare access token silently take over an already-PIN-protected
+// account).
 customersRouter.put("/customer/pin", requireAuth("customer"), async (req, res) => {
-  const { pin } = req.body;
+  const { pin, currentPin } = req.body;
   if (!isValidPin(String(pin ?? ""))) return sendJson(res, 400, { error: "PIN must be 4-8 digits" });
+
+  const customer = await queryOne<{ pin_hash: string | null }>(`SELECT pin_hash FROM customers WHERE id=$1`, [req.auth!.sub]);
+  if (!customer) return sendJson(res, 404, { error: "Customer not found" });
+  if (customer.pin_hash) {
+    if (!(await verifyPassword(String(currentPin ?? ""), customer.pin_hash))) {
+      return sendJson(res, 401, { error: "Current PIN is incorrect" });
+    }
+  }
+
   const pinHash = await hashPassword(String(pin));
   await query(`UPDATE customers SET pin_hash=$1 WHERE id=$2`, [pinHash, req.auth!.sub]);
   sendJson(res, 200, { message: "PIN saved", isSet: true });
