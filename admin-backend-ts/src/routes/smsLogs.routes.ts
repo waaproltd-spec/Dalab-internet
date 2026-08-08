@@ -1,4 +1,4 @@
-import { Router, Response } from "express";
+import { Router } from "express";
 import { randomUUID } from "node:crypto";
 import { query, queryOne, withTransaction } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
@@ -197,6 +197,105 @@ async function findMatchingOrder(
   return { order: null, reason: `Matched by amount+phone but rejected by device/SIM verification — ${skipped.join("; ")}` };
 }
 
+type ExchangeOrderMatch = {
+  id: string;
+  sender_phone: string;
+  amount_sent: number;
+  from_wallet_id: string;
+};
+
+type ExchangeMatchResult = { order: ExchangeOrderMatch | null; reason: string | null };
+
+/**
+ * Money Exchange counterpart to findMatchingOrder() above — same
+ * amount+phone+device/SIM verification shape, against exchange_orders
+ * instead of orders. Only ever called when the Internet Store matcher
+ * found nothing for this SMS (see ingestPaymentSms), so a payment SMS that
+ * really is for a Store order is never redirected here.
+ *
+ * "Correct collection wallet" is enforced via exchange_payout_wallets: each
+ * wallet TYPE (evc_plus/edahab/...) has its own DALAB collection number,
+ * and that number's device/SIM is what a customer's payment SMS for a
+ * candidate order (keyed by that order's from_wallet_id) must have arrived
+ * on — exactly the same device/SIM guardrail findMatchingOrder already
+ * applies via company_payment_methods, just resolved through
+ * exchange_payout_wallets instead. This also inherently verifies
+ * provider/wallet identity: a candidate's from_wallet_id determines which
+ * specific collection wallet is expected, so an SMS that arrived on the
+ * wrong wallet's device/SIM can never match a candidate of a different
+ * currency.
+ */
+async function findMatchingExchangeOrder(
+  parsedAmount: number | undefined,
+  parsedPhone: string | undefined,
+  uploadingAgentId: string,
+  uploadingSimSlot: number | null | undefined
+): Promise<ExchangeMatchResult> {
+  if (parsedAmount == null || !parsedPhone) {
+    return { order: null, reason: "SMS did not parse a usable amount and/or sender phone number" };
+  }
+  const target = normalizePhone(parsedPhone);
+  if (!target) return { order: null, reason: "Parsed phone number had no digits after normalization" };
+
+  const candidates = await withTransaction((client) =>
+    client
+      .query<ExchangeOrderMatch>(
+        `SELECT id, sender_phone, amount_sent, from_wallet_id FROM exchange_orders
+         WHERE status='pending' AND ABS(amount_sent - $1) < 0.01 AND updated_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
+         ORDER BY created_at ASC
+         FOR UPDATE SKIP LOCKED`,
+        [parsedAmount]
+      )
+      .then((r) => r.rows)
+  );
+  if (candidates.length === 0) {
+    return { order: null, reason: `No pending exchange order for $${parsedAmount} in the last ${MATCH_WINDOW_HOURS}h` };
+  }
+  const phoneMatches = candidates.filter((o) => normalizePhone(o.sender_phone) === target);
+  if (phoneMatches.length === 0) {
+    return {
+      order: null,
+      reason: `${candidates.length} pending exchange order(s) for $${parsedAmount} in the last ${MATCH_WINDOW_HOURS}h, but none sent from phone ...${target}`,
+    };
+  }
+
+  const uploadingAgent = await queryOne<{ device_id: string | null }>(`SELECT device_id FROM agents WHERE id=$1`, [uploadingAgentId]);
+  const uploadingDeviceId = uploadingAgent?.device_id ?? null;
+
+  const skipped: string[] = [];
+  for (const candidate of phoneMatches) {
+    const collectionWallet = await queryOne<{ device_id: string | null; sim_slot: number | null }>(
+      `SELECT device_id, sim_slot FROM exchange_payout_wallets WHERE wallet_id=$1 ORDER BY created_at ASC LIMIT 1`,
+      [candidate.from_wallet_id]
+    );
+    if (!collectionWallet) {
+      skipped.push(`order ${candidate.id}: no collection wallet configured for ${candidate.from_wallet_id}`);
+      continue;
+    }
+    if (!collectionWallet.device_id) {
+      // Not yet linked to a device — accept, same permissive fallback
+      // findMatchingOrder uses for a payment method with no device on
+      // record yet; once a device IS on record every payment after this
+      // is strictly verified against it.
+      return { order: candidate, reason: null };
+    }
+    if (collectionWallet.device_id !== uploadingDeviceId) {
+      skipped.push(
+        `order ${candidate.id}: expects device ${collectionWallet.device_id}, this SMS arrived on device ${uploadingDeviceId ?? "(agent has no device_id set)"}`
+      );
+      continue;
+    }
+    if (collectionWallet.sim_slot != null && collectionWallet.sim_slot !== uploadingSimSlot) {
+      skipped.push(
+        `order ${candidate.id}: expects SIM slot ${collectionWallet.sim_slot}, this SMS arrived on slot ${uploadingSimSlot ?? "(unresolved)"}`
+      );
+      continue;
+    }
+    return { order: candidate, reason: null };
+  }
+  return { order: null, reason: `Matched by amount+phone but rejected by collection-wallet device/SIM verification — ${skipped.join("; ")}` };
+}
+
 async function requiresManualApprovalFor(orderId: string): Promise<boolean> {
   const order = await queryOne<{ company_id: string }>(`SELECT company_id FROM orders WHERE id=$1`, [orderId]);
   const company = order && (await queryOne<{ auto_process_enabled: boolean }>(
@@ -255,14 +354,28 @@ async function logPaymentActivity(params: {
   });
 }
 
-async function respondAlreadyProcessed(
-  res: Response,
-  existing: { id: string; matched_order_id: string | null },
+/** Returns the same response shape ingestPaymentSms() itself returns, so
+ * both the live route and tests can treat every outcome uniformly. */
+type IngestSmsResult = {
+  status: number;
+  body: {
+    id: string;
+    matchedOrderId: string | null;
+    matchedExchangeOrderId?: string | null;
+    requiresManualApproval: boolean;
+    duplicate: boolean;
+    orderAlreadyCompleted?: boolean;
+    status: string;
+  };
+};
+
+async function buildAlreadyProcessedResult(
+  existing: { id: string; matched_order_id: string | null; matched_exchange_order_id?: string | null },
   transactionRef: string | null,
   receivedAt: string,
   parsedPhone?: string,
   parsedAmount?: number
-) {
+): Promise<IngestSmsResult> {
   const requiresManualApproval = existing.matched_order_id ? await requiresManualApprovalFor(existing.matched_order_id) : false;
   const orderAlreadyCompleted = existing.matched_order_id ? await orderAlreadyFulfilled(existing.matched_order_id) : false;
   if (existing.matched_order_id) {
@@ -285,7 +398,9 @@ async function respondAlreadyProcessed(
   // A distinct ledger row for THIS blocked attempt (not the original), so
   // the payment_transactions table shows both the real payment and every
   // re-delivery/retry that was correctly rejected — the audit trail
-  // requirement 5 asks for, and direct evidence the guarantee held.
+  // requirement 5 asks for, and direct evidence the guarantee held. Only
+  // for Store orders — exchange orders don't use this ledger (see
+  // ingestPaymentSms for why).
   await createPaymentTransaction({
     smsLogId: existing.id,
     orderId: existing.matched_order_id,
@@ -296,21 +411,53 @@ async function respondAlreadyProcessed(
     status: "duplicate_blocked",
   });
   broadcast({ type: "sms_log.created", smsLogId: existing.id, orderId: existing.matched_order_id });
-  sendJson(res, 200, {
-    id: existing.id,
-    matchedOrderId: existing.matched_order_id,
-    requiresManualApproval,
-    duplicate: true,
-    orderAlreadyCompleted,
-    status: "already_processed",
-  });
+  return {
+    status: 200,
+    body: {
+      id: existing.id,
+      matchedOrderId: existing.matched_order_id,
+      matchedExchangeOrderId: existing.matched_exchange_order_id ?? null,
+      requiresManualApproval,
+      duplicate: true,
+      orderAlreadyCompleted,
+      status: "already_processed",
+    },
+  };
 }
 
-smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => {
-  const { sender, body, parsedProvider, parsedAmount, parsedPhone, receivedAt, transactionRef, simSlot } = req.body;
-  if (!sender || !body) return sendJson(res, 400, { error: "sender and body are required" });
+export type IngestSmsParams = {
+  agentId: string;
+  sender: string;
+  body: string;
+  parsedProvider?: string | null;
+  parsedAmount?: number;
+  parsedPhone?: string;
+  receivedAt?: string;
+  transactionRef?: string | null;
+  simSlot?: number | null;
+};
 
-  const effectiveReceivedAt = receivedAt ?? new Date().toISOString();
+/**
+ * The full incoming-payment-SMS pipeline, extracted out of the Express
+ * handler so it's directly callable (no HTTP/auth needed) — from
+ * resweepUnmatchedSmsLogs below, and from tests. Behavior for the Internet
+ * Store path is byte-for-byte what the inline handler used to do; the only
+ * addition is the Money Exchange branch, which only ever runs once the
+ * Store matcher has already found nothing for this SMS — Store matching is
+ * always tried first and is completely unaffected by Exchange existing.
+ *
+ * Money Exchange matches are NOT routed through payment_transactions (that
+ * ledger is Store-specific — commission math, Balance Dashboard, etc. all
+ * assume a Store order). A matched exchange order is instead just linked
+ * via sms_logs.matched_exchange_order_id and logged, exactly enough for a
+ * Super Admin to see "this SMS pays for DEX..." and click Verify Payment
+ * themselves — matching alone never advances the order out of 'pending'
+ * or dials any payout, on purpose (see exchange.routes.ts's manual-v1
+ * verify endpoint).
+ */
+export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestSmsResult> {
+  const { agentId, sender, body, parsedProvider, parsedAmount, parsedPhone, transactionRef, simSlot } = params;
+  const effectiveReceivedAt = params.receivedAt ?? new Date().toISOString();
 
   // A telecom's own per-transaction reference code (e.g. Somtel eDahab's
   // "Aqanoosiga" field) is a stronger, authoritative duplicate-payment
@@ -319,14 +466,27 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
   // even if its message body text ever varies slightly between deliveries
   // (a redelivered broadcast, an OEM quirk, a manual re-scan of the inbox).
   if (transactionRef) {
-    const existingByRef = await queryOne<{ id: string; matched_order_id: string | null }>(
-      `SELECT id, matched_order_id FROM sms_logs WHERE transaction_ref=$1 LIMIT 1`,
+    const existingByRef = await queryOne<{ id: string; matched_order_id: string | null; matched_exchange_order_id: string | null }>(
+      `SELECT id, matched_order_id, matched_exchange_order_id FROM sms_logs WHERE transaction_ref=$1 LIMIT 1`,
       [transactionRef]
     );
-    if (existingByRef) return respondAlreadyProcessed(res, existingByRef, transactionRef, effectiveReceivedAt, parsedPhone, parsedAmount);
+    if (existingByRef) return buildAlreadyProcessedResult(existingByRef, transactionRef, effectiveReceivedAt, parsedPhone, parsedAmount);
   }
 
-  const { order: match, reason: matchFailureReason } = await findMatchingOrder(parsedAmount, parsedPhone, req.auth!.sub, simSlot);
+  const { order: match, reason: matchFailureReason } = await findMatchingOrder(parsedAmount, parsedPhone, agentId, simSlot);
+
+  // Exchange matching only runs when the Store matcher found nothing — an
+  // SMS that's genuinely a Store payment is never redirected here.
+  let exchangeMatch: ExchangeOrderMatch | null = null;
+  let exchangeMatchFailureReason: string | null = null;
+  if (!match) {
+    const exchangeResult = await findMatchingExchangeOrder(parsedAmount, parsedPhone, agentId, simSlot);
+    exchangeMatch = exchangeResult.order;
+    exchangeMatchFailureReason = exchangeResult.reason;
+  }
+  const combinedFailureReason =
+    match || exchangeMatch ? null : [matchFailureReason, exchangeMatchFailureReason ? `Exchange: ${exchangeMatchFailureReason}` : null].filter(Boolean).join(" | ");
+
   const id = randomUUID();
   // Resolved once in JS (rather than left to SQL's now()) so the dedup
   // lookup below, if the insert conflicts, checks the exact same instant
@@ -334,9 +494,13 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
   // different truncated minute than the row that actually won.
   try {
     await query(
-      `INSERT INTO sms_logs (id, agent_id, sender, body, parsed_provider, parsed_amount, parsed_phone, matched_order_id, received_at, transaction_ref, sim_slot, match_failure_reason)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-      [id, req.auth!.sub, sender, body, parsedProvider ?? null, parsedAmount ?? null, parsedPhone ?? null, match?.id ?? null, effectiveReceivedAt, transactionRef ?? null, simSlot ?? null, match ? null : matchFailureReason]
+      `INSERT INTO sms_logs (id, agent_id, sender, body, parsed_provider, parsed_amount, parsed_phone, matched_order_id, matched_exchange_order_id, received_at, transaction_ref, sim_slot, match_failure_reason)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+      [
+        id, agentId, sender, body, parsedProvider ?? null, parsedAmount ?? null, parsedPhone ?? null,
+        match?.id ?? null, exchangeMatch?.id ?? null, effectiveReceivedAt, transactionRef ?? null, simSlot ?? null,
+        combinedFailureReason || null,
+      ]
     );
   } catch (err: any) {
     if (err?.code !== "23505") throw err;
@@ -347,18 +511,18 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
     // specific), falling back to the sender+body+minute index.
     const existing =
       (transactionRef &&
-        (await queryOne<{ id: string; matched_order_id: string | null }>(
-          `SELECT id, matched_order_id FROM sms_logs WHERE transaction_ref=$1 LIMIT 1`,
+        (await queryOne<{ id: string; matched_order_id: string | null; matched_exchange_order_id: string | null }>(
+          `SELECT id, matched_order_id, matched_exchange_order_id FROM sms_logs WHERE transaction_ref=$1 LIMIT 1`,
           [transactionRef]
         ))) ||
-      (await queryOne<{ id: string; matched_order_id: string | null }>(
-        `SELECT id, matched_order_id FROM sms_logs
+      (await queryOne<{ id: string; matched_order_id: string | null; matched_exchange_order_id: string | null }>(
+        `SELECT id, matched_order_id, matched_exchange_order_id FROM sms_logs
          WHERE sender=$1 AND body=$2
            AND date_trunc('minute', received_at AT TIME ZONE 'UTC') = date_trunc('minute', $3::timestamptz AT TIME ZONE 'UTC')
          LIMIT 1`,
         [sender, body, effectiveReceivedAt]
       ));
-    if (existing) return respondAlreadyProcessed(res, existing, transactionRef ?? null, effectiveReceivedAt, parsedPhone, parsedAmount);
+    if (existing) return buildAlreadyProcessedResult(existing, transactionRef ?? null, effectiveReceivedAt, parsedPhone, parsedAmount);
     throw err;
   }
 
@@ -402,7 +566,7 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
   // (this is the exact root cause of the duplicate Order ID rows reported).
   // Proactively reject that here, before ever inserting a second active row.
   if (match && (await hasActivePaymentTransaction(match.id))) {
-    return blockDuplicateDelivery(res, id, match, transactionRef ?? null, effectiveReceivedAt, requiresManualApproval);
+    return buildDuplicateBlockedResult(id, match, transactionRef ?? null, effectiveReceivedAt, requiresManualApproval);
   }
 
   if (match) {
@@ -417,12 +581,44 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
     });
   }
 
+  // Money Exchange's duplicate guard + "matched" activity entry — an
+  // exchange order is only ever allowed one linked SMS. A race between two
+  // concurrent uploads matching the same order is closed by the same
+  // FOR UPDATE SKIP LOCKED candidate lock findMatchingExchangeOrder takes,
+  // plus this existence check right before linking.
+  if (exchangeMatch) {
+    const alreadyLinked = await queryOne<{ id: string }>(
+      `SELECT id FROM sms_logs WHERE matched_exchange_order_id=$1 AND id != $2 LIMIT 1`,
+      [exchangeMatch.id, id]
+    );
+    if (alreadyLinked) {
+      await query(`UPDATE sms_logs SET matched_exchange_order_id=NULL, match_failure_reason=$1 WHERE id=$2`, [
+        `Exchange order ${exchangeMatch.id} already has a matched payment SMS`,
+        id,
+      ]);
+      return buildExchangeDuplicateBlockedResult(id, exchangeMatch.id, transactionRef ?? null);
+    }
+    // The exact "SMS -> Exchange Order DEX... -> matched" trail requested —
+    // visible in the Activity Log the same way every other exchange status
+    // change already is.
+    await recordActivity({
+      adminId: undefined,
+      action: "match_exchange_order_sms",
+      entityType: "exchange_order",
+      entityId: exchangeMatch.id,
+      oldValue: null,
+      newValue: { smsLogId: id, amountSent: exchangeMatch.amount_sent, transactionRef: transactionRef ?? null, summary: `SMS -> Exchange Order ${exchangeMatch.id} -> matched` },
+    });
+    broadcast({ type: "exchange_order.updated", exchangeOrderId: exchangeMatch.id });
+  }
+
   // The ledger row for this genuinely-new payment attempt — 'pending' until
   // the Agent App's verify-payment/dial-attempt calls advance it. A null
   // return means idx_payment_tx_order_active's atomic backstop (migration
   // 028) caught a race the proactive check above missed — two SMS matching
   // the same order in the same instant — so fall back to the identical
-  // duplicate-blocked path rather than silently dropping the record.
+  // duplicate-blocked path rather than silently dropping the record. Only
+  // relevant for Store orders — exchange orders never touch this ledger.
   const txId = await createPaymentTransaction({
     smsLogId: id,
     orderId: match?.id ?? null,
@@ -434,11 +630,28 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
   });
 
   if (txId == null && match) {
-    return blockDuplicateDelivery(res, id, match, transactionRef ?? null, effectiveReceivedAt, requiresManualApproval);
+    return buildDuplicateBlockedResult(id, match, transactionRef ?? null, effectiveReceivedAt, requiresManualApproval);
   }
 
   broadcast({ type: "sms_log.created", smsLogId: id, orderId: match?.id ?? null });
-  sendJson(res, 201, { id, matchedOrderId: match?.id ?? null, requiresManualApproval, duplicate: false, status: "new" });
+  return {
+    status: 201,
+    body: {
+      id,
+      matchedOrderId: match?.id ?? null,
+      matchedExchangeOrderId: exchangeMatch?.id ?? null,
+      requiresManualApproval,
+      duplicate: false,
+      status: "new",
+    },
+  };
+}
+
+smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => {
+  const { sender, body } = req.body ?? {};
+  if (!sender || !body) return sendJson(res, 400, { error: "sender and body are required" });
+  const result = await ingestPaymentSms({ agentId: req.auth!.sub, ...req.body });
+  sendJson(res, result.status, result.body);
 });
 
 type OrphanedSmsRow = {
@@ -470,60 +683,98 @@ type OrphanedSmsRow = {
 export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; stillUnmatched: number }> {
   const orphans = await query<OrphanedSmsRow>(
     `SELECT id, agent_id, parsed_amount, parsed_phone, sim_slot, transaction_ref, received_at FROM sms_logs
-     WHERE matched_order_id IS NULL AND received_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
+     WHERE matched_order_id IS NULL AND matched_exchange_order_id IS NULL AND received_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
      ORDER BY received_at ASC`
   );
   let relinked = 0;
   for (const sms of orphans) {
     try {
       const { order: match, reason } = await findMatchingOrder(sms.parsed_amount ?? undefined, sms.parsed_phone ?? undefined, sms.agent_id, sms.sim_slot);
-      if (!match) {
-        await query(`UPDATE sms_logs SET match_failure_reason=$1 WHERE id=$2`, [reason, sms.id]);
-        continue;
-      }
-      // Atomically claim this row — a concurrent live upload or another
-      // sweep pass may have linked it (or a different SMS to this same
-      // order) in the meantime; only proceed if we're the one that wins.
-      const claimed = await query<{ id: string }>(
-        `UPDATE sms_logs SET matched_order_id=$1, match_failure_reason=NULL WHERE id=$2 AND matched_order_id IS NULL RETURNING id`,
-        [match.id, sms.id]
-      );
-      if (claimed.length === 0) continue;
+      if (match) {
+        // Atomically claim this row — a concurrent live upload or another
+        // sweep pass may have linked it (or a different SMS to this same
+        // order) in the meantime; only proceed if we're the one that wins.
+        const claimed = await query<{ id: string }>(
+          `UPDATE sms_logs SET matched_order_id=$1, match_failure_reason=NULL WHERE id=$2 AND matched_order_id IS NULL RETURNING id`,
+          [match.id, sms.id]
+        );
+        if (claimed.length === 0) continue;
 
-      const requiresManualApproval = await requiresManualApprovalFor(match.id);
-      if (await hasActivePaymentTransaction(match.id)) {
-        // The order this SMS now matches was fulfilled by a different
-        // payment between its original upload and this sweep pass —
-        // record it as a blocked duplicate, same as the live path does.
-        await markPaymentTransactionDuplicateForSms(sms.id, match.id);
+        const requiresManualApproval = await requiresManualApprovalFor(match.id);
+        if (await hasActivePaymentTransaction(match.id)) {
+          // The order this SMS now matches was fulfilled by a different
+          // payment between its original upload and this sweep pass —
+          // record it as a blocked duplicate, same as the live path does.
+          await markPaymentTransactionDuplicateForSms(sms.id, match.id);
+          await logPaymentActivity({
+            action: "duplicate_delivery_prevented",
+            smsLogId: sms.id,
+            order: match,
+            transactionRef: sms.transaction_ref,
+            paymentTimestamp: sms.received_at,
+            status: "duplicate_blocked",
+            requiresManualApproval,
+          });
+          broadcast({ type: "sms_log.created", smsLogId: sms.id, orderId: match.id });
+          continue;
+        }
+
+        await linkPaymentTransactionToOrder(sms.id, match.id);
         await logPaymentActivity({
-          action: "duplicate_delivery_prevented",
+          action: "payment_verified",
           smsLogId: sms.id,
           order: match,
           transactionRef: sms.transaction_ref,
           paymentTimestamp: sms.received_at,
-          status: "duplicate_blocked",
+          status: "verified",
           requiresManualApproval,
         });
+        if (!requiresManualApproval) {
+          const orderRow = await queryOne<any>(`SELECT * FROM orders WHERE id=$1`, [match.id]);
+          if (orderRow) await verifyOrderAndGenerateUssd(orderRow, sms.agent_id);
+        }
         broadcast({ type: "sms_log.created", smsLogId: sms.id, orderId: match.id });
+        relinked++;
         continue;
       }
 
-      await linkPaymentTransactionToOrder(sms.id, match.id);
-      await logPaymentActivity({
-        action: "payment_verified",
-        smsLogId: sms.id,
-        order: match,
-        transactionRef: sms.transaction_ref,
-        paymentTimestamp: sms.received_at,
-        status: "verified",
-        requiresManualApproval,
-      });
-      if (!requiresManualApproval) {
-        const orderRow = await queryOne<any>(`SELECT * FROM orders WHERE id=$1`, [match.id]);
-        if (orderRow) await verifyOrderAndGenerateUssd(orderRow, sms.agent_id);
+      // No Store order match — try Money Exchange next, same as the live
+      // upload path does. Never auto-verifies/pays out; only links + logs.
+      const { order: exchangeMatch, reason: exchangeReason } = await findMatchingExchangeOrder(
+        sms.parsed_amount ?? undefined,
+        sms.parsed_phone ?? undefined,
+        sms.agent_id,
+        sms.sim_slot
+      );
+      if (!exchangeMatch) {
+        await query(`UPDATE sms_logs SET match_failure_reason=$1 WHERE id=$2`, [
+          [reason, exchangeReason ? `Exchange: ${exchangeReason}` : null].filter(Boolean).join(" | "),
+          sms.id,
+        ]);
+        continue;
       }
-      broadcast({ type: "sms_log.created", smsLogId: sms.id, orderId: match.id });
+      const alreadyLinked = await queryOne<{ id: string }>(`SELECT id FROM sms_logs WHERE matched_exchange_order_id=$1 LIMIT 1`, [exchangeMatch.id]);
+      if (alreadyLinked) {
+        await query(`UPDATE sms_logs SET match_failure_reason=$1 WHERE id=$2`, [
+          `Exchange order ${exchangeMatch.id} already has a matched payment SMS`,
+          sms.id,
+        ]);
+        continue;
+      }
+      const claimedExchange = await query<{ id: string }>(
+        `UPDATE sms_logs SET matched_exchange_order_id=$1, match_failure_reason=NULL WHERE id=$2 AND matched_order_id IS NULL AND matched_exchange_order_id IS NULL RETURNING id`,
+        [exchangeMatch.id, sms.id]
+      );
+      if (claimedExchange.length === 0) continue;
+      await recordActivity({
+        adminId: undefined,
+        action: "match_exchange_order_sms",
+        entityType: "exchange_order",
+        entityId: exchangeMatch.id,
+        oldValue: null,
+        newValue: { smsLogId: sms.id, amountSent: exchangeMatch.amount_sent, transactionRef: sms.transaction_ref, summary: `SMS -> Exchange Order ${exchangeMatch.id} -> matched` },
+      });
+      broadcast({ type: "exchange_order.updated", exchangeOrderId: exchangeMatch.id });
       relinked++;
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -551,16 +802,15 @@ setInterval(() => {
  * records this specific attempt as its own 'duplicate_blocked' ledger row
  * (so the audit trail shows every rejected re-delivery, not just the real
  * payment), logs the required "Duplicate delivery prevented" activity entry,
- * and responds with the same shape respondAlreadyProcessed already uses so
+ * and returns the same shape buildAlreadyProcessedResult already returns so
  * the Agent App/dashboard don't need a third response shape to handle. */
-async function blockDuplicateDelivery(
-  res: Response,
+async function buildDuplicateBlockedResult(
   smsLogId: string,
   order: OrderMatch,
   transactionRef: string | null,
   paymentTimestamp: string,
   requiresManualApproval: boolean
-) {
+): Promise<IngestSmsResult> {
   await logPaymentActivity({
     action: "duplicate_delivery_prevented",
     smsLogId,
@@ -580,27 +830,58 @@ async function blockDuplicateDelivery(
     status: "duplicate_blocked",
   });
   broadcast({ type: "sms_log.created", smsLogId, orderId: order.id });
-  sendJson(res, 200, {
-    id: smsLogId,
-    matchedOrderId: order.id,
-    requiresManualApproval,
-    duplicate: true,
-    orderAlreadyCompleted: await orderAlreadyFulfilled(order.id),
-    status: "duplicate_blocked",
+  return {
+    status: 200,
+    body: {
+      id: smsLogId,
+      matchedOrderId: order.id,
+      requiresManualApproval,
+      duplicate: true,
+      orderAlreadyCompleted: await orderAlreadyFulfilled(order.id),
+      status: "duplicate_blocked",
+    },
+  };
+}
+
+/** Money Exchange's much simpler duplicate guard: unlike Store orders,
+ * exchange orders don't have a payment_transactions ledger — an exchange
+ * order simply isn't allowed to have more than one linked SMS. Records the
+ * same "Duplicate delivery prevented" activity shape as the Store path. */
+async function buildExchangeDuplicateBlockedResult(smsLogId: string, exchangeOrderId: string, transactionRef: string | null): Promise<IngestSmsResult> {
+  await recordActivity({
+    adminId: undefined,
+    action: "duplicate_delivery_prevented",
+    entityType: "exchange_order",
+    entityId: exchangeOrderId,
+    oldValue: null,
+    newValue: { smsLogId, transactionRef },
   });
+  broadcast({ type: "sms_log.created", smsLogId, orderId: null });
+  return {
+    status: 200,
+    body: {
+      id: smsLogId,
+      matchedOrderId: null,
+      matchedExchangeOrderId: null,
+      requiresManualApproval: false,
+      duplicate: true,
+      status: "duplicate_blocked",
+    },
+  };
 }
 
 smsLogsRouter.get("/admin/sms-logs", requireStaff(), async (req, res) => {
   const { agentId, matched, companyId, search, dateFrom, dateTo, limit } = req.query as Record<string, string | undefined>;
   let sql = `
-    SELECT sl.*, o.company_id AS matched_company_id
+    SELECT sl.*, o.company_id AS matched_company_id, eo.status AS matched_exchange_order_status
     FROM sms_logs sl
     LEFT JOIN orders o ON o.id = sl.matched_order_id
+    LEFT JOIN exchange_orders eo ON eo.id = sl.matched_exchange_order_id
     WHERE 1=1`;
   const args: unknown[] = [];
   if (agentId) { args.push(agentId); sql += ` AND sl.agent_id=$${args.length}`; }
-  if (matched === "true") sql += ` AND sl.matched_order_id IS NOT NULL`;
-  if (matched === "false") sql += ` AND sl.matched_order_id IS NULL`;
+  if (matched === "true") sql += ` AND (sl.matched_order_id IS NOT NULL OR sl.matched_exchange_order_id IS NOT NULL)`;
+  if (matched === "false") sql += ` AND sl.matched_order_id IS NULL AND sl.matched_exchange_order_id IS NULL`;
   if (companyId) { args.push(companyId); sql += ` AND o.company_id=$${args.length}`; }
   if (search) {
     args.push(`%${search}%`);

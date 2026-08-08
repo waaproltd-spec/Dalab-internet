@@ -7171,6 +7171,7 @@ function SmsLogs({ companies }) {
                 { label: "Parsed Phone", value: (r) => r.parsedPhone },
                 { label: "Transaction Ref", value: (r) => r.transactionRef },
                 { label: "Matched Order", value: (r) => r.matchedOrderId },
+                { label: "Matched Exchange Order", value: (r) => r.matchedExchangeOrderId },
               ],
               sorted,
             )}
@@ -7247,6 +7248,8 @@ function SmsLogs({ companies }) {
                 <td style={{ padding: "10px 14px" }}>
                   {r.matchedOrderId ? (
                     <Badge tone="green">{r.matchedOrderId}</Badge>
+                  ) : r.matchedExchangeOrderId ? (
+                    <Badge tone="green">Exchange: {r.matchedExchangeOrderId}</Badge>
                   ) : linkState[r.id]?.linked ? (
                     <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-start" }}>
                       <Badge tone="green">{linkState[r.id].linkedOrderId}</Badge>

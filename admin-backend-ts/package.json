@@ -12,7 +12,8 @@
     "start": "node dist/server.js",
     "dev": "tsx watch src/server.ts",
     "migrate": "node dist/db/migrate.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test --test-force-exit src/**/*.test.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
