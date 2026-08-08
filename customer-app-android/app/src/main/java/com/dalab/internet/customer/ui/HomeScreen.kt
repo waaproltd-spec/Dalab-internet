@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.RateReview
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SupportAgent
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -82,7 +83,7 @@ private fun greeting(): Pair<String, String> {
  * a provider to see its packages.
  */
 @Composable
-fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenNotifications: () -> Unit, onOpenSettings: () -> Unit) {
+fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenNotifications: () -> Unit, onOpenSettings: () -> Unit, onSwitchService: () -> Unit) {
     var companies by remember { mutableStateOf<List<Company>>(emptyList()) }
     var promoImages by remember { mutableStateOf<List<PromoImage>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
@@ -130,6 +131,7 @@ fun HomeScreen(onOpenCompany: (Company) -> Unit, onOpenNotifications: () -> Unit
                 compact = compact,
                 onOpenNotifications = onOpenNotifications,
                 onOpenSettings = onOpenSettings,
+                onSwitchService = onSwitchService,
             )
 
             AnimatedVisibility(
@@ -269,6 +271,7 @@ private fun HomeHeader(
     compact: Boolean,
     onOpenNotifications: () -> Unit,
     onOpenSettings: () -> Unit,
+    onSwitchService: () -> Unit,
 ) {
     val (greetingEn, greetingSo) = remember { greeting() }
     Box(
@@ -310,6 +313,12 @@ private fun HomeHeader(
                     fontSize = if (compact) 16.sp else 18.sp,
                     maxLines = 1,
                 )
+            }
+            // Only affordance back to Choose Service (Internet vs Money
+            // Exchange) once inside the Internet flow — Money Exchange is a
+            // separate top-level stack the bottom nav here never reaches.
+            IconButton(onClick = onSwitchService) {
+                Icon(Icons.Filled.SwapHoriz, contentDescription = "Switch service", tint = Color.White)
             }
             IconButton(onClick = onOpenNotifications) {
                 Icon(Icons.Filled.Notifications, contentDescription = "Notifications", tint = Color.White)

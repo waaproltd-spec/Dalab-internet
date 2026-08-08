@@ -22,6 +22,9 @@ import com.dalab.internet.customer.auth.AuthRepository
 import com.dalab.internet.customer.auth.SessionManager
 import com.dalab.internet.customer.data.Company
 import com.dalab.internet.customer.data.CustomerOrder
+import com.dalab.internet.customer.data.ExchangeCorridor
+import com.dalab.internet.customer.data.ExchangeOrder
+import com.dalab.internet.customer.data.ExchangeWallet
 import com.dalab.internet.customer.data.PackageItem
 import com.dalab.internet.customer.data.PaymentWallet
 import com.dalab.internet.customer.prefs.LocalizationManager
@@ -32,6 +35,10 @@ import com.dalab.internet.customer.ui.CheckoutScreen
 import com.dalab.internet.customer.ui.CompanyCategoriesScreen
 import com.dalab.internet.customer.ui.CompanyPackagesScreen
 import com.dalab.internet.customer.ui.DalabTheme
+import com.dalab.internet.customer.ui.ExchangeCorridorsScreen
+import com.dalab.internet.customer.ui.ExchangeNewOrderScreen
+import com.dalab.internet.customer.ui.ExchangePaymentScreen
+import com.dalab.internet.customer.ui.ExchangeStatusScreen
 import com.dalab.internet.customer.ui.HomeScreen
 import com.dalab.internet.customer.ui.NotificationsScreen
 import com.dalab.internet.customer.ui.OrderDetailScreen
@@ -41,6 +48,7 @@ import com.dalab.internet.customer.ui.BottomNavItem
 import com.dalab.internet.customer.ui.PaymentMethodScreen
 import com.dalab.internet.customer.ui.PremiumBottomNav
 import com.dalab.internet.customer.ui.ProfileScreen
+import com.dalab.internet.customer.ui.ServiceSelectionScreen
 import com.dalab.internet.customer.ui.SettingsScreen
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -97,27 +105,45 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { LOGIN, HOME, COMPANY_CATEGORIES, CATEGORY_PACKAGES, PAYMENT_METHOD, CHECKOUT, ORDER_DETAIL }
+private enum class Screen {
+    LOGIN, SERVICE_SELECT,
+    // Internet Store — untouched, never reachable from the Money Exchange stack below.
+    HOME, COMPANY_CATEGORIES, CATEGORY_PACKAGES, PAYMENT_METHOD, CHECKOUT, ORDER_DETAIL,
+    // Money Exchange — a separate main service, never reachable from the Internet stack above.
+    EXCHANGE_CORRIDORS, EXCHANGE_NEW_ORDER, EXCHANGE_PAYMENT, EXCHANGE_STATUS,
+}
 private enum class HomeTab { HOME, ORDERS, PROFILE }
 
 private data class CategorySelection(val id: String, val label: String, val packages: List<PackageItem>)
+private data class CorridorSelection(val corridor: ExchangeCorridor, val fromWallet: ExchangeWallet?, val toWallet: ExchangeWallet?)
 
 @Composable
 private fun CustomerApp() {
-    var screen by remember { mutableStateOf(if (SessionManager.isLoggedIn()) Screen.HOME else Screen.LOGIN) }
+    var screen by remember { mutableStateOf(if (SessionManager.isLoggedIn()) Screen.SERVICE_SELECT else Screen.LOGIN) }
     var selectedCompany by remember { mutableStateOf<Company?>(null) }
     var selectedCategory by remember { mutableStateOf<CategorySelection?>(null) }
     var checkoutSelection by remember { mutableStateOf<Pair<Company, PackageItem>?>(null) }
     var selectedWallet by remember { mutableStateOf<PaymentWallet?>(null) }
     var selectedOrder by remember { mutableStateOf<CustomerOrder?>(null) }
+    var corridorSelection by remember { mutableStateOf<CorridorSelection?>(null) }
+    var exchangeOrder by remember { mutableStateOf<ExchangeOrder?>(null) }
 
     when (screen) {
-        Screen.LOGIN -> OtpLoginScreen(onLoggedIn = { screen = Screen.HOME })
+        Screen.LOGIN -> OtpLoginScreen(onLoggedIn = { screen = Screen.SERVICE_SELECT })
+
+        // Open App -> Choose Service: Internet vs Money Exchange, two
+        // entirely separate main services from here on — neither flow's
+        // screens are ever reachable from the other.
+        Screen.SERVICE_SELECT -> ServiceSelectionScreen(
+            onSelectInternet = { screen = Screen.HOME },
+            onSelectMoneyExchange = { screen = Screen.EXCHANGE_CORRIDORS },
+        )
 
         Screen.HOME -> CustomerHome(
             onOpenCompany = { company -> selectedCompany = company; screen = Screen.COMPANY_CATEGORIES },
             onOpenOrder = { order -> selectedOrder = order; screen = Screen.ORDER_DETAIL },
             onLogout = { AuthRepository.logout(); screen = Screen.LOGIN },
+            onSwitchService = { screen = Screen.SERVICE_SELECT },
         )
 
         Screen.COMPANY_CATEGORIES -> selectedCompany?.let { company ->
@@ -168,6 +194,42 @@ private fun CustomerApp() {
         Screen.ORDER_DETAIL -> selectedOrder?.let { order ->
             OrderDetailScreen(initialOrder = order, onBack = { screen = Screen.HOME })
         }
+
+        // ---- Money Exchange: Exchange -> Payment -> Confirmation ----
+        Screen.EXCHANGE_CORRIDORS -> ExchangeCorridorsScreen(
+            onBack = { screen = Screen.SERVICE_SELECT },
+            onSelectCorridor = { corridor, fromWallet, toWallet ->
+                corridorSelection = CorridorSelection(corridor, fromWallet, toWallet)
+                screen = Screen.EXCHANGE_NEW_ORDER
+            },
+        )
+
+        Screen.EXCHANGE_NEW_ORDER -> corridorSelection?.let { sel ->
+            ExchangeNewOrderScreen(
+                corridor = sel.corridor,
+                fromWallet = sel.fromWallet,
+                toWallet = sel.toWallet,
+                onBack = { screen = Screen.EXCHANGE_CORRIDORS },
+                onOrderCreated = { order -> exchangeOrder = order; screen = Screen.EXCHANGE_PAYMENT },
+            )
+        }
+
+        Screen.EXCHANGE_PAYMENT -> exchangeOrder?.let { order ->
+            ExchangePaymentScreen(
+                order = order,
+                fromWallet = corridorSelection?.fromWallet,
+                onBack = { screen = Screen.EXCHANGE_NEW_ORDER },
+                onContinue = { screen = Screen.EXCHANGE_STATUS },
+            )
+        }
+
+        Screen.EXCHANGE_STATUS -> exchangeOrder?.let { order ->
+            ExchangeStatusScreen(
+                initialOrder = order,
+                onBack = { screen = Screen.SERVICE_SELECT },
+                onDone = { screen = Screen.SERVICE_SELECT },
+            )
+        }
     }
 }
 
@@ -177,6 +239,7 @@ private fun CustomerHome(
     onOpenCompany: (Company) -> Unit,
     onOpenOrder: (CustomerOrder) -> Unit,
     onLogout: () -> Unit,
+    onSwitchService: () -> Unit,
 ) {
     var tab by remember { mutableStateOf(HomeTab.HOME) }
     var showNotifications by remember { mutableStateOf(false) }
@@ -227,6 +290,7 @@ private fun CustomerHome(
                         onOpenCompany = onOpenCompany,
                         onOpenNotifications = { showNotifications = true },
                         onOpenSettings = { showSettings = true },
+                        onSwitchService = onSwitchService,
                     )
                     HomeTab.ORDERS -> OrdersScreen(onOpenOrder = onOpenOrder)
                     HomeTab.PROFILE -> ProfileScreen(onLogout = onLogout)

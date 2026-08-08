@@ -113,3 +113,91 @@ data class CustomerOrder(
     val createdAt: String,
     val completedAt: String? = null,
 )
+
+// ==================== Money Exchange — a separate main service from ====================
+// ==================== Internet Store, never mixed with CustomerOrder ====================
+
+/** Mirrors GET /exchange/wallets (public) — exchange.routes.ts. */
+data class ExchangeWallet(
+    val id: String,
+    val name: String,
+    val providerLabel: String? = null,
+    val colorHex: String,
+    val logoKey: String,
+    val dialPrefix: String,
+)
+
+/** Mirrors GET /exchange/corridors (public) — a From-wallet -> To-wallet pair
+ * with its own rate/fee, e.g. "eDahab -> EVC Plus". Selecting a corridor IS
+ * selecting both the From and To wallet at once — there's no independent
+ * wallet picker, since not every pair is a valid/enabled corridor. */
+data class ExchangeCorridor(
+    val id: String,
+    val fromWalletId: String,
+    val toWalletId: String,
+    val fromWalletName: String? = null,
+    val toWalletName: String? = null,
+    val rate: Double,
+    val feeType: String, // "fixed" | "percentage"
+    val feeValue: Double,
+    val minAmount: Double? = null,
+    val maxAmount: Double? = null,
+    val enabled: Boolean = true,
+)
+
+/** Mirrors GET /exchange/quote — a live preview, never trusted for the
+ * actual order (the backend recomputes amountReceived server-side too). */
+data class ExchangeQuote(
+    val corridorId: String,
+    val amountSent: Double,
+    val rate: Double,
+    val fee: Double,
+    val amountReceived: Double,
+)
+
+data class CreateExchangeOrderRequest(
+    val corridorId: String,
+    val amount: Double,
+    val senderPhone: String,
+    val receiverPhone: String,
+    val clientRequestId: String? = null,
+)
+
+enum class ExchangeOrderStatus {
+    @SerializedName("pending") PENDING,
+    @SerializedName("in_progress") IN_PROGRESS,
+    @SerializedName("completed") COMPLETED,
+    @SerializedName("failed") FAILED,
+    @SerializedName("cancelled") CANCELLED,
+}
+
+/**
+ * Mirrors GET/POST /exchange/orders (customer-scoped) — exchange.routes.ts.
+ * Two customer-facing stages only (per the app's own flow, not a literal
+ * mirror of every backend status): "Pay Now" while PENDING, "Confirmation"
+ * for everything else the order has definitively reached (IN_PROGRESS —
+ * payment verified, payout under way — reads the same as COMPLETED to the
+ * customer: their payment went through) — see [ExchangeStatusScreen].
+ * receiverPhone is the RECIPIENT's wallet number, never the customer's own
+ * account — it is only ever used for this one transaction, never saved as
+ * "my number" anywhere in this app.
+ */
+data class ExchangeOrder(
+    val id: String,
+    val corridorId: String,
+    val fromWalletId: String,
+    val toWalletId: String,
+    val fromWalletName: String? = null,
+    val toWalletName: String? = null,
+    val amountSent: Double,
+    val rateApplied: Double,
+    val feeApplied: Double,
+    val amountReceived: Double,
+    val senderPhone: String,
+    val receiverPhone: String,
+    val status: ExchangeOrderStatus,
+    val collectionPhoneNumber: String? = null,
+    val payoutStarted: Boolean = false,
+    val createdAt: String,
+    val completedAt: String? = null,
+)

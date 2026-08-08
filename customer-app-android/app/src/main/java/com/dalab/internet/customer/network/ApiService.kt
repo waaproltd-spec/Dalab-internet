@@ -1,8 +1,13 @@
 package com.dalab.internet.customer.network
 
 import com.dalab.internet.customer.data.Company
+import com.dalab.internet.customer.data.CreateExchangeOrderRequest
 import com.dalab.internet.customer.data.CustomerOrder
 import com.dalab.internet.customer.data.CustomerProfile
+import com.dalab.internet.customer.data.ExchangeCorridor
+import com.dalab.internet.customer.data.ExchangeOrder
+import com.dalab.internet.customer.data.ExchangeQuote
+import com.dalab.internet.customer.data.ExchangeWallet
 import com.dalab.internet.customer.data.NotificationItem
 import com.dalab.internet.customer.data.PackageItem
 import com.dalab.internet.customer.data.PaymentWallet
@@ -147,6 +152,26 @@ interface ApiService {
 
     @GET("customers/me/referral")
     suspend fun getReferralInfo(): Response<ReferralInfo>
+
+    // ---------------- Money Exchange (separate main service from Internet Store) ----------------
+
+    @GET("exchange/wallets")
+    suspend fun getExchangeWallets(): Response<List<ExchangeWallet>>
+
+    @GET("exchange/corridors")
+    suspend fun getExchangeCorridors(): Response<List<ExchangeCorridor>>
+
+    @GET("exchange/quote")
+    suspend fun getExchangeQuote(@Query("corridorId") corridorId: String, @Query("amount") amount: Double): Response<ExchangeQuote>
+
+    @POST("exchange/orders")
+    suspend fun createExchangeOrder(@Body body: CreateExchangeOrderRequest): Response<ExchangeOrder>
+
+    @GET("exchange/orders")
+    suspend fun getExchangeOrders(): Response<List<ExchangeOrder>>
+
+    @GET("exchange/orders/{id}")
+    suspend fun getExchangeOrder(@Path("id") id: String): Response<ExchangeOrder>
 
     // Social Media Links (Super Admin: Settings -> Social Media Links) — a
     // field is null whenever it's either unconfigured or switched off, so
