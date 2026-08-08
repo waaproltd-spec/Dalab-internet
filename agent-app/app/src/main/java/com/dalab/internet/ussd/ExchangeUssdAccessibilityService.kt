@@ -65,8 +65,18 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
             if (pendingPin != null) {
                 if (inputNode == null) {
                     // Not the right window yet (or the field hasn't rendered) —
-                    // put it back for the next scan instead of dropping it.
+                    // put it back for the next scan instead of dropping it, and
+                    // stop here: falling through to the DialogSeen emit below
+                    // would land a spurious event on the same conflated channel
+                    // ExchangeUssdOrchestrator's step2 awaitNextEvent() is
+                    // waiting on for PinSubmitted, making it give up within
+                    // seconds instead of waiting for a later scan (once the
+                    // field actually renders) to inject for real -- confirmed
+                    // live on order DEX176626979: STEP2_FAILED fired 6s after
+                    // dialing, well under the 15s timeout, dialog left sitting
+                    // untouched on screen with the PIN never actually typed.
                     ExchangeUssdBridge.restorePendingPinToInject(pendingPin)
+                    return
                 } else {
                     val args = Bundle()
                     args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, pendingPin)
