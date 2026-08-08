@@ -217,3 +217,56 @@ object VoucherSentParsers {
         return null
     }
 }
+
+/**
+ * Money Exchange's own outgoing-confirmation half — same idea as
+ * [VoucherSentParser] (Internet Store), but for a Money Exchange payout: the
+ * carrier's own SMS confirming the payout wallet's SIM sent money to a
+ * customer's recipient, received on the payout wallet's own phone. A
+ * corroborating signal independent of ExchangeUssdOrchestrator's on-screen
+ * step2 classification, since that on-screen reading can misclassify a
+ * genuinely successful payout as failed — confirmed live: order
+ * DEX176626979 completed for real (this exact SMS arrived) while the
+ * automation reported STEP2_FAILED because a stray accessibility-service
+ * event beat the real PIN injection to the result channel.
+ */
+data class ExchangePayoutConfirmedEntry(val receiverPhone: String, val amount: Double, val provider: String, val rawText: String)
+
+interface ExchangePayoutSentParser {
+    fun tryParse(sender: String, body: String): ExchangePayoutConfirmedEntry?
+}
+
+/**
+ * Somtel eDahab's outgoing-transfer confirmation SMS.
+ * Example: "1.98 Dollar ayad u warejisay Yaasiin Maxamed Aadan. No:
+ *           620346060.Tixrac: PP260808.2240.E07703 Haraaga: 7.08 Dollar
+ *           Kharashyada Adeegga:0"
+ * No confirmed sender ID for this format (same situation as the incoming
+ * [SomtelEdahabParser]) — matched on the distinctive "u warejisay"
+ * ("transferred to") phrase plus the recipient's "No:" field instead.
+ */
+object SomtelEdahabPayoutSentParser : ExchangePayoutSentParser {
+    private val pattern = Regex(
+        """$AMOUNT_PATTERN\s*Dollar\s+ayad?\s+u\s+warejisay[\s\S]*?No:\s*(\d{6,15})""",
+        RegexOption.IGNORE_CASE
+    )
+
+    override fun tryParse(sender: String, body: String): ExchangePayoutConfirmedEntry? {
+        val match = pattern.find(body) ?: return null
+        val (amount, phone) = match.destructured
+        val parsedAmount = parseAmount(amount) ?: return null
+        return ExchangePayoutConfirmedEntry(receiverPhone = phone, amount = parsedAmount, provider = "Somtel", rawText = body)
+    }
+}
+
+/** Registry for Money Exchange payout confirmations — mirrors [VoucherSentParsers]. */
+object ExchangePayoutSentParsers {
+    val ALL: List<ExchangePayoutSentParser> = listOf(SomtelEdahabPayoutSentParser)
+
+    fun parse(sender: String, body: String): ExchangePayoutConfirmedEntry? {
+        for (parser in ALL) {
+            parser.tryParse(sender, body)?.let { return it }
+        }
+        return null
+    }
+}

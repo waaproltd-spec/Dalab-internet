@@ -8,6 +8,7 @@ import com.dalab.internet.R
 import com.dalab.internet.data.SmsLogEntry
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.network.ApiClient
+import com.dalab.internet.network.ExchangePayoutConfirmationRequest
 import com.dalab.internet.network.VoucherConfirmationRequest
 import com.dalab.internet.queue.PendingActionQueue
 import com.dalab.internet.queue.RetryClassifier
@@ -18,6 +19,7 @@ import com.dalab.internet.ussd.UssdOrchestrator
 data class SmsUploadAction(val entry: SmsLogEntry)
 data class VerifyPaymentAction(val orderId: String, val smsLogId: String?, val parsedAmount: Double?)
 data class VoucherConfirmationAction(val entry: VoucherSentEntry)
+data class ExchangePayoutConfirmationAction(val entry: ExchangePayoutConfirmedEntry)
 
 sealed class UploadOutcome {
     object Success : UploadOutcome()
@@ -99,6 +101,30 @@ object SmsUploadFlow {
             DiagnosticsLog.record("voucher_confirmation", "${if (retryable) "Queued for retry" else "Rejected"}: ${e.message}")
             if (retryable) UploadOutcome.RetryableUpload(e.message ?: "network error")
             else UploadOutcome.Terminal(e.message ?: "voucher confirmation failed")
+        }
+    }
+
+    /**
+     * Money Exchange's own outgoing-confirmation half — reports a payout
+     * confirmation (see [ExchangePayoutSentParsers]) so the backend can
+     * complete the matching order as a corroborating signal alongside
+     * ExchangeUssdOrchestrator's own step2 report. Mirrors
+     * [reportVoucherConfirmation] exactly; best-effort/idempotent
+     * server-side — a redundant or unmatched confirmation is not an error.
+     */
+    suspend fun reportExchangePayoutConfirmation(entry: ExchangePayoutConfirmedEntry): UploadOutcome {
+        return try {
+            RetryClassifier.requireSuccessful(
+                ApiClient.service.reportExchangePayoutConfirmation(
+                    ExchangePayoutConfirmationRequest(entry.receiverPhone, entry.amount, entry.rawText)
+                )
+            )
+            UploadOutcome.Success
+        } catch (e: Exception) {
+            val retryable = RetryClassifier.isRetryable(e)
+            DiagnosticsLog.record("exchange_payout_confirmation", "${if (retryable) "Queued for retry" else "Rejected"}: ${e.message}")
+            if (retryable) UploadOutcome.RetryableUpload(e.message ?: "network error")
+            else UploadOutcome.Terminal(e.message ?: "exchange payout confirmation failed")
         }
     }
 

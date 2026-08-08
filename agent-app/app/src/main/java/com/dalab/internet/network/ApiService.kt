@@ -53,6 +53,8 @@ data class SmsLogUploadResponse(
 )
 data class VoucherConfirmationRequest(val receiverPhone: String, val amount: Double, val provider: String)
 data class VoucherConfirmationResponse(val matched: Boolean, val orderId: String? = null, val alreadyCompleted: Boolean = false)
+data class ExchangePayoutConfirmationRequest(val receiverPhone: String, val amount: Double, val rawText: String)
+data class ExchangePayoutConfirmationResponse(val matched: Boolean, val orderId: String? = null, val alreadyCompleted: Boolean = false)
 data class DialAttemptStartRequest(val simSlot: Int?, val ussdString: String, val attemptNumber: Int)
 data class DialAttemptStartResponse(val id: String)
 // isFinalAttempt: true when this is the last outcome this order will get
@@ -148,6 +150,9 @@ interface ApiService {
 
     @POST("agent/orders/voucher-confirmation")
     suspend fun reportVoucherConfirmation(@Body body: VoucherConfirmationRequest): Response<VoucherConfirmationResponse>
+
+    @POST("agent/exchange/orders/payout-confirmation")
+    suspend fun reportExchangePayoutConfirmation(@Body body: ExchangePayoutConfirmationRequest): Response<ExchangePayoutConfirmationResponse>
 
     @GET("agent/notifications")
     suspend fun getNotifications(): Response<List<AgentNotification>>

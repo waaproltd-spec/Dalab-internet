@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
-import { query, queryOne } from "../db/pool.js";
+import { query, queryOne, withTransaction } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { encrypt, decrypt, isValidPin } from "../auth/crypto.js";
@@ -731,6 +731,107 @@ exchangeRouter.put("/agent/exchange/dial-attempts/:attemptId/step2", requireAuth
   }
   broadcast({ type: "exchange_order.updated", exchangeOrderId });
   sendJson(res, 200, await queryOne(`SELECT * FROM exchange_dial_attempts WHERE id=$1`, [req.params.attemptId]));
+});
+
+// ---------------- Payout confirmation (carrier SMS corroboration) ----------------
+// Mirrors orders.routes.ts's completeOrderById/POST /agent/orders/voucher-confirmation
+// exactly (same shape, same "either signal can complete it first, the loser
+// is a no-op" race handling) — the carrier's own outgoing-transfer SMS,
+// arriving on the payout wallet's phone, as a second signal independent of
+// ExchangeUssdOrchestrator's on-screen step2 classification. Deliberately
+// also matches orders already marked 'failed', not just 'in_progress': the
+// on-screen accessibility-based reading can misclassify a payout that
+// genuinely went through as failed (confirmed live: order DEX176626979 --
+// the carrier's SMS confirmed the transfer while the on-screen automation
+// reported STEP2_FAILED because the PIN field hadn't rendered yet when the
+// bridge's conflated event channel got a stray event). A stray/unmatched
+// confirmation is not an error — nothing to complete just means this
+// particular SMS doesn't correspond to a DALAB payout, or already did.
+
+async function completeExchangeOrderByPayoutConfirmation(
+  orderId: string,
+  confirmationText: string
+): Promise<{ order: any; success: boolean; alreadyCompleted: boolean } | null> {
+  const order = await queryOne<{ id: string; status: string; customer_id: string | null; amount_sent: string; receiver_phone: string; amount_received: string }>(
+    `SELECT * FROM exchange_orders WHERE id=$1`,
+    [orderId]
+  );
+  if (!order) return null;
+
+  const result = await query(
+    `UPDATE exchange_orders SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1 AND status IN ('in_progress','failed') RETURNING *`,
+    [orderId]
+  );
+  if (result.length === 0) {
+    return { order, success: order.status === "completed", alreadyCompleted: order.status === "completed" };
+  }
+  const eo = result[0] as any;
+
+  // Bring the most recent dial attempt's own record in line with reality too
+  // — otherwise the admin dashboard would show a "completed" order sitting
+  // next to a dial attempt still marked "failed", confusing any later audit.
+  // Scrubs the PIN the same way the agent's own step2 report does.
+  let scrubbedText = confirmationText;
+  const corridor = await loadCorridor((order as any).corridor_id);
+  const payoutWallet = corridor?.payout_wallet_id ? await loadPayoutWallet(corridor.payout_wallet_id) : null;
+  if (payoutWallet?.pin_encrypted) {
+    scrubbedText = scrubPin(scrubbedText, decrypt(payoutWallet.pin_encrypted)) ?? scrubbedText;
+  }
+  await query(
+    `UPDATE exchange_dial_attempts SET status='success', step2_response=$1, completed_at=now()
+     WHERE exchange_order_id=$2 AND status != 'success'
+       AND attempt_number = (SELECT MAX(attempt_number) FROM exchange_dial_attempts WHERE exchange_order_id=$2)`,
+    [scrubbedText, orderId]
+  );
+
+  await recordActivity({
+    adminId: undefined,
+    action: "exchange_completed_via_payout_sms",
+    entityType: "exchange_order",
+    entityId: orderId,
+    oldValue: { status: order.status },
+    newValue: { status: "completed", confirmationText: scrubbedText },
+  });
+  broadcast({ type: "exchange_order.updated", exchangeOrderId: orderId });
+  if (eo.customer_id) {
+    await notifyCustomer(
+      eo.customer_id,
+      "Your money exchange is complete",
+      `Your exchange of ${eo.amount_sent} is complete — ${eo.receiver_phone} received ${eo.amount_received}.`
+    );
+  }
+  return { order: eo, success: true, alreadyCompleted: false };
+}
+
+exchangeRouter.post("/agent/exchange/orders/payout-confirmation", requireAuth("agent"), async (req, res) => {
+  const { receiverPhone, amount, rawText } = req.body ?? {};
+  if (!receiverPhone || amount == null) {
+    return sendJson(res, 400, { error: "receiverPhone and amount are required" });
+  }
+  const target = normalizePhone(receiverPhone);
+  if (!target) return sendJson(res, 400, { error: "receiverPhone is not a valid phone number" });
+
+  // Same simpler shape as Internet Store's voucher-confirmation route (no
+  // device/SIM cross-check) — a payout wallet is dialed from exactly one
+  // device by construction (exchange_payout_wallets.device_id), so an
+  // amount+receiver-phone match is already specific enough in practice, and
+  // completeExchangeOrderByPayoutConfirmation's atomic status guard is what
+  // actually prevents a stray SMS from double-completing anything.
+  const candidates = await withTransaction((client) =>
+    client
+      .query<{ id: string; receiver_phone: string | null }>(
+        `SELECT id, receiver_phone FROM exchange_orders WHERE status IN ('in_progress','failed') AND ABS(amount_received - $1) < 0.01
+         ORDER BY updated_at ASC
+         FOR UPDATE SKIP LOCKED`,
+        [amount]
+      )
+      .then((r) => r.rows)
+  );
+  const match = candidates.find((o) => normalizePhone(o.receiver_phone) === target);
+  if (!match) return sendJson(res, 200, { matched: false });
+
+  const result = await completeExchangeOrderByPayoutConfirmation(match.id, String(rawText ?? ""));
+  sendJson(res, 200, { matched: true, orderId: match.id, alreadyCompleted: result?.alreadyCompleted ?? false });
 });
 
 // ---------------- Reverse (pre-payout cancellation only) ----------------

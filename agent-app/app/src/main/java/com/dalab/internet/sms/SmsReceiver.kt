@@ -69,16 +69,17 @@ class SmsReceiver : BroadcastReceiver() {
             return
         }
 
-        val (parsed, voucherSent) = try {
+        val (parsed, voucherSent, exchangePayoutSent) = try {
             val simSlot = resolveSimSlot(context, intent)
             val p = PaymentSmsParsers.parse(sender, body, receivedAt, simSlot)
             val v = if (p == null) VoucherSentParsers.parse(sender, body) else null
-            p to v
+            val e = if (p == null && v == null) ExchangePayoutSentParsers.parse(sender, body) else null
+            Triple(p, v, e)
         } catch (e: Exception) {
             DiagnosticsLog.record("sms_receiver_parse", "Parser threw on incoming SMS: ${e.stackTraceToString().take(2000)}")
             return
         }
-        if (parsed == null && voucherSent == null) {
+        if (parsed == null && voucherSent == null && exchangePayoutSent == null) {
             // Most SMS on this phone are personal texts/OTPs and are correctly
             // ignored here — logging every one of those would flood
             // Diagnostics and leak their content. But an SMS that *looks*
@@ -141,6 +142,20 @@ class SmsReceiver : BroadcastReceiver() {
                             id = UUID.randomUUID().toString(),
                             type = PendingActionQueue.Type.VOUCHER_CONFIRMATION,
                             payload = VoucherConfirmationAction(voucherSent),
+                        )
+                    }
+                    return@launch
+                }
+                if (exchangePayoutSent != null) {
+                    // Money Exchange's own outgoing-confirmation half — the
+                    // payout wallet's SIM sent money out and the carrier
+                    // confirmed it back; a corroborating signal alongside
+                    // ExchangeUssdOrchestrator's own step2 report.
+                    if (SmsUploadFlow.reportExchangePayoutConfirmation(exchangePayoutSent) is UploadOutcome.RetryableUpload) {
+                        PendingActionQueue.enqueue(
+                            id = UUID.randomUUID().toString(),
+                            type = PendingActionQueue.Type.EXCHANGE_PAYOUT_CONFIRMATION,
+                            payload = ExchangePayoutConfirmationAction(exchangePayoutSent),
                         )
                     }
                     return@launch

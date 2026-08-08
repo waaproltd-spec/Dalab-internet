@@ -7,6 +7,7 @@ import com.dalab.internet.sms.SmsUploadAction
 import com.dalab.internet.sms.SmsUploadFlow
 import com.dalab.internet.sms.UploadOutcome
 import com.dalab.internet.sms.VerifyPaymentAction
+import com.dalab.internet.sms.ExchangePayoutConfirmationAction
 import com.dalab.internet.sms.VoucherConfirmationAction
 import com.dalab.internet.ussd.DialAttemptAuditAction
 import com.dalab.internet.ussd.UssdOrchestrator
@@ -49,6 +50,7 @@ object QueueDrainer {
                     PendingActionQueue.remove(action.id)
                 }
                 PendingActionQueue.Type.VOUCHER_CONFIRMATION -> drainVoucherConfirmation(action)
+                PendingActionQueue.Type.EXCHANGE_PAYOUT_CONFIRMATION -> drainExchangePayoutConfirmation(action)
                 PendingActionQueue.Type.SALE_CREATE -> {
                     val payload = PendingActionQueue.payloadOf<SaleCreateAction>(action)
                     RetryClassifier.requireSuccessful(ApiClient.service.createSale(payload.request))
@@ -110,6 +112,19 @@ object QueueDrainer {
                 PendingActionQueue.remove(action.id)
             }
             is UploadOutcome.RetryableVerify -> PendingActionQueue.remove(action.id) // unreachable from reportVoucherConfirmation
+        }
+    }
+
+    private suspend fun drainExchangePayoutConfirmation(action: PendingActionQueue.PendingAction) {
+        val payload = PendingActionQueue.payloadOf<ExchangePayoutConfirmationAction>(action)
+        when (val outcome = SmsUploadFlow.reportExchangePayoutConfirmation(payload.entry)) {
+            is UploadOutcome.Success -> PendingActionQueue.remove(action.id)
+            is UploadOutcome.RetryableUpload -> PendingActionQueue.markAttempt(action.id, outcome.reason)
+            is UploadOutcome.Terminal -> {
+                DiagnosticsLog.record("queue_drain", "Dropped EXCHANGE_PAYOUT_CONFIRMATION (terminal): ${outcome.reason}")
+                PendingActionQueue.remove(action.id)
+            }
+            is UploadOutcome.RetryableVerify -> PendingActionQueue.remove(action.id) // unreachable from reportExchangePayoutConfirmation
         }
     }
 }

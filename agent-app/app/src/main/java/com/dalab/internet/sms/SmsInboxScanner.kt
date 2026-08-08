@@ -100,7 +100,8 @@ object SmsInboxScanner {
         val receivedAt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US).format(Date(dateMs))
         val parsed = PaymentSmsParsers.parse(sender, body, receivedAt)
         val voucherSent = if (parsed == null) VoucherSentParsers.parse(sender, body) else null
-        if (parsed == null && voucherSent == null) return
+        val exchangePayoutSent = if (parsed == null && voucherSent == null) ExchangePayoutSentParsers.parse(sender, body) else null
+        if (parsed == null && voucherSent == null && exchangePayoutSent == null) return
 
         if (voucherSent != null) {
             if (SmsUploadFlow.reportVoucherConfirmation(voucherSent) is UploadOutcome.RetryableUpload) {
@@ -108,6 +109,16 @@ object SmsInboxScanner {
                     id = UUID.randomUUID().toString(),
                     type = PendingActionQueue.Type.VOUCHER_CONFIRMATION,
                     payload = VoucherConfirmationAction(voucherSent),
+                )
+            }
+            return
+        }
+        if (exchangePayoutSent != null) {
+            if (SmsUploadFlow.reportExchangePayoutConfirmation(exchangePayoutSent) is UploadOutcome.RetryableUpload) {
+                PendingActionQueue.enqueue(
+                    id = UUID.randomUUID().toString(),
+                    type = PendingActionQueue.Type.EXCHANGE_PAYOUT_CONFIRMATION,
+                    payload = ExchangePayoutConfirmationAction(exchangePayoutSent),
                 )
             }
             return
