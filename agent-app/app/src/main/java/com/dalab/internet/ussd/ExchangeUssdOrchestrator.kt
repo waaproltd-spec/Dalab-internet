@@ -1,6 +1,7 @@
 package com.dalab.internet.ussd
 
 import android.content.Context
+import android.os.PowerManager
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.ExchangeDialAttemptStartRequest
@@ -74,6 +75,34 @@ class ExchangeUssdOrchestrator(private val context: Context) {
             is SubscriptionLookupResult.Found -> subscriptionLookup.subscriptionId
         }
 
+        // Unlike Internet Store's PARTIAL_WAKE_LOCK (UssdDialer.kt) -- which
+        // only keeps the CPU running for its screen-less sendUssdRequest()
+        // call -- this flow needs the carrier's reply dialog to actually be
+        // drawn on screen for ExchangeUssdAccessibilityService to read it.
+        // With the screen off, ACTION_CALL still launches the system
+        // dialer, but nothing gets rendered and no accessibility events
+        // fire, so the whole attempt silently times out with no response at
+        // all -- confirmed live (order DEX754272134: attempt reported
+        // "failed" with a completely empty step1_response, the exact
+        // signature of a plain 30s awaitNextEvent() timeout; confirmed
+        // fixed live via a diagnostic build on order DEX591154444, which
+        // captured the carrier's real response text with the screen off
+        // beforehand). Deprecated in favor of per-Activity window flags
+        // (FLAG_TURN_SCREEN_ON / setTurnScreenOn), but those only apply to
+        // an Activity this app owns -- there's no way to set them on the
+        // system dialer's own Activity that ACTION_CALL launches, so the
+        // old WakeLock API is the only lever available here. Device has no
+        // keyguard configured (confirmed) -- this wakes the screen to
+        // whatever was already showing, it does not attempt to bypass any
+        // lock.
+        @Suppress("DEPRECATION")
+        val wakeLock = (context.getSystemService(Context.POWER_SERVICE) as? PowerManager)
+            ?.newWakeLock(
+                PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
+                "DalabAgent:ExchangeUssdDial",
+            )
+        wakeLock?.acquire(80_000)
+
         ExchangeUssdBridge.arm()
         try {
             dialer.dial(subscriptionId, body.step1UssdString)
@@ -113,6 +142,7 @@ class ExchangeUssdOrchestrator(private val context: Context) {
             }
         } finally {
             ExchangeUssdBridge.disarm()
+            if (wakeLock?.isHeld == true) wakeLock.release()
         }
     }
 
