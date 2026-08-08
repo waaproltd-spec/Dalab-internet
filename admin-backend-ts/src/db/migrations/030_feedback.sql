@@ -27,9 +27,15 @@ CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at DESC);
 ALTER TABLE notifications ADD COLUMN IF NOT EXISTS customer_id UUID REFERENCES customers(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS idx_notifications_customer_id ON notifications(customer_id);
 
-DO $$
-BEGIN
-  ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_type_check;
-  ALTER TABLE notifications ADD CONSTRAINT notifications_type_check
-    CHECK (type IN ('push','promotion','maintenance','feedback_update'));
-END $$;
+-- The notifications_type_check constraint itself is intentionally NOT set
+-- here anymore. migrate.ts replays every migration file on every deploy
+-- (no tracking table), so this file must stay safe to re-run indefinitely.
+-- This block used to unconditionally narrow the constraint to
+-- ('push','promotion','maintenance','feedback_update') on every replay --
+-- fine on a fresh database, but once 041_money_exchange.sql's later,
+-- wider constraint (which adds 'exchange_update') has actually been applied
+-- and real exchange_update rows exist, replaying THIS narrower version
+-- first on every subsequent deploy fails with "check constraint ... is
+-- violated by some row" and blocks every migration after it, forever.
+-- 041_money_exchange.sql (which runs after this file, sorted by filename)
+-- is the sole source of truth for this constraint's final, correct value.
