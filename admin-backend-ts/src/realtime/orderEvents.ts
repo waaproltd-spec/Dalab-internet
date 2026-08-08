@@ -11,7 +11,8 @@ export type OrderEvent =
   | { type: "payment_transaction.updated"; paymentTransactionId: string; orderId: string | null }
   | { type: "catalog.updated" }
   | { type: "sim_balance.updated"; deviceId: string; simSlot: number }
-  | { type: "feedback.updated" };
+  | { type: "feedback.updated" }
+  | { type: "exchange_order.updated"; exchangeOrderId: string };
 
 const subscribers = new Set<Response>();
 

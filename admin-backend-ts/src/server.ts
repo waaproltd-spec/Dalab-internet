@@ -30,6 +30,7 @@ import { simBalancesRouter } from "./routes/simBalances.routes.js";
 import { feedbackRouter } from "./routes/feedback.routes.js";
 import { referralsRouter } from "./routes/referrals.routes.js";
 import { financeRouter } from "./routes/finance.routes.js";
+import { exchangeRouter } from "./routes/exchange.routes.js";
 import { pool, queryOne } from "./db/pool.js";
 import { seedAll } from "./db/seed.js";
 import { sendJson } from "./utils/camelCase.js";
@@ -269,6 +270,7 @@ app.use(simBalancesRouter);
 app.use(feedbackRouter);
 app.use(referralsRouter);
 app.use(financeRouter);
+app.use(exchangeRouter);
 
 app.use((_req: Request, res: Response) => {
   res.status(404).json({ error: "Not found" });
