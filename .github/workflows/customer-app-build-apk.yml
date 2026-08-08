@@ -73,6 +73,15 @@ jobs:
           path: customer-app-android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
 
+      # Diagnostic only — prints this build's signing certificate fingerprint
+      # so it can be compared against Play Console's registered upload-key
+      # fingerprint for com.dalab.internet, to confirm (or rule out) whether
+      # this repo's CI keystore is the one already trusted to publish updates
+      # to the live app. Does not affect the app or any artifact.
+      - name: Print release signing certificate fingerprint
+        if: ${{ steps.keystore.outputs.path != '' }}
+        run: keytool -printcert -jarfile app/build/outputs/apk/release/app-release.apk
+
       - name: Build release AAB (Play Store)
         if: ${{ steps.keystore.outputs.path != '' }}
         env:
