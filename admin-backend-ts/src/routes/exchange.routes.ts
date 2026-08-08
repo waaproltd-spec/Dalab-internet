@@ -7,6 +7,7 @@ import { encrypt, decrypt, isValidPin } from "../auth/crypto.js";
 import { sendJson } from "../utils/camelCase.js";
 import { broadcast } from "../realtime/orderEvents.js";
 import { recordActivity } from "../utils/activityLog.js";
+import { rateLimit } from "../auth/rateLimit.js";
 
 export const exchangeRouter = Router();
 
@@ -68,6 +69,39 @@ async function loadPayoutWallet(id: string) {
     phone_number: string;
     pin_encrypted: string | null;
   }>(`SELECT * FROM exchange_payout_wallets WHERE id=$1`, [id]);
+}
+
+// DALAB's own number for a given wallet TYPE (e.g. "here's our EVC Plus
+// number, send your payment there") — deliberately reuses
+// exchange_payout_wallets rather than a separate "collection numbers" table:
+// per the settlement model, DALAB holds float in each wallet type and the
+// same physical wallet a corridor might pay OUT of for one direction is
+// exactly the number customers should pay INTO for the other direction.
+// Picks the oldest configured wallet for that type if more than one exists.
+async function loadCollectionPhoneNumber(walletId: string): Promise<string | null> {
+  const row = await queryOne<{ phone_number: string }>(
+    `SELECT phone_number FROM exchange_payout_wallets WHERE wallet_id=$1 ORDER BY created_at ASC LIMIT 1`,
+    [walletId]
+  );
+  return row?.phone_number ?? null;
+}
+
+// Best-effort customer notification, reusing the same generic `notifications`
+// table/`exchange_update` type the completion path already writes to —
+// wrapped so a notification failure can never fail the status change that
+// triggered it.
+async function notifyCustomer(customerId: string | null, title: string, body: string): Promise<void> {
+  if (!customerId) return;
+  try {
+    await query(`INSERT INTO notifications (id, type, title, body, customer_id) VALUES ($1,'exchange_update',$2,$3,$4)`, [
+      randomUUID(),
+      title,
+      body,
+      customerId,
+    ]);
+  } catch {
+    // Best-effort — never fails the caller's already-committed status change.
+  }
 }
 
 // ---------------- Wallet catalog (reuses payment_wallets) ----------------
@@ -255,9 +289,15 @@ async function createExchangeOrder(params: {
   senderPhone: string;
   receiverPhone: string;
   customerPhone?: string;
-  channel: "admin" | "agent";
+  // Set directly for the Customer App's own authenticated create (the
+  // customer IS req.auth.sub — no phone lookup needed); customerPhone
+  // remains how admin/agent create on behalf of someone else.
+  customerId?: string;
+  channel: "admin" | "agent" | "customer_app";
   agentId?: string;
   adminId?: string;
+  clientRequestId?: string | null;
+  collectionPhoneNumber?: string | null;
 }): Promise<{ error?: string; status?: number; order?: any }> {
   const corridor = await loadCorridor(params.corridorId);
   if (!corridor || !corridor.enabled) return { error: "Corridor not found or disabled", status: 404 };
@@ -269,8 +309,12 @@ async function createExchangeOrder(params: {
   }
   const { rate, fee, amountReceived } = computeQuote(params.amountSent, corridor);
 
-  let customerId: string | null = null;
-  if (params.customerPhone) {
+  let customerId: string | null = params.customerId ?? null;
+  if (customerId) {
+    const customer = await queryOne<{ status: string }>(`SELECT status FROM customers WHERE id=$1`, [customerId]);
+    if (!customer) return { error: "Customer not found", status: 404 };
+    if (customer.status === "blocked") return { error: "This customer's account has been blocked", status: 403 };
+  } else if (params.customerPhone) {
     let customer = await queryOne<{ id: string; status: string }>(`SELECT id, status FROM customers WHERE phone=$1`, [params.customerPhone]);
     if (!customer) {
       customer = await queryOne(`INSERT INTO customers (id, phone) VALUES ($1,$2) RETURNING id, status`, [randomUUID(), params.customerPhone]);
@@ -280,18 +324,36 @@ async function createExchangeOrder(params: {
   }
 
   const id = exchangeOrderRef();
-  await query(
-    `INSERT INTO exchange_orders
-       (id, customer_id, corridor_id, from_wallet_id, to_wallet_id, amount_sent, rate_applied, fee_applied,
-        amount_received, sender_phone, receiver_phone, channel, agent_id, created_by_admin_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-    [
-      id, customerId, corridor.id, corridor.from_wallet_id, corridor.to_wallet_id, params.amountSent, rate, fee,
-      amountReceived, params.senderPhone, params.receiverPhone, params.channel, params.agentId ?? null, params.adminId ?? null,
-    ]
-  );
+  try {
+    await query(
+      `INSERT INTO exchange_orders
+         (id, customer_id, corridor_id, from_wallet_id, to_wallet_id, amount_sent, rate_applied, fee_applied,
+          amount_received, sender_phone, receiver_phone, channel, agent_id, created_by_admin_id, client_request_id, collection_phone_number)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+      [
+        id, customerId, corridor.id, corridor.from_wallet_id, corridor.to_wallet_id, params.amountSent, rate, fee,
+        amountReceived, params.senderPhone, params.receiverPhone, params.channel, params.agentId ?? null, params.adminId ?? null,
+        params.clientRequestId ?? null, params.collectionPhoneNumber ?? null,
+      ]
+    );
+  } catch (err: any) {
+    if (err?.code === "23505" && err?.constraint === "idx_exchange_orders_client_request_id" && params.clientRequestId) {
+      // A retried create with the same clientRequestId (e.g. a double-tap or
+      // a client retry after a dropped response) — the original attempt
+      // already went through, so return that existing order instead of
+      // creating a second one.
+      const existing = await queryOne<{ id: string }>(`SELECT id FROM exchange_orders WHERE client_request_id=$1`, [params.clientRequestId]);
+      return { order: await queryOne(`SELECT * FROM exchange_orders WHERE id=$1`, [existing!.id]) };
+    }
+    throw err;
+  }
   const order = await queryOne(`SELECT * FROM exchange_orders WHERE id=$1`, [id]);
   broadcast({ type: "exchange_order.updated", exchangeOrderId: id });
+  await notifyCustomer(
+    customerId,
+    "Exchange request received",
+    `Your request to exchange ${params.amountSent} is being reviewed. We'll notify you once your payment is verified.`
+  );
   return { order };
 }
 
@@ -368,7 +430,7 @@ exchangeRouter.get("/agent/exchange/orders", requireAuth("agent"), async (req, r
 
 exchangeRouter.post("/admin/exchange/orders/:id/verify", requirePermission("exchange.manage"), async (req, res) => {
   const result = await query(
-    `UPDATE exchange_orders SET status='in_progress', updated_at=now() WHERE id=$1 AND status='pending' RETURNING id`,
+    `UPDATE exchange_orders SET status='in_progress', updated_at=now() WHERE id=$1 AND status='pending' RETURNING id, customer_id, amount_sent`,
     [req.params.id]
   );
   if (result.length === 0) {
@@ -385,6 +447,11 @@ exchangeRouter.post("/admin/exchange/orders/:id/verify", requirePermission("exch
     newValue: { status: "in_progress" },
   });
   broadcast({ type: "exchange_order.updated", exchangeOrderId: req.params.id });
+  await notifyCustomer(
+    result[0].customer_id,
+    "Payment verified",
+    `We've received your payment of ${result[0].amount_sent} — your exchange is now being processed.`
+  );
   sendJson(res, 200, await queryOne(`${EXCHANGE_ORDER_LIST_SELECT} WHERE eo.id=$1`, [req.params.id]));
 });
 
@@ -459,8 +526,14 @@ exchangeRouter.put("/agent/exchange/dial-attempts/:attemptId/step1", requireAuth
   // failed final Internet Store dial attempt does — no PIN was ever sent,
   // so there's nothing to reconcile.
   if (status !== "step1_success" && req.body.isFinalAttempt !== false) {
-    await query(`UPDATE exchange_orders SET status='failed', updated_at=now() WHERE id=$1 AND status != 'completed'`, [result[0].exchange_order_id]);
+    const failed = await query(
+      `UPDATE exchange_orders SET status='failed', updated_at=now() WHERE id=$1 AND status != 'completed' RETURNING customer_id`,
+      [result[0].exchange_order_id]
+    );
     broadcast({ type: "exchange_order.updated", exchangeOrderId: result[0].exchange_order_id });
+    if (failed.length > 0) {
+      await notifyCustomer(failed[0].customer_id, "Exchange failed", "We couldn't complete your exchange. Please contact support for assistance.");
+    }
   }
   sendJson(res, 200, await queryOne(`SELECT * FROM exchange_dial_attempts WHERE id=$1`, [req.params.attemptId]));
 });
@@ -534,7 +607,13 @@ exchangeRouter.put("/agent/exchange/dial-attempts/:attemptId/step2", requireAuth
       });
     }
   } else if (finalAttempt) {
-    await query(`UPDATE exchange_orders SET status='failed', updated_at=now() WHERE id=$1 AND status != 'completed'`, [exchangeOrderId]);
+    const failed = await query(
+      `UPDATE exchange_orders SET status='failed', updated_at=now() WHERE id=$1 AND status != 'completed' RETURNING customer_id`,
+      [exchangeOrderId]
+    );
+    if (failed.length > 0) {
+      await notifyCustomer(failed[0].customer_id, "Exchange failed", "We couldn't complete your exchange. Please contact support for assistance.");
+    }
   }
   broadcast({ type: "exchange_order.updated", exchangeOrderId });
   sendJson(res, 200, await queryOne(`SELECT * FROM exchange_dial_attempts WHERE id=$1`, [req.params.attemptId]));
@@ -544,7 +623,7 @@ exchangeRouter.put("/agent/exchange/dial-attempts/:attemptId/step2", requireAuth
 
 exchangeRouter.post("/admin/exchange/orders/:id/reverse", requirePermission("exchange.manage"), async (req, res) => {
   const result = await query(
-    `UPDATE exchange_orders SET status='cancelled', reversed_at=now(), updated_at=now() WHERE id=$1 AND status IN ('pending','in_progress') RETURNING id`,
+    `UPDATE exchange_orders SET status='cancelled', reversed_at=now(), updated_at=now() WHERE id=$1 AND status IN ('pending','in_progress') RETURNING id, customer_id`,
     [req.params.id]
   );
   if (result.length === 0) {
@@ -561,5 +640,104 @@ exchangeRouter.post("/admin/exchange/orders/:id/reverse", requirePermission("exc
     newValue: { status: "cancelled" },
   });
   broadcast({ type: "exchange_order.updated", exchangeOrderId: req.params.id });
+  await notifyCustomer(result[0].customer_id, "Exchange cancelled", "Your exchange request was cancelled. Please contact support if you have questions.");
   sendJson(res, 200, await queryOne(`${EXCHANGE_ORDER_LIST_SELECT} WHERE eo.id=$1`, [req.params.id]));
+});
+
+// ==================== Customer App (self-service) ====================
+// Public catalog reads (wallets/corridors/quote) mirror how GET /companies
+// is public — no account needed to preview rates. Creating and viewing
+// one's own exchange orders requires requireAuth("customer"), exactly like
+// POST/GET /orders (Internet Store).
+
+const PHONE_RE = /^\+?\d{6,15}$/;
+
+exchangeRouter.get("/exchange/wallets", async (_req, res) => {
+  sendJson(
+    res,
+    200,
+    await query(
+      `SELECT id, name, provider_label, color_hex, logo_key FROM payment_wallets WHERE enabled=true ORDER BY sort_order`
+    )
+  );
+});
+
+exchangeRouter.get("/exchange/corridors", async (_req, res) => {
+  sendJson(
+    res,
+    200,
+    await query(
+      `SELECT ec.id, ec.from_wallet_id, ec.to_wallet_id, ec.rate, ec.fee_type, ec.fee_value, ec.min_amount, ec.max_amount,
+              fw.name AS from_wallet_name, tw.name AS to_wallet_name
+       FROM exchange_corridors ec
+       LEFT JOIN payment_wallets fw ON fw.id = ec.from_wallet_id
+       LEFT JOIN payment_wallets tw ON tw.id = ec.to_wallet_id
+       WHERE ec.enabled=true
+       ORDER BY fw.sort_order, tw.sort_order`
+    )
+  );
+});
+
+exchangeRouter.get("/exchange/quote", handleQuote);
+
+exchangeRouter.post(
+  "/exchange/orders",
+  requireAuth("customer"),
+  rateLimit("customer-exchange-create", 20, 15 * 60 * 1000),
+  async (req, res) => {
+    const { corridorId, amount, senderPhone, receiverPhone, clientRequestId } = req.body ?? {};
+    if (!senderPhone || !PHONE_RE.test(String(senderPhone))) return sendJson(res, 400, { error: "Provide a valid sending phone number" });
+    if (!receiverPhone || !PHONE_RE.test(String(receiverPhone))) return sendJson(res, 400, { error: "Provide a valid receiving phone number" });
+    if (clientRequestId != null && typeof clientRequestId !== "string") {
+      return sendJson(res, 400, { error: "clientRequestId must be a string" });
+    }
+
+    const corridor = await loadCorridor(String(corridorId ?? ""));
+    if (!corridor || !corridor.enabled) return sendJson(res, 404, { error: "This exchange corridor is not available" });
+
+    // The customer app must be able to tell the customer exactly where to
+    // send their payment — a corridor with no configured collection number
+    // for its FROM currency isn't ready for self-checkout yet, even though
+    // an admin/agent could still log the exchange manually on the customer's
+    // behalf via the existing admin/agent endpoints.
+    const collectionPhoneNumber = await loadCollectionPhoneNumber(corridor.from_wallet_id);
+    if (!collectionPhoneNumber) {
+      return sendJson(res, 409, { error: "This exchange isn't available for self-checkout yet — please contact support." });
+    }
+
+    const result = await createExchangeOrder({
+      corridorId: corridor.id,
+      amountSent: Number(amount),
+      senderPhone: String(senderPhone),
+      receiverPhone: String(receiverPhone),
+      customerId: req.auth!.sub,
+      channel: "customer_app",
+      clientRequestId: clientRequestId ?? null,
+      collectionPhoneNumber,
+    });
+    if (result.error) return sendJson(res, result.status ?? 400, { error: result.error });
+    sendJson(res, 201, result.order);
+  }
+);
+
+exchangeRouter.get("/exchange/orders", requireAuth("customer"), async (req, res) => {
+  sendJson(res, 200, await query(`${EXCHANGE_ORDER_LIST_SELECT} WHERE eo.customer_id=$1 ORDER BY eo.created_at DESC`, [req.auth!.sub]));
+});
+
+exchangeRouter.get("/exchange/orders/:id", requireAuth("customer"), async (req, res) => {
+  const order = await queryOne<{ id: string }>(`${EXCHANGE_ORDER_LIST_SELECT} WHERE eo.id=$1 AND eo.customer_id=$2`, [
+    req.params.id,
+    req.auth!.sub,
+  ]);
+  if (!order) return sendJson(res, 404, { error: "Exchange order not found" });
+  // A payout attempt already under way (even if not yet resolved) is worth
+  // surfacing distinctly from a plain "in_progress" — the Customer App uses
+  // this to show "an agent is processing your exchange" instead of a
+  // generic "payment confirmed, waiting" state. No dial-attempt internals
+  // (USSD strings, carrier response text) are ever included here.
+  const activeAttempt = await queryOne<{ id: string }>(
+    `SELECT id FROM exchange_dial_attempts WHERE exchange_order_id=$1 LIMIT 1`,
+    [req.params.id]
+  );
+  sendJson(res, 200, { ...order, payoutStarted: Boolean(activeAttempt) });
 });
