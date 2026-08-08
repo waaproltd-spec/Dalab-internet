@@ -619,7 +619,7 @@ test("safe payout lifecycle: SMS match -> in_progress -> dial-attempt -> step1 -
   // Correct payout wallet/device/SIM: eDahab -> EVC Plus pays out via the
   // EVC Plus payout wallet, seeded on SIM 1.
   assert.equal(start.simSlot, 1, "must dial on the EVC Plus payout wallet's SIM (1), matching the corridor's payoutWalletId");
-  assert.equal(start.step1UssdString, "*712*252688000000*60.00#", "EVC Plus payout must dial *712*NUMBER*AMOUNT#");
+  assert.equal(start.step1UssdString, "*712*688000000*60*00#", "EVC Plus payout must dial *712*NUMBER*DOLLARS*CENTS#, receiver normalized to the bare 9-digit local number");
   assert.ok(!start.step1UssdString?.includes(PAYOUT_TEST_PIN), "step1 (number+amount only) must never contain the PIN");
   // PIN handling: present exactly here, over HTTPS, to this one authorized call.
   assert.equal(start.pin, PAYOUT_TEST_PIN);
@@ -801,7 +801,7 @@ test("payout USSD string uses the correct carrier code for each wallet: EVC Plus
     })
   );
   assert.equal(evcStart.simSlot, 1);
-  assert.equal(evcStart.step1UssdString, "*712*252688000000*63.00#", "EVC Plus payout must dial *712*NUMBER*AMOUNT#");
+  assert.equal(evcStart.step1UssdString, "*712*688000000*63*00#", "EVC Plus payout must dial *712*NUMBER*DOLLARS*CENTS#");
 
   // EVC Plus -> eDahab corridor pays out via the eDahab wallet: *110*NUMBER*AMOUNT#
   const edahabOrderId = await insertExchangeOrder({
@@ -828,7 +828,7 @@ test("payout USSD string uses the correct carrier code for each wallet: EVC Plus
     })
   );
   assert.equal(edahabStart.simSlot, 2, "must dial on the eDahab payout wallet's SIM (2)");
-  assert.equal(edahabStart.step1UssdString, "*110*252688000000*64.00#", "eDahab payout must dial *110*NUMBER*AMOUNT#");
+  assert.equal(edahabStart.step1UssdString, "*110*688000000*64*00#", "eDahab payout must dial *110*NUMBER*DOLLARS*CENTS#");
 });
 
 // GET /exchange/wallets is public (no auth) -- the Customer App reads

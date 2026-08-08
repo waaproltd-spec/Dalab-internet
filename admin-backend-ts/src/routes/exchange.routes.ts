@@ -31,6 +31,23 @@ function normalizePhone(phone: string | null | undefined): string {
   return String(phone ?? "").replace(/\D/g, "").slice(-9);
 }
 
+/** "." is not a valid GSM/USSD MMI dial character (the protocol only
+ * supports digits, *, and #), so a decimal amount like "1.98" embedded
+ * directly in the dial string never reaches the carrier intact — confirmed
+ * live against the real *712*...# payout flow, which flattened "1.98" into
+ * "198" (misread as $198, a 100x error) every time. The carrier's own
+ * two-step Dial-to-Pay menu instead expects the amount as two separate
+ * *-delimited segments, whole dollars then cents — also confirmed live:
+ * dialing "*712*<number>*1*98#" correctly showed "$1.98" in the carrier's
+ * own confirmation text. amountReceived is always NUMERIC(10,2), so it's
+ * always exactly "<dollars>.<2-digit cents>" as returned by pg; the ?? "00"
+ * fallback only guards a value that somehow arrives without a decimal
+ * point. */
+function ussdAmountSegments(amountReceived: string | number): string {
+  const [dollars, cents] = String(amountReceived).split(".");
+  return `${dollars}*${(cents ?? "00").padEnd(2, "0")}`;
+}
+
 /** amountReceived = amountSent * rate - fee, matching the admin's spec
  * literally — fee_value is a flat amount when fee_type='fixed', a percentage
  * of amountSent when fee_type='percentage'. Never lets amountReceived go
@@ -572,12 +589,15 @@ exchangeRouter.post("/agent/exchange/orders/:id/dial-attempts", requireAuth("age
   }
   const wallet = await queryOne<{ dial_prefix: string }>(`SELECT dial_prefix FROM payment_wallets WHERE id=$1`, [payoutWallet.wallet_id]);
   const dialPrefix = wallet?.dial_prefix ?? "";
-  // "*{dialPrefix}*{receiverPhone}*{amountReceived}#" — e.g. EVC Plus (dial_prefix "712")
-  // -> "*712*NUMBER*AMOUNT#", eDahab (dial_prefix "110") -> "*110*NUMBER*AMOUNT#".
-  // receiverPhone must be the bare local number — normalizePhone() strips any
-  // 252 country code / leading 0 the customer's saved number carries, since
-  // the carrier's menu rejects anything but the 9-digit local form.
-  const step1UssdString = `*${dialPrefix}*${normalizePhone(order.receiver_phone)}*${order.amount_received}#`;
+  // "*{dialPrefix}*{receiverPhone}*{dollars}*{cents}#" — e.g. EVC Plus
+  // (dial_prefix "712"), $1.98 -> "*712*NUMBER*1*98#", eDahab (dial_prefix
+  // "110"), $10.30 -> "*110*NUMBER*10*30#". receiverPhone must be the bare
+  // local number — normalizePhone() strips any 252 country code / leading 0
+  // the customer's saved number carries, since the carrier's menu rejects
+  // anything but the 9-digit local form. The amount is dollars and cents as
+  // separate *-delimited segments, not a "." decimal — see
+  // ussdAmountSegments() for why.
+  const step1UssdString = `*${dialPrefix}*${normalizePhone(order.receiver_phone)}*${ussdAmountSegments(order.amount_received)}#`;
 
   const id = randomUUID();
   try {
