@@ -41,12 +41,9 @@ class ExchangeUssdOrchestrator(private val context: Context) {
     }
 
     private suspend fun executeLocked(order: com.dalab.internet.data.ExchangeOrder): ExchangeDialResult {
-        if (!ExchangeUssdBridge.isAccessibilityServiceEnabled(context)) {
-            return ExchangeDialResult(
-                ExchangeDialOutcome.ACCESSIBILITY_NOT_ENABLED,
-                "Automated payout isn't enabled on this device yet — turn it on from More > Money Exchange Setup, or use manual payout below.",
-            )
-        }
+        // DIAGNOSTIC BUILD — DO NOT MERGE: accessibility gate skipped so
+        // Step 1 dials for real regardless of the toggle's state (see
+        // below for why that's safe here).
         if (!dialer.hasRequiredPermissions()) {
             return ExchangeDialResult(ExchangeDialOutcome.PERMISSION_DENIED, "Phone permissions aren't granted — check Settings > Apps > Dalab Agent > Permissions.")
         }
@@ -74,46 +71,26 @@ class ExchangeUssdOrchestrator(private val context: Context) {
             is SubscriptionLookupResult.Found -> subscriptionLookup.subscriptionId
         }
 
-        ExchangeUssdBridge.arm()
-        try {
-            dialer.dial(subscriptionId, body.step1UssdString)
-
-            val firstEvent = ExchangeUssdBridge.awaitNextEvent(30_000)
-            if (firstEvent !is UssdDialogEvent.DialogSeen) {
-                reportStep1(body.id, "failed", null)
-                return ExchangeDialResult(ExchangeDialOutcome.TIMEOUT, "No response from the carrier within 30s — check the phone and try manual payout if needed.")
-            }
-            if (!firstEvent.hasInput) {
-                // Doesn't match the expected number+amount -> PIN-prompt shape
-                // (e.g. an immediate error like "invalid number"). Never send
-                // the PIN blind into an unexpected screen.
-                reportStep1(body.id, "ambiguous", firstEvent.text)
-                return ExchangeDialResult(ExchangeDialOutcome.STEP1_FAILED, "Unexpected carrier response (no PIN prompt): \"${firstEvent.text}\" — complete manually.")
-            }
-            reportStep1(body.id, "step1_success", firstEvent.text)
-
-            ExchangeUssdBridge.armPinInjection(pin)
-            val submittedEvent = ExchangeUssdBridge.awaitNextEvent(15_000)
-            if (submittedEvent !is UssdDialogEvent.PinSubmitted) {
-                reportStep2(body.id, "ambiguous", "PIN entry could not be confirmed automatically.", isFinalAttempt = true)
-                return ExchangeDialResult(ExchangeDialOutcome.STEP2_FAILED, "Could not confirm the PIN was submitted — check the phone; the exchange may still be pending on the carrier's side.")
-            }
-
-            val finalEvent = ExchangeUssdBridge.awaitNextEvent(25_000)
-            if (finalEvent !is UssdDialogEvent.DialogSeen) {
-                reportStep2(body.id, "ambiguous", "No final confirmation received after entering the PIN.", isFinalAttempt = true)
-                return ExchangeDialResult(ExchangeDialOutcome.TIMEOUT, "No final confirmation from the carrier — check the phone before retrying.")
-            }
-            val success = !looksLikeFailureResponse(finalEvent.text)
-            reportStep2(body.id, if (success) "success" else "failed", finalEvent.text, isFinalAttempt = true)
-            return if (success) {
-                ExchangeDialResult(ExchangeDialOutcome.SUCCESS, finalEvent.text)
-            } else {
-                ExchangeDialResult(ExchangeDialOutcome.STEP2_FAILED, finalEvent.text)
-            }
-        } finally {
-            ExchangeUssdBridge.disarm()
-        }
+        // DIAGNOSTIC BUILD — DO NOT MERGE: places the real Step 1 call (so
+        // the carrier's actual response is visible on-screen for a human to
+        // confirm) but deliberately never calls ExchangeUssdBridge.arm() or
+        // armPinInjection(). ExchangeUssdAccessibilityService.onAccessibilityEvent
+        // and scanAndAct() both hard-return immediately whenever
+        // ExchangeUssdBridge.armed is false, and armed is only ever set by
+        // arm() — so with arm() never called, there is no PIN for the
+        // service to inject and no code path here that could submit one,
+        // regardless of whether the accessibility toggle happens to be on.
+        // This is a structural guarantee, not a setting: it holds even if
+        // the toggle's real-time state is wrong or stale. Revert to the
+        // real executeLocked() (with arm()/awaitNextEvent()/
+        // armPinInjection() restored) before this is ever used for a real
+        // payout.
+        dialer.dial(subscriptionId, body.step1UssdString)
+        reportStep1(body.id, "ambiguous", "[diagnostic] Step 1 dialed; not proceeding to PIN entry.")
+        return ExchangeDialResult(
+            ExchangeDialOutcome.STEP1_FAILED,
+            "[Diagnostic build] Step 1 dialed for real — check your phone screen for the carrier's actual response. This build stops here and will never submit a PIN.",
+        )
     }
 
     private suspend fun reportStep1(attemptId: String, status: String, responseText: String?) {
