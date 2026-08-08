@@ -21,6 +21,16 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+/** Same last-9-digit normalization orders.routes.ts/smsLogs.routes.ts use for
+ * matching — Somali phone numbers legitimately appear with/without the 252
+ * country code or a leading 0. Needed here (not just for matching) because
+ * the carrier's own USSD payout menu rejects a receiver number dialed with
+ * the 252 prefix still attached ("Please start the Number with 6XXXXXXXXX"),
+ * expecting the bare 9-digit local number. */
+function normalizePhone(phone: string | null | undefined): string {
+  return String(phone ?? "").replace(/\D/g, "").slice(-9);
+}
+
 /** amountReceived = amountSent * rate - fee, matching the admin's spec
  * literally — fee_value is a flat amount when fee_type='fixed', a percentage
  * of amountSent when fee_type='percentage'. Never lets amountReceived go
@@ -564,7 +574,10 @@ exchangeRouter.post("/agent/exchange/orders/:id/dial-attempts", requireAuth("age
   const dialPrefix = wallet?.dial_prefix ?? "";
   // "*{dialPrefix}*{receiverPhone}*{amountReceived}#" — e.g. EVC Plus (dial_prefix "712")
   // -> "*712*NUMBER*AMOUNT#", eDahab (dial_prefix "110") -> "*110*NUMBER*AMOUNT#".
-  const step1UssdString = `*${dialPrefix}*${order.receiver_phone}*${order.amount_received}#`;
+  // receiverPhone must be the bare local number — normalizePhone() strips any
+  // 252 country code / leading 0 the customer's saved number carries, since
+  // the carrier's menu rejects anything but the 9-digit local form.
+  const step1UssdString = `*${dialPrefix}*${normalizePhone(order.receiver_phone)}*${order.amount_received}#`;
 
   const id = randomUUID();
   try {
