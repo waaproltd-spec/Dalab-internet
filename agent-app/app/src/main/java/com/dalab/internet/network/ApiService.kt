@@ -5,6 +5,7 @@ import com.dalab.internet.data.AgentProfile
 import com.dalab.internet.data.AgentReport
 import com.dalab.internet.data.Company
 import com.dalab.internet.data.CustomerSummary
+import com.dalab.internet.data.ExchangeOrder
 import com.dalab.internet.data.Order
 import com.dalab.internet.data.PackageItem
 import com.dalab.internet.data.SmsLogEntry
@@ -69,6 +70,27 @@ data class CreateSaleRequest(
     val receiverPhone: String? = null,
     val paymentMethod: String? = null,
     val clientRequestId: String? = null,
+)
+
+// ---------------- Money Exchange (separate business line — see ussd/Exchange*.kt) ----------------
+
+data class ExchangeDialAttemptStartRequest(val attemptNumber: Int = 1)
+// pin is null only on the rare duplicate-insert path (a retried start call
+// for an attemptNumber that already exists) — the caller must treat that as
+// "can't proceed automatically, ask a Super Admin" rather than dial blind.
+data class ExchangeDialAttemptStartResponse(val id: String, val step1UssdString: String, val pin: String? = null, val simSlot: Int? = null)
+data class ExchangeStepRequest(val status: String, val responseMessage: String? = null, val isFinalAttempt: Boolean = true)
+data class ExchangeDialAttemptDto(
+    val id: String,
+    val exchangeOrderId: String,
+    val simSlot: Int? = null,
+    val attemptNumber: Int,
+    val step1UssdString: String? = null,
+    val step1Response: String? = null,
+    val step2Response: String? = null,
+    val status: String,
+    val createdAt: String,
+    val completedAt: String? = null,
 )
 
 /**
@@ -172,4 +194,30 @@ interface ApiService {
 
     @GET("agent/reports")
     suspend fun getReports(@Query("range") range: String? = null): Response<AgentReport>
+
+    // ---------------- Money Exchange ----------------
+    // Deliberately separate endpoints/models from Internet Store's orders
+    // above — see ExchangeUssdOrchestrator for why the USSD flow itself is
+    // also a completely separate mechanism.
+
+    @GET("agent/exchange/orders")
+    suspend fun getExchangeOrders(): Response<List<ExchangeOrder>>
+
+    @POST("agent/exchange/orders/{id}/dial-attempts")
+    suspend fun startExchangeDialAttempt(
+        @Path("id") orderId: String,
+        @Body body: ExchangeDialAttemptStartRequest,
+    ): Response<ExchangeDialAttemptStartResponse>
+
+    @PUT("agent/exchange/dial-attempts/{attemptId}/step1")
+    suspend fun reportExchangeStep1(
+        @Path("attemptId") attemptId: String,
+        @Body body: ExchangeStepRequest,
+    ): Response<ExchangeDialAttemptDto>
+
+    @PUT("agent/exchange/dial-attempts/{attemptId}/step2")
+    suspend fun reportExchangeStep2(
+        @Path("attemptId") attemptId: String,
+        @Body body: ExchangeStepRequest,
+    ): Response<ExchangeDialAttemptDto>
 }

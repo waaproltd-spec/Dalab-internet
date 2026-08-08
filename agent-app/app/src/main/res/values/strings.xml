@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">DALAB Agent</string>
+    <string name="exchange_accessibility_description">Lets DALAB Agent read and complete the carrier\'s USSD reply dialog during a Money Exchange payout (entering the PIN automatically), so an agent doesn\'t have to type it in by hand. Only active while a Money Exchange payout you started is in progress.</string>
 </resources>

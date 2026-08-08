@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.CurrencyExchange
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.List
@@ -31,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.auth.SessionManager
+import com.dalab.internet.data.ExchangeOrder
 import com.dalab.internet.data.Order
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.diagnostics.HeartbeatStats
@@ -42,6 +44,9 @@ import com.dalab.internet.ui.AutoLoginScreen
 import com.dalab.internet.ui.CustomersScreen
 import com.dalab.internet.ui.DeviceSetupScreen
 import com.dalab.internet.ui.DiagnosticsScreen
+import com.dalab.internet.ui.ExchangeAccessibilitySetupScreen
+import com.dalab.internet.ui.ExchangeOrderDetailScreen
+import com.dalab.internet.ui.ExchangeOrdersListScreen
 import com.dalab.internet.ui.NewSaleScreen
 import com.dalab.internet.ui.OrderDetailScreen
 import com.dalab.internet.ui.OrdersListScreen
@@ -115,7 +120,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD }
+private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP }
 private enum class HomeTab { ORDERS, SALES, CUSTOMERS, REPORTS, MORE }
 
 @Composable
@@ -158,6 +163,7 @@ private fun AgentApp() {
         )
     }
     var selectedOrder by remember { mutableStateOf<Order?>(null) }
+    var selectedExchangeOrder by remember { mutableStateOf<ExchangeOrder?>(null) }
     val scope = rememberCoroutineScope()
 
     // Granting READ_SMS/RECEIVE_SMS previously only enabled the live receiver
@@ -219,6 +225,7 @@ private fun AgentApp() {
             onOpenDiagnostics = { screen = Screen.DIAGNOSTICS },
             onOpenPermissionsStatus = { screen = Screen.PERMISSIONS_STATUS },
             onOpenReliabilityDashboard = { screen = Screen.RELIABILITY_DASHBOARD },
+            onOpenMoneyExchange = { screen = Screen.EXCHANGE_LIST },
         )
 
         Screen.ORDER_DETAIL -> selectedOrder?.let { order ->
@@ -240,6 +247,22 @@ private fun AgentApp() {
         Screen.PERMISSIONS_STATUS -> PermissionsStatusScreen(onBack = { screen = Screen.HOME })
 
         Screen.RELIABILITY_DASHBOARD -> ReliabilityDashboardScreen(onBack = { screen = Screen.HOME })
+
+        Screen.EXCHANGE_LIST -> ExchangeOrdersListScreen(
+            onOpenOrder = { order -> selectedExchangeOrder = order; screen = Screen.EXCHANGE_DETAIL },
+            onOpenSetup = { screen = Screen.EXCHANGE_SETUP },
+            onBack = { screen = Screen.HOME },
+        )
+
+        Screen.EXCHANGE_DETAIL -> selectedExchangeOrder?.let { order ->
+            ExchangeOrderDetailScreen(
+                order = order,
+                onBack = { screen = Screen.EXCHANGE_LIST },
+                onOrderUpdated = { selectedExchangeOrder = it },
+            )
+        }
+
+        Screen.EXCHANGE_SETUP -> ExchangeAccessibilitySetupScreen(onBack = { screen = Screen.EXCHANGE_LIST })
     }
 }
 
@@ -261,6 +284,7 @@ private fun AgentHome(
     onOpenDiagnostics: () -> Unit,
     onOpenPermissionsStatus: () -> Unit,
     onOpenReliabilityDashboard: () -> Unit,
+    onOpenMoneyExchange: () -> Unit,
 ) {
     var tab by remember { mutableStateOf(HomeTab.ORDERS) }
 
@@ -314,6 +338,7 @@ private fun AgentHome(
                     onOpenDiagnostics = onOpenDiagnostics,
                     onOpenPermissionsStatus = onOpenPermissionsStatus,
                     onOpenReliabilityDashboard = onOpenReliabilityDashboard,
+                    onOpenMoneyExchange = onOpenMoneyExchange,
                 )
             }
         }
@@ -329,8 +354,16 @@ private fun MoreScreen(
     onOpenDiagnostics: () -> Unit,
     onOpenPermissionsStatus: () -> Unit,
     onOpenReliabilityDashboard: () -> Unit,
+    onOpenMoneyExchange: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
+        ListItem(
+            headlineContent = { Text("Money Exchange") },
+            supportingContent = { Text("Verified exchanges waiting for payout") },
+            leadingContent = { Icon(Icons.Filled.CurrencyExchange, contentDescription = null) },
+            modifier = Modifier.clickable(onClick = onOpenMoneyExchange),
+        )
+        Divider()
         ListItem(
             headlineContent = { Text("Wallet Balances") },
             supportingContent = { Text("Provider balances and live payment transactions") },

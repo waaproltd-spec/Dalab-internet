@@ -73,5 +73,25 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!--
+          Money Exchange's 2-step automated USSD payout engine — reads and
+          drives the native USSD reply dialog (see ExchangeUssdAccessibilityService).
+          Completely separate from, and never used by, Internet Store's dialing
+          path (UssdDialer/UssdOrchestrator). The agent must manually enable this
+          via Settings > Accessibility (Android does not allow silently granting
+          it) — see ExchangeAccessibilitySetupScreen.
+        -->
+        <service
+            android:name=".ussd.ExchangeUssdAccessibilityService"
+            android:exported="false"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/exchange_accessibility_service_config" />
+        </service>
+
     </application>
 </manifest>
