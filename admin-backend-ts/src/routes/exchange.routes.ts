@@ -733,12 +733,19 @@ exchangeRouter.post("/admin/exchange/orders/:id/reverse", requirePermission("exc
 
 const PHONE_RE = /^\+?\d{6,15}$/;
 
+// dial_prefix is public/harmless to expose here — it's the same USSD
+// carrier code (e.g. "712" for EVC Plus) the Customer App already builds
+// Internet Store payment dial codes from via each company's ussdTemplate.
+// The Customer App uses it to build the "Dial to Pay" USSD string for the
+// customer's own collection-payment leg (see wallet_numbers/exchange_new/
+// exchange_payment_instructions screens) — never anything payout/PIN
+// related, which stays entirely server-side (exchange_payout_wallets).
 exchangeRouter.get("/exchange/wallets", async (_req, res) => {
   sendJson(
     res,
     200,
     await query(
-      `SELECT id, name, provider_label, color_hex, logo_key FROM payment_wallets WHERE enabled=true ORDER BY sort_order`
+      `SELECT id, name, provider_label, color_hex, logo_key, dial_prefix FROM payment_wallets WHERE enabled=true ORDER BY sort_order`
     )
   );
 });

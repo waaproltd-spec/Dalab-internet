@@ -830,3 +830,17 @@ test("payout USSD string uses the correct carrier code for each wallet: EVC Plus
   assert.equal(edahabStart.simSlot, 2, "must dial on the eDahab payout wallet's SIM (2)");
   assert.equal(edahabStart.step1UssdString, "*110*252688000000*64.00#", "eDahab payout must dial *110*NUMBER*AMOUNT#");
 });
+
+// GET /exchange/wallets is public (no auth) -- the Customer App reads
+// dialPrefix from it to build the customer's own "Dial to Pay" collection
+// USSD string client-side (*{dialPrefix}*{collectionNumber}*{amount}#, same
+// shape as the payout leg above), never anything payout/PIN related.
+test("GET /exchange/wallets exposes each wallet's dial prefix for the customer's own Dial to Pay button", async () => {
+  const res = await fetch(`${payoutBaseUrl}/exchange/wallets`);
+  assert.equal(res.status, 200);
+  const wallets = (await asJson(res)) as Array<{ id: string; dialPrefix: string }>;
+  const evc = wallets.find((w) => w.id === "evc_plus");
+  const edahab = wallets.find((w) => w.id === "edahab");
+  assert.equal(evc?.dialPrefix, "712");
+  assert.equal(edahab?.dialPrefix, "110");
+});
