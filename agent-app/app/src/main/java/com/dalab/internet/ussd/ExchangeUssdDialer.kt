@@ -25,9 +25,17 @@ class ExchangeUssdDialer(private val context: Context) {
 
     /** Triggers the OS's own USSD dial for [ussdCode] on the SIM identified
      * by [subscriptionId]. Does not wait for or read any response itself —
-     * that's ExchangeUssdBridge/ExchangeUssdAccessibilityService's job. */
+     * that's ExchangeUssdBridge/ExchangeUssdAccessibilityService's job.
+     *
+     * DIAGNOSTIC BUILD — DO NOT MERGE: ACTION_CALL swapped for ACTION_DIAL
+     * so this opens the dialer pre-filled with the exact final string
+     * instead of actually placing the call/starting a carrier session —
+     * lets us see whether Android's tel: URI handling strips the "." out
+     * of a fractional amount (e.g. "1.98") before it ever reaches the
+     * network, with zero money or carrier-session risk. Revert to
+     * ACTION_CALL before this is ever used for a real payout. */
     fun dial(subscriptionId: Int, ussdCode: String) {
-        val intent = Intent(Intent.ACTION_CALL, Uri.parse("tel:" + Uri.encode(ussdCode))).apply {
+        val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(ussdCode))).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             resolvePhoneAccountHandle(subscriptionId)?.let {
                 putExtra(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, it)

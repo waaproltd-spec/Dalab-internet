@@ -41,12 +41,12 @@ class ExchangeUssdOrchestrator(private val context: Context) {
     }
 
     private suspend fun executeLocked(order: com.dalab.internet.data.ExchangeOrder): ExchangeDialResult {
-        if (!ExchangeUssdBridge.isAccessibilityServiceEnabled(context)) {
-            return ExchangeDialResult(
-                ExchangeDialOutcome.ACCESSIBILITY_NOT_ENABLED,
-                "Automated payout isn't enabled on this device yet — turn it on from More > Money Exchange Setup, or use manual payout below.",
-            )
-        }
+        // DIAGNOSTIC BUILD — DO NOT MERGE: accessibility-service gate
+        // skipped here. Safe only because ExchangeUssdDialer.dial() in this
+        // same build uses ACTION_DIAL (opens the dialer pre-filled, never
+        // starts a carrier session), so there's no real dial for a disabled
+        // accessibility service to fail to supervise. Restore this check
+        // before this code is ever used for a real payout.
         if (!dialer.hasRequiredPermissions()) {
             return ExchangeDialResult(ExchangeDialOutcome.PERMISSION_DENIED, "Phone permissions aren't granted — check Settings > Apps > Dalab Agent > Permissions.")
         }
