@@ -80,7 +80,9 @@ jobs:
       # to the live app. Does not affect the app or any artifact.
       - name: Print release signing certificate fingerprint
         if: ${{ steps.keystore.outputs.path != '' }}
-        run: keytool -printcert -jarfile app/build/outputs/apk/release/app-release.apk
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --print-certs app/build/outputs/apk/release/app-release.apk
 
       - name: Build release AAB (Play Store)
         if: ${{ steps.keystore.outputs.path != '' }}
