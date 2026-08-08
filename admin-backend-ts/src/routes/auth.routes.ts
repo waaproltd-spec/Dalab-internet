@@ -91,7 +91,14 @@ authRouter.post("/auth/register", rateLimit("customer-register", 10, 15 * 60 * 1
   const tokens = await issueTokens(customer!.id, "customer");
   sendJson(res, 201, {
     ...tokens,
-    customer: { id: customer!.id, phone: customer!.phone, name: customer!.name, email: customer!.email },
+    customer: {
+      id: customer!.id,
+      phone: customer!.phone,
+      name: customer!.name,
+      email: customer!.email,
+      evcPlusNumber: customer!.evc_plus_number,
+      edahabNumber: customer!.edahab_number,
+    },
     pinSet: Boolean(customer!.pin_hash),
   });
 });
@@ -122,7 +129,14 @@ authRouter.post("/auth/login", rateLimit("customer-login", 10, 15 * 60 * 1000), 
   const tokens = await issueTokens(customer.id, "customer");
   sendJson(res, 200, {
     ...tokens,
-    customer: { id: customer.id, phone: customer.phone, name: customer.name, email: customer.email },
+    customer: {
+      id: customer.id,
+      phone: customer.phone,
+      name: customer.name,
+      email: customer.email,
+      evcPlusNumber: customer.evc_plus_number,
+      edahabNumber: customer.edahab_number,
+    },
     pinSet: Boolean(customer.pin_hash),
   });
 });
@@ -158,7 +172,14 @@ authRouter.post("/auth/identify", rateLimit("customer-identify", 20, 15 * 60 * 1
   const tokens = await issueTokens(customer!.id, "customer");
   sendJson(res, 200, {
     ...tokens,
-    customer: { id: customer!.id, phone: customer!.phone, name: customer!.name, email: customer!.email },
+    customer: {
+      id: customer!.id,
+      phone: customer!.phone,
+      name: customer!.name,
+      email: customer!.email,
+      evcPlusNumber: customer!.evc_plus_number,
+      edahabNumber: customer!.edahab_number,
+    },
     pinSet: Boolean(customer!.pin_hash),
   });
 });
@@ -241,7 +262,14 @@ authRouter.post("/auth/customer/signup", rateLimit("customer-pin-signup", 10, 15
   const tokens = await issueTokens(customer!.id, "customer");
   sendJson(res, 201, {
     ...tokens,
-    customer: { id: customer!.id, phone: customer!.phone, name: customer!.name, email: customer!.email },
+    customer: {
+      id: customer!.id,
+      phone: customer!.phone,
+      name: customer!.name,
+      email: customer!.email,
+      evcPlusNumber: customer!.evc_plus_number,
+      edahabNumber: customer!.edahab_number,
+    },
   });
 });
 
@@ -261,7 +289,14 @@ authRouter.post("/auth/customer/login", rateLimit("customer-pin-login", 10, 15 *
   const tokens = await issueTokens(customer.id, "customer");
   sendJson(res, 200, {
     ...tokens,
-    customer: { id: customer.id, phone: customer.phone, name: customer.name, email: customer.email },
+    customer: {
+      id: customer.id,
+      phone: customer.phone,
+      name: customer.name,
+      email: customer.email,
+      evcPlusNumber: customer.evc_plus_number,
+      edahabNumber: customer.edahab_number,
+    },
   });
 });
 

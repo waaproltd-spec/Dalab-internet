@@ -155,7 +155,8 @@ customersRouter.post("/agent/customers", requireAuth("agent"), async (req, res) 
 });
 
 // ---------------- Customer: own profile ----------------
-const CUSTOMER_PROFILE_COLUMNS = "id, phone, name, email, macaash_points, created_at";
+const CUSTOMER_PROFILE_COLUMNS = "id, phone, name, email, macaash_points, evc_plus_number, edahab_number, created_at";
+const WALLET_PHONE_RE = /^\+?\d{6,15}$/;
 
 customersRouter.get("/customer/profile", requireAuth("customer"), async (req, res) => {
   const customer = await queryOne(`SELECT ${CUSTOMER_PROFILE_COLUMNS} FROM customers WHERE id=$1`, [req.auth!.sub]);
@@ -167,6 +168,33 @@ customersRouter.put("/customer/profile", requireAuth("customer"), async (req, re
   const name = String(req.body.name ?? "").trim();
   if (!name) return sendJson(res, 400, { error: "name is required" });
   await query(`UPDATE customers SET name=$1 WHERE id=$2`, [name, req.auth!.sub]);
+  sendJson(res, 200, await queryOne(`SELECT ${CUSTOMER_PROFILE_COLUMNS} FROM customers WHERE id=$1`, [req.auth!.sub]));
+});
+
+// ---------------- Customer: saved Money Exchange wallet numbers ----------------
+// So Money Exchange can auto-fill sender/receiver numbers from the
+// customer's own Account instead of asking them to retype both every time
+// (see exchange.routes.ts and the Customer App's exchange_new_screen.dart /
+// wallet_numbers_screen.dart). Each field is independently optional — a
+// customer can save just one wallet number at a time; exchange_new_screen.dart
+// decides whether that's enough for the corridor they picked. Explicitly
+// passing null (as opposed to omitting the key) clears a previously saved
+// number, since a customer may no longer hold that wallet.
+customersRouter.put("/customer/wallet-numbers", requireAuth("customer"), async (req, res) => {
+  const body = req.body ?? {};
+  for (const field of ["evcPlusNumber", "edahabNumber"] as const) {
+    if (field in body && body[field] != null && !WALLET_PHONE_RE.test(String(body[field]))) {
+      return sendJson(res, 400, { error: `Provide a valid ${field === "evcPlusNumber" ? "EVC Plus" : "eDahab"} number` });
+    }
+  }
+  const existing = await queryOne<{ evc_plus_number: string | null; edahab_number: string | null }>(
+    `SELECT evc_plus_number, edahab_number FROM customers WHERE id=$1`,
+    [req.auth!.sub]
+  );
+  if (!existing) return sendJson(res, 404, { error: "Customer not found" });
+  const evcPlusNumber = "evcPlusNumber" in body ? (body.evcPlusNumber == null ? null : String(body.evcPlusNumber)) : existing.evc_plus_number;
+  const edahabNumber = "edahabNumber" in body ? (body.edahabNumber == null ? null : String(body.edahabNumber)) : existing.edahab_number;
+  await query(`UPDATE customers SET evc_plus_number=$1, edahab_number=$2 WHERE id=$3`, [evcPlusNumber, edahabNumber, req.auth!.sub]);
   sendJson(res, 200, await queryOne(`SELECT ${CUSTOMER_PROFILE_COLUMNS} FROM customers WHERE id=$1`, [req.auth!.sub]));
 });
 
