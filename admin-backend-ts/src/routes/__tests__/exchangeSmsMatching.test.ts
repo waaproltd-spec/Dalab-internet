@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { query, queryOne, pool } from "../../db/pool.js";
 import { ingestPaymentSms } from "../smsLogs.routes.js";
+import { autoAdvanceExchangeOrderToInProgress } from "../exchange.routes.js";
 
 const AGENT_ID = randomUUID();
 const DEVICE_ID = "test-device-1";
@@ -169,6 +170,13 @@ test("valid eDahab -> EVC Plus exchange payment matches, links, and logs", async
 
   const activity = await activityFor(orderId, "match_exchange_order_sms");
   assert.ok(activity, "expected a match_exchange_order_sms activity log entry");
+
+  // Fully automatic pipeline: a matched payment SMS also auto-verifies the
+  // order (pending -> in_progress) with no admin/agent action.
+  const order = await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]);
+  assert.equal(order?.status, "in_progress");
+  const verifyActivity = await activityFor(orderId, "auto_verify_exchange_order_sms_match");
+  assert.ok(verifyActivity, "expected an auto_verify_exchange_order_sms_match activity log entry");
 });
 
 test("valid EVC Plus -> eDahab exchange payment matches, links, and logs", async () => {
@@ -196,6 +204,9 @@ test("valid EVC Plus -> eDahab exchange payment matches, links, and logs", async
 
   const activity = await activityFor(orderId, "match_exchange_order_sms");
   assert.ok(activity);
+
+  const order = await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]);
+  assert.equal(order?.status, "in_progress");
 });
 
 test("wrong amount does not match", async () => {
@@ -356,7 +367,7 @@ test("duplicate SMS (same transactionRef) is reported as already_processed, not 
   assert.equal(second.body.id, first.body.id, "must return the original sms_logs row, not create a second one");
 });
 
-test("a second, differently-referenced SMS for an already-matched exchange order is blocked as a duplicate delivery", async () => {
+test("a second, differently-referenced SMS for an already-matched (now in_progress) exchange order cannot re-match or re-verify it", async () => {
   const orderId = await insertExchangeOrder({
     corridorId: corridorEdahabToEvc,
     fromWalletId: "edahab",
@@ -375,11 +386,21 @@ test("a second, differently-referenced SMS for an already-matched exchange order
     transactionRef: nextRef(),
   });
   assert.equal(first.body.matchedExchangeOrderId, orderId);
+  const afterFirst = await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]);
+  assert.equal(afterFirst?.status, "in_progress", "the first match must have auto-verified the order");
 
   // A different transaction_ref and body — e.g. the same customer somehow
-  // triggers a second real-looking SMS for the same order while it's still
-  // 'pending' (order isn't reused/deduped the way this can't naturally
-  // recur, but the guard must hold regardless of how it happens).
+  // triggers a second real-looking SMS for the same order. Since the first
+  // match already auto-advanced the order out of 'pending', the candidate
+  // query in findMatchingExchangeOrder (WHERE status='pending') can no
+  // longer find it at all — the second SMS simply fails to match anything
+  // (surfaced as an ordinary Unmatched row on the SMS Monitor dashboard),
+  // rather than hitting the explicit "already has a matched SMS" duplicate
+  // guard, which now only ever fires for a genuine concurrent race (two
+  // SMS landing before either's auto-verify transaction commits — covered
+  // by findMatchingExchangeOrder's FOR UPDATE SKIP LOCKED candidate lock).
+  // Either way the safety property holds: the order can never be matched,
+  // verified, or paid out twice.
   const second = await ingestPaymentSms({
     agentId: AGENT_ID,
     sender: "eDahab",
@@ -390,17 +411,22 @@ test("a second, differently-referenced SMS for an already-matched exchange order
     transactionRef: nextRef(),
   });
 
-  assert.equal(second.body.duplicate, true);
-  assert.equal(second.body.status, "duplicate_blocked");
-  assert.equal(second.body.matchedExchangeOrderId, null, "the blocked duplicate itself must not carry the link");
+  assert.equal(second.body.matchedExchangeOrderId, null, "the order is no longer 'pending', so it can't be matched again");
+  assert.equal(second.body.duplicate, false);
 
-  // The order must still be linked to exactly the FIRST sms_log row.
+  // The order must still be linked to exactly the FIRST sms_log row, and
+  // must still be in_progress from that first, legitimate verify — never
+  // touched a second time.
   const linkedRows = await query<{ id: string }>(`SELECT id FROM sms_logs WHERE matched_exchange_order_id=$1`, [orderId]);
   assert.equal(linkedRows.length, 1);
   assert.equal(linkedRows[0].id, first.body.id);
-
-  const dupActivity = await activityFor(orderId, "duplicate_delivery_prevented");
-  assert.ok(dupActivity);
+  const afterSecond = await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]);
+  assert.equal(afterSecond?.status, "in_progress");
+  const verifyActivityCount = await query(
+    `SELECT id FROM admin_activity_log WHERE entity_type='exchange_order' AND entity_id=$1 AND action='auto_verify_exchange_order_sms_match'`,
+    [orderId]
+  );
+  assert.equal(verifyActivityCount.length, 1, "must never auto-verify the same order twice");
 });
 
 test("a payment SMS for a normal Internet Store order still matches exactly as before (Store path unaffected)", async () => {
@@ -432,4 +458,77 @@ test("a payment SMS for a normal Internet Store order still matches exactly as b
   );
   assert.equal(row?.matched_order_id, storeOrderId);
   assert.equal(row?.matched_exchange_order_id, null);
+});
+
+test("auto-verify is idempotent — cannot double-advance an already in_progress order", async () => {
+  const orderId = await insertExchangeOrder({
+    corridorId: corridorEdahabToEvc,
+    fromWalletId: "edahab",
+    toWalletId: "evc_plus",
+    amountSent: 45,
+    senderPhone: "252611111120",
+  });
+
+  const result = await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "eDahab",
+    body: "Lacag $45.00 ah",
+    parsedAmount: 45,
+    parsedPhone: "252611111120",
+    simSlot: 2,
+    transactionRef: nextRef(),
+  });
+  assert.equal(result.body.matchedExchangeOrderId, orderId);
+  const afterMatch = await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]);
+  assert.equal(afterMatch?.status, "in_progress");
+
+  // A second, independent call for the same order (e.g. an admin tapping
+  // Verify Payment on an order the matcher already advanced, or a resweep
+  // racing the live path) must be rejected, not silently re-fire.
+  const second = await autoAdvanceExchangeOrderToInProgress(orderId, { source: "sms_match" });
+  assert.ok(second.error, "expected a second advance attempt to be rejected");
+  assert.match(second.error!, /not pending|Cannot verify/);
+
+  const verifyActivityCount = await query(
+    `SELECT id FROM admin_activity_log WHERE entity_type='exchange_order' AND entity_id=$1 AND action='auto_verify_exchange_order_sms_match'`,
+    [orderId]
+  );
+  assert.equal(verifyActivityCount.length, 1, "must log exactly one auto-verify, never two");
+});
+
+test("hasDialAttempt correctly distinguishes orders with and without a dial attempt (GET /agent/exchange/orders shape)", async () => {
+  const dialedOrderId = await insertExchangeOrder({
+    corridorId: corridorEdahabToEvc,
+    fromWalletId: "edahab",
+    toWalletId: "evc_plus",
+    amountSent: 50,
+    senderPhone: "252611111121",
+  });
+  const undialedOrderId = await insertExchangeOrder({
+    corridorId: corridorEdahabToEvc,
+    fromWalletId: "edahab",
+    toWalletId: "evc_plus",
+    amountSent: 51,
+    senderPhone: "252611111122",
+  });
+  await query(`UPDATE exchange_orders SET status='in_progress' WHERE id IN ($1,$2)`, [dialedOrderId, undialedOrderId]);
+  await query(
+    `INSERT INTO exchange_dial_attempts (exchange_order_id, attempt_number, status) VALUES ($1, 1, 'failed')`,
+    [dialedOrderId]
+  );
+
+  // Exact query the GET /agent/exchange/orders route runs (see
+  // exchange.routes.ts) — reproduced here since exercising it through a
+  // real authenticated HTTP request is out of scope for this unit-level
+  // suite; this validates the EXISTS logic ExchangeSelfHealSweeper (Agent
+  // App) relies on to never auto-dial an order a second time.
+  const rows = await query<{ id: string; has_dial_attempt: boolean }>(
+    `SELECT eo.id, EXISTS(SELECT 1 FROM exchange_dial_attempts eda WHERE eda.exchange_order_id = eo.id) AS has_dial_attempt
+     FROM exchange_orders eo WHERE eo.status='in_progress' AND eo.id IN ($1,$2)`,
+    [dialedOrderId, undialedOrderId]
+  );
+  const dialed = rows.find((r) => r.id === dialedOrderId);
+  const undialed = rows.find((r) => r.id === undialedOrderId);
+  assert.equal(dialed?.has_dial_attempt, true, "an order with a (even failed) dial attempt must be flagged, so it's never auto-dialed twice");
+  assert.equal(undialed?.has_dial_attempt, false, "an order with no dial attempt yet must be eligible for automatic payout");
 });

@@ -31,6 +31,14 @@ data class ExchangeOrder(
     val channel: String? = null,
     val createdAt: String,
     val completedAt: String? = null,
+    // Only present on GET /agent/exchange/orders (the automatic payout
+    // queue) — true the moment ANY dial attempt exists for this order
+    // (success, failure, or ambiguous), regardless of which device made
+    // it. ExchangeSelfHealSweeper checks this before calling
+    // executePayout() so a failed/ambiguous automated attempt is never
+    // retried automatically — it stays Failed for a human to act on
+    // (manual payout in ExchangeOrderDetailScreen), never silently redialed.
+    val hasDialAttempt: Boolean = false,
 )
 
 enum class ExchangeOrderStatus {

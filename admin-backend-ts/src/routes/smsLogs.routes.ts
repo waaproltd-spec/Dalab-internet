@@ -14,6 +14,7 @@ import {
 import { extractBalanceFromSms, resolveCompanyIdByProviderName, resolveDeviceSlotForCompany, applyBalanceUpdate } from "../utils/simBalances.js";
 import { broadcast } from "../realtime/orderEvents.js";
 import { verifyOrderAndGenerateUssd } from "./orders.routes.js";
+import { autoAdvanceExchangeOrderToInProgress } from "./exchange.routes.js";
 
 export const smsLogsRouter = Router();
 
@@ -609,7 +610,14 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
       oldValue: null,
       newValue: { smsLogId: id, amountSent: exchangeMatch.amount_sent, transactionRef: transactionRef ?? null, summary: `SMS -> Exchange Order ${exchangeMatch.id} -> matched` },
     });
-    broadcast({ type: "exchange_order.updated", exchangeOrderId: exchangeMatch.id });
+    // Fully automatic payout pipeline: a matched payment SMS now also
+    // advances the order itself (pending -> in_progress), not just links
+    // the SMS — this is what lets the Agent App's ExchangeSelfHealSweeper
+    // pick it up and dial the payout with no admin/agent tap required. Its
+    // own UPDATE...WHERE status='pending' guard makes this safe to call
+    // unconditionally: if the order somehow isn't pending anymore (a race,
+    // or an admin already verified it by hand), this is just a no-op.
+    await autoAdvanceExchangeOrderToInProgress(exchangeMatch.id, { source: "sms_match" });
   }
 
   // The ledger row for this genuinely-new payment attempt — 'pending' until
@@ -774,7 +782,10 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
         oldValue: null,
         newValue: { smsLogId: sms.id, amountSent: exchangeMatch.amount_sent, transactionRef: sms.transaction_ref, summary: `SMS -> Exchange Order ${exchangeMatch.id} -> matched` },
       });
-      broadcast({ type: "exchange_order.updated", exchangeOrderId: exchangeMatch.id });
+      // Same automatic pending -> in_progress advance the live upload path
+      // makes — a delayed match (the SMS beat the order's creation) still
+      // ends up fully automatic, not stuck waiting for a manual verify.
+      await autoAdvanceExchangeOrderToInProgress(exchangeMatch.id, { source: "sms_match" });
       relinked++;
     } catch (err) {
       // eslint-disable-next-line no-console

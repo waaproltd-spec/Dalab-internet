@@ -452,37 +452,86 @@ exchangeRouter.get("/admin/exchange/orders/:id", requireStaff(), async (req, res
 exchangeRouter.get("/agent/exchange/orders", requireAuth("agent"), async (req, res) => {
   // The agent's own payout queue — verified exchanges (in_progress) waiting
   // to be dialed, same shape as the customer app's order history but scoped
-  // to what an agent needs to act on.
-  sendJson(res, 200, await query(`${EXCHANGE_ORDER_LIST_SELECT} WHERE eo.status='in_progress' ORDER BY eo.created_at ASC`));
+  // to what an agent needs to act on. hasDialAttempt (not part of the
+  // shared EXCHANGE_ORDER_LIST_SELECT — added here via a one-off EXISTS
+  // subquery rather than mutating that shared constant) is what
+  // ExchangeSelfHealSweeper checks before automatically starting a payout:
+  // once ANY dial attempt exists for an order — success, failure, or
+  // ambiguous — it must never be auto-dialed again, so a failed payout
+  // stays Failed rather than silently getting retried and risking sending
+  // the money twice.
+  sendJson(
+    res,
+    200,
+    await query(
+      `SELECT eo.*, c.phone AS customer_phone, c.name AS customer_name,
+              fw.name AS from_wallet_name, tw.name AS to_wallet_name, a.name AS agent_name,
+              EXISTS(SELECT 1 FROM exchange_dial_attempts eda WHERE eda.exchange_order_id = eo.id) AS has_dial_attempt
+       FROM exchange_orders eo
+       LEFT JOIN customers c ON c.id = eo.customer_id
+       LEFT JOIN payment_wallets fw ON fw.id = eo.from_wallet_id
+       LEFT JOIN payment_wallets tw ON tw.id = eo.to_wallet_id
+       LEFT JOIN agents a ON a.id = eo.agent_id
+       WHERE eo.status='in_progress'
+       ORDER BY eo.created_at ASC`
+    )
+  );
 });
 
-// ---------------- Verify (manual v1 — no SMS auto-matching) ----------------
+// ---------------- Verify ----------------
+// v1 was manual-only ("no SMS auto-matching"); the matcher now exists
+// (smsLogs.routes.ts's ingestPaymentSms/resweepUnmatchedSmsLogs), so this
+// same pending->in_progress transition also fires automatically the moment
+// an incoming payment SMS is matched to an order — see
+// autoAdvanceExchangeOrderToInProgress below, which both this route and
+// the SMS matcher call. Verifying only ever unblocks the payout step
+// (Agent App's ExchangeSelfHealSweeper then picks up the resulting
+// in_progress order); it never dials anything itself.
 
-exchangeRouter.post("/admin/exchange/orders/:id/verify", requirePermission("exchange.manage"), async (req, res) => {
+/**
+ * Atomically moves an exchange order pending -> in_progress, logs it,
+ * broadcasts the update, and notifies the customer — factored out of the
+ * admin-facing verify route so the automatic SMS-match path can trigger
+ * the exact same transition. Idempotent by construction: the UPDATE's
+ * `AND status='pending'` guard means calling this twice for the same order
+ * (e.g. a resweep racing the live SMS-upload path, or an admin manually
+ * verifying an order the matcher already advanced) can never double-fire —
+ * the second caller just gets the "not pending" error back.
+ */
+export async function autoAdvanceExchangeOrderToInProgress(
+  orderId: string,
+  opts: { adminId?: string; source: "admin" | "sms_match" }
+): Promise<{ error?: string; status?: number; order?: any }> {
   const result = await query(
     `UPDATE exchange_orders SET status='in_progress', updated_at=now() WHERE id=$1 AND status='pending' RETURNING id, customer_id, amount_sent`,
-    [req.params.id]
+    [orderId]
   );
   if (result.length === 0) {
-    const existing = await queryOne(`SELECT status FROM exchange_orders WHERE id=$1`, [req.params.id]);
-    if (!existing) return sendJson(res, 404, { error: "Exchange order not found" });
-    return sendJson(res, 409, { error: `Cannot verify an order in status '${existing.status}'` });
+    const existing = await queryOne(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]);
+    if (!existing) return { error: "Exchange order not found", status: 404 };
+    return { error: `Cannot verify an order in status '${existing.status}'`, status: 409 };
   }
   await recordActivity({
-    adminId: req.auth!.sub,
-    action: "verify_exchange_order",
+    adminId: opts.adminId,
+    action: opts.source === "admin" ? "verify_exchange_order" : "auto_verify_exchange_order_sms_match",
     entityType: "exchange_order",
-    entityId: req.params.id,
+    entityId: orderId,
     oldValue: { status: "pending" },
-    newValue: { status: "in_progress" },
+    newValue: { status: "in_progress", source: opts.source },
   });
-  broadcast({ type: "exchange_order.updated", exchangeOrderId: req.params.id });
+  broadcast({ type: "exchange_order.updated", exchangeOrderId: orderId });
   await notifyCustomer(
     result[0].customer_id,
     "Payment verified",
     `We've received your payment of ${result[0].amount_sent} — your exchange is now being processed.`
   );
-  sendJson(res, 200, await queryOne(`${EXCHANGE_ORDER_LIST_SELECT} WHERE eo.id=$1`, [req.params.id]));
+  return { order: await queryOne(`${EXCHANGE_ORDER_LIST_SELECT} WHERE eo.id=$1`, [orderId]) };
+}
+
+exchangeRouter.post("/admin/exchange/orders/:id/verify", requirePermission("exchange.manage"), async (req, res) => {
+  const result = await autoAdvanceExchangeOrderToInProgress(req.params.id, { adminId: req.auth!.sub, source: "admin" });
+  if (result.error) return sendJson(res, result.status ?? 400, { error: result.error });
+  sendJson(res, 200, result.order);
 });
 
 // ---------------- Payout dial attempts (2-step USSD) ----------------
