@@ -8,7 +8,7 @@ import {
   Smartphone, Radio, ChevronDown, ChevronRight, AlertTriangle, RotateCcw, UserCog, Tags,
   WifiOff, BatteryFull, BatteryMedium, BatteryLow, BatteryWarning,
   Image as ImageIcon, Upload, MessageSquare, Database, Activity, History, CreditCard, PlayCircle, Percent,
-  MessageCircle, Lightbulb, Share2, KeyRound, ExternalLink, PiggyBank, Landmark, Trash
+  MessageCircle, Lightbulb, Share2, KeyRound, ExternalLink, PiggyBank, Landmark, Trash, ArrowLeftRight
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 
@@ -325,6 +325,28 @@ const DalabAdminApi = {
   },
   createFinanceExpense: (body) => dalabAdminApiRequest("/admin/finance/expenses", { method: "POST", body }),
   deleteFinanceExpense: (id) => dalabAdminApiRequest(`/admin/finance/expenses/${id}`, { method: "DELETE" }),
+  // Money Exchange — converting between mobile-money wallet types (EVC Plus,
+  // eDahab, JEEB, Amtel Pay). Corridors hold the admin-set rate+fee; payout
+  // wallets hold which SIM pays out and its PIN (write-only — never read
+  // back). Orders are created by an admin/agent on behalf of a customer.
+  getExchangeWallets: () => dalabAdminApiRequest("/admin/exchange/wallets"),
+  getExchangePayoutWallets: () => dalabAdminApiRequest("/admin/exchange/payout-wallets"),
+  createExchangePayoutWallet: (body) => dalabAdminApiRequest("/admin/exchange/payout-wallets", { method: "POST", body }),
+  updateExchangePayoutWallet: (id, body) => dalabAdminApiRequest(`/admin/exchange/payout-wallets/${id}`, { method: "PUT", body }),
+  setExchangePayoutWalletPin: (id, pin) => dalabAdminApiRequest(`/admin/exchange/payout-wallets/${id}/pin`, { method: "PUT", body: { pin } }),
+  getExchangeCorridors: () => dalabAdminApiRequest("/admin/exchange/corridors"),
+  createExchangeCorridor: (body) => dalabAdminApiRequest("/admin/exchange/corridors", { method: "POST", body }),
+  updateExchangeCorridor: (id, body) => dalabAdminApiRequest(`/admin/exchange/corridors/${id}`, { method: "PUT", body }),
+  getExchangeQuote: (corridorId, amount) =>
+    dalabAdminApiRequest(`/admin/exchange/quote?${new URLSearchParams({ corridorId, amount }).toString()}`),
+  createExchangeOrder: (body) => dalabAdminApiRequest("/admin/exchange/orders", { method: "POST", body }),
+  getExchangeOrders: (filters = {}) => {
+    const qs = new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([, v]) => v))).toString();
+    return dalabAdminApiRequest(`/admin/exchange/orders${qs ? `?${qs}` : ""}`);
+  },
+  getExchangeOrder: (id) => dalabAdminApiRequest(`/admin/exchange/orders/${id}`),
+  verifyExchangeOrder: (id) => dalabAdminApiRequest(`/admin/exchange/orders/${id}/verify`, { method: "POST" }),
+  reverseExchangeOrder: (id) => dalabAdminApiRequest(`/admin/exchange/orders/${id}/reverse`, { method: "POST" }),
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -344,6 +366,7 @@ const PERMISSION_OPTIONS = [
   { key: "feedback.manage", label: "Manage feedback & suggestions" },
   { key: "referrals.manage", label: "Manage referral reward rules" },
   { key: "finance.manage", label: "Manage financial expenses" },
+  { key: "exchange.manage", label: "Manage money exchange" },
 ];
 
 // Normalizes a GET /admin/companies row into the shape every section of this
@@ -624,6 +647,7 @@ const NAV = [
   { id: "sms-logs", label: "SMS Monitor", icon: MessageSquare },
   { id: "payment-transactions", label: "Payment Transactions", icon: Activity },
   { id: "commissions", label: "Commissions", icon: Percent },
+  { id: "money-exchange", label: "Money Exchange", icon: ArrowLeftRight },
   { id: "referrals", label: "Referral Rewards", icon: Share2 },
   { id: "pending-recovery", label: "Pending Recovery", icon: RotateCcw },
   { id: "execution-logs", label: "Execution Logs", icon: Terminal },
@@ -5622,6 +5646,657 @@ function CommissionsPanel({ companies, packages, admin }) {
   );
 }
 
+// Money Exchange — converting between mobile-money wallet types (EVC Plus,
+// eDahab, JEEB, Amtel Pay). Three sub-sections in one panel: Payout Wallets
+// (which SIM pays out for a wallet type, and its PIN — Super-Admin-only,
+// write-only, never displayed), Corridors (admin rate+fee per from/to
+// wallet pair, delegable via exchange.manage), and Pending/History (the
+// verify-then-payout queue and a filterable transaction log). No PIN is
+// ever rendered anywhere in this component — only a "PIN set" boolean.
+const EXCHANGE_STATUS_META = {
+  pending: { label: "Pending", tone: "amber" },
+  in_progress: { label: "In Progress", tone: "blue" },
+  completed: { label: "Completed", tone: "green" },
+  failed: { label: "Failed", tone: "red" },
+  cancelled: { label: "Cancelled", tone: "gray" },
+};
+
+const NEW_PAYOUT_WALLET_FORM = { walletId: "", deviceId: "", simSlot: "", phoneNumber: "" };
+const NEW_CORRIDOR_FORM = { fromWalletId: "", toWalletId: "", rate: "1.0", feeType: "fixed", feeValue: "0", minAmount: "", maxAmount: "", payoutWalletId: "" };
+const NEW_EXCHANGE_ORDER_FORM = { corridorId: "", amount: "", senderPhone: "", receiverPhone: "", customerPhone: "" };
+
+function MoneyExchangePanel({ admin }) {
+  const canManage = hasPermission(admin, "exchange.manage");
+  const isSuperAdmin = admin?.role === "super_admin";
+
+  const [wallets, setWallets] = useState([]);
+  const [devices, setDevices] = useState([]);
+
+  const [payoutWallets, setPayoutWallets] = useState([]);
+  const [editingPayoutWallet, setEditingPayoutWallet] = useState(null); // "new" | id | null
+  const [payoutWalletForm, setPayoutWalletForm] = useState(NEW_PAYOUT_WALLET_FORM);
+  const [payoutWalletError, setPayoutWalletError] = useState("");
+  const [payoutWalletSaving, setPayoutWalletSaving] = useState(false);
+  const [pinModalFor, setPinModalFor] = useState(null);
+  const [pinValue, setPinValue] = useState("");
+  const [pinError, setPinError] = useState("");
+  const [pinSaving, setPinSaving] = useState(false);
+
+  const [corridors, setCorridors] = useState([]);
+  const [editingCorridor, setEditingCorridor] = useState(null);
+  const [corridorForm, setCorridorForm] = useState(NEW_CORRIDOR_FORM);
+  const [corridorError, setCorridorError] = useState("");
+  const [corridorSaving, setCorridorSaving] = useState(false);
+
+  const [pendingOrders, setPendingOrders] = useState([]);
+  const [pendingLoading, setPendingLoading] = useState(false);
+  const [actingId, setActingId] = useState(null);
+  const [actionError, setActionError] = useState({});
+
+  const [orders, setOrders] = useState([]);
+  const [ordersLoading, setOrdersLoading] = useState(false);
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [search, setSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [detailId, setDetailId] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  const [creating, setCreating] = useState(false);
+  const [createForm, setCreateForm] = useState(NEW_EXCHANGE_ORDER_FORM);
+  const [createQuote, setCreateQuote] = useState(null);
+  const [createQuoteError, setCreateQuoteError] = useState("");
+  const [createError, setCreateError] = useState("");
+  const [createSaving, setCreateSaving] = useState(false);
+
+  const fetchWallets = async () => {
+    try { setWallets(await DalabAdminApi.getExchangeWallets()); }
+    catch (err) { console.error("getExchangeWallets failed:", err.message); }
+  };
+  const fetchDevices = async () => {
+    try { setDevices(await DalabAdminApi.getAgentDevices()); }
+    catch (err) { console.error("getAgentDevices failed:", err.message); }
+  };
+  const fetchPayoutWallets = async () => {
+    try { setPayoutWallets(await DalabAdminApi.getExchangePayoutWallets()); }
+    catch (err) { console.error("getExchangePayoutWallets failed:", err.message); }
+  };
+  const fetchCorridors = async () => {
+    try { setCorridors(await DalabAdminApi.getExchangeCorridors()); }
+    catch (err) { console.error("getExchangeCorridors failed:", err.message); }
+  };
+  const fetchPending = async () => {
+    setPendingLoading(true);
+    try { setPendingOrders(await DalabAdminApi.getExchangeOrders({ status: "pending" })); }
+    catch (err) { console.error("getExchangeOrders(pending) failed:", err.message); }
+    finally { setPendingLoading(false); }
+  };
+  const fetchOrders = async () => {
+    setOrdersLoading(true);
+    try {
+      setOrders(await DalabAdminApi.getExchangeOrders({
+        status: statusFilter === "all" ? undefined : statusFilter,
+        search: search.trim() || undefined,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
+      }));
+    } catch (err) {
+      console.error("getExchangeOrders failed:", err.message);
+    } finally {
+      setOrdersLoading(false);
+    }
+  };
+  const refreshAll = () => { fetchWallets(); fetchDevices(); fetchPayoutWallets(); fetchCorridors(); fetchPending(); fetchOrders(); };
+
+  useEffect(() => { fetchWallets(); fetchDevices(); fetchPayoutWallets(); fetchCorridors(); fetchPending(); }, []);
+  useEffect(() => { fetchOrders(); }, [statusFilter, dateFrom, dateTo]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { const t = setTimeout(fetchOrders, 350); return () => clearTimeout(t); }, [search]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    const unsubscribe = subscribeOrderEvents("/admin/orders/stream", { onEvent: () => { fetchPending(); fetchOrders(); } });
+    return () => unsubscribe();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const timer = setInterval(fetchPending, 15000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const walletName = (id) => wallets.find((w) => w.id === id)?.name || id || "—";
+
+  // ---- Payout wallets ----
+  const openNewPayoutWallet = () => { setEditingPayoutWallet("new"); setPayoutWalletForm(NEW_PAYOUT_WALLET_FORM); setPayoutWalletError(""); };
+  const openEditPayoutWallet = (w) => {
+    setEditingPayoutWallet(w.id);
+    setPayoutWalletForm({ walletId: w.walletId, deviceId: w.deviceId || "", simSlot: w.simSlot != null ? String(w.simSlot) : "", phoneNumber: w.phoneNumber });
+    setPayoutWalletError("");
+  };
+  const savePayoutWallet = async () => {
+    if (!payoutWalletForm.walletId) return setPayoutWalletError("Choose a wallet type.");
+    if (!payoutWalletForm.phoneNumber.trim()) return setPayoutWalletError("Phone number is required.");
+    setPayoutWalletSaving(true);
+    setPayoutWalletError("");
+    try {
+      const body = {
+        walletId: payoutWalletForm.walletId,
+        deviceId: payoutWalletForm.deviceId || undefined,
+        simSlot: payoutWalletForm.simSlot ? Number(payoutWalletForm.simSlot) : undefined,
+        phoneNumber: payoutWalletForm.phoneNumber.trim(),
+      };
+      if (editingPayoutWallet === "new") await DalabAdminApi.createExchangePayoutWallet(body);
+      else await DalabAdminApi.updateExchangePayoutWallet(editingPayoutWallet, body);
+      setEditingPayoutWallet(null);
+      fetchPayoutWallets();
+    } catch (err) {
+      setPayoutWalletError(err.message || "Couldn't save this payout wallet.");
+    } finally {
+      setPayoutWalletSaving(false);
+    }
+  };
+  const openPinModal = (id) => { setPinModalFor(id); setPinValue(""); setPinError(""); };
+  const savePin = async () => {
+    if (!/^\d{4,8}$/.test(pinValue)) return setPinError("PIN must be 4-8 digits.");
+    setPinSaving(true);
+    setPinError("");
+    try {
+      await DalabAdminApi.setExchangePayoutWalletPin(pinModalFor, pinValue);
+      setPinModalFor(null);
+      setPinValue("");
+      fetchPayoutWallets();
+    } catch (err) {
+      setPinError(err.message || "Couldn't save this PIN.");
+    } finally {
+      setPinSaving(false);
+    }
+  };
+
+  // ---- Corridors ----
+  const openNewCorridor = () => { setEditingCorridor("new"); setCorridorForm(NEW_CORRIDOR_FORM); setCorridorError(""); };
+  const openEditCorridor = (c) => {
+    setEditingCorridor(c.id);
+    setCorridorForm({
+      fromWalletId: c.fromWalletId, toWalletId: c.toWalletId, rate: String(c.rate),
+      feeType: c.feeType, feeValue: String(c.feeValue),
+      minAmount: c.minAmount != null ? String(c.minAmount) : "", maxAmount: c.maxAmount != null ? String(c.maxAmount) : "",
+      payoutWalletId: c.payoutWalletId || "",
+    });
+    setCorridorError("");
+  };
+  const saveCorridor = async () => {
+    if (!corridorForm.fromWalletId || !corridorForm.toWalletId) return setCorridorError("Choose both wallets.");
+    if (corridorForm.fromWalletId === corridorForm.toWalletId) return setCorridorError("From and To wallets must be different.");
+    if (!corridorForm.rate || Number(corridorForm.rate) <= 0) return setCorridorError("Enter a valid positive rate.");
+    if (corridorForm.feeValue === "" || Number(corridorForm.feeValue) < 0) return setCorridorError("Enter a valid non-negative fee.");
+    setCorridorSaving(true);
+    setCorridorError("");
+    try {
+      const body = {
+        fromWalletId: corridorForm.fromWalletId, toWalletId: corridorForm.toWalletId,
+        rate: Number(corridorForm.rate), feeType: corridorForm.feeType, feeValue: Number(corridorForm.feeValue),
+        minAmount: corridorForm.minAmount ? Number(corridorForm.minAmount) : undefined,
+        maxAmount: corridorForm.maxAmount ? Number(corridorForm.maxAmount) : undefined,
+        payoutWalletId: corridorForm.payoutWalletId || undefined,
+      };
+      if (editingCorridor === "new") await DalabAdminApi.createExchangeCorridor(body);
+      else await DalabAdminApi.updateExchangeCorridor(editingCorridor, { ...body, enabled: true });
+      setEditingCorridor(null);
+      fetchCorridors();
+    } catch (err) {
+      setCorridorError(err.message || "Couldn't save this corridor.");
+    } finally {
+      setCorridorSaving(false);
+    }
+  };
+  const toggleCorridor = async (c) => {
+    try {
+      await DalabAdminApi.updateExchangeCorridor(c.id, {
+        fromWalletId: c.fromWalletId, toWalletId: c.toWalletId, rate: c.rate, feeType: c.feeType, feeValue: c.feeValue,
+        minAmount: c.minAmount, maxAmount: c.maxAmount, payoutWalletId: c.payoutWalletId, enabled: !c.enabled,
+      });
+      fetchCorridors();
+    } catch (err) {
+      console.error("updateExchangeCorridor failed:", err.message);
+    }
+  };
+
+  // ---- Pending queue ----
+  const verifyOrder = async (order) => {
+    setActingId(order.id);
+    setActionError((m) => ({ ...m, [order.id]: "" }));
+    try {
+      await DalabAdminApi.verifyExchangeOrder(order.id);
+      fetchPending();
+      fetchOrders();
+    } catch (err) {
+      setActionError((m) => ({ ...m, [order.id]: err.message || "Could not verify this exchange." }));
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  // ---- History detail ----
+  const openDetail = async (id) => {
+    setDetailId(id);
+    setDetail(null);
+    setDetailLoading(true);
+    try {
+      setDetail(await DalabAdminApi.getExchangeOrder(id));
+    } catch (err) {
+      console.error("getExchangeOrder failed:", err.message);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  // ---- Create Exchange ----
+  const openCreate = () => { setCreating(true); setCreateForm(NEW_EXCHANGE_ORDER_FORM); setCreateQuote(null); setCreateError(""); };
+  useEffect(() => {
+    if (!creating || !createForm.corridorId || !createForm.amount) { setCreateQuote(null); return; }
+    const t = setTimeout(async () => {
+      try {
+        setCreateQuoteError("");
+        setCreateQuote(await DalabAdminApi.getExchangeQuote(createForm.corridorId, createForm.amount));
+      } catch (err) {
+        setCreateQuote(null);
+        setCreateQuoteError(err.message || "Couldn't compute a quote for this amount.");
+      }
+    }, 350);
+    return () => clearTimeout(t);
+  }, [creating, createForm.corridorId, createForm.amount]);
+  const saveCreate = async () => {
+    if (!createForm.corridorId) return setCreateError("Choose a corridor.");
+    if (!createForm.amount || Number(createForm.amount) <= 0) return setCreateError("Enter a valid amount.");
+    if (!createForm.senderPhone.trim() || !createForm.receiverPhone.trim()) return setCreateError("Sender and receiver phone numbers are required.");
+    setCreateSaving(true);
+    setCreateError("");
+    try {
+      await DalabAdminApi.createExchangeOrder({
+        corridorId: createForm.corridorId, amount: Number(createForm.amount),
+        senderPhone: createForm.senderPhone.trim(), receiverPhone: createForm.receiverPhone.trim(),
+        customerPhone: createForm.customerPhone.trim() || undefined,
+      });
+      setCreating(false);
+      fetchPending();
+      fetchOrders();
+    } catch (err) {
+      setCreateError(err.message || "Couldn't create this exchange.");
+    } finally {
+      setCreateSaving(false);
+    }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to view Money Exchange.</div>;
+  }
+
+  return (
+    <div>
+      {/* Payout Wallets — Super-Admin-only, holds the PIN (write-only) */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 15, color: INK }}>Payout Wallets</div>
+          <div style={{ fontSize: 12, color: MUTE, marginTop: 2 }}>Which SIM pays out for each wallet type, and its PIN. Super Admin only.</div>
+        </div>
+        {isSuperAdmin && <Button icon={Plus} onClick={openNewPayoutWallet}>Add Payout Wallet</Button>}
+      </div>
+      <Card style={{ padding: 0, overflow: "hidden", marginBottom: 22 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Wallet</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Phone Number</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Device / SIM</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>PIN</th>
+              {isSuperAdmin && <th style={{ padding: "10px 14px" }} />}
+            </tr>
+          </thead>
+          <tbody>
+            {payoutWallets.map((w) => (
+              <tr key={w.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK }}>{w.walletName || w.walletId}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontFamily: "monospace" }}>{w.phoneNumber}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE }}>{w.deviceName ? `${w.deviceName} — SIM ${w.simSlot ?? "?"}` : "—"}</td>
+                <td style={{ padding: "10px 14px" }}>
+                  <Badge tone={w.pinIsSet ? "green" : "amber"}>{w.pinIsSet ? "Set" : "Not set"}</Badge>
+                </td>
+                {isSuperAdmin && (
+                  <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                    <button onClick={() => openEditPayoutWallet(w)} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }} title="Edit">
+                      <Pencil size={15} color={SLATE} />
+                    </button>
+                    <button onClick={() => openPinModal(w.id)} style={{ background: "none", border: "none", cursor: "pointer" }} title="Set PIN">
+                      <KeyRound size={15} color={INDIGO} />
+                    </button>
+                  </td>
+                )}
+              </tr>
+            ))}
+            {payoutWallets.length === 0 && (
+              <tr><td colSpan={5} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No payout wallets configured yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+
+      {/* Corridors — rate + fee per wallet pair */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 15, color: INK }}>Corridors</div>
+          <div style={{ fontSize: 12, color: MUTE, marginTop: 2 }}>Rate and fee for converting from one wallet to another. Amount received = amount sent × rate − fee.</div>
+        </div>
+        {canManage && <Button icon={Plus} onClick={openNewCorridor}>Add Corridor</Button>}
+      </div>
+      <Card style={{ padding: 0, overflow: "hidden", marginBottom: 22 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>From</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>To</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Rate</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Fee</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payout Wallet</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Status</th>
+              {canManage && <th style={{ padding: "10px 14px" }} />}
+            </tr>
+          </thead>
+          <tbody>
+            {corridors.map((c) => (
+              <tr key={c.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{c.fromWalletName || c.fromWalletId}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{c.toWalletName || c.toWalletId}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{Number(c.rate).toFixed(4)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>
+                  {c.feeType === "percentage" ? `${Number(c.feeValue)}%` : `$${Number(c.feeValue).toFixed(2)}`}
+                </td>
+                <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE }}>
+                  {payoutWallets.find((w) => w.id === c.payoutWalletId)?.phoneNumber || "Not set"}
+                </td>
+                <td style={{ padding: "10px 14px" }}>
+                  <Badge tone={c.enabled ? "green" : "gray"}>{c.enabled ? "Enabled" : "Disabled"}</Badge>
+                </td>
+                {canManage && (
+                  <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                    <button onClick={() => openEditCorridor(c)} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }} title="Edit">
+                      <Pencil size={15} color={SLATE} />
+                    </button>
+                    <button onClick={() => toggleCorridor(c)} style={{ background: "none", border: "none", cursor: "pointer" }} title={c.enabled ? "Disable" : "Enable"}>
+                      <Power size={15} color={c.enabled ? "#C81E2C" : GREEN} />
+                    </button>
+                  </td>
+                )}
+              </tr>
+            ))}
+            {corridors.length === 0 && (
+              <tr><td colSpan={7} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No corridors configured yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+
+      {/* Pending — verify incoming payment before payout can start */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ fontWeight: 800, fontSize: 15, color: INK }}>Pending Exchanges</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {canManage && <Button icon={Plus} onClick={openCreate}>Log Exchange</Button>}
+          <Button variant="ghost" icon={pendingLoading ? Loader2 : RefreshCw} spin={pendingLoading} onClick={fetchPending}>Refresh</Button>
+        </div>
+      </div>
+      <Card style={{ padding: 0, overflow: "hidden", marginBottom: 22 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Order</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Corridor</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Sent / Received</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Receiver</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Created</th>
+              <th style={{ padding: "10px 14px" }} />
+            </tr>
+          </thead>
+          <tbody>
+            {pendingOrders.map((o) => (
+              <tr key={o.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, color: INK }}>{o.id}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{o.fromWalletName} → {o.toWalletName}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>${Number(o.amountSent).toFixed(2)} / ${Number(o.amountReceived).toFixed(2)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontFamily: "monospace" }}>{o.receiverPhone}</td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(o.createdAt)}</td>
+                <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                  {actionError[o.id] && <div style={{ color: "#C81E2C", fontSize: 11, marginBottom: 4 }}>{actionError[o.id]}</div>}
+                  {canManage && (
+                    <Button variant="primary" disabled={actingId === o.id} onClick={() => verifyOrder(o)}>
+                      {actingId === o.id ? "Verifying…" : "Verify Payment"}
+                    </Button>
+                  )}
+                </td>
+              </tr>
+            ))}
+            {!pendingLoading && pendingOrders.length === 0 && (
+              <tr><td colSpan={6} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No exchanges awaiting verification.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+
+      {/* History — filterable log + detail timeline */}
+      <div style={{ fontWeight: 800, fontSize: 15, color: INK, marginBottom: 12 }}>Exchange History</div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ position: "relative", flex: "1 1 220px", maxWidth: 280 }}>
+          <Search size={14} color={MUTE} style={{ position: "absolute", left: 10, top: 10 }} />
+          <input style={{ ...inputStyle, paddingLeft: 30, width: "100%" }} placeholder="Search order ID or phone" value={search} onChange={(e) => setSearch(e.target.value)} />
+        </div>
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={{ ...inputStyle, width: 160 }}>
+          <option value="all">All statuses</option>
+          {Object.entries(EXCHANGE_STATUS_META).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
+        </select>
+        <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} style={{ ...inputStyle, width: 150 }} title="From date" />
+        <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ ...inputStyle, width: 150 }} title="To date" />
+      </div>
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: "#FAFBFF" }}>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Order</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Corridor</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Sent / Received</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Status</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Created</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ordersLoading && orders.length === 0 && (
+                <tr><td colSpan={5} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>Loading…</td></tr>
+              )}
+              {orders.map((o) => {
+                const meta = EXCHANGE_STATUS_META[o.status] || { label: o.status, tone: "neutral" };
+                return (
+                  <tr key={o.id} onClick={() => openDetail(o.id)} style={{ borderTop: `1px solid ${BORDER}`, cursor: "pointer" }} title="View timeline">
+                    <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, color: INK }}>{o.id}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{o.fromWalletName} → {o.toWalletName}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>${Number(o.amountSent).toFixed(2)} / ${Number(o.amountReceived).toFixed(2)}</td>
+                    <td style={{ padding: "10px 14px" }}><Badge tone={meta.tone}>{meta.label}</Badge></td>
+                    <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(o.createdAt)}</td>
+                  </tr>
+                );
+              })}
+              {!ordersLoading && orders.length === 0 && (
+                <tr><td colSpan={5} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No exchanges recorded yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      {/* Payout wallet edit modal */}
+      {editingPayoutWallet && (
+        <Modal title={editingPayoutWallet === "new" ? "Add Payout Wallet" : "Edit Payout Wallet"} onClose={() => setEditingPayoutWallet(null)} width={440}>
+          <Field label="Wallet type">
+            <select style={inputStyle} value={payoutWalletForm.walletId} onChange={(e) => setPayoutWalletForm({ ...payoutWalletForm, walletId: e.target.value })}>
+              <option value="">Choose a wallet…</option>
+              {wallets.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Phone number">
+            <input style={inputStyle} value={payoutWalletForm.phoneNumber} onChange={(e) => setPayoutWalletForm({ ...payoutWalletForm, phoneNumber: e.target.value })} placeholder="e.g. 252610338686" />
+          </Field>
+          <Field label="Device">
+            <select style={inputStyle} value={payoutWalletForm.deviceId} onChange={(e) => setPayoutWalletForm({ ...payoutWalletForm, deviceId: e.target.value })}>
+              <option value="">Not assigned</option>
+              {devices.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          </Field>
+          <Field label="SIM slot">
+            <select style={inputStyle} value={payoutWalletForm.simSlot} onChange={(e) => setPayoutWalletForm({ ...payoutWalletForm, simSlot: e.target.value })}>
+              <option value="">Not set</option>
+              <option value="1">SIM 1</option>
+              <option value="2">SIM 2</option>
+            </select>
+          </Field>
+          {payoutWalletError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{payoutWalletError}</div>}
+          <Button onClick={savePayoutWallet} disabled={payoutWalletSaving} style={{ width: "100%", justifyContent: "center" }}>
+            {payoutWalletSaving ? "Saving…" : "Save"}
+          </Button>
+        </Modal>
+      )}
+
+      {/* PIN modal — write-only, never pre-filled, never echoed back */}
+      {pinModalFor && (
+        <Modal title="Set Payout PIN" onClose={() => setPinModalFor(null)} width={360}>
+          <div style={{ fontSize: 12, color: MUTE, marginBottom: 14 }}>
+            This PIN authorizes sending money from this wallet. It's encrypted at rest and never shown again after saving.
+          </div>
+          <Field label="New PIN (4-8 digits)">
+            <input type="password" inputMode="numeric" style={inputStyle} value={pinValue} onChange={(e) => setPinValue(e.target.value)} maxLength={8} />
+          </Field>
+          {pinError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{pinError}</div>}
+          <Button onClick={savePin} disabled={pinSaving} style={{ width: "100%", justifyContent: "center" }}>
+            {pinSaving ? "Saving…" : "Save PIN"}
+          </Button>
+        </Modal>
+      )}
+
+      {/* Corridor edit modal */}
+      {editingCorridor && (
+        <Modal title={editingCorridor === "new" ? "Add Corridor" : "Edit Corridor"} onClose={() => setEditingCorridor(null)} width={460}>
+          <Field label="From wallet">
+            <select style={inputStyle} value={corridorForm.fromWalletId} onChange={(e) => setCorridorForm({ ...corridorForm, fromWalletId: e.target.value })}>
+              <option value="">Choose…</option>
+              {wallets.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+            </select>
+          </Field>
+          <Field label="To wallet">
+            <select style={inputStyle} value={corridorForm.toWalletId} onChange={(e) => setCorridorForm({ ...corridorForm, toWalletId: e.target.value })}>
+              <option value="">Choose…</option>
+              {wallets.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Rate (amount received = amount sent × rate)">
+            <input type="number" min="0" step="0.0001" style={inputStyle} value={corridorForm.rate} onChange={(e) => setCorridorForm({ ...corridorForm, rate: e.target.value })} />
+          </Field>
+          <Field label="Fee type">
+            <select style={inputStyle} value={corridorForm.feeType} onChange={(e) => setCorridorForm({ ...corridorForm, feeType: e.target.value })}>
+              <option value="fixed">Fixed amount</option>
+              <option value="percentage">Percentage of amount sent</option>
+            </select>
+          </Field>
+          <Field label={corridorForm.feeType === "percentage" ? "Fee (%)" : "Fee ($)"}>
+            <input type="number" min="0" step="0.01" style={inputStyle} value={corridorForm.feeValue} onChange={(e) => setCorridorForm({ ...corridorForm, feeValue: e.target.value })} />
+          </Field>
+          <Field label="Payout wallet (which SIM sends the payout)">
+            <select style={inputStyle} value={corridorForm.payoutWalletId} onChange={(e) => setCorridorForm({ ...corridorForm, payoutWalletId: e.target.value })}>
+              <option value="">Not set</option>
+              {payoutWallets.map((w) => <option key={w.id} value={w.id}>{w.walletName} — {w.phoneNumber}</option>)}
+            </select>
+          </Field>
+          <Field label="Min amount (optional)">
+            <input type="number" min="0" step="0.01" style={inputStyle} value={corridorForm.minAmount} onChange={(e) => setCorridorForm({ ...corridorForm, minAmount: e.target.value })} />
+          </Field>
+          <Field label="Max amount (optional)">
+            <input type="number" min="0" step="0.01" style={inputStyle} value={corridorForm.maxAmount} onChange={(e) => setCorridorForm({ ...corridorForm, maxAmount: e.target.value })} />
+          </Field>
+          {corridorError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{corridorError}</div>}
+          <Button onClick={saveCorridor} disabled={corridorSaving} style={{ width: "100%", justifyContent: "center" }}>
+            {corridorSaving ? "Saving…" : "Save Corridor"}
+          </Button>
+        </Modal>
+      )}
+
+      {/* Detail timeline modal */}
+      {detailId && (
+        <Modal title="Exchange details" onClose={() => setDetailId(null)} width={560}>
+          {detailLoading && <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>}
+          {detail && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: MUTE, textTransform: "uppercase" }}>Summary</div>
+                <div style={{ fontSize: 12.5, color: INK, marginTop: 4 }}>
+                  {detail.fromWalletName} → {detail.toWalletName} — ${Number(detail.amountSent).toFixed(2)} sent, ${Number(detail.amountReceived).toFixed(2)} received
+                </div>
+                <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Sender {detail.senderPhone} — Receiver {detail.receiverPhone}</div>
+                <div style={{ marginTop: 6 }}><Badge tone={(EXCHANGE_STATUS_META[detail.status] || {}).tone || "neutral"}>{(EXCHANGE_STATUS_META[detail.status] || {}).label || detail.status}</Badge></div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: MUTE, textTransform: "uppercase" }}>Payout dial attempts</div>
+                {(detail.dialAttempts || []).length === 0 && (
+                  <div style={{ fontSize: 12.5, color: MUTE, marginTop: 4 }}>No dial attempts yet.</div>
+                )}
+                {(detail.dialAttempts || []).map((a) => (
+                  <div key={a.id} style={{ fontSize: 12.5, color: INK, marginTop: 6, paddingTop: 6, borderTop: `1px solid ${BORDER}` }}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <Badge tone={a.status === "success" ? "green" : a.status === "failed" ? "red" : "amber"}>Attempt {a.attemptNumber} — {a.status}</Badge>
+                      <span style={{ color: MUTE }}>{formatDateTime(a.createdAt)}</span>
+                    </div>
+                    {a.step1Response && <div style={{ color: SLATE, marginTop: 4 }}>Step 1: {a.step1Response}</div>}
+                    {a.step2Response && <div style={{ color: SLATE, marginTop: 2 }}>Step 2: {a.step2Response}</div>}
+                  </div>
+                ))}
+              </div>
+              <div style={{ fontSize: 11, color: MUTE, fontStyle: "italic" }}>The payout PIN is never shown here or anywhere in the dashboard.</div>
+            </div>
+          )}
+        </Modal>
+      )}
+
+      {/* Create Exchange (v1 has no customer self-service yet) */}
+      {creating && (
+        <Modal title="Log an Exchange" onClose={() => setCreating(false)} width={460}>
+          <Field label="Corridor">
+            <select style={inputStyle} value={createForm.corridorId} onChange={(e) => setCreateForm({ ...createForm, corridorId: e.target.value })}>
+              <option value="">Choose a corridor…</option>
+              {corridors.filter((c) => c.enabled).map((c) => <option key={c.id} value={c.id}>{c.fromWalletName} → {c.toWalletName}</option>)}
+            </select>
+          </Field>
+          <Field label="Amount sent">
+            <input type="number" min="0" step="0.01" style={inputStyle} value={createForm.amount} onChange={(e) => setCreateForm({ ...createForm, amount: e.target.value })} />
+          </Field>
+          {createQuoteError && <div style={{ color: "#C81E2C", fontSize: 12, marginBottom: 10 }}>{createQuoteError}</div>}
+          {createQuote && (
+            <div style={{ background: "#FAFBFF", border: `1px solid ${BORDER}`, borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 12.5 }}>
+              <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ color: MUTE }}>Rate</span><span>{createQuote.rate}</span></div>
+              <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ color: MUTE }}>Fee</span><span>${Number(createQuote.fee).toFixed(2)}</span></div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, color: GREEN }}><span>Amount received</span><span>${Number(createQuote.amountReceived).toFixed(2)}</span></div>
+            </div>
+          )}
+          <Field label="Sender phone (who sent the money)">
+            <input style={inputStyle} value={createForm.senderPhone} onChange={(e) => setCreateForm({ ...createForm, senderPhone: e.target.value })} />
+          </Field>
+          <Field label="Receiver phone (who gets the payout)">
+            <input style={inputStyle} value={createForm.receiverPhone} onChange={(e) => setCreateForm({ ...createForm, receiverPhone: e.target.value })} />
+          </Field>
+          <Field label="Customer phone (optional — links this to a customer account)">
+            <input style={inputStyle} value={createForm.customerPhone} onChange={(e) => setCreateForm({ ...createForm, customerPhone: e.target.value })} />
+          </Field>
+          {createError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{createError}</div>}
+          <Button onClick={saveCreate} disabled={createSaving} style={{ width: "100%", justifyContent: "center" }}>
+            {createSaving ? "Saving…" : "Log Exchange"}
+          </Button>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 const FEEDBACK_STATUS_META = {
   pending: { tone: "amber", label: "Pending" },
   reviewed: { tone: "blue", label: "Reviewed" },
@@ -8188,6 +8863,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "sms-logs" && <SmsLogs companies={companies} />}
           {active === "payment-transactions" && <PaymentTransactionsPanel companies={companies} />}
           {active === "commissions" && <CommissionsPanel companies={companies} packages={packages} admin={admin} />}
+          {active === "money-exchange" && <MoneyExchangePanel admin={admin} />}
           {active === "feedback" && <FeedbackPanel admin={admin} />}
           {active === "referrals" && <ReferralRewardsPanel admin={admin} />}
           {active === "pending-recovery" && <PendingRecoveryPanel />}
