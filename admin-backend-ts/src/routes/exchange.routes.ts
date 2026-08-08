@@ -562,7 +562,9 @@ exchangeRouter.post("/agent/exchange/orders/:id/dial-attempts", requireAuth("age
   }
   const wallet = await queryOne<{ dial_prefix: string }>(`SELECT dial_prefix FROM payment_wallets WHERE id=$1`, [payoutWallet.wallet_id]);
   const dialPrefix = wallet?.dial_prefix ?? "";
-  const step1UssdString = `${dialPrefix}${order.receiver_phone}*${order.amount_received}#`;
+  // "*{dialPrefix}*{receiverPhone}*{amountReceived}#" — e.g. EVC Plus (dial_prefix "712")
+  // -> "*712*NUMBER*AMOUNT#", eDahab (dial_prefix "110") -> "*110*NUMBER*AMOUNT#".
+  const step1UssdString = `*${dialPrefix}*${order.receiver_phone}*${order.amount_received}#`;
 
   const id = randomUUID();
   try {
