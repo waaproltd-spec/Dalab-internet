@@ -13,9 +13,14 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+import express from "express";
+import "express-async-errors";
 import { query, queryOne, pool } from "../../db/pool.js";
+import { encrypt, signAccessToken } from "../../auth/crypto.js";
 import { ingestPaymentSms } from "../smsLogs.routes.js";
-import { autoAdvanceExchangeOrderToInProgress } from "../exchange.routes.js";
+import { autoAdvanceExchangeOrderToInProgress, exchangeRouter } from "../exchange.routes.js";
 
 const AGENT_ID = randomUUID();
 const DEVICE_ID = "test-device-1";
@@ -24,9 +29,28 @@ const STORE_CUSTOMER_ID = randomUUID();
 const COMPANY_ID = "test-company";
 const CATEGORY_ID = randomUUID();
 const PACKAGE_ID = randomUUID();
+// Fake, test-only PIN for the payout-lifecycle tests below -- never used
+// against a real wallet/carrier.
+const PAYOUT_TEST_PIN = "4471";
 
 let corridorEdahabToEvc: string;
 let corridorEvcToEdahab: string;
+
+// Minimal HTTP harness for the payout-lifecycle tests at the end of this
+// file — mounts the REAL, unmodified exchangeRouter so those tests exercise
+// actual HTTP + JWT auth exactly like the Agent App would, rather than
+// calling route logic directly. Kept in this same file (sharing this one
+// before()/corridor setup) rather than a separate test file: exchange_
+// corridors has a UNIQUE(from_wallet_id, to_wallet_id) constraint, so two
+// independent test files each trying to own "the eDahab<->EVC Plus
+// corridor pair" would stomp on each other when run together.
+const payoutApp = express();
+payoutApp.use(express.json());
+payoutApp.use(exchangeRouter);
+let payoutServer: http.Server;
+let payoutBaseUrl: string;
+let agentToken: string;
+let superAdminToken: string;
 
 before(async () => {
   // Clean slate — this test DB is dedicated to this suite (see the shell
@@ -58,14 +82,17 @@ before(async () => {
 
   // Two collection wallets on the same physical test device, one SIM each —
   // mirrors the real production setup (Mobile 1 / SIM 1 = EVC Plus, Mobile
-  // 1 / SIM 2 = eDahab).
+  // 1 / SIM 2 = eDahab). PINs set via the same encrypt() the real
+  // PUT /admin/exchange/payout-wallets/:id/pin endpoint uses, so the
+  // payout-lifecycle tests below exercise the real encrypt/decrypt path —
+  // both fake, test-only PINs, never used against a real wallet/carrier.
   const edahabWallet = await queryOne<{ id: string }>(
-    `INSERT INTO exchange_payout_wallets (wallet_id, device_id, sim_slot, phone_number) VALUES ('edahab',$1,2,'252620338686') RETURNING id`,
-    [DEVICE_ID]
+    `INSERT INTO exchange_payout_wallets (wallet_id, device_id, sim_slot, phone_number, pin_encrypted) VALUES ('edahab',$1,2,'252620338686',$2) RETURNING id`,
+    [DEVICE_ID, encrypt("9999")]
   );
   const evcWallet = await queryOne<{ id: string }>(
-    `INSERT INTO exchange_payout_wallets (wallet_id, device_id, sim_slot, phone_number) VALUES ('evc_plus',$1,1,'252610338686') RETURNING id`,
-    [DEVICE_ID]
+    `INSERT INTO exchange_payout_wallets (wallet_id, device_id, sim_slot, phone_number, pin_encrypted) VALUES ('evc_plus',$1,1,'252610338686',$2) RETURNING id`,
+    [DEVICE_ID, encrypt(PAYOUT_TEST_PIN)]
   );
 
   corridorEdahabToEvc = (
@@ -94,9 +121,18 @@ before(async () => {
     `INSERT INTO packages (id, company_id, category_id, name, price, mb) VALUES ($1,$2,$3,'1GB',5,1024)`,
     [PACKAGE_ID, COMPANY_ID, CATEGORY_ID]
   );
+
+  agentToken = signAccessToken(AGENT_ID, "agent");
+  superAdminToken = signAccessToken(randomUUID(), "super_admin");
+  payoutServer = http.createServer(payoutApp as unknown as http.RequestListener);
+  payoutServer.listen(0);
+  await new Promise<void>((resolve) => payoutServer.once("listening", resolve));
+  const { port } = payoutServer.address() as AddressInfo;
+  payoutBaseUrl = `http://127.0.0.1:${port}`;
 });
 
 after(async () => {
+  await new Promise<void>((resolve) => payoutServer.close(() => resolve()));
   await pool.end();
   // orderEvents.ts and this file's own module (resweep interval) register
   // ref'd setIntervals at import time — nothing production code needs to
@@ -531,4 +567,210 @@ test("hasDialAttempt correctly distinguishes orders with and without a dial atte
   const undialed = rows.find((r) => r.id === undialedOrderId);
   assert.equal(dialed?.has_dial_attempt, true, "an order with a (even failed) dial attempt must be flagged, so it's never auto-dialed twice");
   assert.equal(undialed?.has_dial_attempt, false, "an order with no dial attempt yet must be eligible for automatic payout");
+});
+
+// ==================== Safe (no real money) payout-lifecycle tests ====================
+// These exercise the REAL production route handlers (exchangeRouter,
+// unmodified) over REAL HTTP with REAL JWTs, against this same local
+// Postgres test database — nothing here talks to Android, a real
+// USSD/telecom network, or the live VPS. They stand in for "the Agent App
+// calling these endpoints" without an actual phone: everything the Agent
+// App would send (dial-attempt start, step1 result, step2 result) is sent
+// directly, exactly as ExchangeUssdOrchestrator does, but hand-driven
+// instead of by a real carrier USSD session. No real money moves at any
+// point. corridorEdahabToEvc pays out via the EVC Plus wallet (SIM 1,
+// PAYOUT_TEST_PIN) seeded in this file's before().
+
+async function asJson(res: Response): Promise<any> {
+  return res.json();
+}
+
+test("safe payout lifecycle: SMS match -> in_progress -> dial-attempt -> step1 -> step2 success -> Completed", async () => {
+  const orderId = await insertExchangeOrder({
+    corridorId: corridorEdahabToEvc,
+    fromWalletId: "edahab",
+    toWalletId: "evc_plus",
+    amountSent: 60,
+    senderPhone: "252611131001",
+  });
+
+  const smsResult = await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "eDahab",
+    body: "Lacag $60.00 ah",
+    parsedAmount: 60,
+    parsedPhone: "252611131001",
+    simSlot: 2,
+    transactionRef: nextRef(),
+  });
+  assert.equal(smsResult.body.matchedExchangeOrderId, orderId);
+  const afterMatch = await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]);
+  assert.equal(afterMatch?.status, "in_progress");
+
+  // "Agent App" starts the payout dial (mock -- no real phone/carrier).
+  const startRes = await fetch(`${payoutBaseUrl}/agent/exchange/orders/${orderId}/dial-attempts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ attemptNumber: 1 }),
+  });
+  assert.equal(startRes.status, 201);
+  const start = await asJson(startRes);
+
+  // Correct payout wallet/device/SIM: eDahab -> EVC Plus pays out via the
+  // EVC Plus payout wallet, seeded on SIM 1.
+  assert.equal(start.simSlot, 1, "must dial on the EVC Plus payout wallet's SIM (1), matching the corridor's payoutWalletId");
+  assert.ok(start.step1UssdString?.includes("252688099000") || start.step1UssdString?.length > 0, "step1 USSD string must be generated");
+  assert.ok(!start.step1UssdString?.includes(PAYOUT_TEST_PIN), "step1 (number+amount only) must never contain the PIN");
+  // PIN handling: present exactly here, over HTTPS, to this one authorized call.
+  assert.equal(start.pin, PAYOUT_TEST_PIN);
+
+  const step1Res = await fetch(`${payoutBaseUrl}/agent/exchange/dial-attempts/${start.id}/step1`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ status: "step1_success", responseMessage: "Fadlan geli lambarka sirta ah (PIN)" }),
+  });
+  assert.equal(step1Res.status, 200);
+
+  // Deliberately includes the PIN in the mock carrier response text, to
+  // prove scrubPin() actually redacts it before storage.
+  const step2Res = await fetch(`${payoutBaseUrl}/agent/exchange/dial-attempts/${start.id}/step2`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({
+      status: "success",
+      responseMessage: `Lacagta waa la diray si guul leh (PIN: ${PAYOUT_TEST_PIN} confirmed)`,
+      isFinalAttempt: true,
+    }),
+  });
+  assert.equal(step2Res.status, 200);
+  const step2Body = await asJson(step2Res);
+  assert.ok(!JSON.stringify(step2Body).includes(PAYOUT_TEST_PIN), "scrubPin must strip the PIN from the stored/returned carrier response text");
+  assert.ok(JSON.stringify(step2Body).includes("••••"), "the scrubbed text should show the masking marker in its place");
+
+  const order = await queryOne<{ status: string; completed_at: string | null }>(
+    `SELECT status, completed_at FROM exchange_orders WHERE id=$1`,
+    [orderId]
+  );
+  assert.equal(order?.status, "completed");
+  assert.ok(order?.completed_at, "completedAt must be set");
+  assert.ok(await activityFor(orderId, "exchange_completed"), "expected an exchange_completed activity log entry");
+
+  // PIN must never appear anywhere a Super Admin can see: the order-detail
+  // response (including embedded dialAttempts) and the raw activity_log rows.
+  const detailRes = await fetch(`${payoutBaseUrl}/admin/exchange/orders/${orderId}`, {
+    headers: { Authorization: `Bearer ${superAdminToken}` },
+  });
+  const detailBody = await asJson(detailRes);
+  assert.ok(!JSON.stringify(detailBody).includes(PAYOUT_TEST_PIN), "the PIN must never appear in the admin order-detail response");
+  assert.ok(!("pin" in (detailBody.dialAttempts?.[0] ?? {})), "a dial attempt must never expose a pin field to the dashboard");
+  const activityRows = await query<{ old_value: unknown; new_value: unknown }>(
+    `SELECT old_value, new_value FROM admin_activity_log WHERE entity_type='exchange_order' AND entity_id=$1`,
+    [orderId]
+  );
+  for (const row of activityRows) assert.ok(!JSON.stringify(row).includes(PAYOUT_TEST_PIN), "the PIN must never be written into the activity log");
+
+  // Duplicate-payout prevention: the order is completed, so a repeat
+  // dial-attempt-start call must be rejected outright.
+  const repeatRes = await fetch(`${payoutBaseUrl}/agent/exchange/orders/${orderId}/dial-attempts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ attemptNumber: 1 }),
+  });
+  assert.equal(repeatRes.status, 409);
+  assert.match((await asJson(repeatRes)).error, /completed/);
+});
+
+test("safe payout lifecycle: failed step2 marks the order Failed and blocks any repeat automatic attempt", async () => {
+  const orderId = await insertExchangeOrder({
+    corridorId: corridorEdahabToEvc,
+    fromWalletId: "edahab",
+    toWalletId: "evc_plus",
+    amountSent: 61,
+    senderPhone: "252611131002",
+  });
+  await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "eDahab",
+    body: "Lacag $61.00 ah",
+    parsedAmount: 61,
+    parsedPhone: "252611131002",
+    simSlot: 2,
+    transactionRef: nextRef(),
+  });
+
+  const startRes = await fetch(`${payoutBaseUrl}/agent/exchange/orders/${orderId}/dial-attempts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ attemptNumber: 1 }),
+  });
+  const start = await asJson(startRes);
+
+  // Simulate the carrier rejecting the payout (e.g. insufficient float) --
+  // a mock failure, no real telecom involved.
+  const step2Res = await fetch(`${payoutBaseUrl}/agent/exchange/dial-attempts/${start.id}/step2`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ status: "failed", responseMessage: "Insufficient balance", isFinalAttempt: true }),
+  });
+  assert.equal(step2Res.status, 200);
+
+  const order = await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]);
+  assert.equal(order?.status, "failed", "a failed final attempt must mark the order Failed, never silently retry");
+
+  const hasDialAttemptRow = await queryOne<{ has_dial_attempt: boolean }>(
+    `SELECT EXISTS(SELECT 1 FROM exchange_dial_attempts WHERE exchange_order_id=$1) AS has_dial_attempt`,
+    [orderId]
+  );
+  assert.equal(hasDialAttemptRow?.has_dial_attempt, true, "a failed attempt still counts as 'already tried' for ExchangeSelfHealSweeper's skip check");
+
+  const retryRes = await fetch(`${payoutBaseUrl}/agent/exchange/orders/${orderId}/dial-attempts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ attemptNumber: 2 }),
+  });
+  assert.equal(retryRes.status, 409, "the order-level guard must independently block any further automatic attempt too");
+  assert.match((await asJson(retryRes)).error, /failed/);
+});
+
+test("safe payout lifecycle: a duplicate dial-attempt-start call never issues the PIN twice", async () => {
+  const orderId = await insertExchangeOrder({
+    corridorId: corridorEdahabToEvc,
+    fromWalletId: "edahab",
+    toWalletId: "evc_plus",
+    amountSent: 62,
+    senderPhone: "252611131003",
+  });
+  await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "eDahab",
+    body: "Lacag $62.00 ah",
+    parsedAmount: 62,
+    parsedPhone: "252611131003",
+    simSlot: 2,
+    transactionRef: nextRef(),
+  });
+
+  const first = await fetch(`${payoutBaseUrl}/agent/exchange/orders/${orderId}/dial-attempts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ attemptNumber: 1 }),
+  });
+  const firstBody = await asJson(first);
+  assert.equal(firstBody.pin, PAYOUT_TEST_PIN);
+
+  // Same attemptNumber again -- two sweep passes racing, or a naive client
+  // retry -- must hit the UNIQUE constraint's duplicate path and get NO
+  // pin back at all.
+  const second = await fetch(`${payoutBaseUrl}/agent/exchange/orders/${orderId}/dial-attempts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ attemptNumber: 1 }),
+  });
+  assert.equal(second.status, 200);
+  const secondBody = await asJson(second);
+  assert.equal(secondBody.pin, undefined, "a duplicate dial-attempt-start call must never issue the PIN a second time");
+  assert.equal(secondBody.id, firstBody.id, "must be the exact same attempt row, not a new one");
+
+  const attemptRows = await query(`SELECT id FROM exchange_dial_attempts WHERE exchange_order_id=$1`, [orderId]);
+  assert.equal(attemptRows.length, 1, "only one dial_attempts row must ever exist for this order+attemptNumber pair");
 });
