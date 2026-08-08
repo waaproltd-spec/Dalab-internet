@@ -201,10 +201,38 @@ function validateCorridorBody(body: any): { error?: string } {
   return {};
 }
 
+// A corridor's payout wallet is what DALAB dials OUT of to pay the customer
+// — it has to physically hold the "To" currency, not the "From" one (the
+// dial prefix used at payout time comes from the payout wallet's own
+// wallet_id — see POST /agent/exchange/orders/:id/dial-attempts). Enforced
+// server-side, not just in the dashboard's dropdown, since the dashboard
+// filter alone can't stop a direct/older API client from saving a
+// mismatched pair.
+async function validatePayoutWalletMatchesTo(
+  payoutWalletId: string | null | undefined,
+  toWalletId: string
+): Promise<{ error?: string }> {
+  if (!payoutWalletId) return {};
+  const payoutWallet = await loadPayoutWallet(payoutWalletId);
+  if (!payoutWallet) return { error: "Payout wallet not found" };
+  if (payoutWallet.wallet_id !== toWalletId) {
+    const [toWallet, payoutWalletKind] = await Promise.all([
+      queryOne<{ name: string }>(`SELECT name FROM payment_wallets WHERE id=$1`, [toWalletId]),
+      queryOne<{ name: string }>(`SELECT name FROM payment_wallets WHERE id=$1`, [payoutWallet.wallet_id]),
+    ]);
+    return {
+      error: `Payout wallet must be a ${toWallet?.name ?? toWalletId} wallet (this corridor pays out in ${toWallet?.name ?? toWalletId}), but a ${payoutWalletKind?.name ?? payoutWallet.wallet_id} wallet was selected.`,
+    };
+  }
+  return {};
+}
+
 exchangeRouter.post("/admin/exchange/corridors", requirePermission("exchange.manage"), async (req, res) => {
   const check = validateCorridorBody(req.body);
   if (check.error) return sendJson(res, 400, { error: check.error });
   const { fromWalletId, toWalletId, rate, feeType, feeValue, minAmount, maxAmount, payoutWalletId } = req.body;
+  const payoutCheck = await validatePayoutWalletMatchesTo(payoutWalletId, toWalletId);
+  if (payoutCheck.error) return sendJson(res, 400, { error: payoutCheck.error });
 
   const id = randomUUID();
   try {
@@ -234,6 +262,8 @@ exchangeRouter.put("/admin/exchange/corridors/:id", requirePermission("exchange.
   const check = validateCorridorBody(req.body);
   if (check.error) return sendJson(res, 400, { error: check.error });
   const { fromWalletId, toWalletId, rate, feeType, feeValue, minAmount, maxAmount, payoutWalletId, enabled } = req.body;
+  const payoutCheck = await validatePayoutWalletMatchesTo(payoutWalletId, toWalletId);
+  if (payoutCheck.error) return sendJson(res, 400, { error: payoutCheck.error });
 
   await query(
     `UPDATE exchange_corridors

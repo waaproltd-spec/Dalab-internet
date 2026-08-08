@@ -6186,7 +6186,18 @@ function MoneyExchangePanel({ admin }) {
             </select>
           </Field>
           <Field label="To wallet">
-            <select style={inputStyle} value={corridorForm.toWalletId} onChange={(e) => setCorridorForm({ ...corridorForm, toWalletId: e.target.value })}>
+            <select
+              style={inputStyle}
+              value={corridorForm.toWalletId}
+              onChange={(e) => {
+                const toWalletId = e.target.value;
+                // The previously-picked payout wallet may no longer be valid
+                // for the new "To" currency — clear it rather than silently
+                // keeping a now-mismatched selection around.
+                const stillValid = payoutWallets.some((w) => w.id === corridorForm.payoutWalletId && w.walletId === toWalletId);
+                setCorridorForm({ ...corridorForm, toWalletId, payoutWalletId: stillValid ? corridorForm.payoutWalletId : "" });
+              }}
+            >
               <option value="">Choose…</option>
               {wallets.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
             </select>
@@ -6203,11 +6214,18 @@ function MoneyExchangePanel({ admin }) {
           <Field label={corridorForm.feeType === "percentage" ? "Fee (%)" : "Fee ($)"}>
             <input type="number" min="0" step="0.01" style={inputStyle} value={corridorForm.feeValue} onChange={(e) => setCorridorForm({ ...corridorForm, feeValue: e.target.value })} />
           </Field>
-          <Field label="Payout wallet (which SIM sends the payout)">
-            <select style={inputStyle} value={corridorForm.payoutWalletId} onChange={(e) => setCorridorForm({ ...corridorForm, payoutWalletId: e.target.value })}>
+          <Field label="Payout wallet (which SIM sends the payout — must match the To wallet's currency)">
+            <select style={inputStyle} value={corridorForm.payoutWalletId} onChange={(e) => setCorridorForm({ ...corridorForm, payoutWalletId: e.target.value })} disabled={!corridorForm.toWalletId}>
               <option value="">Not set</option>
-              {payoutWallets.map((w) => <option key={w.id} value={w.id}>{w.walletName} — {w.phoneNumber}</option>)}
+              {payoutWallets.filter((w) => w.walletId === corridorForm.toWalletId).map((w) => (
+                <option key={w.id} value={w.id}>{w.walletName} — {w.phoneNumber}</option>
+              ))}
             </select>
+            {corridorForm.toWalletId && payoutWallets.every((w) => w.walletId !== corridorForm.toWalletId) && (
+              <div style={{ color: "#A9720A", fontSize: 12, marginTop: 4 }}>
+                No payout wallet configured for this "To" currency yet — add one above first.
+              </div>
+            )}
           </Field>
           <Field label="Min amount (optional)">
             <input type="number" min="0" step="0.01" style={inputStyle} value={corridorForm.minAmount} onChange={(e) => setCorridorForm({ ...corridorForm, minAmount: e.target.value })} />
