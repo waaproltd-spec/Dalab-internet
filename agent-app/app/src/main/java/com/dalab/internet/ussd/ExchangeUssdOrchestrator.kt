@@ -1,6 +1,7 @@
 package com.dalab.internet.ussd
 
 import android.content.Context
+import android.os.PowerManager
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.ExchangeDialAttemptStartRequest
@@ -74,6 +75,32 @@ class ExchangeUssdOrchestrator(private val context: Context) {
             is SubscriptionLookupResult.Found -> subscriptionLookup.subscriptionId
         }
 
+        // Unlike Internet Store's PARTIAL_WAKE_LOCK (UssdDialer.kt) -- which
+        // only keeps the CPU running for its screen-less sendUssdRequest()
+        // call -- this flow needs the carrier's reply dialog to actually be
+        // drawn on screen for ExchangeUssdAccessibilityService to read it.
+        // With the screen off, ACTION_CALL still launches the system
+        // dialer, but nothing gets rendered and no accessibility events
+        // fire, so the whole attempt silently times out with no response at
+        // all -- confirmed live (order DEX754272134: attempt reported
+        // "failed" with a completely empty step1_response, the exact
+        // signature of a plain 30s awaitNextEvent() timeout). A full,
+        // screen-on wake lock fixes that. Deprecated in favor of per-Activity
+        // window flags (FLAG_TURN_SCREEN_ON / setTurnScreenOn), but those
+        // only apply to an Activity this app owns -- there's no way to set
+        // them on the system dialer's own Activity that ACTION_CALL launches,
+        // so the old WakeLock API is the only lever available here. Device
+        // has no keyguard configured (confirmed) -- this wakes the screen to
+        // whatever was already showing, it does not attempt to bypass any
+        // lock.
+        @Suppress("DEPRECATION")
+        val wakeLock = (context.getSystemService(Context.POWER_SERVICE) as? PowerManager)
+            ?.newWakeLock(
+                PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
+                "DalabAgent:ExchangeUssdDial",
+            )
+        wakeLock?.acquire(80_000)
+
         ExchangeUssdBridge.arm()
         try {
             dialer.dial(subscriptionId, body.step1UssdString)
@@ -83,36 +110,24 @@ class ExchangeUssdOrchestrator(private val context: Context) {
                 reportStep1(body.id, "failed", null)
                 return ExchangeDialResult(ExchangeDialOutcome.TIMEOUT, "No response from the carrier within 30s — check the phone and try manual payout if needed.")
             }
-            if (!firstEvent.hasInput) {
-                // Doesn't match the expected number+amount -> PIN-prompt shape
-                // (e.g. an immediate error like "invalid number"). Never send
-                // the PIN blind into an unexpected screen.
-                reportStep1(body.id, "ambiguous", firstEvent.text)
-                return ExchangeDialResult(ExchangeDialOutcome.STEP1_FAILED, "Unexpected carrier response (no PIN prompt): \"${firstEvent.text}\" — complete manually.")
-            }
-            reportStep1(body.id, "step1_success", firstEvent.text)
-
-            ExchangeUssdBridge.armPinInjection(pin)
-            val submittedEvent = ExchangeUssdBridge.awaitNextEvent(15_000)
-            if (submittedEvent !is UssdDialogEvent.PinSubmitted) {
-                reportStep2(body.id, "ambiguous", "PIN entry could not be confirmed automatically.", isFinalAttempt = true)
-                return ExchangeDialResult(ExchangeDialOutcome.STEP2_FAILED, "Could not confirm the PIN was submitted — check the phone; the exchange may still be pending on the carrier's side.")
-            }
-
-            val finalEvent = ExchangeUssdBridge.awaitNextEvent(25_000)
-            if (finalEvent !is UssdDialogEvent.DialogSeen) {
-                reportStep2(body.id, "ambiguous", "No final confirmation received after entering the PIN.", isFinalAttempt = true)
-                return ExchangeDialResult(ExchangeDialOutcome.TIMEOUT, "No final confirmation from the carrier — check the phone before retrying.")
-            }
-            val success = !looksLikeFailureResponse(finalEvent.text)
-            reportStep2(body.id, if (success) "success" else "failed", finalEvent.text, isFinalAttempt = true)
-            return if (success) {
-                ExchangeDialResult(ExchangeDialOutcome.SUCCESS, finalEvent.text)
-            } else {
-                ExchangeDialResult(ExchangeDialOutcome.STEP2_FAILED, finalEvent.text)
-            }
+            // DIAGNOSTIC BUILD — DO NOT MERGE: reports whatever step1
+            // actually saw (truthfully, whether hasInput or not) and stops
+            // here unconditionally. Purpose is narrowly to verify the wake
+            // lock above actually gets the screen on and the carrier's real
+            // dialog rendered/read with the screen off beforehand -- NOT to
+            // re-verify the PIN flow, which was already proven working in
+            // earlier tests. armPinInjection() is never called in this
+            // build, so it cannot submit a PIN no matter what firstEvent
+            // contains. Restore the real step2 flow below before this is
+            // ever used for a real payout.
+            reportStep1(body.id, "ambiguous", "[diagnostic: screen-wake verify] ${firstEvent.text}")
+            return ExchangeDialResult(
+                ExchangeDialOutcome.STEP1_FAILED,
+                "[Diagnostic build] Screen-wake test — carrier response: \"${firstEvent.text}\" (hasInput=${firstEvent.hasInput}). Stopped before PIN by design.",
+            )
         } finally {
             ExchangeUssdBridge.disarm()
+            if (wakeLock?.isHeld == true) wakeLock.release()
         }
     }
 
