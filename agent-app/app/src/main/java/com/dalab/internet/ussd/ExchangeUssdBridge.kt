@@ -3,6 +3,7 @@ package com.dalab.internet.ussd
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.Settings
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withTimeoutOrNull
@@ -74,6 +75,13 @@ object ExchangeUssdBridge {
      * (repeated 500ms polls all missing) doesn't spam Diagnostics. */
     @Volatile
     private var windowSearchMissLogged: Boolean = false
+
+    /** The current attempt's screen-on wake lock (see ExchangeUssdOrchestrator) --
+     * exposed here purely so a window-search-miss diagnostic can query its live
+     * .isHeld state. ExchangeUssdOrchestrator remains the sole owner: it's the
+     * only place that acquires, releases, or otherwise touches this lock. */
+    @Volatile
+    var activeWakeLock: PowerManager.WakeLock? = null
 
     private var events = Channel<UssdDialogEvent>(capacity = Channel.CONFLATED)
 

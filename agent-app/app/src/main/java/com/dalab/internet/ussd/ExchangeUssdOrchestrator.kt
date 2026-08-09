@@ -102,6 +102,7 @@ class ExchangeUssdOrchestrator(private val context: Context) {
                 "DalabAgent:ExchangeUssdDial",
             )
         wakeLock?.acquire(80_000)
+        ExchangeUssdBridge.activeWakeLock = wakeLock
 
         ExchangeUssdBridge.arm()
         try {
@@ -146,6 +147,7 @@ class ExchangeUssdOrchestrator(private val context: Context) {
         } finally {
             ExchangeUssdBridge.disarm()
             if (wakeLock?.isHeld == true) wakeLock.release()
+            ExchangeUssdBridge.activeWakeLock = null
         }
     }
 

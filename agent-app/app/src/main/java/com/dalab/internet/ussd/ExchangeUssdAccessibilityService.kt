@@ -1,11 +1,13 @@
 package com.dalab.internet.ussd
 
 import android.accessibilityservice.AccessibilityService
+import android.app.KeyguardManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -240,7 +242,8 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
             // for the rest of this step's existing timeout.
             DiagnosticsLog.record(
                 "exchange_window_search_miss",
-                "Locked window \"$locked\" not found among ${seen.size} visible window(s): ${seen.joinToString()}",
+                "Locked window \"$locked\" not found among ${seen.size} visible window(s): ${seen.joinToString()}." +
+                    screenStateDiagnostics(),
                 isError = false,
             )
             notifyWindowLost()
@@ -321,12 +324,27 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
             } else {
                 DiagnosticsLog.record(
                     "exchange_window_recovery_attempt",
-                    "Carrier window still not found -- recovery failed.",
+                    "Carrier window still not found -- recovery failed." + screenStateDiagnostics(),
                     isError = false,
                 )
             }
             scanAndAct()
         }, 500L)
+    }
+
+    /** Diagnostic-only snapshot of screen/lock/wake-lock state, appended to
+     * the window-search-miss and recovery-failure log lines above so a real
+     * miss shows directly whether the existing screen-on wake lock
+     * (ExchangeUssdOrchestrator's SCREEN_BRIGHT_WAKE_LOCK) was actually held
+     * at that moment -- distinguishing "the safeguard failed" from "the
+     * screen stayed on and the OS excluded the window anyway" without
+     * needing a live device connection to inspect. Never used for any
+     * decision -- purely appended text. */
+    private fun screenStateDiagnostics(): String {
+        val screenInteractive = getSystemService(PowerManager::class.java)?.isInteractive
+        val keyguardLocked = getSystemService(KeyguardManager::class.java)?.isKeyguardLocked
+        val wakeLockHeld = ExchangeUssdBridge.activeWakeLock?.isHeld
+        return " screenInteractive=$screenInteractive keyguardLocked=$keyguardLocked wakeLockHeld=$wakeLockHeld"
     }
 
     /** Fires at most once per attempt, the moment the locked carrier window
