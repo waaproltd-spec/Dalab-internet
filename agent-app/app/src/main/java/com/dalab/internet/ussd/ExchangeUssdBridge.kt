@@ -28,8 +28,22 @@ object ExchangeUssdBridge {
     @Volatile
     private var pendingPinToInject: String? = null
 
+    /** True once [UssdDialogEvent.PinSubmitted] has been emitted for the
+     * current attempt — the signal that distinguishes a pre-PIN confirm
+     * screen (Step 1) from the separate post-PIN confirm screen (Step 3),
+     * without duplicating that state in the accessibility service. */
     @Volatile
-    private var lastAutoConfirmedDialogText: String? = null
+    private var pinSubmitted: Boolean = false
+
+    /** Separate dedup trackers for the two stages a confirm screen can
+     * belong to — kept independent so an identically-worded Step 1 and
+     * Step 3 confirm screen can never collide and cause Step 3 to be
+     * wrongly treated as "already tapped" and silently skipped. */
+    @Volatile
+    private var lastPreConfirmText: String? = null
+
+    @Volatile
+    private var lastPostConfirmText: String? = null
 
     private var events = Channel<UssdDialogEvent>(capacity = Channel.CONFLATED)
 
@@ -51,7 +65,9 @@ object ExchangeUssdBridge {
     fun arm() {
         events = Channel(capacity = Channel.CONFLATED)
         pendingPinToInject = null
-        lastAutoConfirmedDialogText = null
+        pinSubmitted = false
+        lastPreConfirmText = null
+        lastPostConfirmText = null
         stopPinPolling()
         armed = true
     }
@@ -59,7 +75,9 @@ object ExchangeUssdBridge {
     fun disarm() {
         armed = false
         pendingPinToInject = null
-        lastAutoConfirmedDialogText = null
+        pinSubmitted = false
+        lastPreConfirmText = null
+        lastPostConfirmText = null
         stopPinPolling()
     }
 
@@ -113,19 +131,31 @@ object ExchangeUssdBridge {
         pendingPinToInject = pin
     }
 
-    /** True the first time this exact dialog text is seen during the
-     * current attempt — and remembers it, so a repeat scan of the same
-     * still-on-screen confirmation dialog (multiple accessibility events
-     * can fire before the tap actually dismisses it) never taps its button
-     * twice. A different dialog text (the next step in a multi-screen
-     * confirm flow) is allowed through again. */
+    /** True the first time this exact dialog text is seen *for the current
+     * stage* (Step 1's pre-PIN confirm vs Step 3's post-PIN confirm — see
+     * [currentConfirmationStage]) during the current attempt — and
+     * remembers it, so a repeat scan of the same still-on-screen
+     * confirmation dialog (multiple accessibility events can fire before
+     * the tap actually dismisses it) never taps its button twice. A
+     * different dialog text (the next step in a multi-screen confirm flow)
+     * is allowed through again. Stages are tracked independently so an
+     * identically-worded Step 1 and Step 3 screen never collide. */
     internal fun shouldAutoConfirm(dialogText: String): Boolean {
-        if (dialogText == lastAutoConfirmedDialogText) return false
-        lastAutoConfirmedDialogText = dialogText
-        return true
+        return if (pinSubmitted) {
+            if (dialogText == lastPostConfirmText) false else { lastPostConfirmText = dialogText; true }
+        } else {
+            if (dialogText == lastPreConfirmText) false else { lastPreConfirmText = dialogText; true }
+        }
     }
 
+    /** Which real step a confirm screen being auto-tapped right now belongs
+     * to: Step 1 (pre-PIN) if the PIN hasn't been submitted yet this
+     * attempt, Step 3 (post-PIN) if it has. */
+    internal fun currentConfirmationStage(): ConfirmationStage =
+        if (pinSubmitted) ConfirmationStage.POST_PIN else ConfirmationStage.PRE_PIN
+
     internal fun emit(event: UssdDialogEvent) {
+        if (event is UssdDialogEvent.PinSubmitted) pinSubmitted = true
         events.trySend(event)
     }
 

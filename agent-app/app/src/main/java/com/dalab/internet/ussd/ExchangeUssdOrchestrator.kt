@@ -171,7 +171,14 @@ class ExchangeUssdOrchestrator(private val context: Context) {
             val remaining = deadline - System.currentTimeMillis()
             if (remaining <= 0) return null
             val event = ExchangeUssdBridge.awaitNextEvent(remaining)
-            if (event is UssdDialogEvent.ConfirmationAdvanced) continue
+            if (event is UssdDialogEvent.ConfirmationAdvanced) {
+                DiagnosticsLog.record(
+                    "exchange_confirmation_advanced",
+                    "Auto-tapped a ${event.stage} confirmation screen; continuing to wait (~${remaining}ms left in this step's budget).",
+                    isError = false,
+                )
+                continue
+            }
             return event
         }
     }

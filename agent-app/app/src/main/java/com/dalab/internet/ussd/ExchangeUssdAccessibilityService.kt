@@ -116,7 +116,7 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
                 if (confirmButton != null) {
                     if (ExchangeUssdBridge.shouldAutoConfirm(messageText)) {
                         confirmButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                        ExchangeUssdBridge.emit(UssdDialogEvent.ConfirmationAdvanced)
+                        ExchangeUssdBridge.emit(UssdDialogEvent.ConfirmationAdvanced(ExchangeUssdBridge.currentConfirmationStage()))
                     }
                     // Else: already tapped this exact dialog on an earlier
                     // scan (a repeat accessibility event can land before the
@@ -176,20 +176,51 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
     }
 
     private fun findPositiveButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        findPositiveButtonByText(node)?.let { return it }
+
+        // No clearly-labelled Send/OK/Dial/Yes button anywhere in this
+        // dialog. A textless button can only be safely treated as the
+        // confirm/submit action when it's the *only* clickable button
+        // present -- with more than one, there's no way to tell it apart
+        // from Cancel, and guessing risks tapping the wrong one and
+        // cancelling a live-money transfer instead of confirming it.
+        val clickableButtons = mutableListOf<AccessibilityNodeInfo>()
+        collectClickableButtons(node, clickableButtons)
+        if (clickableButtons.size == 1 && clickableButtons[0].text?.toString().isNullOrBlank()) {
+            return clickableButtons[0]
+        }
+        for (button in clickableButtons) {
+            @Suppress("DEPRECATION")
+            button.recycle()
+        }
+        return null
+    }
+
+    private fun findPositiveButtonByText(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         if (node.isClickable && node.className?.contains("Button") == true) {
             val text = node.text?.toString()?.lowercase()
-            if (text == null || text.contains("ok") || text.contains("send") || text.contains("dial") || text.contains("yes")) {
+            if (text != null && (text.contains("ok") || text.contains("send") || text.contains("dial") || text.contains("yes"))) {
                 return node
             }
         }
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            val found = findPositiveButton(child)
+            val found = findPositiveButtonByText(child)
             if (found != null) return found
             @Suppress("DEPRECATION")
             child.recycle()
         }
         return null
+    }
+
+    private fun collectClickableButtons(node: AccessibilityNodeInfo, out: MutableList<AccessibilityNodeInfo>) {
+        if (node.isClickable && node.className?.contains("Button") == true) {
+            out.add(node)
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            collectClickableButtons(child, out)
+        }
     }
 
     override fun onInterrupt() {
