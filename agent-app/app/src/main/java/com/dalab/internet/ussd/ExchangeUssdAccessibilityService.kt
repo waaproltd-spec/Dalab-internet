@@ -101,6 +101,31 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
                 return
             }
 
+            if (inputNode == null) {
+                // No PIN field yet, but this may be a legitimate
+                // intermediate step -- some carrier flows show a plain
+                // "confirm this transfer?" screen (message + Send/OK, no
+                // input) before the PIN prompt, not just an error. Auto-tap
+                // it and keep waiting instead of failing the whole attempt,
+                // exactly like a human agent manually pressing Send would.
+                // A dialog with no recognizable confirm button at all falls
+                // through to the ambiguous-failure DialogSeen below
+                // unchanged -- never taps something that isn't actually a
+                // confirm/dismiss action.
+                val confirmButton = findPositiveButton(root)
+                if (confirmButton != null) {
+                    if (ExchangeUssdBridge.shouldAutoConfirm(messageText)) {
+                        confirmButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        ExchangeUssdBridge.emit(UssdDialogEvent.ConfirmationAdvanced)
+                    }
+                    // Else: already tapped this exact dialog on an earlier
+                    // scan (a repeat accessibility event can land before the
+                    // tap has visually dismissed it) -- do nothing rather
+                    // than re-emit this stale screen as a final answer.
+                    return
+                }
+            }
+
             ExchangeUssdBridge.emit(UssdDialogEvent.DialogSeen(messageText, hasInput = inputNode != null))
         } catch (e: Exception) {
             Log.w(TAG, "scanAndAct failed: ${e.message}")

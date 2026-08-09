@@ -107,7 +107,7 @@ class ExchangeUssdOrchestrator(private val context: Context) {
         try {
             dialer.dial(subscriptionId, body.step1UssdString)
 
-            val firstEvent = ExchangeUssdBridge.awaitNextEvent(30_000)
+            val firstEvent = awaitEventSkippingConfirmations(30_000)
             if (firstEvent !is UssdDialogEvent.DialogSeen) {
                 reportStep1(body.id, "failed", null)
                 return ExchangeDialResult(ExchangeDialOutcome.TIMEOUT, "No response from the carrier within 30s — check the phone and try manual payout if needed.")
@@ -115,20 +115,23 @@ class ExchangeUssdOrchestrator(private val context: Context) {
             if (!firstEvent.hasInput) {
                 // Doesn't match the expected number+amount -> PIN-prompt shape
                 // (e.g. an immediate error like "invalid number"). Never send
-                // the PIN blind into an unexpected screen.
+                // the PIN blind into an unexpected screen. (A legitimate
+                // intermediate "confirm this transfer?" screen never reaches
+                // here at all -- awaitEventSkippingConfirmations already
+                // auto-tapped it and kept waiting.)
                 reportStep1(body.id, "ambiguous", firstEvent.text)
                 return ExchangeDialResult(ExchangeDialOutcome.STEP1_FAILED, "Unexpected carrier response (no PIN prompt): \"${firstEvent.text}\" — complete manually.")
             }
             reportStep1(body.id, "step1_success", firstEvent.text)
 
             ExchangeUssdBridge.armPinInjection(pin)
-            val submittedEvent = ExchangeUssdBridge.awaitNextEvent(15_000)
+            val submittedEvent = awaitEventSkippingConfirmations(15_000)
             if (submittedEvent !is UssdDialogEvent.PinSubmitted) {
                 reportStep2(body.id, "ambiguous", "PIN entry could not be confirmed automatically.", isFinalAttempt = true)
                 return ExchangeDialResult(ExchangeDialOutcome.STEP2_FAILED, "Could not confirm the PIN was submitted — check the phone; the exchange may still be pending on the carrier's side.")
             }
 
-            val finalEvent = ExchangeUssdBridge.awaitNextEvent(25_000)
+            val finalEvent = awaitEventSkippingConfirmations(25_000)
             if (finalEvent !is UssdDialogEvent.DialogSeen) {
                 reportStep2(body.id, "ambiguous", "No final confirmation received after entering the PIN.", isFinalAttempt = true)
                 return ExchangeDialResult(ExchangeDialOutcome.TIMEOUT, "No final confirmation from the carrier — check the phone before retrying.")
@@ -143,6 +146,25 @@ class ExchangeUssdOrchestrator(private val context: Context) {
         } finally {
             ExchangeUssdBridge.disarm()
             if (wakeLock?.isHeld == true) wakeLock.release()
+        }
+    }
+
+    /** Waits up to [timeoutMs] for a real event, transparently skipping any
+     * number of [UssdDialogEvent.ConfirmationAdvanced] events along the
+     * way (the accessibility service already auto-tapped those
+     * intermediate "confirm this transfer?" screens) — so a multi-screen
+     * carrier flow doesn't eat into the caller's actual response budget
+     * beyond the wall-clock time it takes. Returns null once the full
+     * budget is spent with no non-confirmation event, same as a plain
+     * awaitNextEvent timeout. */
+    private suspend fun awaitEventSkippingConfirmations(timeoutMs: Long): UssdDialogEvent? {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (true) {
+            val remaining = deadline - System.currentTimeMillis()
+            if (remaining <= 0) return null
+            val event = ExchangeUssdBridge.awaitNextEvent(remaining)
+            if (event is UssdDialogEvent.ConfirmationAdvanced) continue
+            return event
         }
     }
 

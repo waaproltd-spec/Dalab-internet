@@ -28,6 +28,9 @@ object ExchangeUssdBridge {
     @Volatile
     private var pendingPinToInject: String? = null
 
+    @Volatile
+    private var lastAutoConfirmedDialogText: String? = null
+
     private var events = Channel<UssdDialogEvent>(capacity = Channel.CONFLATED)
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -48,6 +51,7 @@ object ExchangeUssdBridge {
     fun arm() {
         events = Channel(capacity = Channel.CONFLATED)
         pendingPinToInject = null
+        lastAutoConfirmedDialogText = null
         stopPinPolling()
         armed = true
     }
@@ -55,6 +59,7 @@ object ExchangeUssdBridge {
     fun disarm() {
         armed = false
         pendingPinToInject = null
+        lastAutoConfirmedDialogText = null
         stopPinPolling()
     }
 
@@ -106,6 +111,18 @@ object ExchangeUssdBridge {
      * still gets it. */
     internal fun restorePendingPinToInject(pin: String) {
         pendingPinToInject = pin
+    }
+
+    /** True the first time this exact dialog text is seen during the
+     * current attempt — and remembers it, so a repeat scan of the same
+     * still-on-screen confirmation dialog (multiple accessibility events
+     * can fire before the tap actually dismisses it) never taps its button
+     * twice. A different dialog text (the next step in a multi-screen
+     * confirm flow) is allowed through again. */
+    internal fun shouldAutoConfirm(dialogText: String): Boolean {
+        if (dialogText == lastAutoConfirmedDialogText) return false
+        lastAutoConfirmedDialogText = dialogText
+        return true
     }
 
     internal fun emit(event: UssdDialogEvent) {
