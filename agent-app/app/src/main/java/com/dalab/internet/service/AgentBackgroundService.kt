@@ -32,6 +32,7 @@ import com.dalab.internet.network.HeartbeatRequest
 import com.dalab.internet.network.RealtimeClient
 import com.dalab.internet.queue.QueueDrainer
 import com.dalab.internet.queue.RetryClassifier
+import com.dalab.internet.sms.SmsSenderIdRepository
 import com.dalab.internet.ussd.ExchangeSelfHealSweeper
 import com.dalab.internet.ussd.SelfHealSweeper
 import com.dalab.internet.ussd.SimRoutingRepository
@@ -110,6 +111,7 @@ class AgentBackgroundService : Service() {
         // loops below still get a defensive try/catch since they run unattended
         // for as long as the service is alive.
         newScope.launch { SimRoutingRepository.refresh() }
+        newScope.launch { SmsSenderIdRepository.refresh() }
         newScope.launch {
             try {
                 QueueDrainer.drainAll(applicationContext)
@@ -347,6 +349,7 @@ class AgentBackgroundService : Service() {
             try {
                 if (DeviceIdentity.isSet() && SessionManager.isLoggedIn()) {
                     SimRoutingRepository.refresh()
+                    SmsSenderIdRepository.refresh()
                 }
             } catch (e: Exception) {
                 DiagnosticsLog.record("sim_routing_loop", "Tick failed: ${e.stackTraceToString().take(2000)}")

@@ -40,7 +40,13 @@ private fun parseAmount(raw: String): Double? = raw.replace(",", "").toDoubleOrN
  * Sender:  "192" or "EVCPLUS"
  */
 object HormuudEvcPlusParser : PaymentSmsParser {
-    override val senders = listOf("192", "EVCPLUS")
+    // Read through SmsSenderIdRepository (Super-Admin-configurable, see
+    // SmsSenderIdRepository.kt) so a provider's real sender ID can be
+    // corrected from the dashboard without an app update. Falls back to
+    // this exact hardcoded list -- unchanged from before this existed --
+    // whenever the registry hasn't loaded "hormuud_evc_plus" yet.
+    override val senders: List<String>
+        get() = SmsSenderIdRepository.sendersFor("hormuud_evc_plus", listOf("192", "EVCPLUS"))
 
     private val pattern = Regex(
         """waxaad\s+\$?\s*$AMOUNT_PATTERN\s*\$?\s*ka\s+heshay\s+(\d{6,12}),?\s*Tar:\s*([\d/]+)""",
@@ -83,8 +89,11 @@ object SomtelEdahabParser : PaymentSmsParser {
     // SomtelEdahabPayoutSentParser's outgoing-payout format (same SMS
     // thread). Previously unvalidated ("No confirmed SMS sender/shortcode
     // was provided for this format") -- now locked down the same way
-    // HormuudEvcPlusParser already validates its senders.
-    override val senders: List<String> = listOf("eDahab")
+    // HormuudEvcPlusParser already validates its senders. Now read through
+    // SmsSenderIdRepository (Super-Admin-configurable) with this exact list
+    // as the fallback -- see HormuudEvcPlusParser's senders for why.
+    override val senders: List<String>
+        get() = SmsSenderIdRepository.sendersFor("somtel_edahab", listOf("eDahab"))
 
     private val pattern = Regex(
         """$AMOUNT_PATTERN\s*Dollar\s+Ayaad\s+Ka\s+Heshay[\s\S]*?Lambarka\s*:\s*(\d{6,15})""",
@@ -126,11 +135,14 @@ object SomtelEdahabParser : PaymentSmsParser {
  * Example: "[-EVCPlus-] $0.1 ayaad ka Heshay AARAN DATA SERVICE
  *           (252685115555),27/07/26 04:49:01 via Somnet Telecom,
  *           Haraagaagu waa $4.95."
- * No confirmed SMS sender/shortcode was provided for this format either —
- * matched by the body's "Somnet" tag instead of an allowed-senders list.
+ * Confirmed this session: Somnet-branded EVC Plus SMS also arrives from
+ * sender "192" -- the same short code Hormuud EVC Plus uses, since both are
+ * on the underlying EVC Plus network. Now validated the same way
+ * HormuudEvcPlusParser/SomtelEdahabParser validate their senders.
  */
 object SomnetEvcPlusParser : PaymentSmsParser {
-    override val senders: List<String> = emptyList()
+    override val senders: List<String>
+        get() = SmsSenderIdRepository.sendersFor("somnet_evc_plus", listOf("192"))
 
     private val pattern = Regex(
         """\$$AMOUNT_PATTERN\s*ayaad\s+ka\s+Heshay\s+.+?\((\d{6,15})\)[\s\S]*?via\s+Somnet\s+Telecom""",
@@ -138,6 +150,7 @@ object SomnetEvcPlusParser : PaymentSmsParser {
     )
 
     override fun tryParse(sender: String, body: String, receivedAt: String): SmsLogEntry? {
+        if (senders.none { it.equals(sender.trim(), ignoreCase = true) }) return null
         if (!body.contains("Somnet", ignoreCase = true)) return null
         val match = pattern.find(body) ?: return null
         val (amount, phone) = match.destructured
@@ -260,7 +273,11 @@ interface ExchangePayoutSentParser {
  * "No:" field, now also requiring the sender to match.
  */
 object SomtelEdahabPayoutSentParser : ExchangePayoutSentParser {
-    override val senders: List<String> = listOf("eDahab")
+    // Shares the "somtel_edahab" provider key with SomtelEdahabParser above
+    // -- same telecom network, same sender for both directions (confirmed
+    // same-thread this session). See SmsSenderIdRepository.kt.
+    override val senders: List<String>
+        get() = SmsSenderIdRepository.sendersFor("somtel_edahab", listOf("eDahab"))
 
     private val pattern = Regex(
         """$AMOUNT_PATTERN\s*Dollar\s+ayad?\s+u\s+warejisay[\s\S]*?No:\s*(\d{6,15})""",
@@ -294,7 +311,11 @@ object SomtelEdahabPayoutSentParser : ExchangePayoutSentParser {
  * same posture as SomtelEdahabPayoutSentParser.
  */
 object HormuudEvcPlusPayoutSentParser : ExchangePayoutSentParser {
-    override val senders: List<String> = listOf("192", "EVCPLUS")
+    // Shares the "hormuud_evc_plus" provider key with HormuudEvcPlusParser
+    // above -- same telecom network, same sender for both directions. See
+    // SmsSenderIdRepository.kt.
+    override val senders: List<String>
+        get() = SmsSenderIdRepository.sendersFor("hormuud_evc_plus", listOf("192", "EVCPLUS"))
 
     private val pattern = Regex(
         """\$$AMOUNT_PATTERN\s*ayaad\s+uwareejisay\s+.+?\((\d{6,15})\)""",

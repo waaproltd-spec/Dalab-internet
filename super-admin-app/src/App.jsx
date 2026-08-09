@@ -347,6 +347,15 @@ const DalabAdminApi = {
   getExchangeOrder: (id) => dalabAdminApiRequest(`/admin/exchange/orders/${id}`),
   verifyExchangeOrder: (id) => dalabAdminApiRequest(`/admin/exchange/orders/${id}/verify`, { method: "POST" }),
   reverseExchangeOrder: (id) => dalabAdminApiRequest(`/admin/exchange/orders/${id}/reverse`, { method: "POST" }),
+  // Which real SMS sender ID(s) each provider network (Hormuud EVC Plus,
+  // Somtel eDahab, Somnet EVC Plus, ...) is allowed to send from — the Agent
+  // App's PaymentSmsParsers/ExchangePayoutSentParsers fetch and cache this
+  // to validate an incoming SMS's sender before accepting it as a real
+  // payment/payout confirmation, instead of a hardcoded list in the app.
+  getSmsSenderIds: () => dalabAdminApiRequest("/admin/sms-sender-ids"),
+  createSmsSenderId: (body) => dalabAdminApiRequest("/admin/sms-sender-ids", { method: "POST", body }),
+  setSmsSenderIdStatus: (id, enabled) => dalabAdminApiRequest(`/admin/sms-sender-ids/${id}/status`, { method: "PUT", body: { enabled } }),
+  deleteSmsSenderId: (id) => dalabAdminApiRequest(`/admin/sms-sender-ids/${id}`, { method: "DELETE" }),
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -648,6 +657,7 @@ const NAV = [
   { id: "payment-transactions", label: "Payment Transactions", icon: Activity },
   { id: "commissions", label: "Commissions", icon: Percent },
   { id: "money-exchange", label: "Money Exchange", icon: ArrowLeftRight },
+  { id: "sms-sender-ids", label: "SMS Sender IDs", icon: MessageSquare, superAdminOnly: true },
   { id: "referrals", label: "Referral Rewards", icon: Share2 },
   { id: "pending-recovery", label: "Pending Recovery", icon: RotateCcw },
   { id: "execution-logs", label: "Execution Logs", icon: Terminal },
@@ -8368,6 +8378,147 @@ function PaymentWalletsPanel({ companies }) {
   );
 }
 
+// Which real SMS sender ID(s) each provider network (Hormuud EVC Plus,
+// Somtel eDahab, Somnet EVC Plus, ...) is allowed to send from. The Agent
+// App's PaymentSmsParsers/ExchangePayoutSentParsers validate every incoming
+// payment/payout SMS's real sender against this registry before accepting
+// it as a confirmation — never just the message text/format — so an SMS
+// from the wrong provider can never be mistaken for a valid payment or
+// payout. Sender identity is a property of the telecom network itself, not
+// of any individual number/wallet, so this is intentionally a small global
+// table rather than a field on Payment Wallets / Provider Numbers.
+function SmsSenderIdsPanel() {
+  const [senders, setSenders] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [editing, setEditing] = useState(null); // 'new' | null
+  const [form, setForm] = useState({});
+
+  const fetchSenders = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setLoading(true);
+    setError("");
+    try {
+      setSenders(await DalabAdminApi.getSmsSenderIds());
+    } catch (err) {
+      setError(err.message || "Could not load SMS sender IDs.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { fetchSenders(); }, []);
+
+  const openNew = () => {
+    setForm({ providerKey: "", sender: "", label: "" });
+    setEditing("new");
+  };
+
+  const save = async () => {
+    if (!form.providerKey.trim() || !form.sender.trim()) {
+      alert("Provider key and sender are required.");
+      return;
+    }
+    try {
+      await DalabAdminApi.createSmsSenderId({
+        providerKey: form.providerKey.trim().toLowerCase().replace(/\s+/g, "_"),
+        sender: form.sender.trim(),
+        label: form.label.trim() || undefined,
+      });
+      await fetchSenders();
+    } catch (err) {
+      alert(err.message || "Could not save this sender.");
+      return;
+    }
+    setEditing(null);
+  };
+
+  const toggleStatus = async (s) => {
+    const next = !s.enabled;
+    setSenders((prev) => prev.map((x) => (x.id === s.id ? { ...x, enabled: next } : x)));
+    try { await DalabAdminApi.setSmsSenderIdStatus(s.id, next); } catch (err) { fetchSenders(); }
+  };
+
+  const remove = async (s) => {
+    if (!window.confirm(`Delete sender "${s.sender}" for provider "${s.providerKey}"? SMS from this sender will no longer be accepted for that provider.`)) return;
+    setSenders((prev) => prev.filter((x) => x.id !== s.id));
+    try { await DalabAdminApi.deleteSmsSenderId(s.id); } catch (err) { fetchSenders(); }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage SMS sender IDs.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 16, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>SMS Sender IDs</div>
+          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>
+            The exact SMS sender each provider is allowed to send from (e.g. Hormuud EVC Plus and Somnet EVC Plus both send from "192"; Somtel eDahab sends from "eDahab"). The Agent App only accepts a payment or payout confirmation SMS if its real sender matches an enabled entry here for that provider — a wrong or spoofed sender is rejected even if the message text looks correct.
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={fetchSenders} disabled={loading}>Refresh</Button>
+          <Button icon={Plus} onClick={openNew}>Add Sender</Button>
+        </div>
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              {["Provider Key", "Sender", "Label", "Status", ""].map((h) => (
+                <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {senders.map((s) => (
+              <tr key={s.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13, fontFamily: "monospace" }}>{s.providerKey}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE, fontFamily: "monospace" }}>{s.sender}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE }}>{s.label || "—"}</td>
+                <td style={{ padding: "10px 14px" }}><Badge tone={s.enabled ? "green" : "gray"}>{s.enabled ? "Enabled" : "Disabled"}</Badge></td>
+                <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
+                  <button onClick={() => toggleStatus(s)} title={s.enabled ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
+                    <Power size={14} color={s.enabled ? GREEN : "#C81E2C"} />
+                  </button>
+                  <button onClick={() => remove(s)} title="Delete" style={{ background: "none", border: "none", cursor: "pointer" }}>
+                    <Trash2 size={14} color="#C81E2C" />
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {senders.length === 0 && !loading && (
+              <tr><td colSpan={5} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No SMS sender IDs configured yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+
+      {editing && (
+        <Modal title="Add SMS sender" onClose={() => setEditing(null)} width={420}>
+          <Field label="Provider Key (shared by every parser for this network, e.g. hormuud_evc_plus)">
+            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={form.providerKey || ""} onChange={(e) => setForm({ ...form, providerKey: e.target.value })} placeholder="hormuud_evc_plus" />
+          </Field>
+          <Field label="Sender (exact SMS sender/short code)">
+            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={form.sender || ""} onChange={(e) => setForm({ ...form, sender: e.target.value })} placeholder="192" />
+          </Field>
+          <Field label="Label (optional, for your own reference)">
+            <input style={inputStyle} value={form.label || ""} onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder="Hormuud EVC Plus" />
+          </Field>
+          <div style={{ display: "flex", gap: 10 }}>
+            <Button onClick={save} icon={Check}>Save Sender</Button>
+            <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 function ChangePasswordCard() {
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -8885,6 +9036,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "payment-transactions" && <PaymentTransactionsPanel companies={companies} />}
           {active === "commissions" && <CommissionsPanel companies={companies} packages={packages} admin={admin} />}
           {active === "money-exchange" && <MoneyExchangePanel admin={admin} />}
+          {active === "sms-sender-ids" && <SmsSenderIdsPanel />}
           {active === "feedback" && <FeedbackPanel admin={admin} />}
           {active === "referrals" && <ReferralRewardsPanel admin={admin} />}
           {active === "pending-recovery" && <PendingRecoveryPanel />}
