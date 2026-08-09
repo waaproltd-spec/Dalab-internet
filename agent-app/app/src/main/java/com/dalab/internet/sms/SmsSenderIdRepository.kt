@@ -26,6 +26,15 @@ data class SmsSenderIdEntry(
 object SmsSenderIdRepository {
     @Volatile private var cache: Map<String, List<String>> = emptyMap() // providerKey -> senders
 
+    /** The last failure message actually logged to Diagnostics -- caps
+     * logging to once per distinct error instead of once per ~60s refresh
+     * loop tick for as long as the backend keeps returning the same failure
+     * (e.g. the route not deployed yet). Cleared on a successful refresh so
+     * a later, different (or recovered-then-repeated) failure still logs.
+     * Same dedup shape as ExchangeUssdBridge.shouldLogWindowMismatch
+     * elsewhere in this codebase. */
+    @Volatile private var lastLoggedFailure: String? = null
+
     suspend fun refresh(): Result<Unit> {
         return try {
             val response = ApiClient.service.getSmsSenderIds()
@@ -33,16 +42,23 @@ object SmsSenderIdRepository {
                 cache = response.body()
                     ?.groupBy({ it.providerKey }, { it.sender })
                     ?: emptyMap()
+                lastLoggedFailure = null
                 Result.success(Unit)
             } else {
                 val error = IllegalStateException("Failed to load SMS sender IDs: HTTP ${response.code()}")
-                DiagnosticsLog.record("sms_sender_ids_refresh", error.message ?: "unknown error")
+                logFailureIfNew(error.message ?: "unknown error")
                 Result.failure(error)
             }
         } catch (e: Exception) {
-            DiagnosticsLog.record("sms_sender_ids_refresh", e.message ?: "unknown error")
+            logFailureIfNew(e.message ?: "unknown error")
             Result.failure(e)
         }
+    }
+
+    private fun logFailureIfNew(message: String) {
+        if (message == lastLoggedFailure) return
+        lastLoggedFailure = message
+        DiagnosticsLog.record("sms_sender_ids_refresh", message)
     }
 
     /**
