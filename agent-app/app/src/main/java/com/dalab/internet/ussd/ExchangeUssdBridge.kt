@@ -59,6 +59,16 @@ object ExchangeUssdBridge {
     @Volatile
     private var lastLoggedMismatchPackage: String? = null
 
+    /** True once a post-PIN (Step 3) confirmation screen has already been
+     * auto-tapped this attempt. Caps that auto-tap to at most once: the
+     * carrier's own final receipt reuses the same dialog template (still
+     * has an EditText, may still have an OK/Send-looking button), so
+     * without this cap a genuinely final screen could be mistaken for
+     * another Step 3 confirm and tapped instead of being accepted as the
+     * real result. */
+    @Volatile
+    private var postPinConfirmationTapped: Boolean = false
+
     private var events = Channel<UssdDialogEvent>(capacity = Channel.CONFLATED)
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -84,6 +94,7 @@ object ExchangeUssdBridge {
         lastPostConfirmText = null
         lockedPackageName = null
         lastLoggedMismatchPackage = null
+        postPinConfirmationTapped = false
         stopPinPolling()
         armed = true
     }
@@ -96,6 +107,7 @@ object ExchangeUssdBridge {
         lastPostConfirmText = null
         lockedPackageName = null
         lastLoggedMismatchPackage = null
+        postPinConfirmationTapped = false
         stopPinPolling()
     }
 
@@ -197,8 +209,18 @@ object ExchangeUssdBridge {
 
     internal fun emit(event: UssdDialogEvent) {
         if (event is UssdDialogEvent.PinSubmitted) pinSubmitted = true
+        if (event is UssdDialogEvent.ConfirmationAdvanced && event.stage == ConfirmationStage.POST_PIN) {
+            postPinConfirmationTapped = true
+        }
         events.trySend(event)
     }
+
+    /** True while a post-PIN screen should still be evaluated as a
+     * possible Step 3 confirm-tap target rather than read as final content
+     * -- i.e. the PIN has been submitted, but no Step 3 screen has been
+     * auto-tapped yet this attempt. */
+    internal fun isEligibleForPostPinConfirmTap(): Boolean =
+        pinSubmitted && !postPinConfirmationTapped
 
     /** Discards any event already buffered in the conflated channel before a
      * fresh wait starts, so awaitNextEvent only ever returns something that

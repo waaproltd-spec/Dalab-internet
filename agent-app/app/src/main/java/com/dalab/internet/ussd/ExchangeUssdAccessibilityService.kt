@@ -122,7 +122,7 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
                 return
             }
 
-            if (inputNode == null) {
+            if (inputNode == null || ExchangeUssdBridge.isEligibleForPostPinConfirmTap()) {
                 // No PIN field yet, but this may be a legitimate
                 // intermediate step -- some carrier flows show a plain
                 // "confirm this transfer?" screen (message + Send/OK, no
@@ -133,6 +133,17 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
                 // through to the ambiguous-failure DialogSeen below
                 // unchanged -- never taps something that isn't actually a
                 // confirm/dismiss action.
+                //
+                // The same applies after the PIN has been submitted: the
+                // native USSD dialog reuses one template with an EditText
+                // for the whole session, so a Step 3 "Send/Cancel" screen
+                // confirming the pending transfer still has a (now
+                // irrelevant) input field -- inputNode != null doesn't mean
+                // "still needs input" once the PIN is already in. Capped to
+                // one auto-tap per attempt (isEligibleForPostPinConfirmTap)
+                // so the carrier's real final receipt -- which can share the
+                // same template -- is never mistaken for another Step 3
+                // screen and tapped instead of being accepted as the result.
                 val confirmButton = findPositiveButton(root)
                 if (confirmButton != null) {
                     if (ExchangeUssdBridge.shouldAutoConfirm(messageText)) {
