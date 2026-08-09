@@ -1,10 +1,16 @@
 package com.dalab.internet.ussd
 
 import android.accessibilityservice.AccessibilityService
+import android.app.PendingIntent
+import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import com.dalab.internet.MainActivity
+import com.dalab.internet.R
 import com.dalab.internet.diagnostics.DiagnosticsLog
 
 /**
@@ -207,19 +213,47 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
             window.recycle()
         }
         if (found == null && ExchangeUssdBridge.shouldLogWindowSearchMiss()) {
-            // Confirmed live: the carrier dialog can stay visually on top of
-            // the Home screen after losing focus, yet not appear in this
-            // list at all -- this records exactly what *was* visible so the
-            // real cause (window genuinely absent vs. present under an
-            // unexpected package/type) is diagnosable from Diagnostics
-            // alone, without guessing at a fix blind.
+            // Confirmed live (Samsung/One UI): the carrier dialog can stay
+            // visually on top of the Home screen after losing focus, yet
+            // genuinely not appear in this list at all -- the OS itself
+            // excludes it from the interactive window set once backgrounded,
+            // not a search-logic gap on our side. Nothing can be tapped or
+            // filled without the real window, so the safest response is to
+            // tell the user to come back rather than silently keep polling
+            // for the rest of this step's existing timeout.
             DiagnosticsLog.record(
                 "exchange_window_search_miss",
                 "Locked window \"$locked\" not found among ${seen.size} visible window(s): ${seen.joinToString()}",
                 isError = false,
             )
+            notifyWindowLost()
         }
         return found
+    }
+
+    /** Fires at most once per attempt, the moment the locked carrier window
+     * can't be found among the currently visible windows -- e.g. the OS
+     * stopped exposing it to accessibility services once the user left it
+     * for Home or another app (see findRelevantRoot()). Purely
+     * informational: tells the user to come back so the in-flight attempt
+     * can still complete within its existing timeout. Does not change what
+     * the automation waits for, tries, or accepts as a result -- no PIN is
+     * entered and no outcome is reported here or anywhere else based on
+     * this notification. */
+    private fun notifyWindowLost() {
+        val openApp = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(this, "payment_channel")
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("Action needed: return to Money Exchange")
+            .setContentText("The USSD screen left the foreground -- return to it now to finish this payout.")
+            .setContentIntent(openApp)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
+        NotificationManagerCompat.from(this).notify(WINDOW_LOST_NOTIFICATION_ID, notification)
     }
 
     private fun isTransientLoadingDialog(text: String): Boolean {
@@ -322,6 +356,11 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "ExchangeUssdA11y"
+
+        // Distinct from AgentBackgroundService's NOTIFICATION_ID (1001) and
+        // SESSION_EXPIRED_NOTIFICATION_ID (1002) -- notification IDs are
+        // shared across the whole app's notifications, not per-class.
+        private const val WINDOW_LOST_NOTIFICATION_ID = 2001
 
         @Volatile
         var instance: ExchangeUssdAccessibilityService? = null
