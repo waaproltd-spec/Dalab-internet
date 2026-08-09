@@ -259,9 +259,39 @@ object SomtelEdahabPayoutSentParser : ExchangePayoutSentParser {
     }
 }
 
+/**
+ * Hormuud EVC Plus's outgoing-transfer confirmation SMS.
+ * Example: "[-EVCPLUS-] $1.98 ayaad uwareejisay YASIIN MAXAMED AADAN
+ *           (610346060), Tar: 09/08/26 20:32:27, Haraagaagu waa $36.965."
+ * Mirrors HormuudEvcPlusParser's incoming counterpart -- same "[-EVCPLUS-]"
+ * tag, but "ayaad uwareejisay" ("was transferred to") instead of "waxaad
+ * ... ka heshay" ("you received from"), and the recipient's phone is in
+ * parentheses after their name rather than immediately after the amount
+ * -- confirmed live: this exact format went completely unrecognized
+ * (order DEX254812266's real, successful payout SMS logged as
+ * sms_receiver_unrecognized, so the corroboration safety net never fired
+ * to correct the on-screen automation's mistaken Failed result). No
+ * confirmed sender ID captured yet -- matched on the distinctive
+ * "uwareejisay" phrase instead, same posture as SomtelEdahabPayoutSentParser.
+ */
+object HormuudEvcPlusPayoutSentParser : ExchangePayoutSentParser {
+    private val pattern = Regex(
+        """\$$AMOUNT_PATTERN\s*ayaad\s+uwareejisay\s+.+?\((\d{6,15})\)""",
+        RegexOption.IGNORE_CASE
+    )
+
+    override fun tryParse(sender: String, body: String): ExchangePayoutConfirmedEntry? {
+        if (!body.contains("uwareejisay", ignoreCase = true)) return null
+        val match = pattern.find(body) ?: return null
+        val (amount, phone) = match.destructured
+        val parsedAmount = parseAmount(amount) ?: return null
+        return ExchangePayoutConfirmedEntry(receiverPhone = phone, amount = parsedAmount, provider = "Hormuud", rawText = body)
+    }
+}
+
 /** Registry for Money Exchange payout confirmations — mirrors [VoucherSentParsers]. */
 object ExchangePayoutSentParsers {
-    val ALL: List<ExchangePayoutSentParser> = listOf(SomtelEdahabPayoutSentParser)
+    val ALL: List<ExchangePayoutSentParser> = listOf(SomtelEdahabPayoutSentParser, HormuudEvcPlusPayoutSentParser)
 
     fun parse(sender: String, body: String): ExchangePayoutConfirmedEntry? {
         for (parser in ALL) {
