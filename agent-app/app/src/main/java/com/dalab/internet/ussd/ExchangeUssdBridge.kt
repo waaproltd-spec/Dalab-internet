@@ -69,6 +69,12 @@ object ExchangeUssdBridge {
     @Volatile
     private var postPinConfirmationTapped: Boolean = false
 
+    /** True once this attempt has already logged an exchange_window_search_miss
+     * entry -- caps it to once per attempt so a prolonged background period
+     * (repeated 500ms polls all missing) doesn't spam Diagnostics. */
+    @Volatile
+    private var windowSearchMissLogged: Boolean = false
+
     private var events = Channel<UssdDialogEvent>(capacity = Channel.CONFLATED)
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -95,6 +101,7 @@ object ExchangeUssdBridge {
         lockedPackageName = null
         lastLoggedMismatchPackage = null
         postPinConfirmationTapped = false
+        windowSearchMissLogged = false
         stopPinPolling()
         armed = true
     }
@@ -107,6 +114,7 @@ object ExchangeUssdBridge {
         lastPostConfirmText = null
         lockedPackageName = null
         lastLoggedMismatchPackage = null
+        windowSearchMissLogged = false
         postPinConfirmationTapped = false
         stopPinPolling()
     }
@@ -196,6 +204,15 @@ object ExchangeUssdBridge {
             return true
         }
         return packageName != null && packageName == locked
+    }
+
+    /** True the first time this attempt fails to find its locked window
+     * among the currently visible windows -- caps the diagnostic log to
+     * once per attempt. */
+    internal fun shouldLogWindowSearchMiss(): Boolean {
+        if (windowSearchMissLogged) return false
+        windowSearchMissLogged = true
+        return true
     }
 
     /** The package this attempt has locked onto, once established --

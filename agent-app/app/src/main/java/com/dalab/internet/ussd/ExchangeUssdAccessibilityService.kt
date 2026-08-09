@@ -189,9 +189,15 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
     private fun findRelevantRoot(): AccessibilityNodeInfo? {
         val locked = ExchangeUssdBridge.lockedWindowPackageOrNull() ?: return rootInActiveWindow
         var found: AccessibilityNodeInfo? = null
+        // Only collected for the miss-diagnostic below -- package+type of
+        // every window seen this scan, so a search miss is self-explanatory
+        // without needing a live device connection to inspect.
+        val seen = mutableListOf<String>()
         for (window in windows) {
             val windowRoot = window.root
-            if (found == null && windowRoot?.packageName?.toString() == locked) {
+            val windowPackage = windowRoot?.packageName?.toString()
+            seen.add("${windowPackage ?: "?"}(type=${window.type})")
+            if (found == null && windowPackage == locked) {
                 found = windowRoot
             } else {
                 @Suppress("DEPRECATION")
@@ -199,6 +205,19 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
             }
             @Suppress("DEPRECATION")
             window.recycle()
+        }
+        if (found == null && ExchangeUssdBridge.shouldLogWindowSearchMiss()) {
+            // Confirmed live: the carrier dialog can stay visually on top of
+            // the Home screen after losing focus, yet not appear in this
+            // list at all -- this records exactly what *was* visible so the
+            // real cause (window genuinely absent vs. present under an
+            // unexpected package/type) is diagnosable from Diagnostics
+            // alone, without guessing at a fix blind.
+            DiagnosticsLog.record(
+                "exchange_window_search_miss",
+                "Locked window \"$locked\" not found among ${seen.size} visible window(s): ${seen.joinToString()}",
+                isError = false,
+            )
         }
         return found
     }
