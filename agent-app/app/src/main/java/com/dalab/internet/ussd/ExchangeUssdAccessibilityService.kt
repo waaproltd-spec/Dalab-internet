@@ -88,6 +88,19 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
                 }
             }
 
+            if (isTransientLoadingDialog(messageText)) {
+                // Android's own "USSD code running…" placeholder, shown
+                // while waiting for the carrier -- not a real response.
+                // Emitting this as DialogSeen would make the orchestrator
+                // treat it as the final (PIN-less) answer and give up well
+                // before its actual timeout -- confirmed live on order
+                // DEX801871634 (STEP1_FAILED with response text literally
+                // "USSD code running…"). Skip it silently; a later scan
+                // (triggered once the real dialog replaces this one) will
+                // emit the actual response.
+                return
+            }
+
             ExchangeUssdBridge.emit(UssdDialogEvent.DialogSeen(messageText, hasInput = inputNode != null))
         } catch (e: Exception) {
             Log.w(TAG, "scanAndAct failed: ${e.message}")
@@ -95,6 +108,16 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
             @Suppress("DEPRECATION")
             root.recycle()
         }
+    }
+
+    private fun isTransientLoadingDialog(text: String): Boolean {
+        // Android's built-in USSD "waiting for carrier" placeholder
+        // (com.android.phone's ussd_dialog_load string) -- "USSD code
+        // running…" on most builds, "Running USSD code…" on some
+        // OEM/locale variants. It never carries an input field of its own;
+        // the real carrier response replaces it in a later window.
+        val normalized = text.trim().lowercase()
+        return normalized.contains("ussd code running") || normalized.contains("running ussd code")
     }
 
     private fun findDialogMessageText(node: AccessibilityNodeInfo): String? {

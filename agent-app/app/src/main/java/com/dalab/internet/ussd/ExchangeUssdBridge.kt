@@ -30,6 +30,10 @@ object ExchangeUssdBridge {
 
     private var events = Channel<UssdDialogEvent>(capacity = Channel.CONFLATED)
 
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var pinPollRunnable: Runnable? = null
+    private const val PIN_POLL_INTERVAL_MS = 500L
+
     fun isAccessibilityServiceEnabled(context: Context): Boolean {
         val enabled = Settings.Secure.getString(
             context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
@@ -44,23 +48,51 @@ object ExchangeUssdBridge {
     fun arm() {
         events = Channel(capacity = Channel.CONFLATED)
         pendingPinToInject = null
+        stopPinPolling()
         armed = true
     }
 
     fun disarm() {
         armed = false
         pendingPinToInject = null
+        stopPinPolling()
     }
 
     /** Tells the service to fill+submit this PIN into the next input-bearing
-     * dialog it sees, and asks it to re-check the currently foregrounded
-     * window immediately (in case the target dialog is already on screen and
-     * won't otherwise fire a fresh accessibility event). */
+     * dialog it sees, then actively re-checks the currently foregrounded
+     * window at a short interval until it's consumed (submitted) or the
+     * attempt ends. A single immediate check isn't enough: the reply
+     * dialog's input field can render a beat after the window itself
+     * appears, and some OEM dialogs never fire a second accessibility event
+     * once drawn — leaving a purely event-driven scan no way to try again
+     * before ExchangeUssdOrchestrator's step-2 timeout gives up (confirmed
+     * live on order DEX933880917: STEP2_FAILED, PIN never actually typed).
+     * Polling only changes how often scanAndAct() gets called — what it
+     * does with what it finds (inject once, else restore for next look) is
+     * unchanged. */
     fun armPinInjection(pin: String) {
         pendingPinToInject = pin
-        Handler(Looper.getMainLooper()).post {
-            ExchangeUssdAccessibilityService.instance?.scanAndAct()
+        startPinPolling()
+    }
+
+    private fun startPinPolling() {
+        stopPinPolling()
+        val runnable = object : Runnable {
+            override fun run() {
+                if (!armed || pendingPinToInject == null) return // submitted, or attempt finished/cancelled — stop
+                ExchangeUssdAccessibilityService.instance?.scanAndAct()
+                if (armed && pendingPinToInject != null) {
+                    mainHandler.postDelayed(this, PIN_POLL_INTERVAL_MS)
+                }
+            }
         }
+        pinPollRunnable = runnable
+        mainHandler.post(runnable)
+    }
+
+    private fun stopPinPolling() {
+        pinPollRunnable?.let(mainHandler::removeCallbacks)
+        pinPollRunnable = null
     }
 
     internal fun consumePendingPinToInject(): String? {
@@ -70,8 +102,8 @@ object ExchangeUssdBridge {
     }
 
     /** Puts the PIN back if the window scanAndAct just looked at wasn't the
-     * right one — e.g. it had no input field yet — so a later window still
-     * gets it. */
+     * right one — e.g. it had no input field yet — so a later poll/window
+     * still gets it. */
     internal fun restorePendingPinToInject(pin: String) {
         pendingPinToInject = pin
     }
