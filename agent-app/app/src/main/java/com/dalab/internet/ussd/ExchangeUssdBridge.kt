@@ -45,6 +45,20 @@ object ExchangeUssdBridge {
     @Volatile
     private var lastPostConfirmText: String? = null
 
+    /** The package name of the window this attempt has confirmed is the
+     * real carrier dialog — set the first time a scan sees any dialog text
+     * at all (armed only goes true right as the USSD dial is placed, so the
+     * first window to show any text is overwhelmingly likely to be the
+     * actual dialer). Every later scan in this attempt must come from this
+     * same window; a mismatch means the foreground drifted to an unrelated
+     * app (e.g. Chrome) and must never be treated as carrier output or have
+     * a PIN injected into it. */
+    @Volatile
+    private var lockedPackageName: String? = null
+
+    @Volatile
+    private var lastLoggedMismatchPackage: String? = null
+
     private var events = Channel<UssdDialogEvent>(capacity = Channel.CONFLATED)
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -68,6 +82,8 @@ object ExchangeUssdBridge {
         pinSubmitted = false
         lastPreConfirmText = null
         lastPostConfirmText = null
+        lockedPackageName = null
+        lastLoggedMismatchPackage = null
         stopPinPolling()
         armed = true
     }
@@ -78,6 +94,8 @@ object ExchangeUssdBridge {
         pinSubmitted = false
         lastPreConfirmText = null
         lastPostConfirmText = null
+        lockedPackageName = null
+        lastLoggedMismatchPackage = null
         stopPinPolling()
     }
 
@@ -153,6 +171,29 @@ object ExchangeUssdBridge {
      * attempt, Step 3 (post-PIN) if it has. */
     internal fun currentConfirmationStage(): ConfirmationStage =
         if (pinSubmitted) ConfirmationStage.POST_PIN else ConfirmationStage.PRE_PIN
+
+    /** True if [packageName] is the window already confirmed as this
+     * attempt's real carrier dialog, or if no window has been confirmed
+     * yet (in which case [packageName] becomes the locked window). False
+     * means the foreground has drifted to a different app mid-attempt --
+     * its content must never be read as carrier output. */
+    internal fun isWindowAllowed(packageName: String?): Boolean {
+        val locked = lockedPackageName
+        if (locked == null) {
+            lockedPackageName = packageName
+            return true
+        }
+        return packageName != null && packageName == locked
+    }
+
+    /** True the first time a given off-target package is seen this
+     * attempt, so a window mismatch logs once instead of on every 500ms
+     * poll while the wrong app stays foregrounded. */
+    internal fun shouldLogWindowMismatch(packageName: String?): Boolean {
+        if (packageName == lastLoggedMismatchPackage) return false
+        lastLoggedMismatchPackage = packageName
+        return true
+    }
 
     internal fun emit(event: UssdDialogEvent) {
         if (event is UssdDialogEvent.PinSubmitted) pinSubmitted = true

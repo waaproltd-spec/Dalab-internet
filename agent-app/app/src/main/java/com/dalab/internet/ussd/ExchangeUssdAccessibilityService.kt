@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.dalab.internet.diagnostics.DiagnosticsLog
 
 /**
  * Reads Android's native "USSD message" reply dialog via the Accessibility
@@ -59,6 +60,26 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
         val root = rootInActiveWindow ?: return
         try {
             val messageText = findDialogMessageText(root) ?: return
+
+            val windowPackage = root.packageName?.toString()
+            if (!ExchangeUssdBridge.isWindowAllowed(windowPackage)) {
+                // Foreground drifted to a different app mid-attempt (e.g.
+                // Chrome) -- never treat unrelated content as the carrier's
+                // dialog, and never inject the PIN into it. Leave any
+                // pending PIN untouched; the next poll retries once the
+                // real dialog is back in front (confirmed live: order
+                // DEX624960716 reported SUCCESS off a Chrome tab's text
+                // after Chrome came to the foreground mid-attempt).
+                if (ExchangeUssdBridge.shouldLogWindowMismatch(windowPackage)) {
+                    DiagnosticsLog.record(
+                        "exchange_window_mismatch",
+                        "Ignored foreground window \"$windowPackage\" -- doesn't match the carrier dialog's window for this attempt.",
+                        isError = false,
+                    )
+                }
+                return
+            }
+
             val inputNode = findEditableNode(root)
 
             val pendingPin = ExchangeUssdBridge.consumePendingPinToInject()
