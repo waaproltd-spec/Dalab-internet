@@ -76,7 +76,15 @@ object HormuudEvcPlusParser : PaymentSmsParser {
  * HormuudEvcPlusParser restricts on `senders`.
  */
 object SomtelEdahabParser : PaymentSmsParser {
-    override val senders: List<String> = emptyList()
+    // Confirmed live this session: a real eDahab-formatted SMS's actual
+    // originatingAddress (read directly by SmsReceiver.kt, not a
+    // UI-resolved contact name) was logged as exactly "eDahab" -- and the
+    // same sender carries both this incoming-payment format and
+    // SomtelEdahabPayoutSentParser's outgoing-payout format (same SMS
+    // thread). Previously unvalidated ("No confirmed SMS sender/shortcode
+    // was provided for this format") -- now locked down the same way
+    // HormuudEvcPlusParser already validates its senders.
+    override val senders: List<String> = listOf("eDahab")
 
     private val pattern = Regex(
         """$AMOUNT_PATTERN\s*Dollar\s+Ayaad\s+Ka\s+Heshay[\s\S]*?Lambarka\s*:\s*(\d{6,15})""",
@@ -91,6 +99,7 @@ object SomtelEdahabParser : PaymentSmsParser {
     private val referencePattern = Regex("""Aqanoosiga\s*:\s*(\S+)""", RegexOption.IGNORE_CASE)
 
     override fun tryParse(sender: String, body: String, receivedAt: String): SmsLogEntry? {
+        if (senders.none { it.equals(sender.trim(), ignoreCase = true) }) return null
         if (!body.contains("eDahab", ignoreCase = true)) return null
         val match = pattern.find(body) ?: return null
         val (amount, phone) = match.destructured
@@ -233,6 +242,7 @@ object VoucherSentParsers {
 data class ExchangePayoutConfirmedEntry(val receiverPhone: String, val amount: Double, val provider: String, val rawText: String)
 
 interface ExchangePayoutSentParser {
+    val senders: List<String>
     fun tryParse(sender: String, body: String): ExchangePayoutConfirmedEntry?
 }
 
@@ -241,17 +251,24 @@ interface ExchangePayoutSentParser {
  * Example: "1.98 Dollar ayad u warejisay Yaasiin Maxamed Aadan. No:
  *           620346060.Tixrac: PP260808.2240.E07703 Haraaga: 7.08 Dollar
  *           Kharashyada Adeegga:0"
- * No confirmed sender ID for this format (same situation as the incoming
- * [SomtelEdahabParser]) — matched on the distinctive "u warejisay"
- * ("transferred to") phrase plus the recipient's "No:" field instead.
+ * Confirmed live this session: this SMS arrives in the same thread (same
+ * originatingAddress) as SomtelEdahabParser's incoming-payment format,
+ * whose real sender was independently confirmed as "eDahab" via
+ * Diagnostics -- so this outgoing side shares that same sender. Previously
+ * unvalidated ("No confirmed sender ID for this format") -- matched on the
+ * distinctive "u warejisay" ("transferred to") phrase plus the recipient's
+ * "No:" field, now also requiring the sender to match.
  */
 object SomtelEdahabPayoutSentParser : ExchangePayoutSentParser {
+    override val senders: List<String> = listOf("eDahab")
+
     private val pattern = Regex(
         """$AMOUNT_PATTERN\s*Dollar\s+ayad?\s+u\s+warejisay[\s\S]*?No:\s*(\d{6,15})""",
         RegexOption.IGNORE_CASE
     )
 
     override fun tryParse(sender: String, body: String): ExchangePayoutConfirmedEntry? {
+        if (senders.none { it.equals(sender.trim(), ignoreCase = true) }) return null
         val match = pattern.find(body) ?: return null
         val (amount, phone) = match.destructured
         val parsedAmount = parseAmount(amount) ?: return null
@@ -270,17 +287,22 @@ object SomtelEdahabPayoutSentParser : ExchangePayoutSentParser {
  * -- confirmed live: this exact format went completely unrecognized
  * (order DEX254812266's real, successful payout SMS logged as
  * sms_receiver_unrecognized, so the corroboration safety net never fired
- * to correct the on-screen automation's mistaken Failed result). No
- * confirmed sender ID captured yet -- matched on the distinctive
- * "uwareejisay" phrase instead, same posture as SomtelEdahabPayoutSentParser.
+ * to correct the on-screen automation's mistaken Failed result). Sender
+ * confirmed live too: this SMS arrives in the same thread as sender "192"'s
+ * incoming-payment SMS -- the same senders HormuudEvcPlusParser already
+ * trusts -- matched on the distinctive "uwareejisay" phrase plus sender,
+ * same posture as SomtelEdahabPayoutSentParser.
  */
 object HormuudEvcPlusPayoutSentParser : ExchangePayoutSentParser {
+    override val senders: List<String> = listOf("192", "EVCPLUS")
+
     private val pattern = Regex(
         """\$$AMOUNT_PATTERN\s*ayaad\s+uwareejisay\s+.+?\((\d{6,15})\)""",
         RegexOption.IGNORE_CASE
     )
 
     override fun tryParse(sender: String, body: String): ExchangePayoutConfirmedEntry? {
+        if (senders.none { it.equals(sender.trim(), ignoreCase = true) }) return null
         if (!body.contains("uwareejisay", ignoreCase = true)) return null
         val match = pattern.find(body) ?: return null
         val (amount, phone) = match.destructured
