@@ -57,7 +57,7 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
      * already on screen and won't fire a fresh event of its own). */
     internal fun scanAndAct() {
         if (!ExchangeUssdBridge.armed) return
-        val root = rootInActiveWindow ?: return
+        val root = findRelevantRoot() ?: return
         try {
             val messageText = findDialogMessageText(root) ?: return
 
@@ -165,6 +165,42 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
             @Suppress("DEPRECATION")
             root.recycle()
         }
+    }
+
+    /** Finds the window this attempt should read from and act on. Before a
+     * window is locked in for this attempt (the first time real dialog text
+     * is seen -- see ExchangeUssdBridge.isWindowAllowed), uses whatever
+     * window is currently active, exactly as before: right after dial()
+     * places the call, that's reliably the phone/dialer UI grabbing focus.
+     * Once a window is locked, searches *every* currently visible window
+     * (not just the active one) for the one belonging to the locked
+     * package, so the carrier dialog keeps being read -- and PIN/Send
+     * actions keep being dispatched to it -- even after the user navigates
+     * to the Home screen or another app. Android can keep a system-style
+     * USSD dialog visually on screen without it remaining the "active"
+     * window; before this, that meant the automation stalled the moment
+     * focus moved away, even with the real dialog still visible (confirmed
+     * live: exchange_window_mismatch firing against
+     * com.sec.android.app.launcher and com.anthropic.claude while the
+     * dialog was still on screen). This never widens *what* the automation
+     * is willing to act on -- it's still an exact match against the one
+     * package locked in for this attempt, nothing else is ever considered.
+     * Returns null once the locked window has genuinely closed. */
+    private fun findRelevantRoot(): AccessibilityNodeInfo? {
+        val locked = ExchangeUssdBridge.lockedWindowPackageOrNull() ?: return rootInActiveWindow
+        var found: AccessibilityNodeInfo? = null
+        for (window in windows) {
+            val windowRoot = window.root
+            if (found == null && windowRoot?.packageName?.toString() == locked) {
+                found = windowRoot
+            } else {
+                @Suppress("DEPRECATION")
+                windowRoot?.recycle()
+            }
+            @Suppress("DEPRECATION")
+            window.recycle()
+        }
+        return found
     }
 
     private fun isTransientLoadingDialog(text: String): Boolean {

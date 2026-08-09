@@ -198,6 +198,11 @@ object ExchangeUssdBridge {
         return packageName != null && packageName == locked
     }
 
+    /** The package this attempt has locked onto, once established --
+     * lets the service actively search for that specific window across
+     * every currently visible window, not only the active one. */
+    internal fun lockedWindowPackageOrNull(): String? = lockedPackageName
+
     /** True the first time a given off-target package is seen this
      * attempt, so a window mismatch logs once instead of on every 500ms
      * poll while the wrong app stays foregrounded. */
