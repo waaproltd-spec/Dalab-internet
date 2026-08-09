@@ -129,6 +129,19 @@ object ExchangeUssdBridge {
         events.trySend(event)
     }
 
+    /** Discards any event already buffered in the conflated channel before a
+     * fresh wait starts, so awaitNextEvent only ever returns something that
+     * happens *after* this call — not a stray DialogSeen left over from a
+     * still-on-screen dialog re-firing an accessibility event during the
+     * previous step's network round-trip (confirmed live: STEP2_FAILED
+     * firing ~5s after dialing, an order of magnitude under the 15s budget,
+     * on orders DEX176626979 and DEX565544915). */
+    internal fun drainStaleEvents() {
+        while (events.tryReceive().isSuccess) {
+            // discard
+        }
+    }
+
     suspend fun awaitNextEvent(timeoutMs: Long): UssdDialogEvent? = withTimeoutOrNull(timeoutMs) {
         events.receive()
     }

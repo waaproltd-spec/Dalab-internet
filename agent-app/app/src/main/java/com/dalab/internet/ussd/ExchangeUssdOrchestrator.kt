@@ -156,8 +156,16 @@ class ExchangeUssdOrchestrator(private val context: Context) {
      * carrier flow doesn't eat into the caller's actual response budget
      * beyond the wall-clock time it takes. Returns null once the full
      * budget is spent with no non-confirmation event, same as a plain
-     * awaitNextEvent timeout. */
+     * awaitNextEvent timeout.
+     *
+     * Always drains any already-buffered event first: the conflated
+     * channel can pick up a stray DialogSeen for a still-on-screen dialog
+     * re-firing an accessibility event during the *previous* step's own
+     * network round-trip (e.g. reportStep1's suspend call) — without the
+     * drain, this wait would instantly "receive" that stale leftover
+     * instead of actually watching for what happens from this point on. */
     private suspend fun awaitEventSkippingConfirmations(timeoutMs: Long): UssdDialogEvent? {
+        ExchangeUssdBridge.drainStaleEvents()
         val deadline = System.currentTimeMillis() + timeoutMs
         while (true) {
             val remaining = deadline - System.currentTimeMillis()
