@@ -3,7 +3,6 @@ package com.dalab.internet.ussd
 import android.accessibilityservice.AccessibilityService
 import android.app.PendingIntent
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -245,7 +244,7 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
                 isError = false,
             )
             notifyWindowLost()
-            attemptRecentsRecovery(locked)
+            attemptForegroundRecovery()
         }
         return found
     }
@@ -257,139 +256,77 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
      * an OS/OEM exclusion, not something SYSTEM_ALERT_WINDOW can affect, since
      * that permission only governs what THIS app's own windows can draw, not
      * whether Android exposes another app's window to accessibility
-     * introspection). Purely additive to notifyWindowLost() above, not a
-     * replacement -- this is experimental and its real-world hit rate is
-     * unknown; every outcome branch is logged so that can be measured from
-     * the field instead of assumed. Never redials/re-issues ACTION_CALL (a
-     * second USSD session risks a duplicate live-money payout) and never
-     * taps an ambiguous match -- same "don't guess" posture as
-     * findPositiveButton() elsewhere in this file. */
-    private fun attemptRecentsRecovery(lockedPackage: String) {
-        val label = resolveAppLabel(lockedPackage)
-        if (label == null) {
-            DiagnosticsLog.record(
-                "exchange_window_recovery_attempt",
-                "Could not resolve a display label for \"$lockedPackage\" -- recovery not attempted.",
-                isError = false,
-            )
-            return
-        }
-        val opened = performGlobalAction(GLOBAL_ACTION_RECENTS)
-        if (!opened) {
-            DiagnosticsLog.record(
-                "exchange_window_recovery_attempt",
-                "GLOBAL_ACTION_RECENTS returned false -- recovery not attempted.",
-                isError = false,
-            )
-            return
-        }
-        // The Recents/Overview UI needs a moment to render before its nodes
-        // are queryable -- same short-delay reasoning as
-        // ExchangeUssdBridge.PIN_POLL_INTERVAL_MS elsewhere in this feature.
-        Handler(Looper.getMainLooper()).postDelayed({ scanRecentsAndTap(lockedPackage, label) }, 400L)
-    }
-
-    /** Looks for exactly one Recents entry matching [label] and taps it.
-     * Every node inside the Overview UI belongs to the launcher/SystemUI's
-     * own accessibility window -- there is no API to read which app a task
-     * card represents, only its visible text/content-description, which
-     * normally carries the app's display label rather than its package
-     * name. Zero or more-than-one match -> do nothing; only a single,
-     * unambiguous match is ever tapped. */
-    private fun scanRecentsAndTap(lockedPackage: String, label: String) {
-        if (!ExchangeUssdBridge.armed) {
-            DiagnosticsLog.record(
-                "exchange_window_recovery_attempt",
-                "Attempt ended before Recents scan completed -- skipped.",
-                isError = false,
-            )
-            return
-        }
-        val target = label.trim().lowercase()
-        val matches = mutableListOf<AccessibilityNodeInfo>()
-        var windowCount = 0
-        for (window in windows) {
-            windowCount++
-            val windowRoot = window.root
-            if (windowRoot != null) {
-                findClickableAncestorsMatchingLabel(windowRoot, target, matches)
-                @Suppress("DEPRECATION")
-                windowRoot.recycle()
+     * introspection). Supersedes the earlier GLOBAL_ACTION_RECENTS-based
+     * attempt (commit 50638bd), which live testing showed never found a
+     * matching Recents entry -- most likely because the carrier's USSD
+     * dialog has no backing Activity/Task and therefore no Recents card at
+     * all. This approach instead brings this app's own MainActivity back to
+     * the foreground (an ordinary, always-available action for this app's
+     * own task) and re-scans shortly after, on the theory that regaining
+     * top-level foreground status is what makes Android start reporting the
+     * still-visible carrier window via getWindows() again. Purely additive
+     * to notifyWindowLost() above, not a replacement -- this is experimental
+     * and its real-world hit rate is unknown; every outcome is logged so
+     * that can be measured from the field instead of assumed. Never
+     * redials/re-issues ACTION_CALL and never touches PIN injection or the
+     * confirmation logic -- those are entirely unchanged; this only affects
+     * whether a later scanAndAct() can find the window to act on. */
+    private fun attemptForegroundRecovery() {
+        DiagnosticsLog.record(
+            "exchange_window_recovery_attempt",
+            "Recovery triggered after window-search-miss.",
+            isError = false,
+        )
+        try {
+            val intent = Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
             }
-            @Suppress("DEPRECATION")
-            window.recycle()
+            startActivity(intent)
+            DiagnosticsLog.record(
+                "exchange_window_recovery_attempt",
+                "MainActivity brought to the foreground.",
+                isError = false,
+            )
+        } catch (e: Exception) {
+            DiagnosticsLog.record(
+                "exchange_window_recovery_attempt",
+                "Recovery failed -- could not bring MainActivity to the foreground: ${e.message}",
+                isError = false,
+            )
+            return
         }
-        when {
-            matches.isEmpty() -> DiagnosticsLog.record(
+        Handler(Looper.getMainLooper()).postDelayed({
+            DiagnosticsLog.record(
                 "exchange_window_recovery_attempt",
-                "Opened Recents but found no entry matching label \"$label\" ($lockedPackage) among $windowCount window(s).",
+                "500ms re-scan started.",
                 isError = false,
             )
-            matches.size > 1 -> DiagnosticsLog.record(
-                "exchange_window_recovery_attempt",
-                "Opened Recents but found ${matches.size} ambiguous entries matching \"$label\" -- not tapping any.",
-                isError = false,
-            )
-            else -> {
-                val tapped = matches[0].performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            if (!ExchangeUssdBridge.armed) {
                 DiagnosticsLog.record(
                     "exchange_window_recovery_attempt",
-                    "Opened Recents, found one matching entry for \"$label\" ($lockedPackage), tapped it (result=$tapped).",
+                    "Attempt ended before the re-scan ran -- skipped.",
+                    isError = false,
+                )
+                return@postDelayed
+            }
+            val recoveredRoot = findRelevantRoot()
+            if (recoveredRoot != null) {
+                DiagnosticsLog.record(
+                    "exchange_window_recovery_attempt",
+                    "Carrier window found again -- recovery succeeded.",
+                    isError = false,
+                )
+                @Suppress("DEPRECATION")
+                recoveredRoot.recycle()
+            } else {
+                DiagnosticsLog.record(
+                    "exchange_window_recovery_attempt",
+                    "Carrier window still not found -- recovery failed.",
                     isError = false,
                 )
             }
-        }
-        for (node in matches) {
-            @Suppress("DEPRECATION")
-            node.recycle()
-        }
-    }
-
-    /** Walks [node]'s tree for text/content-description matching
-     * [targetLabelLowercase], and for each hit walks up (bounded depth) to
-     * the nearest clickable ancestor -- the actual tappable card, not the
-     * label text node itself -- adding it to [out] (deduplicated by bounds
-     * so the same card found via multiple descendant text nodes isn't
-     * counted twice). */
-    private fun findClickableAncestorsMatchingLabel(
-        node: AccessibilityNodeInfo,
-        targetLabelLowercase: String,
-        out: MutableList<AccessibilityNodeInfo>,
-    ) {
-        val text = node.text?.toString()?.trim()?.lowercase()
-        val description = node.contentDescription?.toString()?.trim()?.lowercase()
-        if (text == targetLabelLowercase || description == targetLabelLowercase) {
-            var ancestor: AccessibilityNodeInfo? = node
-            var depth = 0
-            while (ancestor != null && depth < 8) {
-                if (ancestor.isClickable) {
-                    val bounds = android.graphics.Rect().also { ancestor!!.getBoundsInScreen(it) }
-                    val alreadyFound = out.any { existing ->
-                        val existingBounds = android.graphics.Rect().also { existing.getBoundsInScreen(it) }
-                        existingBounds == bounds
-                    }
-                    if (!alreadyFound) out.add(ancestor)
-                    break
-                }
-                ancestor = ancestor.parent
-                depth++
-            }
-        }
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            findClickableAncestorsMatchingLabel(child, targetLabelLowercase, out)
-            @Suppress("DEPRECATION")
-            child.recycle()
-        }
-    }
-
-    private fun resolveAppLabel(packageName: String): String? {
-        return try {
-            val info = packageManager.getApplicationInfo(packageName, 0)
-            packageManager.getApplicationLabel(info).toString()
-        } catch (e: PackageManager.NameNotFoundException) {
-            null
-        }
+            scanAndAct()
+        }, 500L)
     }
 
     /** Fires at most once per attempt, the moment the locked carrier window
