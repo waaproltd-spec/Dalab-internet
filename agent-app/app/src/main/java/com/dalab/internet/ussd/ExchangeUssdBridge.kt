@@ -197,9 +197,20 @@ object ExchangeUssdBridge {
      * yet (in which case [packageName] becomes the locked window). False
      * means the foreground has drifted to a different app mid-attempt --
      * its content must never be read as carrier output. */
-    internal fun isWindowAllowed(packageName: String?): Boolean {
+    internal fun isWindowAllowed(packageName: String?, looksLikeUssdDialog: Boolean): Boolean {
         val locked = lockedPackageName
         if (locked == null) {
+            // Don't lock onto whatever's merely on screen -- confirmed live
+            // (order DEX426547905): a background/self-heal-triggered dial
+            // can fire while an unrelated app's window is still active
+            // (nothing the user is doing "wrong" -- there's an inherent
+            // race between dial() and the real dialer UI taking over), and
+            // locking onto that app's content produced a Step 1 "carrier
+            // response" that was actually just an app label. Only content
+            // that already looks like a genuine USSD dialog establishes the
+            // lock; anything else is skipped so a later scan, once the real
+            // dialer appears, gets to establish it correctly instead.
+            if (!looksLikeUssdDialog) return false
             lockedPackageName = packageName
             return true
         }

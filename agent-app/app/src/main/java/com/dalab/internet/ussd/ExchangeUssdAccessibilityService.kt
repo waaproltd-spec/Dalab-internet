@@ -68,25 +68,40 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
             val messageText = findDialogMessageText(root) ?: return
 
             val windowPackage = root.packageName?.toString()
-            if (!ExchangeUssdBridge.isWindowAllowed(windowPackage)) {
-                // Foreground drifted to a different app mid-attempt (e.g.
-                // Chrome) -- never treat unrelated content as the carrier's
-                // dialog, and never inject the PIN into it. Leave any
-                // pending PIN untouched; the next poll retries once the
-                // real dialog is back in front (confirmed live: order
-                // DEX624960716 reported SUCCESS off a Chrome tab's text
-                // after Chrome came to the foreground mid-attempt).
+            val inputNode = findEditableNode(root)
+            // Whether this scan's content looks like a genuine USSD dialog
+            // at all -- used only to decide whether it's safe to *establish*
+            // the window lock on it (see ExchangeUssdBridge.isWindowAllowed).
+            // findPositiveButton(root) here does a second tree walk beyond
+            // the one later in this function when a confirm-tap is actually
+            // attempted -- an accepted small cost on a small dialog tree,
+            // not worth threading a cached node reference through for.
+            val looksLikeUssdDialog = inputNode != null || isTransientLoadingDialog(messageText) || findPositiveButton(root) != null
+            if (!ExchangeUssdBridge.isWindowAllowed(windowPackage, looksLikeUssdDialog)) {
+                // Either the foreground drifted to a different app mid-attempt
+                // (e.g. Chrome) after a lock was already established --
+                // confirmed live: order DEX624960716 reported SUCCESS off a
+                // Chrome tab's text -- or no lock exists yet and this scan's
+                // content doesn't look like a dialog at all (confirmed live:
+                // order DEX426547905 locked onto an unrelated app's label as
+                // if it were the carrier's Step 1 response). Either way,
+                // never treat this content as carrier output and never
+                // inject the PIN into it. Leave any pending PIN untouched;
+                // the next poll retries once the real dialog is in front.
                 if (ExchangeUssdBridge.shouldLogWindowMismatch(windowPackage)) {
+                    val reason = if (ExchangeUssdBridge.lockedWindowPackageOrNull() == null) {
+                        "doesn't look like the carrier dialog yet (no input field, button, or loading text)"
+                    } else {
+                        "doesn't match the carrier dialog's window for this attempt"
+                    }
                     DiagnosticsLog.record(
                         "exchange_window_mismatch",
-                        "Ignored foreground window \"$windowPackage\" -- doesn't match the carrier dialog's window for this attempt.",
+                        "Ignored foreground window \"$windowPackage\" -- $reason.",
                         isError = false,
                     )
                 }
                 return
             }
-
-            val inputNode = findEditableNode(root)
 
             val pendingPin = ExchangeUssdBridge.consumePendingPinToInject()
             if (pendingPin != null) {
