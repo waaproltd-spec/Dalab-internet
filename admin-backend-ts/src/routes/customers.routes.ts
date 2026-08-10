@@ -11,7 +11,35 @@ export const customersRouter = Router();
 // pin_hash must never reach any client — explicit column list (plus a
 // derived pinSet boolean) rather than SELECT *, same convention already
 // used for pin_encrypted on companies.
-const ADMIN_CUSTOMER_COLUMNS = `id, phone, name, email, status, macaash_points, created_at, (pin_hash IS NOT NULL) AS pin_set, (password_hash IS NOT NULL) AS has_password`;
+//
+// evc_plus_locked/edahab_locked and exchange_*_limit_effective/
+// has_higher_exchange_limit are computed here rather than in application
+// code so the Admin dashboard's list and single-customer responses always
+// agree — see 047_exchange_wallet_lock_and_limits.sql and the wallet-lock/
+// exchange-limits routes below for what these mean.
+const ADMIN_CUSTOMER_COLUMNS = `id, phone, name, email, status, macaash_points, created_at,
+  (pin_hash IS NOT NULL) AS pin_set, (password_hash IS NOT NULL) AS has_password,
+  evc_plus_name, evc_plus_number, evc_plus_saved_at,
+  (evc_plus_saved_at IS NOT NULL AND now() - evc_plus_saved_at > interval '2 hours') AS evc_plus_locked,
+  edahab_name, edahab_number, edahab_saved_at,
+  (edahab_saved_at IS NOT NULL AND now() - edahab_saved_at > interval '2 hours') AS edahab_locked,
+  exchange_daily_limit, exchange_monthly_limit, exchange_yearly_limit,
+  COALESCE(exchange_daily_limit, 100) AS exchange_daily_limit_effective,
+  COALESCE(exchange_monthly_limit, 500) AS exchange_monthly_limit_effective,
+  COALESCE(exchange_yearly_limit, 2000) AS exchange_yearly_limit_effective,
+  ((exchange_daily_limit IS NOT NULL AND exchange_daily_limit > 100)
+    OR (exchange_monthly_limit IS NOT NULL AND exchange_monthly_limit > 500)
+    OR (exchange_yearly_limit IS NOT NULL AND exchange_yearly_limit > 2000)) AS has_higher_exchange_limit`;
+
+// Shared by both the customer's own PUT /customer/wallet-numbers and the
+// Admin override PUT /admin/customers/:id/wallet-numbers below — a wallet
+// (EVC Plus, eDahab) is always a name+number pair, saved and cleared
+// together (047_exchange_wallet_lock_and_limits.sql).
+const WALLET_PHONE_RE = /^\+?\d{6,15}$/;
+const WALLET_LOCK_WINDOW_MS = 2 * 60 * 60 * 1000;
+function walletPairError(label: string) {
+  return { error: `Provide both a name and a number for ${label}, or clear both` };
+}
 
 customersRouter.get("/admin/customers", requireStaff(), async (req, res) => {
   const { search } = req.query;
@@ -38,6 +66,85 @@ customersRouter.put("/admin/customers/:id/block", requirePermission("customers.m
   if (!customer) return sendJson(res, 404, { error: "Customer not found" });
   const nextStatus = customer.status === "active" ? "blocked" : "active";
   await query(`UPDATE customers SET status=$1 WHERE id=$2`, [nextStatus, req.params.id]);
+  sendJson(res, 200, await queryOne(`SELECT ${ADMIN_CUSTOMER_COLUMNS} FROM customers WHERE id=$1`, [req.params.id]));
+});
+
+// ---------------- Customer wallet info override (Admin) ----------------
+// The customer-facing PUT /customer/wallet-numbers (below) locks a wallet 2
+// hours after it's first saved — this is the only way to correct one after
+// that, and the only way (unlockEvcPlus/unlockEdahab) to grant the customer
+// a fresh self-service window again. No lock check here — an Admin can
+// always edit.
+customersRouter.put("/admin/customers/:id/wallet-numbers", requirePermission("customers.manage"), async (req, res) => {
+  const existing = await queryOne<{
+    evc_plus_name: string | null;
+    evc_plus_number: string | null;
+    evc_plus_saved_at: string | null;
+    edahab_name: string | null;
+    edahab_number: string | null;
+    edahab_saved_at: string | null;
+  }>(
+    `SELECT evc_plus_name, evc_plus_number, evc_plus_saved_at, edahab_name, edahab_number, edahab_saved_at FROM customers WHERE id=$1`,
+    [req.params.id]
+  );
+  if (!existing) return sendJson(res, 404, { error: "Customer not found" });
+  const body = req.body ?? {};
+
+  for (const field of ["evcPlusNumber", "edahabNumber"] as const) {
+    if (field in body && body[field] != null && !WALLET_PHONE_RE.test(String(body[field]))) {
+      return sendJson(res, 400, { error: `Provide a valid ${field === "evcPlusNumber" ? "EVC Plus" : "eDahab"} number` });
+    }
+  }
+
+  const evcPlusName = "evcPlusName" in body ? (body.evcPlusName == null ? null : String(body.evcPlusName).trim()) : existing.evc_plus_name;
+  const evcPlusNumber = "evcPlusNumber" in body ? (body.evcPlusNumber == null ? null : String(body.evcPlusNumber)) : existing.evc_plus_number;
+  const edahabName = "edahabName" in body ? (body.edahabName == null ? null : String(body.edahabName).trim()) : existing.edahab_name;
+  const edahabNumber = "edahabNumber" in body ? (body.edahabNumber == null ? null : String(body.edahabNumber)) : existing.edahab_number;
+
+  if ((evcPlusName == null) !== (evcPlusNumber == null)) return sendJson(res, 400, walletPairError("EVC Plus"));
+  if ((edahabName == null) !== (edahabNumber == null)) return sendJson(res, 400, walletPairError("eDahab"));
+
+  let evcPlusSavedAt = evcPlusName != null && evcPlusNumber != null ? existing.evc_plus_saved_at : null;
+  let edahabSavedAt = edahabName != null && edahabNumber != null ? existing.edahab_saved_at : null;
+  if (body.unlockEvcPlus === true && evcPlusName != null) evcPlusSavedAt = new Date().toISOString();
+  if (body.unlockEdahab === true && edahabName != null) edahabSavedAt = new Date().toISOString();
+
+  await query(
+    `UPDATE customers SET evc_plus_name=$1, evc_plus_number=$2, evc_plus_saved_at=$3, edahab_name=$4, edahab_number=$5, edahab_saved_at=$6 WHERE id=$7`,
+    [evcPlusName, evcPlusNumber, evcPlusSavedAt, edahabName, edahabNumber, edahabSavedAt, req.params.id]
+  );
+  sendJson(res, 200, await queryOne(`SELECT ${ADMIN_CUSTOMER_COLUMNS} FROM customers WHERE id=$1`, [req.params.id]));
+});
+
+// ---------------- Customer exchange limits (Admin) ----------------
+// NULL reverts a period to the platform default (see exchange.routes.ts's
+// createExchangeOrder for enforcement) — a number here is a custom limit for
+// this one customer. has_higher_exchange_limit (ADMIN_CUSTOMER_COLUMNS) only
+// turns on when a custom value actually exceeds its default, so the
+// dashboard's blue checkmark means "approved for more," not just "has an
+// override configured."
+customersRouter.put("/admin/customers/:id/exchange-limits", requirePermission("customers.manage"), async (req, res) => {
+  const existing = await queryOne<{ exchange_daily_limit: string | null; exchange_monthly_limit: string | null; exchange_yearly_limit: string | null }>(
+    `SELECT exchange_daily_limit, exchange_monthly_limit, exchange_yearly_limit FROM customers WHERE id=$1`,
+    [req.params.id]
+  );
+  if (!existing) return sendJson(res, 404, { error: "Customer not found" });
+  const body = req.body ?? {};
+
+  for (const field of ["dailyLimit", "monthlyLimit", "yearlyLimit"] as const) {
+    if (field in body && body[field] != null && !(Number.isFinite(Number(body[field])) && Number(body[field]) > 0)) {
+      return sendJson(res, 400, { error: `${field} must be a positive number or null` });
+    }
+  }
+
+  const dailyLimit = "dailyLimit" in body ? (body.dailyLimit == null ? null : Number(body.dailyLimit)) : existing.exchange_daily_limit;
+  const monthlyLimit = "monthlyLimit" in body ? (body.monthlyLimit == null ? null : Number(body.monthlyLimit)) : existing.exchange_monthly_limit;
+  const yearlyLimit = "yearlyLimit" in body ? (body.yearlyLimit == null ? null : Number(body.yearlyLimit)) : existing.exchange_yearly_limit;
+
+  await query(
+    `UPDATE customers SET exchange_daily_limit=$1, exchange_monthly_limit=$2, exchange_yearly_limit=$3 WHERE id=$4`,
+    [dailyLimit, monthlyLimit, yearlyLimit, req.params.id]
+  );
   sendJson(res, 200, await queryOne(`SELECT ${ADMIN_CUSTOMER_COLUMNS} FROM customers WHERE id=$1`, [req.params.id]));
 });
 
@@ -155,8 +262,8 @@ customersRouter.post("/agent/customers", requireAuth("agent"), async (req, res) 
 });
 
 // ---------------- Customer: own profile ----------------
-const CUSTOMER_PROFILE_COLUMNS = "id, phone, name, email, macaash_points, evc_plus_number, edahab_number, created_at";
-const WALLET_PHONE_RE = /^\+?\d{6,15}$/;
+const CUSTOMER_PROFILE_COLUMNS =
+  "id, phone, name, email, macaash_points, evc_plus_name, evc_plus_number, evc_plus_saved_at, edahab_name, edahab_number, edahab_saved_at, created_at";
 
 customersRouter.get("/customer/profile", requireAuth("customer"), async (req, res) => {
   const customer = await queryOne(`SELECT ${CUSTOMER_PROFILE_COLUMNS} FROM customers WHERE id=$1`, [req.auth!.sub]);
@@ -174,12 +281,14 @@ customersRouter.put("/customer/profile", requireAuth("customer"), async (req, re
 // ---------------- Customer: saved Money Exchange wallet numbers ----------------
 // So Money Exchange can auto-fill sender/receiver numbers from the
 // customer's own Account instead of asking them to retype both every time
-// (see exchange.routes.ts and the Customer App's exchange_new_screen.dart /
-// wallet_numbers_screen.dart). Each field is independently optional — a
-// customer can save just one wallet number at a time; exchange_new_screen.dart
-// decides whether that's enough for the corridor they picked. Explicitly
-// passing null (as opposed to omitting the key) clears a previously saved
-// number, since a customer may no longer hold that wallet.
+// (see exchange.routes.ts and the Customer App's exchange_swap_screen.dart /
+// wallet_numbers_screen.dart). Each wallet (EVC Plus, eDahab) is a name+
+// number pair, saved and cleared together — explicitly passing null for
+// both (as opposed to omitting the keys) clears that wallet, only while
+// it's still unlocked. A wallet locks a fixed 2 hours after it's first
+// saved (evc_plus_saved_at/edahab_saved_at, set once and never refreshed by
+// a later edit within the window); past that, only PUT /admin/customers/:id/
+// wallet-numbers can change or unlock it.
 customersRouter.put("/customer/wallet-numbers", requireAuth("customer"), async (req, res) => {
   const body = req.body ?? {};
   for (const field of ["evcPlusNumber", "edahabNumber"] as const) {
@@ -187,14 +296,41 @@ customersRouter.put("/customer/wallet-numbers", requireAuth("customer"), async (
       return sendJson(res, 400, { error: `Provide a valid ${field === "evcPlusNumber" ? "EVC Plus" : "eDahab"} number` });
     }
   }
-  const existing = await queryOne<{ evc_plus_number: string | null; edahab_number: string | null }>(
-    `SELECT evc_plus_number, edahab_number FROM customers WHERE id=$1`,
+  const existing = await queryOne<{
+    evc_plus_name: string | null;
+    evc_plus_number: string | null;
+    evc_plus_saved_at: string | null;
+    edahab_name: string | null;
+    edahab_number: string | null;
+    edahab_saved_at: string | null;
+  }>(
+    `SELECT evc_plus_name, evc_plus_number, evc_plus_saved_at, edahab_name, edahab_number, edahab_saved_at FROM customers WHERE id=$1`,
     [req.auth!.sub]
   );
   if (!existing) return sendJson(res, 404, { error: "Customer not found" });
+
+  const touchesEvc = "evcPlusName" in body || "evcPlusNumber" in body;
+  const touchesEdahab = "edahabName" in body || "edahabNumber" in body;
+  const evcLocked = existing.evc_plus_saved_at != null && Date.now() - new Date(existing.evc_plus_saved_at).getTime() > WALLET_LOCK_WINDOW_MS;
+  const edahabLocked = existing.edahab_saved_at != null && Date.now() - new Date(existing.edahab_saved_at).getTime() > WALLET_LOCK_WINDOW_MS;
+  if (touchesEvc && evcLocked) return sendJson(res, 403, { error: "Your EVC Plus wallet info is locked. Contact support to update it." });
+  if (touchesEdahab && edahabLocked) return sendJson(res, 403, { error: "Your eDahab wallet info is locked. Contact support to update it." });
+
+  const evcPlusName = "evcPlusName" in body ? (body.evcPlusName == null ? null : String(body.evcPlusName).trim()) : existing.evc_plus_name;
   const evcPlusNumber = "evcPlusNumber" in body ? (body.evcPlusNumber == null ? null : String(body.evcPlusNumber)) : existing.evc_plus_number;
+  const edahabName = "edahabName" in body ? (body.edahabName == null ? null : String(body.edahabName).trim()) : existing.edahab_name;
   const edahabNumber = "edahabNumber" in body ? (body.edahabNumber == null ? null : String(body.edahabNumber)) : existing.edahab_number;
-  await query(`UPDATE customers SET evc_plus_number=$1, edahab_number=$2 WHERE id=$3`, [evcPlusNumber, edahabNumber, req.auth!.sub]);
+
+  if ((evcPlusName == null) !== (evcPlusNumber == null)) return sendJson(res, 400, walletPairError("EVC Plus"));
+  if ((edahabName == null) !== (edahabNumber == null)) return sendJson(res, 400, walletPairError("eDahab"));
+
+  const evcPlusSavedAt = evcPlusName != null && evcPlusNumber != null ? (existing.evc_plus_saved_at ?? new Date().toISOString()) : null;
+  const edahabSavedAt = edahabName != null && edahabNumber != null ? (existing.edahab_saved_at ?? new Date().toISOString()) : null;
+
+  await query(
+    `UPDATE customers SET evc_plus_name=$1, evc_plus_number=$2, evc_plus_saved_at=$3, edahab_name=$4, edahab_number=$5, edahab_saved_at=$6 WHERE id=$7`,
+    [evcPlusName, evcPlusNumber, evcPlusSavedAt, edahabName, edahabNumber, edahabSavedAt, req.auth!.sub]
+  );
   sendJson(res, 200, await queryOne(`SELECT ${CUSTOMER_PROFILE_COLUMNS} FROM customers WHERE id=$1`, [req.auth!.sub]));
 });
 

@@ -187,6 +187,10 @@ const DalabAdminApi = {
   setCustomerPin: (id, pin) => dalabAdminApiRequest(`/admin/customers/${id}/pin`, { method: "PUT", body: { pin } }),
   resetCustomerPin: (id) => dalabAdminApiRequest(`/admin/customers/${id}/pin`, { method: "DELETE" }),
   resetCustomerPassword: (id) => dalabAdminApiRequest(`/admin/customers/${id}/reset-password`, { method: "PUT" }),
+  // eBadal wallet info override/unlock and exchange-limit overrides — both
+  // customers.manage (delegable), unlike the PIN/password routes above.
+  updateCustomerWallet: (id, body) => dalabAdminApiRequest(`/admin/customers/${id}/wallet-numbers`, { method: "PUT", body }),
+  setCustomerExchangeLimits: (id, body) => dalabAdminApiRequest(`/admin/customers/${id}/exchange-limits`, { method: "PUT", body }),
   // Promo Images — up to 5 promotional images shown as a carousel on the
   // Customer App Home screen. Images are uploaded as data URIs (base64)
   // rather than multipart form data, since dalabAdminApiRequest already
@@ -416,6 +420,19 @@ function normalizeCustomer(c) {
     points: c.macaashPoints ?? 0,
     joined: c.createdAt ? new Date(c.createdAt).toLocaleDateString() : "",
     pinSet: c.pinSet ?? false,
+    evcPlusName: c.evcPlusName ?? null,
+    evcPlusNumber: c.evcPlusNumber ?? null,
+    evcPlusLocked: c.evcPlusLocked ?? false,
+    edahabName: c.edahabName ?? null,
+    edahabNumber: c.edahabNumber ?? null,
+    edahabLocked: c.edahabLocked ?? false,
+    // Raw (possibly null = "using default") custom limits, for pre-filling
+    // the Limits modal — not the *_effective values, which are only useful
+    // for display elsewhere.
+    exchangeDailyLimit: c.exchangeDailyLimit ?? null,
+    exchangeMonthlyLimit: c.exchangeMonthlyLimit ?? null,
+    exchangeYearlyLimit: c.exchangeYearlyLimit ?? null,
+    hasHigherExchangeLimit: c.hasHigherExchangeLimit ?? false,
   };
 }
 
@@ -621,10 +638,10 @@ const initialUssdTemplates = [
 ];
 
 const initialCustomers = [
-  { id: 1, name: "Yaaain Ahmed", phone: "252 61 234 5678", orders: 14, points: 320, status: "active", joined: "2025-11-02" },
-  { id: 2, name: "Faarax Nur", phone: "252 63 981 2201", orders: 3, points: 40, status: "active", joined: "2026-02-18" },
-  { id: 3, name: "Hodan Ali", phone: "252 65 771 4402", orders: 1, points: 0, status: "blocked", joined: "2026-05-30" },
-  { id: 4, name: "Cabdi Rashiid", phone: "252 68 552 9910", orders: 7, points: 150, status: "active", joined: "2026-01-09" },
+  { id: 1, name: "Yaaain Ahmed", phone: "252 61 234 5678", orders: 14, points: 320, status: "active", joined: "2025-11-02", evcPlusName: "Yaaain Ahmed", evcPlusNumber: "252611110000", evcPlusLocked: true, edahabName: "Yaaain Ahmed", edahabNumber: "252611110001", edahabLocked: false, exchangeDailyLimit: 250, exchangeMonthlyLimit: null, exchangeYearlyLimit: null, hasHigherExchangeLimit: true },
+  { id: 2, name: "Faarax Nur", phone: "252 63 981 2201", orders: 3, points: 40, status: "active", joined: "2026-02-18", evcPlusName: null, evcPlusNumber: null, evcPlusLocked: false, edahabName: null, edahabNumber: null, edahabLocked: false, exchangeDailyLimit: null, exchangeMonthlyLimit: null, exchangeYearlyLimit: null, hasHigherExchangeLimit: false },
+  { id: 3, name: "Hodan Ali", phone: "252 65 771 4402", orders: 1, points: 0, status: "blocked", joined: "2026-05-30", evcPlusName: null, evcPlusNumber: null, evcPlusLocked: false, edahabName: null, edahabNumber: null, edahabLocked: false, exchangeDailyLimit: null, exchangeMonthlyLimit: null, exchangeYearlyLimit: null, hasHigherExchangeLimit: false },
+  { id: 4, name: "Cabdi Rashiid", phone: "252 68 552 9910", orders: 7, points: 150, status: "active", joined: "2026-01-09", evcPlusName: "Cabdi Rashiid", evcPlusNumber: "252688552991", evcPlusLocked: false, edahabName: null, edahabNumber: null, edahabLocked: false, exchangeDailyLimit: null, exchangeMonthlyLimit: null, exchangeYearlyLimit: null, hasHigherExchangeLimit: false },
 ];
 
 const salesTrend = [
@@ -2867,6 +2884,14 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
   // logged anywhere else.
   const [passwordSaving, setPasswordSaving] = useState(null); // customer id currently resetting | null
   const [passwordResetResult, setPasswordResetResult] = useState(null); // { customer, tempPassword } | null
+  const [walletTarget, setWalletTarget] = useState(null); // customer object | null
+  const [walletDraft, setWalletDraft] = useState({});
+  const [walletError, setWalletError] = useState("");
+  const [walletSaving, setWalletSaving] = useState(false);
+  const [limitsTarget, setLimitsTarget] = useState(null); // customer object | null
+  const [limitsDraft, setLimitsDraft] = useState({});
+  const [limitsError, setLimitsError] = useState("");
+  const [limitsSaving, setLimitsSaving] = useState(false);
   const canManage = hasPermission(admin, "customers.manage");
   // Not delegable via customers.manage — only the Super Admin role itself,
   // matching the backend's requireAuth("super_admin") on every PIN route.
@@ -2963,6 +2988,92 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
     }
   };
 
+  const openWallet = (c) => {
+    setWalletTarget(c);
+    setWalletDraft({
+      evcPlusName: c.evcPlusName || "",
+      evcPlusNumber: c.evcPlusNumber || "",
+      edahabName: c.edahabName || "",
+      edahabNumber: c.edahabNumber || "",
+      unlockEvcPlus: false,
+      unlockEdahab: false,
+    });
+    setWalletError("");
+  };
+
+  const saveWallet = async () => {
+    setWalletSaving(true);
+    setWalletError("");
+    const body = {
+      evcPlusName: walletDraft.evcPlusName.trim() ? walletDraft.evcPlusName.trim() : null,
+      evcPlusNumber: walletDraft.evcPlusNumber.trim() ? walletDraft.evcPlusNumber.trim() : null,
+      edahabName: walletDraft.edahabName.trim() ? walletDraft.edahabName.trim() : null,
+      edahabNumber: walletDraft.edahabNumber.trim() ? walletDraft.edahabNumber.trim() : null,
+      unlockEvcPlus: walletDraft.unlockEvcPlus,
+      unlockEdahab: walletDraft.unlockEdahab,
+    };
+    if (!DALAB_API_ENABLED) {
+      setCustomers((prev) => prev.map((x) => (x.id === walletTarget.id ? {
+        ...x, ...body,
+        evcPlusLocked: walletDraft.unlockEvcPlus ? false : x.evcPlusLocked,
+        edahabLocked: walletDraft.unlockEdahab ? false : x.edahabLocked,
+      } : x)));
+      setWalletTarget(null);
+      setWalletSaving(false);
+      return;
+    }
+    try {
+      await DalabAdminApi.updateCustomerWallet(walletTarget.id, body);
+      await refreshCustomers(search || undefined);
+      setWalletTarget(null);
+    } catch (err) {
+      setWalletError(err.message || "Could not save wallet info.");
+    } finally {
+      setWalletSaving(false);
+    }
+  };
+
+  const openLimits = (c) => {
+    setLimitsTarget(c);
+    setLimitsDraft({
+      dailyLimit: c.exchangeDailyLimit != null ? String(c.exchangeDailyLimit) : "",
+      monthlyLimit: c.exchangeMonthlyLimit != null ? String(c.exchangeMonthlyLimit) : "",
+      yearlyLimit: c.exchangeYearlyLimit != null ? String(c.exchangeYearlyLimit) : "",
+    });
+    setLimitsError("");
+  };
+
+  const resetLimitsDraft = () => setLimitsDraft({ dailyLimit: "", monthlyLimit: "", yearlyLimit: "" });
+
+  const saveLimits = async () => {
+    setLimitsSaving(true);
+    setLimitsError("");
+    const body = {
+      dailyLimit: limitsDraft.dailyLimit.trim() ? Number(limitsDraft.dailyLimit) : null,
+      monthlyLimit: limitsDraft.monthlyLimit.trim() ? Number(limitsDraft.monthlyLimit) : null,
+      yearlyLimit: limitsDraft.yearlyLimit.trim() ? Number(limitsDraft.yearlyLimit) : null,
+    };
+    if (!DALAB_API_ENABLED) {
+      setCustomers((prev) => prev.map((x) => (x.id === limitsTarget.id ? {
+        ...x,
+        exchangeDailyLimit: body.dailyLimit, exchangeMonthlyLimit: body.monthlyLimit, exchangeYearlyLimit: body.yearlyLimit,
+        hasHigherExchangeLimit: (body.dailyLimit ?? 0) > 100 || (body.monthlyLimit ?? 0) > 500 || (body.yearlyLimit ?? 0) > 2000,
+      } : x)));
+      setLimitsTarget(null);
+      setLimitsSaving(false);
+      return;
+    }
+    try {
+      await DalabAdminApi.setCustomerExchangeLimits(limitsTarget.id, body);
+      await refreshCustomers(search || undefined);
+      setLimitsTarget(null);
+    } catch (err) {
+      setLimitsError(err.message || "Could not save exchange limits.");
+    } finally {
+      setLimitsSaving(false);
+    }
+  };
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
@@ -2987,7 +3098,12 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
           <tbody>
             {shown.map((c) => (
               <tr key={c.id} style={{ borderTop: `1px solid ${BORDER}` }}>
-                <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{c?.name || "Not provided"}</td>
+                <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                    {c?.name || "Not provided"}
+                    {c.hasHigherExchangeLimit && <CheckCircle2 size={14} color="#1D4ED8" title="Approved for a higher exchange limit" />}
+                  </span>
+                </td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE, fontFamily: "monospace" }}>{c?.phone || "—"}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{c?.orders ?? 0}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{c.points}</td>
@@ -3016,6 +3132,12 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
                       </button>
                       <button onClick={() => remove(c)} style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
                         <Trash2 size={14} color="#C81E2C" />
+                      </button>
+                      <button onClick={() => openWallet(c)} title="eBadal wallet info (EVC Plus / eDahab)" style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
+                        <Wallet size={14} color={INDIGO} />
+                      </button>
+                      <button onClick={() => openLimits(c)} title="Exchange limits" style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
+                        <TrendingUp size={14} color={INDIGO} />
                       </button>
                     </>
                   )}
@@ -3104,6 +3226,79 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
             </div>
           </Field>
           <Button onClick={() => setPasswordResetResult(null)}>Done</Button>
+        </Modal>
+      )}
+
+      {walletTarget && (
+        <Modal title={`eBadal Wallet Info — ${walletTarget.name || walletTarget.phone}`} onClose={() => setWalletTarget(null)} width={460}>
+          <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>
+            A customer can correct their own wallet info for 2 hours after first saving it, then it locks —
+            only here. Name and number are always saved together; clear both to remove a wallet.
+          </div>
+
+          <div style={{ fontWeight: 800, fontSize: 13, color: INK, marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
+            EVC Plus
+            <Badge tone={walletTarget.evcPlusLocked ? "red" : "green"}>{walletTarget.evcPlusLocked ? "Locked" : "Editable"}</Badge>
+          </div>
+          <Field label="Name">
+            <input style={inputStyle} value={walletDraft.evcPlusName} onChange={(e) => setWalletDraft({ ...walletDraft, evcPlusName: e.target.value })} />
+          </Field>
+          <Field label="Number">
+            <input style={inputStyle} value={walletDraft.evcPlusNumber} onChange={(e) => setWalletDraft({ ...walletDraft, evcPlusNumber: e.target.value })} />
+          </Field>
+          {walletTarget.evcPlusLocked && (
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: SLATE, marginBottom: 14 }}>
+              <input type="checkbox" checked={walletDraft.unlockEvcPlus} onChange={(e) => setWalletDraft({ ...walletDraft, unlockEvcPlus: e.target.checked })} />
+              Grant a new 2-hour edit window for EVC Plus
+            </label>
+          )}
+
+          <div style={{ fontWeight: 800, fontSize: 13, color: INK, marginTop: 6, marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
+            eDahab
+            <Badge tone={walletTarget.edahabLocked ? "red" : "green"}>{walletTarget.edahabLocked ? "Locked" : "Editable"}</Badge>
+          </div>
+          <Field label="Name">
+            <input style={inputStyle} value={walletDraft.edahabName} onChange={(e) => setWalletDraft({ ...walletDraft, edahabName: e.target.value })} />
+          </Field>
+          <Field label="Number">
+            <input style={inputStyle} value={walletDraft.edahabNumber} onChange={(e) => setWalletDraft({ ...walletDraft, edahabNumber: e.target.value })} />
+          </Field>
+          {walletTarget.edahabLocked && (
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: SLATE, marginBottom: 14 }}>
+              <input type="checkbox" checked={walletDraft.unlockEdahab} onChange={(e) => setWalletDraft({ ...walletDraft, unlockEdahab: e.target.checked })} />
+              Grant a new 2-hour edit window for eDahab
+            </label>
+          )}
+
+          {walletError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{walletError}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            <Button onClick={saveWallet} icon={walletSaving ? Loader2 : Check} spin={walletSaving} disabled={walletSaving}>Save</Button>
+            <Button variant="ghost" onClick={() => setWalletTarget(null)} disabled={walletSaving}>Cancel</Button>
+          </div>
+        </Modal>
+      )}
+
+      {limitsTarget && (
+        <Modal title={`Exchange Limits — ${limitsTarget.name || limitsTarget.phone}`} onClose={() => setLimitsTarget(null)}>
+          <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>
+            Leave a field blank to use the platform default (Daily $100, Monthly $500, Yearly $2,000).
+            The blue checkmark on this customer only appears once one of these genuinely exceeds its default.
+          </div>
+          <Field label="Daily limit ($)">
+            <input style={inputStyle} type="number" min="0" placeholder="100 (default)" value={limitsDraft.dailyLimit} onChange={(e) => setLimitsDraft({ ...limitsDraft, dailyLimit: e.target.value })} />
+          </Field>
+          <Field label="Monthly limit ($)">
+            <input style={inputStyle} type="number" min="0" placeholder="500 (default)" value={limitsDraft.monthlyLimit} onChange={(e) => setLimitsDraft({ ...limitsDraft, monthlyLimit: e.target.value })} />
+          </Field>
+          <Field label="Yearly limit ($)">
+            <input style={inputStyle} type="number" min="0" placeholder="2000 (default)" value={limitsDraft.yearlyLimit} onChange={(e) => setLimitsDraft({ ...limitsDraft, yearlyLimit: e.target.value })} />
+          </Field>
+          {limitsError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{limitsError}</div>}
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <Button onClick={saveLimits} icon={limitsSaving ? Loader2 : Check} spin={limitsSaving} disabled={limitsSaving}>Save</Button>
+            <Button variant="ghost" onClick={resetLimitsDraft} disabled={limitsSaving}>Reset to defaults</Button>
+            <Button variant="ghost" onClick={() => setLimitsTarget(null)} disabled={limitsSaving}>Cancel</Button>
+          </div>
         </Modal>
       )}
     </div>

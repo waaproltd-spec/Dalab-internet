@@ -380,6 +380,42 @@ async function createExchangeOrder(params: {
     customerId = customer!.id;
   }
 
+  // Daily/monthly/yearly cumulative exchange limits (default $100/$500/$2000,
+  // Admin-settable per customer via PUT /admin/customers/:id/exchange-limits
+  // — see 047_exchange_wallet_lock_and_limits.sql). Only completed orders
+  // count toward usage; calendar periods resolve in the DB session's
+  // Africa/Mogadishu timezone (src/db/pool.ts). Admin-created orders
+  // (channel: "admin") are exempt — an admin creating an order directly
+  // already implies authorization, and raising a customer's limit is itself
+  // an admin action.
+  if (customerId && params.channel !== "admin") {
+    const limits = await queryOne<{ daily: string; monthly: string; yearly: string }>(
+      `SELECT COALESCE(exchange_daily_limit,100) AS daily,
+              COALESCE(exchange_monthly_limit,500) AS monthly,
+              COALESCE(exchange_yearly_limit,2000) AS yearly
+       FROM customers WHERE id=$1`,
+      [customerId]
+    );
+    const usage = await queryOne<{ daily_sum: string; monthly_sum: string; yearly_sum: string }>(
+      `SELECT
+         COALESCE(SUM(amount_sent) FILTER (WHERE completed_at >= date_trunc('day', now())), 0) AS daily_sum,
+         COALESCE(SUM(amount_sent) FILTER (WHERE completed_at >= date_trunc('month', now())), 0) AS monthly_sum,
+         COALESCE(SUM(amount_sent) FILTER (WHERE completed_at >= date_trunc('year', now())), 0) AS yearly_sum
+       FROM exchange_orders WHERE customer_id=$1 AND status='completed'`,
+      [customerId]
+    );
+    const checks: Array<[string, number, number]> = [
+      ["daily", Number(usage!.daily_sum), Number(limits!.daily)],
+      ["monthly", Number(usage!.monthly_sum), Number(limits!.monthly)],
+      ["yearly", Number(usage!.yearly_sum), Number(limits!.yearly)],
+    ];
+    for (const [period, used, limit] of checks) {
+      if (used + params.amountSent > limit) {
+        return { error: `This would exceed your ${period} exchange limit of $${limit}. Contact support to request a higher limit.`, status: 400 };
+      }
+    }
+  }
+
   const id = exchangeOrderRef();
   try {
     await query(
