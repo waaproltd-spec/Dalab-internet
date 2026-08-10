@@ -266,7 +266,7 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
                 isError = false,
             )
         }
-        if (found == null && ExchangeUssdBridge.shouldLogWindowSearchMiss()) {
+        if (found == null) {
             // Confirmed live (Samsung/One UI): the carrier dialog can stay
             // visually on top of the Home screen after losing focus, yet
             // genuinely not appear in this list at all -- the OS itself
@@ -275,14 +275,23 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
             // filled without the real window, so the safest response is to
             // tell the user to come back rather than silently keep polling
             // for the rest of this step's existing timeout.
-            DiagnosticsLog.record(
-                "exchange_window_search_miss",
-                "Locked window \"$locked\" not found among ${seen.size} visible window(s): ${seen.joinToString()}." +
-                    screenStateDiagnostics(),
-                isError = false,
-            )
-            notifyWindowLost()
-            attemptForegroundRecovery()
+            if (ExchangeUssdBridge.shouldLogWindowSearchMiss()) {
+                DiagnosticsLog.record(
+                    "exchange_window_search_miss",
+                    "Locked window \"$locked\" not found among ${seen.size} visible window(s): ${seen.joinToString()}." +
+                        screenStateDiagnostics(),
+                    isError = false,
+                )
+                notifyWindowLost()
+            }
+            // Deliberately gated separately from the log/notification above --
+            // confirmed live (order DEX441787877): the window can be lost,
+            // recovered, then lost again multiple times within one step's
+            // timeout budget, and only the very first loss used to get a
+            // rescue attempt at all. See ExchangeUssdBridge.shouldAttemptWindowRecovery.
+            if (ExchangeUssdBridge.shouldAttemptWindowRecovery()) {
+                attemptForegroundRecovery()
+            }
         }
         return found
     }
@@ -308,7 +317,12 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
      * that can be measured from the field instead of assumed. Never
      * redials/re-issues ACTION_CALL and never touches PIN injection or the
      * confirmation logic -- those are entirely unchanged; this only affects
-     * whether a later scanAndAct() can find the window to act on. */
+     * whether a later scanAndAct() can find the window to act on. Can run
+     * more than once per attempt if the window keeps flickering in and out
+     * (each miss gets its own cycle, up to
+     * ExchangeUssdBridge.MAX_RECOVERY_ATTEMPTS) -- confirmed live (order
+     * DEX441787877) that a single recovery succeeding didn't mean the window
+     * stayed found for the rest of the step's timeout budget. */
     private fun attemptForegroundRecovery() {
         DiagnosticsLog.record(
             "exchange_window_recovery_attempt",
@@ -331,6 +345,7 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
                 "Recovery failed -- could not bring MainActivity to the foreground: ${e.message}",
                 isError = false,
             )
+            ExchangeUssdBridge.recoveryAttemptFinished()
             return
         }
         Handler(Looper.getMainLooper()).postDelayed({
@@ -345,6 +360,7 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
                     "Attempt ended before the re-scan ran -- skipped.",
                     isError = false,
                 )
+                ExchangeUssdBridge.recoveryAttemptFinished()
                 return@postDelayed
             }
             val recoveredRoot = findRelevantRoot()
@@ -363,6 +379,11 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
                     isError = false,
                 )
             }
+            // Marked finished before the recursive scanAndAct() below so that
+            // if it hits another miss (the window flickered out again), a
+            // fresh recovery cycle is free to start -- up to the shared
+            // per-attempt cap in ExchangeUssdBridge.shouldAttemptWindowRecovery.
+            ExchangeUssdBridge.recoveryAttemptFinished()
             scanAndAct()
         }, 500L)
     }

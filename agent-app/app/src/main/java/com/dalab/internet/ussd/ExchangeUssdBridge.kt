@@ -86,9 +86,32 @@ object ExchangeUssdBridge {
 
     /** True once this attempt has already logged an exchange_window_search_miss
      * entry -- caps it to once per attempt so a prolonged background period
-     * (repeated 500ms polls all missing) doesn't spam Diagnostics. */
+     * (repeated 500ms polls all missing) doesn't spam Diagnostics. Deliberately
+     * separate from [recoveryAttemptCount]/[recoveryInProgress] below -- capping
+     * the actual recovery *action* to the same one-shot budget as this log line
+     * meant a flickering window (found, lost again, found, lost again...) only
+     * ever got one real rescue attempt no matter how much of the step's timeout
+     * budget remained -- confirmed live (order DEX441787877): recovery
+     * succeeded once, then the attempt still ended in STEP2_FAILED ~22s later
+     * with no further recovery attempted and no further diagnostics logged. */
     @Volatile
     private var windowSearchMissLogged: Boolean = false
+
+    /** How many [attemptForegroundRecovery]-style recovery cycles this attempt
+     * has started, and whether one is currently in flight (its 500ms delayed
+     * re-scan hasn't run yet) -- see [shouldAttemptWindowRecovery]. Bounded by
+     * [MAX_RECOVERY_ATTEMPTS] so a genuinely, permanently gone window can't
+     * spend the rest of the step's timeout budget bouncing the app to the
+     * foreground; [recoveryInProgress] stops two misses found moments apart
+     * (an accessibility event and the PIN poll, say) from both kicking off an
+     * overlapping recovery cycle. */
+    @Volatile
+    private var recoveryAttemptCount: Int = 0
+
+    @Volatile
+    private var recoveryInProgress: Boolean = false
+
+    private const val MAX_RECOVERY_ATTEMPTS = 4
 
     /** True once this attempt has already logged an exchange_pin_field_miss
      * entry -- caps it to once per attempt for the same reason as
@@ -134,6 +157,8 @@ object ExchangeUssdBridge {
         postPinConfirmationTapped = false
         windowSearchMissLogged = false
         pinFieldMissLogged = false
+        recoveryAttemptCount = 0
+        recoveryInProgress = false
         stopPinPolling()
         armed = true
     }
@@ -149,6 +174,8 @@ object ExchangeUssdBridge {
         lastLoggedMismatchPackage = null
         windowSearchMissLogged = false
         pinFieldMissLogged = false
+        recoveryAttemptCount = 0
+        recoveryInProgress = false
         postPinConfirmationTapped = false
         stopPinPolling()
     }
@@ -267,6 +294,29 @@ object ExchangeUssdBridge {
         if (windowSearchMissLogged) return false
         windowSearchMissLogged = true
         return true
+    }
+
+    /** True if this attempt should start another foreground-recovery cycle:
+     * not already mid-cycle, and under [MAX_RECOVERY_ATTEMPTS] so far this
+     * attempt. Deliberately independent of [shouldLogWindowSearchMiss] -- a
+     * flickering window can keep being lost and found throughout a step's
+     * whole timeout budget, and each loss deserves its own rescue attempt,
+     * not just the first one. Marks a cycle as started (increments the
+     * count, sets in-progress) when it returns true; the caller must pair
+     * this with [recoveryAttemptFinished] once that cycle's re-scan runs. */
+    internal fun shouldAttemptWindowRecovery(): Boolean {
+        if (recoveryInProgress || recoveryAttemptCount >= MAX_RECOVERY_ATTEMPTS) return false
+        recoveryAttemptCount++
+        recoveryInProgress = true
+        return true
+    }
+
+    /** Marks the current recovery cycle as finished (succeeded, failed, or
+     * skipped) so a later miss -- including one found by that same cycle's
+     * own re-scan -- is free to start another cycle via
+     * [shouldAttemptWindowRecovery], up to the same per-attempt cap. */
+    internal fun recoveryAttemptFinished() {
+        recoveryInProgress = false
     }
 
     /** True the first time this attempt's PIN poll sees its locked window
