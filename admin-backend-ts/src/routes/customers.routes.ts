@@ -96,13 +96,22 @@ customersRouter.put("/admin/customers/:id/wallet-numbers", requirePermission("cu
     }
   }
 
+  const touchesEvc = "evcPlusName" in body || "evcPlusNumber" in body;
+  const touchesEdahab = "edahabName" in body || "edahabNumber" in body;
+
   const evcPlusName = "evcPlusName" in body ? (body.evcPlusName == null ? null : String(body.evcPlusName).trim()) : existing.evc_plus_name;
   const evcPlusNumber = "evcPlusNumber" in body ? (body.evcPlusNumber == null ? null : String(body.evcPlusNumber)) : existing.evc_plus_number;
   const edahabName = "edahabName" in body ? (body.edahabName == null ? null : String(body.edahabName).trim()) : existing.edahab_name;
   const edahabNumber = "edahabNumber" in body ? (body.edahabNumber == null ? null : String(body.edahabNumber)) : existing.edahab_number;
 
-  if ((evcPlusName == null) !== (evcPlusNumber == null)) return sendJson(res, 400, walletPairError("EVC Plus"));
-  if ((edahabName == null) !== (edahabNumber == null)) return sendJson(res, 400, walletPairError("eDahab"));
+  // Only validate the pair on a wallet this request actually touches — a
+  // customer/admin editing just one wallet shouldn't get blocked by the
+  // OTHER wallet's pre-existing state (e.g. a bare number saved before
+  // 047_exchange_wallet_lock_and_limits.sql added the name column, leaving
+  // name=null/number=set on a wallet nobody's touched through this pair
+  // flow yet).
+  if (touchesEvc && (evcPlusName == null) !== (evcPlusNumber == null)) return sendJson(res, 400, walletPairError("EVC Plus"));
+  if (touchesEdahab && (edahabName == null) !== (edahabNumber == null)) return sendJson(res, 400, walletPairError("eDahab"));
 
   let evcPlusSavedAt = evcPlusName != null && evcPlusNumber != null ? existing.evc_plus_saved_at : null;
   let edahabSavedAt = edahabName != null && edahabNumber != null ? existing.edahab_saved_at : null;
@@ -321,8 +330,15 @@ customersRouter.put("/customer/wallet-numbers", requireAuth("customer"), async (
   const edahabName = "edahabName" in body ? (body.edahabName == null ? null : String(body.edahabName).trim()) : existing.edahab_name;
   const edahabNumber = "edahabNumber" in body ? (body.edahabNumber == null ? null : String(body.edahabNumber)) : existing.edahab_number;
 
-  if ((evcPlusName == null) !== (evcPlusNumber == null)) return sendJson(res, 400, walletPairError("EVC Plus"));
-  if ((edahabName == null) !== (edahabNumber == null)) return sendJson(res, 400, walletPairError("eDahab"));
+  // Only validate the pair on a wallet this request actually touches — a
+  // customer who saved a bare number before the name field existed
+  // (044_customer_wallet_numbers.sql predates 047's name columns) can have
+  // name=null/number=set on the OTHER wallet, one nobody's edited through
+  // this pair flow yet. Re-validating that untouched, pre-existing state on
+  // every save incorrectly blocked saving a wallet that was actually
+  // complete and correct.
+  if (touchesEvc && (evcPlusName == null) !== (evcPlusNumber == null)) return sendJson(res, 400, walletPairError("EVC Plus"));
+  if (touchesEdahab && (edahabName == null) !== (edahabNumber == null)) return sendJson(res, 400, walletPairError("eDahab"));
 
   const evcPlusSavedAt = evcPlusName != null && evcPlusNumber != null ? (existing.evc_plus_saved_at ?? new Date().toISOString()) : null;
   const edahabSavedAt = edahabName != null && edahabNumber != null ? (existing.edahab_saved_at ?? new Date().toISOString()) : null;
