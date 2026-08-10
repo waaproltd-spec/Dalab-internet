@@ -206,13 +206,25 @@ class SmsReceiver : BroadcastReceiver() {
  * extra every major OEM has shipped for a decade, and the only source for
  * this information short of manufacturer-specific APIs. Resolved to a
  * 1-based slot index (matching ussd_templates.sim_slot's existing
- * convention) via SubscriptionManager. Returns null — never throws — on
- * anything that stops this from working (single-SIM device, missing
- * READ_PHONE_STATE, no subscription extra on this OEM/API level); the
- * backend falls back to device-level-only matching in that case rather
- * than losing the payment match entirely.
+ * convention) via SubscriptionManager. Retries once after a short delay if
+ * unresolved — confirmed live on a real device that SubscriptionManager can
+ * transiently report no active subscription for an instant right after
+ * delivery (~6% of incoming payment SMS across both SIM slots over a 48h
+ * sample) — then returns null — never throws, never guesses — on anything
+ * that still doesn't work (single-SIM device, missing READ_PHONE_STATE, no
+ * subscription extra on this OEM/API level); the backend falls back to
+ * device-level-only matching in that case rather than losing the payment
+ * match entirely.
  */
 private fun resolveSimSlot(context: Context, intent: Intent): Int? {
+    resolveSimSlotOnce(context, intent)?.let { return it }
+    Thread.sleep(SIM_SLOT_RETRY_DELAY_MS)
+    return resolveSimSlotOnce(context, intent)
+}
+
+private const val SIM_SLOT_RETRY_DELAY_MS = 300L
+
+private fun resolveSimSlotOnce(context: Context, intent: Intent): Int? {
     return try {
         val subscriptionId = intent.extras?.getInt("subscription", -1) ?: -1
         if (subscriptionId <= 0) return null

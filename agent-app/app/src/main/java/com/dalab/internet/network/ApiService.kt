@@ -13,6 +13,7 @@ import com.dalab.internet.data.Transaction
 import com.dalab.internet.data.AgentNotification
 import com.dalab.internet.data.AgentPaymentTransaction
 import com.dalab.internet.data.WalletBalanceEntry
+import com.dalab.internet.sms.SmsSenderIdEntry
 import com.dalab.internet.ussd.SimRoutingEntry
 import retrofit2.Response
 import retrofit2.http.*
@@ -159,6 +160,9 @@ interface ApiService {
 
     @GET("agent/sim-routing")
     suspend fun getSimRouting(@Query("deviceId") deviceId: String? = null): Response<List<SimRoutingEntry>>
+
+    @GET("agent/sms-sender-ids")
+    suspend fun getSmsSenderIds(): Response<List<SmsSenderIdEntry>>
 
     @POST("agent/orders/{id}/dial-attempts")
     suspend fun startDialAttempt(@Path("id") orderId: String, @Body body: DialAttemptStartRequest): Response<DialAttemptStartResponse>

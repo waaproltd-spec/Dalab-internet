@@ -56,12 +56,18 @@ object ExchangeSelfHealSweeper {
                 if (order.id in inFlight) false else { inFlight.add(order.id); true }
             }
             if (!claimed) continue
+            // Same "From → To" fallback pattern already used in
+            // ExchangeOrdersListScreen — included here purely so a live
+            // failure's provider (e.g. EVC Plus vs eDahab) is visible
+            // straight from the log line, with no change to what's dialed
+            // or how.
+            val corridor = "${order.fromWalletName ?: order.fromWalletId} → ${order.toWalletName ?: order.toWalletId}"
             try {
-                DiagnosticsLog.record("exchange_self_heal_sweep", "Auto-dialing exchange order ${order.id}.", isError = false)
+                DiagnosticsLog.record("exchange_self_heal_sweep", "Auto-dialing exchange order ${order.id} ($corridor).", isError = false)
                 val result = orchestrator.executePayout(order)
                 DiagnosticsLog.record(
                     "exchange_self_heal_sweep",
-                    "Exchange order ${order.id} auto-payout result: ${result.outcome}${result.message?.let { " — $it" } ?: ""}",
+                    "Exchange order ${order.id} ($corridor) auto-payout result: ${result.outcome}${result.message?.let { " — $it" } ?: ""}",
                     isError = result.outcome != ExchangeDialOutcome.SUCCESS && result.outcome != ExchangeDialOutcome.DUPLICATE_SKIPPED,
                 )
             } catch (e: Exception) {
