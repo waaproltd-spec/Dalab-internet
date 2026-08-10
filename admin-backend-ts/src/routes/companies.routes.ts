@@ -302,11 +302,41 @@ function numOrDefault(value: unknown, fallback: number | null): number | null {
   return value === "" || value == null ? fallback : (value as number);
 }
 
+// The dashboard's package form fields are plain text inputs with no numeric
+// restriction, so an admin can type a non-numeric label (e.g. a Somali
+// description like "24 sac call") into MB/Minutes/SMS/price — those columns
+// are NUMERIC/INTEGER, so Postgres previously rejected the value with an
+// unhandled exception that surfaced only as a bare "Internal server error".
+// Checked against every numeric package field present in the request body
+// (undefined fields are left alone — PUT only validates what's actually
+// being changed) before either INSERT/UPDATE runs, so a bad value is caught
+// with a clear message instead of ever reaching the database.
+const NUMERIC_PACKAGE_FIELDS: Array<[string, string]> = [
+  ["oldPrice", "Old price"],
+  ["price", "Discount price"],
+  ["providerAmount", "Provider / USSD Amount"],
+  ["mb", "MB"],
+  ["minutes", "Minutes"],
+  ["sms", "SMS"],
+];
+function packageNumberFieldError(body: Record<string, unknown>): string | undefined {
+  for (const [key, label] of NUMERIC_PACKAGE_FIELDS) {
+    const value = body[key];
+    if (value === "" || value == null) continue;
+    if (typeof value === "number" ? !Number.isFinite(value) : !/^-?\d+(\.\d+)?$/.test(String(value).trim())) {
+      return `${label} must be a number`;
+    }
+  }
+  return undefined;
+}
+
 packagesRouter.post("/admin/packages", requirePermission("packages.manage"), async (req, res) => {
   const { companyId, categoryId, name, oldPrice, price, providerAmount, mb, minutes, sms, validity, code, ussdTemplateId } = req.body;
   if (!companyId || !categoryId || !name || price == null) {
     return sendJson(res, 400, { error: "companyId, categoryId, name, price are required" });
   }
+  const numberFieldError = packageNumberFieldError(req.body);
+  if (numberFieldError) return sendJson(res, 400, { error: numberFieldError });
   // categoryId is the category's slug, not its id — packages.category_id is
   // free text with no DB-level FK (a category rename must never risk
   // breaking existing packages), so this is the one place that actually
@@ -347,6 +377,8 @@ packagesRouter.post("/admin/packages", requirePermission("packages.manage"), asy
 packagesRouter.put("/admin/packages/:id", requirePermission("packages.manage"), async (req, res) => {
   const existing = await queryOne(`SELECT * FROM packages WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Package not found" });
+  const numberFieldError = packageNumberFieldError(req.body);
+  if (numberFieldError) return sendJson(res, 400, { error: numberFieldError });
   // Every field the client can actually send (oldPrice, categoryId,
   // providerAmount, ...) is camelCase, while `existing`'s keys are the DB's
   // snake_case column names — `{ ...existing, ...req.body }` can't bridge

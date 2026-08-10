@@ -2001,15 +2001,18 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
             <input style={inputStyle} value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </Field>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <Field label="Old price ($)"><input style={inputStyle} value={form.oldPrice ?? ""} onChange={(e) => setForm({ ...form, oldPrice: e.target.value })} /></Field>
-            <Field label="Discount price ($)"><input style={inputStyle} value={form.price ?? ""} onChange={(e) => setForm({ ...form, price: e.target.value })} /></Field>
-            <Field label="MB"><input style={inputStyle} value={form.mb ?? ""} onChange={(e) => setForm({ ...form, mb: e.target.value })} /></Field>
-            <Field label="Minutes"><input style={inputStyle} value={form.minutes ?? ""} onChange={(e) => setForm({ ...form, minutes: e.target.value })} /></Field>
-            <Field label="SMS"><input style={inputStyle} value={form.sms ?? ""} onChange={(e) => setForm({ ...form, sms: e.target.value })} /></Field>
+            <Field label="Old price ($)"><input type="number" step="0.01" min="0" style={inputStyle} value={form.oldPrice ?? ""} onChange={(e) => setForm({ ...form, oldPrice: e.target.value })} /></Field>
+            <Field label="Discount price ($)"><input type="number" step="0.01" min="0" style={inputStyle} value={form.price ?? ""} onChange={(e) => setForm({ ...form, price: e.target.value })} /></Field>
+            <Field label="MB"><input type="number" step="1" min="0" style={inputStyle} value={form.mb ?? ""} onChange={(e) => setForm({ ...form, mb: e.target.value })} /></Field>
+            <Field label="Minutes"><input type="number" step="1" min="0" style={inputStyle} value={form.minutes ?? ""} onChange={(e) => setForm({ ...form, minutes: e.target.value })} /></Field>
+            <Field label="SMS"><input type="number" step="1" min="0" style={inputStyle} value={form.sms ?? ""} onChange={(e) => setForm({ ...form, sms: e.target.value })} /></Field>
             <Field label="Validity"><input style={inputStyle} value={form.validity ?? ""} onChange={(e) => setForm({ ...form, validity: e.target.value })} placeholder="e.g. 1 month" /></Field>
           </div>
           <Field label="Provider / USSD Amount ($) — optional">
             <input
+              type="number"
+              step="0.01"
+              min="0"
               style={inputStyle}
               value={form.providerAmount ?? ""}
               onChange={(e) => setForm({ ...form, providerAmount: e.target.value })}
