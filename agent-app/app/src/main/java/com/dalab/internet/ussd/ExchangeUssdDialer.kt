@@ -6,7 +6,7 @@ import android.net.Uri
 import android.os.Build
 import android.telecom.PhoneAccountHandle
 import android.telecom.TelecomManager
-import android.telephony.SubscriptionManager
+import android.telephony.TelephonyManager
 import com.dalab.internet.diagnostics.DiagnosticsLog
 
 /**
@@ -42,7 +42,7 @@ class ExchangeUssdDialer(private val context: Context) {
 
     /** Maps a telephony subscription id to the PhoneAccountHandle ACTION_CALL
      * needs to route to a specific SIM on a dual-SIM device. Prefers Android's
-     * official [SubscriptionManager.getSubscriptionId] (API 30+), which reads
+     * official [TelephonyManager.getSubscriptionId] (API 30+), which reads
      * the real subscription a handle belongs to directly. Falls back to the
      * previous string-matching heuristic (assumes a handle's own id string
      * equals the subscription id -- a widely-used but undocumented
@@ -71,15 +71,15 @@ class ExchangeUssdDialer(private val context: Context) {
             // a better match, never remove the existing coverage.
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 val officialMatch = try {
-                    val subscriptionManager = context.getSystemService(SubscriptionManager::class.java)
-                    handles.firstOrNull { handle -> subscriptionManager?.getSubscriptionId(handle) == subscriptionId }
+                    val telephonyManager = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+                    handles.firstOrNull { handle -> telephonyManager?.getSubscriptionId(handle) == subscriptionId }
                 } catch (_: SecurityException) {
                     null
                 }
                 if (officialMatch != null) {
                     DiagnosticsLog.record(
                         "exchange_phone_account_resolution",
-                        "subscriptionId=$subscriptionId resolved to a PhoneAccountHandle via the official SubscriptionManager API.",
+                        "subscriptionId=$subscriptionId resolved to a PhoneAccountHandle via the official TelephonyManager API.",
                         isError = false,
                     )
                     return officialMatch
