@@ -10,6 +10,8 @@ import com.dalab.internet.sms.VerifyPaymentAction
 import com.dalab.internet.sms.ExchangePayoutConfirmationAction
 import com.dalab.internet.sms.VoucherConfirmationAction
 import com.dalab.internet.ussd.DialAttemptAuditAction
+import com.dalab.internet.ussd.ExchangeDialStepReportAction
+import com.dalab.internet.ussd.ExchangeUssdOrchestrator
 import com.dalab.internet.ussd.UssdOrchestrator
 import java.util.UUID
 
@@ -49,6 +51,10 @@ object QueueDrainer {
                     UssdOrchestrator.replayDialAttemptAudit(PendingActionQueue.payloadOf(action))
                     PendingActionQueue.remove(action.id)
                 }
+                PendingActionQueue.Type.EXCHANGE_DIAL_STEP_REPORT -> {
+                    ExchangeUssdOrchestrator.replayDialStepReport(PendingActionQueue.payloadOf<ExchangeDialStepReportAction>(action))
+                    PendingActionQueue.remove(action.id)
+                }
                 PendingActionQueue.Type.VOUCHER_CONFIRMATION -> drainVoucherConfirmation(action)
                 PendingActionQueue.Type.EXCHANGE_PAYOUT_CONFIRMATION -> drainExchangePayoutConfirmation(action)
                 PendingActionQueue.Type.SALE_CREATE -> {
@@ -58,9 +64,10 @@ object QueueDrainer {
                 }
             }
         } catch (e: Exception) {
-            // Only DIAL_ATTEMPT_AUDIT's and SALE_CREATE's replay can throw
-            // here — SMS_UPLOAD and VERIFY_PAYMENT classify their own outcome
-            // via the sealed UploadOutcome instead of exceptions.
+            // Only DIAL_ATTEMPT_AUDIT's, EXCHANGE_DIAL_STEP_REPORT's, and
+            // SALE_CREATE's replay can throw here — SMS_UPLOAD and
+            // VERIFY_PAYMENT classify their own outcome via the sealed
+            // UploadOutcome instead of exceptions.
             if (RetryClassifier.isRetryable(e)) {
                 PendingActionQueue.markAttempt(action.id, e.message)
             } else {

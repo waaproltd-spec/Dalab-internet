@@ -6,8 +6,26 @@ import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.ExchangeDialAttemptStartRequest
 import com.dalab.internet.network.ExchangeStepRequest
+import com.dalab.internet.queue.PendingActionQueue
+import com.dalab.internet.queue.RetryClassifier
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.UUID
+
+/** Gson-serialized payload for a queued step1/step2 report replay -- see
+ * [ExchangeUssdOrchestrator.reportStep1]/[reportStep2] and
+ * [ExchangeUssdOrchestrator.replayDialStepReport]. Mirrors
+ * UssdOrchestrator.DialAttemptAuditAction's role for Internet Store, but
+ * simpler: by the time either report call runs, startExchangeDialAttempt has
+ * already succeeded and [attemptId] is already known, so a replay only ever
+ * needs to redo the one PUT call, never a paired start+report. */
+data class ExchangeDialStepReportAction(
+    val attemptId: String,
+    val step: Int, // 1 or 2 -- which endpoint to replay
+    val status: String,
+    val responseMessage: String?,
+    val isFinalAttempt: Boolean = true, // only meaningful for step 2
+)
 
 /**
  * The automated Money Exchange payout engine: dial the carrier's two-step
@@ -185,19 +203,49 @@ class ExchangeUssdOrchestrator(private val context: Context) {
         }
     }
 
+    // reportStep1/reportStep2 run right after (or during) the same SIM's own
+    // ACTION_CALL/USSD session -- on many dual-SIM devices, a single SIM can't
+    // fully sustain mobile data and an active voice/USSD signaling session at
+    // once, so that SIM's own data connection can be briefly suspended for
+    // exactly this window if it's also the device's active mobile-data SIM.
+    // Previously any failure here (a plain IOException from that transient
+    // gap) was just logged and dropped forever -- the local PIN flow could
+    // genuinely succeed while the backend never found out. Now queued through
+    // the same PendingActionQueue/QueueDrainer/RetryClassifier infrastructure
+    // Internet Store's own dial-attempt audit already relies on for the
+    // identical kind of transient blip -- see UssdOrchestrator.reportDialResult.
+
     private suspend fun reportStep1(attemptId: String, status: String, responseText: String?) {
         try {
-            ApiClient.service.reportExchangeStep1(attemptId, ExchangeStepRequest(status, responseText))
+            RetryClassifier.requireSuccessful(ApiClient.service.reportExchangeStep1(attemptId, ExchangeStepRequest(status, responseText)))
         } catch (e: Exception) {
-            DiagnosticsLog.record("exchange_dial_step1_report", "Failed to report step1 (attempt $attemptId): ${e.message}", isError = false)
+            if (RetryClassifier.isRetryable(e)) {
+                DiagnosticsLog.record("exchange_dial_step1_report", "Queued replay after failure (attempt $attemptId): ${e.message}", isError = false)
+                PendingActionQueue.enqueue(
+                    id = UUID.randomUUID().toString(),
+                    type = PendingActionQueue.Type.EXCHANGE_DIAL_STEP_REPORT,
+                    payload = ExchangeDialStepReportAction(attemptId, step = 1, status = status, responseMessage = responseText),
+                )
+            } else {
+                DiagnosticsLog.record("exchange_dial_step1_report", "Failed to report step1 (attempt $attemptId, not retryable): ${e.message}", isError = false)
+            }
         }
     }
 
     private suspend fun reportStep2(attemptId: String, status: String, responseText: String?, isFinalAttempt: Boolean) {
         try {
-            ApiClient.service.reportExchangeStep2(attemptId, ExchangeStepRequest(status, responseText, isFinalAttempt))
+            RetryClassifier.requireSuccessful(ApiClient.service.reportExchangeStep2(attemptId, ExchangeStepRequest(status, responseText, isFinalAttempt)))
         } catch (e: Exception) {
-            DiagnosticsLog.record("exchange_dial_step2_report", "Failed to report step2 (attempt $attemptId): ${e.message}", isError = false)
+            if (RetryClassifier.isRetryable(e)) {
+                DiagnosticsLog.record("exchange_dial_step2_report", "Queued replay after failure (attempt $attemptId): ${e.message}", isError = false)
+                PendingActionQueue.enqueue(
+                    id = UUID.randomUUID().toString(),
+                    type = PendingActionQueue.Type.EXCHANGE_DIAL_STEP_REPORT,
+                    payload = ExchangeDialStepReportAction(attemptId, step = 2, status = status, responseMessage = responseText, isFinalAttempt = isFinalAttempt),
+                )
+            } else {
+                DiagnosticsLog.record("exchange_dial_step2_report", "Failed to report step2 (attempt $attemptId, not retryable): ${e.message}", isError = false)
+            }
         }
     }
 
@@ -214,6 +262,19 @@ class ExchangeUssdOrchestrator(private val context: Context) {
 
         private suspend fun release(orderId: String) {
             inFlightMutex.withLock { inFlightOrderIds.remove(orderId) }
+        }
+
+        /** Replays a queued [ExchangeDialStepReportAction] -- called by
+         * QueueDrainer. Lets any exception propagate so the caller can
+         * classify it via RetryClassifier (retryable -> keep queued, terminal
+         * -> drop), same contract as UssdOrchestrator.replayDialAttemptAudit. */
+        suspend fun replayDialStepReport(action: ExchangeDialStepReportAction) {
+            val request = ExchangeStepRequest(action.status, action.responseMessage, action.isFinalAttempt)
+            when (action.step) {
+                1 -> RetryClassifier.requireSuccessful(ApiClient.service.reportExchangeStep1(action.attemptId, request))
+                2 -> RetryClassifier.requireSuccessful(ApiClient.service.reportExchangeStep2(action.attemptId, request))
+                else -> error("Unknown step ${action.step} in queued ExchangeDialStepReportAction")
+            }
         }
     }
 }
