@@ -72,6 +72,16 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
             val messageText = findDialogMessageText(root) ?: return
 
             val windowPackage = root.packageName?.toString()
+            // Second identity signal alongside windowPackage -- see
+            // ExchangeUssdBridge.lockedWindowId for why a window id is
+            // needed as a fallback (confirmed live, order DEX546004901:
+            // package name became unresolvable for every visible window
+            // once a self-heal-sweep dial's carrier dialog lost the
+            // foreground, even though the same window was still on screen).
+            val windowInfo = root.window
+            val windowId = windowInfo?.id
+            @Suppress("DEPRECATION")
+            windowInfo?.recycle()
             val inputNode = findEditableNode(root)
             // Whether this scan's content looks like a genuine USSD dialog
             // at all -- used only to decide whether it's safe to *establish*
@@ -81,7 +91,7 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
             // attempted -- an accepted small cost on a small dialog tree,
             // not worth threading a cached node reference through for.
             val looksLikeUssdDialog = inputNode != null || isTransientLoadingDialog(messageText) || findPositiveButton(root) != null
-            if (!ExchangeUssdBridge.isWindowAllowed(windowPackage, looksLikeUssdDialog)) {
+            if (!ExchangeUssdBridge.isWindowAllowed(windowPackage, windowId, looksLikeUssdDialog)) {
                 // Either the foreground drifted to a different app mid-attempt
                 // (e.g. Chrome) after a lock was already established --
                 // confirmed live: order DEX624960716 reported SUCCESS off a
@@ -215,28 +225,46 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
      * live: exchange_window_mismatch firing against
      * com.sec.android.app.launcher and com.anthropic.claude while the
      * dialog was still on screen). This never widens *what* the automation
-     * is willing to act on -- it's still an exact match against the one
-     * package locked in for this attempt, nothing else is ever considered.
+     * is willing to act on -- it's still matched against the one window
+     * locked in for this attempt (by package name, or by window id as a
+     * fallback -- see ExchangeUssdBridge.lockedWindowId -- when the package
+     * name is no longer resolvable), nothing else is ever considered.
      * Returns null once the locked window has genuinely closed. */
     private fun findRelevantRoot(): AccessibilityNodeInfo? {
         val locked = ExchangeUssdBridge.lockedWindowPackageOrNull() ?: return rootInActiveWindow
+        val lockedId = ExchangeUssdBridge.lockedWindowIdOrNull()
         var found: AccessibilityNodeInfo? = null
-        // Only collected for the miss-diagnostic below -- package+type of
+        var foundViaIdFallback = false
+        // Only collected for the miss-diagnostic below -- package+type+id of
         // every window seen this scan, so a search miss is self-explanatory
         // without needing a live device connection to inspect.
         val seen = mutableListOf<String>()
         for (window in windows) {
             val windowRoot = window.root
             val windowPackage = windowRoot?.packageName?.toString()
-            seen.add("${windowPackage ?: "?"}(type=${window.type})")
-            if (found == null && windowPackage == locked) {
+            seen.add("${windowPackage ?: "?"}(type=${window.type}, id=${window.id})")
+            val matchesById = lockedId != null && window.id == lockedId
+            if (found == null && (windowPackage == locked || matchesById)) {
                 found = windowRoot
+                foundViaIdFallback = windowPackage != locked && matchesById
             } else {
                 @Suppress("DEPRECATION")
                 windowRoot?.recycle()
             }
             @Suppress("DEPRECATION")
             window.recycle()
+        }
+        if (found != null && foundViaIdFallback) {
+            // Self-verifying: confirms live whether the id-fallback theory
+            // (window persists, package name becomes unresolvable) is what's
+            // actually happening in the field, directly from this log line,
+            // without needing another diagnostic-only round trip.
+            DiagnosticsLog.record(
+                "exchange_window_id_fallback_match",
+                "Re-acquired locked window id=$lockedId via window id, not package name " +
+                    "(originally \"$locked\", now reports as \"${found.packageName ?: "?"}\").",
+                isError = false,
+            )
         }
         if (found == null && ExchangeUssdBridge.shouldLogWindowSearchMiss()) {
             // Confirmed live (Samsung/One UI): the carrier dialog can stay

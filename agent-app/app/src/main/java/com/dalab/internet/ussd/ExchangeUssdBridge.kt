@@ -57,6 +57,20 @@ object ExchangeUssdBridge {
     @Volatile
     private var lockedPackageName: String? = null
 
+    /** The AccessibilityWindowInfo id of the window locked in as [lockedPackageName],
+     * captured at the same moment as the package name. Window ids stay stable for a
+     * given window's whole lifetime independent of whether its package name is still
+     * resolvable -- confirmed live (order DEX546004901, eDahab -> EVC Plus): a
+     * self-heal-sweep-triggered (backgrounded) dial's carrier dialog stayed visible
+     * and interactive on screen, but every later scan's getWindows() call reported it
+     * (and everything else visible) with no resolvable package name at all, so the
+     * package-only check in [isWindowAllowed] could never re-find it -- the PIN sat
+     * there unfilled until the attempt timed out. This id is purely an additional,
+     * OR'd fallback signal for re-acquiring an already-locked window; it never
+     * changes when or what a lock is first established on. */
+    @Volatile
+    private var lockedWindowId: Int? = null
+
     @Volatile
     private var lastLoggedMismatchPackage: String? = null
 
@@ -115,6 +129,7 @@ object ExchangeUssdBridge {
         lastPreConfirmText = null
         lastPostConfirmText = null
         lockedPackageName = null
+        lockedWindowId = null
         lastLoggedMismatchPackage = null
         postPinConfirmationTapped = false
         windowSearchMissLogged = false
@@ -130,6 +145,7 @@ object ExchangeUssdBridge {
         lastPreConfirmText = null
         lastPostConfirmText = null
         lockedPackageName = null
+        lockedWindowId = null
         lastLoggedMismatchPackage = null
         windowSearchMissLogged = false
         pinFieldMissLogged = false
@@ -214,8 +230,14 @@ object ExchangeUssdBridge {
      * attempt's real carrier dialog, or if no window has been confirmed
      * yet (in which case [packageName] becomes the locked window). False
      * means the foreground has drifted to a different app mid-attempt --
-     * its content must never be read as carrier output. */
-    internal fun isWindowAllowed(packageName: String?, looksLikeUssdDialog: Boolean): Boolean {
+     * its content must never be read as carrier output.
+     *
+     * [windowId] is a second, purely additive identity signal (see
+     * [lockedWindowId]) checked only once the primary package-name check
+     * has already failed against an established lock -- it can never
+     * change whether/when a lock is first established, only widen how an
+     * *already-locked* window is re-recognized on a later scan. */
+    internal fun isWindowAllowed(packageName: String?, windowId: Int?, looksLikeUssdDialog: Boolean): Boolean {
         val locked = lockedPackageName
         if (locked == null) {
             // Don't lock onto whatever's merely on screen -- confirmed live
@@ -230,9 +252,12 @@ object ExchangeUssdBridge {
             // dialer appears, gets to establish it correctly instead.
             if (!looksLikeUssdDialog) return false
             lockedPackageName = packageName
+            lockedWindowId = windowId
             return true
         }
-        return packageName != null && packageName == locked
+        if (packageName != null && packageName == locked) return true
+        val lockedId = lockedWindowId
+        return lockedId != null && windowId != null && windowId == lockedId
     }
 
     /** True the first time this attempt fails to find its locked window
@@ -257,6 +282,10 @@ object ExchangeUssdBridge {
      * lets the service actively search for that specific window across
      * every currently visible window, not only the active one. */
     internal fun lockedWindowPackageOrNull(): String? = lockedPackageName
+
+    /** The window id captured alongside [lockedPackageName] at lock time,
+     * once established -- see [isWindowAllowed] and [lockedWindowId]. */
+    internal fun lockedWindowIdOrNull(): Int? = lockedWindowId
 
     /** True the first time a given off-target package is seen this
      * attempt, so a window mismatch logs once instead of on every 500ms
