@@ -121,6 +121,13 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
                     // live on order DEX176626979: STEP2_FAILED fired 6s after
                     // dialing, well under the 15s timeout, dialog left sitting
                     // untouched on screen with the PIN never actually typed.
+                    if (ExchangeUssdBridge.shouldLogPinFieldMiss()) {
+                        DiagnosticsLog.record(
+                            "exchange_pin_field_miss",
+                            "Locked window \"$windowPackage\" has no editable field yet -- PIN not injected on this poll. Dialog text: \"$messageText\".",
+                            isError = false,
+                        )
+                    }
                     ExchangeUssdBridge.restorePendingPinToInject(pendingPin)
                     return
                 } else {

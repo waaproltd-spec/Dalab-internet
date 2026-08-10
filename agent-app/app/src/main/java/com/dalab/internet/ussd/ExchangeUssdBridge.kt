@@ -76,6 +76,14 @@ object ExchangeUssdBridge {
     @Volatile
     private var windowSearchMissLogged: Boolean = false
 
+    /** True once this attempt has already logged an exchange_pin_field_miss
+     * entry -- caps it to once per attempt for the same reason as
+     * [windowSearchMissLogged]: the PIN poll re-scans every 500ms while the
+     * field hasn't rendered yet, which would otherwise spam Diagnostics with
+     * one entry per poll for the entire wait. */
+    @Volatile
+    private var pinFieldMissLogged: Boolean = false
+
     /** The current attempt's screen-on wake lock (see ExchangeUssdOrchestrator) --
      * exposed here purely so a window-search-miss diagnostic can query its live
      * .isHeld state. ExchangeUssdOrchestrator remains the sole owner: it's the
@@ -110,6 +118,7 @@ object ExchangeUssdBridge {
         lastLoggedMismatchPackage = null
         postPinConfirmationTapped = false
         windowSearchMissLogged = false
+        pinFieldMissLogged = false
         stopPinPolling()
         armed = true
     }
@@ -123,6 +132,7 @@ object ExchangeUssdBridge {
         lockedPackageName = null
         lastLoggedMismatchPackage = null
         windowSearchMissLogged = false
+        pinFieldMissLogged = false
         postPinConfirmationTapped = false
         stopPinPolling()
     }
@@ -231,6 +241,15 @@ object ExchangeUssdBridge {
     internal fun shouldLogWindowSearchMiss(): Boolean {
         if (windowSearchMissLogged) return false
         windowSearchMissLogged = true
+        return true
+    }
+
+    /** True the first time this attempt's PIN poll sees its locked window
+     * but finds no editable field in it yet -- caps the diagnostic log to
+     * once per attempt, same as [shouldLogWindowSearchMiss]. */
+    internal fun shouldLogPinFieldMiss(): Boolean {
+        if (pinFieldMissLogged) return false
+        pinFieldMissLogged = true
         return true
     }
 
