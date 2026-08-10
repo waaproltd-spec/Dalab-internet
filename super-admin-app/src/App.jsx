@@ -2868,6 +2868,21 @@ function Orders({ orders, setOrders, companies, admin }) {
   );
 }
 
+// Below this width the Customers table (6-8 columns plus up to 7 action
+// buttons per row) can't fit without horizontal scrolling, so Customers
+// swaps to a stacked card-per-customer layout instead. Only Customers uses
+// this today; kept local rather than lifted to a shared layout system since
+// no other section has asked for it yet.
+function useIsMobile(breakpoint = 720) {
+  const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < breakpoint);
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < breakpoint);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [breakpoint]);
+  return isMobile;
+}
+
 function Customers({ customers, setCustomers, refreshCustomers, admin }) {
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState(null);
@@ -2896,6 +2911,7 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
   // Not delegable via customers.manage — only the Super Admin role itself,
   // matching the backend's requireAuth("super_admin") on every PIN route.
   const canManagePin = admin?.role === "super_admin";
+  const isMobile = useIsMobile();
 
   useEffect(() => { refreshCustomers?.(search || undefined); }, [search]);
 
@@ -3076,16 +3092,80 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 14 }}>
         <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Customers</div>
-        <div style={{ position: "relative" }}>
+        <div style={{ position: "relative", flex: isMobile ? "1 1 100%" : "0 0 auto" }}>
           <Search size={14} color={MUTE} style={{ position: "absolute", left: 10, top: 10 }} />
-          <input style={{ ...inputStyle, paddingLeft: 30, width: 220 }} placeholder="Search name or phone" value={search} onChange={(e) => setSearch(e.target.value)} />
+          <input style={{ ...inputStyle, paddingLeft: 30, width: isMobile ? "100%" : 220 }} placeholder="Search name or phone" value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
       </div>
 
       {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
+      {isMobile ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {shown.map((c) => (
+            <Card key={c.id} style={{ padding: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 800, color: INK, fontSize: 14, display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                    {c?.name || "Not provided"}
+                    {c.hasHigherExchangeLimit && <CheckCircle2 size={14} color="#1D4ED8" title="Approved for a higher exchange limit" />}
+                  </div>
+                  <div style={{ fontSize: 12, color: SLATE, fontFamily: "monospace", marginTop: 3 }}>{c?.phone || "—"}</div>
+                </div>
+                <Badge tone={c.status === "active" ? "green" : "red"}>{c.status === "active" ? "Active" : "Blocked"}</Badge>
+              </div>
+
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginTop: 10, fontSize: 11.5, color: MUTE }}>
+                <span>Orders <strong style={{ color: SLATE }}>{c?.orders ?? 0}</strong></span>
+                <span>Macaash <strong style={{ color: SLATE }}>{c.points}</strong></span>
+                <span>Joined <strong style={{ color: SLATE }}>{c.joined}</strong></span>
+                {canManagePin && (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
+                    PIN <Lock size={11} color={c.pinSet ? GREEN : MUTE} />
+                    <strong style={{ color: c.pinSet ? GREEN : MUTE }}>{c.pinSet ? "Set" : "Not set"}</strong>
+                  </span>
+                )}
+              </div>
+
+              {(canManage || canManagePin) && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12, paddingTop: 12, borderTop: `1px solid ${BORDER}` }}>
+                  {canManage && (
+                    <>
+                      <Button variant={c.status === "active" ? "danger" : "ghost"} icon={c.status === "active" ? XCircle : Check} onClick={() => toggleBlock(c)} style={{ padding: "7px 11px", fontSize: 12 }}>
+                        {c.status === "active" ? "Block" : "Unblock"}
+                      </Button>
+                      <Button variant="ghost" icon={Pencil} onClick={() => openEdit(c)} style={{ padding: "7px 11px", fontSize: 12 }}>Edit</Button>
+                      <Button variant="ghost" icon={Wallet} onClick={() => openWallet(c)} style={{ padding: "7px 11px", fontSize: 12 }}>Wallet</Button>
+                      <Button variant="ghost" icon={TrendingUp} onClick={() => openLimits(c)} style={{ padding: "7px 11px", fontSize: 12 }}>Limits</Button>
+                      <Button variant="danger" icon={Trash2} onClick={() => remove(c)} style={{ padding: "7px 11px", fontSize: 12 }}>Delete</Button>
+                    </>
+                  )}
+                  {canManagePin && (
+                    <>
+                      <Button variant="ghost" icon={Lock} onClick={() => openPin(c)} style={{ padding: "7px 11px", fontSize: 12 }}>PIN</Button>
+                      <Button
+                        variant="ghost"
+                        icon={passwordSaving === c.id ? Loader2 : KeyRound}
+                        spin={passwordSaving === c.id}
+                        disabled={passwordSaving === c.id}
+                        onClick={() => resetPassword(c)}
+                        style={{ padding: "7px 11px", fontSize: 12 }}
+                      >
+                        Reset password
+                      </Button>
+                    </>
+                  )}
+                </div>
+              )}
+            </Card>
+          ))}
+          {shown.length === 0 && (
+            <div style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No customers found.</div>
+          )}
+        </div>
+      ) : (
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
@@ -3160,6 +3240,7 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
           </tbody>
         </table>
       </Card>
+      )}
 
       {editing && (
         <Modal title="Edit customer" onClose={() => setEditing(null)}>
