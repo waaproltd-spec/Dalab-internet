@@ -402,6 +402,30 @@ async function createExchangeOrder(params: {
       const existing = await queryOne<{ id: string }>(`SELECT id FROM exchange_orders WHERE client_request_id=$1`, [params.clientRequestId]);
       return { order: await queryOne(`SELECT * FROM exchange_orders WHERE id=$1`, [existing!.id]) };
     }
+    if (err?.code === "23505" && err?.constraint === "idx_exchange_orders_pending_content_dedup") {
+      // Same customer already has a pending exchange order for this exact
+      // corridor+amount (e.g. re-visiting Money Exchange without paying) —
+      // reuse it instead of creating a duplicate sibling order that a future
+      // payment SMS could otherwise complete instead of this one (see
+      // 046_exchange_pending_dedup.sql).
+      //
+      // BUT this request's own sender/receiver phone and collection number
+      // are what the customer just typed/was shown on THIS visit — stamp
+      // them onto the reused row before returning it, same rationale as
+      // orders.routes.ts's equivalent reuse path.
+      const existing = await queryOne<{ id: string }>(
+        `SELECT id FROM exchange_orders WHERE customer_id=$1 AND corridor_id=$2 AND amount_sent=$3 AND status='pending'`,
+        [customerId, corridor.id, params.amountSent]
+      );
+      if (existing) {
+        await query(
+          `UPDATE exchange_orders SET sender_phone=$1, receiver_phone=$2, collection_phone_number=$3, updated_at=now()
+           WHERE id=$4 AND status='pending'`,
+          [params.senderPhone, params.receiverPhone, params.collectionPhoneNumber ?? null, existing.id]
+        );
+        return { order: await queryOne(`SELECT * FROM exchange_orders WHERE id=$1`, [existing.id]) };
+      }
+    }
     throw err;
   }
   const order = await queryOne(`SELECT * FROM exchange_orders WHERE id=$1`, [id]);
