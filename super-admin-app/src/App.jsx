@@ -3788,15 +3788,15 @@ function BatteryIcon({ percent, size = 14, color }) {
 }
 
 // Admin > Mobile Management: which side of the payment flow a device is
-// allowed to handle (agent_devices.payment_role — see backend migration
-// 048_agent_device_payment_role.sql). Purely additive: every device
-// defaults to "send_receive", today's unrestricted behavior.
+// allowed to handle (agent_devices.payment_role — see backend migrations
+// 048_agent_device_payment_role.sql and 049_payment_role_two_way.sql).
+// Exactly one of the two — every device is either the receiver or a
+// sender, never both, so routing never has to guess which.
 const PAYMENT_ROLE_LABELS = {
   receive_only: "Receive Only",
   send_only: "Send Only",
-  send_receive: "Send + Receive",
 };
-const PAYMENT_ROLE_TONES = { receive_only: "blue", send_only: "amber", send_receive: "green" };
+const PAYMENT_ROLE_TONES = { receive_only: "blue", send_only: "amber" };
 
 function DevicesPanel({ canManage }) {
   const [devices, setDevices] = useState([]);
@@ -3830,7 +3830,7 @@ function DevicesPanel({ canManage }) {
     return () => clearInterval(timer);
   }, []);
 
-  const openNew = () => { setForm({ name: "", description: "", paymentRole: "send_receive" }); setEditing("new"); };
+  const openNew = () => { setForm({ name: "", description: "", paymentRole: "send_only" }); setEditing("new"); };
   const openEdit = (d) => { setForm(d); setEditing(d.id); };
 
   const save = async () => {
@@ -3905,7 +3905,7 @@ function DevicesPanel({ canManage }) {
 
             <div style={{ marginTop: 10 }}>
               <Badge tone={PAYMENT_ROLE_TONES[d.paymentRole] || "gray"}>
-                {PAYMENT_ROLE_LABELS[d.paymentRole] || "Send + Receive"}
+                {PAYMENT_ROLE_LABELS[d.paymentRole] || "Send Only"}
               </Badge>
             </div>
 
@@ -4004,10 +4004,9 @@ function DevicesPanel({ canManage }) {
           <Field label="Payment mobile role">
             <select
               style={inputStyle}
-              value={form.paymentRole || "send_receive"}
+              value={form.paymentRole || "send_only"}
               onChange={(e) => setForm({ ...form, paymentRole: e.target.value })}
             >
-              <option value="send_receive">Send + Receive — dials USSD and reads incoming payment SMS</option>
               <option value="receive_only">Receive Only — reads incoming payment SMS, never sends</option>
               <option value="send_only">Send Only — dials USSD, never handles incoming payment SMS</option>
             </select>

@@ -359,11 +359,11 @@ class AgentBackgroundService : Service() {
     }
 
     // Admin > Mobile Management: picks up a payment-role change (Receive
-    // Only / Send Only / Send + Receive) an admin makes for this device on
-    // the same cadence as SIM routing, so SmsReceiver/UssdOrchestrator start
-    // respecting it within about a minute without an app restart. Reuses
-    // the same public /agent/devices list the device-setup picker already
-    // calls — no new endpoint needed.
+    // Only / Send Only) an admin makes for this device on the same cadence
+    // as SIM routing, so SmsReceiver/UssdOrchestrator start respecting it
+    // within about a minute without an app restart. Reuses the same public
+    // /agent/devices list the device-setup picker already calls — no new
+    // endpoint needed.
     private suspend fun refreshPaymentRole() {
         val deviceId = DeviceIdentity.deviceId() ?: return
         val response = ApiClient.service.getDevices()

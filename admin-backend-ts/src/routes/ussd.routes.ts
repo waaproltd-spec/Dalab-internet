@@ -405,7 +405,7 @@ ussdRouter.get("/admin/agent-devices/:id/diagnostics", requireStaff(), async (re
   sendJson(res, 200, { summary, recent });
 });
 
-const PAYMENT_ROLES = ["receive_only", "send_only", "send_receive"];
+const PAYMENT_ROLES = ["receive_only", "send_only"];
 
 ussdRouter.post("/admin/agent-devices", requirePermission("devices.manage"), async (req, res) => {
   const { name, description, paymentRole } = req.body;
@@ -418,7 +418,7 @@ ussdRouter.post("/admin/agent-devices", requirePermission("devices.manage"), asy
   }
   const id = randomUUID();
   await query(`INSERT INTO agent_devices (id, name, description, payment_role) VALUES ($1,$2,$3,$4)`, [
-    id, name, description ?? "", paymentRole ?? "send_receive",
+    id, name, description ?? "", paymentRole ?? "send_only",
   ]);
   sendJson(res, 201, await queryOne(`SELECT * FROM agent_devices WHERE id=$1`, [id]));
 });
