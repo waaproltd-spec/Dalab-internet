@@ -184,9 +184,16 @@ data class AgentReport(
     val totals: ReportTotals,
 )
 
-/** Mirrors GET /agent/devices — the physical Agent App installs registered under this account. */
+/**
+ * Mirrors GET /agent/devices — the physical Agent App installs registered
+ * under this account. paymentRole is nullable rather than defaulted (Gson
+ * bypasses Kotlin constructor defaults on missing JSON fields, leaving a
+ * non-null default silently unset) — null is treated the same as
+ * "sendReceive" (unrestricted) everywhere it's read, see DeviceIdentity.
+ */
 data class AgentDevice(
     val id: String,
     val name: String,
     val description: String? = null,
+    val paymentRole: String? = null,
 )

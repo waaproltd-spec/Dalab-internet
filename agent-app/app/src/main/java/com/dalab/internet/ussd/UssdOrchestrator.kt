@@ -50,6 +50,18 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
     private val dialer = UssdDialer(context)
 
     suspend fun processMatchedOrder(orderId: String, smsLogId: String?): DialResult {
+        if (!DeviceIdentity.canSend()) {
+            // Admin > Mobile Management: this device is configured Receive
+            // Only — the backend would reject the dial-attempt anyway (see
+            // POST /agent/orders/:id/dial-attempts), so skip it here rather
+            // than burning a verify-payment call and a doomed dial attempt.
+            DiagnosticsLog.record(
+                "dial_skipped_receive_only",
+                "Order $orderId not dialed — this device is configured as Receive Only (Admin > Mobile Management).",
+                isError = false,
+            )
+            return DialResult(DialOutcome.PERMISSION_DENIED, "This device is set to Receive Only and cannot send payments.")
+        }
         if (!claimOrder(orderId)) {
             DiagnosticsLog.record(
                 "duplicate_dial_guard",
@@ -132,6 +144,14 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
      * this resolving it from SimRoutingRepository/the template override.
      */
     suspend fun executeManually(orderId: String, forcedSimSlot: Int): DialResult {
+        if (!DeviceIdentity.canSend()) {
+            DiagnosticsLog.record(
+                "dial_skipped_receive_only",
+                "Order $orderId not dialed — this device is configured as Receive Only (Admin > Mobile Management).",
+                isError = false,
+            )
+            return DialResult(DialOutcome.PERMISSION_DENIED, "This device is set to Receive Only and cannot send payments.")
+        }
         if (!claimOrder(orderId)) {
             DiagnosticsLog.record(
                 "duplicate_dial_guard",

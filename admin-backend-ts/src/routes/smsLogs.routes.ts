@@ -15,6 +15,7 @@ import { extractBalanceFromSms, resolveCompanyIdByProviderName, resolveDeviceSlo
 import { broadcast } from "../realtime/orderEvents.js";
 import { verifyOrderAndGenerateUssd } from "./orders.routes.js";
 import { autoAdvanceExchangeOrderToInProgress } from "./exchange.routes.js";
+import { agentDeviceAllows } from "../utils/agentDevicePaymentRole.js";
 
 export const smsLogsRouter = Router();
 
@@ -658,6 +659,11 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
 smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => {
   const { sender, body } = req.body ?? {};
   if (!sender || !body) return sendJson(res, 400, { error: "sender and body are required" });
+  // Admin > Mobile Management: a device set to Send Only never acts on
+  // incoming payment SMS (see 048_agent_device_payment_role.sql).
+  if (!(await agentDeviceAllows(req.auth!.sub, "receive"))) {
+    return sendJson(res, 403, { error: "Your assigned device is configured as Send Only and cannot process payment SMS." });
+  }
   const result = await ingestPaymentSms({ agentId: req.auth!.sub, ...req.body });
   sendJson(res, result.status, result.body);
 });

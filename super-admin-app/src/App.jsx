@@ -3787,6 +3787,17 @@ function BatteryIcon({ percent, size = 14, color }) {
   return <BatteryFull size={size} color={color || GREEN} />;
 }
 
+// Admin > Mobile Management: which side of the payment flow a device is
+// allowed to handle (agent_devices.payment_role — see backend migrations
+// 048_agent_device_payment_role.sql and 049_payment_role_two_way.sql).
+// Exactly one of the two — every device is either the receiver or a
+// sender, never both, so routing never has to guess which.
+const PAYMENT_ROLE_LABELS = {
+  receive_only: "Receive Only",
+  send_only: "Send Only",
+};
+const PAYMENT_ROLE_TONES = { receive_only: "blue", send_only: "amber" };
+
 function DevicesPanel({ canManage }) {
   const [devices, setDevices] = useState([]);
   const [agents, setAgents] = useState([]);
@@ -3819,7 +3830,7 @@ function DevicesPanel({ canManage }) {
     return () => clearInterval(timer);
   }, []);
 
-  const openNew = () => { setForm({ name: "", description: "" }); setEditing("new"); };
+  const openNew = () => { setForm({ name: "", description: "", paymentRole: "send_only" }); setEditing("new"); };
   const openEdit = (d) => { setForm(d); setEditing(d.id); };
 
   const save = async () => {
@@ -3890,6 +3901,12 @@ function DevicesPanel({ canManage }) {
                 </div>
               </div>
               <Badge tone={d.enabled ? "green" : "red"}>{d.enabled ? "Enabled" : "Disabled"}</Badge>
+            </div>
+
+            <div style={{ marginTop: 10 }}>
+              <Badge tone={PAYMENT_ROLE_TONES[d.paymentRole] || "gray"}>
+                {PAYMENT_ROLE_LABELS[d.paymentRole] || "Send Only"}
+              </Badge>
             </div>
 
             <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 12, flexWrap: "wrap" }}>
@@ -3983,6 +4000,16 @@ function DevicesPanel({ canManage }) {
           </Field>
           <Field label="Description (optional)">
             <input style={inputStyle} value={form.description || ""} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="e.g. Dual-SIM Android, front counter" />
+          </Field>
+          <Field label="Payment mobile role">
+            <select
+              style={inputStyle}
+              value={form.paymentRole || "send_only"}
+              onChange={(e) => setForm({ ...form, paymentRole: e.target.value })}
+            >
+              <option value="receive_only">Receive Only — reads incoming payment SMS, never sends</option>
+              <option value="send_only">Send Only — dials USSD, never handles incoming payment SMS</option>
+            </select>
           </Field>
           <div style={{ display: "flex", gap: 10 }}>
             <Button onClick={save} icon={Check}>Save</Button>
