@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.provider.Telephony
 import android.telephony.SubscriptionManager
 import androidx.core.content.ContextCompat
+import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.data.SmsLogEntry
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.queue.PendingActionQueue
@@ -38,6 +39,18 @@ class SmsReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
+        if (!DeviceIdentity.canReceive()) {
+            // Admin > Mobile Management: this device is configured Send
+            // Only — the backend would reject the upload anyway (see
+            // POST /agent/sms-logs), so skip it here to avoid a doomed
+            // network round-trip and a confusing notification.
+            DiagnosticsLog.record(
+                "sms_receiver_ignored",
+                "SMS ignored — this device is configured as Send Only (Admin > Mobile Management).",
+                isError = false,
+            )
+            return
+        }
         if (!SmsListenerState.isListening.value) {
             // Previously a silent return — if listening gets disabled (or
             // never actually re-enabled after an app/process restart), every

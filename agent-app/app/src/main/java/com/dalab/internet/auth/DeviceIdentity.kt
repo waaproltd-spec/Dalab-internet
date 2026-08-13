@@ -15,6 +15,7 @@ object DeviceIdentity {
     private const val PREFS = "dalab_agent_device"
     private const val KEY_DEVICE_ID = "device_id"
     private const val KEY_DEVICE_NAME = "device_name"
+    private const val KEY_PAYMENT_ROLE = "payment_role"
 
     private lateinit var prefs: SharedPreferences
 
@@ -23,13 +24,33 @@ object DeviceIdentity {
         prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     }
 
-    fun set(deviceId: String, deviceName: String) {
-        prefs.edit().putString(KEY_DEVICE_ID, deviceId).putString(KEY_DEVICE_NAME, deviceName).apply()
+    fun set(deviceId: String, deviceName: String, paymentRole: String? = null) {
+        prefs.edit()
+            .putString(KEY_DEVICE_ID, deviceId)
+            .putString(KEY_DEVICE_NAME, deviceName)
+            .putString(KEY_PAYMENT_ROLE, paymentRole)
+            .apply()
     }
 
     fun deviceId(): String? = prefs.getString(KEY_DEVICE_ID, null)
     fun deviceName(): String? = prefs.getString(KEY_DEVICE_NAME, null)
     fun isSet(): Boolean = deviceId() != null
+
+    /**
+     * Admin > Mobile Management (agent_devices.payment_role). Refreshed
+     * opportunistically from AgentBackgroundService's heartbeat cycle, so an
+     * admin's role change reaches this device within about a minute without
+     * requiring a re-run of device setup. Null (never synced yet, or the
+     * device predates this field) is treated as unrestricted — same as the
+     * backend's own "no role set" fallback.
+     */
+    fun paymentRole(): String? = prefs.getString(KEY_PAYMENT_ROLE, null)
+    fun setPaymentRole(role: String?) {
+        prefs.edit().putString(KEY_PAYMENT_ROLE, role).apply()
+    }
+
+    fun canSend(): Boolean = paymentRole() != "receive_only"
+    fun canReceive(): Boolean = paymentRole() != "send_only"
 
     fun clear() {
         prefs.edit().clear().apply()

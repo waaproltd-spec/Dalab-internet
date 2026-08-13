@@ -8,6 +8,7 @@ import { sendJson } from "../utils/camelCase.js";
 import { broadcast } from "../realtime/orderEvents.js";
 import { recordActivity } from "../utils/activityLog.js";
 import { rateLimit } from "../auth/rateLimit.js";
+import { agentDeviceAllows } from "../utils/agentDevicePaymentRole.js";
 
 export const exchangeRouter = Router();
 
@@ -637,6 +638,11 @@ exchangeRouter.post("/agent/exchange/orders/:id/dial-attempts", requireAuth("age
   if (!order) return sendJson(res, 404, { error: "Exchange order not found" });
   if (order.status !== "in_progress") {
     return sendJson(res, 409, { error: `Cannot dial a payout for an order in status '${order.status}'` });
+  }
+  // Admin > Mobile Management: a device set to Receive Only never dials
+  // USSD, including Money Exchange payouts (see 048_agent_device_payment_role.sql).
+  if (!(await agentDeviceAllows(req.auth!.sub, "send"))) {
+    return sendJson(res, 403, { error: "Your assigned device is configured as Receive Only and cannot send payments." });
   }
 
   const corridor = await loadCorridor(order.corridor_id);

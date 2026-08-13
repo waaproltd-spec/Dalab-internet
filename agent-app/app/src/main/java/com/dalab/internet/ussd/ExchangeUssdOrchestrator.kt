@@ -2,6 +2,7 @@ package com.dalab.internet.ussd
 
 import android.content.Context
 import android.os.PowerManager
+import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.ExchangeDialAttemptStartRequest
@@ -42,6 +43,17 @@ class ExchangeUssdOrchestrator(private val context: Context) {
     }
 
     private suspend fun executeLocked(order: com.dalab.internet.data.ExchangeOrder): ExchangeDialResult {
+        if (!DeviceIdentity.canSend()) {
+            // Admin > Mobile Management: this device is configured Receive
+            // Only — the backend would reject the payout dial-attempt anyway
+            // (see POST /agent/exchange/orders/:id/dial-attempts).
+            DiagnosticsLog.record(
+                "exchange_dial_skipped_receive_only",
+                "Exchange order ${order.id} not dialed — this device is configured as Receive Only (Admin > Mobile Management).",
+                isError = false,
+            )
+            return ExchangeDialResult(ExchangeDialOutcome.PERMISSION_DENIED, "This device is set to Receive Only and cannot send payments.")
+        }
         if (!ExchangeUssdBridge.isAccessibilityServiceEnabled(context)) {
             return ExchangeDialResult(
                 ExchangeDialOutcome.ACCESSIBILITY_NOT_ENABLED,

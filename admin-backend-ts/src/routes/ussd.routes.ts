@@ -405,22 +405,39 @@ ussdRouter.get("/admin/agent-devices/:id/diagnostics", requireStaff(), async (re
   sendJson(res, 200, { summary, recent });
 });
 
+const PAYMENT_ROLES = ["receive_only", "send_only", "send_receive"];
+
 ussdRouter.post("/admin/agent-devices", requirePermission("devices.manage"), async (req, res) => {
-  const { name, description } = req.body;
+  const { name, description, paymentRole } = req.body;
   if (!name) return sendJson(res, 400, { error: "name is required" });
+  if (paymentRole != null && !PAYMENT_ROLES.includes(paymentRole)) {
+    return sendJson(res, 400, { error: `paymentRole must be one of: ${PAYMENT_ROLES.join(", ")}` });
+  }
   if (await queryOne(`SELECT id FROM agent_devices WHERE name=$1`, [name])) {
     return sendJson(res, 409, { error: "A device with this name already exists" });
   }
   const id = randomUUID();
-  await query(`INSERT INTO agent_devices (id, name, description) VALUES ($1,$2,$3)`, [id, name, description ?? ""]);
+  await query(`INSERT INTO agent_devices (id, name, description, payment_role) VALUES ($1,$2,$3,$4)`, [
+    id, name, description ?? "", paymentRole ?? "send_receive",
+  ]);
   sendJson(res, 201, await queryOne(`SELECT * FROM agent_devices WHERE id=$1`, [id]));
 });
 
 ussdRouter.put("/admin/agent-devices/:id", requirePermission("devices.manage"), async (req, res) => {
-  const existing = await queryOne(`SELECT * FROM agent_devices WHERE id=$1`, [req.params.id]);
+  const existing = await queryOne<{ name: string; description: string; payment_role: string }>(
+    `SELECT * FROM agent_devices WHERE id=$1`,
+    [req.params.id]
+  );
   if (!existing) return sendJson(res, 404, { error: "Device not found" });
-  await query(`UPDATE agent_devices SET name=$1, description=$2 WHERE id=$3`, [
-    req.body.name ?? existing.name, req.body.description ?? existing.description, req.params.id,
+  const { paymentRole } = req.body;
+  if (paymentRole != null && !PAYMENT_ROLES.includes(paymentRole)) {
+    return sendJson(res, 400, { error: `paymentRole must be one of: ${PAYMENT_ROLES.join(", ")}` });
+  }
+  await query(`UPDATE agent_devices SET name=$1, description=$2, payment_role=$3 WHERE id=$4`, [
+    req.body.name ?? existing.name,
+    req.body.description ?? existing.description,
+    paymentRole ?? existing.payment_role,
+    req.params.id,
   ]);
   sendJson(res, 200, await queryOne(`SELECT * FROM agent_devices WHERE id=$1`, [req.params.id]));
 });
@@ -508,7 +525,7 @@ ussdRouter.get("/agent/sim-routing", requireAuth("agent"), async (req, res) => {
 // deviceId chosen there is what auth/device-login uses to find its agent).
 // Only non-sensitive labels are returned — no PINs, no health telemetry.
 ussdRouter.get("/agent/devices", async (_req, res) => {
-  sendJson(res, 200, await query(`SELECT id, name, description FROM agent_devices ORDER BY name`));
+  sendJson(res, 200, await query(`SELECT id, name, description, payment_role FROM agent_devices ORDER BY name`));
 });
 
 // Health telemetry from the Agent App's background service — battery,
@@ -583,9 +600,17 @@ ussdRouter.post("/agent/orders/:id/dial-attempts", requireAuth("agent"), async (
 
   const agent = await queryOne<{ device_id: string | null }>(`SELECT device_id FROM agents WHERE id=$1`, [req.auth!.sub]);
   if (agent?.device_id) {
-    const device = await queryOne<{ enabled: boolean }>(`SELECT enabled FROM agent_devices WHERE id=$1`, [agent.device_id]);
+    const device = await queryOne<{ enabled: boolean; payment_role: string }>(
+      `SELECT enabled, payment_role FROM agent_devices WHERE id=$1`,
+      [agent.device_id]
+    );
     if (device && !device.enabled) {
       return sendJson(res, 403, { error: "Your assigned device has been disabled by an admin." });
+    }
+    // Admin > Mobile Management: a device set to Receive Only never dials
+    // USSD (see 048_agent_device_payment_role.sql).
+    if (device && device.payment_role === "receive_only") {
+      return sendJson(res, 403, { error: "Your assigned device is configured as Receive Only and cannot send payments." });
     }
   }
 

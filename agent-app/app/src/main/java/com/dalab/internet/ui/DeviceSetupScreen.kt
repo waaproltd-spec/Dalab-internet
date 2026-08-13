@@ -79,7 +79,7 @@ fun DeviceSetupScreen(onDeviceSelected: () -> Unit) {
                         headlineContent = { Text(device.name) },
                         supportingContent = device.description?.takeIf { it.isNotBlank() }?.let { { Text(it) } },
                         modifier = Modifier.clickable {
-                            DeviceIdentity.set(device.id, device.name)
+                            DeviceIdentity.set(device.id, device.name, device.paymentRole)
                             onDeviceSelected()
                         },
                     )
