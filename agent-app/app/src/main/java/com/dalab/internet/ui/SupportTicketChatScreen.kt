@@ -53,8 +53,9 @@ fun SupportTicketChatScreen(initialTicket: SupportTicket, onBack: () -> Unit) {
     // detail as soon as the screen opens, not just on the next event.
     LaunchedEffect(Unit) { refresh() }
     LaunchedEffect(Unit) { AgentEventBus.orderEvents.collect { refresh() } }
-    LaunchedEffect(ticket.messages.size) {
-        if (ticket.messages.isNotEmpty()) listState.animateScrollToItem(ticket.messages.size - 1)
+    LaunchedEffect(ticket.messages?.size) {
+        val count = ticket.messages?.size ?: 0
+        if (count > 0) listState.animateScrollToItem(count - 1)
     }
 
     fun accept() {
@@ -123,7 +124,7 @@ fun SupportTicketChatScreen(initialTicket: SupportTicket, onBack: () -> Unit) {
                     }
                 } else {
                     LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(12.dp)) {
-                        items(ticket.messages, key = { it.id }) { m -> SupportMessageBubble(m) }
+                        items(ticket.messages.orEmpty(), key = { it.id }) { m -> SupportMessageBubble(m) }
                     }
                 }
             }
