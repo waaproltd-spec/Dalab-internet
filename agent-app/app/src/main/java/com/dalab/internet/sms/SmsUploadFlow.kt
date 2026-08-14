@@ -116,7 +116,7 @@ object SmsUploadFlow {
         return try {
             RetryClassifier.requireSuccessful(
                 ApiClient.service.reportExchangePayoutConfirmation(
-                    ExchangePayoutConfirmationRequest(entry.receiverPhone, entry.amount, entry.rawText)
+                    ExchangePayoutConfirmationRequest(entry.receiverPhone, entry.amount, entry.rawText, entry.provider)
                 )
             )
             UploadOutcome.Success

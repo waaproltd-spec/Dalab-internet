@@ -599,7 +599,7 @@ function normalizePhone(phone: string | null | undefined): string {
  * completed the order (or this SMS doesn't correspond to a DALAB order).
  */
 ordersRouter.post("/agent/orders/voucher-confirmation", requireAuth("agent"), async (req, res) => {
-  const { receiverPhone, amount } = req.body;
+  const { receiverPhone, amount, provider } = req.body;
   if (!receiverPhone || amount == null) {
     return sendJson(res, 400, { error: "receiverPhone and amount are required" });
   }
@@ -611,13 +611,23 @@ ordersRouter.post("/agent/orders/voucher-confirmation", requireAuth("agent"), as
   // amount+phone, the carrier's confirmation should complete whichever was
   // claimed first, and FOR UPDATE SKIP LOCKED keeps two concurrent carrier
   // confirmations from both landing on the same in-flight candidate.
+  //
+  // Scoped to companies.name matching the SMS's own carrier (when the app
+  // sends one — older builds may not) and to orders updated in the last
+  // hour: confirmed live that without these, an amount+phone collision
+  // across two different providers' in_progress orders (or a long-stale
+  // one) let an unrelated order's SMS complete the wrong order outright.
   const candidates = await withTransaction((client) =>
     client
       .query<{ id: string; receiver_phone: string | null }>(
-        `SELECT id, receiver_phone FROM orders WHERE status='in_progress' AND ABS(amount - $1) < 0.01
-         ORDER BY updated_at ASC
+        `SELECT o.id, o.receiver_phone FROM orders o
+         LEFT JOIN companies co ON co.id = o.company_id
+         WHERE o.status='in_progress' AND ABS(o.amount - $1) < 0.01
+           AND o.updated_at > now() - interval '1 hour'
+           AND ($2::text IS NULL OR lower(co.name) = lower($2::text))
+         ORDER BY o.updated_at ASC
          FOR UPDATE SKIP LOCKED`,
-        [amount]
+        [amount, typeof provider === "string" ? provider : null]
       )
       .then((r) => r.rows)
   );
