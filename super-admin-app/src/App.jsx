@@ -200,7 +200,7 @@ const DalabAdminApi = {
   updatePromoImage: (id, body) => dalabAdminApiRequest(`/admin/promo-images/${id}`, { method: "PUT", body }),
   deletePromoImage: (id) => dalabAdminApiRequest(`/admin/promo-images/${id}`, { method: "DELETE" }),
   promoImageUrl: (id) => `${DALAB_API_BASE_URL}/promo-images/${id}/image`,
-  sendNotification: (type, title, body) => dalabAdminApiRequest("/admin/notifications/send", { method: "POST", body: { type, title, body } }),
+  sendNotification: (payload) => dalabAdminApiRequest("/admin/notifications/send", { method: "POST", body: payload }),
   getAdminNotifications: () => dalabAdminApiRequest("/admin/notifications"),
   getReports: (range) => dalabAdminApiRequest(`/admin/reports?range=${range}`),
   // USSD Services
@@ -7618,15 +7618,41 @@ function SmsLogs({ companies }) {
   );
 }
 
-const NOTIFICATION_TYPE_LABEL = { push: "Push Notification", promotion: "Promotion", maintenance: "Maintenance Message" };
+const NOTIFICATION_TYPE_LABEL = {
+  push: "Push Notification",
+  promotion: "Promotion",
+  order_update: "Order Update",
+  exchange_update: "Exchange Update",
+  maintenance: "Maintenance Message",
+};
+const NOTIFICATION_GROUP_LABEL = {
+  internet_customers: "Internet customers (have placed an order)",
+  exchange_customers: "eBadal customers (have made an exchange)",
+  new_this_week: "New customers (last 7 days)",
+};
+const NEW_NOTIFICATION_FORM = {
+  type: "push",
+  title: "",
+  body: "",
+  targetType: "all",
+  group: "internet_customers",
+  relatedOrderId: "",
+  relatedExchangeOrderId: "",
+};
 
 function Notifications() {
   const [sent, setSent] = useState([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [historyError, setHistoryError] = useState("");
-  const [form, setForm] = useState({ type: "push", title: "", body: "" });
+  const [form, setForm] = useState(NEW_NOTIFICATION_FORM);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState("");
+  const [sendResult, setSendResult] = useState(null);
+
+  const [customerSearch, setCustomerSearch] = useState("");
+  const [customerResults, setCustomerResults] = useState([]);
+  const [searchingCustomers, setSearchingCustomers] = useState(false);
+  const [selectedCustomers, setSelectedCustomers] = useState([]);
 
   const fetchHistory = () => {
     if (!DALAB_API_ENABLED) { setLoadingHistory(false); return; }
@@ -7639,17 +7665,66 @@ function Notifications() {
   };
   useEffect(fetchHistory, []);
 
+  const isCustomerTargeted = form.targetType === "single" || form.targetType === "multiple";
+
+  // Debounced customer search — only active while picking a single/multiple
+  // target, reuses the existing GET /admin/customers?search= already used
+  // by the Customers panel rather than a new lookup endpoint.
+  useEffect(() => {
+    if (!isCustomerTargeted || !customerSearch.trim()) { setCustomerResults([]); return; }
+    setSearchingCustomers(true);
+    const timer = setTimeout(() => {
+      DalabAdminApi.getCustomers(customerSearch.trim())
+        .then((rows) => setCustomerResults(rows))
+        .catch(() => setCustomerResults([]))
+        .finally(() => setSearchingCustomers(false));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [customerSearch, isCustomerTargeted]);
+
+  const toggleCustomer = (c) => {
+    setSelectedCustomers((prev) => {
+      const exists = prev.some((p) => p.id === c.id);
+      if (exists) return prev.filter((p) => p.id !== c.id);
+      return form.targetType === "single" ? [c] : [...prev, c];
+    });
+  };
+
+  const sendLabel = () => {
+    if (form.type === "maintenance") return "Send maintenance message";
+    if (form.targetType === "all") return "Send to all customers";
+    if (form.targetType === "group") return `Send to ${NOTIFICATION_GROUP_LABEL[form.group]?.split(" (")[0] ?? "group"}`;
+    const n = selectedCustomers.length;
+    return n === 0 ? "Select customers to send" : `Send to ${n} customer${n === 1 ? "" : "s"}`;
+  };
+
   const send = async () => {
     if (!form.title || sending) return;
+    if (isCustomerTargeted && selectedCustomers.length === 0) {
+      setSendError("Select at least one customer first.");
+      return;
+    }
     setSending(true);
     setSendError("");
+    setSendResult(null);
     try {
-      // Delivery is DB-record-only for now — no FCM/APNs push infrastructure
-      // is wired up yet, so this reaches the notifications table (and
-      // whatever in-app "Notifications" screen polls it) but not an actual
-      // phone push until that infra exists.
-      await DalabAdminApi.sendNotification(form.type, form.title, form.body);
-      setForm({ type: "push", title: "", body: "" });
+      const payload = {
+        type: form.type,
+        title: form.title,
+        body: form.body,
+        ...(form.type !== "maintenance" && {
+          targetType: form.targetType,
+          ...(isCustomerTargeted && { customerIds: selectedCustomers.map((c) => c.id) }),
+          ...(form.targetType === "group" && { group: form.group }),
+          ...(form.relatedOrderId.trim() && { relatedOrderId: form.relatedOrderId.trim() }),
+          ...(form.relatedExchangeOrderId.trim() && { relatedExchangeOrderId: form.relatedExchangeOrderId.trim() }),
+        }),
+      };
+      const result = await DalabAdminApi.sendNotification(payload);
+      setSendResult(result);
+      setForm(NEW_NOTIFICATION_FORM);
+      setSelectedCustomers([]);
+      setCustomerSearch("");
       fetchHistory();
     } catch (err) {
       setSendError(err.message || "Could not send notification.");
@@ -7664,15 +7739,22 @@ function Notifications() {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1.2fr", gap: 14 }}>
         <Card style={{ padding: 18 }}>
           <div style={{ fontWeight: 700, fontSize: 13, color: INK, marginBottom: 10 }}>Compose</div>
-          <div style={{ fontSize: 11.5, color: MUTE, marginBottom: 12 }}>
-            Stored and shown in-app to customers/agents. No push (FCM/APNs) infrastructure is connected yet, so this doesn't reach a phone that has the app closed.
-          </div>
           {sendError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{sendError}</div>}
+          {sendResult && (
+            <div style={{ background: "#E4F7EA", color: "#137A3B", fontSize: 12, borderRadius: 10, padding: "8px 12px", marginBottom: 10 }}>
+              Sent to {sendResult.customerCount ?? 0} customer{(sendResult.customerCount ?? 0) === 1 ? "" : "s"}.{" "}
+              {sendResult.pushConfigured
+                ? `${sendResult.pushSent ?? 0} push notification${(sendResult.pushSent ?? 0) === 1 ? "" : "s"} delivered.`
+                : "Push isn't configured yet — this only reached the in-app inbox, not a phone with the app closed."}
+            </div>
+          )}
           <Field label="Type">
             <select style={inputStyle} value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
               <option value="push">Push Notification</option>
               <option value="promotion">Promotion</option>
-              <option value="maintenance">Maintenance Message</option>
+              <option value="order_update">Order Update</option>
+              <option value="exchange_update">Exchange Update</option>
+              <option value="maintenance">Maintenance Message (agents only)</option>
             </select>
           </Field>
           <Field label="Title">
@@ -7681,8 +7763,103 @@ function Notifications() {
           <Field label="Message">
             <textarea style={{ ...inputStyle, minHeight: 80, resize: "vertical" }} value={form.body} onChange={(e) => setForm({ ...form, body: e.target.value })} />
           </Field>
+
+          {form.type === "maintenance" ? (
+            <div style={{ fontSize: 11.5, color: MUTE, marginBottom: 12 }}>
+              Maintenance messages go to Agents only — customers never see them.
+            </div>
+          ) : (
+            <>
+              <Field label="Send to">
+                <select
+                  style={inputStyle}
+                  value={form.targetType}
+                  onChange={(e) => { setForm({ ...form, targetType: e.target.value }); setSelectedCustomers([]); }}
+                >
+                  <option value="all">All customers</option>
+                  <option value="group">A customer group</option>
+                  <option value="multiple">Multiple selected customers</option>
+                  <option value="single">One customer</option>
+                </select>
+              </Field>
+
+              {form.targetType === "group" && (
+                <Field label="Group">
+                  <select style={inputStyle} value={form.group} onChange={(e) => setForm({ ...form, group: e.target.value })}>
+                    {Object.entries(NOTIFICATION_GROUP_LABEL).map(([key, label]) => (
+                      <option key={key} value={key}>{label}</option>
+                    ))}
+                  </select>
+                </Field>
+              )}
+
+              {isCustomerTargeted && (
+                <Field label={form.targetType === "single" ? "Customer" : "Customers"}>
+                  {selectedCustomers.length > 0 && (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                      {selectedCustomers.map((c) => (
+                        <span
+                          key={c.id}
+                          style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "#EEF0FB", color: INDIGO, borderRadius: 999, padding: "4px 10px", fontSize: 12, fontWeight: 600 }}
+                        >
+                          {c.name || c.phone}
+                          <X size={12} style={{ cursor: "pointer" }} onClick={() => toggleCustomer(c)} />
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <input
+                    style={inputStyle}
+                    value={customerSearch}
+                    onChange={(e) => setCustomerSearch(e.target.value)}
+                    placeholder="Search by name or phone…"
+                  />
+                  {customerSearch.trim() && (
+                    <div style={{ marginTop: 6, border: `1px solid ${BORDER}`, borderRadius: 10, maxHeight: 160, overflowY: "auto" }}>
+                      {searchingCustomers ? (
+                        <div style={{ padding: 10, fontSize: 12, color: MUTE }}>Searching…</div>
+                      ) : customerResults.length === 0 ? (
+                        <div style={{ padding: 10, fontSize: 12, color: MUTE }}>No matches.</div>
+                      ) : (
+                        customerResults.map((c) => {
+                          const checked = selectedCustomers.some((p) => p.id === c.id);
+                          return (
+                            <div
+                              key={c.id}
+                              onClick={() => toggleCustomer(c)}
+                              style={{ padding: "8px 10px", fontSize: 12.5, cursor: "pointer", background: checked ? "#EEF0FB" : "transparent", borderBottom: `1px solid ${BORDER}` }}
+                            >
+                              {c.name || "Unnamed"} · {c.phone}
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  )}
+                </Field>
+              )}
+
+              {(form.type === "order_update" || form.type === "exchange_update") && (
+                <Field label={form.type === "order_update" ? "Related Order ID (optional)" : "Related Exchange ID (optional)"}>
+                  <input
+                    style={inputStyle}
+                    value={form.type === "order_update" ? form.relatedOrderId : form.relatedExchangeOrderId}
+                    onChange={(e) =>
+                      setForm(
+                        form.type === "order_update"
+                          ? { ...form, relatedOrderId: e.target.value }
+                          : { ...form, relatedExchangeOrderId: e.target.value }
+                      )
+                    }
+                    placeholder={form.type === "order_update" ? "e.g. DLB123456" : "e.g. DEX123456789"}
+                  />
+                </Field>
+              )}
+            </>
+          )}
+
           <Button icon={sending ? Loader2 : Bell} spin={sending} disabled={sending || !form.title} onClick={send}>
-            {sending ? "Sending..." : "Send to all customers"}
+            {sending ? "Sending..." : sendLabel()}
           </Button>
         </Card>
         <Card style={{ padding: 0, overflow: "hidden" }}>
@@ -7696,15 +7873,35 @@ function Notifications() {
           ) : sent.length === 0 ? (
             <div style={{ padding: 16, fontSize: 12.5, color: MUTE }}>Nothing sent yet.</div>
           ) : (
-            sent.map((s) => (
-              <div key={s.id} style={{ padding: "12px 16px", borderBottom: `1px solid ${BORDER}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div>
-                  <div style={{ fontWeight: 700, fontSize: 13, color: INK }}>{s.title}</div>
-                  <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>{formatDateTime(s.sentAt)}</div>
+            sent.map((s) => {
+              const count = Number(s.customerCount) || 0;
+              const readCount = Number(s.readCount) || 0;
+              const targetLabel =
+                s.targetType === "all" ? "All customers"
+                : s.targetType === "group" ? "Customer group"
+                : count === 1 ? (s.customerName || s.customerPhone || "1 customer")
+                : count > 1 ? `${count} customers`
+                : null;
+              return (
+                <div key={s.id} style={{ padding: "12px 16px", borderBottom: `1px solid ${BORDER}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 13, color: INK }}>{s.title}</div>
+                      <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>
+                        {formatDateTime(s.sentAt)}{s.sentByAdminEmail ? ` · ${s.sentByAdminEmail}` : ""}
+                      </div>
+                    </div>
+                    <Badge>{NOTIFICATION_TYPE_LABEL[s.type] ?? s.type}</Badge>
+                  </div>
+                  {targetLabel && (
+                    <div style={{ fontSize: 11.5, color: MUTE, marginTop: 6 }}>
+                      {targetLabel}
+                      {count > 1 && ` · ${readCount} read`}
+                    </div>
+                  )}
                 </div>
-                <Badge>{NOTIFICATION_TYPE_LABEL[s.type] ?? s.type}</Badge>
-              </div>
-            ))
+              );
+            })
           )}
         </Card>
       </div>
