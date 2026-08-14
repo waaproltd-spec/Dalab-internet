@@ -2,11 +2,16 @@ package com.dalab.internet.customer.data
 
 import com.google.gson.annotations.SerializedName
 
-/** Mirrors the customer object returned by OTP verify / GET /customer/profile. */
+/** Mirrors the customer object returned by OTP verify / GET /customer/profile.
+ * photoBase64 is a full "data:<mime>;base64,<data>" string (or null if the
+ * customer has no photo set) — the same shape uploaded to PUT
+ * /customer/profile/photo, never persisted to SessionManager (only ever
+ * held in this screen's own Compose state — see ProfileScreen). */
 data class CustomerProfile(
     val id: String,
     val phone: String,
     val name: String?,
+    val photoBase64: String? = null,
 )
 
 /** Mirrors GET /promo-images (admin-backend-ts, promoImages.routes.ts) — public, Super Admin-uploaded only. */
@@ -201,3 +206,21 @@ data class ExchangeOrder(
     val createdAt: String,
     val completedAt: String? = null,
 )
+
+/** The exact, backend-validated category enum for POST /feedback
+ * (feedback.routes.ts FEEDBACK_CATEGORIES) — the "Select Issue" sheet on
+ * [FeedbackScreen] offers exactly these seven, once each. */
+enum class FeedbackCategory(val apiValue: String, val label: String, val labelSo: String) {
+    APP_CRASHES("App Crashes Frequently", "App Crashes Frequently", "App-ku si joogto ah ayuu u xiraa"),
+    PAYMENT_FAILED("Unable to Complete Payment", "Unable to Complete Payment", "Lacag-bixinta lama dhamaystirin"),
+    INTERNET_PACKAGE("Internet Package Problem", "Internet Package Problem", "Dhibaato ku saabsan baakada Internetka"),
+    PAYMENT_VERIFICATION("Payment Verification Issue", "Payment Verification Issue", "Dhibaato xaqiijinta lacag-bixinta"),
+    MAKE_SUGGESTION("Make Suggestion", "Make Suggestion", "Soo Jeedin"),
+    FEEDBACK("Feedback", "Feedback", "Fikrad"),
+    OTHER("Other", "Other", "Kale"),
+}
+
+/** Body for POST /feedback (feedback.routes.ts). */
+data class FeedbackRequest(val category: String, val message: String, val deviceInfo: String? = null)
+
+data class FeedbackResponse(val id: String, val category: String, val message: String, val status: String)

@@ -5,6 +5,7 @@ import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { hashPassword, verifyPassword, isValidPin } from "../auth/crypto.js";
+import { parseDataUri } from "../utils/dataUri.js";
 
 export const customersRouter = Router();
 
@@ -274,8 +275,31 @@ customersRouter.post("/agent/customers", requireAuth("agent"), async (req, res) 
 const CUSTOMER_PROFILE_COLUMNS =
   "id, phone, name, email, macaash_points, evc_plus_name, evc_plus_number, evc_plus_saved_at, edahab_name, edahab_number, edahab_saved_at, created_at";
 
+// photo_data (BYTEA) is deliberately never part of CUSTOMER_PROFILE_COLUMNS
+// -- same reasoning as promo_images.image_data -- so this is the one place
+// that reads it, converting it to an inline data URI here rather than a
+// separate binary-serving route: a customer's photo is private (unlike a
+// promo image), and inlining it into the already-authenticated profile
+// response avoids standing up a second endpoint that would need its own
+// auth story for <img>-style loading.
+async function fetchCustomerProfile(id: string) {
+  const row = await queryOne<Record<string, unknown>>(
+    `SELECT ${CUSTOMER_PROFILE_COLUMNS}, photo_data, photo_mime_type FROM customers WHERE id=$1`,
+    [id]
+  );
+  if (!row) return null;
+  const { photo_data, photo_mime_type, ...rest } = row;
+  return {
+    ...rest,
+    photoBase64:
+      photo_data && photo_mime_type
+        ? `data:${photo_mime_type};base64,${(photo_data as Buffer).toString("base64")}`
+        : null,
+  };
+}
+
 customersRouter.get("/customer/profile", requireAuth("customer"), async (req, res) => {
-  const customer = await queryOne(`SELECT ${CUSTOMER_PROFILE_COLUMNS} FROM customers WHERE id=$1`, [req.auth!.sub]);
+  const customer = await fetchCustomerProfile(req.auth!.sub);
   if (!customer) return sendJson(res, 404, { error: "Customer not found" });
   sendJson(res, 200, customer);
 });
@@ -284,7 +308,36 @@ customersRouter.put("/customer/profile", requireAuth("customer"), async (req, re
   const name = String(req.body.name ?? "").trim();
   if (!name) return sendJson(res, 400, { error: "name is required" });
   await query(`UPDATE customers SET name=$1 WHERE id=$2`, [name, req.auth!.sub]);
-  sendJson(res, 200, await queryOne(`SELECT ${CUSTOMER_PROFILE_COLUMNS} FROM customers WHERE id=$1`, [req.auth!.sub]));
+  sendJson(res, 200, await fetchCustomerProfile(req.auth!.sub));
+});
+
+// Same data-URI upload shape as POST /admin/promo-images (parseDataUri),
+// just stored on the customer row instead of a separate images table since
+// there's only ever one photo per customer. Capped by decoded byte size
+// (promo images cap by *count* instead -- irrelevant here, there's only
+// ever one) so a customer can't push an arbitrarily large blob into the row.
+const MAX_PROFILE_PHOTO_BYTES = 4 * 1024 * 1024; // 4MB
+
+customersRouter.put("/customer/profile/photo", requireAuth("customer"), async (req, res) => {
+  const parsed = parseDataUri(req.body.photoBase64);
+  if (!parsed) return sendJson(res, 400, { error: "photoBase64 must be a data:<mime>;base64,<data> string" });
+  if (!parsed.mimeType.startsWith("image/")) {
+    return sendJson(res, 400, { error: "photoBase64 must be an image" });
+  }
+  if (parsed.data.byteLength > MAX_PROFILE_PHOTO_BYTES) {
+    return sendJson(res, 400, { error: "Photo is too large (max 4MB)" });
+  }
+  await query(`UPDATE customers SET photo_data=$1, photo_mime_type=$2 WHERE id=$3`, [
+    parsed.data,
+    parsed.mimeType,
+    req.auth!.sub,
+  ]);
+  sendJson(res, 200, await fetchCustomerProfile(req.auth!.sub));
+});
+
+customersRouter.delete("/customer/profile/photo", requireAuth("customer"), async (req, res) => {
+  await query(`UPDATE customers SET photo_data=NULL, photo_mime_type=NULL WHERE id=$1`, [req.auth!.sub]);
+  sendJson(res, 200, await fetchCustomerProfile(req.auth!.sub));
 });
 
 // ---------------- Customer: saved Money Exchange wallet numbers ----------------
