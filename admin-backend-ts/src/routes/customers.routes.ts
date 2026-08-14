@@ -20,9 +20,9 @@ export const customersRouter = Router();
 const ADMIN_CUSTOMER_COLUMNS = `id, phone, name, email, status, macaash_points, created_at,
   (pin_hash IS NOT NULL) AS pin_set, (password_hash IS NOT NULL) AS has_password,
   evc_plus_name, evc_plus_number, evc_plus_saved_at,
-  (evc_plus_saved_at IS NOT NULL) AS evc_plus_locked,
+  (evc_plus_saved_at IS NOT NULL AND now() - evc_plus_saved_at > interval '2 hours') AS evc_plus_locked,
   edahab_name, edahab_number, edahab_saved_at,
-  (edahab_saved_at IS NOT NULL) AS edahab_locked,
+  (edahab_saved_at IS NOT NULL AND now() - edahab_saved_at > interval '2 hours') AS edahab_locked,
   exchange_daily_limit, exchange_monthly_limit, exchange_yearly_limit,
   COALESCE(exchange_daily_limit, 100) AS exchange_daily_limit_effective,
   COALESCE(exchange_monthly_limit, 500) AS exchange_monthly_limit_effective,
@@ -36,6 +36,7 @@ const ADMIN_CUSTOMER_COLUMNS = `id, phone, name, email, status, macaash_points, 
 // (EVC Plus, eDahab) is always a name+number pair, saved and cleared
 // together (047_exchange_wallet_lock_and_limits.sql).
 const WALLET_PHONE_RE = /^\+?\d{6,15}$/;
+const WALLET_LOCK_WINDOW_MS = 2 * 60 * 60 * 1000;
 function walletPairError(label: string) {
   return { error: `Provide both a name and a number for ${label}, or clear both` };
 }
@@ -69,14 +70,11 @@ customersRouter.put("/admin/customers/:id/block", requirePermission("customers.m
 });
 
 // ---------------- Customer wallet info override (Admin) ----------------
-// The customer-facing PUT /customer/wallet-numbers (below) locks a wallet
-// permanently the moment it's first saved — this route is the only way to
-// correct one after that. An Admin can always edit the name/number directly
-// here (no lock check), which leaves the existing saved_at untouched (still
-// locked to the customer, same as before the edit). unlockEvcPlus/
-// unlockEdahab instead clears saved_at back to null, genuinely reopening
-// that wallet for the customer to save fresh through their own
-// self-service screen — which immediately re-locks it permanently again.
+// The customer-facing PUT /customer/wallet-numbers (below) locks a wallet 2
+// hours after it's first saved — this is the only way to correct one after
+// that, and the only way (unlockEvcPlus/unlockEdahab) to grant the customer
+// a fresh self-service window again. No lock check here — an Admin can
+// always edit.
 customersRouter.put("/admin/customers/:id/wallet-numbers", requirePermission("customers.manage"), async (req, res) => {
   const existing = await queryOne<{
     evc_plus_name: string | null;
@@ -117,8 +115,8 @@ customersRouter.put("/admin/customers/:id/wallet-numbers", requirePermission("cu
 
   let evcPlusSavedAt = evcPlusName != null && evcPlusNumber != null ? existing.evc_plus_saved_at : null;
   let edahabSavedAt = edahabName != null && edahabNumber != null ? existing.edahab_saved_at : null;
-  if (body.unlockEvcPlus === true) evcPlusSavedAt = null;
-  if (body.unlockEdahab === true) edahabSavedAt = null;
+  if (body.unlockEvcPlus === true && evcPlusName != null) evcPlusSavedAt = new Date().toISOString();
+  if (body.unlockEdahab === true && edahabName != null) edahabSavedAt = new Date().toISOString();
 
   await query(
     `UPDATE customers SET evc_plus_name=$1, evc_plus_number=$2, evc_plus_saved_at=$3, edahab_name=$4, edahab_number=$5, edahab_saved_at=$6 WHERE id=$7`,
@@ -296,10 +294,10 @@ customersRouter.put("/customer/profile", requireAuth("customer"), async (req, re
 // wallet_numbers_screen.dart). Each wallet (EVC Plus, eDahab) is a name+
 // number pair, saved and cleared together — explicitly passing null for
 // both (as opposed to omitting the keys) clears that wallet, only while
-// it's still unlocked. A wallet locks permanently the moment it's first
-// saved (evc_plus_saved_at/edahab_saved_at, set once and never cleared by a
-// later edit); from then on, only PUT /admin/customers/:id/wallet-numbers
-// can change or unlock it.
+// it's still unlocked. A wallet locks a fixed 2 hours after it's first
+// saved (evc_plus_saved_at/edahab_saved_at, set once and never refreshed by
+// a later edit within the window); past that, only PUT /admin/customers/:id/
+// wallet-numbers can change or unlock it.
 customersRouter.put("/customer/wallet-numbers", requireAuth("customer"), async (req, res) => {
   const body = req.body ?? {};
   for (const field of ["evcPlusNumber", "edahabNumber"] as const) {
@@ -322,8 +320,8 @@ customersRouter.put("/customer/wallet-numbers", requireAuth("customer"), async (
 
   const touchesEvc = "evcPlusName" in body || "evcPlusNumber" in body;
   const touchesEdahab = "edahabName" in body || "edahabNumber" in body;
-  const evcLocked = existing.evc_plus_saved_at != null;
-  const edahabLocked = existing.edahab_saved_at != null;
+  const evcLocked = existing.evc_plus_saved_at != null && Date.now() - new Date(existing.evc_plus_saved_at).getTime() > WALLET_LOCK_WINDOW_MS;
+  const edahabLocked = existing.edahab_saved_at != null && Date.now() - new Date(existing.edahab_saved_at).getTime() > WALLET_LOCK_WINDOW_MS;
   if (touchesEvc && evcLocked) return sendJson(res, 403, { error: "Your EVC Plus wallet info is locked. Contact support to update it." });
   if (touchesEdahab && edahabLocked) return sendJson(res, 403, { error: "Your eDahab wallet info is locked. Contact support to update it." });
 
