@@ -937,7 +937,7 @@ exchangeRouter.post("/admin/exchange/orders/:id/reverse", requirePermission("exc
     newValue: { status: "cancelled" },
   });
   broadcast({ type: "exchange_order.updated", exchangeOrderId: req.params.id });
-  await notifyCustomer(result[0].customer_id, "Exchange cancelled", "Your exchange request was cancelled. Please contact support if you have questions.");
+  await notifyCustomer(result[0].customer_id, "eBadalkaagu waa la joojiyay", "Codsigaaga eBadalka waa la joojiyay. Fadlan la xiriir taageerada haddii aad su'aalo qabto.");
   sendJson(res, 200, await queryOne(`${EXCHANGE_ORDER_LIST_SELECT} WHERE eo.id=$1`, [req.params.id]));
 });
 
