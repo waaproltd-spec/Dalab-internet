@@ -116,17 +116,17 @@ feedbackRouter.put("/admin/feedback/:id", requirePermission("feedback.manage"), 
   // was actually looked at.
   if (status && status !== "pending" && status !== existing.status) {
     const STATUS_LABEL: Record<string, string> = {
-      reviewed: "reviewed",
-      implemented: "implemented",
-      rejected: "rejected",
+      reviewed: "waa la eegay",
+      implemented: "waa la fuliyay",
+      rejected: "waa la diiday",
     };
     await query(
       `INSERT INTO notifications (id, type, title, body, customer_id)
        VALUES ($1,'feedback_update',$2,$3,$4)`,
       [
         randomUUID(),
-        "Update on your feedback",
-        `Your "${existing.category}" submission has been ${STATUS_LABEL[status] ?? status}.${adminReply ? ` "${adminReply}"` : ""}`,
+        "Cusboonaysiin ku saabsan fikradaada",
+        `Gudbintaada "${existing.category}" ${STATUS_LABEL[status] ?? status}.${adminReply ? ` "${adminReply}"` : ""}`,
         existing.customer_id,
       ]
     );
