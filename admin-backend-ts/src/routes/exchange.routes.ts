@@ -889,7 +889,10 @@ exchangeRouter.post("/agent/exchange/orders/payout-confirmation", requireAuth("a
   // the same "Hormuud"/"Somtel" convention ExchangePayoutSentParsers
   // already tags entries with — see 019_payment_wallets_company_id.sql)
   // rules that out. Also scoped to the last hour so a long-stale
-  // same-signature test order can never eat a fresh confirmation either.
+  // same-signature test order can never eat a fresh confirmation, and
+  // ordered newest-created-first: an SMS confirms whichever payout was
+  // actually just dialed, so the most recently created eligible order is
+  // the far more likely match than one that's been sitting for a while.
   const candidates = await withTransaction((client) =>
     client
       .query<{ id: string; receiver_phone: string | null }>(
@@ -900,7 +903,7 @@ exchangeRouter.post("/agent/exchange/orders/payout-confirmation", requireAuth("a
          WHERE eo.status IN ('in_progress','failed') AND ABS(eo.amount_received - $1) < 0.01
            AND eo.updated_at > now() - interval '1 hour'
            AND ($2::text IS NULL OR lower(pw.provider_label) = lower($2::text))
-         ORDER BY eo.updated_at ASC
+         ORDER BY eo.created_at DESC
          FOR UPDATE SKIP LOCKED`,
         [amount, typeof provider === "string" ? provider : null]
       )
