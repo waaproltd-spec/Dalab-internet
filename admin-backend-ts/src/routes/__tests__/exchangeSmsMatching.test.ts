@@ -680,7 +680,7 @@ test("safe payout lifecycle: SMS match -> in_progress -> dial-attempt -> step1 -
   assert.match((await asJson(repeatRes)).error, /completed/);
 });
 
-test("safe payout lifecycle: failed step2 marks the order Failed and blocks any repeat automatic attempt", async () => {
+test("safe payout lifecycle: failed step2 marks the order Pending Manual Payout (never a silent Failed) and blocks any repeat automatic attempt", async () => {
   const orderId = await insertExchangeOrder({
     corridorId: corridorEdahabToEvc,
     fromWalletId: "edahab",
@@ -714,8 +714,17 @@ test("safe payout lifecycle: failed step2 marks the order Failed and blocks any 
   });
   assert.equal(step2Res.status, 200);
 
-  const order = await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]);
-  assert.equal(order?.status, "failed", "a failed final attempt must mark the order Failed, never silently retry");
+  const order = await queryOne<{ status: string; payout_failure_reason: string | null }>(
+    `SELECT status, payout_failure_reason FROM exchange_orders WHERE id=$1`,
+    [orderId]
+  );
+  // A confirmed customer payment must never end up sitting at a silent
+  // 'failed' with no one alerted — a final dial-attempt failure now promotes
+  // straight to pending_manual_payout (immediately, not after the 20-minute
+  // safety window) so it shows up in the admin dashboard's action-required
+  // list with a "Pay Manually" button.
+  assert.equal(order?.status, "pending_manual_payout", "a failed final attempt must promote the order to Pending Manual Payout, never silently retry or sit at Failed");
+  assert.match(order?.payout_failure_reason ?? "", /Insufficient balance/, "the carrier's response text must be recorded as the failure reason for the admin to see");
 
   const hasDialAttemptRow = await queryOne<{ has_dial_attempt: boolean }>(
     `SELECT EXISTS(SELECT 1 FROM exchange_dial_attempts WHERE exchange_order_id=$1) AS has_dial_attempt`,
@@ -729,7 +738,7 @@ test("safe payout lifecycle: failed step2 marks the order Failed and blocks any 
     body: JSON.stringify({ attemptNumber: 2 }),
   });
   assert.equal(retryRes.status, 409, "the order-level guard must independently block any further automatic attempt too");
-  assert.match((await asJson(retryRes)).error, /failed/);
+  assert.match((await asJson(retryRes)).error, /pending_manual_payout/);
 });
 
 test("safe payout lifecycle: a duplicate dial-attempt-start call never issues the PIN twice", async () => {
