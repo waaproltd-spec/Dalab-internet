@@ -870,26 +870,39 @@ async function completeExchangeOrderByPayoutConfirmation(
 }
 
 exchangeRouter.post("/agent/exchange/orders/payout-confirmation", requireAuth("agent"), async (req, res) => {
-  const { receiverPhone, amount, rawText } = req.body ?? {};
+  const { receiverPhone, amount, rawText, provider } = req.body ?? {};
   if (!receiverPhone || amount == null) {
     return sendJson(res, 400, { error: "receiverPhone and amount are required" });
   }
   const target = normalizePhone(receiverPhone);
   if (!target) return sendJson(res, 400, { error: "receiverPhone is not a valid phone number" });
 
-  // Same simpler shape as Internet Store's voucher-confirmation route (no
-  // device/SIM cross-check) — a payout wallet is dialed from exactly one
-  // device by construction (exchange_payout_wallets.device_id), so an
-  // amount+receiver-phone match is already specific enough in practice, and
-  // completeExchangeOrderByPayoutConfirmation's atomic status guard is what
-  // actually prevents a stray SMS from double-completing anything.
+  // Confirmed live: without a provider check, a same-amount+phone
+  // confirmation SMS from one wallet's network (e.g. EVC Plus) could match
+  // and complete a *different* corridor's order whose actual payout wallet
+  // was eDahab, purely because that unrelated order happened to have an
+  // earlier updated_at — order DEX907119529 (EVC Plus -> eDahab, whose own
+  // dial attempt genuinely timed out) got marked completed by a
+  // confirmation meant for DEX907751183 (eDahab -> EVC Plus). Joining down
+  // to the corridor's actual payout wallet and matching its provider_label
+  // against the SMS's own carrier (payment_wallets.provider_label follows
+  // the same "Hormuud"/"Somtel" convention ExchangePayoutSentParsers
+  // already tags entries with — see 019_payment_wallets_company_id.sql)
+  // rules that out. Also scoped to the last hour so a long-stale
+  // same-signature test order can never eat a fresh confirmation either.
   const candidates = await withTransaction((client) =>
     client
       .query<{ id: string; receiver_phone: string | null }>(
-        `SELECT id, receiver_phone FROM exchange_orders WHERE status IN ('in_progress','failed') AND ABS(amount_received - $1) < 0.01
-         ORDER BY updated_at ASC
+        `SELECT eo.id, eo.receiver_phone FROM exchange_orders eo
+         JOIN exchange_corridors ec ON ec.id = eo.corridor_id
+         LEFT JOIN exchange_payout_wallets epw ON epw.id = ec.payout_wallet_id
+         LEFT JOIN payment_wallets pw ON pw.id = epw.wallet_id
+         WHERE eo.status IN ('in_progress','failed') AND ABS(eo.amount_received - $1) < 0.01
+           AND eo.updated_at > now() - interval '1 hour'
+           AND ($2::text IS NULL OR lower(pw.provider_label) = lower($2::text))
+         ORDER BY eo.updated_at ASC
          FOR UPDATE SKIP LOCKED`,
-        [amount]
+        [amount, typeof provider === "string" ? provider : null]
       )
       .then((r) => r.rows)
   );

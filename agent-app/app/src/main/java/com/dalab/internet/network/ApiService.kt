@@ -54,7 +54,7 @@ data class SmsLogUploadResponse(
 )
 data class VoucherConfirmationRequest(val receiverPhone: String, val amount: Double, val provider: String)
 data class VoucherConfirmationResponse(val matched: Boolean, val orderId: String? = null, val alreadyCompleted: Boolean = false)
-data class ExchangePayoutConfirmationRequest(val receiverPhone: String, val amount: Double, val rawText: String)
+data class ExchangePayoutConfirmationRequest(val receiverPhone: String, val amount: Double, val rawText: String, val provider: String)
 data class ExchangePayoutConfirmationResponse(val matched: Boolean, val orderId: String? = null, val alreadyCompleted: Boolean = false)
 data class DialAttemptStartRequest(val simSlot: Int?, val ussdString: String, val attemptNumber: Int)
 data class DialAttemptStartResponse(val id: String)
