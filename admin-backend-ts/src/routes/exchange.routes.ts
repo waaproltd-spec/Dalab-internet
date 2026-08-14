@@ -904,7 +904,7 @@ exchangeRouter.post("/agent/exchange/orders/payout-confirmation", requireAuth("a
            AND eo.updated_at > now() - interval '1 hour'
            AND ($2::text IS NULL OR lower(pw.provider_label) = lower($2::text))
          ORDER BY eo.created_at DESC
-         FOR UPDATE SKIP LOCKED`,
+         FOR UPDATE OF eo SKIP LOCKED`,
         [amount, typeof provider === "string" ? provider : null]
       )
       .then((r) => r.rows)

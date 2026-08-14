@@ -831,6 +831,128 @@ test("payout USSD string uses the correct carrier code for each wallet: EVC Plus
   assert.equal(edahabStart.step1UssdString, "*110*688000000*64*00#", "eDahab payout must dial *110*NUMBER*DOLLARS*CENTS#");
 });
 
+// ==================== POST /agent/exchange/orders/payout-confirmation ====================
+// The carrier's own outgoing-transfer SMS, arriving on the payout wallet's
+// phone, as a corroborating signal independent of ExchangeUssdOrchestrator's
+// on-screen step2 report (see completeExchangeOrderByPayoutConfirmation's
+// own comment above). Confirmed live in production that the matching query
+// needs three independent guards, not just recency: order DEX907119529
+// (EVC Plus -> eDahab, whose own dial attempt genuinely timed out) was
+// wrongly marked completed by a confirmation SMS actually meant for
+// DEX907751183 (eDahab -> EVC Plus) because it happened to have an earlier
+// updated_at and nothing checked which wallet/network actually sent it.
+
+const PAYOUT_PHONE = "252688000000"; // insertExchangeOrder's fixed receiver_phone
+
+async function reportPayoutConfirmation(body: { amount: number; rawText?: string; provider?: string }) {
+  const res = await fetch(`${payoutBaseUrl}/agent/exchange/orders/payout-confirmation`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ receiverPhone: PAYOUT_PHONE, amount: body.amount, rawText: body.rawText ?? "test sms", provider: body.provider }),
+  });
+  return { status: res.status, body: await asJson(res) };
+}
+
+test("payout-confirmation completes an eDahab -> EVC Plus order given the EVC Plus/Hormuud carrier", async () => {
+  const orderId = await insertExchangeOrder({
+    corridorId: corridorEdahabToEvc,
+    fromWalletId: "edahab",
+    toWalletId: "evc_plus",
+    amountSent: 70,
+    senderPhone: "252611131010",
+    status: "failed", // exactly the observed production shape: a timed-out dial attempt, corrected by a late SMS
+  });
+
+  const result = await reportPayoutConfirmation({ amount: 70, provider: "Hormuud" });
+  assert.equal(result.body.matched, true);
+  assert.equal(result.body.orderId, orderId);
+
+  const order = await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]);
+  assert.equal(order?.status, "completed");
+});
+
+test("payout-confirmation completes an EVC Plus -> eDahab order given the eDahab/Somtel carrier", async () => {
+  const orderId = await insertExchangeOrder({
+    corridorId: corridorEvcToEdahab,
+    fromWalletId: "evc_plus",
+    toWalletId: "edahab",
+    amountSent: 71,
+    senderPhone: "252611131011",
+    status: "failed",
+  });
+
+  const result = await reportPayoutConfirmation({ amount: 71, provider: "Somtel" });
+  assert.equal(result.body.matched, true);
+  assert.equal(result.body.orderId, orderId);
+
+  const order = await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]);
+  assert.equal(order?.status, "completed");
+});
+
+test("payout-confirmation never completes the wrong corridor's order, even when it is the newer one (regression for DEX907119529)", async () => {
+  // Wrong-corridor order created SECOND (newer) -- if provider filtering
+  // were only a tie-breaker rather than a hard WHERE-clause exclusion,
+  // newest-first ordering alone would incorrectly pick this one.
+  const rightOrderId = await insertExchangeOrder({
+    corridorId: corridorEdahabToEvc, // pays out via EVC Plus / Hormuud
+    fromWalletId: "edahab",
+    toWalletId: "evc_plus",
+    amountSent: 72,
+    senderPhone: "252611131012",
+    status: "failed",
+  });
+  const wrongOrderId = await insertExchangeOrder({
+    corridorId: corridorEvcToEdahab, // pays out via eDahab / Somtel -- wrong network for a Hormuud SMS
+    fromWalletId: "evc_plus",
+    toWalletId: "edahab",
+    amountSent: 72, // same amount+phone as the right order on purpose
+    senderPhone: "252611131013",
+    status: "failed",
+  });
+
+  const result = await reportPayoutConfirmation({ amount: 72, provider: "Hormuud" });
+  assert.equal(result.body.matched, true);
+  assert.equal(result.body.orderId, rightOrderId, "must match the eDahab -> EVC Plus order, not the newer wrong-corridor one");
+
+  const rightOrder = await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [rightOrderId]);
+  assert.equal(rightOrder?.status, "completed");
+  const wrongOrder = await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [wrongOrderId]);
+  assert.equal(wrongOrder?.status, "failed", "the wrong-corridor order must be left completely untouched");
+});
+
+test("payout-confirmation ignores a same-amount+phone order older than the match window", async () => {
+  const orderId = await insertExchangeOrder({
+    corridorId: corridorEdahabToEvc,
+    fromWalletId: "edahab",
+    toWalletId: "evc_plus",
+    amountSent: 73,
+    senderPhone: "252611131014",
+    status: "failed",
+    ageHours: 2, // older than the 1-hour payout-confirmation match window
+  });
+
+  const result = await reportPayoutConfirmation({ amount: 73, provider: "Hormuud" });
+  assert.equal(result.body.matched, false, "a stale failed order must never be resurrected by an unrelated fresh confirmation");
+
+  const order = await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]);
+  assert.equal(order?.status, "failed");
+});
+
+test("payout-confirmation still matches when the app sends no provider (older APK builds)", async () => {
+  const orderId = await insertExchangeOrder({
+    corridorId: corridorEdahabToEvc,
+    fromWalletId: "edahab",
+    toWalletId: "evc_plus",
+    amountSent: 74,
+    senderPhone: "252611131015",
+    status: "failed",
+  });
+
+  const result = await reportPayoutConfirmation({ amount: 74 }); // no provider field
+  assert.equal(result.body.matched, true);
+  assert.equal(result.body.orderId, orderId);
+});
+
 // GET /exchange/wallets is public (no auth) -- the Customer App reads
 // dialPrefix from it to build the customer's own "Dial to Pay" collection
 // USSD string client-side (*{dialPrefix}*{collectionNumber}*{amount}#, same
