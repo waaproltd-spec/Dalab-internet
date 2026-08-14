@@ -130,6 +130,31 @@ data class AgentNotification(
     val read: Boolean = false,
 )
 
+/**
+ * POST /admin/notifications/send — the same endpoint/logic the Admin
+ * Dashboard's Notifications page uses to reach customers. An agent's token
+ * is only permitted `targetType = "all"` and a customer-facing `type`
+ * (never "maintenance") — see notifications.routes.ts — so those two are
+ * fixed here rather than exposed as choices in the Agent App's UI.
+ */
+data class SendCustomerNotificationRequest(
+    val type: String,
+    val title: String,
+    val body: String? = null,
+    val targetType: String = "all",
+)
+
+data class SendCustomerNotificationResponse(
+    val type: String,
+    val title: String,
+    val body: String? = null,
+    val targetType: String,
+    val customerCount: Int,
+    val pushConfigured: Boolean = false,
+    val pushAttempted: Int = 0,
+    val pushSent: Int = 0,
+)
+
 /** Mirrors GET /companies (admin-backend-ts, companies.routes.ts) — public, no auth required. */
 data class Company(
     val id: String,

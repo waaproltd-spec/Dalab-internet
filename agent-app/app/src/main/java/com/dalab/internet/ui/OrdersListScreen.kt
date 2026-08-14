@@ -72,11 +72,6 @@ fun OrdersListScreen(onOpenOrder: (Order) -> Unit) {
 
     var todaySales by remember { mutableStateOf(0.0) }
     var todayOrders by remember { mutableStateOf(0) }
-    // Independent of the filter chips below (Pending/Completed/All) — always
-    // the most recent orders across every status, so this card gives a true
-    // "what just happened" feed regardless of which filter the agent has
-    // selected for the main list.
-    var recentActivity by remember { mutableStateOf<List<Order>>(emptyList()) }
 
     fun smsListeningActive(): Boolean {
         val readGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_SMS) == PackageManager.PERMISSION_GRANTED
@@ -94,11 +89,6 @@ fun OrdersListScreen(onOpenOrder: (Order) -> Unit) {
                 todayOrders = report?.series?.sumOf { it.orders } ?: 0
             } catch (_: Exception) {
                 // Dashboard tiles just keep their last known value on failure.
-            }
-            try {
-                recentActivity = ApiClient.service.getOrders(status = null).body().orEmpty().take(5)
-            } catch (_: Exception) {
-                // Leave the previous list in place.
             }
         }
     }
@@ -174,8 +164,6 @@ fun OrdersListScreen(onOpenOrder: (Order) -> Unit) {
                 todayOrders = todayOrders,
                 onRefresh = { refresh(); refreshDashboard() },
             )
-
-            RecentActivityCard(orders = recentActivity)
 
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
@@ -347,49 +335,6 @@ private fun HomeStatCard(label: String, value: String, modifier: Modifier = Modi
         Column(modifier = Modifier.padding(14.dp)) {
             Text(value, color = DalabIndigo, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
             Text(label, color = Color.Gray, style = MaterialTheme.typography.labelSmall)
-        }
-    }
-}
-
-// A separate, self-contained card — deliberately not merged into the
-// filterable orders list below it, which stays scoped to actionable
-// (mostly-pending) work. This one is a quick-glance feed of what just
-// happened across every status, sender-agnostic of the filter chips.
-@Composable
-private fun RecentActivityCard(orders: List<Order>) {
-    if (orders.isEmpty()) return
-
-    Card(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-        shape = RoundedCornerShape(16.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                "Recent Activity",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                color = DalabIndigo,
-            )
-            Spacer(Modifier.height(10.dp))
-            orders.forEachIndexed { index, order ->
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(order.customerName ?: "Customer", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-                        Text(order.companyName, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                    }
-                    Column(horizontalAlignment = Alignment.End) {
-                        Text("$${"%.2f".format(order.amount)}", fontWeight = FontWeight.Bold, color = DalabGreen)
-                        Spacer(Modifier.height(4.dp))
-                        StatusChip(order)
-                    }
-                }
-                if (index != orders.lastIndex) Divider(modifier = Modifier.padding(top = 2.dp))
-            }
         }
     }
 }

@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Security
@@ -66,6 +67,7 @@ import com.dalab.internet.ui.PermissionsStatusScreen
 import com.dalab.internet.ui.ReliabilityDashboardScreen
 import com.dalab.internet.ui.ReliabilitySetupScreen
 import com.dalab.internet.ui.ReportsScreen
+import com.dalab.internet.ui.SendNotificationScreen
 import com.dalab.internet.ui.SmsPermissionScreen
 import com.dalab.internet.ui.SupportTicketChatScreen
 import com.dalab.internet.ui.TransactionHistoryScreen
@@ -143,7 +145,7 @@ class MainActivity : ComponentActivity() {
 // from More, replacing their old top-level tab slots (see "Home screen
 // cleanup" — the functionality is unchanged, just no longer front-and-center).
 private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, SUPPORT_CHAT, SALES, CUSTOMERS, REPORTS }
-private enum class HomeTab { HOME, SUPPORT, RECENT_ACTIVITY, MORE }
+private enum class HomeTab { HOME, NOTIFICATIONS, SUPPORT, RECENT_ACTIVITY, MORE }
 
 @Composable
 private fun AgentApp() {
@@ -310,7 +312,7 @@ private fun rememberLauncherForSmsPermissions(
     ActivityResultContracts.RequestMultiplePermissions(), onResult
 )
 
-/** Bottom-nav shell for the logged-in agent: Home, Support, Recent Activity, More. */
+/** Bottom-nav shell for the logged-in agent: Home, Notifications, Support, Recent Activity, More. */
 @Composable
 private fun AgentHome(
     onOpenOrder: (Order) -> Unit,
@@ -331,6 +333,7 @@ private fun AgentHome(
     val tabItems = remember {
         listOf(
             DalabBottomBarItem(Icons.Filled.Home, "Home"),
+            DalabBottomBarItem(Icons.Filled.Notifications, "Notifications"),
             DalabBottomBarItem(Icons.Filled.SupportAgent, "Support"),
             DalabBottomBarItem(Icons.Filled.History, "Recent Activity"),
             DalabBottomBarItem(Icons.Filled.MoreHoriz, "More"),
@@ -353,6 +356,7 @@ private fun AgentHome(
                 // from More, so it has no back target (same as every other
                 // tab here). Everything about how the queue itself works
                 // (real-time refresh, accept flow, ticket data) is untouched.
+                HomeTab.NOTIFICATIONS -> SendNotificationScreen()
                 HomeTab.SUPPORT -> CustomerSupportScreen(onOpenTicket = onOpenSupportTicket)
                 HomeTab.RECENT_ACTIVITY -> TransactionHistoryScreen()
                 HomeTab.MORE -> MoreScreen(

@@ -65,10 +65,23 @@ async function resolveTargetCustomerIds(
  * now fans out to one row per targeted customer (required for accurate
  * per-customer read tracking — see 050_notifications_push.sql) and attempts
  * a real push to each of their registered devices.
+ *
+ * Also reachable by an agent (Agent App's "Notifications" tab), not just
+ * Admin/Super Admin — same endpoint/logic rather than a parallel send path.
+ * An agent is restricted to customer-facing types (never 'maintenance') and
+ * targetType 'all' (no per-customer/group targeting), enforced below.
  */
-notificationsRouter.post("/admin/notifications/send", requireStaff(), async (req, res) => {
+notificationsRouter.post("/admin/notifications/send", requireAuth("super_admin", "admin", "agent"), async (req, res) => {
   const { type, title, body, targetType, customerIds, group, relatedOrderId, relatedExchangeOrderId } = req.body ?? {};
   if (!title) return sendJson(res, 400, { error: "title is required" });
+
+  const isAgent = req.auth!.role === "agent";
+  if (isAgent && type === "maintenance") {
+    return sendJson(res, 403, { error: "Agents cannot send maintenance notifications" });
+  }
+  if (isAgent && targetType !== "all") {
+    return sendJson(res, 403, { error: "Agents can only send notifications to all customers (targetType 'all')" });
+  }
 
   if (type === "maintenance") {
     const id = randomUUID();
@@ -94,8 +107,15 @@ notificationsRouter.post("/admin/notifications/send", requireStaff(), async (req
   // One INSERT per targeted customer, same content each time — a genuine
   // per-customer fan-out, not a single shared row, so read_at means
   // something and each customer's own push actually reaches their device.
+  // sent_by_admin_id FKs to admin_users(id) and can't hold an agent's id (a
+  // different table/id space) — sent_by_agent_id is the sibling column for
+  // that case (see 054_agent_customer_notifications.sql), with exactly one
+  // of the two ever set per row.
+  const sentByAdminId = isAgent ? null : req.auth!.sub;
+  const sentByAgentId = isAgent ? req.auth!.sub : null;
+
   const ids = customers.map(() => randomUUID());
-  const COLS = 9;
+  const COLS = 10;
   const values = customers.map((_, i) => {
     const base = i * COLS;
     const ph = Array.from({ length: COLS }, (_, j) => `$${base + j + 1}`).join(",");
@@ -103,10 +123,10 @@ notificationsRouter.post("/admin/notifications/send", requireStaff(), async (req
   }).join(",");
   const params: unknown[] = [];
   customers.forEach((customerId, i) => {
-    params.push(ids[i], type, title, body ?? "", customerId, relatedOrderId ?? null, relatedExchangeOrderId ?? null, req.auth!.sub, targetType);
+    params.push(ids[i], type, title, body ?? "", customerId, relatedOrderId ?? null, relatedExchangeOrderId ?? null, sentByAdminId, targetType, sentByAgentId);
   });
   await query(
-    `INSERT INTO notifications (id, type, title, body, customer_id, related_order_id, related_exchange_order_id, sent_by_admin_id, target_type)
+    `INSERT INTO notifications (id, type, title, body, customer_id, related_order_id, related_exchange_order_id, sent_by_admin_id, target_type, sent_by_agent_id)
      VALUES ${values}`,
     params
   );
@@ -134,7 +154,7 @@ notificationsRouter.post("/admin/notifications/send", requireStaff(), async (req
   );
 
   await recordActivity({
-    adminId: req.auth!.sub,
+    adminId: sentByAdminId ?? undefined,
     action: "notification_sent",
     entityType: "notification",
     entityId: ids[0],
@@ -147,6 +167,7 @@ notificationsRouter.post("/admin/notifications/send", requireStaff(), async (req
       pushConfigured: isPushConfigured(),
       pushAttempted: pushResult.attempted,
       pushSent: pushResult.sent,
+      ...(isAgent ? { sentByAgentId } : {}),
     },
   });
 

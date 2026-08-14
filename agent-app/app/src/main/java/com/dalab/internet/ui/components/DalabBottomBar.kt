@@ -38,19 +38,19 @@ import androidx.compose.ui.unit.sp
 data class DalabBottomBarItem(val icon: ImageVector, val label: String)
 
 /**
- * Custom bottom nav (Home | Support | Recent Activity | More) rather than a
- * stock Material3 NavigationBar, for a more distinctive active-tab
- * treatment: a soft indigo pill fades in behind the selected icon, the icon
- * itself scales up slightly, and both icon and label crossfade to the brand
- * indigo -- all spring-based, single-property animations (no custom
- * Canvas/layout work), which is what keeps this lightweight and smooth
- * rather than distracting.
+ * Custom bottom nav (Home | Notifications | Support | Recent Activity |
+ * More) rather than a stock Material3 NavigationBar, for a more distinctive
+ * active-tab treatment: a soft indigo pill fades in behind the selected
+ * icon, the icon itself scales up slightly, and both icon and label
+ * crossfade to the brand indigo -- all spring-based, single-property
+ * animations (no custom Canvas/layout work), which is what keeps this
+ * lightweight and smooth rather than distracting.
  */
 @Composable
 fun DalabBottomBar(items: List<DalabBottomBarItem>, selectedIndex: Int, onSelect: (Int) -> Unit) {
     Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 10.dp) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
         ) {
             items.forEachIndexed { index, item ->
@@ -86,7 +86,7 @@ private fun DalabBottomBarTab(item: DalabBottomBarItem, selected: Boolean, onCli
         modifier = Modifier
             .clip(RoundedCornerShape(16.dp))
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 4.dp),
+            .padding(horizontal = 6.dp, vertical = 4.dp),
     ) {
         Box(contentAlignment = Alignment.Center) {
             Box(
@@ -105,8 +105,11 @@ private fun DalabBottomBarTab(item: DalabBottomBarItem, selected: Boolean, onCli
         Text(
             item.label,
             color = tint,
-            fontSize = 11.sp,
+            fontSize = 10.sp,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            maxLines = 1,
+            softWrap = false,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Clip,
         )
     }
 }

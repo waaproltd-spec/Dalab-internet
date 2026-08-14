@@ -14,6 +14,8 @@ import com.dalab.internet.data.SupportTicket
 import com.dalab.internet.data.Transaction
 import com.dalab.internet.data.AgentNotification
 import com.dalab.internet.data.AgentPaymentTransaction
+import com.dalab.internet.data.SendCustomerNotificationRequest
+import com.dalab.internet.data.SendCustomerNotificationResponse
 import com.dalab.internet.data.WalletBalanceEntry
 import com.dalab.internet.sms.SmsSenderIdEntry
 import com.dalab.internet.ussd.SimRoutingEntry
@@ -159,6 +161,12 @@ interface ApiService {
 
     @GET("agent/notifications")
     suspend fun getNotifications(): Response<List<AgentNotification>>
+
+    // Same endpoint the Admin Dashboard's Notifications page sends through —
+    // see notifications.routes.ts. The Agent App only ever sends
+    // targetType="all" (enforced server-side too for the "agent" role).
+    @POST("admin/notifications/send")
+    suspend fun sendCustomerNotification(@Body body: SendCustomerNotificationRequest): Response<SendCustomerNotificationResponse>
 
     @GET("agent/sim-routing")
     suspend fun getSimRouting(@Query("deviceId") deviceId: String? = null): Response<List<SimRoutingEntry>>
