@@ -12,7 +12,14 @@ import { agentDeviceAllows } from "../utils/agentDevicePaymentRole.js";
 
 export const exchangeRouter = Router();
 
-const EXCHANGE_ORDER_STATUSES = ["pending", "in_progress", "completed", "failed", "cancelled"];
+const EXCHANGE_ORDER_STATUSES = ["pending", "in_progress", "pending_manual_payout", "completed", "completed_manual", "failed", "cancelled"];
+
+// Money Exchange: how long a verified (in_progress) order gets to auto-payout
+// before the 20-minute safety sweep (see sweepStalePayouts below) promotes it
+// to pending_manual_payout even with no definitive failure signal at all. A
+// genuine failure signal (a final step1/step2 dial-attempt failure) promotes
+// it immediately instead — see the dial-attempt report handlers below.
+const PAYOUT_SAFETY_WINDOW_MINUTES = 20;
 
 function exchangeOrderRef(): string {
   return "DEX" + Math.floor(100000000 + Math.random() * 900000000);
@@ -501,12 +508,14 @@ exchangeRouter.post("/agent/exchange/orders", requireAuth("agent"), async (req, 
 
 const EXCHANGE_ORDER_LIST_SELECT = `
   SELECT eo.*, c.phone AS customer_phone, c.name AS customer_name,
-         fw.name AS from_wallet_name, tw.name AS to_wallet_name, a.name AS agent_name
+         fw.name AS from_wallet_name, tw.name AS to_wallet_name, a.name AS agent_name,
+         mpb.email AS manual_payout_by_email
   FROM exchange_orders eo
   LEFT JOIN customers c ON c.id = eo.customer_id
   LEFT JOIN payment_wallets fw ON fw.id = eo.from_wallet_id
   LEFT JOIN payment_wallets tw ON tw.id = eo.to_wallet_id
   LEFT JOIN agents a ON a.id = eo.agent_id
+  LEFT JOIN admin_users mpb ON mpb.id = eo.manual_payout_by
 `;
 
 exchangeRouter.get("/admin/exchange/orders", requireStaff(), async (req, res) => {
@@ -590,8 +599,14 @@ export async function autoAdvanceExchangeOrderToInProgress(
   orderId: string,
   opts: { adminId?: string; source: "admin" | "sms_match" }
 ): Promise<{ error?: string; status?: number; order?: any }> {
+  // payment_confirmed_at marks this exact moment — the admin dashboard's
+  // "Payment: Confirmed" badge and "Time payment was confirmed" field read
+  // this directly. payout_deadline_at is the 20-minute safety-net deadline
+  // sweepStalePayouts acts on.
   const result = await query(
-    `UPDATE exchange_orders SET status='in_progress', updated_at=now() WHERE id=$1 AND status='pending' RETURNING id, customer_id, amount_sent`,
+    `UPDATE exchange_orders SET status='in_progress', payment_confirmed_at=now(),
+       payout_deadline_at=now() + interval '${PAYOUT_SAFETY_WINDOW_MINUTES} minutes', updated_at=now()
+     WHERE id=$1 AND status='pending' RETURNING id, customer_id, amount_sent`,
     [orderId]
   );
   if (result.length === 0) {
@@ -615,6 +630,28 @@ export async function autoAdvanceExchangeOrderToInProgress(
   );
   return { order: await queryOne(`${EXCHANGE_ORDER_LIST_SELECT} WHERE eo.id=$1`, [orderId]) };
 }
+
+/**
+ * Safety-net sweep for Money Exchange payouts: promotes any order still
+ * 'in_progress' past its payout_deadline_at to 'pending_manual_payout', even
+ * when no explicit failure signal was ever reported (e.g. no agent device
+ * ever picked up the payout at all). Orders that already got a specific
+ * payout_failure_reason from a known dial-attempt failure are promoted
+ * immediately at the point of failure — see the step1/step2 report handlers
+ * below — well before this sweep would otherwise catch them.
+ */
+async function sweepStalePayouts(): Promise<void> {
+  const promoted = await query<{ id: string }>(
+    `UPDATE exchange_orders SET status='pending_manual_payout', payout_failure_reason=COALESCE(payout_failure_reason, $1), updated_at=now()
+     WHERE status='in_progress' AND payout_deadline_at IS NOT NULL AND payout_deadline_at < now()
+     RETURNING id`,
+    [`No payout confirmation received within ${PAYOUT_SAFETY_WINDOW_MINUTES} minutes.`]
+  );
+  for (const row of promoted) broadcast({ type: "exchange_order.updated", exchangeOrderId: row.id });
+}
+setInterval(() => {
+  sweepStalePayouts().catch((err) => console.error("sweepStalePayouts failed:", err));
+}, 30_000);
 
 exchangeRouter.post("/admin/exchange/orders/:id/verify", requirePermission("exchange.manage"), async (req, res) => {
   const result = await autoAdvanceExchangeOrderToInProgress(req.params.id, { adminId: req.auth!.sub, source: "admin" });
@@ -702,17 +739,25 @@ exchangeRouter.put("/agent/exchange/dial-attempts/:attemptId/step1", requireAuth
     if (!existing) return sendJson(res, 404, { error: "Dial attempt not found" });
     return sendJson(res, 200, existing);
   }
-  // A step-1 failure that's genuinely final fails the order the same way a
-  // failed final Internet Store dial attempt does — no PIN was ever sent,
-  // so there's nothing to reconcile.
+  // A step-1 failure that's genuinely final is a known, definitive
+  // automation failure — no PIN was ever sent, so there's nothing left to
+  // reconcile automatically. Promoted straight to pending_manual_payout
+  // (never a bare 'failed', which used to leave a confirmed customer payment
+  // sitting with no one alerted) immediately, rather than waiting for the
+  // 20-minute safety sweep — the customer already paid and must not wait.
   if (status !== "step1_success" && req.body.isFinalAttempt !== false) {
-    const failed = await query(
-      `UPDATE exchange_orders SET status='failed', updated_at=now() WHERE id=$1 AND status != 'completed' RETURNING customer_id`,
-      [result[0].exchange_order_id]
+    const promoted = await query(
+      `UPDATE exchange_orders SET status='pending_manual_payout', payout_failure_reason=$2, updated_at=now()
+       WHERE id=$1 AND status NOT IN ('completed','completed_manual') RETURNING customer_id`,
+      [result[0].exchange_order_id, responseMessage ? `Step 1 dial failed: ${responseMessage}` : "Step 1 dial failed — no response from the carrier."]
     );
     broadcast({ type: "exchange_order.updated", exchangeOrderId: result[0].exchange_order_id });
-    if (failed.length > 0) {
-      await notifyCustomer(failed[0].customer_id, "Exchange failed", "We couldn't complete your exchange. Please contact support for assistance.");
+    if (promoted.length > 0) {
+      await notifyCustomer(
+        promoted[0].customer_id,
+        "Your exchange needs a moment longer",
+        "We're finishing your exchange payout manually — you'll be notified the moment it's sent."
+      );
     }
   }
   sendJson(res, 200, await queryOne(`SELECT * FROM exchange_dial_attempts WHERE id=$1`, [req.params.attemptId]));
@@ -787,12 +832,17 @@ exchangeRouter.put("/agent/exchange/dial-attempts/:attemptId/step2", requireAuth
       });
     }
   } else if (finalAttempt) {
-    const failed = await query(
-      `UPDATE exchange_orders SET status='failed', updated_at=now() WHERE id=$1 AND status != 'completed' RETURNING customer_id`,
-      [exchangeOrderId]
+    const promoted = await query(
+      `UPDATE exchange_orders SET status='pending_manual_payout', payout_failure_reason=$2, updated_at=now()
+       WHERE id=$1 AND status NOT IN ('completed','completed_manual') RETURNING customer_id`,
+      [exchangeOrderId, scrubbedMessage ? `Step 2 (PIN) failed: ${scrubbedMessage}` : "Step 2 (PIN) failed — no confirmation from the carrier."]
     );
-    if (failed.length > 0) {
-      await notifyCustomer(failed[0].customer_id, "Exchange failed", "We couldn't complete your exchange. Please contact support for assistance.");
+    if (promoted.length > 0) {
+      await notifyCustomer(
+        promoted[0].customer_id,
+        "Your exchange needs a moment longer",
+        "We're finishing your exchange payout manually — you'll be notified the moment it's sent."
+      );
     }
   }
   broadcast({ type: "exchange_order.updated", exchangeOrderId });
@@ -825,7 +875,7 @@ async function completeExchangeOrderByPayoutConfirmation(
   if (!order) return null;
 
   const result = await query(
-    `UPDATE exchange_orders SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1 AND status IN ('in_progress','failed') RETURNING *`,
+    `UPDATE exchange_orders SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1 AND status IN ('in_progress','pending_manual_payout','failed') RETURNING *`,
     [orderId]
   );
   if (result.length === 0) {
@@ -886,7 +936,7 @@ exchangeRouter.post("/agent/exchange/orders/payout-confirmation", requireAuth("a
   const candidates = await withTransaction((client) =>
     client
       .query<{ id: string; receiver_phone: string | null }>(
-        `SELECT id, receiver_phone FROM exchange_orders WHERE status IN ('in_progress','failed') AND ABS(amount_received - $1) < 0.01
+        `SELECT id, receiver_phone FROM exchange_orders WHERE status IN ('in_progress','pending_manual_payout','failed') AND ABS(amount_received - $1) < 0.01
          ORDER BY updated_at ASC
          FOR UPDATE SKIP LOCKED`,
         [amount]
@@ -898,6 +948,64 @@ exchangeRouter.post("/agent/exchange/orders/payout-confirmation", requireAuth("a
 
   const result = await completeExchangeOrderByPayoutConfirmation(match.id, String(rawText ?? ""));
   sendJson(res, 200, { matched: true, orderId: match.id, alreadyCompleted: result?.alreadyCompleted ?? false });
+});
+
+// ---------------- Pay Manually ----------------
+// An admin sends the payout themselves (outside this system, from their own
+// phone) after automation failed or got stuck, then records it here — a
+// required reference/transaction ID plus who did it and when, so a manual
+// payout is always as auditable as an automatic one. Lands on
+// 'completed_manual' (never a bare 'completed', which is reserved for
+// automation actually succeeding), and the exact same
+// `status NOT IN ('completed','completed_manual')` atomic guard the Internet
+// Store side uses is what makes this safe to click twice, or to race a
+// very-late automatic completion signal, without ever paying the same
+// customer twice.
+
+exchangeRouter.post("/admin/exchange/orders/:id/pay-manually", requirePermission("exchange.manage"), async (req, res) => {
+  const { referenceId } = req.body ?? {};
+  if (!referenceId || !String(referenceId).trim()) {
+    return sendJson(res, 400, { error: "A manual transaction/reference ID is required." });
+  }
+  const order = await queryOne<any>(`SELECT * FROM exchange_orders WHERE id=$1`, [req.params.id]);
+  if (!order) return sendJson(res, 404, { error: "Exchange order not found" });
+  if (!["in_progress", "pending_manual_payout"].includes(order.status)) {
+    return sendJson(res, 409, { error: `Cannot manually pay out an order in status '${order.status}'` });
+  }
+
+  const result = await query(
+    `UPDATE exchange_orders SET status='completed_manual', completed_at=now(),
+       manual_payout_by=$2, manual_payout_at=now(), manual_payout_reference=$3, updated_at=now()
+     WHERE id=$1 AND status NOT IN ('completed','completed_manual') RETURNING *`,
+    [req.params.id, req.auth!.sub, String(referenceId).trim()]
+  );
+  if (result.length === 0) {
+    return sendJson(res, 409, { error: "This exchange has already been completed — nothing to do." });
+  }
+  const eo = result[0] as any;
+
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "exchange_paid_manually",
+    entityType: "exchange_order",
+    entityId: req.params.id,
+    oldValue: { status: order.status },
+    newValue: {
+      status: "completed_manual",
+      referenceId: eo.manual_payout_reference,
+      amountReceived: eo.amount_received,
+      receiverPhone: eo.receiver_phone,
+    },
+  });
+  broadcast({ type: "exchange_order.updated", exchangeOrderId: req.params.id });
+  if (eo.customer_id) {
+    await notifyCustomer(
+      eo.customer_id,
+      "Your money exchange is complete",
+      `Your exchange of ${eo.amount_sent} is complete — ${eo.receiver_phone} received ${eo.amount_received}.`
+    );
+  }
+  sendJson(res, 200, await queryOne(`${EXCHANGE_ORDER_LIST_SELECT} WHERE eo.id=$1`, [req.params.id]));
 });
 
 // ---------------- Reverse (pre-payout cancellation only) ----------------

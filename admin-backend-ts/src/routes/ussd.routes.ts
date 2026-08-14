@@ -10,7 +10,6 @@ import { recordActivity } from "../utils/activityLog.js";
 import { markPaymentProcessing, markPaymentFinal } from "../utils/paymentTransactions.js";
 import { creditCommissionIfNeeded } from "../utils/commissions.js";
 import { creditReferralBonusIfNeeded } from "../utils/referrals.js";
-import { refundRedeemedPointsIfNeeded } from "../utils/loyaltyPoints.js";
 import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
 
 export const ussdRouter = Router();
@@ -340,8 +339,15 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
  */
 export async function selfHealStuckOrders(companyId: string): Promise<{ healed: number; stillStuck: number }> {
   try {
+    // Also catches orders a USSD-generation failure already promoted to
+    // pending_admin_review (see verifyOrderAndGenerateUssd in
+    // orders.routes.ts) — fixing the PIN/template that caused that failure
+    // should still auto-heal them here exactly as it always has for
+    // still-in_progress orders, not strand them waiting for an admin to
+    // notice and click Complete Manually for a delivery that can now
+    // actually go out on its own.
     const stuck = await query<any>(
-      `SELECT * FROM orders WHERE status='in_progress' AND ussd_generated IS NULL AND company_id=$1`,
+      `SELECT * FROM orders WHERE status IN ('in_progress','pending_admin_review') AND ussd_generated IS NULL AND company_id=$1`,
       [companyId]
     );
     let healed = 0;
@@ -350,6 +356,20 @@ export async function selfHealStuckOrders(companyId: string): Promise<{ healed: 
       await query(`UPDATE orders SET ussd_generation_failed_reason=$1 WHERE id=$2`, [result.error ?? null, order.id]);
       if (result.ussd) {
         healed++;
+        // Demote back to in_progress (with a fresh delivery deadline) so the
+        // normal automatic pipeline picks it up again — a bare "wasn't stuck
+        // anymore" without this would leave it sitting in
+        // pending_admin_review even though it can now actually be delivered.
+        // 7 minutes, matching orders.routes.ts's DELIVERY_SAFETY_WINDOW_MINUTES
+        // — duplicated as a literal rather than imported to avoid a circular
+        // import (orders.routes.ts already imports generateUssdForOrder from
+        // this file).
+        await query(
+          `UPDATE orders SET status='in_progress', review_reason=NULL,
+             delivery_deadline_at=now() + interval '7 minutes', updated_at=now()
+           WHERE id=$1 AND status='pending_admin_review'`,
+          [order.id]
+        );
         broadcast({ type: "order.updated", orderId: order.id });
       }
     }
@@ -725,19 +745,27 @@ ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (r
     }
     await markPaymentFinal(attempt.order_id, "completed");
   } else {
-    // Only mark the ORDER failed once this is genuinely the last attempt —
-    // UssdOrchestrator reports every attempt as it happens (see
-    // dialWithRetry in the Agent App), including the first of up to 3
-    // retries. Flipping orders.status='failed' on attempt 1 showed the
-    // customer "Failed" while a retry was still about to run seconds later;
-    // now the order stays at its current status (still 'in_progress') until
-    // either a retry succeeds or every attempt is exhausted.
+    // Only act once this is genuinely the last attempt — UssdOrchestrator
+    // reports every attempt as it happens (see dialWithRetry in the Agent
+    // App), including the first of up to 3 retries; acting on attempt 1
+    // would show the customer a failure while a retry was still about to run
+    // seconds later, so the order stays at its current status until either a
+    // retry succeeds or every attempt is exhausted.
+    //
+    // A final failure here is a known, definitive automation failure — not a
+    // "maybe it's still coming" state — so it's promoted straight to
+    // pending_admin_review (never a bare 'failed', which used to leave a
+    // confirmed customer payment sitting with no one alerted) immediately,
+    // rather than waiting for the 7-minute safety sweep. No points refund
+    // here: the order isn't actually abandoned, it's still recoverable via
+    // "Complete Manually" or the generic status route explicitly setting
+    // 'failed'/'cancelled' (which still does refund, see that route).
     if (finalAttempt) {
-      const failed = await query(
-        `UPDATE orders SET status='failed', updated_at=now() WHERE id=$1 AND status != 'completed' RETURNING id`,
-        [attempt.order_id]
+      await query(
+        `UPDATE orders SET status='pending_admin_review', review_reason=$2, updated_at=now()
+         WHERE id=$1 AND status NOT IN ('completed','completed_manual')`,
+        [attempt.order_id, responseMessage ? `Delivery failed: ${responseMessage}` : "Delivery failed — no confirmation received from the carrier."]
       );
-      if (failed.length > 0) await refundRedeemedPointsIfNeeded(attempt.order_id);
     }
     // markPaymentFinal itself is not necessarily final — UssdOrchestrator may
     // still retry, which calls markPaymentProcessing again and can still

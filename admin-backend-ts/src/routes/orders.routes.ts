@@ -16,7 +16,16 @@ import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
 
 export const ordersRouter = Router();
 
-const ORDER_STATUSES = ["pending", "in_progress", "completed", "failed", "cancelled"];
+const ORDER_STATUSES = ["pending", "in_progress", "pending_admin_review", "completed", "completed_manual", "failed", "cancelled"];
+
+// Internet/Data: how long a verified (in_progress) order gets to auto-deliver
+// before the 7-minute safety sweep (see sweepStaleOrders below) promotes it
+// to pending_admin_review even with no definitive failure signal at all —
+// e.g. no device ever picked it up. A genuine failure signal (USSD
+// generation failure, a final dial-attempt failure) promotes it immediately
+// instead of waiting for this deadline — see verifyOrderAndGenerateUssd and
+// ussd.routes.ts's dial-attempt report handler.
+const DELIVERY_SAFETY_WINDOW_MINUTES = 7;
 const MACAASH_POINTS_PER_DOLLAR = 10;
 
 function orderRef(): string {
@@ -25,11 +34,13 @@ function orderRef(): string {
 
 const ORDER_LIST_SELECT = `
   SELECT o.*, c.name AS customer_name, c.phone AS customer_phone,
-         co.name AS company_name, co.color_hex AS company_color, p.name AS package_name
+         co.name AS company_name, co.color_hex AS company_color, p.name AS package_name,
+         mcb.email AS manual_completed_by_email
   FROM orders o
   JOIN customers c ON c.id = o.customer_id
   JOIN companies co ON co.id = o.company_id
-  JOIN packages p ON p.id = o.package_id`;
+  JOIN packages p ON p.id = o.package_id
+  LEFT JOIN admin_users mcb ON mcb.id = o.manual_completed_by`;
 
 async function loadOrder(id: string) {
   return queryOne(`${ORDER_LIST_SELECT} WHERE o.id=$1`, [id]);
@@ -459,8 +470,15 @@ export async function verifyOrderAndGenerateUssd(
   // Atomic compare-and-swap: only ever one caller of two concurrent/retried
   // requests actually flips pending -> in_progress, so USSD generation can
   // never be double-triggered for the same order.
+  // payment_confirmed_at marks this exact moment — "payment confirmed" has
+  // never been a status value in this codebase (see 049's header comment);
+  // this timestamp is what the admin dashboard's "Payment: Confirmed" badge
+  // and "Time payment was confirmed" field actually read. delivery_deadline_at
+  // is the 7-minute safety-net deadline the sweep below acts on.
   const result = await query(
-    `UPDATE orders SET status='in_progress', agent_id=$1, updated_at=now() WHERE id=$2 AND status='pending' RETURNING id`,
+    `UPDATE orders SET status='in_progress', agent_id=$1, payment_confirmed_at=now(),
+       delivery_deadline_at=now() + interval '${DELIVERY_SAFETY_WINDOW_MINUTES} minutes', updated_at=now()
+     WHERE id=$2 AND status='pending' RETURNING id`,
     [agentId, order.id]
   );
   if (result.length === 0) {
@@ -489,10 +507,44 @@ export async function verifyOrderAndGenerateUssd(
       oldValue: null,
       newValue: { reason: genResult.error, companyId: order.company_id, packageId: order.package_id },
     });
+    // A missing PIN/template is a definitive, known failure (not something a
+    // later retry fixes on its own — it needs an admin to configure
+    // something), so promote straight to admin review instead of waiting out
+    // the full 7-minute safety window — "alert immediately", per spec.
+    await query(
+      `UPDATE orders SET status='pending_admin_review', review_reason=$1, updated_at=now() WHERE id=$2 AND status='in_progress'`,
+      [`Could not generate the delivery code: ${genResult.error}`, order.id]
+    );
   }
   broadcast({ type: "order.updated", orderId: order.id });
   return { ok: true };
 }
+
+/**
+ * Safety-net sweep for Internet/Data orders: promotes any order still
+ * 'in_progress' past its delivery_deadline_at to 'pending_admin_review',
+ * even when no explicit failure signal was ever reported (e.g. the
+ * responsible device never picked it up at all — the "stuck with total
+ * silence" case a definitive-failure redirect can't catch because there was
+ * no failure report to redirect from). Orders that already got a specific
+ * review_reason from a known failure (USSD generation, a final dial-attempt
+ * failure) are promoted immediately at the point of failure, well before
+ * this sweep would otherwise catch them — see verifyOrderAndGenerateUssd
+ * above and the dial-attempt report handler in ussd.routes.ts. Runs on the
+ * same setInterval-poll pattern as smsLogs.routes.ts's resweepUnmatchedSmsLogs.
+ */
+async function sweepStaleOrders(): Promise<void> {
+  const promoted = await query<{ id: string }>(
+    `UPDATE orders SET status='pending_admin_review', review_reason=COALESCE(review_reason, $1), updated_at=now()
+     WHERE status='in_progress' AND delivery_deadline_at IS NOT NULL AND delivery_deadline_at < now()
+     RETURNING id`,
+    [`No delivery confirmation received within ${DELIVERY_SAFETY_WINDOW_MINUTES} minutes.`]
+  );
+  for (const row of promoted) broadcast({ type: "order.updated", orderId: row.id });
+}
+setInterval(() => {
+  sweepStaleOrders().catch((err) => console.error("sweepStaleOrders failed:", err));
+}, 30_000);
 
 ordersRouter.post("/agent/orders/:id/verify-payment", requireAuth("agent"), async (req, res) => {
   const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
@@ -537,8 +589,14 @@ async function completeOrderById(orderId: string): Promise<{ order: any; success
   const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [orderId]);
   if (!order) return null;
 
+  // Also accepts pending_admin_review: the agent's "mark complete" tap or a
+  // corroborating voucher-confirmation SMS can still land after the 7-minute
+  // safety sweep already promoted this order — that's a genuine automatic
+  // success arriving late, not a manual completion, so it still goes through
+  // this function (status ends up 'completed', not 'completed_manual').
   const result = await query(
-    `UPDATE orders SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1 AND status='in_progress' RETURNING id`,
+    `UPDATE orders SET status='completed', completed_at=now(), updated_at=now()
+     WHERE id=$1 AND status IN ('in_progress','pending_admin_review') RETURNING id`,
     [orderId]
   );
   if (result.length === 0) {
@@ -611,10 +669,15 @@ ordersRouter.post("/agent/orders/voucher-confirmation", requireAuth("agent"), as
   // amount+phone, the carrier's confirmation should complete whichever was
   // claimed first, and FOR UPDATE SKIP LOCKED keeps two concurrent carrier
   // confirmations from both landing on the same in-flight candidate.
+  // Also matches pending_admin_review candidates: this confirmation SMS is a
+  // second, independent success signal that can arrive after the order was
+  // already promoted for a stall/failure — the same "on-screen read can be
+  // wrong, a corroborating carrier SMS is the safety net" rationale
+  // exchange.routes.ts documents for its own payout-confirmation route.
   const candidates = await withTransaction((client) =>
     client
       .query<{ id: string; receiver_phone: string | null }>(
-        `SELECT id, receiver_phone FROM orders WHERE status='in_progress' AND ABS(amount - $1) < 0.01
+        `SELECT id, receiver_phone FROM orders WHERE status IN ('in_progress','pending_admin_review') AND ABS(amount - $1) < 0.01
          ORDER BY updated_at ASC
          FOR UPDATE SKIP LOCKED`,
         [amount]
@@ -828,6 +891,48 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
     await query(`UPDATE orders SET status=$1, updated_at=now() WHERE id=$2`, [status, req.params.id]);
     if (status === "failed" || status === "cancelled") await refundRedeemedPointsIfNeeded(req.params.id);
   }
+  broadcast({ type: "order.updated", orderId: req.params.id });
+  sendJson(res, 200, maskOrder(await loadOrder(req.params.id)));
+});
+
+// "Send Manually / Complete Manually" — an admin steps in and delivers the
+// Internet/Data package themselves (outside this system) after automation
+// failed or got stuck, then confirms it here. Distinct from the generic PUT
+// .../status route above: this one records who did it and when
+// (manual_completed_by/manual_completed_at) and lands on 'completed_manual'
+// rather than a bare 'completed', so the admin dashboard can always tell an
+// automatic delivery apart from a manual one. The atomic
+// `status NOT IN ('completed','completed_manual')` guard is what makes this
+// safe to click twice (or race against a very-late automatic completion
+// signal) without ever crediting Macaash/commission/referral twice or
+// double-delivering.
+ordersRouter.post("/admin/orders/:id/complete-manually", requirePermission("orders.manage"), async (req, res) => {
+  const order = await queryOne<any>(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
+  if (!order) return sendJson(res, 404, { error: "Order not found" });
+  if (!["in_progress", "pending_admin_review"].includes(order.status)) {
+    return sendJson(res, 409, { error: `Cannot manually complete an order in status '${order.status}'` });
+  }
+
+  const result = await query(
+    `UPDATE orders SET status='completed_manual', completed_at=now(), manual_completed_by=$2, manual_completed_at=now(), updated_at=now()
+     WHERE id=$1 AND status NOT IN ('completed','completed_manual') RETURNING id`,
+    [req.params.id, req.auth!.sub]
+  );
+  if (result.length === 0) {
+    return sendJson(res, 409, { error: "This order has already been completed — nothing to do." });
+  }
+
+  await creditMacaashIfNeeded(order);
+  await creditCommissionIfNeeded(order);
+  await creditReferralBonusIfNeeded(order);
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "order_completed_manually",
+    entityType: "order",
+    entityId: req.params.id,
+    oldValue: { status: order.status },
+    newValue: { status: "completed_manual" },
+  });
   broadcast({ type: "order.updated", orderId: req.params.id });
   sendJson(res, 200, maskOrder(await loadOrder(req.params.id)));
 });

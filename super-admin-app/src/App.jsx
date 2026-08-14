@@ -176,6 +176,7 @@ const DalabAdminApi = {
   },
   getOrderCounts: (companyId) => dalabAdminApiRequest(`/admin/orders/counts${companyId ? `?companyId=${companyId}` : ""}`),
   updateOrderStatus: (id, status) => dalabAdminApiRequest(`/admin/orders/${id}/status`, { method: "PUT", body: { status } }),
+  completeOrderManually: (id) => dalabAdminApiRequest(`/admin/orders/${id}/complete-manually`, { method: "POST" }),
   getCustomers: (search) => dalabAdminApiRequest(`/admin/customers${search ? `?search=${search}` : ""}`),
   updateCustomer: (id, body) => dalabAdminApiRequest(`/admin/customers/${id}`, { method: "PUT", body }),
   deleteCustomer: (id) => dalabAdminApiRequest(`/admin/customers/${id}`, { method: "DELETE" }),
@@ -350,6 +351,8 @@ const DalabAdminApi = {
   },
   getExchangeOrder: (id) => dalabAdminApiRequest(`/admin/exchange/orders/${id}`),
   verifyExchangeOrder: (id) => dalabAdminApiRequest(`/admin/exchange/orders/${id}/verify`, { method: "POST" }),
+  payExchangeOrderManually: (id, referenceId) =>
+    dalabAdminApiRequest(`/admin/exchange/orders/${id}/pay-manually`, { method: "POST", body: { referenceId } }),
   reverseExchangeOrder: (id) => dalabAdminApiRequest(`/admin/exchange/orders/${id}/reverse`, { method: "POST" }),
   // Which real SMS sender ID(s) each provider network (Hormuud EVC Plus,
   // Somtel eDahab, Somnet EVC Plus, ...) is allowed to send from — the Agent
@@ -779,7 +782,9 @@ function formatDurationMs(ms) {
 const ORDER_STATUS_META = {
   pending: { label: "Pending", tone: "amber" },
   in_progress: { label: "In Progress", tone: "blue" },
-  completed: { label: "Completed", tone: "green" },
+  pending_admin_review: { label: "Pending Admin Review", tone: "red" },
+  completed: { label: "Completed - Automatic", tone: "green" },
+  completed_manual: { label: "Completed - Manual", tone: "green" },
   failed: { label: "Failed", tone: "red" },
   cancelled: { label: "Cancelled", tone: "gray" },
 };
@@ -2258,7 +2263,15 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
   const nextActions = {
     pending: [{ label: "Start Processing", status: "in_progress", icon: Clock3, variant: "primary" }, { label: "Cancel", status: "cancelled", icon: XCircle, variant: "danger" }],
     in_progress: [{ label: "Mark Completed", status: "completed", icon: CheckCircle2, variant: "primary" }, { label: "Mark Failed", status: "failed", icon: XCircle, variant: "danger" }],
+    // "Complete Manually" for a pending_admin_review order lives on the
+    // Orders panel's "ACTION REQUIRED" banner (DalabAdminApi.completeOrderManually) —
+    // it needs to credit Macaash/commission/referral and stamp
+    // manual_completed_by/at, which this drawer's generic onStatus
+    // (a bare PUT .../status) does not do. "Mark Failed" here is still safe:
+    // it's the same refund-on-failure path 'failed' already always takes.
+    pending_admin_review: [{ label: "Mark Failed", status: "failed", icon: XCircle, variant: "danger" }],
     completed: [],
+    completed_manual: [],
     failed: [{ label: "Retry (Set Pending)", status: "pending", icon: RefreshCw, variant: "ghost" }],
     cancelled: [{ label: "Reopen (Set Pending)", status: "pending", icon: RefreshCw, variant: "ghost" }],
   };
@@ -2402,7 +2415,22 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
 
         <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>DATE & TIME</div>
         {row("Created", formatDateTime(order.createdAt), true)}
+        {order.paymentConfirmedAt && row("Payment confirmed", formatDateTime(order.paymentConfirmedAt), true)}
         {order.completedAt && row("Completed", formatDateTime(order.completedAt), true)}
+
+        {order.status === "pending_admin_review" && order.reviewReason && (
+          <>
+            <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>ACTION REQUIRED</div>
+            {row("Reason", order.reviewReason)}
+          </>
+        )}
+        {order.status === "completed_manual" && (
+          <>
+            <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>MANUAL COMPLETION</div>
+            {row("Completed by", order.manualCompletedByEmail)}
+            {row("Completed at", formatDateTime(order.manualCompletedAt), true)}
+          </>
+        )}
 
         <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>USSD EXECUTION HISTORY</div>
         {attemptsError ? (
@@ -2477,6 +2505,105 @@ function SummaryMetricCard({ icon: Icon, label, value, color, hint }) {
 }
 
 const ORDERS_POLL_INTERVAL_MS = 8000;
+
+// "CUSTOMER PAYMENT RECEIVED — ACTION REQUIRED": every order the backend has
+// promoted to pending_admin_review — either immediately, the moment a
+// definitive delivery failure was reported, or via the 7-minute safety sweep
+// catching total silence — surfaces here in real time (same SSE stream every
+// other Orders view already subscribes to) so a confirmed customer payment
+// is never left sitting unresolved with no one alerted. Renders nothing at
+// all when the list is empty, so it never clutters the normal Orders view.
+function OrderActionRequiredBanner({ admin }) {
+  const canManage = hasPermission(admin, "orders.manage");
+  const [rows, setRows] = useState([]);
+  const [actingId, setActingId] = useState(null);
+  const [actionError, setActionError] = useState({});
+
+  const fetchRows = async () => {
+    if (!DALAB_API_ENABLED) return;
+    try {
+      setRows(await DalabAdminApi.getOrders("pending_admin_review"));
+    } catch (err) {
+      console.error("Failed to load orders pending admin review:", err.message);
+    }
+  };
+
+  useEffect(() => { fetchRows(); }, []);
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    const unsubscribe = subscribeOrderEvents("/admin/orders/stream", { onEvent: fetchRows });
+    return () => unsubscribe();
+  }, []);
+  useEffect(() => {
+    const timer = setInterval(fetchRows, 15000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const completeManually = async (order) => {
+    setActingId(order.id);
+    setActionError((m) => ({ ...m, [order.id]: "" }));
+    try {
+      await DalabAdminApi.completeOrderManually(order.id);
+      fetchRows();
+    } catch (err) {
+      setActionError((m) => ({ ...m, [order.id]: err.message || "Could not mark this order as delivered." }));
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  if (!DALAB_API_ENABLED || rows.length === 0) return null;
+
+  return (
+    <Card style={{ padding: 0, overflow: "hidden", marginBottom: 18, border: "1px solid #F3B6BA" }}>
+      <div style={{ background: "#FCE7E8", padding: "12px 16px", display: "flex", alignItems: "center", gap: 10 }}>
+        <AlertTriangle size={18} color="#C81E2C" />
+        <div style={{ fontWeight: 800, fontSize: 13, color: "#C81E2C", letterSpacing: 0.3 }}>
+          CUSTOMER PAYMENT RECEIVED — ACTION REQUIRED ({rows.length})
+        </div>
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Order ID</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Customer</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Phone</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Amount Paid</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payment</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Delivery</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Reason</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payment Confirmed</th>
+              <th style={{ padding: "10px 14px" }} />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((o) => (
+              <tr key={o.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, color: INK }}>{o.id}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{o.customerName || "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{o.senderPhone || o.customerPhone || "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontWeight: 700 }}>${Number(o.amount).toFixed(2)}</td>
+                <td style={{ padding: "10px 14px" }}><Badge tone="green">Payment Confirmed</Badge></td>
+                <td style={{ padding: "10px 14px" }}><Badge tone={orderTone(o.status)}>{orderStatusLabel(o.status)}</Badge></td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: INK, maxWidth: 240 }}>{o.reviewReason || "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(o.paymentConfirmedAt)}</td>
+                <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                  {actionError[o.id] && <div style={{ color: "#C81E2C", fontSize: 11, marginBottom: 4 }}>{actionError[o.id]}</div>}
+                  {canManage && (
+                    <Button variant="primary" disabled={actingId === o.id} onClick={() => completeManually(o)}>
+                      {actingId === o.id ? "Completing…" : "Complete Manually"}
+                    </Button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  );
+}
 
 function Orders({ orders, setOrders, companies, admin }) {
   const [filter, setFilter] = useState("all");
@@ -2680,6 +2807,7 @@ function Orders({ orders, setOrders, companies, admin }) {
 
   return (
     <div>
+      <OrderActionRequiredBanner admin={admin} />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 16, flexWrap: "wrap" }}>
         <div>
           <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Order Management</div>
@@ -5970,7 +6098,9 @@ function CommissionsPanel({ companies, packages, admin }) {
 const EXCHANGE_STATUS_META = {
   pending: { label: "Pending", tone: "amber" },
   in_progress: { label: "In Progress", tone: "blue" },
-  completed: { label: "Completed", tone: "green" },
+  pending_manual_payout: { label: "Pending Manual Payout", tone: "red" },
+  completed: { label: "Completed - Automatic", tone: "green" },
+  completed_manual: { label: "Completed - Manual", tone: "green" },
   failed: { label: "Failed", tone: "red" },
   cancelled: { label: "Cancelled", tone: "gray" },
 };
@@ -5978,6 +6108,142 @@ const EXCHANGE_STATUS_META = {
 const NEW_PAYOUT_WALLET_FORM = { walletId: "", deviceId: "", simSlot: "", phoneNumber: "" };
 const NEW_CORRIDOR_FORM = { fromWalletId: "", toWalletId: "", rate: "1.0", feeType: "fixed", feeValue: "0", minAmount: "", maxAmount: "", payoutWalletId: "" };
 const NEW_EXCHANGE_ORDER_FORM = { corridorId: "", amount: "", senderPhone: "", receiverPhone: "", customerPhone: "" };
+
+// "CUSTOMER PAYMENT RECEIVED — ACTION REQUIRED": every exchange the backend
+// has promoted to pending_manual_payout — either immediately, the moment a
+// definitive payout-dial failure was reported, or via the 20-minute safety
+// sweep catching total silence — surfaces here in real time so a confirmed
+// customer payment is never left sitting unresolved. "Pay Manually" requires
+// a transaction/reference ID (the admin sent the payout themselves, outside
+// this system, and is recording proof of it) before it'll submit. Renders
+// nothing at all when the list is empty.
+function ExchangeActionRequiredBanner({ admin }) {
+  const canManage = hasPermission(admin, "exchange.manage");
+  const [rows, setRows] = useState([]);
+  const [payModalFor, setPayModalFor] = useState(null);
+  const [referenceId, setReferenceId] = useState("");
+  const [payError, setPayError] = useState("");
+  const [paySaving, setPaySaving] = useState(false);
+
+  const fetchRows = async () => {
+    if (!DALAB_API_ENABLED) return;
+    try {
+      setRows(await DalabAdminApi.getExchangeOrders({ status: "pending_manual_payout" }));
+    } catch (err) {
+      console.error("Failed to load exchanges pending manual payout:", err.message);
+    }
+  };
+
+  useEffect(() => { fetchRows(); }, []);
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    const unsubscribe = subscribeOrderEvents("/admin/orders/stream", { onEvent: fetchRows });
+    return () => unsubscribe();
+  }, []);
+  useEffect(() => {
+    const timer = setInterval(fetchRows, 15000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const openPayModal = (order) => {
+    setPayModalFor(order);
+    setReferenceId("");
+    setPayError("");
+  };
+
+  const submitPayManually = async () => {
+    if (!referenceId.trim()) {
+      setPayError("Enter the transaction/reference ID for the payout you sent.");
+      return;
+    }
+    setPaySaving(true);
+    setPayError("");
+    try {
+      await DalabAdminApi.payExchangeOrderManually(payModalFor.id, referenceId.trim());
+      setPayModalFor(null);
+      fetchRows();
+    } catch (err) {
+      setPayError(err.message || "Could not record this manual payout.");
+    } finally {
+      setPaySaving(false);
+    }
+  };
+
+  if (!DALAB_API_ENABLED || rows.length === 0) return null;
+
+  return (
+    <>
+      <Card style={{ padding: 0, overflow: "hidden", marginBottom: 18, border: "1px solid #F3B6BA" }}>
+        <div style={{ background: "#FCE7E8", padding: "12px 16px", display: "flex", alignItems: "center", gap: 10 }}>
+          <AlertTriangle size={18} color="#C81E2C" />
+          <div style={{ fontWeight: 800, fontSize: 13, color: "#C81E2C", letterSpacing: 0.3 }}>
+            CUSTOMER PAYMENT RECEIVED — ACTION REQUIRED ({rows.length})
+          </div>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: "#FAFBFF" }}>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Exchange ID</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Customer</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Receiver Phone</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payout Amount</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payment</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payout</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Failure Reason</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payment Confirmed</th>
+                <th style={{ padding: "10px 14px" }} />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((o) => (
+                <tr key={o.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, color: INK }}>{o.id}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{o.customerName || o.customerPhone || "—"}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{o.receiverPhone || "—"}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontWeight: 700 }}>{o.amountReceived}</td>
+                  <td style={{ padding: "10px 14px" }}><Badge tone="green">Payment Confirmed</Badge></td>
+                  <td style={{ padding: "10px 14px" }}><Badge tone={EXCHANGE_STATUS_META[o.status]?.tone ?? "neutral"}>{EXCHANGE_STATUS_META[o.status]?.label ?? o.status}</Badge></td>
+                  <td style={{ padding: "10px 14px", fontSize: 11.5, color: INK, maxWidth: 240 }}>{o.payoutFailureReason || "—"}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(o.paymentConfirmedAt)}</td>
+                  <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                    {canManage && (
+                      <Button variant="primary" onClick={() => openPayModal(o)}>Pay Manually</Button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      {payModalFor && (
+        <Modal title={`Pay Manually — ${payModalFor.id}`} onClose={() => setPayModalFor(null)}>
+          <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>
+            Send {payModalFor.amountReceived} to {payModalFor.receiverPhone} yourself, then record the transaction/reference ID below to mark this exchange Completed - Manual.
+          </div>
+          <Field label="Transaction / Reference ID">
+            <input
+              style={inputStyle}
+              value={referenceId}
+              onChange={(e) => setReferenceId(e.target.value)}
+              placeholder="e.g. the carrier's confirmation code"
+              autoFocus
+            />
+          </Field>
+          {payError && <div style={{ color: "#C81E2C", fontSize: 12, marginBottom: 12 }}>{payError}</div>}
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+            <Button variant="ghost" onClick={() => setPayModalFor(null)} disabled={paySaving}>Cancel</Button>
+            <Button variant="primary" onClick={submitPayManually} disabled={paySaving}>
+              {paySaving ? "Saving…" : "Confirm Sent — Mark Completed"}
+            </Button>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
 
 function MoneyExchangePanel({ admin }) {
   const canManage = hasPermission(admin, "exchange.manage");
@@ -6245,6 +6511,7 @@ function MoneyExchangePanel({ admin }) {
 
   return (
     <div>
+      <ExchangeActionRequiredBanner admin={admin} />
       {/* Payout Wallets — Super-Admin-only, holds the PIN (write-only) */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
         <div>
@@ -6584,6 +6851,15 @@ function MoneyExchangePanel({ admin }) {
                   </div>
                 ))}
               </div>
+              {detail.status === "completed_manual" && (
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: MUTE, textTransform: "uppercase" }}>Manual payout</div>
+                  <div style={{ fontSize: 12.5, color: INK, marginTop: 4 }}>
+                    Paid by {detail.manualPayoutByEmail || "—"} on {formatDateTime(detail.manualPayoutAt)}
+                  </div>
+                  <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Reference: {detail.manualPayoutReference || "—"}</div>
+                </div>
+              )}
               <div style={{ fontSize: 11, color: MUTE, fontStyle: "italic" }}>The payout PIN is never shown here or anywhere in the dashboard.</div>
             </div>
           )}
@@ -9075,6 +9351,8 @@ function AdminDashboardShell({ admin, onLogout }) {
   const [duplicateBlockedCount, setDuplicateBlockedCount] = useState(0);
   const [lowBalanceCount, setLowBalanceCount] = useState(0);
   const [pendingRecoveryCount, setPendingRecoveryCount] = useState(0);
+  const [orderReviewCount, setOrderReviewCount] = useState(0);
+  const [payoutReviewCount, setPayoutReviewCount] = useState(0);
   const [missingTemplateCount, setMissingTemplateCount] = useState(0);
   const [pendingFeedbackCount, setPendingFeedbackCount] = useState(0);
 
@@ -9180,6 +9458,40 @@ function AdminDashboardShell({ admin, onLogout }) {
     return () => unsubscribe();
   }, []);
 
+  // "CUSTOMER PAYMENT RECEIVED — ACTION REQUIRED" badges: a confirmed
+  // customer payment stuck waiting on manual delivery/payout should be
+  // visible from the sidebar itself, not just after opening the Orders or
+  // Money Exchange panel.
+  const refreshOrderReviewCount = async () => {
+    if (!DALAB_API_ENABLED) return;
+    try {
+      setOrderReviewCount((await DalabAdminApi.getOrders("pending_admin_review")).length);
+    } catch (err) {
+      console.error("Failed to load pending admin review count:", err.message);
+    }
+  };
+  useEffect(() => { refreshOrderReviewCount(); }, []);
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    const unsubscribe = subscribeOrderEvents("/admin/orders/stream", { onEvent: refreshOrderReviewCount });
+    return () => unsubscribe();
+  }, []);
+
+  const refreshPayoutReviewCount = async () => {
+    if (!DALAB_API_ENABLED) return;
+    try {
+      setPayoutReviewCount((await DalabAdminApi.getExchangeOrders({ status: "pending_manual_payout" })).length);
+    } catch (err) {
+      console.error("Failed to load pending manual payout count:", err.message);
+    }
+  };
+  useEffect(() => { refreshPayoutReviewCount(); }, []);
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    const unsubscribe = subscribeOrderEvents("/admin/orders/stream", { onEvent: refreshPayoutReviewCount });
+    return () => unsubscribe();
+  }, []);
+
   // Proactive: catches a package with no way to resolve a USSD template
   // (root cause of orders getting stuck at generation time) at the point of
   // configuration, instead of waiting for a real customer payment to reveal
@@ -9274,6 +9586,16 @@ function AdminDashboardShell({ admin, onLogout }) {
                 {!collapsed && n.id === "pending-recovery" && pendingRecoveryCount > 0 && (
                   <span style={{ marginLeft: "auto" }} title="Orders awaiting manual recovery">
                     <Badge tone="amber">{pendingRecoveryCount}</Badge>
+                  </span>
+                )}
+                {!collapsed && n.id === "orders" && orderReviewCount > 0 && (
+                  <span style={{ marginLeft: "auto" }} title="Customer payment received — action required (Pending Admin Review)">
+                    <Badge tone="red">{orderReviewCount}</Badge>
+                  </span>
+                )}
+                {!collapsed && n.id === "money-exchange" && payoutReviewCount > 0 && (
+                  <span style={{ marginLeft: "auto" }} title="Customer payment received — action required (Pending Manual Payout)">
+                    <Badge tone="red">{payoutReviewCount}</Badge>
                   </span>
                 )}
                 {!collapsed && n.id === "packages" && missingTemplateCount > 0 && (
