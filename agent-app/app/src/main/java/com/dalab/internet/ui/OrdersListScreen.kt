@@ -1,31 +1,49 @@
 package com.dalab.internet.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Circle
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SettingsInputAntenna
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import com.dalab.internet.auth.SessionManager
 import com.dalab.internet.data.Order
 import com.dalab.internet.data.OrderStatus
 import com.dalab.internet.network.AgentEventBus
 import com.dalab.internet.network.ApiClient
+import com.dalab.internet.network.ConnectionState
+import com.dalab.internet.service.AgentBackgroundService
 import com.dalab.internet.ussd.SimRoutingRepository
 import com.dalab.internet.ussd.SimSlotResult
 import com.dalab.internet.ussd.UssdOrchestrator
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 private val DalabIndigo = Color(0xFF1D2E8C)
 private val DalabGreen = Color(0xFF16A34A)
@@ -42,11 +60,13 @@ fun OrdersListScreen(onOpenOrder: (Order) -> Unit) {
     val context = LocalContext.current
     var orders by remember { mutableStateOf<List<Order>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
+    var lastSyncedAt by remember { mutableStateOf<Date?>(null) }
     var filter by remember { mutableStateOf(OrdersFilter.PENDING) }
     var selectedIds by remember { mutableStateOf(setOf<String>()) }
     var executingId by remember { mutableStateOf<String?>(null) }
     var bulkExecuting by remember { mutableStateOf(false) }
     var resultMessage by remember { mutableStateOf<String?>(null) }
+    val connectionState by AgentEventBus.connectionState.collectAsState()
     val scope = rememberCoroutineScope()
     val orchestrator = remember { UssdOrchestrator(context) }
 
@@ -58,7 +78,15 @@ fun OrdersListScreen(onOpenOrder: (Order) -> Unit) {
     // selected for the main list.
     var recentActivity by remember { mutableStateOf<List<Order>>(emptyList()) }
 
+    fun smsListeningActive(): Boolean {
+        val readGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_SMS) == PackageManager.PERMISSION_GRANTED
+        val receiveGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECEIVE_SMS) == PackageManager.PERMISSION_GRANTED
+        return readGranted && receiveGranted && AgentBackgroundService.isRunning
+    }
+    var listeningActive by remember { mutableStateOf(smsListeningActive()) }
+
     fun refreshDashboard() {
+        listeningActive = smsListeningActive()
         scope.launch {
             try {
                 val report = ApiClient.service.getReports("daily").body()
@@ -83,6 +111,7 @@ fun OrdersListScreen(onOpenOrder: (Order) -> Unit) {
             try {
                 val response = ApiClient.service.getOrders(status = filter.apiStatus)
                 orders = response.body().orEmpty()
+                lastSyncedAt = Date()
             } catch (_: Exception) {
                 // Leave the previous list in place; a banner/snackbar in a full
                 // implementation would say "couldn't refresh" here.
@@ -138,6 +167,9 @@ fun OrdersListScreen(onOpenOrder: (Order) -> Unit) {
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
             AgentHomeHeader(
                 agentName = remember { SessionManager.currentAgent()?.name },
+                listeningActive = listeningActive,
+                connectionState = connectionState,
+                lastSyncedAt = lastSyncedAt,
                 todaySales = todaySales,
                 todayOrders = todayOrders,
                 onRefresh = { refresh(); refreshDashboard() },
@@ -212,10 +244,21 @@ fun OrdersListScreen(onOpenOrder: (Order) -> Unit) {
 @Composable
 private fun AgentHomeHeader(
     agentName: String?,
+    listeningActive: Boolean,
+    connectionState: ConnectionState,
+    lastSyncedAt: Date?,
     todaySales: Double,
     todayOrders: Int,
     onRefresh: () -> Unit,
 ) {
+    val infiniteTransition = rememberInfiniteTransition(label = "listening-pulse")
+    val pulseScale by infiniteTransition.animateFloat(
+        initialValue = 0.85f,
+        targetValue = 1.15f,
+        animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing), RepeatMode.Reverse),
+        label = "listening-pulse-scale",
+    )
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -236,6 +279,56 @@ private fun AgentHomeHeader(
             }
             IconButton(onClick = onRefresh) {
                 Icon(Icons.Filled.Refresh, contentDescription = "Refresh", tint = Color.White)
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        Surface(color = Color.White.copy(alpha = 0.15f), shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+            Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .scale(if (listeningActive) pulseScale else 1f)
+                        .background(Color.White.copy(alpha = if (listeningActive) 0.25f else 0.12f), CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Filled.SettingsInputAntenna, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                }
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text(
+                        if (listeningActive) "SMS Listening — Active" else "SMS Listening — Inactive",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        if (listeningActive) "Background service is monitoring payment SMS" else "Grant SMS permissions in More → Permissions",
+                        color = Color.White.copy(alpha = 0.8f),
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(10.dp))
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            val (dotColor, label) = when (connectionState) {
+                ConnectionState.CONNECTED -> Color(0xFF6FE39A) to "Connected"
+                ConnectionState.CONNECTING -> Color(0xFFF2C200) to "Reconnecting…"
+                ConnectionState.DISCONNECTED -> Color(0xFFF87171) to "Disconnected"
+            }
+            Icon(Icons.Filled.Circle, contentDescription = null, tint = dotColor, modifier = Modifier.size(7.dp))
+            Spacer(Modifier.width(5.dp))
+            Text(label, color = Color.White.copy(alpha = 0.85f), style = MaterialTheme.typography.labelSmall)
+            lastSyncedAt?.let {
+                Text(
+                    "  ·  Synced ${SimpleDateFormat("HH:mm:ss", Locale.US).format(it)}",
+                    color = Color.White.copy(alpha = 0.7f),
+                    style = MaterialTheme.typography.labelSmall,
+                )
             }
         }
 
