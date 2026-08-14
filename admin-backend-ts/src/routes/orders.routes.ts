@@ -606,11 +606,10 @@ ordersRouter.post("/agent/orders/voucher-confirmation", requireAuth("agent"), as
   const target = normalizePhone(receiverPhone);
   if (!target) return sendJson(res, 400, { error: "receiverPhone is not a valid phone number" });
 
-  // Oldest-first + row-locked, mirroring findMatchingOrder's rationale in
-  // smsLogs.routes.ts: when several in_progress siblings exist for the same
-  // amount+phone, the carrier's confirmation should complete whichever was
-  // claimed first, and FOR UPDATE SKIP LOCKED keeps two concurrent carrier
-  // confirmations from both landing on the same in-flight candidate.
+  // Row-locked, and ordered newest-created-first: an SMS confirms whichever
+  // top-up was actually just dialed, so among several in_progress siblings
+  // sharing the same amount+phone, the most recently created one is by far
+  // the more likely match — not whichever has sat in_progress the longest.
   //
   // Scoped to companies.name matching the SMS's own carrier (when the app
   // sends one — older builds may not) and to orders updated in the last
@@ -625,7 +624,7 @@ ordersRouter.post("/agent/orders/voucher-confirmation", requireAuth("agent"), as
          WHERE o.status='in_progress' AND ABS(o.amount - $1) < 0.01
            AND o.updated_at > now() - interval '1 hour'
            AND ($2::text IS NULL OR lower(co.name) = lower($2::text))
-         ORDER BY o.updated_at ASC
+         ORDER BY o.created_at DESC
          FOR UPDATE SKIP LOCKED`,
         [amount, typeof provider === "string" ? provider : null]
       )
