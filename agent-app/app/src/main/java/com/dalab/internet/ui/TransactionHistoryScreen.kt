@@ -3,6 +3,7 @@ package com.dalab.internet.ui
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.*
@@ -18,7 +19,7 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TransactionHistoryScreen(onBack: () -> Unit) {
+fun TransactionHistoryScreen(onBack: (() -> Unit)? = null) {
     var transactions by remember { mutableStateOf<List<Transaction>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     val scope = rememberCoroutineScope()
@@ -37,10 +38,12 @@ fun TransactionHistoryScreen(onBack: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Transaction History") },
+                title = { Text("Recent Activity") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
+                    if (onBack != null) {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
+                        }
                     }
                 },
             )
@@ -52,22 +55,30 @@ fun TransactionHistoryScreen(onBack: () -> Unit) {
             } else if (transactions.isEmpty()) {
                 Text("No completed transactions yet.", modifier = Modifier.align(Alignment.Center))
             } else {
-                LazyColumn {
+                LazyColumn(
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
                     items(transactions, key = { it.orderId }) { tx ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(16.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                        Card(
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
                         ) {
-                            Column {
-                                Text(tx.customerName ?: "Customer", fontWeight = FontWeight.Bold)
-                                Text("${tx.companyName} · ${tx.orderId}", style = MaterialTheme.typography.bodySmall)
-                            }
-                            Column(horizontalAlignment = Alignment.End) {
-                                Text("$${"%.2f".format(tx.amount)}", fontWeight = FontWeight.Bold)
-                                Text(formatApiDateTime(tx.completedAt), style = MaterialTheme.typography.labelSmall)
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Column {
+                                    Text(tx.customerName ?: "Customer", fontWeight = FontWeight.Bold)
+                                    Text("${tx.companyName} · ${tx.orderId}", style = MaterialTheme.typography.bodySmall)
+                                }
+                                Column(horizontalAlignment = Alignment.End) {
+                                    Text("$${"%.2f".format(tx.amount)}", fontWeight = FontWeight.Bold)
+                                    Text(formatApiDateTime(tx.completedAt), style = MaterialTheme.typography.labelSmall)
+                                }
                             }
                         }
-                        Divider()
                     }
                 }
             }

@@ -10,8 +10,12 @@ import android.os.PowerManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Assessment
@@ -20,16 +24,20 @@ import androidx.compose.material.icons.filled.CurrencyExchange
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.People
-import androidx.compose.material.icons.filled.PointOfSale
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Sell
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.auth.SessionManager
@@ -62,6 +70,10 @@ import com.dalab.internet.ui.SmsPermissionScreen
 import com.dalab.internet.ui.SupportTicketChatScreen
 import com.dalab.internet.ui.TransactionHistoryScreen
 import com.dalab.internet.ui.WalletDashboardScreen
+import com.dalab.internet.ui.components.DalabBottomBar
+import com.dalab.internet.ui.components.DalabBottomBarItem
+import com.dalab.internet.ui.theme.DalabEyebrowStyle
+import com.dalab.internet.ui.theme.DalabTheme
 import kotlinx.coroutines.launch
 
 private val SMS_PERMISSIONS = arrayOf(Manifest.permission.RECEIVE_SMS, Manifest.permission.READ_SMS)
@@ -93,7 +105,7 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            MaterialTheme {
+            DalabTheme {
                 AgentApp()
             }
         }
@@ -124,8 +136,14 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, SUPPORT_LIST, SUPPORT_CHAT }
-private enum class HomeTab { ORDERS, SALES, CUSTOMERS, REPORTS, MORE }
+// TRANSACTIONS and SUPPORT_LIST no longer exist as separate drill-ins:
+// Recent Activity and Support are now top-level bottom-nav tabs (see
+// HomeTab below) that render their screens directly, the same way the
+// former ORDERS tab always has. SALES/CUSTOMERS/REPORTS are new drill-ins
+// from More, replacing their old top-level tab slots (see "Home screen
+// cleanup" — the functionality is unchanged, just no longer front-and-center).
+private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, SUPPORT_CHAT, SALES, CUSTOMERS, REPORTS }
+private enum class HomeTab { HOME, SUPPORT, RECENT_ACTIVITY, MORE }
 
 @Composable
 private fun AgentApp() {
@@ -223,15 +241,17 @@ private fun AgentApp() {
 
         Screen.HOME -> AgentHome(
             onOpenOrder = { order -> selectedOrder = order; screen = Screen.ORDER_DETAIL },
+            onOpenSupportTicket = { ticket -> selectedSupportTicket = ticket; screen = Screen.SUPPORT_CHAT },
             onOpenPackages = { screen = Screen.PACKAGES },
-            onOpenTransactions = { screen = Screen.TRANSACTIONS },
             onOpenWallet = { screen = Screen.WALLET },
             onOpenDeviceSetup = { screen = Screen.DEVICE_SETUP },
             onOpenDiagnostics = { screen = Screen.DIAGNOSTICS },
             onOpenPermissionsStatus = { screen = Screen.PERMISSIONS_STATUS },
             onOpenReliabilityDashboard = { screen = Screen.RELIABILITY_DASHBOARD },
             onOpenMoneyExchange = { screen = Screen.EXCHANGE_LIST },
-            onOpenCustomerSupport = { screen = Screen.SUPPORT_LIST },
+            onOpenSales = { screen = Screen.SALES },
+            onOpenCustomers = { screen = Screen.CUSTOMERS },
+            onOpenReports = { screen = Screen.REPORTS },
         )
 
         Screen.ORDER_DETAIL -> selectedOrder?.let { order ->
@@ -243,8 +263,6 @@ private fun AgentApp() {
         }
 
         Screen.PACKAGES -> PackagesScreen(onBack = { screen = Screen.HOME })
-
-        Screen.TRANSACTIONS -> TransactionHistoryScreen(onBack = { screen = Screen.HOME })
 
         Screen.WALLET -> WalletDashboardScreen(onBack = { screen = Screen.HOME })
 
@@ -268,19 +286,20 @@ private fun AgentApp() {
             )
         }
 
-        Screen.SUPPORT_LIST -> CustomerSupportScreen(
-            onOpenTicket = { ticket -> selectedSupportTicket = ticket; screen = Screen.SUPPORT_CHAT },
-            onBack = { screen = Screen.HOME },
-        )
-
         Screen.SUPPORT_CHAT -> selectedSupportTicket?.let { ticket ->
             SupportTicketChatScreen(
                 initialTicket = ticket,
-                onBack = { screen = Screen.SUPPORT_LIST },
+                onBack = { screen = Screen.HOME },
             )
         }
 
         Screen.EXCHANGE_SETUP -> ExchangeAccessibilitySetupScreen(onBack = { screen = Screen.EXCHANGE_LIST })
+
+        Screen.SALES -> NewSaleScreen(onBack = { screen = Screen.HOME })
+
+        Screen.CUSTOMERS -> CustomersScreen(onBack = { screen = Screen.HOME })
+
+        Screen.REPORTS -> ReportsScreen(onBack = { screen = Screen.HOME })
     }
 }
 
@@ -291,154 +310,138 @@ private fun rememberLauncherForSmsPermissions(
     ActivityResultContracts.RequestMultiplePermissions(), onResult
 )
 
-/** Bottom-nav shell for the logged-in agent: Orders, Sales, Customers, Reports, More. */
+/** Bottom-nav shell for the logged-in agent: Home, Support, Recent Activity, More. */
 @Composable
 private fun AgentHome(
     onOpenOrder: (Order) -> Unit,
+    onOpenSupportTicket: (SupportTicket) -> Unit,
     onOpenPackages: () -> Unit,
-    onOpenTransactions: () -> Unit,
     onOpenWallet: () -> Unit,
     onOpenDeviceSetup: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onOpenPermissionsStatus: () -> Unit,
     onOpenReliabilityDashboard: () -> Unit,
     onOpenMoneyExchange: () -> Unit,
-    onOpenCustomerSupport: () -> Unit,
+    onOpenSales: () -> Unit,
+    onOpenCustomers: () -> Unit,
+    onOpenReports: () -> Unit,
 ) {
-    var tab by remember { mutableStateOf(HomeTab.ORDERS) }
+    var tab by remember { mutableStateOf(HomeTab.HOME) }
+    val tabValues = remember { HomeTab.values().toList() }
+    val tabItems = remember {
+        listOf(
+            DalabBottomBarItem(Icons.Filled.Home, "Home"),
+            DalabBottomBarItem(Icons.Filled.SupportAgent, "Support"),
+            DalabBottomBarItem(Icons.Filled.History, "Recent Activity"),
+            DalabBottomBarItem(Icons.Filled.MoreHoriz, "More"),
+        )
+    }
 
     Scaffold(
         bottomBar = {
-            NavigationBar {
-                NavigationBarItem(
-                    selected = tab == HomeTab.ORDERS,
-                    onClick = { tab = HomeTab.ORDERS },
-                    icon = { Icon(Icons.Filled.Home, contentDescription = "Home") },
-                    label = { Text("Home") },
-                )
-                NavigationBarItem(
-                    selected = tab == HomeTab.SALES,
-                    onClick = { tab = HomeTab.SALES },
-                    icon = { Icon(Icons.Filled.Sell, contentDescription = "New Sale") },
-                    label = { Text("Sales") },
-                )
-                NavigationBarItem(
-                    selected = tab == HomeTab.CUSTOMERS,
-                    onClick = { tab = HomeTab.CUSTOMERS },
-                    icon = { Icon(Icons.Filled.People, contentDescription = "Customers") },
-                    label = { Text("Customers") },
-                )
-                NavigationBarItem(
-                    selected = tab == HomeTab.REPORTS,
-                    onClick = { tab = HomeTab.REPORTS },
-                    icon = { Icon(Icons.Filled.Assessment, contentDescription = "Reports") },
-                    label = { Text("Reports") },
-                )
-                NavigationBarItem(
-                    selected = tab == HomeTab.MORE,
-                    onClick = { tab = HomeTab.MORE },
-                    icon = { Icon(Icons.Filled.PointOfSale, contentDescription = "More") },
-                    label = { Text("More") },
-                )
-            }
+            DalabBottomBar(
+                items = tabItems,
+                selectedIndex = tabValues.indexOf(tab),
+                onSelect = { index -> tab = tabValues[index] },
+            )
         }
     ) { padding ->
         Box(modifier = Modifier.padding(padding)) {
             when (tab) {
-                HomeTab.ORDERS -> OrdersListScreen(onOpenOrder = onOpenOrder)
-                HomeTab.SALES -> NewSaleScreen()
-                HomeTab.CUSTOMERS -> CustomersScreen()
-                HomeTab.REPORTS -> ReportsScreen()
+                HomeTab.HOME -> OrdersListScreen(onOpenOrder = onOpenOrder)
+                // No onBack -- this is a top-level tab now, not a drill-in
+                // from More, so it has no back target (same as every other
+                // tab here). Everything about how the queue itself works
+                // (real-time refresh, accept flow, ticket data) is untouched.
+                HomeTab.SUPPORT -> CustomerSupportScreen(onOpenTicket = onOpenSupportTicket)
+                HomeTab.RECENT_ACTIVITY -> TransactionHistoryScreen()
                 HomeTab.MORE -> MoreScreen(
                     onOpenPackages = onOpenPackages,
-                    onOpenTransactions = onOpenTransactions,
                     onOpenWallet = onOpenWallet,
                     onOpenDeviceSetup = onOpenDeviceSetup,
                     onOpenDiagnostics = onOpenDiagnostics,
                     onOpenPermissionsStatus = onOpenPermissionsStatus,
                     onOpenReliabilityDashboard = onOpenReliabilityDashboard,
                     onOpenMoneyExchange = onOpenMoneyExchange,
-                    onOpenCustomerSupport = onOpenCustomerSupport,
+                    onOpenSales = onOpenSales,
+                    onOpenCustomers = onOpenCustomers,
+                    onOpenReports = onOpenReports,
                 )
             }
         }
     }
 }
 
+private data class MoreMenuItem(val icon: ImageVector, val title: String, val subtitle: String, val onClick: () -> Unit)
+
+/**
+ * Everything that isn't Home/Support/Recent Activity now lives here,
+ * including Sales/Customers/Reports (moved off the top-level bottom nav —
+ * see "Home screen cleanup" — but still fully reachable, nothing was
+ * deleted). One rounded card grouping every destination, rather than a
+ * bare full-bleed list, for a calmer, more deliberate "settings menu" feel.
+ */
 @Composable
 private fun MoreScreen(
     onOpenPackages: () -> Unit,
-    onOpenTransactions: () -> Unit,
     onOpenWallet: () -> Unit,
     onOpenDeviceSetup: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onOpenPermissionsStatus: () -> Unit,
     onOpenReliabilityDashboard: () -> Unit,
     onOpenMoneyExchange: () -> Unit,
-    onOpenCustomerSupport: () -> Unit,
+    onOpenSales: () -> Unit,
+    onOpenCustomers: () -> Unit,
+    onOpenReports: () -> Unit,
 ) {
-    Column(modifier = Modifier.fillMaxSize()) {
-        ListItem(
-            headlineContent = { Text("Customer Support") },
-            supportingContent = { Text("Customer chats waiting for an agent") },
-            leadingContent = { Icon(Icons.Filled.SupportAgent, contentDescription = null) },
-            modifier = Modifier.clickable(onClick = onOpenCustomerSupport),
+    val items = listOf(
+        MoreMenuItem(Icons.Filled.CurrencyExchange, "Money Exchange", "Verified exchanges waiting for payout", onOpenMoneyExchange),
+        MoreMenuItem(Icons.Filled.AccountBalanceWallet, "Wallet Balances", "Provider balances and live payment transactions", onOpenWallet),
+        MoreMenuItem(Icons.Filled.List, "Packages", "Browse the full catalog and pricing", onOpenPackages),
+        MoreMenuItem(Icons.Filled.Sell, "Sales", "Create a walk-in sale for a customer", onOpenSales),
+        MoreMenuItem(Icons.Filled.People, "Customers", "Search and add customers", onOpenCustomers),
+        MoreMenuItem(Icons.Filled.Assessment, "Reports", "Your completed-sales summary", onOpenReports),
+        MoreMenuItem(Icons.Filled.PhoneAndroid, "Device", DeviceIdentity.deviceName() ?: "Choose which registered device this phone is", onOpenDeviceSetup),
+        MoreMenuItem(Icons.Filled.BugReport, "Diagnostics", "Recent errors and automatic retries on this device", onOpenDiagnostics),
+        MoreMenuItem(Icons.Filled.Security, "Permissions", "SMS + background service status for this device", onOpenPermissionsStatus),
+        MoreMenuItem(Icons.Filled.Speed, "Reliability Dashboard", "Foreground service, heartbeat, SMS reader, connectivity, and offline queue — live", onOpenReliabilityDashboard),
+    )
+
+    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        Text(
+            "MORE",
+            style = DalabEyebrowStyle,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 20.dp, top = 20.dp, bottom = 8.dp),
         )
-        Divider()
-        ListItem(
-            headlineContent = { Text("Money Exchange") },
-            supportingContent = { Text("Verified exchanges waiting for payout") },
-            leadingContent = { Icon(Icons.Filled.CurrencyExchange, contentDescription = null) },
-            modifier = Modifier.clickable(onClick = onOpenMoneyExchange),
-        )
-        Divider()
-        ListItem(
-            headlineContent = { Text("Wallet Balances") },
-            supportingContent = { Text("Provider balances and live payment transactions") },
-            leadingContent = { Icon(Icons.Filled.AccountBalanceWallet, contentDescription = null) },
-            modifier = Modifier.clickable(onClick = onOpenWallet),
-        )
-        Divider()
-        ListItem(
-            headlineContent = { Text("Packages") },
-            supportingContent = { Text("Browse the full catalog and pricing") },
-            leadingContent = { Icon(Icons.Filled.List, contentDescription = null) },
-            modifier = Modifier.clickable(onClick = onOpenPackages),
-        )
-        Divider()
-        ListItem(
-            headlineContent = { Text("Transaction History") },
-            supportingContent = { Text("Orders you've completed") },
-            leadingContent = { Icon(Icons.Filled.History, contentDescription = null) },
-            modifier = Modifier.clickable(onClick = onOpenTransactions),
-        )
-        Divider()
-        ListItem(
-            headlineContent = { Text("Device") },
-            supportingContent = { Text(DeviceIdentity.deviceName() ?: "Choose which registered device this phone is") },
-            leadingContent = { Icon(Icons.Filled.PhoneAndroid, contentDescription = null) },
-            modifier = Modifier.clickable(onClick = onOpenDeviceSetup),
-        )
-        Divider()
-        ListItem(
-            headlineContent = { Text("Diagnostics") },
-            supportingContent = { Text("Recent errors and automatic retries on this device") },
-            leadingContent = { Icon(Icons.Filled.BugReport, contentDescription = null) },
-            modifier = Modifier.clickable(onClick = onOpenDiagnostics),
-        )
-        Divider()
-        ListItem(
-            headlineContent = { Text("Permissions") },
-            supportingContent = { Text("SMS + background service status for this device") },
-            leadingContent = { Icon(Icons.Filled.Security, contentDescription = null) },
-            modifier = Modifier.clickable(onClick = onOpenPermissionsStatus),
-        )
-        Divider()
-        ListItem(
-            headlineContent = { Text("Reliability Dashboard") },
-            supportingContent = { Text("Foreground service, heartbeat, SMS reader, connectivity, and offline queue — live") },
-            leadingContent = { Icon(Icons.Filled.Speed, contentDescription = null) },
-            modifier = Modifier.clickable(onClick = onOpenReliabilityDashboard),
-        )
+        Card(
+            modifier = Modifier.padding(horizontal = 16.dp),
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        ) {
+            Column {
+                items.forEachIndexed { index, item ->
+                    ListItem(
+                        headlineContent = { Text(item.title, fontWeight = FontWeight.SemiBold) },
+                        supportingContent = { Text(item.subtitle, style = MaterialTheme.typography.bodySmall) },
+                        leadingContent = {
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(12.dp)),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(item.icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                            }
+                        },
+                        colors = ListItemDefaults.colors(containerColor = androidx.compose.ui.graphics.Color.Transparent),
+                        modifier = Modifier.clickable(onClick = item.onClick),
+                    )
+                    if (index != items.lastIndex) Divider(modifier = Modifier.padding(start = 70.dp))
+                }
+            }
+        }
+        Spacer(Modifier.height(24.dp))
     }
 }

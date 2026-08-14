@@ -13,6 +13,7 @@ import androidx.compose.ui.unit.dp
 import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.data.AgentDevice
 import com.dalab.internet.network.ApiClient
+import com.dalab.internet.ui.components.DalabLogo
 import kotlinx.coroutines.launch
 
 /**
@@ -50,6 +51,8 @@ fun DeviceSetupScreen(onDeviceSelected: () -> Unit) {
     LaunchedEffect(Unit) { load() }
 
     Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
+        DalabLogo(size = 48.dp)
+        Spacer(Modifier.height(12.dp))
         Text("Which device is this?", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(4.dp))
         Text(

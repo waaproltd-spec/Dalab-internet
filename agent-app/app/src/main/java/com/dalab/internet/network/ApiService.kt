@@ -20,7 +20,7 @@ import com.dalab.internet.ussd.SimRoutingEntry
 import retrofit2.Response
 import retrofit2.http.*
 
-data class DeviceLoginRequest(val deviceId: String)
+data class DeviceLoginRequest(val deviceId: String, val activationCode: String? = null)
 data class DiagnosticsEntryDto(
     val tag: String,
     val message: String,

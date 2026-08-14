@@ -96,3 +96,17 @@ export function generateOtp(length = 4): string {
   const max = 10 ** length;
   return String(randomInt(min, max));
 }
+
+// Excludes visually-ambiguous characters (0/O, 1/I/L) since an admin reads
+// this aloud or types it out to hand to an agent — a device activation code,
+// not a password a person chooses, so readability matters more than a
+// larger alphabet would gain.
+const ACTIVATION_CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+
+export function generateActivationCode(length = 8): string {
+  let code = "";
+  for (let i = 0; i < length; i++) {
+    code += ACTIVATION_CODE_ALPHABET[randomInt(0, ACTIVATION_CODE_ALPHABET.length)];
+  }
+  return code;
+}

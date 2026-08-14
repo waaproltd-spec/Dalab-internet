@@ -189,6 +189,22 @@ class AgentBackgroundService : Service() {
                 }
             }
         }
+        newScope.launch {
+            // A device an admin explicitly disabled will fail the exact same
+            // silent re-auth attempt sessionExpired's collector makes above
+            // (device-login itself checks agent_devices.enabled) — no need to
+            // retry that here too. This just makes sure the agent is told the
+            // real reason (revoked, not a generic sign-out) instead of the
+            // sessionExpired notification's "ask your Super Admin to assign
+            // an agent" text, which would be misleading for this case.
+            while (isActive) {
+                try {
+                    AgentEventBus.deviceRevoked.collect { notifyDeviceRevoked() }
+                } catch (e: Exception) {
+                    DiagnosticsLog.record("background_service_device_revoked", "Collector died, restarting: ${e.stackTraceToString().take(2000)}")
+                }
+            }
+        }
         try {
             registerConnectivityCallback(newScope)
         } catch (e: Exception) {
@@ -499,10 +515,28 @@ class AgentBackgroundService : Service() {
         NotificationManagerCompat.from(this).notify(SESSION_EXPIRED_NOTIFICATION_ID, notification)
     }
 
+    private fun notifyDeviceRevoked() {
+        DiagnosticsLog.record("device_revoked", "Device access was disabled by an administrator — session cleared.")
+        val openApp = android.app.PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java),
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(this, "payment_channel")
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("Device access revoked")
+            .setContentText("An administrator disabled this device. Payments are NOT being processed until it's re-authorized.")
+            .setContentIntent(openApp)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
+        NotificationManagerCompat.from(this).notify(DEVICE_REVOKED_NOTIFICATION_ID, notification)
+    }
+
     companion object {
         private const val CHANNEL_ID = "agent_background_channel"
         private const val NOTIFICATION_ID = 1001
         private const val SESSION_EXPIRED_NOTIFICATION_ID = 1002
+        private const val DEVICE_REVOKED_NOTIFICATION_ID = 1003
         private const val HEARTBEAT_INTERVAL_MS = 60_000L
         private const val HEARTBEAT_MAX_ATTEMPTS = 4
         private const val HEARTBEAT_RETRY_BASE_DELAY_MS = 2_000L
