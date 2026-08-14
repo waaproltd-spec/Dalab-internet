@@ -46,16 +46,25 @@ object ExchangeUssdBridge {
     @Volatile
     private var lastPostConfirmText: String? = null
 
-    /** The package name of the window this attempt has confirmed is the
-     * real carrier dialog — set the first time a scan sees any dialog text
-     * at all (armed only goes true right as the USSD dial is placed, so the
-     * first window to show any text is overwhelmingly likely to be the
-     * actual dialer). Every later scan in this attempt must come from this
-     * same window; a mismatch means the foreground drifted to an unrelated
-     * app (e.g. Chrome) and must never be treated as carrier output or have
-     * a PIN injected into it. */
+    /** The package name(s) of the window(s) this attempt has confirmed
+     * belong to the real carrier dialog — the first entry is added the first
+     * time a scan sees any dialog text at all (armed only goes true right as
+     * the USSD dial is placed, so the first window to show any text is
+     * overwhelmingly likely to be the actual dialer). A later scan from an
+     * unrecognized window is added too, but only if its content independently
+     * clears the same "looks like a genuine USSD dialog" bar used to
+     * establish the very first lock — confirmed live (Samsung/One UI): the
+     * transient "USSD code running…" loading screen and the real,
+     * interactive PIN-entry reply can render under two different window
+     * packages (com.android.phone, then com.android.systemui) for the same
+     * attempt, and a single-package lock left the second one permanently
+     * rejected as a "mismatch" for the rest of the attempt, so the PIN was
+     * never typed. This never widens *what* content is trusted — content
+     * that doesn't already look like a genuine USSD dialog still can't join
+     * the set — only *how many windows* the already-established dialog is
+     * allowed to legitimately span. */
     @Volatile
-    private var lockedPackageName: String? = null
+    private var lockedPackageNames: Set<String> = emptySet()
 
     @Volatile
     private var lastLoggedMismatchPackage: String? = null
@@ -106,7 +115,7 @@ object ExchangeUssdBridge {
         pinSubmitted = false
         lastPreConfirmText = null
         lastPostConfirmText = null
-        lockedPackageName = null
+        lockedPackageNames = emptySet()
         lastLoggedMismatchPackage = null
         postPinConfirmationTapped = false
         windowSearchMissLogged = false
@@ -120,7 +129,7 @@ object ExchangeUssdBridge {
         pinSubmitted = false
         lastPreConfirmText = null
         lastPostConfirmText = null
-        lockedPackageName = null
+        lockedPackageNames = emptySet()
         lastLoggedMismatchPackage = null
         windowSearchMissLogged = false
         postPinConfirmationTapped = false
@@ -200,29 +209,27 @@ object ExchangeUssdBridge {
     internal fun currentConfirmationStage(): ConfirmationStage =
         if (pinSubmitted) ConfirmationStage.POST_PIN else ConfirmationStage.PRE_PIN
 
-    /** True if [packageName] is the window already confirmed as this
-     * attempt's real carrier dialog, or if no window has been confirmed
-     * yet (in which case [packageName] becomes the locked window). False
-     * means the foreground has drifted to a different app mid-attempt --
-     * its content must never be read as carrier output. */
+    /** True if [packageName] is one of the windows already confirmed as
+     * this attempt's real carrier dialog, or if it isn't yet but its content
+     * independently looks like a genuine USSD dialog (in which case
+     * [packageName] joins the trusted set). False means this window's
+     * content must never be read as carrier output. */
     internal fun isWindowAllowed(packageName: String?, looksLikeUssdDialog: Boolean): Boolean {
-        val locked = lockedPackageName
-        if (locked == null) {
-            // Don't lock onto whatever's merely on screen -- confirmed live
-            // (order DEX426547905): a background/self-heal-triggered dial
-            // can fire while an unrelated app's window is still active
-            // (nothing the user is doing "wrong" -- there's an inherent
-            // race between dial() and the real dialer UI taking over), and
-            // locking onto that app's content produced a Step 1 "carrier
-            // response" that was actually just an app label. Only content
-            // that already looks like a genuine USSD dialog establishes the
-            // lock; anything else is skipped so a later scan, once the real
-            // dialer appears, gets to establish it correctly instead.
-            if (!looksLikeUssdDialog) return false
-            lockedPackageName = packageName
-            return true
-        }
-        return packageName != null && packageName == locked
+        if (packageName == null) return false
+        if (lockedPackageNames.contains(packageName)) return true
+        // Don't lock onto whatever's merely on screen -- confirmed live
+        // (order DEX426547905): a background/self-heal-triggered dial
+        // can fire while an unrelated app's window is still active
+        // (nothing the user is doing "wrong" -- there's an inherent
+        // race between dial() and the real dialer UI taking over), and
+        // locking onto that app's content produced a Step 1 "carrier
+        // response" that was actually just an app label. Only content
+        // that already looks like a genuine USSD dialog joins the trusted
+        // set; anything else is skipped so a later scan, once the real
+        // dialer appears, gets to establish it correctly instead.
+        if (!looksLikeUssdDialog) return false
+        lockedPackageNames = lockedPackageNames + packageName
+        return true
     }
 
     /** True the first time this attempt fails to find its locked window
@@ -234,10 +241,11 @@ object ExchangeUssdBridge {
         return true
     }
 
-    /** The package this attempt has locked onto, once established --
-     * lets the service actively search for that specific window across
-     * every currently visible window, not only the active one. */
-    internal fun lockedWindowPackageOrNull(): String? = lockedPackageName
+    /** The package(s) this attempt has locked onto so far, once at least
+     * one is established -- lets the service actively search for any of
+     * those specific windows across every currently visible window, not
+     * only the active one. */
+    internal fun lockedWindowPackages(): Set<String> = lockedPackageNames
 
     /** True the first time a given off-target package is seen this
      * attempt, so a window mismatch logs once instead of on every 500ms

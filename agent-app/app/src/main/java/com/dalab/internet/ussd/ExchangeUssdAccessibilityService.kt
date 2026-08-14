@@ -93,7 +93,7 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
                 // inject the PIN into it. Leave any pending PIN untouched;
                 // the next poll retries once the real dialog is in front.
                 if (ExchangeUssdBridge.shouldLogWindowMismatch(windowPackage)) {
-                    val reason = if (ExchangeUssdBridge.lockedWindowPackageOrNull() == null) {
+                    val reason = if (ExchangeUssdBridge.lockedWindowPackages().isEmpty()) {
                         "doesn't look like the carrier dialog yet (no input field, button, or loading text)"
                     } else {
                         "doesn't match the carrier dialog's window for this attempt"
@@ -212,7 +212,8 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
      * package locked in for this attempt, nothing else is ever considered.
      * Returns null once the locked window has genuinely closed. */
     private fun findRelevantRoot(): AccessibilityNodeInfo? {
-        val locked = ExchangeUssdBridge.lockedWindowPackageOrNull() ?: return rootInActiveWindow
+        val locked = ExchangeUssdBridge.lockedWindowPackages()
+        if (locked.isEmpty()) return rootInActiveWindow
         var found: AccessibilityNodeInfo? = null
         // Only collected for the miss-diagnostic below -- package+type of
         // every window seen this scan, so a search miss is self-explanatory
@@ -222,7 +223,7 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
             val windowRoot = window.root
             val windowPackage = windowRoot?.packageName?.toString()
             seen.add("${windowPackage ?: "?"}(type=${window.type})")
-            if (found == null && windowPackage == locked) {
+            if (found == null && windowPackage != null && locked.contains(windowPackage)) {
                 found = windowRoot
             } else {
                 @Suppress("DEPRECATION")
@@ -242,7 +243,7 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
             // for the rest of this step's existing timeout.
             DiagnosticsLog.record(
                 "exchange_window_search_miss",
-                "Locked window \"$locked\" not found among ${seen.size} visible window(s): ${seen.joinToString()}." +
+                "Locked window(s) ${locked.joinToString(prefix = "\"", postfix = "\"")} not found among ${seen.size} visible window(s): ${seen.joinToString()}." +
                     screenStateDiagnostics(),
                 isError = false,
             )
