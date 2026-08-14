@@ -208,20 +208,33 @@ interface VoucherSentParser {
 
 /**
  * Hormuud's E-Voucher (top-up sent) confirmation SMS.
- * Example: "[-E-Voucher-] You have transferred $0.1 to 252619991299. Your balance is $0.27."
+ * English example: "[-E-Voucher-] You have transferred $0.1 to 252619991299. Your balance is $0.27."
+ * Somali example: "[-E-Voucher-] Waxaad $0.1 ugu shubtay 252610346060, Haraagaagu waa
+ *                  $3.92. La soo deg App-ka WAAFI http://onelink.to/waafi"
  * Sender: "740"
+ *
+ * Confirmed live: the Somali-wording variant went completely unrecognized
+ * (sms_receiver_unrecognized) — same sender, same underlying confirmation,
+ * just "waxaad ... ugu shubtay" ("you topped up ... to") instead of
+ * "transferred ... to". Mirrors HormuudEvcPlusParser's own English/Somali
+ * split for the incoming-payment side of this exact same telecom.
  */
 object HormuudEVoucherParser : VoucherSentParser {
     override val senders = listOf("740")
 
-    private val pattern = Regex(
+    private val englishPattern = Regex(
         """transferred\s+\$?\s*$AMOUNT_PATTERN\s+to\s+(\d{6,15})""",
+        RegexOption.IGNORE_CASE
+    )
+
+    private val somaliPattern = Regex(
+        """waxaad\s+\$?\s*$AMOUNT_PATTERN\s*ugu\s+shubtay\s+(\d{6,15})""",
         RegexOption.IGNORE_CASE
     )
 
     override fun tryParse(sender: String, body: String): VoucherSentEntry? {
         if (senders.none { it.equals(sender.trim(), ignoreCase = true) }) return null
-        val match = pattern.find(body) ?: return null
+        val match = englishPattern.find(body) ?: somaliPattern.find(body) ?: return null
         val (amount, phone) = match.destructured
         val parsedAmount = parseAmount(amount) ?: return null
         return VoucherSentEntry(receiverPhone = phone, amount = parsedAmount, provider = "Hormuud")
