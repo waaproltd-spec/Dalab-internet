@@ -2,7 +2,7 @@ import { Router } from "express";
 import { query, queryOne } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
-import { answerCustomerQuestion } from "../support/supportAi.js";
+import { answerCustomerQuestion, loadLatestActivitySummary } from "../support/supportAi.js";
 import { subscribe, broadcast } from "../realtime/orderEvents.js";
 
 export const supportRouter = Router();
@@ -30,6 +30,7 @@ interface TicketRow {
   created_at: string;
   accepted_at: string | null;
   resolved_at: string | null;
+  customer_feedback: boolean | null;
 }
 
 // Position/ETA are computed live from current queue state on every request
@@ -77,7 +78,7 @@ supportRouter.post("/customer/support/ask", requireAuth("customer"), async (req,
   if (!message) return sendJson(res, 400, { error: "message is required" });
   const result = await answerCustomerQuestion(req.auth!.sub, message);
   if (!result) return sendJson(res, 200, { matched: false });
-  sendJson(res, 200, { matched: true, answer: result.answer, intent: result.intent });
+  sendJson(res, 200, { matched: true, answer: result.answer, intent: result.intent, needsEscalation: result.needsEscalation });
 });
 
 // Escalates to a human queue. `history` carries whatever the customer/AI
@@ -113,6 +114,14 @@ supportRouter.post("/customer/support/tickets", requireAuth("customer"), async (
     ticket!.id,
     queue === "admin" ? "Codsigan waxaa loo gudbiyay Admin." : "Codsigan waxaa loo gudbiyay Agent.",
   ]);
+  // Real order/payment snapshot, taken at the moment of escalation, so
+  // whichever Agent/Admin accepts this ticket sees it in the same
+  // conversation thread without the customer repeating themselves. Never
+  // invented -- omitted entirely when the customer has no order history.
+  const activitySummary = await loadLatestActivitySummary(req.auth!.sub);
+  if (activitySummary) {
+    await query(`INSERT INTO support_messages (ticket_id, sender_type, body) VALUES ($1,'system',$2)`, [ticket!.id, activitySummary]);
+  }
   broadcast({ type: "support_ticket.updated", ticketId: ticket!.id, queue });
   sendJson(res, 201, await ticketResponse(ticket!));
 });
@@ -148,6 +157,27 @@ supportRouter.post("/customer/support/tickets/:id/messages", requireAuth("custom
   await query(`UPDATE support_tickets SET updated_at=now() WHERE id=$1`, [ticket.id]);
   broadcast({ type: "support_ticket.updated", ticketId: ticket.id, queue: ticket.queue });
   sendJson(res, 201, await ticketResponse(ticket));
+});
+
+// "Did this help?" -- settable once, only after resolution, only by the
+// ticket's own customer. Lets the team measure real AI/Agent effectiveness
+// instead of guessing; not shown again once already answered (the CAS'd
+// WHERE clause makes a second call a no-op rather than overwriting it).
+supportRouter.post("/customer/support/tickets/:id/feedback", requireAuth("customer"), async (req, res) => {
+  const helpful = req.body?.helpful;
+  if (typeof helpful !== "boolean") return sendJson(res, 400, { error: "helpful must be a boolean" });
+  const rows = await query<TicketRow>(
+    `UPDATE support_tickets SET customer_feedback=$1
+     WHERE id=$2 AND customer_id=$3 AND status='resolved' AND customer_feedback IS NULL
+     RETURNING *`,
+    [helpful, req.params.id, req.auth!.sub]
+  );
+  if (rows.length === 0) {
+    const existing = await queryOne<TicketRow>(`SELECT * FROM support_tickets WHERE id=$1 AND customer_id=$2`, [req.params.id, req.auth!.sub]);
+    if (!existing) return sendJson(res, 404, { error: "Ticket not found" });
+    return sendJson(res, 200, await ticketResponse(existing));
+  }
+  sendJson(res, 200, await ticketResponse(rows[0]));
 });
 
 // Real-time queue-position/chat updates for the Customer App -- reuses the
