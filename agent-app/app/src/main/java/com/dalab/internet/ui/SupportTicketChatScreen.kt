@@ -41,14 +41,17 @@ fun SupportTicketChatScreen(initialTicket: SupportTicket, onBack: () -> Unit) {
     fun refresh() {
         scope.launch {
             try {
-                val fresh = ApiClient.service.getSupportTickets().body().orEmpty().find { it.id == ticket.id }
-                if (fresh != null) ticket = fresh
+                ApiClient.service.getSupportTicket(ticket.id).body()?.let { ticket = it }
             } catch (_: Exception) {
                 // Keep showing the last known state.
             }
         }
     }
 
+    // initialTicket comes from the queue list, which only carries a
+    // lastMessage preview (not the full conversation) — load the real
+    // detail as soon as the screen opens, not just on the next event.
+    LaunchedEffect(Unit) { refresh() }
     LaunchedEffect(Unit) { AgentEventBus.orderEvents.collect { refresh() } }
     LaunchedEffect(ticket.messages.size) {
         if (ticket.messages.isNotEmpty()) listState.animateScrollToItem(ticket.messages.size - 1)

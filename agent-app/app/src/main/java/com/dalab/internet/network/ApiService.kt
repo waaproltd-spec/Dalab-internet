@@ -240,6 +240,12 @@ interface ApiService {
     @GET("agent/support/tickets")
     suspend fun getSupportTickets(): Response<List<SupportTicket>>
 
+    // Full ticket detail, messages included — the list above only carries a
+    // lastMessage preview for the queue cards, so the chat screen needs this
+    // to actually see the conversation (see SupportTicketChatScreen.refresh).
+    @GET("agent/support/tickets/{id}")
+    suspend fun getSupportTicket(@Path("id") id: String): Response<SupportTicket>
+
     @POST("agent/support/tickets/{id}/accept")
     suspend fun acceptSupportTicket(@Path("id") id: String): Response<SupportTicket>
 
