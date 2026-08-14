@@ -469,8 +469,8 @@ async function createExchangeOrder(params: {
   broadcast({ type: "exchange_order.updated", exchangeOrderId: id });
   await notifyCustomer(
     customerId,
-    "Exchange request received",
-    `Your request to exchange ${params.amountSent} is being reviewed. We'll notify you once your payment is verified.`
+    "Codsigaaga eBadalka waa la helay",
+    `Codsigaaga inaad badasho ${params.amountSent} ayaa hadda la eegayaa. Waan kuu soo sheegi doonaa marka lacagtaada la xaqiijiyo.`
   );
   return { order };
 }
@@ -610,8 +610,8 @@ export async function autoAdvanceExchangeOrderToInProgress(
   broadcast({ type: "exchange_order.updated", exchangeOrderId: orderId });
   await notifyCustomer(
     result[0].customer_id,
-    "Payment verified",
-    `We've received your payment of ${result[0].amount_sent} — your exchange is now being processed.`
+    "Lacagta waa la xaqiijiyay",
+    `Waan helnay lacagtaada ${result[0].amount_sent} — eBadalkaaga hadda waa la shaqeynayaa.`
   );
   return { order: await queryOne(`${EXCHANGE_ORDER_LIST_SELECT} WHERE eo.id=$1`, [orderId]) };
 }
@@ -712,7 +712,7 @@ exchangeRouter.put("/agent/exchange/dial-attempts/:attemptId/step1", requireAuth
     );
     broadcast({ type: "exchange_order.updated", exchangeOrderId: result[0].exchange_order_id });
     if (failed.length > 0) {
-      await notifyCustomer(failed[0].customer_id, "Exchange failed", "We couldn't complete your exchange. Please contact support for assistance.");
+      await notifyCustomer(failed[0].customer_id, "eBadalku wuu fashilmay", "Ma awoodin inaan dhammeeyo eBadalkaaga. Fadlan la xiriir taageerada si aad caawimaad u hesho.");
     }
   }
   sendJson(res, 200, await queryOne(`SELECT * FROM exchange_dial_attempts WHERE id=$1`, [req.params.attemptId]));
@@ -767,8 +767,8 @@ exchangeRouter.put("/agent/exchange/dial-attempts/:attemptId/step2", requireAuth
             `INSERT INTO notifications (id, type, title, body, customer_id) VALUES ($1,'exchange_update',$2,$3,$4)`,
             [
               randomUUID(),
-              "Your money exchange is complete",
-              `Your exchange of ${eo.amount_sent} is complete — ${eo.receiver_phone} received ${eo.amount_received}.`,
+              "eBadalkaagu waa dhammaaday",
+              `eBadalkaaga ${eo.amount_sent} waa dhammaaday — ${eo.receiver_phone} waxay heshay ${eo.amount_received}.`,
               eo.customer_id,
             ]
           );
@@ -792,7 +792,7 @@ exchangeRouter.put("/agent/exchange/dial-attempts/:attemptId/step2", requireAuth
       [exchangeOrderId]
     );
     if (failed.length > 0) {
-      await notifyCustomer(failed[0].customer_id, "Exchange failed", "We couldn't complete your exchange. Please contact support for assistance.");
+      await notifyCustomer(failed[0].customer_id, "eBadalku wuu fashilmay", "Ma awoodin inaan dhammeeyo eBadalkaaga. Fadlan la xiriir taageerada si aad caawimaad u hesho.");
     }
   }
   broadcast({ type: "exchange_order.updated", exchangeOrderId });
@@ -862,8 +862,8 @@ async function completeExchangeOrderByPayoutConfirmation(
   if (eo.customer_id) {
     await notifyCustomer(
       eo.customer_id,
-      "Your money exchange is complete",
-      `Your exchange of ${eo.amount_sent} is complete — ${eo.receiver_phone} received ${eo.amount_received}.`
+      "eBadalkaagu waa dhammaaday",
+      `eBadalkaaga ${eo.amount_sent} waa dhammaaday — ${eo.receiver_phone} waxay heshay ${eo.amount_received}.`
     );
   }
   return { order: eo, success: true, alreadyCompleted: false };
