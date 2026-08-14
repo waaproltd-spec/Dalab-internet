@@ -226,6 +226,21 @@ supportRouter.get("/agent/support/tickets", requireAuth("agent"), async (req, re
   sendJson(res, 200, rows);
 });
 
+// One ticket's full detail, messages included -- the list endpoint above
+// deliberately only carries a lastMessage preview for the queue cards, so
+// the chat screen needs its own fetch (both on open and on every refresh)
+// to actually see the conversation.
+supportRouter.get("/agent/support/tickets/:id", requireAuth("agent"), async (req, res) => {
+  const ticket = await queryOne<TicketRow>(
+    `SELECT st.*, COALESCE(c.name, c.phone) AS customer_name
+     FROM support_tickets st JOIN customers c ON c.id = st.customer_id
+     WHERE st.id=$1 AND st.queue='agent'`,
+    [req.params.id]
+  );
+  if (!ticket) return sendJson(res, 404, { error: "Ticket not found" });
+  sendJson(res, 200, await ticketResponse(ticket));
+});
+
 supportRouter.post("/agent/support/tickets/:id/accept", requireAuth("agent"), async (req, res) => {
   const ticket = await acceptTicket(req.params.id, "agent", "assigned_agent_id", req.auth!.sub);
   if (!ticket) return sendJson(res, 409, { error: "This request was already accepted" });
@@ -261,6 +276,17 @@ supportRouter.get("/admin/support/tickets", requireStaff(), async (req, res) => 
     [req.auth!.sub]
   );
   sendJson(res, 200, rows);
+});
+
+supportRouter.get("/admin/support/tickets/:id", requireStaff(), async (req, res) => {
+  const ticket = await queryOne<TicketRow>(
+    `SELECT st.*, COALESCE(c.name, c.phone) AS customer_name
+     FROM support_tickets st JOIN customers c ON c.id = st.customer_id
+     WHERE st.id=$1 AND st.queue='admin'`,
+    [req.params.id]
+  );
+  if (!ticket) return sendJson(res, 404, { error: "Ticket not found" });
+  sendJson(res, 200, await ticketResponse(ticket));
 });
 
 supportRouter.post("/admin/support/tickets/:id/accept", requireStaff(), async (req, res) => {
