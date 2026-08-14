@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.PointOfSale
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Sell
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -34,6 +35,7 @@ import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.auth.SessionManager
 import com.dalab.internet.data.ExchangeOrder
 import com.dalab.internet.data.Order
+import com.dalab.internet.data.SupportTicket
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.diagnostics.HeartbeatStats
 import com.dalab.internet.queue.PendingActionQueue
@@ -41,6 +43,7 @@ import com.dalab.internet.service.AgentBackgroundService
 import com.dalab.internet.sms.SmsInboxScanner
 import com.dalab.internet.sms.SmsListenerState
 import com.dalab.internet.ui.AutoLoginScreen
+import com.dalab.internet.ui.CustomerSupportScreen
 import com.dalab.internet.ui.CustomersScreen
 import com.dalab.internet.ui.DeviceSetupScreen
 import com.dalab.internet.ui.DiagnosticsScreen
@@ -56,6 +59,7 @@ import com.dalab.internet.ui.ReliabilityDashboardScreen
 import com.dalab.internet.ui.ReliabilitySetupScreen
 import com.dalab.internet.ui.ReportsScreen
 import com.dalab.internet.ui.SmsPermissionScreen
+import com.dalab.internet.ui.SupportTicketChatScreen
 import com.dalab.internet.ui.TransactionHistoryScreen
 import com.dalab.internet.ui.WalletDashboardScreen
 import kotlinx.coroutines.launch
@@ -120,7 +124,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP }
+private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, SUPPORT_LIST, SUPPORT_CHAT }
 private enum class HomeTab { ORDERS, SALES, CUSTOMERS, REPORTS, MORE }
 
 @Composable
@@ -164,6 +168,7 @@ private fun AgentApp() {
     }
     var selectedOrder by remember { mutableStateOf<Order?>(null) }
     var selectedExchangeOrder by remember { mutableStateOf<ExchangeOrder?>(null) }
+    var selectedSupportTicket by remember { mutableStateOf<SupportTicket?>(null) }
     val scope = rememberCoroutineScope()
 
     // Granting READ_SMS/RECEIVE_SMS previously only enabled the live receiver
@@ -226,6 +231,7 @@ private fun AgentApp() {
             onOpenPermissionsStatus = { screen = Screen.PERMISSIONS_STATUS },
             onOpenReliabilityDashboard = { screen = Screen.RELIABILITY_DASHBOARD },
             onOpenMoneyExchange = { screen = Screen.EXCHANGE_LIST },
+            onOpenCustomerSupport = { screen = Screen.SUPPORT_LIST },
         )
 
         Screen.ORDER_DETAIL -> selectedOrder?.let { order ->
@@ -262,6 +268,18 @@ private fun AgentApp() {
             )
         }
 
+        Screen.SUPPORT_LIST -> CustomerSupportScreen(
+            onOpenTicket = { ticket -> selectedSupportTicket = ticket; screen = Screen.SUPPORT_CHAT },
+            onBack = { screen = Screen.HOME },
+        )
+
+        Screen.SUPPORT_CHAT -> selectedSupportTicket?.let { ticket ->
+            SupportTicketChatScreen(
+                initialTicket = ticket,
+                onBack = { screen = Screen.SUPPORT_LIST },
+            )
+        }
+
         Screen.EXCHANGE_SETUP -> ExchangeAccessibilitySetupScreen(onBack = { screen = Screen.EXCHANGE_LIST })
     }
 }
@@ -285,6 +303,7 @@ private fun AgentHome(
     onOpenPermissionsStatus: () -> Unit,
     onOpenReliabilityDashboard: () -> Unit,
     onOpenMoneyExchange: () -> Unit,
+    onOpenCustomerSupport: () -> Unit,
 ) {
     var tab by remember { mutableStateOf(HomeTab.ORDERS) }
 
@@ -339,6 +358,7 @@ private fun AgentHome(
                     onOpenPermissionsStatus = onOpenPermissionsStatus,
                     onOpenReliabilityDashboard = onOpenReliabilityDashboard,
                     onOpenMoneyExchange = onOpenMoneyExchange,
+                    onOpenCustomerSupport = onOpenCustomerSupport,
                 )
             }
         }
@@ -355,8 +375,16 @@ private fun MoreScreen(
     onOpenPermissionsStatus: () -> Unit,
     onOpenReliabilityDashboard: () -> Unit,
     onOpenMoneyExchange: () -> Unit,
+    onOpenCustomerSupport: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
+        ListItem(
+            headlineContent = { Text("Customer Support") },
+            supportingContent = { Text("Customer chats waiting for an agent") },
+            leadingContent = { Icon(Icons.Filled.SupportAgent, contentDescription = null) },
+            modifier = Modifier.clickable(onClick = onOpenCustomerSupport),
+        )
+        Divider()
         ListItem(
             headlineContent = { Text("Money Exchange") },
             supportingContent = { Text("Verified exchanges waiting for payout") },
