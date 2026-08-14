@@ -191,7 +191,7 @@ const DalabAdminApi = {
   // customers.manage (delegable), unlike the PIN/password routes above.
   updateCustomerWallet: (id, body) => dalabAdminApiRequest(`/admin/customers/${id}/wallet-numbers`, { method: "PUT", body }),
   setCustomerExchangeLimits: (id, body) => dalabAdminApiRequest(`/admin/customers/${id}/exchange-limits`, { method: "PUT", body }),
-  // Promo Images — up to 5 promotional images shown as a carousel on the
+  // Promo Images — up to 10 promotional images shown as a carousel on the
   // Customer App Home screen. Images are uploaded as data URIs (base64)
   // rather than multipart form data, since dalabAdminApiRequest already
   // sends everything as JSON.
