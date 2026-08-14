@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { query, queryOne } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
-import { encrypt, decrypt, isValidPin } from "../auth/crypto.js";
+import { encrypt, decrypt, isValidPin, hashPassword, generateActivationCode } from "../auth/crypto.js";
 import { sendJson } from "../utils/camelCase.js";
 import { broadcast } from "../realtime/orderEvents.js";
 import { recordActivity } from "../utils/activityLog.js";
@@ -372,8 +372,18 @@ ussdRouter.post("/admin/orders/:id/generate-ussd", requireStaff(), async (req, r
 
 // ---------------- Multi-Device Configuration ----------------
 
+// Explicit column list rather than d.* -- activation_code_hash must never
+// reach the dashboard, even hashed (see POST .../activation-code below for
+// the one place the plaintext code is ever shown, and only once). Every
+// device row sent to a client goes through this.
+const DEVICE_ADMIN_COLUMNS = `
+  d.id, d.name, d.description, d.created_at, d.enabled, d.battery_percent, d.network_online,
+  d.sim1_present, d.sim2_present, d.last_heartbeat_at, d.payment_role,
+  (d.activation_code_hash IS NOT NULL) AS has_activation_code
+`;
+
 ussdRouter.get("/admin/agent-devices", requireStaff(), async (_req, res) => {
-  const devices = await query(`SELECT d.*, ${DEVICE_ONLINE_SQL} AS online FROM agent_devices d ORDER BY d.name`);
+  const devices = await query(`SELECT ${DEVICE_ADMIN_COLUMNS}, ${DEVICE_ONLINE_SQL} AS online FROM agent_devices d ORDER BY d.name`);
   const routing = await query(
     `SELECT sr.*, c.name AS company_name, c.color_hex AS company_color FROM sim_routing sr JOIN companies c ON c.id=sr.company_id`
   );
@@ -417,10 +427,18 @@ ussdRouter.post("/admin/agent-devices", requirePermission("devices.manage"), asy
     return sendJson(res, 409, { error: "A device with this name already exists" });
   }
   const id = randomUUID();
-  await query(`INSERT INTO agent_devices (id, name, description, payment_role) VALUES ($1,$2,$3,$4)`, [
-    id, name, description ?? "", paymentRole ?? "send_receive",
-  ]);
-  sendJson(res, 201, await queryOne(`SELECT * FROM agent_devices WHERE id=$1`, [id]));
+  // Every newly created device is secured with a real activation code from
+  // the start -- returned in plaintext exactly once, right here, for the
+  // admin to hand to the agent. Devices that already existed before this
+  // feature are untouched (activation_code_hash stays NULL for them) unless
+  // an admin later opts them in via POST .../activation-code.
+  const activationCode = generateActivationCode();
+  await query(
+    `INSERT INTO agent_devices (id, name, description, payment_role, activation_code_hash) VALUES ($1,$2,$3,$4,$5)`,
+    [id, name, description ?? "", paymentRole ?? "send_receive", await hashPassword(activationCode)]
+  );
+  const device = await queryOne(`SELECT ${DEVICE_ADMIN_COLUMNS} FROM agent_devices d WHERE d.id=$1`, [id]);
+  sendJson(res, 201, { ...device, activationCode });
 });
 
 ussdRouter.put("/admin/agent-devices/:id", requirePermission("devices.manage"), async (req, res) => {
@@ -439,7 +457,7 @@ ussdRouter.put("/admin/agent-devices/:id", requirePermission("devices.manage"), 
     paymentRole ?? existing.payment_role,
     req.params.id,
   ]);
-  sendJson(res, 200, await queryOne(`SELECT * FROM agent_devices WHERE id=$1`, [req.params.id]));
+  sendJson(res, 200, await queryOne(`SELECT ${DEVICE_ADMIN_COLUMNS} FROM agent_devices d WHERE d.id=$1`, [req.params.id]));
 });
 
 ussdRouter.delete("/admin/agent-devices/:id", requirePermission("devices.manage"), async (req, res) => {
@@ -448,14 +466,31 @@ ussdRouter.delete("/admin/agent-devices/:id", requirePermission("devices.manage"
   sendJson(res, 200, { deleted: true });
 });
 
-// A disabled device is rejected at dial-attempt time (see below) — this just
-// flips the flag an admin toggles from the dashboard.
+// Disabling a device now takes effect immediately everywhere an agent
+// authenticates or makes any authenticated request (see requireAuth in
+// middleware.ts), not just at USSD dial-attempt time -- this just flips the
+// flag an admin toggles from the dashboard.
 ussdRouter.put("/admin/agent-devices/:id/status", requirePermission("devices.manage"), async (req, res) => {
   const { enabled } = req.body;
   if (typeof enabled !== "boolean") return sendJson(res, 400, { error: "enabled must be a boolean" });
   const result = await query(`UPDATE agent_devices SET enabled=$1 WHERE id=$2 RETURNING id`, [enabled, req.params.id]);
   if (result.length === 0) return sendJson(res, 404, { error: "Device not found" });
-  sendJson(res, 200, await queryOne(`SELECT * FROM agent_devices WHERE id=$1`, [req.params.id]));
+  sendJson(res, 200, await queryOne(`SELECT ${DEVICE_ADMIN_COLUMNS} FROM agent_devices d WHERE d.id=$1`, [req.params.id]));
+});
+
+// Generates a brand-new activation code for a device -- returned in
+// plaintext exactly once, here, for the admin to hand to the agent. Also
+// how an admin opts an already-existing (pre-this-feature) device into
+// requiring a code, or rotates a code they suspect leaked; the previous
+// code (if any) stops working the instant this runs, since it's replaced,
+// not added to.
+ussdRouter.post("/admin/agent-devices/:id/activation-code", requirePermission("devices.manage"), async (req, res) => {
+  const existing = await queryOne<{ id: string }>(`SELECT id FROM agent_devices WHERE id=$1`, [req.params.id]);
+  if (!existing) return sendJson(res, 404, { error: "Device not found" });
+  const activationCode = generateActivationCode();
+  await query(`UPDATE agent_devices SET activation_code_hash=$1 WHERE id=$2`, [await hashPassword(activationCode), req.params.id]);
+  const device = await queryOne(`SELECT ${DEVICE_ADMIN_COLUMNS} FROM agent_devices d WHERE d.id=$1`, [req.params.id]);
+  sendJson(res, 200, { ...device, activationCode });
 });
 
 // ---------------- SIM Routing ----------------

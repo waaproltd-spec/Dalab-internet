@@ -34,6 +34,14 @@ object AgentEventBus {
     private val _sessionExpired = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val sessionExpired: SharedFlow<Unit> = _sessionExpired.asSharedFlow()
 
+    // Emitted the moment any API response comes back 403 DEVICE_DISABLED
+    // (see ApiClient's deviceRevokedInterceptor) -- an admin disabled this
+    // specific device mid-session. Distinct from sessionExpired (a normal
+    // refresh-token expiry) so AgentBackgroundService can post a message
+    // that's actually true about what happened, not a generic "signed out."
+    private val _deviceRevoked = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val deviceRevoked: SharedFlow<Unit> = _deviceRevoked.asSharedFlow()
+
     fun emitOrderEvent() {
         _orderEvents.tryEmit(Unit)
     }
@@ -44,5 +52,9 @@ object AgentEventBus {
 
     fun emitSessionExpired() {
         _sessionExpired.tryEmit(Unit)
+    }
+
+    fun emitDeviceRevoked() {
+        _deviceRevoked.tryEmit(Unit)
     }
 }

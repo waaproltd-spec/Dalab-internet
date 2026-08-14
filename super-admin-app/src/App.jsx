@@ -234,6 +234,7 @@ const DalabAdminApi = {
   updateAgentDevice: (id, body) => dalabAdminApiRequest(`/admin/agent-devices/${id}`, { method: "PUT", body }),
   setAgentDeviceStatus: (id, enabled) => dalabAdminApiRequest(`/admin/agent-devices/${id}/status`, { method: "PUT", body: { enabled } }),
   deleteAgentDevice: (id) => dalabAdminApiRequest(`/admin/agent-devices/${id}`, { method: "DELETE" }),
+  generateDeviceActivationCode: (id) => dalabAdminApiRequest(`/admin/agent-devices/${id}/activation-code`, { method: "POST" }),
   setCompanyAutoProcess: (companyId, enabled) => dalabAdminApiRequest(`/admin/companies/${companyId}/auto-process`, { method: "PUT", body: { enabled } }),
   getAgentsList: () => dalabAdminApiRequest("/admin/agents"),
   createAgent: (body) => dalabAdminApiRequest("/admin/agents", { method: "POST", body }),
@@ -3805,6 +3806,7 @@ function DevicesPanel({ canManage }) {
   const [error, setError] = useState("");
   const [editing, setEditing] = useState(null); // 'new' | device object | null
   const [form, setForm] = useState({});
+  const [revealedCode, setRevealedCode] = useState(null); // { deviceName, code } | null — shown exactly once, never fetchable again
 
   const fetchAll = async () => {
     if (!DALAB_API_ENABLED) return;
@@ -3852,6 +3854,21 @@ function DevicesPanel({ canManage }) {
     } catch (err) {
       setError(err.message || "Could not update device status.");
       fetchAll();
+    }
+  };
+
+  // Generates (or rotates) the secret an agent must enter once to activate
+  // this device — see auth.routes.ts's /agent/auth/device-login. Shown in
+  // plaintext exactly once, right here; the server only ever stores a
+  // bcrypt hash of it and cannot show it again after this.
+  const generateCode = async (d) => {
+    if (!window.confirm(`Generate a new activation code for "${d.name}"? Any code already given to an agent for this device stops working the moment this runs.`)) return;
+    try {
+      const result = await DalabAdminApi.generateDeviceActivationCode(d.id);
+      setRevealedCode({ deviceName: d.name, code: result.activationCode });
+      fetchAll();
+    } catch (err) {
+      alert(err.message || "Could not generate an activation code.");
     }
   };
 
@@ -3903,9 +3920,13 @@ function DevicesPanel({ canManage }) {
               <Badge tone={d.enabled ? "green" : "red"}>{d.enabled ? "Enabled" : "Disabled"}</Badge>
             </div>
 
-            <div style={{ marginTop: 10 }}>
+            <div style={{ marginTop: 10, display: "flex", gap: 6, flexWrap: "wrap" }}>
               <Badge tone={PAYMENT_ROLE_TONES[d.paymentRole] || "gray"}>
                 {PAYMENT_ROLE_LABELS[d.paymentRole] || "Send + Receive"}
+              </Badge>
+              <Badge tone={d.hasActivationCode ? "green" : "gray"}>
+                <KeyRound size={11} style={{ marginRight: 4, verticalAlign: -1 }} />
+                {d.hasActivationCode ? "Activation code set" : "No activation code"}
               </Badge>
             </div>
 
@@ -3936,8 +3957,11 @@ function DevicesPanel({ canManage }) {
             </div>
             {canManage && (
               <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-                <button onClick={() => toggleEnabled(d)} title={d.enabled ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                <button onClick={() => toggleEnabled(d)} title={d.enabled ? "Disable (revokes access immediately)" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer" }}>
                   <Power size={14} color={d.enabled ? GREEN : "#C81E2C"} />
+                </button>
+                <button onClick={() => generateCode(d)} title={d.hasActivationCode ? "Rotate activation code" : "Generate activation code"} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                  <KeyRound size={14} color={INDIGO} />
                 </button>
                 <button onClick={() => openEdit(d)} style={{ background: "none", border: "none", cursor: "pointer" }}>
                   <Pencil size={14} color={INDIGO} />
@@ -4016,6 +4040,33 @@ function DevicesPanel({ canManage }) {
             <Button onClick={save} icon={Check}>Save</Button>
             <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
           </div>
+        </Modal>
+      )}
+
+      {revealedCode && (
+        <Modal title={`Activation code for "${revealedCode.deviceName}"`} onClose={() => setRevealedCode(null)} width={420}>
+          <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>
+            Give this code to the agent who will use this device — they'll enter it once, in the Agent App, to activate it.
+            It will not be shown again after you close this window.
+          </div>
+          <div
+            style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
+              padding: "12px 16px", borderRadius: 10, background: INDIGO_SOFT, marginBottom: 14,
+            }}
+          >
+            <span style={{ fontFamily: "monospace", fontSize: 20, fontWeight: 700, letterSpacing: 3, color: INK }}>
+              {revealedCode.code}
+            </span>
+            <button
+              onClick={() => navigator.clipboard?.writeText(revealedCode.code)}
+              title="Copy"
+              style={{ background: "none", border: "none", cursor: "pointer" }}
+            >
+              <Copy size={16} color={INDIGO} />
+            </button>
+          </div>
+          <Button onClick={() => setRevealedCode(null)}>Done</Button>
         </Modal>
       )}
     </div>

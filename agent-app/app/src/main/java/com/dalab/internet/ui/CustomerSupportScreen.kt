@@ -1,9 +1,9 @@
 package com.dalab.internet.ui
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Refresh
@@ -29,7 +29,7 @@ import kotlinx.coroutines.launch
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CustomerSupportScreen(onOpenTicket: (SupportTicket) -> Unit, onBack: () -> Unit) {
+fun CustomerSupportScreen(onOpenTicket: (SupportTicket) -> Unit, onBack: (() -> Unit)? = null) {
     var tickets by remember { mutableStateOf<List<SupportTicket>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     val scope = rememberCoroutineScope()
@@ -54,7 +54,12 @@ fun CustomerSupportScreen(onOpenTicket: (SupportTicket) -> Unit, onBack: () -> U
             TopAppBar(
                 title = { Text("Customer Support") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back") }
+                    // Only shown when this screen is a drill-in (ticket chat's
+                    // "back") -- as the top-level Support tab it has no back
+                    // target, same as every other bottom-nav tab.
+                    if (onBack != null) {
+                        IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back") }
+                    }
                 },
                 actions = {
                     IconButton(onClick = ::refresh) { Icon(Icons.Filled.Refresh, contentDescription = "Refresh") }
@@ -72,10 +77,12 @@ fun CustomerSupportScreen(onOpenTicket: (SupportTicket) -> Unit, onBack: () -> U
                     style = MaterialTheme.typography.bodyMedium,
                 )
             } else {
-                LazyColumn {
+                LazyColumn(
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
                     items(tickets, key = { it.id }) { ticket ->
                         SupportTicketCard(ticket = ticket, onClick = { onOpenTicket(ticket) })
-                        Divider()
                     }
                 }
             }
@@ -85,24 +92,31 @@ fun CustomerSupportScreen(onOpenTicket: (SupportTicket) -> Unit, onBack: () -> U
 
 @Composable
 private fun SupportTicketCard(ticket: SupportTicket, onClick: () -> Unit) {
-    Column(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp)) {
-        Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-            Column {
-                Text(ticket.customerName ?: "Customer", fontWeight = FontWeight.Bold)
-                Text(ticket.subject, style = MaterialTheme.typography.bodySmall, maxLines = 2)
+    Card(
+        onClick = onClick,
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+            Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                Column {
+                    Text(ticket.customerName ?: "Customer", fontWeight = FontWeight.Bold)
+                    Text(ticket.subject, style = MaterialTheme.typography.bodySmall, maxLines = 2)
+                }
+                SupportStatusChip(ticket.status)
             }
-            SupportStatusChip(ticket.status)
+            Spacer(Modifier.height(8.dp))
+            if (ticket.lastMessage != null) {
+                Text(ticket.lastMessage, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                Spacer(Modifier.height(4.dp))
+            }
+            Text(
+                "Waiting: ${formatWaitingMinutes(ticket.waitingMinutes)}",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Medium,
+            )
         }
-        Spacer(Modifier.height(8.dp))
-        if (ticket.lastMessage != null) {
-            Text(ticket.lastMessage, style = MaterialTheme.typography.labelSmall, maxLines = 1)
-            Spacer(Modifier.height(4.dp))
-        }
-        Text(
-            "Waiting: ${formatWaitingMinutes(ticket.waitingMinutes)}",
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Medium,
-        )
     }
 }
 

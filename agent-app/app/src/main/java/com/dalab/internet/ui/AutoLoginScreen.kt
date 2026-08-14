@@ -11,6 +11,7 @@ import androidx.compose.ui.unit.dp
 import com.dalab.internet.auth.AuthRepository
 import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.auth.LoginResult
+import com.dalab.internet.ui.components.DalabLogo
 
 /**
  * There is no login screen — the app authenticates itself silently using
@@ -22,18 +23,29 @@ import com.dalab.internet.auth.LoginResult
 @Composable
 fun AutoLoginScreen(onSuccess: () -> Unit, onChooseDifferentDevice: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
+    var errorCode by remember { mutableStateOf<String?>(null) }
     var attempt by remember { mutableStateOf(0) }
+    // Only ever sent when an admin has actually set an activation code for
+    // this device (see agent_devices.activation_code_hash) -- most devices
+    // have none, and the very first attempt below always tries with no code
+    // at all, exactly like before this existed. This field only appears
+    // once the server itself says one is needed (INVALID_ACTIVATION_CODE).
+    var activationCode by remember { mutableStateOf("") }
 
     LaunchedEffect(attempt) {
         error = null
+        errorCode = null
         val deviceId = DeviceIdentity.deviceId()
         if (deviceId == null) {
             error = "No device selected."
             return@LaunchedEffect
         }
-        when (val result = AuthRepository.loginWithDevice(deviceId)) {
+        when (val result = AuthRepository.loginWithDevice(deviceId, activationCode.trim().ifBlank { null })) {
             is LoginResult.Success -> onSuccess()
-            is LoginResult.Failure -> error = result.message
+            is LoginResult.Failure -> {
+                error = result.message
+                errorCode = result.code
+            }
         }
     }
 
@@ -42,6 +54,8 @@ fun AutoLoginScreen(onSuccess: () -> Unit, onChooseDifferentDevice: () -> Unit) 
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
+        DalabLogo(size = 72.dp)
+        Spacer(Modifier.height(16.dp))
         Text("DALAB Agent", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(28.dp))
 
@@ -52,7 +66,18 @@ fun AutoLoginScreen(onSuccess: () -> Unit, onChooseDifferentDevice: () -> Unit) 
         } else {
             Text(error!!, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
             Spacer(Modifier.height(16.dp))
-            Button(onClick = { attempt++ }) { Text("Retry") }
+            if (errorCode == "INVALID_ACTIVATION_CODE") {
+                OutlinedTextField(
+                    value = activationCode,
+                    onValueChange = { activationCode = it },
+                    label = { Text("Activation code") },
+                    singleLine = true,
+                )
+                Spacer(Modifier.height(12.dp))
+                Button(onClick = { attempt++ }, enabled = activationCode.isNotBlank()) { Text("Activate") }
+            } else {
+                Button(onClick = { attempt++ }) { Text("Retry") }
+            }
             Spacer(Modifier.height(8.dp))
             TextButton(onClick = onChooseDifferentDevice) { Text("Choose a different device") }
         }

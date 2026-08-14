@@ -5,6 +5,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -20,7 +21,7 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CustomersScreen() {
+fun CustomersScreen(onBack: (() -> Unit)? = null) {
     var customers by remember { mutableStateOf<List<CustomerSummary>>(emptyList()) }
     var query by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(true) }
@@ -45,7 +46,16 @@ fun CustomersScreen() {
     LaunchedEffect(Unit) { refresh() }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("Customers") }) },
+        topBar = {
+            TopAppBar(
+                title = { Text("Customers") },
+                navigationIcon = {
+                    if (onBack != null) {
+                        IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back") }
+                    }
+                },
+            )
+        },
         floatingActionButton = {
             FloatingActionButton(onClick = { showAddDialog = true }) {
                 Icon(Icons.Filled.Add, contentDescription = "Add customer")

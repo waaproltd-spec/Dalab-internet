@@ -33,13 +33,44 @@ object ApiClient {
         chain.proceed(request)
     }
 
+    // An admin disabling this device (see requireAuth in the backend's
+    // middleware.ts) shows up as a plain 403 on whichever request happened
+    // to be in flight -- OkHttp's Authenticator only ever fires for 401, so
+    // this has to be a response Interceptor instead, checked on every call
+    // regardless of which endpoint it was. peekBody reads without consuming
+    // the stream the real caller still needs. Session is cleared immediately
+    // so every subsequent call fails fast instead of one-by-one discovering
+    // the device is disabled; the next app open routes back through
+    // AutoLoginScreen, which surfaces the real reason.
+    private val deviceRevokedInterceptor = Interceptor { chain ->
+        val response = chain.proceed(chain.request())
+        if (response.code == 403) {
+            val snippet = try {
+                response.peekBody(512).string()
+            } catch (_: Exception) {
+                ""
+            }
+            if (snippet.contains("DEVICE_DISABLED")) {
+                SessionManager.clear()
+                AgentEventBus.emitDeviceRevoked()
+            }
+        }
+        response
+    }
+
     // A separate, plain client with no auth header and no authenticator —
     // used only to call /auth/refresh, so refreshing a token can never
     // recursively trigger another refresh attempt.
     private val plainRetrofit: Retrofit by lazy {
         Retrofit.Builder()
             .baseUrl(BASE_URL)
-            .client(OkHttpClient.Builder().connectTimeout(45, TimeUnit.SECONDS).readTimeout(45, TimeUnit.SECONDS).build())
+            .client(
+                OkHttpClient.Builder()
+                    .addInterceptor(deviceRevokedInterceptor)
+                    .connectTimeout(45, TimeUnit.SECONDS)
+                    .readTimeout(45, TimeUnit.SECONDS)
+                    .build()
+            )
             .addConverterFactory(GsonConverterFactory.create())
             .build()
     }
@@ -126,6 +157,7 @@ object ApiClient {
     // though the server was simply waking up, not actually unreachable.
     private val okHttpClient = OkHttpClient.Builder()
         .addInterceptor(authInterceptor)
+        .addInterceptor(deviceRevokedInterceptor)
         .authenticator(refreshAuthenticator)
         .connectTimeout(45, TimeUnit.SECONDS)
         .readTimeout(45, TimeUnit.SECONDS)

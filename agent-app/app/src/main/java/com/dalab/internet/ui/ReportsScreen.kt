@@ -3,6 +3,8 @@ package com.dalab.internet.ui
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -18,7 +20,7 @@ private val RANGES = listOf("daily" to "Today", "weekly" to "Week", "monthly" to
 /** The agent's own completed-sales summary — GET /agent/reports. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ReportsScreen() {
+fun ReportsScreen(onBack: (() -> Unit)? = null) {
     var range by remember { mutableStateOf("weekly") }
     var report by remember { mutableStateOf<AgentReport?>(null) }
     var loading by remember { mutableStateOf(true) }
@@ -40,7 +42,18 @@ fun ReportsScreen() {
 
     LaunchedEffect(range) { load() }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("My Reports") }) }) { padding ->
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("My Reports") },
+                navigationIcon = {
+                    if (onBack != null) {
+                        IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back") }
+                    }
+                },
+            )
+        }
+    ) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
             Row(
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),

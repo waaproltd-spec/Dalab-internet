@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -37,7 +38,7 @@ import java.util.UUID
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun NewSaleScreen() {
+fun NewSaleScreen(onBack: (() -> Unit)? = null) {
     var companies by remember { mutableStateOf<List<Company>>(emptyList()) }
     var selectedCompany by remember { mutableStateOf<Company?>(null) }
     var packages by remember { mutableStateOf<List<PackageItem>>(emptyList()) }
@@ -90,7 +91,18 @@ fun NewSaleScreen() {
     val selectedPackages = packages.filter { selectedPackageIds.contains(it.id) }
     val totalAmount = selectedPackages.sumOf { it.price }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("New Sale") }) }) { padding ->
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("New Sale") },
+                navigationIcon = {
+                    if (onBack != null) {
+                        IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back") }
+                    }
+                },
+            )
+        }
+    ) { padding ->
         val orders = successOrders
         if (orders != null) {
             SaleConfirmation(orders = orders, queuedPackages = queuedPackages, onNewSale = { reset() })

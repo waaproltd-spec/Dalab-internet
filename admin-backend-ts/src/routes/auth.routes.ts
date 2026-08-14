@@ -5,6 +5,7 @@ import {
   hashPassword, verifyPassword, signAccessToken, signRefreshToken, verifyToken,
   isValidEmail, isStrongPassword, REFRESH_TTL_MS,
 } from "../auth/crypto.js";
+import { agentDeviceIsActive } from "../auth/middleware.js";
 import { requireAuth } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
 import { Role } from "../types/index.js";
@@ -321,7 +322,27 @@ authRouter.post("/auth/logout", async (req, res) => {
 // GET /agent/devices), so this needs nothing else from the person using it.
 authRouter.post("/agent/auth/device-login", rateLimit("agent-device-login", 30, 15 * 60 * 1000), async (req, res) => {
   const deviceId = String(req.body.deviceId ?? "").trim();
+  const activationCode = String(req.body.activationCode ?? "").trim();
   if (!deviceId) return sendJson(res, 400, { error: "deviceId is required" });
+
+  const device = await queryOne<{ id: string; enabled: boolean; activation_code_hash: string | null }>(
+    `SELECT id, enabled, activation_code_hash FROM agent_devices WHERE id=$1`,
+    [deviceId]
+  );
+  if (!device) return sendJson(res, 404, { error: "Unknown device." });
+  if (!device.enabled) {
+    return sendJson(res, 403, { error: "This device has been disabled by an administrator.", code: "DEVICE_DISABLED" });
+  }
+  // A device with no activation code configured keeps working exactly as
+  // before this feature existed — the code is an opt-in, admin-issued extra
+  // layer (see POST /admin/agent-devices/:id/activation-code), not a
+  // retroactive requirement on every already-deployed device.
+  if (device.activation_code_hash) {
+    if (!activationCode || !(await verifyPassword(activationCode, device.activation_code_hash))) {
+      return sendJson(res, 401, { error: "Incorrect activation code.", code: "INVALID_ACTIVATION_CODE" });
+    }
+  }
+
   const agent = await queryOne(
     `SELECT * FROM agents WHERE device_id=$1 AND status='active' ORDER BY created_at ASC LIMIT 1`,
     [deviceId]
@@ -420,6 +441,14 @@ authRouter.post("/auth/refresh", async (req, res) => {
     [tokenHash]
   );
   if (!row) return sendJson(res, 401, { error: "Refresh token revoked or expired" });
+
+  // Same live device check as requireAuth (see middleware.ts) — a device
+  // disabled while the agent's access token was still valid must not be
+  // able to silently mint a fresh one via refresh either.
+  if (payload.role === "agent" && !(await agentDeviceIsActive(payload.sub))) {
+    await query(`UPDATE refresh_tokens SET revoked=true WHERE id=$1`, [row.id]);
+    return sendJson(res, 403, { error: "Your device access has been disabled. Contact your administrator.", code: "DEVICE_DISABLED" });
+  }
 
   await query(`UPDATE refresh_tokens SET revoked=true WHERE id=$1`, [row.id]);
   const tokens = await issueTokens(payload.sub, payload.role);
