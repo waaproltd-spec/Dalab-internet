@@ -3,7 +3,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { query, queryOne } from "../db/pool.js";
 import {
   hashPassword, verifyPassword, signAccessToken, signRefreshToken, verifyToken,
-  isValidEmail, isStrongPassword, REFRESH_TTL_MS,
+  isValidEmail, isStrongPassword, isValidPin, REFRESH_TTL_MS,
 } from "../auth/crypto.js";
 import { requireAuth } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
@@ -40,13 +40,21 @@ authRouter.post("/auth/register", rateLimit("customer-register", 10, 15 * 60 * 1
   const password = String(req.body.password ?? "");
   const name = req.body.name ? String(req.body.name).trim() : null;
   const email = req.body.email ? String(req.body.email).trim().toLowerCase() : null;
+  // Optional: the Customer App's Create Account screen always sends one
+  // (for later Forgot Password recovery — see /auth/customer/forgot-password
+  // below), but the legacy "set a password for my old OTP account" screen
+  // reuses this same endpoint without a pin, and must keep working exactly
+  // as before.
+  const pin = req.body.pin != null ? String(req.body.pin) : null;
   if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid phone number" });
   if (!isStrongPassword(password)) {
     return sendJson(res, 400, { error: "Password must be at least 8 characters and include a letter, a number, and a symbol" });
   }
   if (email && !isValidEmail(email)) return sendJson(res, 400, { error: "Provide a valid email" });
+  if (pin != null && !isValidPin(pin)) return sendJson(res, 400, { error: "PIN must be 4-8 digits" });
 
   const passwordHash = await hashPassword(password);
+  const pinHash = pin != null ? await hashPassword(pin) : null;
   let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
 
   if (customer) {
@@ -63,9 +71,11 @@ authRouter.post("/auth/register", rateLimit("customer-register", 10, 15 * 60 * 1
       const emailTaken = await queryOne(`SELECT id FROM customers WHERE email=$1 AND id<>$2`, [email, customer.id]);
       if (emailTaken) return sendJson(res, 409, { error: "An account with this email already exists." });
     }
+    // COALESCE on pin_hash: a request with no pin (the legacy flow) must
+    // never wipe out a PIN a Super Admin already set on this row.
     await query(
-      `UPDATE customers SET password_hash=$1, name=COALESCE($2, name), email=COALESCE($3, email) WHERE id=$4`,
-      [passwordHash, name, email, customer.id]
+      `UPDATE customers SET password_hash=$1, name=COALESCE($2, name), email=COALESCE($3, email), pin_hash=COALESCE($4, pin_hash) WHERE id=$5`,
+      [passwordHash, name, email, pinHash, customer.id]
     );
     customer = await queryOne(`SELECT * FROM customers WHERE id=$1`, [customer.id]);
   } else {
@@ -83,8 +93,8 @@ authRouter.post("/auth/register", rateLimit("customer-register", 10, 15 * 60 * 1
       if (referrer) referredBy = referrer.id;
     }
     customer = await queryOne(
-      `INSERT INTO customers (id, phone, name, email, password_hash, referred_by_customer_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [randomUUID(), phone, name, email, passwordHash, referredBy]
+      `INSERT INTO customers (id, phone, name, email, password_hash, pin_hash, referred_by_customer_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [randomUUID(), phone, name, email, passwordHash, pinHash, referredBy]
     );
   }
 
@@ -139,6 +149,62 @@ authRouter.post("/auth/login", rateLimit("customer-login", 10, 15 * 60 * 1000), 
     },
     pinSet: Boolean(customer.pin_hash),
   });
+});
+
+// ---------------- Customer: forgot password via PIN (no OTP, no email) ----------------
+// Two-step so the Customer App can gate showing the new-password screen on
+// a correct PIN, without trusting that check alone for the actual reset:
+// verify-pin only confirms the PIN and changes nothing; reset re-verifies
+// the same phone+pin from scratch before touching password_hash. Uses the
+// same pin_hash column as the Super Admin's PIN management
+// (customers.routes.ts) and the legacy PIN-login flow below — setting a
+// PIN happens only via POST /auth/register above or a Super Admin reset,
+// never self-service outside of account creation, matching
+// 015_customer_pin.sql's "if a customer forgets their PIN, they contact
+// Support" model.
+authRouter.post("/auth/customer/forgot-password/verify-pin", rateLimit("customer-forgot-password-verify", 10, 15 * 60 * 1000), async (req, res) => {
+  const phone = normalizeCustomerPhone(req.body.phone);
+  const pin = String(req.body.pin ?? "");
+  if (!phone || !pin) return sendJson(res, 400, { error: "phone and pin are required" });
+
+  const customer = await queryOne<{ pin_hash: string | null; status: string }>(
+    `SELECT pin_hash, status FROM customers WHERE phone=$1`,
+    [phone]
+  );
+  // Same generic message whether the phone isn't registered, has no PIN
+  // set yet, or the PIN is simply wrong — never reveal which case it is.
+  const genericError = () => sendJson(res, 401, { error: "Invalid phone number or PIN" });
+  if (!customer || !customer.pin_hash) return genericError();
+  if (!(await verifyPassword(pin, customer.pin_hash))) return genericError();
+  if (customer.status === "blocked") return sendJson(res, 403, { error: "This account has been blocked" });
+
+  sendJson(res, 200, { valid: true });
+});
+
+authRouter.post("/auth/customer/forgot-password/reset", rateLimit("customer-forgot-password-reset", 5, 15 * 60 * 1000), async (req, res) => {
+  const phone = normalizeCustomerPhone(req.body.phone);
+  const pin = String(req.body.pin ?? "");
+  const newPassword = String(req.body.newPassword ?? "");
+  if (!phone || !pin || !newPassword) return sendJson(res, 400, { error: "phone, pin, and newPassword are required" });
+  if (!isStrongPassword(newPassword)) {
+    return sendJson(res, 400, { error: "Password must be at least 8 characters and include a letter, a number, and a symbol" });
+  }
+
+  const customer = await queryOne<{ id: string; pin_hash: string | null; status: string }>(
+    `SELECT id, pin_hash, status FROM customers WHERE phone=$1`,
+    [phone]
+  );
+  const genericError = () => sendJson(res, 401, { error: "Invalid phone number or PIN" });
+  if (!customer || !customer.pin_hash) return genericError();
+  if (!(await verifyPassword(pin, customer.pin_hash))) return genericError();
+  if (customer.status === "blocked") return sendJson(res, 403, { error: "This account has been blocked" });
+
+  await query(`UPDATE customers SET password_hash=$1 WHERE id=$2`, [await hashPassword(newPassword), customer.id]);
+  // Forces re-login everywhere, same as the admin password-reset flow —
+  // the old password may be compromised, which is presumably why the
+  // customer is here.
+  await query(`UPDATE refresh_tokens SET revoked=true WHERE subject_id=$1`, [customer.id]);
+  sendJson(res, 200, { message: "Password reset successfully. Please log in with your new password." });
 });
 
 // ---------------- Customer: passwordless name + phone identity ----------------
