@@ -9,6 +9,8 @@ import com.dalab.internet.data.ExchangeOrder
 import com.dalab.internet.data.Order
 import com.dalab.internet.data.PackageItem
 import com.dalab.internet.data.SmsLogEntry
+import com.dalab.internet.data.SupportMessageRequest
+import com.dalab.internet.data.SupportTicket
 import com.dalab.internet.data.Transaction
 import com.dalab.internet.data.AgentNotification
 import com.dalab.internet.data.AgentPaymentTransaction
@@ -229,4 +231,21 @@ interface ApiService {
         @Path("attemptId") attemptId: String,
         @Body body: ExchangeStepRequest,
     ): Response<ExchangeDialAttemptDto>
+
+    // ---------------- Customer Support ----------------
+    // AI tries first (customer-app only, no agent-side call for that) --
+    // this is the human half: the shared waiting queue plus whatever this
+    // agent has already accepted. See support.routes.ts.
+
+    @GET("agent/support/tickets")
+    suspend fun getSupportTickets(): Response<List<SupportTicket>>
+
+    @POST("agent/support/tickets/{id}/accept")
+    suspend fun acceptSupportTicket(@Path("id") id: String): Response<SupportTicket>
+
+    @POST("agent/support/tickets/{id}/messages")
+    suspend fun sendSupportMessage(@Path("id") id: String, @Body body: SupportMessageRequest): Response<SupportTicket>
+
+    @POST("agent/support/tickets/{id}/resolve")
+    suspend fun resolveSupportTicket(@Path("id") id: String): Response<SupportTicket>
 }

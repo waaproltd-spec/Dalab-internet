@@ -12,7 +12,8 @@ export type OrderEvent =
   | { type: "catalog.updated" }
   | { type: "sim_balance.updated"; deviceId: string; simSlot: number }
   | { type: "feedback.updated" }
-  | { type: "exchange_order.updated"; exchangeOrderId: string };
+  | { type: "exchange_order.updated"; exchangeOrderId: string }
+  | { type: "support_ticket.updated"; ticketId: string; queue: "agent" | "admin" };
 
 const subscribers = new Set<Response>();
 
