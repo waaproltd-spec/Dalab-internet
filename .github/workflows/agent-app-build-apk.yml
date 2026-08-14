@@ -21,6 +21,8 @@ defaults:
 jobs:
   build:
     runs-on: self-hosted
+    permissions:
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -73,3 +75,22 @@ jobs:
           name: dalab-agent-release-apk
           path: agent-app/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
+
+      - name: Publish build to GitHub Release
+        # Same reasoning as the Customer App's build workflow: a Release
+        # asset is directly downloadable (no Actions-UI login friction) and
+        # this repo is public, so no repo-auth is needed to fetch it either.
+        # Reuses one fixed tag so every run overwrites the previous asset
+        # instead of accumulating storage over time.
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: agent-app-latest-build
+          name: "Agent App build #${{ github.run_number }}"
+          body: |
+            Automated build from commit ${{ github.sha }} on `${{ github.ref_name }}`.
+            Not a versioned release - this tag's assets are overwritten by every run.
+          prerelease: true
+          make_latest: false
+          files: |
+            agent-app/app/build/outputs/apk/debug/app-debug.apk
+            agent-app/app/build/outputs/apk/release/app-release.apk
