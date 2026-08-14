@@ -55,27 +55,31 @@ fun TransactionHistoryScreen(onBack: (() -> Unit)? = null) {
             } else if (transactions.isEmpty()) {
                 Text("No completed transactions yet.", modifier = Modifier.align(Alignment.Center))
             } else {
-                LazyColumn(
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    items(transactions, key = { it.orderId }) { tx ->
-                        Card(
-                            shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(16.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                            ) {
-                                Column {
-                                    Text(tx.customerName ?: "Customer", fontWeight = FontWeight.Bold)
-                                    Text("${tx.companyName} · ${tx.orderId}", style = MaterialTheme.typography.bodySmall)
-                                }
-                                Column(horizontalAlignment = Alignment.End) {
-                                    Text("$${"%.2f".format(tx.amount)}", fontWeight = FontWeight.Bold)
-                                    Text(formatApiDateTime(tx.completedAt), style = MaterialTheme.typography.labelSmall)
+                Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth().weight(1f),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                    ) {
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            TransactionRow(
+                                customer = "Customer",
+                                detail = "Company · Order",
+                                amount = "Amount",
+                                completed = "Completed",
+                                header = true,
+                            )
+                            Divider()
+                            LazyColumn(modifier = Modifier.weight(1f)) {
+                                items(transactions, key = { it.orderId }) { tx ->
+                                    TransactionRow(
+                                        customer = tx.customerName ?: "Customer",
+                                        detail = "${tx.companyName} · ${tx.orderId}",
+                                        amount = "$${"%.2f".format(tx.amount)}",
+                                        completed = formatApiDateTime(tx.completedAt),
+                                    )
+                                    Divider()
                                 }
                             }
                         }
@@ -83,5 +87,48 @@ fun TransactionHistoryScreen(onBack: (() -> Unit)? = null) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun TransactionRow(
+    customer: String,
+    detail: String,
+    amount: String,
+    completed: String,
+    header: Boolean = false,
+) {
+    val weight = if (header) FontWeight.Bold else FontWeight.Normal
+    val style = if (header) MaterialTheme.typography.labelMedium else MaterialTheme.typography.bodyMedium
+    val color = if (header) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface
+
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1.3f)) {
+            Text(customer, style = style, fontWeight = weight, color = color, maxLines = 1)
+            if (!header) {
+                Text(detail, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+            } else {
+                Text(detail, style = MaterialTheme.typography.labelSmall, fontWeight = weight, color = color, maxLines = 1)
+            }
+        }
+        Text(
+            amount,
+            modifier = Modifier.weight(0.8f),
+            style = style,
+            fontWeight = FontWeight.Bold,
+            color = if (header) color else MaterialTheme.colorScheme.primary,
+            maxLines = 1,
+        )
+        Text(
+            completed,
+            modifier = Modifier.weight(1f),
+            style = if (header) style else MaterialTheme.typography.labelSmall,
+            fontWeight = weight,
+            color = color,
+            maxLines = 1,
+        )
     }
 }
