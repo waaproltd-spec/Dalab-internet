@@ -625,7 +625,7 @@ ordersRouter.post("/agent/orders/voucher-confirmation", requireAuth("agent"), as
            AND o.updated_at > now() - interval '1 hour'
            AND ($2::text IS NULL OR lower(co.name) = lower($2::text))
          ORDER BY o.created_at DESC
-         FOR UPDATE SKIP LOCKED`,
+         FOR UPDATE OF o SKIP LOCKED`,
         [amount, typeof provider === "string" ? provider : null]
       )
       .then((r) => r.rows)
