@@ -111,21 +111,26 @@ notificationsRouter.post("/admin/notifications/send", requireStaff(), async (req
     params
   );
 
-  const tokenRows = await query<{ token: string }>(
-    `SELECT DISTINCT token FROM customer_push_tokens WHERE customer_id = ANY($1::uuid[])`,
+  // Each customer got their own row above (ids[i] for customers[i]) — every
+  // push to that customer's device(s) must carry that same row id in `data`
+  // so a tap can mark exactly that row read and show its exact message,
+  // without a shared multicast payload (which can't vary per recipient).
+  const idByCustomer = new Map(customers.map((customerId, i) => [customerId, ids[i]]));
+  const tokenRows = await query<{ token: string; customer_id: string }>(
+    `SELECT DISTINCT token, customer_id FROM customer_push_tokens WHERE customer_id = ANY($1::uuid[])`,
     [customers]
   );
   const pushResult = await sendPushToTokens(
-    tokenRows.map((r) => r.token),
-    {
-      title,
-      body: body ?? "",
+    tokenRows.map((r) => ({
+      token: r.token,
       data: {
         type,
+        notificationId: idByCustomer.get(r.customer_id) ?? "",
         relatedOrderId: relatedOrderId ?? "",
         relatedExchangeOrderId: relatedExchangeOrderId ?? "",
       },
-    }
+    })),
+    { title, body: body ?? "" }
   );
 
   await recordActivity({

@@ -49,21 +49,25 @@ export interface PushResult {
 }
 
 /**
- * Sends the same title/body/data payload to every token in [tokens],
- * chunked to FCM's 500-tokens-per-call multicast limit, and deletes any
- * token FCM reports as no-longer-registered (app uninstalled, token
- * rotated and the old one never got cleaned up client-side) so the next
- * send to this customer doesn't keep wasting a call on a dead device.
- * `data` values must all be strings — FCM's data-payload requirement — and
- * are what the Flutter side reads to route a notification tap to the right
- * screen (see NotificationsScreen/main.dart's background-tap handler).
+ * Sends [notification] to every recipient in [recipients], chunked to FCM's
+ * 500-messages-per-call sendEach limit, and deletes any token FCM reports as
+ * no-longer-registered (app uninstalled, token rotated and the old one never
+ * got cleaned up client-side) so the next send to this customer doesn't keep
+ * wasting a call on a dead device.
+ *
+ * Each recipient carries its own `data` (all values must be strings — FCM's
+ * data-payload requirement) rather than one shared payload, specifically so
+ * `data.notificationId` can be that recipient's own row id from the
+ * per-customer fan-out insert (see notifications.routes.ts) — the Flutter
+ * side needs that exact id to mark the right row read and to show its full
+ * message on tap, not just route to the general notifications list.
  */
 export async function sendPushToTokens(
-  tokens: string[],
-  payload: { title: string; body: string; data: Record<string, string> }
+  recipients: { token: string; data: Record<string, string> }[],
+  notification: { title: string; body: string }
 ): Promise<PushResult> {
   const firebaseApp = getApp();
-  if (!firebaseApp || tokens.length === 0) {
+  if (!firebaseApp || recipients.length === 0) {
     return { attempted: 0, sent: 0, failed: 0 };
   }
   const messaging = getMessaging(firebaseApp);
@@ -72,26 +76,28 @@ export async function sendPushToTokens(
   let failed = 0;
   const deadTokens: string[] = [];
 
-  for (let i = 0; i < tokens.length; i += CHUNK) {
-    const chunk = tokens.slice(i, i + CHUNK);
+  for (let i = 0; i < recipients.length; i += CHUNK) {
+    const chunk = recipients.slice(i, i + CHUNK);
     try {
-      const result = await messaging.sendEachForMulticast({
-        tokens: chunk,
-        notification: { title: payload.title, body: payload.body },
-        data: payload.data,
-        android: { priority: "high", notification: { channelId: "dalab_notifications" } },
-        apns: { payload: { aps: { sound: "default" } } },
-      });
+      const result = await messaging.sendEach(
+        chunk.map((r) => ({
+          token: r.token,
+          notification: { title: notification.title, body: notification.body },
+          data: r.data,
+          android: { priority: "high" as const, notification: { channelId: "dalab_notifications" } },
+          apns: { payload: { aps: { sound: "default" } } },
+        }))
+      );
       sent += result.successCount;
       failed += result.failureCount;
       result.responses.forEach((r, idx) => {
         const code = r.error?.code;
         if (code === "messaging/registration-token-not-registered" || code === "messaging/invalid-registration-token") {
-          deadTokens.push(chunk[idx]);
+          deadTokens.push(chunk[idx].token);
         }
       });
     } catch (err) {
-      console.error("FCM sendEachForMulticast failed for a chunk:", (err as Error).message);
+      console.error("FCM sendEach failed for a chunk:", (err as Error).message);
       failed += chunk.length;
     }
   }
@@ -102,5 +108,5 @@ export async function sendPushToTokens(
     });
   }
 
-  return { attempted: tokens.length, sent, failed };
+  return { attempted: recipients.length, sent, failed };
 }
