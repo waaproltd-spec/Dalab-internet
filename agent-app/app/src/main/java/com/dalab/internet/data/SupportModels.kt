@@ -12,7 +12,14 @@ data class SupportTicket(
     val status: String, // waiting | in_progress | resolved
     val subject: String,
     val queueInfo: SupportQueueInfo? = null,
-    val messages: List<SupportMessage> = emptyList(),
+    // Nullable, not List<SupportMessage> = emptyList() — Gson builds this
+    // class via reflection and only ever calls the no-arg path for fields
+    // it can't find in the JSON, which sets them to null and skips the
+    // Kotlin default entirely. The queue-list endpoint never sends a
+    // "messages" key at all (only single-ticket responses do), so a
+    // non-nullable field here is silently null at runtime despite the
+    // type, and the first thing that calls .size on it crashes.
+    val messages: List<SupportMessage>? = null,
 )
 
 data class SupportQueueInfo(val position: Int, val etaMinutes: Int)
