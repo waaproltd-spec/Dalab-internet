@@ -8,6 +8,8 @@ import com.dalab.internet.customer.data.ExchangeCorridor
 import com.dalab.internet.customer.data.ExchangeOrder
 import com.dalab.internet.customer.data.ExchangeQuote
 import com.dalab.internet.customer.data.ExchangeWallet
+import com.dalab.internet.customer.data.FeedbackRequest
+import com.dalab.internet.customer.data.FeedbackResponse
 import com.dalab.internet.customer.data.NotificationItem
 import com.dalab.internet.customer.data.PackageItem
 import com.dalab.internet.customer.data.PaymentWallet
@@ -26,6 +28,10 @@ data class OtpVerifyResponse(val accessToken: String, val refreshToken: String, 
 data class RefreshRequest(val refreshToken: String)
 data class RefreshResponse(val accessToken: String, val refreshToken: String)
 data class UpdateProfileRequest(val name: String)
+// photoBase64 must be a full "data:<mime>;base64,<data>" string -- see
+// ProfileScreen's image-picker handling, which builds it from the picked
+// file's bytes exactly like the Super Admin dashboard's Promo Images upload.
+data class UpdateProfilePhotoRequest(val photoBase64: String)
 data class PinBody(val pin: String)
 data class PinStatusResponse(val isSet: Boolean)
 data class PinVerifyResponse(val valid: Boolean)
@@ -102,8 +108,20 @@ interface ApiService {
     @PUT("customer/profile")
     suspend fun updateProfile(@Body body: UpdateProfileRequest): Response<CustomerProfile>
 
+    // Same data-URI upload shape as the Super Admin dashboard's Promo Images
+    // upload (see admin-backend-ts/promoImages.routes.ts) -- one photo per
+    // customer rather than a gallery, see customers.routes.ts.
+    @PUT("customer/profile/photo")
+    suspend fun uploadProfilePhoto(@Body body: UpdateProfilePhotoRequest): Response<CustomerProfile>
+
+    @DELETE("customer/profile/photo")
+    suspend fun deleteProfilePhoto(): Response<CustomerProfile>
+
     @DELETE("customer/profile")
     suspend fun deleteAccount(): Response<Unit>
+
+    @POST("feedback")
+    suspend fun submitFeedback(@Body body: FeedbackRequest): Response<FeedbackResponse>
 
     // Optional, customer-facing login PIN — entirely separate from the
     // required phone+OTP flow above; a customer who never calls setPin stays

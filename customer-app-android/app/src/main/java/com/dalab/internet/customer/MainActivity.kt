@@ -39,6 +39,7 @@ import com.dalab.internet.customer.ui.ExchangeCorridorsScreen
 import com.dalab.internet.customer.ui.ExchangeNewOrderScreen
 import com.dalab.internet.customer.ui.ExchangePaymentScreen
 import com.dalab.internet.customer.ui.ExchangeStatusScreen
+import com.dalab.internet.customer.ui.FeedbackScreen
 import com.dalab.internet.customer.ui.HomeScreen
 import com.dalab.internet.customer.ui.NotificationsScreen
 import com.dalab.internet.customer.ui.OrderDetailScreen
@@ -244,6 +245,7 @@ private fun CustomerHome(
     var tab by remember { mutableStateOf(HomeTab.HOME) }
     var showNotifications by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var showFeedback by remember { mutableStateOf(false) }
 
     if (showSettings) {
         SettingsScreen(onBack = { showSettings = false })
@@ -251,6 +253,10 @@ private fun CustomerHome(
     }
     if (showNotifications) {
         NotificationsScreen(onBack = { showNotifications = false })
+        return
+    }
+    if (showFeedback) {
+        FeedbackScreen(onBack = { showFeedback = false })
         return
     }
 
@@ -293,7 +299,7 @@ private fun CustomerHome(
                         onSwitchService = onSwitchService,
                     )
                     HomeTab.ORDERS -> OrdersScreen(onOpenOrder = onOpenOrder)
-                    HomeTab.PROFILE -> ProfileScreen(onLogout = onLogout)
+                    HomeTab.PROFILE -> ProfileScreen(onLogout = onLogout, onOpenFeedback = { showFeedback = true })
                 }
             }
         }

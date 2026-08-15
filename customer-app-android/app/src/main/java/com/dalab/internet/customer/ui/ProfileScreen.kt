@@ -5,12 +5,16 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.net.Uri
+import android.util.Base64
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.slideInVertically
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -32,7 +36,9 @@ import androidx.compose.material.icons.filled.GetApp
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Feedback
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.CardGiftcard
@@ -42,9 +48,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -53,10 +60,12 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.dalab.internet.customer.auth.SessionManager
+import com.dalab.internet.customer.data.CustomerProfile
 import com.dalab.internet.customer.network.ApiClient
 import com.dalab.internet.customer.network.PinBody
 import com.dalab.internet.customer.network.ReferralInfo
 import com.dalab.internet.customer.network.SocialLinks
+import com.dalab.internet.customer.network.UpdateProfilePhotoRequest
 import com.dalab.internet.customer.network.UpdateProfileRequest
 import com.dalab.internet.customer.prefs.LocalizationManager
 import kotlinx.coroutines.launch
@@ -68,7 +77,7 @@ private val DalabGreen = Color(0xFF16A34A)
 private const val PACKAGE_NAME = "com.dalab.internet.customer"
 
 @Composable
-fun ProfileScreen(onLogout: () -> Unit) {
+fun ProfileScreen(onLogout: () -> Unit, onOpenFeedback: () -> Unit) {
     val context = LocalContext.current
     var customer by remember { mutableStateOf(SessionManager.currentCustomer()) }
     var showEditDialog by remember { mutableStateOf(false) }
@@ -83,11 +92,80 @@ fun ProfileScreen(onLogout: () -> Unit) {
     var referralInfo by remember { mutableStateOf<ReferralInfo?>(null) }
     var showReferralHistory by remember { mutableStateOf(false) }
     var socialLinks by remember { mutableStateOf(SocialLinks()) }
+    // Profile-photo upload — never routed through SessionManager (which
+    // persists only id/name/phone to small EncryptedSharedPreferences
+    // values); the photo itself lives only in this screen's own Compose
+    // state, re-fetched fresh via getProfile() every time the tab opens.
+    var photoUploading by remember { mutableStateOf(false) }
+    var photoError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val compact = LocalConfiguration.current.screenHeightDp < 700
 
+    val photoPickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        photoError = null
+        photoUploading = true
+        scope.launch {
+            try {
+                val mimeType = context.contentResolver.getType(uri) ?: "image/jpeg"
+                val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                when {
+                    bytes == null -> photoError = "Couldn't read that photo. Please try another."
+                    // Mirrors the 4MB cap PUT /customer/profile/photo enforces
+                    // server-side -- checked here too so a customer on a slow
+                    // connection finds out immediately instead of waiting on
+                    // a round trip just to get the same rejection back.
+                    bytes.size > 4 * 1024 * 1024 -> photoError = "Photo is too large (max 4MB)."
+                    else -> {
+                        val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                        val response = ApiClient.service.uploadProfilePhoto(
+                            UpdateProfilePhotoRequest("data:$mimeType;base64,$base64")
+                        )
+                        val updated = response.body()
+                        if (updated != null) {
+                            customer = updated
+                            SessionManager.updateProfile(updated)
+                        } else {
+                            photoError = "Couldn't update your photo. Please try again."
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                photoError = "Couldn't reach the server. Check your connection."
+            }
+            photoUploading = false
+        }
+    }
+
+    // Decoded once per distinct photoBase64 value, not on every recomposition.
+    val photoBitmap = remember(customer?.photoBase64) {
+        customer?.photoBase64?.let { dataUri ->
+            try {
+                val encoded = dataUri.substringAfter(",", "")
+                if (encoded.isEmpty()) null else {
+                    val bytes = Base64.decode(encoded, Base64.DEFAULT)
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+                }
+            } catch (_: Exception) {
+                null
+            }
+        }
+    }
+
     LaunchedEffect(Unit) {
         contentVisible = true
+        try {
+            // Refreshes name + photo from the server -- SessionManager's cached
+            // copy (used as this screen's initial state above) never holds a
+            // photo at all, so this is the only place photoBase64 is ever
+            // populated.
+            ApiClient.service.getProfile().body()?.let {
+                customer = it
+                SessionManager.updateProfile(it)
+            }
+        } catch (_: Exception) {
+            // Keep whatever was last known locally — not worth surfacing an error for.
+        }
         try {
             ApiClient.service.getPinStatus().body()?.let {
                 isPinSet = it.isSet
@@ -114,53 +192,15 @@ fun ProfileScreen(onLogout: () -> Unit) {
             .background(MaterialTheme.colorScheme.background)
             .verticalScroll(rememberScrollState()),
     ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(
-                        Brush.linearGradient(listOf(HeaderStart, HeaderEnd)),
-                        shape = RoundedCornerShape(bottomStart = 28.dp, bottomEnd = 28.dp),
-                    )
-                    .padding(vertical = if (compact) 20.dp else 28.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Box(
-                        modifier = Modifier
-                            .size(if (compact) 72.dp else 84.dp)
-                            .clip(CircleShape)
-                            .background(Color.White.copy(alpha = 0.18f))
-                            .border(2.dp, Color.White.copy(alpha = 0.6f), CircleShape),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            (customer?.name?.takeIf { it.isNotBlank() } ?: "?").take(1).uppercase(),
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 30.sp,
-                        )
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    Text(
-                        customer?.name?.takeIf { it.isNotBlank() } ?: "DALAB customer",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White,
-                    )
-                    Text(customer?.phone ?: "", style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.85f))
-                    Spacer(Modifier.height(14.dp))
-                    OutlinedButton(
-                        onClick = { showEditDialog = true },
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.6f)),
-                        shape = RoundedCornerShape(24.dp),
-                    ) {
-                        Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(LocalizationManager.tr("Edit Profile", "Wax ka beddel xisaabta"))
-                    }
-                }
-            }
+            ProfileAvatarCard(
+                customer = customer,
+                photoBitmap = photoBitmap,
+                photoUploading = photoUploading,
+                photoError = photoError,
+                compact = compact,
+                onPickPhoto = { photoPickerLauncher.launch("image/*") },
+                nameModifier = Modifier.clickable { showEditDialog = true },
+            )
 
             AnimatedVisibility(
                 visible = contentVisible,
@@ -202,6 +242,11 @@ fun ProfileScreen(onLogout: () -> Unit) {
                                     LocalizationManager.tr("Create Login PIN", "Samee PIN Gelitaan")
                                 },
                                 onClick = { showPinDialog = true },
+                            )
+                            ProfileMenuRow(
+                                icon = Icons.Filled.Feedback,
+                                label = LocalizationManager.tr("Feedback", "Fikrad"),
+                                onClick = onOpenFeedback,
                             )
                             ProfileMenuRow(
                                 icon = Icons.Filled.Star,
@@ -776,6 +821,117 @@ private fun DangerActionCard(icon: ImageVector, label: String, onClick: () -> Un
         Spacer(Modifier.width(16.dp))
         Text(label, modifier = Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = DangerRed)
         Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = DangerRed)
+    }
+}
+
+/**
+ * The avatar (photo or generic person icon, with the green photo-edit badge)
+ * + name + phone card shared by [ProfileScreen] and [FeedbackScreen] --
+ * exactly the same widget in both places (per the new design), including the
+ * photo-edit affordance, so a customer can change their photo from either
+ * screen. Each caller owns its own photo-fetch/upload state independently
+ * (this app has no shared view-model layer -- every screen manages its own
+ * ApiClient calls, see e.g. the getPinStatus/getReferralInfo pattern above)
+ * and just passes it in here for rendering.
+ */
+@Composable
+internal fun ProfileAvatarCard(
+    customer: CustomerProfile?,
+    photoBitmap: androidx.compose.ui.graphics.ImageBitmap?,
+    photoUploading: Boolean,
+    photoError: String?,
+    compact: Boolean,
+    onPickPhoto: () -> Unit,
+    nameModifier: Modifier = Modifier,
+) {
+    Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier.fillMaxWidth().shadow(2.dp, RoundedCornerShape(20.dp)),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = if (compact) 20.dp else 28.dp, horizontal = 16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Box {
+                    Box(
+                        modifier = Modifier
+                            .size(if (compact) 72.dp else 84.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFFDCEBFF)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        when {
+                            photoBitmap != null -> Image(
+                                bitmap = photoBitmap,
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxSize().clip(CircleShape),
+                                contentScale = ContentScale.Crop,
+                            )
+                            photoUploading -> CircularProgressIndicator(
+                                modifier = Modifier.size(28.dp),
+                                strokeWidth = 2.dp,
+                                color = HeaderStart,
+                            )
+                            else -> Icon(
+                                Icons.Filled.Person,
+                                contentDescription = null,
+                                tint = HeaderStart,
+                                modifier = Modifier.size(40.dp),
+                            )
+                        }
+                    }
+                    // Green edit badge -- the only entry point for changing the
+                    // photo. Tapping the name below (nameModifier, wired
+                    // differently per screen) is a separate affordance, so the
+                    // two distinct edits (photo vs. name) never collide.
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .size(28.dp)
+                            .clip(CircleShape)
+                            .background(DalabGreen)
+                            .border(3.dp, MaterialTheme.colorScheme.surface, CircleShape)
+                            .clickable(enabled = !photoUploading, onClick = onPickPhoto),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Filled.Edit,
+                            contentDescription = LocalizationManager.tr("Change photo", "Beddel sawirka"),
+                            tint = Color.White,
+                            modifier = Modifier.size(12.dp),
+                        )
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    customer?.name?.takeIf { it.isNotBlank() } ?: "DALAB customer",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = nameModifier,
+                )
+                if (!customer?.phone.isNullOrBlank()) {
+                    Text(
+                        customer?.phone.orEmpty(),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (photoError != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        photoError,
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 12.5.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    )
+                }
+            }
+        }
     }
 }
 

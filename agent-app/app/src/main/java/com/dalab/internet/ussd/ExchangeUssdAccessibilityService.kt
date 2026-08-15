@@ -197,9 +197,9 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
      * is seen -- see ExchangeUssdBridge.isWindowAllowed), uses whatever
      * window is currently active, exactly as before: right after dial()
      * places the call, that's reliably the phone/dialer UI grabbing focus.
-     * Once a window is locked, searches *every* currently visible window
-     * (not just the active one) for the one belonging to the locked
-     * package, so the carrier dialog keeps being read -- and PIN/Send
+     * Once at least one window is locked, first searches *every* currently
+     * visible window (not just the active one) for one already in the
+     * trusted set, so the carrier dialog keeps being read -- and PIN/Send
      * actions keep being dispatched to it -- even after the user navigates
      * to the Home screen or another app. Android can keep a system-style
      * USSD dialog visually on screen without it remaining the "active"
@@ -207,10 +207,34 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
      * focus moved away, even with the real dialog still visible (confirmed
      * live: exchange_window_mismatch firing against
      * com.sec.android.app.launcher and com.anthropic.claude while the
-     * dialog was still on screen). This never widens *what* the automation
-     * is willing to act on -- it's still an exact match against the one
-     * package locked in for this attempt, nothing else is ever considered.
-     * Returns null once the locked window has genuinely closed. */
+     * dialog was still on screen).
+     *
+     * If none of the already-trusted windows are visible, falls back to
+     * whatever window is currently active even though its package isn't
+     * trusted yet -- handed to scanAndAct so ExchangeUssdBridge.isWindowAllowed
+     * gets a chance to evaluate its content and extend the trusted set if it
+     * genuinely looks like the same carrier dialog continuing under a new
+     * window package. Confirmed live (Samsung/One UI): the very first
+     * dialog-like screen locks onto one package (e.g. the OEM's own
+     * com.samsung.android.dialer for the initial/loading screen), but the
+     * real, interactive PIN-entry reply can render under a *different*
+     * package (e.g. com.android.phone) that's visible in getWindows() the
+     * whole time -- without this fallback, that window is never even handed
+     * to isWindowAllowed to be considered, so it can never join the trusted
+     * set no matter how clearly its content looks like the real dialog, and
+     * the PIN is never typed. This still never blindly trusts a new
+     * package's content -- isWindowAllowed's own "looks like a genuine USSD
+     * dialog" bar is unchanged and still gates whether scanAndAct actually
+     * acts on it.
+     *
+     * Only when there is truly no trusted window AND no active window at
+     * all is this treated as a genuine miss (logged, with a recovery
+     * attempt) -- that specific combination is what happens when the OS
+     * stops reporting the carrier window via getWindows() entirely once
+     * it's backgrounded, which recovery (re-foregrounding this app) can
+     * actually help with; an active-but-untrusted window is a different
+     * situation recovery doesn't obviously fix, and is left to scanAndAct's
+     * own mismatch logging instead. */
     private fun findRelevantRoot(): AccessibilityNodeInfo? {
         val locked = ExchangeUssdBridge.lockedWindowPackages()
         if (locked.isEmpty()) return rootInActiveWindow
@@ -232,7 +256,12 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
             @Suppress("DEPRECATION")
             window.recycle()
         }
-        if (found == null && ExchangeUssdBridge.shouldLogWindowSearchMiss()) {
+        if (found != null) return found
+
+        val active = rootInActiveWindow
+        if (active != null) return active
+
+        if (ExchangeUssdBridge.shouldLogWindowSearchMiss()) {
             // Confirmed live (Samsung/One UI): the carrier dialog can stay
             // visually on top of the Home screen after losing focus, yet
             // genuinely not appear in this list at all -- the OS itself
@@ -250,7 +279,7 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
             notifyWindowLost()
             attemptForegroundRecovery()
         }
-        return found
+        return null
     }
 
     /** Best-effort, no-new-permission attempt to recover from the window-

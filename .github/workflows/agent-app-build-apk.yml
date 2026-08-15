@@ -21,6 +21,8 @@ defaults:
 jobs:
   build:
     runs-on: self-hosted
+    permissions:
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -73,3 +75,66 @@ jobs:
           name: dalab-agent-release-apk
           path: agent-app/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
+
+      - name: Delete previous GitHub Release (if any)
+        # Necessary before the draft-upload step below: this repo has
+        # GitHub's immutable-releases feature on, so a release that was
+        # already published at this same tag (from an earlier run) stays
+        # locked forever -- softprops/action-gh-release finds and reuses
+        # the existing release object by tag rather than creating a fresh
+        # one, so passing draft:true on a *new* run does nothing once a
+        # published release already sits at this tag (confirmed live: the
+        # very next run after that happened immediately got "Cannot upload
+        # asset ... to an immutable release" on both files). Deleting
+        # whatever's there first guarantees every run starts from a real,
+        # fresh, mutable draft. Silently no-ops on a brand new tag (curl's
+        # `-f` makes a 404 just exit non-zero into `|| true`).
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO_API="https://api.github.com/repos/${{ github.repository }}"
+          RELEASE_ID=$(curl -sS -f -H "Authorization: Bearer $GH_TOKEN" \
+            "$REPO_API/releases/tags/agent-app-latest-build" \
+            | grep -m1 -o '"id": *[0-9]*' | grep -o '[0-9]*' || true)
+          if [ -n "$RELEASE_ID" ]; then
+            curl -sS -X DELETE -H "Authorization: Bearer $GH_TOKEN" \
+              "$REPO_API/releases/$RELEASE_ID"
+          fi
+          curl -sS -X DELETE -H "Authorization: Bearer $GH_TOKEN" \
+            "$REPO_API/git/refs/tags/agent-app-latest-build" || true
+
+      - name: Upload build to GitHub Release (draft)
+        # Same reasoning as the Customer App's build workflow: a Release
+        # asset is directly downloadable (no Actions-UI login friction) and
+        # this repo is public, so no repo-auth is needed to fetch it either.
+        # Reuses one fixed tag so every run overwrites the previous asset
+        # instead of accumulating storage over time.
+        #
+        # Uploaded as a draft first, then published in a separate step below
+        # -- this repo has GitHub's immutable-releases feature on, which
+        # locks a non-draft prerelease's assets right after creation (even
+        # though it's still a "prerelease"), so uploading two files in one
+        # non-draft call intermittently 404s on the second file depending on
+        # exactly how fast that lock lands. A draft never triggers that
+        # lock, so both files always land before anything is published.
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: agent-app-latest-build
+          name: "Agent App build #${{ github.run_number }}"
+          body: |
+            Automated build from commit ${{ github.sha }} on `${{ github.ref_name }}`.
+            Not a versioned release - this tag's assets are overwritten by every run.
+          draft: true
+          prerelease: true
+          make_latest: false
+          files: |
+            agent-app/app/build/outputs/apk/debug/app-debug.apk
+            agent-app/app/build/outputs/apk/release/app-release.apk
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: agent-app-latest-build
+          draft: false
+          prerelease: true
+          make_latest: false
