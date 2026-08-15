@@ -76,6 +76,33 @@ jobs:
           path: agent-app/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
 
+      - name: Delete previous GitHub Release (if any)
+        # Necessary before the draft-upload step below: this repo has
+        # GitHub's immutable-releases feature on, so a release that was
+        # already published at this same tag (from an earlier run) stays
+        # locked forever -- softprops/action-gh-release finds and reuses
+        # the existing release object by tag rather than creating a fresh
+        # one, so passing draft:true on a *new* run does nothing once a
+        # published release already sits at this tag (confirmed live: the
+        # very next run after that happened immediately got "Cannot upload
+        # asset ... to an immutable release" on both files). Deleting
+        # whatever's there first guarantees every run starts from a real,
+        # fresh, mutable draft. Silently no-ops on a brand new tag (curl's
+        # `-f` makes a 404 just exit non-zero into `|| true`).
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO_API="https://api.github.com/repos/${{ github.repository }}"
+          RELEASE_ID=$(curl -sS -f -H "Authorization: Bearer $GH_TOKEN" \
+            "$REPO_API/releases/tags/agent-app-latest-build" \
+            | grep -m1 -o '"id": *[0-9]*' | grep -o '[0-9]*' || true)
+          if [ -n "$RELEASE_ID" ]; then
+            curl -sS -X DELETE -H "Authorization: Bearer $GH_TOKEN" \
+              "$REPO_API/releases/$RELEASE_ID"
+          fi
+          curl -sS -X DELETE -H "Authorization: Bearer $GH_TOKEN" \
+            "$REPO_API/git/refs/tags/agent-app-latest-build" || true
+
       - name: Upload build to GitHub Release (draft)
         # Same reasoning as the Customer App's build workflow: a Release
         # asset is directly downloadable (no Actions-UI login friction) and
