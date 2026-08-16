@@ -5,6 +5,7 @@ import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { hashPassword, verifyPassword, isValidPin } from "../auth/crypto.js";
+import { parseDataUri } from "../utils/dataUri.js";
 
 export const customersRouter = Router();
 
@@ -272,7 +273,7 @@ customersRouter.post("/agent/customers", requireAuth("agent"), async (req, res) 
 
 // ---------------- Customer: own profile ----------------
 const CUSTOMER_PROFILE_COLUMNS =
-  "id, phone, name, email, macaash_points, evc_plus_name, evc_plus_number, evc_plus_saved_at, edahab_name, edahab_number, edahab_saved_at, created_at";
+  "id, phone, name, email, macaash_points, evc_plus_name, evc_plus_number, evc_plus_saved_at, edahab_name, edahab_number, edahab_saved_at, photo_base64, created_at";
 
 customersRouter.get("/customer/profile", requireAuth("customer"), async (req, res) => {
   const customer = await queryOne(`SELECT ${CUSTOMER_PROFILE_COLUMNS} FROM customers WHERE id=$1`, [req.auth!.sub]);
@@ -284,6 +285,31 @@ customersRouter.put("/customer/profile", requireAuth("customer"), async (req, re
   const name = String(req.body.name ?? "").trim();
   if (!name) return sendJson(res, 400, { error: "name is required" });
   await query(`UPDATE customers SET name=$1 WHERE id=$2`, [name, req.auth!.sub]);
+  sendJson(res, 200, await queryOne(`SELECT ${CUSTOMER_PROFILE_COLUMNS} FROM customers WHERE id=$1`, [req.auth!.sub]));
+});
+
+// Stored inline as the full "data:<mime>;base64,<data>" string (rather than
+// bytes + a separate served-by-id route like promo_images) because a
+// customer's photo is private and always fetched as part of their own
+// profile response — there's no public <img src> case to optimize for here.
+const PROFILE_PHOTO_MAX_BYTES = 4 * 1024 * 1024;
+const PROFILE_PHOTO_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+
+customersRouter.put("/customer/profile/photo", requireAuth("customer"), async (req, res) => {
+  const parsed = parseDataUri(req.body.photoBase64);
+  if (!parsed) return sendJson(res, 400, { error: "photoBase64 must be a data:<mime>;base64,<data> string" });
+  if (!PROFILE_PHOTO_MIME_TYPES.has(parsed.mimeType)) {
+    return sendJson(res, 400, { error: "Photo must be a JPEG, PNG, or WEBP image" });
+  }
+  if (parsed.data.length > PROFILE_PHOTO_MAX_BYTES) {
+    return sendJson(res, 400, { error: "Photo must be 4MB or smaller" });
+  }
+  await query(`UPDATE customers SET photo_base64=$1 WHERE id=$2`, [String(req.body.photoBase64), req.auth!.sub]);
+  sendJson(res, 200, await queryOne(`SELECT ${CUSTOMER_PROFILE_COLUMNS} FROM customers WHERE id=$1`, [req.auth!.sub]));
+});
+
+customersRouter.delete("/customer/profile/photo", requireAuth("customer"), async (req, res) => {
+  await query(`UPDATE customers SET photo_base64=NULL WHERE id=$1`, [req.auth!.sub]);
   sendJson(res, 200, await queryOne(`SELECT ${CUSTOMER_PROFILE_COLUMNS} FROM customers WHERE id=$1`, [req.auth!.sub]));
 });
 
