@@ -161,6 +161,39 @@ test("a structured SOMLINK error (e.g. insufficient balance) leaves the order in
   assert.equal(order?.status, "in_progress");
 });
 
+// Regression test for the real API's actual behavior, verified live against
+// https://api.data.somlink.net on 2026-08-16: an invalid/expired token
+// returns the plain string `Invalid Token` with HTTP 401 — not the
+// documented {code,message} JSON shape. Confirms the stale-token ->
+// re-login -> retry path still engages correctly even though the body
+// isn't parseable JSON.
+test("a stale token (plain-text 'Invalid Token' 401, verified against the real API) triggers exactly one re-login and retry", async (t) => {
+  const orderId = await insertOrder();
+  await query(`UPDATE orders SET status='in_progress' WHERE id=$1`, [orderId]);
+  __setCachedTokenForTests("stale-token");
+
+  let callCount = 0;
+  t.mock.method(globalThis, "fetch", async (_input: any, init?: any) => {
+    callCount++;
+    const body = init?.body ? JSON.parse(init.body) : {};
+    if (callCount === 1) {
+      // The exact real response body — plain text, not JSON.
+      return new Response("Invalid Token", { status: 401, headers: { "Content-Type": "text/plain" } });
+    }
+    if (body.phone && body.password) {
+      return new Response(JSON.stringify({ status: 200, token: "fresh-token", create_date: new Date().toISOString() }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ code: 200, message: "DATA_PAID_SUCCESSFULLY", paid_amount: 1, balance: 0.7 }), { status: 200 });
+  });
+
+  const result = await deliverViaSomlink({ id: orderId, customer_id: CUSTOMER_ID, package_id: packageId, receiver_phone: CUSTOMER_PHONE, amount: 1 });
+  assert.equal(result.ok, true);
+  assert.equal(callCount, 3, "expected: failed send_data, re-login, retried send_data");
+
+  const tx = await queryOne<{ status: string }>(`SELECT status FROM somlink_transactions WHERE order_id=$1`, [orderId]);
+  assert.equal(tx?.status, "success");
+});
+
 test("a network/timeout failure is recorded as 'ambiguous', never 'failed' or 'completed'", async (t) => {
   const orderId = await insertOrder();
   await query(`UPDATE orders SET status='in_progress' WHERE id=$1`, [orderId]);

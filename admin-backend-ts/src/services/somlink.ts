@@ -55,6 +55,13 @@ interface SomlinkSendDataResponse {
 }
 
 let cachedToken: string | null = null;
+// Verified against the real API on 2026-08-16: a token's exp - iat is
+// exactly 120 seconds. Refreshed proactively a little before that (rather
+// than waiting for the 401 an expired token gets) so a normal delivery
+// call doesn't pay for an extra failed round trip on every order placed
+// more than ~100s after the last login.
+let cachedTokenExpiresAt: number | null = null;
+const TOKEN_TTL_MS = 100_000;
 
 function maskPhone(phone: string): string {
   const digits = String(phone ?? "");
@@ -62,7 +69,14 @@ function maskPhone(phone: string): string {
   return `${digits.slice(0, 5)}${"*".repeat(Math.max(0, digits.length - 8))}${digits.slice(-3)}`;
 }
 
-async function fetchJson(path: string, body: unknown): Promise<{ status: number; json: any }> {
+/** Never throws on a non-JSON body — verified against the real API that an
+ * invalid/expired token comes back as the plain string `Invalid Token`,
+ * not the documented {code,message} JSON shape, so callers need the raw
+ * status/text to classify a response like that correctly instead of it
+ * being forced into SomlinkAmbiguousError before they even see the status
+ * code. Only a genuine network failure (couldn't reach SOMLINK at all, or
+ * the request timed out) throws here — that outcome really is unknown. */
+async function fetchJson(path: string, body: unknown): Promise<{ status: number; json: any; rawText: string }> {
   let res: Response;
   try {
     res = await fetch(`${somlinkBaseUrl()}${path}`, {
@@ -72,42 +86,44 @@ async function fetchJson(path: string, body: unknown): Promise<{ status: number;
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
   } catch (err: any) {
-    // Network error, DNS failure, or the AbortSignal timeout firing —
-    // SOMLINK's side of what happened is unknown.
     throw new SomlinkAmbiguousError(`SOMLINK request to ${path} failed: ${err?.message ?? err}`);
   }
-  let json: any;
+  const rawText = await res.text();
+  let json: any = undefined;
   try {
-    json = await res.json();
-  } catch (err: any) {
-    throw new SomlinkAmbiguousError(`SOMLINK returned a non-JSON response from ${path} (HTTP ${res.status})`);
+    json = JSON.parse(rawText);
+  } catch {
+    // Not JSON — e.g. the plain-text "Invalid Token" case above. Leave
+    // json undefined; callers fall back to rawText + status.
   }
-  return { status: res.status, json };
+  return { status: res.status, json, rawText };
 }
 
 async function login(): Promise<string> {
   const phone = requiredEnv("SOMLINK_PHONE");
   const password = requiredEnv("SOMLINK_PASSWORD");
-  const { status, json } = await fetchJson("/auth/data_v3_login", { phone, password });
-  const parsed = json as SomlinkLoginResponse;
+  const { status, json, rawText } = await fetchJson("/auth/data_v3_login", { phone, password });
+  const parsed = json as SomlinkLoginResponse | undefined;
   if (status < 200 || status >= 300 || !parsed?.token) {
-    throw new SomlinkApiError(status, typeof json?.message === "string" ? json.message : "login_failed");
+    throw new SomlinkApiError(status, typeof json?.message === "string" ? json.message : rawText || "login_failed");
   }
   cachedToken = parsed.token;
+  cachedTokenExpiresAt = Date.now() + TOKEN_TTL_MS;
   return cachedToken;
 }
 
 async function getToken(): Promise<string> {
-  if (cachedToken) return cachedToken;
+  if (cachedToken && cachedTokenExpiresAt && Date.now() < cachedTokenExpiresAt) return cachedToken;
   return login();
 }
 
 /** True for the shape of response SOMLINK sends back for an invalid/expired
  * token — used to trigger exactly one re-login + retry, never an unbounded
- * retry loop. */
-function looksLikeInvalidToken(status: number, json: any): boolean {
+ * retry loop. Checks the HTTP status first, deliberately independent of
+ * whether the body parsed as JSON (the real "Invalid Token" 401 doesn't). */
+function looksLikeInvalidToken(status: number, json: any, rawText: string): boolean {
   if (status === 401 || status === 403) return true;
-  const message = String(json?.message ?? "").toUpperCase();
+  const message = String(json?.message ?? rawText ?? "").toUpperCase();
   return message.includes("TOKEN") || message.includes("UNAUTHORIZED") || message.includes("AUTH");
 }
 
@@ -137,39 +153,51 @@ export interface SomlinkSendDataResult {
  * safely retry; see deliverViaSomlink in ../routes/somlink.routes.ts.
  */
 export async function somlinkSendData(params: SomlinkSendDataParams): Promise<SomlinkSendDataResult> {
-  const attempt = async (token: string) => {
-    const { status, json } = await fetchJson("/data/send_data", {
+  const attempt = async (token: string) =>
+    fetchJson("/data/send_data", {
       token,
       data_phone: params.dataPhone,
       wallet_phone: params.walletPhone,
       amount: params.amount,
       bundle_id: params.bundleId,
     });
-    return { status, json: json as SomlinkSendDataResponse };
-  };
 
   let token = await getToken();
-  let { status, json } = await attempt(token);
+  let { status, json, rawText } = await attempt(token);
 
-  if (looksLikeInvalidToken(status, json)) {
+  if (looksLikeInvalidToken(status, json, rawText)) {
     cachedToken = null;
+    cachedTokenExpiresAt = null;
     token = await login();
-    ({ status, json } = await attempt(token));
+    ({ status, json, rawText } = await attempt(token));
   }
 
-  if (typeof json?.code !== "number") {
-    throw new SomlinkAmbiguousError(`SOMLINK /data/send_data returned an unrecognized response shape (HTTP ${status})`);
+  const parsed = json as SomlinkSendDataResponse | undefined;
+  if (parsed?.code === 200 && parsed.message === "DATA_PAID_SUCCESSFULLY") {
+    return {
+      code: parsed.code,
+      message: parsed.message,
+      paidAmount: typeof parsed.paid_amount === "number" ? parsed.paid_amount : null,
+      dataPhone: parsed.data_phone ?? null,
+      balance: typeof parsed.balance === "number" ? parsed.balance : null,
+    };
   }
-  if (json.code !== 200 || json.message !== "DATA_PAID_SUCCESSFULLY") {
-    throw new SomlinkApiError(json.code, json.message);
+  // A structured response with a code SOMLINK itself returned, even one
+  // riding on an HTTP 200, is a confirmed decline — pass it through as-is.
+  if (typeof parsed?.code === "number") {
+    throw new SomlinkApiError(parsed.code, parsed.message);
   }
-  return {
-    code: json.code,
-    message: json.message,
-    paidAmount: typeof json.paid_amount === "number" ? json.paid_amount : null,
-    dataPhone: json.data_phone ?? null,
-    balance: typeof json.balance === "number" ? json.balance : null,
-  };
+  // A 4xx with no parseable {code,message} body (the real "Invalid Token"
+  // case, or any other plain-text client-error rejection) is still a
+  // confirmed "no" from SOMLINK's server — the request was rejected before
+  // being processed, so it's safe to retry a fresh attempt later.
+  if (status >= 400 && status < 500) {
+    throw new SomlinkApiError(status, rawText || `HTTP ${status}`);
+  }
+  // Anything else — a 2xx that doesn't match the documented success shape,
+  // or a 5xx (SOMLINK's own server erroring, possibly mid-transaction) —
+  // genuinely cannot be confirmed either way.
+  throw new SomlinkAmbiguousError(`SOMLINK /data/send_data returned an unrecognized response (HTTP ${status}): ${rawText.slice(0, 300)}`);
 }
 
 /** Log line format shared by every SOMLINK call site — never includes the
@@ -193,7 +221,12 @@ export function logSomlink(entry: {
 }
 
 // Test-only hook — lets tests force a specific cached token (or clear it)
-// without reaching into module-private state any other way.
+// without reaching into module-private state any other way. Also sets a
+// fresh expiry so the token is treated as currently valid, matching what a
+// real login() call would have just set — otherwise getToken() would see
+// a null cachedTokenExpiresAt and silently re-login instead of using the
+// token the test just set.
 export function __setCachedTokenForTests(token: string | null): void {
   cachedToken = token;
+  cachedTokenExpiresAt = token ? Date.now() + TOKEN_TTL_MS : null;
 }
