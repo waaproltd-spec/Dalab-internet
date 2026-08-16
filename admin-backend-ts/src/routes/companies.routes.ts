@@ -16,7 +16,7 @@ export const packagesRouter = Router();
 // routes — logo_data is only ever read by the dedicated .../logo route below
 // (raw bytes, not through sendJson); has_logo is a cheap boolean so the
 // dashboard/apps know whether to point an <img> at that route at all.
-const COMPANY_COLUMNS = `id, name, group_number, color_hex, logo_url, status, gateway, payment_number, payment_ussd_template, provider_number, ussd_code, visible_customer_app, visible_agent_app, auto_process_enabled, slug, description, sort_order, (logo_data IS NOT NULL) AS has_logo, created_at, updated_at`;
+const COMPANY_COLUMNS = `id, name, group_number, color_hex, logo_url, status, gateway, payment_number, payment_ussd_template, provider_number, ussd_code, visible_customer_app, visible_agent_app, auto_process_enabled, slug, description, sort_order, fulfillment_method, (logo_data IS NOT NULL) AS has_logo, created_at, updated_at`;
 
 // provider_amount is the internal cost actually requested from the telecom
 // via USSD — it can differ from the customer-facing price (e.g. a
@@ -197,6 +197,31 @@ companiesRouter.put("/admin/companies/:id/status", requireAuth("super_admin"), a
   sendJson(res, 200, await queryOne(`SELECT ${COMPANY_COLUMNS} FROM companies WHERE id=$1`, [req.params.id]));
 });
 
+// Super-Admin-only, same reasoning as payment-number/provider-number: this
+// switches a whole provider from the USSD-dial flow to real-money SOMLINK
+// API calls on every future order, so it gets the strictest permission in
+// this file rather than the more delegable companies.manage used by the
+// general PUT above.
+companiesRouter.put("/admin/companies/:id/fulfillment-method", requireAuth("super_admin"), async (req, res) => {
+  const { fulfillmentMethod } = req.body;
+  if (!["ussd", "somlink"].includes(fulfillmentMethod)) {
+    return sendJson(res, 400, { error: "fulfillmentMethod must be ussd|somlink" });
+  }
+  const existing = await queryOne(`SELECT fulfillment_method FROM companies WHERE id=$1`, [req.params.id]);
+  if (!existing) return sendJson(res, 404, { error: "Company not found" });
+  await query(`UPDATE companies SET fulfillment_method=$1, updated_at=now() WHERE id=$2`, [fulfillmentMethod, req.params.id]);
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "update_fulfillment_method",
+    entityType: "company",
+    entityId: req.params.id,
+    oldValue: { fulfillmentMethod: existing.fulfillment_method },
+    newValue: { fulfillmentMethod },
+  });
+  broadcast({ type: "catalog.updated" });
+  sendJson(res, 200, await queryOne(`SELECT ${COMPANY_COLUMNS} FROM companies WHERE id=$1`, [req.params.id]));
+});
+
 companiesRouter.put("/admin/companies/:id/visibility", requirePermission("companies.manage"), async (req, res) => {
   const existing = await queryOne(`SELECT visible_customer_app, visible_agent_app FROM companies WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Company not found" });
@@ -303,7 +328,7 @@ function numOrDefault(value: unknown, fallback: number | null): number | null {
 }
 
 packagesRouter.post("/admin/packages", requirePermission("packages.manage"), async (req, res) => {
-  const { companyId, categoryId, name, oldPrice, price, providerAmount, mb, minutes, sms, validity, code, ussdTemplateId } = req.body;
+  const { companyId, categoryId, name, oldPrice, price, providerAmount, mb, minutes, sms, validity, code, ussdTemplateId, somlinkBundleId } = req.body;
   if (!companyId || !categoryId || !name || price == null) {
     return sendJson(res, 400, { error: "companyId, categoryId, name, price are required" });
   }
@@ -324,10 +349,11 @@ packagesRouter.post("/admin/packages", requirePermission("packages.manage"), asy
   // column — unlike price, this field is optional so "" is a valid input.
   const providerAmountValue = providerAmount === "" || providerAmount == null ? null : providerAmount;
   const ussdTemplateIdValue = ussdTemplateId || null;
+  const somlinkBundleIdValue = numOrDefault(somlinkBundleId, null);
   await query(
-    `INSERT INTO packages (id, company_id, category_id, name, old_price, price, provider_amount, mb, minutes, sms, validity, code, ussd_template_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-    [id, companyId, categoryId, name, numOrDefault(oldPrice, price), price, providerAmountValue, numOrDefault(mb, 0), numOrDefault(minutes, 0), numOrDefault(sms, 0), validity ?? "", code ?? null, ussdTemplateIdValue]
+    `INSERT INTO packages (id, company_id, category_id, name, old_price, price, provider_amount, mb, minutes, sms, validity, code, ussd_template_id, somlink_bundle_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+    [id, companyId, categoryId, name, numOrDefault(oldPrice, price), price, providerAmountValue, numOrDefault(mb, 0), numOrDefault(minutes, 0), numOrDefault(sms, 0), validity ?? "", code ?? null, ussdTemplateIdValue, somlinkBundleIdValue]
   );
   const created = await queryOne(`SELECT * FROM packages WHERE id=$1`, [id]);
   await recordActivity({
@@ -367,6 +393,8 @@ packagesRouter.put("/admin/packages/:id", requirePermission("packages.manage"), 
   const rawProviderAmount = req.body.providerAmount !== undefined ? req.body.providerAmount : existing.provider_amount;
   const providerAmount = rawProviderAmount === "" || rawProviderAmount == null ? null : rawProviderAmount;
   const ussdTemplateId = req.body.ussdTemplateId !== undefined ? (req.body.ussdTemplateId || null) : existing.ussd_template_id;
+  const rawSomlinkBundleId = req.body.somlinkBundleId !== undefined ? req.body.somlinkBundleId : existing.somlink_bundle_id;
+  const somlinkBundleId = numOrDefault(rawSomlinkBundleId, null);
   if (
     req.body.categoryId !== undefined &&
     !(await queryOne(`SELECT id FROM service_categories WHERE company_id=$1 AND slug=$2`, [existing.company_id, categoryId]))
@@ -378,8 +406,8 @@ packagesRouter.put("/admin/packages/:id", requirePermission("packages.manage"), 
     if (templateError) return sendJson(res, 400, { error: templateError });
   }
   await query(
-    `UPDATE packages SET name=$1, category_id=$2, old_price=$3, price=$4, provider_amount=$5, mb=$6, minutes=$7, sms=$8, validity=$9, active=$10, code=$11, ussd_template_id=$12 WHERE id=$13`,
-    [name, categoryId, oldPrice, price, providerAmount, mb, minutes, sms, validity, Boolean(active), code ?? null, ussdTemplateId, req.params.id]
+    `UPDATE packages SET name=$1, category_id=$2, old_price=$3, price=$4, provider_amount=$5, mb=$6, minutes=$7, sms=$8, validity=$9, active=$10, code=$11, ussd_template_id=$12, somlink_bundle_id=$13 WHERE id=$14`,
+    [name, categoryId, oldPrice, price, providerAmount, mb, minutes, sms, validity, Boolean(active), code ?? null, ussdTemplateId, somlinkBundleId, req.params.id]
   );
   const updated = await queryOne(`SELECT * FROM packages WHERE id=$1`, [req.params.id]);
   await recordActivity({

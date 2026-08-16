@@ -5,6 +5,7 @@ import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { generateUssdForOrder } from "./ussd.routes.js";
+import { deliverViaSomlink, classifySomlinkStuckReason } from "./somlink.routes.js";
 import { subscribe, broadcast } from "../realtime/orderEvents.js";
 import { recordActivity } from "../utils/activityLog.js";
 import { creditCommissionIfNeeded, reverseCommissionIfNeeded } from "../utils/commissions.js";
@@ -469,6 +470,23 @@ export async function verifyOrderAndGenerateUssd(
     return { ok: false, alreadyProcessed: order.status !== "pending" };
   }
 
+  // A SOMLINK-fulfilled company skips USSD entirely — deliverViaSomlink
+  // calls the real API directly; on a confirmed DATA_PAID_SUCCESSFULLY
+  // response this immediately completes the order via the same
+  // completeOrderById every other completion path uses (see
+  // somlink.routes.ts). Every other company keeps today's exact
+  // USSD-generation behavior, untouched.
+  const company = await queryOne<{ fulfillment_method: string }>(
+    `SELECT fulfillment_method FROM companies WHERE id=$1`,
+    [order.company_id]
+  );
+  if (company?.fulfillment_method === "somlink") {
+    const result = await deliverViaSomlink(order);
+    if (result.ok) await completeOrderById(order.id);
+    broadcast({ type: "order.updated", orderId: order.id });
+    return { ok: true };
+  }
+
   // Order approved — auto-generate the USSD dialer string. A missing PIN or
   // template isn't fatal to the approval itself; ussd_generated just stays
   // null until an admin sets one up, visible on the order detail either way.
@@ -527,13 +545,18 @@ async function creditMacaashIfNeeded(order: any) {
 
 /**
  * Atomic in_progress -> completed transition, shared by the agent's own
- * "mark complete" tap (after a successful USSD dial response) and the
+ * "mark complete" tap (after a successful USSD dial response), the
  * voucher-confirmation endpoint below (a second, independent signal: the
- * carrier's own SMS confirming the agent's SIM sent the top-up). Either
- * signal can complete the order first; whichever loses the race just gets
- * 0 rows back from the guarded UPDATE and is treated as a no-op, not an error.
+ * carrier's own SMS confirming the agent's SIM sent the top-up), and
+ * somlink.routes.ts's deliverViaSomlink (a confirmed SOMLINK
+ * DATA_PAID_SUCCESSFULLY response). Any of these signals can complete the
+ * order first; whichever loses the race just gets 0 rows back from the
+ * guarded UPDATE and is treated as a no-op, not an error. Exported so
+ * somlink.routes.ts reuses the exact same macaash/commission/referral
+ * crediting + activity log + broadcast path every other completion route
+ * already goes through, rather than a parallel copy of it.
  */
-async function completeOrderById(orderId: string): Promise<{ order: any; success: boolean; alreadyCompleted: boolean } | null> {
+export async function completeOrderById(orderId: string): Promise<{ order: any; success: boolean; alreadyCompleted: boolean } | null> {
   const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [orderId]);
   if (!order) return null;
 
@@ -702,6 +725,12 @@ async function classifyStuckReason(order: any): Promise<string | null> {
     return hasPayment ? "payment_verification_waiting" : null;
   }
   if (order.status !== "in_progress") return null;
+
+  const company = await queryOne<{ fulfillment_method: string }>(
+    `SELECT fulfillment_method FROM companies WHERE id=$1`,
+    [order.company_id]
+  );
+  if (company?.fulfillment_method === "somlink") return classifySomlinkStuckReason(order);
 
   if (!order.ussd_generated) return "ussd_generation_failed";
 
