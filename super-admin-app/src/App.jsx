@@ -191,6 +191,10 @@ const DalabAdminApi = {
   getCustomerPinStatus: (id) => dalabAdminApiRequest(`/admin/customers/${id}/pin-status`),
   setCustomerPin: (id, pin) => dalabAdminApiRequest(`/admin/customers/${id}/pin`, { method: "PUT", body: { pin } }),
   resetCustomerPin: (id) => dalabAdminApiRequest(`/admin/customers/${id}/pin`, { method: "DELETE" }),
+  // Password Recovery: the server picks the new 4-digit Recovery PIN itself
+  // (never admin-typed) and returns it exactly once for the Super Admin to
+  // relay to the customer out-of-band — see customers.routes.ts.
+  generateCustomerPin: (id) => dalabAdminApiRequest(`/admin/customers/${id}/pin/generate`, { method: "POST" }),
   resetCustomerPassword: (id) => dalabAdminApiRequest(`/admin/customers/${id}/reset-password`, { method: "PUT" }),
   // eBadal wallet info override/unlock and exchange-limit overrides — both
   // customers.manage (delegable), unlike the PIN/password routes above.
@@ -3038,6 +3042,11 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
   const [pinDraft, setPinDraft] = useState("");
   const [pinError, setPinError] = useState("");
   const [pinSaving, setPinSaving] = useState(false);
+  // Password Recovery's "Generate New PIN" result — holds the one-time
+  // plaintext 4-digit Recovery PIN the server just generated, exactly like
+  // passwordResetResult below does for temp passwords, so it can be shown to
+  // the Super Admin to relay to the customer out-of-band.
+  const [generatedPin, setGeneratedPin] = useState(null); // { customer, pin } | null
   // No self-service "forgot password" (no email/SMS gateway to deliver a
   // reset link/code) — this is the only way a locked-out customer gets back
   // in. passwordResetResult holds the one-time plaintext temp password so
@@ -3130,6 +3139,27 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
       setPinTarget(null);
     } catch (err) {
       setPinError(err.message || "Could not save PIN.");
+    } finally {
+      setPinSaving(false);
+    }
+  };
+
+  // Password Recovery: "Generate New PIN" — the server picks the value, not
+  // the admin (unlike savePin above, which sets a specific typed-in value).
+  // A generated PIN immediately supersedes whatever the customer had before,
+  // so no separate confirm dialog — the Super Admin only reaches this by
+  // already having decided to reset it (matching the Contact Admin flow the
+  // Customer App sends a locked-out customer through).
+  const generatePin = async () => {
+    setPinSaving(true);
+    setPinError("");
+    try {
+      const result = await DalabAdminApi.generateCustomerPin(pinTarget.id);
+      setCustomers((prev) => prev.map((x) => (x.id === pinTarget.id ? { ...x, pinSet: true } : x)));
+      setGeneratedPin({ customer: pinTarget, pin: result.pin });
+      setPinTarget(null);
+    } catch (err) {
+      setPinError(err.message || "Could not generate a new PIN.");
     } finally {
       setPinSaving(false);
     }
@@ -3405,15 +3435,24 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
       )}
 
       {pinTarget && (
-        <Modal title={`PIN — ${pinTarget.name || pinTarget.phone}`} onClose={() => setPinTarget(null)}>
+        <Modal title={`Password Recovery — ${pinTarget.name || pinTarget.phone}`} onClose={() => setPinTarget(null)}>
           <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>
-            Optional. If this customer forgets their PIN, direct them to Support — there is no self-service reset.
-            The PIN is stored as a secure hash; it can never be viewed once set, only replaced.
+            The Customer App's Forgot Password screen sends a customer who's forgotten their Recovery PIN here.
+            The PIN is stored as a secure hash and can never be viewed once set — only replaced.
           </div>
-          <Field label="PIN status">
+          <Field label="Recovery PIN status">
             <Badge tone={pinTarget.pinSet ? "green" : "amber"}>{pinTarget.pinSet ? "Set" : "Not set"}</Badge>
           </Field>
-          <Field label={pinTarget.pinSet ? "New PIN (replaces the current one)" : "Create PIN"}>
+          <div style={{ marginBottom: 16, padding: 12, borderRadius: 10, background: "#FAFBFF", border: "1px solid #E5E8F4" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: INK, marginBottom: 4 }}>Reset Recovery PIN</div>
+            <div style={{ fontSize: 12, color: MUTE, marginBottom: 10 }}>
+              Generates a brand-new 4-digit Recovery PIN and immediately invalidates the old one. Shown once, here, for you to relay to the customer yourself (call, WhatsApp, etc.).
+            </div>
+            <Button onClick={generatePin} icon={pinSaving ? Loader2 : RefreshCw} spin={pinSaving} disabled={pinSaving}>
+              Generate New PIN
+            </Button>
+          </div>
+          <Field label={pinTarget.pinSet ? "Or set a specific PIN (replaces the current one)" : "Or create a specific PIN"}>
             <input
               type="password" inputMode="numeric" maxLength={8} placeholder="3-8 digits"
               style={inputStyle}
@@ -3423,14 +3462,36 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
           </Field>
           {pinError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{pinError}</div>}
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <Button onClick={savePin} icon={pinSaving ? Loader2 : Check} spin={pinSaving} disabled={pinSaving || !pinDraft}>
+            <Button variant="ghost" onClick={savePin} icon={pinSaving ? Loader2 : Check} spin={pinSaving} disabled={pinSaving || !pinDraft}>
               {pinTarget.pinSet ? "Change PIN" : "Create PIN"}
             </Button>
             {pinTarget.pinSet && (
-              <Button variant="danger" onClick={resetPin} disabled={pinSaving}>Reset PIN</Button>
+              <Button variant="danger" onClick={resetPin} disabled={pinSaving}>Clear PIN</Button>
             )}
             <Button variant="ghost" onClick={() => setPinTarget(null)} disabled={pinSaving}>Cancel</Button>
           </div>
+        </Modal>
+      )}
+
+      {generatedPin && (
+        <Modal title={`New Recovery PIN — ${generatedPin.customer.name || generatedPin.customer.phone}`} onClose={() => setGeneratedPin(null)}>
+          <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>
+            Relay this PIN to the customer yourself (call, WhatsApp, etc.) — there's no automatic delivery.
+            It's shown here once and can't be retrieved again after you close this dialog. Their previous Recovery PIN no longer works.
+          </div>
+          <Field label="New Recovery PIN">
+            <div style={{ display: "flex", gap: 8 }}>
+              <input readOnly style={{ ...inputStyle, fontFamily: "monospace", fontWeight: 700, fontSize: 18, letterSpacing: 4, textAlign: "center" }} value={generatedPin.pin} onFocus={(e) => e.target.select()} />
+              <Button
+                variant="ghost"
+                icon={Copy}
+                onClick={() => navigator.clipboard?.writeText(generatedPin.pin)}
+              >
+                Copy
+              </Button>
+            </div>
+          </Field>
+          <Button onClick={() => setGeneratedPin(null)}>Done</Button>
         </Modal>
       )}
 

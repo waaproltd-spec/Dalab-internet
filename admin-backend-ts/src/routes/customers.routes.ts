@@ -187,6 +187,25 @@ customersRouter.put("/admin/customers/:id/pin", requireAuth("super_admin"), asyn
   sendJson(res, 200, { message: "PIN saved", isSet: true });
 });
 
+// ---------------- Password Recovery: Reset Recovery PIN (Super Admin only) ----------------
+// The Customer App's Forgot Password flow directs a customer who's forgotten
+// their Recovery PIN to Contact Admin; this is that admin-side action. Unlike
+// PUT /pin above (where the Super Admin types a specific value), this one
+// always generates the new PIN itself — the Super Admin never chooses or
+// types it, only relays it out-of-band once generated. A fresh call always
+// overwrites pin_hash, so the customer's previous Recovery PIN stops working
+// the instant a new one is generated, with no separate "invalidate" step
+// needed. The plaintext PIN is returned exactly once, in this response only —
+// never logged, never stored anywhere but this bcrypt hash.
+customersRouter.post("/admin/customers/:id/pin/generate", requireAuth("super_admin"), async (req, res) => {
+  const existing = await queryOne(`SELECT id FROM customers WHERE id=$1`, [req.params.id]);
+  if (!existing) return sendJson(res, 404, { error: "Customer not found" });
+  const pin = String(Math.floor(1000 + Math.random() * 9000));
+  const pinHash = await hashPassword(pin);
+  await query(`UPDATE customers SET pin_hash=$1 WHERE id=$2`, [pinHash, req.params.id]);
+  sendJson(res, 200, { message: "New Recovery PIN generated", pin, isSet: true });
+});
+
 // "Reset" clears the PIN back to unset (optional) rather than assigning a
 // new one itself — the customer/Support flow that lets them "create a new
 // PIN" afterward is a separate, later concern; this just guarantees the old
