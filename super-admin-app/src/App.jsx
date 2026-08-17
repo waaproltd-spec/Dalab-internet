@@ -214,8 +214,12 @@ const DalabAdminApi = {
   updatePromoImage: (id, body) => dalabAdminApiRequest(`/admin/promo-images/${id}`, { method: "PUT", body }),
   deletePromoImage: (id) => dalabAdminApiRequest(`/admin/promo-images/${id}`, { method: "DELETE" }),
   promoImageUrl: (id) => `${DALAB_API_BASE_URL}/promo-images/${id}/image`,
-  sendNotification: (type, title, body) => dalabAdminApiRequest("/admin/notifications/send", { method: "POST", body: { type, title, body } }),
-  getAdminNotifications: () => dalabAdminApiRequest("/admin/notifications"),
+  // Push-notification broadcast — one shared route the Agent App hits with
+  // the exact same body shape, so there is no capability difference between
+  // the two apps. targetType: 'single'|'multiple'|'all'|'recent';
+  // serviceFilter: 'all'|'internet'|'ebadal'|'reseller'.
+  broadcastNotification: (body) => dalabAdminApiRequest("/notifications/broadcast", { method: "POST", body }),
+  getNotificationCampaigns: () => dalabAdminApiRequest("/notifications/campaigns"),
   getReports: (range) => dalabAdminApiRequest(`/admin/reports?range=${range}`),
   // USSD Services
   getUssdTemplates: (companyId) => dalabAdminApiRequest(`/admin/ussd-templates${companyId ? `?companyId=${companyId}` : ""}`),
@@ -7835,38 +7839,91 @@ function SmsLogs({ companies }) {
   );
 }
 
-const NOTIFICATION_TYPE_LABEL = { push: "Push Notification", promotion: "Promotion", maintenance: "Maintenance Message" };
+const TARGET_TYPE_LABEL = { single: "1 customer", multiple: "Selected customers", all: "All customers", recent: "Joined in last 7 days" };
+const SERVICE_FILTER_LABEL = { all: "All Services", internet: "Internet", ebadal: "eBadal", reseller: "Reseller" };
 
+// Same composer + history reachable from the Agent app via the identical
+// POST /notifications/broadcast / GET /notifications/campaigns routes — see
+// DalabAdminApi.broadcastNotification's comment. Nothing here is
+// Admin-only; an Agent hitting these same two routes gets the exact same
+// targeting options and the exact same history.
 function Notifications() {
-  const [sent, setSent] = useState([]);
-  const [loadingHistory, setLoadingHistory] = useState(true);
-  const [historyError, setHistoryError] = useState("");
-  const [form, setForm] = useState({ type: "push", title: "", body: "" });
+  const [targetType, setTargetType] = useState("all");
+  const [serviceFilter, setServiceFilter] = useState("all");
+  const [selectedCustomers, setSelectedCustomers] = useState([]);
+  const [customerSearch, setCustomerSearch] = useState("");
+  const [customerResults, setCustomerResults] = useState([]);
+  const [searchingCustomers, setSearchingCustomers] = useState(false);
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState("");
+  const [sendResult, setSendResult] = useState(null);
+
+  const [campaigns, setCampaigns] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(true);
+  const [historyError, setHistoryError] = useState("");
 
   const fetchHistory = () => {
     if (!DALAB_API_ENABLED) { setLoadingHistory(false); return; }
     setLoadingHistory(true);
     setHistoryError("");
-    DalabAdminApi.getAdminNotifications()
-      .then((rows) => setSent(rows))
+    DalabAdminApi.getNotificationCampaigns()
+      .then((rows) => setCampaigns(rows))
       .catch((err) => setHistoryError(err.message || "Could not load sent history."))
       .finally(() => setLoadingHistory(false));
   };
   useEffect(fetchHistory, []);
 
+  // Debounced customer search — only active while picking a single/multiple
+  // target, mirrors the picker every other "search customers" field in this
+  // dashboard already uses (getCustomers(search)).
+  useEffect(() => {
+    if (targetType !== "single" && targetType !== "multiple") return;
+    if (!customerSearch.trim() || !DALAB_API_ENABLED) { setCustomerResults([]); return; }
+    setSearchingCustomers(true);
+    const handle = setTimeout(() => {
+      DalabAdminApi.getCustomers(customerSearch.trim())
+        .then((rows) => setCustomerResults(rows))
+        .catch(() => setCustomerResults([]))
+        .finally(() => setSearchingCustomers(false));
+    }, 300);
+    return () => clearTimeout(handle);
+  }, [customerSearch, targetType]);
+
+  const toggleCustomer = (customer) => {
+    setSelectedCustomers((prev) => {
+      const already = prev.some((c) => c.id === customer.id);
+      if (already) return prev.filter((c) => c.id !== customer.id);
+      if (targetType === "single") return [customer];
+      return [...prev, customer];
+    });
+  };
+
+  const canSend =
+    title.trim() &&
+    body.trim() &&
+    !sending &&
+    ((targetType !== "single" && targetType !== "multiple") || selectedCustomers.length > 0);
+
   const send = async () => {
-    if (!form.title || sending) return;
+    if (!canSend) return;
     setSending(true);
     setSendError("");
+    setSendResult(null);
     try {
-      // Delivery is DB-record-only for now — no FCM/APNs push infrastructure
-      // is wired up yet, so this reaches the notifications table (and
-      // whatever in-app "Notifications" screen polls it) but not an actual
-      // phone push until that infra exists.
-      await DalabAdminApi.sendNotification(form.type, form.title, form.body);
-      setForm({ type: "push", title: "", body: "" });
+      const result = await DalabAdminApi.broadcastNotification({
+        targetType,
+        customerIds: selectedCustomers.map((c) => c.id),
+        serviceFilter,
+        title: title.trim(),
+        body: body.trim(),
+      });
+      setSendResult(result);
+      setTitle("");
+      setBody("");
+      setSelectedCustomers([]);
+      setCustomerSearch("");
       fetchHistory();
     } catch (err) {
       setSendError(err.message || "Could not send notification.");
@@ -7878,30 +7935,101 @@ function Notifications() {
   return (
     <div>
       <div style={{ fontWeight: 800, fontSize: 17, color: INK, marginBottom: 14 }}>Notifications</div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.2fr", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.3fr", gap: 14, alignItems: "start" }}>
         <Card style={{ padding: 18 }}>
           <div style={{ fontWeight: 700, fontSize: 13, color: INK, marginBottom: 10 }}>Compose</div>
-          <div style={{ fontSize: 11.5, color: MUTE, marginBottom: 12 }}>
-            Stored and shown in-app to customers/agents. No push (FCM/APNs) infrastructure is connected yet, so this doesn't reach a phone that has the app closed.
-          </div>
           {sendError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{sendError}</div>}
-          <Field label="Type">
-            <select style={inputStyle} value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
-              <option value="push">Push Notification</option>
-              <option value="promotion">Promotion</option>
-              <option value="maintenance">Maintenance Message</option>
+          {sendResult && (
+            <div style={{ background: "#E4F7EA", color: "#137A3B", fontSize: 12.5, fontWeight: 600, padding: "10px 12px", borderRadius: 10, marginBottom: 12 }}>
+              Sent to {sendResult.recipientCount} customer{sendResult.recipientCount === 1 ? "" : "s"} — {sendResult.deliveredCount} delivered, {sendResult.failedCount} failed (no registered device or push disabled).
+            </div>
+          )}
+
+          <Field label="Send to">
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {[
+                ["single", "One customer"],
+                ["multiple", "Selected customers"],
+                ["all", "All customers"],
+                ["recent", "Joined in last 7 days"],
+              ].map(([value, label]) => (
+                <button
+                  key={value}
+                  onClick={() => { setTargetType(value); setSelectedCustomers([]); }}
+                  style={{
+                    padding: "7px 12px", borderRadius: 20, fontSize: 12, fontWeight: 700, cursor: "pointer",
+                    border: `1px solid ${targetType === value ? INDIGO : BORDER}`,
+                    background: targetType === value ? INDIGO : "#fff", color: targetType === value ? "#fff" : SLATE,
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </Field>
+
+          {(targetType === "single" || targetType === "multiple") && (
+            <Field label={targetType === "single" ? "Customer" : "Customers"}>
+              {selectedCustomers.length > 0 && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                  {selectedCustomers.map((c) => (
+                    <span key={c.id} style={{ display: "inline-flex", alignItems: "center", gap: 4, background: INDIGO_SOFT, color: INDIGO, fontSize: 11.5, fontWeight: 700, padding: "4px 6px 4px 10px", borderRadius: 20 }}>
+                      {c.name || c.phone}
+                      <X size={12} style={{ cursor: "pointer" }} onClick={() => toggleCustomer(c)} />
+                    </span>
+                  ))}
+                </div>
+              )}
+              <input
+                style={inputStyle}
+                value={customerSearch}
+                onChange={(e) => setCustomerSearch(e.target.value)}
+                placeholder="Search by name or phone…"
+              />
+              {customerSearch.trim() && (
+                <div style={{ border: `1px solid ${BORDER}`, borderRadius: 10, marginTop: 6, maxHeight: 180, overflowY: "auto" }}>
+                  {searchingCustomers ? (
+                    <div style={{ padding: 10, fontSize: 12, color: MUTE }}>Searching…</div>
+                  ) : customerResults.length === 0 ? (
+                    <div style={{ padding: 10, fontSize: 12, color: MUTE }}>No matching customers.</div>
+                  ) : (
+                    customerResults.map((c) => {
+                      const checked = selectedCustomers.some((s) => s.id === c.id);
+                      return (
+                        <div
+                          key={c.id}
+                          onClick={() => toggleCustomer(c)}
+                          style={{ padding: "8px 10px", fontSize: 12.5, cursor: "pointer", display: "flex", justifyContent: "space-between", background: checked ? INDIGO_SOFT : "#fff", borderBottom: `1px solid ${BORDER}` }}
+                        >
+                          <span style={{ color: INK, fontWeight: 600 }}>{c.name || "—"} <span style={{ color: MUTE, fontWeight: 400 }}>{c.phone}</span></span>
+                          {checked && <Check size={14} color={INDIGO} />}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+            </Field>
+          )}
+
+          <Field label="Service">
+            <select style={inputStyle} value={serviceFilter} onChange={(e) => setServiceFilter(e.target.value)}>
+              {Object.entries(SERVICE_FILTER_LABEL).map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
             </select>
           </Field>
           <Field label="Title">
-            <input style={inputStyle} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Weekend data bonus" />
+            <input style={inputStyle} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Weekend data bonus" />
           </Field>
           <Field label="Message">
-            <textarea style={{ ...inputStyle, minHeight: 80, resize: "vertical" }} value={form.body} onChange={(e) => setForm({ ...form, body: e.target.value })} />
+            <textarea style={{ ...inputStyle, minHeight: 80, resize: "vertical" }} value={body} onChange={(e) => setBody(e.target.value)} />
           </Field>
-          <Button icon={sending ? Loader2 : Bell} spin={sending} disabled={sending || !form.title} onClick={send}>
-            {sending ? "Sending..." : "Send to all customers"}
+          <Button icon={sending ? Loader2 : Bell} spin={sending} disabled={!canSend} onClick={send}>
+            {sending ? "Sending..." : "Send notification"}
           </Button>
         </Card>
+
         <Card style={{ padding: 0, overflow: "hidden" }}>
           <div style={{ padding: "14px 16px", fontWeight: 700, fontSize: 13, color: INK, borderBottom: `1px solid ${BORDER}` }}>Sent history</div>
           {!DALAB_API_ENABLED ? (
@@ -7910,16 +8038,30 @@ function Notifications() {
             <div style={{ padding: 16, color: "#C81E2C", fontSize: 12.5 }}>{historyError}</div>
           ) : loadingHistory ? (
             <div style={{ padding: 16, fontSize: 12.5, color: MUTE }}>Loading…</div>
-          ) : sent.length === 0 ? (
+          ) : campaigns.length === 0 ? (
             <div style={{ padding: 16, fontSize: 12.5, color: MUTE }}>Nothing sent yet.</div>
           ) : (
-            sent.map((s) => (
-              <div key={s.id} style={{ padding: "12px 16px", borderBottom: `1px solid ${BORDER}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div>
-                  <div style={{ fontWeight: 700, fontSize: 13, color: INK }}>{s.title}</div>
-                  <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>{formatDateTime(s.sentAt)}</div>
+            campaigns.map((c) => (
+              <div key={c.id} style={{ padding: "12px 16px", borderBottom: `1px solid ${BORDER}` }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: INK }}>{c.title}</div>
+                    <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>{c.body}</div>
+                  </div>
+                  <Badge>{TARGET_TYPE_LABEL[c.targetType] ?? c.targetType}</Badge>
                 </div>
-                <Badge>{NOTIFICATION_TYPE_LABEL[s.type] ?? s.type}</Badge>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 8, fontSize: 11.5, color: SLATE }}>
+                  <span>{formatDateTime(c.createdAt)}</span>
+                  <span>·</span>
+                  <span>By {c.createdByName || "—"} ({c.createdByRole === "agent" ? "Agent" : "Admin"})</span>
+                  <span>·</span>
+                  <span>{SERVICE_FILTER_LABEL[c.serviceFilter] ?? c.serviceFilter}</span>
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                  <Badge tone="neutral">{c.recipientCount} sent</Badge>
+                  <Badge tone="green">{c.deliveredCount} delivered</Badge>
+                  <Badge tone={c.failedCount > 0 ? "red" : "gray"}>{c.failedCount} failed</Badge>
+                </div>
               </div>
             ))
           )}
