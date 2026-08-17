@@ -141,6 +141,43 @@ test("a confirmed DATA_PAID_SUCCESSFULLY response completes the order and credit
   assert.ok((customer?.macaash_points ?? 0) >= 10);
 });
 
+// Regression test for the real error-126 investigation: the real order
+// that got "SORRY_THERE_IS_ISSUE_IN_THE_DATA_SERVER" had a 12-digit
+// receiver_phone ("252645390044") while SOMLINK's own wallet_phone
+// (SOMLINK_PHONE) is always the bare 9-digit local form — deliverViaSomlink
+// must send SOMLINK the same normalized local form for both, not the raw
+// stored value, matching orders.routes.ts's/smsLogs.routes.ts's own
+// normalizePhone convention for this exact "252/0/bare" ambiguity.
+test("data_phone and wallet_phone are normalized to the bare local 9-digit form before being sent to SOMLINK", async (t) => {
+  const orderId = await insertOrder();
+  await query(`UPDATE orders SET status='in_progress', receiver_phone='252645390044' WHERE id=$1`, [orderId]);
+
+  let sentBody: any = null;
+  t.mock.method(globalThis, "fetch", async (_input: any, init?: any) => {
+    const body = init?.body ? JSON.parse(init.body) : {};
+    if (body.data_phone || body.wallet_phone) sentBody = body;
+    return new Response(JSON.stringify({ code: 200, message: "DATA_PAID_SUCCESSFULLY", paid_amount: 1, balance: 1 }), { status: 200 });
+  });
+
+  const result = await deliverViaSomlink({
+    id: orderId,
+    customer_id: CUSTOMER_ID,
+    package_id: packageId,
+    receiver_phone: "252645390044",
+    amount: 1,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(sentBody.data_phone, "645390044");
+  assert.equal(sentBody.wallet_phone, "647177774");
+
+  const tx = await queryOne<{ data_phone: string; wallet_phone: string }>(
+    `SELECT data_phone, wallet_phone FROM somlink_transactions WHERE order_id=$1`,
+    [orderId]
+  );
+  assert.equal(tx?.data_phone, "645390044");
+  assert.equal(tx?.wallet_phone, "647177774");
+});
+
 test("a structured SOMLINK error (e.g. insufficient balance) leaves the order in_progress, not completed", async (t) => {
   const orderId = await insertOrder();
   await query(`UPDATE orders SET status='in_progress' WHERE id=$1`, [orderId]);

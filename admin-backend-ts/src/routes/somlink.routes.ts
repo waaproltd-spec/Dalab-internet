@@ -21,6 +21,22 @@ function requiredEnv(name: string): string {
   return value;
 }
 
+/** Somali phone numbers legitimately appear with/without the 252 country
+ * code or a leading 0 (the same ambiguity orders.routes.ts's own
+ * normalizePhone and smsLogs.routes.ts's own normalizePhone already exist
+ * to handle). order.receiver_phone/sender_phone are stored in whatever raw
+ * form the customer/agent entered — e.g. the 12-digit "252645390044" on the
+ * real order that got SOMLINK error 126 — while SOMLINK_PHONE (the wallet
+ * number SOMLINK's own /auth/data_v3_login already authenticates
+ * successfully) is the bare local 9-digit form ("647177774"). A 12-digit
+ * data_phone SOMLINK doesn't recognize as a valid MSISDN is a plausible
+ * cause of a generic "SORRY_THERE_IS_ISSUE_IN_THE_DATA_SERVER" rather than
+ * a specific invalid-phone error; normalizing both phone params to the one
+ * local form SOMLINK is confirmed to accept removes that mismatch. */
+function toLocalPhone(phone: string | null | undefined): string {
+  return String(phone ?? "").replace(/\D/g, "").slice(-9);
+}
+
 /**
  * Places one real SOMLINK /data/send_data order for this DALAB order and
  * records the attempt in somlink_transactions. Never called twice for the
@@ -43,7 +59,11 @@ export async function deliverViaSomlink(order: any): Promise<{ ok: true } | { ok
   if (!pkg?.somlink_bundle_id) {
     return { ok: false, reason: "no_bundle_configured" };
   }
-  const dataPhone: string | null = order.receiver_phone ?? order.sender_phone ?? null;
+  const rawDataPhone: string | null = order.receiver_phone ?? order.sender_phone ?? null;
+  if (!rawDataPhone) {
+    return { ok: false, reason: "no_customer_phone" };
+  }
+  const dataPhone = toLocalPhone(rawDataPhone);
   if (!dataPhone) {
     return { ok: false, reason: "no_customer_phone" };
   }
@@ -54,7 +74,7 @@ export async function deliverViaSomlink(order: any): Promise<{ ok: true } | { ok
 
   let walletPhone: string;
   try {
-    walletPhone = requiredEnv("SOMLINK_PHONE");
+    walletPhone = toLocalPhone(requiredEnv("SOMLINK_PHONE"));
   } catch (err) {
     return { ok: false, reason: "somlink_not_configured" };
   }
