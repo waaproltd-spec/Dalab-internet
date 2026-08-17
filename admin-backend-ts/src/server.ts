@@ -34,6 +34,7 @@ import { exchangeRouter } from "./routes/exchange.routes.js";
 import { smsSenderIdsRouter } from "./routes/smsSenderIds.routes.js";
 import { resellersRouter } from "./routes/resellers.routes.js";
 import { resellerOrdersRouter } from "./routes/resellerOrders.routes.js";
+import { resellerDepositsWithdrawalsRouter } from "./routes/resellerDepositsWithdrawals.routes.js";
 import { pool, queryOne } from "./db/pool.js";
 import { seedAll } from "./db/seed.js";
 import { sendJson } from "./utils/camelCase.js";
@@ -277,6 +278,7 @@ app.use(exchangeRouter);
 app.use(smsSenderIdsRouter);
 app.use(resellersRouter);
 app.use(resellerOrdersRouter);
+app.use(resellerDepositsWithdrawalsRouter);
 
 app.use((_req: Request, res: Response) => {
   res.status(404).json({ error: "Not found" });
