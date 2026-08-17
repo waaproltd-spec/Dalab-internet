@@ -1,10 +1,17 @@
 // Firebase Cloud Messaging wrapper — the only file in this codebase that
-// talks to Firebase. Configured from three env vars (FIREBASE_PROJECT_ID,
-// FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY — a service-account key
-// downloaded from Firebase Console > Project Settings > Service Accounts >
-// Generate new private key) rather than a JSON file on disk, matching how
-// every other secret in this app (SOMLINK_PASSWORD, JWT_SECRET, ...) is
-// configured via the process environment, not a committed file.
+// talks to Firebase. Configured either way:
+//
+//   1. FIREBASE_SERVICE_ACCOUNT_PATH — path to the service-account JSON file
+//      downloaded from Firebase Console > Project Settings > Service
+//      Accounts > Generate new private key, placed directly on the server
+//      (outside the repo, permissions locked down — see deploy notes).
+//      Preferred: firebase-admin's cert() reads the file itself, so the
+//      private key's embedded newlines never have to survive a round trip
+//      through a single-line env var.
+//   2. FIREBASE_PROJECT_ID / FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY —
+//      the same three fields as separate env vars (private key with its
+//      newlines \n-escaped), for setups where a file on disk isn't an
+//      option. Checked only if (1) isn't set.
 //
 // Every export here is best-effort: a push failure must never fail the
 // order/exchange/campaign action that triggered it (same rule
@@ -18,13 +25,22 @@ import { query } from "../db/pool.js";
 let initAttempted = false;
 let configured = false;
 
-/** Lazy, once-only init — most local/dev/test runs never set these three
- * vars, and importing this module must not throw just because they're
- * unset (mirrors requiredEnv()'s callers in somlink.ts, which only throw
- * at the point a send is actually attempted, not at import time). */
+/** Lazy, once-only init — most local/dev/test runs set neither of these,
+ * and importing this module must not throw just because they're unset
+ * (mirrors requiredEnv()'s callers in somlink.ts, which only throw at the
+ * point a send is actually attempted, not at import time). */
 function ensureInitialized(): boolean {
   if (initAttempted) return configured;
   initAttempted = true;
+
+  const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
+  if (serviceAccountPath) {
+    if (getApps().length === 0) {
+      initializeApp({ credential: cert(serviceAccountPath) });
+    }
+    configured = true;
+    return true;
+  }
 
   const projectId = process.env.FIREBASE_PROJECT_ID;
   const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
@@ -37,7 +53,7 @@ function ensureInitialized(): boolean {
   if (!projectId || !clientEmail || !privateKey) {
     // eslint-disable-next-line no-console
     console.warn(
-      "Push notifications disabled: FIREBASE_PROJECT_ID/FIREBASE_CLIENT_EMAIL/FIREBASE_PRIVATE_KEY are not fully set."
+      "Push notifications disabled: set FIREBASE_SERVICE_ACCOUNT_PATH, or all three of FIREBASE_PROJECT_ID/FIREBASE_CLIENT_EMAIL/FIREBASE_PRIVATE_KEY."
     );
     return false;
   }

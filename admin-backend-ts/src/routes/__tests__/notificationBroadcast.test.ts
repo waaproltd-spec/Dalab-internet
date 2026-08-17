@@ -59,7 +59,7 @@ before(async () => {
   await query(`DELETE FROM service_categories`);
   await query(`DELETE FROM companies WHERE id=$1`, [COMPANY_ID]);
   await query(`DELETE FROM customers`);
-  await query(`DELETE FROM agents WHERE id=$1`, [AGENT_ID]);
+  await query(`DELETE FROM agents WHERE phone=$1`, ["252699100000"]);
 
   recentCustomerId = randomUUID();
   internetCustomerId = randomUUID();
@@ -122,6 +122,21 @@ function authed(token: string, body: unknown) {
   };
 }
 
+interface BroadcastResult {
+  id: string;
+  recipientCount: number;
+  sentCount: number;
+  deliveredCount: number;
+  failedCount: number;
+}
+interface CampaignRow {
+  createdByName: string;
+  createdByRole: string;
+  sentCount: number;
+  deliveredCount: number;
+  failedCount: number;
+}
+
 test("targetType 'multiple' sends only to the exact customerIds given, recording an in-app row and a failed campaign_recipients row (no FCM configured in this test env)", async () => {
   const res = await fetch(`${baseUrl}/notifications/broadcast`, authed(agentToken, {
     targetType: "multiple",
@@ -131,7 +146,7 @@ test("targetType 'multiple' sends only to the exact customerIds given, recording
     body: "DALAB will be briefly unavailable tonight.",
   }));
   assert.equal(res.status, 201);
-  const campaign = await res.json();
+  const campaign = (await res.json()) as BroadcastResult;
   assert.equal(campaign.recipientCount, 2);
   assert.equal(campaign.sentCount, 2);
   assert.equal(campaign.deliveredCount, 0);
@@ -163,7 +178,7 @@ test("targetType 'recent' includes only customers who joined within the last 7 d
     title: "Welcome",
     body: "Thanks for joining DALAB!",
   }));
-  const campaign = await res.json();
+  const campaign = (await res.json()) as BroadcastResult;
   const recipients = await query<{ customer_id: string }>(
     `SELECT customer_id FROM notification_campaign_recipients WHERE campaign_id=$1`,
     [campaign.id]
@@ -181,7 +196,7 @@ test("targetType 'all' reaches every active customer and excludes blocked ones",
     title: "App update available",
     body: "Update to the latest version for the new design.",
   }));
-  const campaign = await res.json();
+  const campaign = (await res.json()) as BroadcastResult;
   const recipients = await query<{ customer_id: string }>(
     `SELECT customer_id FROM notification_campaign_recipients WHERE campaign_id=$1`,
     [campaign.id]
@@ -197,7 +212,7 @@ test("serviceFilter 'internet' matches only customers with a Store order", async
     title: "New Internet packages",
     body: "Check out our new data bundles.",
   }));
-  const campaign = await res.json();
+  const campaign = (await res.json()) as BroadcastResult;
   const recipients = await query<{ customer_id: string }>(
     `SELECT customer_id FROM notification_campaign_recipients WHERE campaign_id=$1`,
     [campaign.id]
@@ -212,7 +227,7 @@ test("serviceFilter 'reseller' matches nobody yet (no Reseller data model exists
     title: "Reseller launch",
     body: "Reselling is coming soon.",
   }));
-  const campaign = await res.json();
+  const campaign = (await res.json()) as BroadcastResult;
   assert.equal(campaign.recipientCount, 0);
 });
 
@@ -231,7 +246,7 @@ test("GET /notifications/campaigns lists history newest-first with the sender's 
     headers: { Authorization: `Bearer ${agentToken}` },
   });
   assert.equal(res.status, 200);
-  const rows = await res.json();
+  const rows = (await res.json()) as CampaignRow[];
   assert.ok(rows.length >= 5);
   assert.equal(rows[0].createdByName, "Test Agent");
   assert.equal(rows[0].createdByRole, "agent");
