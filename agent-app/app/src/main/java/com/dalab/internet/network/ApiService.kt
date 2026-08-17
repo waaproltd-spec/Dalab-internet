@@ -56,6 +56,41 @@ data class VoucherConfirmationRequest(val receiverPhone: String, val amount: Dou
 data class VoucherConfirmationResponse(val matched: Boolean, val orderId: String? = null, val alreadyCompleted: Boolean = false)
 data class ExchangePayoutConfirmationRequest(val receiverPhone: String, val amount: Double, val rawText: String)
 data class ExchangePayoutConfirmationResponse(val matched: Boolean, val orderId: String? = null, val alreadyCompleted: Boolean = false)
+
+// ---------------- Notification broadcast ----------------
+// Same POST /notifications/broadcast + GET /notifications/campaigns the
+// Admin dashboard's Notifications tab uses (App.jsx's DalabAdminApi.
+// broadcastNotification/getNotificationCampaigns) — an agent hitting these
+// exact routes gets the identical targeting options and history the Admin
+// dashboard shows, with no capability gap between the two apps.
+data class BroadcastRequest(
+    val targetType: String, // "single" | "multiple" | "all" | "recent"
+    val customerIds: List<String> = emptyList(),
+    val serviceFilter: String, // "all" | "internet" | "ebadal" | "reseller"
+    val title: String,
+    val body: String,
+)
+data class BroadcastResponse(
+    val id: String,
+    val recipientCount: Int,
+    val sentCount: Int,
+    val deliveredCount: Int,
+    val failedCount: Int,
+)
+data class NotificationCampaign(
+    val id: String,
+    val title: String,
+    val body: String,
+    val targetType: String,
+    val serviceFilter: String,
+    val recipientCount: Int,
+    val sentCount: Int,
+    val deliveredCount: Int,
+    val failedCount: Int,
+    val createdByName: String?,
+    val createdByRole: String,
+    val createdAt: String,
+)
 data class DialAttemptStartRequest(val simSlot: Int?, val ussdString: String, val attemptNumber: Int)
 data class DialAttemptStartResponse(val id: String)
 // isFinalAttempt: true when this is the last outcome this order will get
@@ -157,6 +192,12 @@ interface ApiService {
 
     @GET("agent/notifications")
     suspend fun getNotifications(): Response<List<AgentNotification>>
+
+    @POST("notifications/broadcast")
+    suspend fun broadcastNotification(@Body body: BroadcastRequest): Response<BroadcastResponse>
+
+    @GET("notifications/campaigns")
+    suspend fun getNotificationCampaigns(): Response<List<NotificationCampaign>>
 
     @GET("agent/sim-routing")
     suspend fun getSimRouting(@Query("deviceId") deviceId: String? = null): Response<List<SimRoutingEntry>>

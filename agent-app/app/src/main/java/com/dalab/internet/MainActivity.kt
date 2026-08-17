@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.CurrencyExchange
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.PointOfSale
@@ -48,6 +49,7 @@ import com.dalab.internet.ui.ExchangeAccessibilitySetupScreen
 import com.dalab.internet.ui.ExchangeOrderDetailScreen
 import com.dalab.internet.ui.ExchangeOrdersListScreen
 import com.dalab.internet.ui.NewSaleScreen
+import com.dalab.internet.ui.NotificationsScreen
 import com.dalab.internet.ui.OrderDetailScreen
 import com.dalab.internet.ui.OrdersListScreen
 import com.dalab.internet.ui.PackagesScreen
@@ -120,7 +122,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP }
+private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, NOTIFICATIONS }
 private enum class HomeTab { ORDERS, SALES, CUSTOMERS, REPORTS, MORE }
 
 @Composable
@@ -226,6 +228,7 @@ private fun AgentApp() {
             onOpenPermissionsStatus = { screen = Screen.PERMISSIONS_STATUS },
             onOpenReliabilityDashboard = { screen = Screen.RELIABILITY_DASHBOARD },
             onOpenMoneyExchange = { screen = Screen.EXCHANGE_LIST },
+            onOpenNotifications = { screen = Screen.NOTIFICATIONS },
         )
 
         Screen.ORDER_DETAIL -> selectedOrder?.let { order ->
@@ -263,6 +266,8 @@ private fun AgentApp() {
         }
 
         Screen.EXCHANGE_SETUP -> ExchangeAccessibilitySetupScreen(onBack = { screen = Screen.EXCHANGE_LIST })
+
+        Screen.NOTIFICATIONS -> NotificationsScreen(onBack = { screen = Screen.HOME })
     }
 }
 
@@ -285,6 +290,7 @@ private fun AgentHome(
     onOpenPermissionsStatus: () -> Unit,
     onOpenReliabilityDashboard: () -> Unit,
     onOpenMoneyExchange: () -> Unit,
+    onOpenNotifications: () -> Unit,
 ) {
     var tab by remember { mutableStateOf(HomeTab.ORDERS) }
 
@@ -339,6 +345,7 @@ private fun AgentHome(
                     onOpenPermissionsStatus = onOpenPermissionsStatus,
                     onOpenReliabilityDashboard = onOpenReliabilityDashboard,
                     onOpenMoneyExchange = onOpenMoneyExchange,
+                    onOpenNotifications = onOpenNotifications,
                 )
             }
         }
@@ -355,8 +362,16 @@ private fun MoreScreen(
     onOpenPermissionsStatus: () -> Unit,
     onOpenReliabilityDashboard: () -> Unit,
     onOpenMoneyExchange: () -> Unit,
+    onOpenNotifications: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
+        ListItem(
+            headlineContent = { Text("Notifications") },
+            supportingContent = { Text("Send a push notification to customers") },
+            leadingContent = { Icon(Icons.Filled.Notifications, contentDescription = null) },
+            modifier = Modifier.clickable(onClick = onOpenNotifications),
+        )
+        Divider()
         ListItem(
             headlineContent = { Text("Money Exchange") },
             supportingContent = { Text("Verified exchanges waiting for payout") },
