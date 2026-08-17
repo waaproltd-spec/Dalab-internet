@@ -146,6 +146,9 @@ const DalabAdminApi = {
   companyLogoUrl: (id) => `${DALAB_API_BASE_URL}/companies/${id}/logo`,
   updateCompanyStatus: (id, status) => dalabAdminApiRequest(`/admin/companies/${id}/status`, { method: "PUT", body: { status } }),
   updateCompanyVisibility: (id, visibleCustomerApp, visibleAgentApp) => dalabAdminApiRequest(`/admin/companies/${id}/visibility`, { method: "PUT", body: { visibleCustomerApp, visibleAgentApp } }),
+  // 'ussd' (default) or 'somlink' — switches a company's whole fulfillment
+  // pipeline; super_admin only on the backend.
+  updateCompanyFulfillmentMethod: (id, fulfillmentMethod) => dalabAdminApiRequest(`/admin/companies/${id}/fulfillment-method`, { method: "PUT", body: { fulfillmentMethod } }),
   updatePaymentNumber: (id, paymentNumber, paymentUssdTemplate) => dalabAdminApiRequest(`/admin/companies/${id}/payment-number`, { method: "PUT", body: { paymentNumber, paymentUssdTemplate } }),
   updateProviderNumber: (id, providerNumber) => dalabAdminApiRequest(`/admin/companies/${id}/provider-number`, { method: "PUT", body: { providerNumber } }),
   getCompanyPaymentMethods: (companyId) => dalabAdminApiRequest(`/admin/companies/${companyId}/payment-methods`),
@@ -176,6 +179,8 @@ const DalabAdminApi = {
   },
   getOrderCounts: (companyId) => dalabAdminApiRequest(`/admin/orders/counts${companyId ? `?companyId=${companyId}` : ""}`),
   updateOrderStatus: (id, status) => dalabAdminApiRequest(`/admin/orders/${id}/status`, { method: "PUT", body: { status } }),
+  getOrderSomlinkStatus: (id) => dalabAdminApiRequest(`/admin/orders/${id}/somlink-status`),
+  retrySomlinkOrder: (id) => dalabAdminApiRequest(`/admin/orders/${id}/retry-somlink`, { method: "POST" }),
   getCustomers: (search) => dalabAdminApiRequest(`/admin/customers${search ? `?search=${search}` : ""}`),
   updateCustomer: (id, body) => dalabAdminApiRequest(`/admin/customers/${id}`, { method: "PUT", body }),
   deleteCustomer: (id) => dalabAdminApiRequest(`/admin/customers/${id}`, { method: "DELETE" }),
@@ -1523,6 +1528,21 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
     }
   };
 
+  // Switches a whole provider between the USSD-dial flow and the SOMLINK
+  // API — a real-money fulfillment change, so this is wired directly (not
+  // bundled into the general Save button) and only ever shown to a
+  // super_admin, matching the backend's own restriction on this route.
+  const setFulfillmentMethod = async (c, fulfillmentMethod) => {
+    setForm((prev) => ({ ...prev, fulfillmentMethod }));
+    setCompanies((prev) => prev.map((x) => (x.id === c.id ? { ...x, fulfillmentMethod } : x))); // optimistic
+    try {
+      await DalabAdminApi.updateCompanyFulfillmentMethod(c.id, fulfillmentMethod);
+    } catch (err) {
+      setError(err.message || "Could not update fulfillment method.");
+      refreshCompanies();
+    }
+  };
+
   const remove = async (c) => {
     if (!window.confirm(`Delete ${c.name}? This can't be undone.`)) return;
     if (DALAB_API_ENABLED) {
@@ -1568,6 +1588,7 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
                   <div style={{ fontWeight: 700, fontSize: 14, color: INK }}>{c?.name || "Unnamed company"}</div>
                   <div style={{ fontSize: 11.5, color: MUTE }}>{c.gateway}{c.description ? ` · ${c.description}` : ""}</div>
                 </div>
+                {c.fulfillmentMethod === "somlink" && <Badge tone="blue">SOMLINK</Badge>}
                 <Badge tone={c.status === "enabled" ? "green" : "red"}>{c.status === "enabled" ? "Enabled" : "Disabled"}</Badge>
                 {canManageStatus && (
                   <button onClick={() => toggle(c)} title="Enable / disable" style={{ background: "none", border: "none", cursor: "pointer" }}>
@@ -1648,6 +1669,25 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
           <Field label="Brand color">
             <input type="color" style={{ ...inputStyle, padding: 4, height: 40 }} value={form.color} onChange={(e) => setForm({ ...form, color: e.target.value })} />
           </Field>
+
+          {DALAB_API_ENABLED && editing !== "new" && admin?.role === "super_admin" && (
+            <Field label="Fulfillment method">
+              <select
+                style={inputStyle}
+                value={form.fulfillmentMethod || "ussd"}
+                onChange={(e) => setFulfillmentMethod({ id: editing }, e.target.value)}
+              >
+                <option value="ussd">USSD (dial via agent SIM — default)</option>
+                <option value="somlink">SOMLINK (automatic data API)</option>
+              </select>
+              <div style={{ fontSize: 11, color: MUTE, marginTop: 4 }}>
+                SOMLINK delivers data automatically through an API instead of dialing a USSD code — every package under
+                this provider needs its own SOMLINK Bundle ID set in Packages, or orders will have nothing to deliver.
+                This takes effect immediately, not on Save.
+              </div>
+            </Field>
+          )}
+
           <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
             <Button onClick={save} icon={Check} disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
             <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
@@ -2035,6 +2075,22 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
               </div>
             </Field>
           )}
+          {companies.find((c) => c.id === form.companyId)?.fulfillmentMethod === "somlink" && (
+            <Field label="SOMLINK Bundle ID">
+              <input
+                type="number"
+                step="1"
+                min="0"
+                style={inputStyle}
+                value={form.somlinkBundleId ?? ""}
+                onChange={(e) => setForm({ ...form, somlinkBundleId: e.target.value })}
+                placeholder="e.g. 20061"
+              />
+              <div style={{ fontSize: 11, color: MUTE, marginTop: 4 }}>
+                This provider is set to SOMLINK — required for this package to be deliverable. Must match SOMLINK's own bundle catalog ID exactly (from your SOMLINK account documentation), or orders for this package cannot be fulfilled.
+              </div>
+            </Field>
+          )}
           {templateWarning && (
             <div style={{ background: "#FFF6E5", border: "1px solid #F5C451", borderRadius: 8, padding: "10px 12px", fontSize: 12.5, color: "#8A6100", marginBottom: 14 }}>
               {templateWarning}
@@ -2202,6 +2258,11 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
   const [localOrder, setLocalOrder] = useState(order);
   const [visible, setVisible] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [somlinkStatus, setSomlinkStatus] = useState(null);
+  const [somlinkStatusError, setSomlinkStatusError] = useState("");
+  const [retryingSomlink, setRetryingSomlink] = useState(false);
+  const [retrySomlinkError, setRetrySomlinkError] = useState("");
+  const isSomlink = order?.companyFulfillmentMethod === "somlink";
 
   // Mount closed, then flip to open on the next frame so the browser
   // actually animates the transform/opacity transition instead of snapping
@@ -2247,6 +2308,39 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
     if (attempts.length > 0 || !order.ussdGenerated || order.ussdGenerationFailedReason) return;
     DalabAdminApi.getOrderDeliveryStatus(order.id).then(setDeliveryStatus).catch(() => {});
   }, [order?.id, attempts.length, order?.ussdGenerated, order?.ussdGenerationFailedReason]);
+
+  // SOMLINK-fulfilled orders have no USSD dial history — this is their
+  // equivalent panel, sourced from somlink_transactions instead.
+  useEffect(() => {
+    setSomlinkStatus(null);
+    setSomlinkStatusError("");
+    if (!order || !DALAB_API_ENABLED || !isSomlink) return;
+    DalabAdminApi.getOrderSomlinkStatus(order.id)
+      .then(setSomlinkStatus)
+      .catch((err) => setSomlinkStatusError(err.message || "Could not load SOMLINK delivery status."));
+  }, [order?.id, isSomlink]);
+
+  // Deliberately does NOT go through the onStatus/updateOrderStatus prop —
+  // that's the generic manual status-override route. The real outcome here
+  // is decided entirely server-side by POST retry-somlink itself (which
+  // only completes the order on a confirmed SOMLINK success, via the same
+  // completeOrderById every other completion path uses); this just reloads
+  // what the server actually did, in place, so the drawer reflects it
+  // without a second, separate status-changing call.
+  const retrySomlinkFromDrawer = async () => {
+    setRetryingSomlink(true);
+    setRetrySomlinkError("");
+    try {
+      const result = await DalabAdminApi.retrySomlinkOrder(order.id);
+      setLocalOrder(result.order);
+      const refreshed = await DalabAdminApi.getOrderSomlinkStatus(order.id);
+      setSomlinkStatus(refreshed);
+    } catch (err) {
+      setRetrySomlinkError(err.message || "Could not retry SOMLINK delivery for this order.");
+    } finally {
+      setRetryingSomlink(false);
+    }
+  };
 
   if (!order) return null;
   const row = (label, value, mono) => (
@@ -2378,50 +2472,101 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
           </div>
         )}
 
-        <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>USSD DIALER</div>
-        {order.ussdGenerated ? (
-          <div style={{ background: "#0B1240", borderRadius: 10, padding: 12, marginTop: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-            <span style={{ color: "#22B24C", fontFamily: "monospace", fontSize: 13.5, fontWeight: 700, wordBreak: "break-all" }}>{order.ussdGenerated}</span>
-            <button
-              onClick={() => navigator.clipboard?.writeText(order.ussdGenerated)}
-              title="Copy"
-              style={{ background: "none", border: "none", cursor: "pointer", flexShrink: 0 }}
-            >
-              <Copy size={15} color="#9AA1D4" />
-            </button>
-          </div>
-        ) : order.ussdGenerationFailedReason ? (
-          <div style={{ marginTop: 8, fontSize: 12.5, color: "#C81E2C", fontWeight: 600 }}>
-            USSD generation failed: {order.ussdGenerationFailedReason}
-          </div>
+        {isSomlink ? (
+          <>
+            <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>SOMLINK ORDER STATUS</div>
+            {somlinkStatusError ? (
+              <div style={{ marginTop: 8, fontSize: 12, color: "#C81E2C" }}>{somlinkStatusError}</div>
+            ) : !somlinkStatus?.transaction ? (
+              <div style={{ marginTop: 8, fontSize: 12, color: MUTE }}>No SOMLINK delivery attempt recorded for this order yet.</div>
+            ) : (
+              <div style={{ marginTop: 8, padding: "10px 12px", borderRadius: 8, border: `1px solid ${BORDER}` }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11.5 }}>
+                  <Badge tone={somlinkStatus.transaction.status === "success" ? "green" : somlinkStatus.transaction.status === "failed" ? "red" : "amber"}>
+                    {somlinkStatus.transaction.status}
+                  </Badge>
+                  <span style={{ color: MUTE }}>bundle {somlinkStatus.transaction.bundleId}</span>
+                  <span style={{ color: MUTE, marginLeft: "auto" }}>{formatDateTime(somlinkStatus.transaction.requestedAt)}</span>
+                </div>
+                {(somlinkStatus.transaction.responseMessage || somlinkStatus.transaction.errorDetail) && (
+                  <div style={{ fontSize: 11.5, color: INK, marginTop: 6 }}>
+                    {somlinkStatus.transaction.responseCode != null ? `Code ${somlinkStatus.transaction.responseCode}: ` : ""}
+                    {somlinkStatus.transaction.responseMessage || somlinkStatus.transaction.errorDetail}
+                  </div>
+                )}
+                {somlinkStatus.transaction.status === "success" && (
+                  <div style={{ fontSize: 11, color: MUTE, marginTop: 4 }}>
+                    Paid ${Number(somlinkStatus.transaction.paidAmount ?? 0).toFixed(2)} · wallet balance after: ${Number(somlinkStatus.transaction.balanceAfter ?? 0).toFixed(2)}
+                  </div>
+                )}
+              </div>
+            )}
+            {retrySomlinkError && <div style={{ color: "#C81E2C", fontSize: 12, marginTop: 8 }}>{retrySomlinkError}</div>}
+            {localOrder.status === "in_progress" && ["failed", "ambiguous"].includes(somlinkStatus?.transaction?.status) && (
+              <div style={{ marginTop: 10 }}>
+                {somlinkStatus.transaction.status === "ambiguous" && (
+                  <div style={{ fontSize: 11, color: "#A9720A", marginBottom: 6 }}>
+                    The outcome of the last attempt is unknown — confirm via SOMLINK's own dashboard that it did NOT go through before retrying, to avoid a duplicate charge.
+                  </div>
+                )}
+                <Button variant="primary" icon={RefreshCw} onClick={retrySomlinkFromDrawer} disabled={retryingSomlink}>
+                  {retryingSomlink ? "Retrying..." : "Retry SOMLINK"}
+                </Button>
+              </div>
+            )}
+          </>
         ) : (
-          <div style={{ marginTop: 8, fontSize: 12, color: MUTE }}>
-            Not generated yet — this happens automatically once the order is approved (moved to In Progress), provided a matching template and a provider PIN are set up in Device & USSD.
-          </div>
+          <>
+            <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>USSD DIALER</div>
+            {order.ussdGenerated ? (
+              <div style={{ background: "#0B1240", borderRadius: 10, padding: 12, marginTop: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                <span style={{ color: "#22B24C", fontFamily: "monospace", fontSize: 13.5, fontWeight: 700, wordBreak: "break-all" }}>{order.ussdGenerated}</span>
+                <button
+                  onClick={() => navigator.clipboard?.writeText(order.ussdGenerated)}
+                  title="Copy"
+                  style={{ background: "none", border: "none", cursor: "pointer", flexShrink: 0 }}
+                >
+                  <Copy size={15} color="#9AA1D4" />
+                </button>
+              </div>
+            ) : order.ussdGenerationFailedReason ? (
+              <div style={{ marginTop: 8, fontSize: 12.5, color: "#C81E2C", fontWeight: 600 }}>
+                USSD generation failed: {order.ussdGenerationFailedReason}
+              </div>
+            ) : (
+              <div style={{ marginTop: 8, fontSize: 12, color: MUTE }}>
+                Not generated yet — this happens automatically once the order is approved (moved to In Progress), provided a matching template and a provider PIN are set up in Device & USSD.
+              </div>
+            )}
+          </>
         )}
 
         <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>DATE & TIME</div>
         {row("Created", formatDateTime(order.createdAt), true)}
         {order.completedAt && row("Completed", formatDateTime(order.completedAt), true)}
 
-        <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>USSD EXECUTION HISTORY</div>
-        {attemptsError ? (
-          <div style={{ marginTop: 8, fontSize: 12, color: "#C81E2C" }}>{attemptsError}</div>
-        ) : attempts.length === 0 ? (
-          <div style={{ marginTop: 8, fontSize: 12, color: MUTE }}>
-            {waitingForDeviceMessage(deliveryStatus) || "No dial attempts recorded for this order yet."}
-          </div>
-        ) : (
-          <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
-            {attempts.map((a) => (
-              <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: `1px solid ${BORDER}`, fontSize: 11.5 }}>
-                <Badge tone={a.status === "success" ? "green" : a.status === "failed" ? "red" : "amber"}>{a.status}</Badge>
-                <span style={{ color: MUTE }}>SIM {a.simSlot ?? "—"}</span>
-                <span style={{ color: MUTE }}>attempt #{a.attemptNumber}</span>
-                <span style={{ color: MUTE, marginLeft: "auto" }}>{formatDateTime(a.createdAt)}</span>
+        {!isSomlink && (
+          <>
+            <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>USSD EXECUTION HISTORY</div>
+            {attemptsError ? (
+              <div style={{ marginTop: 8, fontSize: 12, color: "#C81E2C" }}>{attemptsError}</div>
+            ) : attempts.length === 0 ? (
+              <div style={{ marginTop: 8, fontSize: 12, color: MUTE }}>
+                {waitingForDeviceMessage(deliveryStatus) || "No dial attempts recorded for this order yet."}
               </div>
-            ))}
-          </div>
+            ) : (
+              <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                {attempts.map((a) => (
+                  <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: `1px solid ${BORDER}`, fontSize: 11.5 }}>
+                    <Badge tone={a.status === "success" ? "green" : a.status === "failed" ? "red" : "amber"}>{a.status}</Badge>
+                    <span style={{ color: MUTE }}>SIM {a.simSlot ?? "—"}</span>
+                    <span style={{ color: MUTE }}>attempt #{a.attemptNumber}</span>
+                    <span style={{ color: MUTE, marginLeft: "auto" }}>{formatDateTime(a.createdAt)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
         )}
 
         {reverseError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginTop: 14 }}>{reverseError}</div>}
@@ -2810,6 +2955,7 @@ function Orders({ orders, setOrders, companies, admin }) {
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <div style={{ width: 8, height: 8, borderRadius: 4, background: o.companyColor || INDIGO, flexShrink: 0 }} />
                     <span style={{ fontWeight: 700, fontSize: 13.5, color: INK }}>{o.companyName}</span>
+                    {o.companyFulfillmentMethod === "somlink" && <Badge tone="blue">SOMLINK</Badge>}
                   </div>
                   <Badge tone={displayOrderTone(o)}>{displayOrderStatus(o)}</Badge>
                 </div>
@@ -7002,6 +7148,15 @@ const STUCK_REASON_META = {
   // looksLikeFailureResponse. Red: needs a human to check the raw response
   // text (Payment History) and decide, same severity as a config gap.
   delivery_response_ambiguous: { label: "Delivery Response Ambiguous", tone: "red" },
+  // SOMLINK-fulfilled orders (see classifySomlinkStuckReason, somlink.routes.ts)
+  // — a real-money API call rather than a USSD dial, so these get their own
+  // "Retry SOMLINK" action below instead of "Send to Agent".
+  somlink_not_attempted: { label: "SOMLINK Not Attempted", tone: "red" },
+  somlink_declined: { label: "SOMLINK Declined", tone: "red" },
+  // A network error/timeout — SOMLINK's actual outcome is unknown, so this
+  // is never auto-retried; a human must confirm via SOMLINK's own dashboard
+  // that the prior attempt did NOT go through before retrying.
+  somlink_response_ambiguous: { label: "SOMLINK Response Ambiguous — verify before retrying", tone: "amber" },
 };
 
 function PendingRecoveryPanel() {
@@ -7043,6 +7198,24 @@ function PendingRecoveryPanel() {
       fetchRows();
     } catch (err) {
       setActionError((m) => ({ ...m, [order.id]: err.message || "Could not send this order back to the agent." }));
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  // SOMLINK orders never go through "Send to Agent" — that path regenerates
+  // a USSD dial string, which is meaningless for an API-fulfilled order and
+  // would leave it stuck the same way. This calls the real SOMLINK retry
+  // route instead, which places one fresh real-money attempt and only
+  // completes the order on a confirmed success.
+  const retrySomlink = async (order) => {
+    setActingId(order.id);
+    setActionError((m) => ({ ...m, [order.id]: "" }));
+    try {
+      await DalabAdminApi.retrySomlinkOrder(order.id);
+      fetchRows();
+    } catch (err) {
+      setActionError((m) => ({ ...m, [order.id]: err.message || "Could not retry SOMLINK delivery for this order." }));
     } finally {
       setActingId(null);
     }
@@ -7096,9 +7269,15 @@ function PendingRecoveryPanel() {
                     <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(o.createdAt)}</td>
                     <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
                       {actionError[o.id] && <div style={{ color: "#C81E2C", fontSize: 11, marginBottom: 4 }}>{actionError[o.id]}</div>}
-                      <Button variant="primary" disabled={actingId === o.id} onClick={() => sendToAgent(o)}>
-                        {actingId === o.id ? "Sending..." : "Send to Agent"}
-                      </Button>
+                      {o.companyFulfillmentMethod === "somlink" ? (
+                        <Button variant="primary" disabled={actingId === o.id} onClick={() => retrySomlink(o)}>
+                          {actingId === o.id ? "Retrying..." : "Retry SOMLINK"}
+                        </Button>
+                      ) : (
+                        <Button variant="primary" disabled={actingId === o.id} onClick={() => sendToAgent(o)}>
+                          {actingId === o.id ? "Sending..." : "Send to Agent"}
+                        </Button>
+                      )}
                     </td>
                   </tr>
                 );

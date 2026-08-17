@@ -36,6 +36,15 @@ async function loadOrder(id: string) {
   return queryOne(`${ORDER_LIST_SELECT} WHERE o.id=$1`, [id]);
 }
 
+// Admin/staff-only variant of ORDER_LIST_SELECT, adding the company's
+// fulfillment_method — needed so the dashboard can show a "SOMLINK" badge
+// and pick the right recovery action per order, but deliberately kept out
+// of ORDER_LIST_SELECT/loadOrder above since those also serve the
+// customer-facing /orders/:id route, and the provider a company uses under
+// the hood must stay invisible to the customer app.
+const ADMIN_ORDER_LIST_SELECT = `${ORDER_LIST_SELECT.slice(0, ORDER_LIST_SELECT.indexOf("FROM"))}, co.fulfillment_method AS company_fulfillment_method
+  ${ORDER_LIST_SELECT.slice(ORDER_LIST_SELECT.indexOf("FROM"))}`;
+
 // ussd_generated carries the provider's plaintext PIN inlined (the Agent
 // App needs the real string to dial) — every customer- and admin/staff-
 // facing response must show ussd_generated_masked instead. Agent-facing
@@ -669,7 +678,7 @@ ordersRouter.get("/agent/transactions", requireAuth("agent"), async (req, res) =
 // ---------------- Admin/Staff: Orders Management ----------------
 ordersRouter.get("/admin/orders", requireStaff(), async (req, res) => {
   const { status, companyId, search, dateFrom, dateTo } = req.query as Record<string, string | undefined>;
-  let sql = `${ORDER_LIST_SELECT} WHERE 1=1`;
+  let sql = `${ADMIN_ORDER_LIST_SELECT} WHERE 1=1`;
   const args: unknown[] = [];
   if (status) { args.push(status); sql += ` AND o.status=$${args.length}`; }
   if (companyId) { args.push(companyId); sql += ` AND o.company_id=$${args.length}`; }
@@ -768,7 +777,7 @@ async function classifyStuckReason(order: any): Promise<string | null> {
 // reason every other literal-path route above already is.
 ordersRouter.get("/admin/orders/pending-recovery", requireStaff(), async (_req, res) => {
   const candidates = await query<any>(
-    `${ORDER_LIST_SELECT}
+    `${ADMIN_ORDER_LIST_SELECT}
      WHERE o.status IN ('pending','in_progress')
        AND o.created_at < now() - interval '5 minutes'
      ORDER BY o.created_at ASC
@@ -781,9 +790,32 @@ ordersRouter.get("/admin/orders/pending-recovery", requireStaff(), async (_req, 
 });
 
 ordersRouter.get("/admin/orders/:id", requireStaff(), async (req, res) => {
-  const order = await loadOrder(req.params.id);
+  const order = await queryOne(`${ADMIN_ORDER_LIST_SELECT} WHERE o.id=$1`, [req.params.id]);
   if (!order) return sendJson(res, 404, { error: "Order not found" });
   sendJson(res, 200, maskOrder(order));
+});
+
+// Admin-only: the latest SOMLINK delivery attempt for this order, for the
+// order-detail drawer's "SOMLINK order status" panel. Returns
+// fulfillmentMethod so the dashboard knows whether to show this panel at
+// all, and null transaction fields for a somlink order that hasn't been
+// attempted yet (e.g. still 'pending', not yet verified).
+ordersRouter.get("/admin/orders/:id/somlink-status", requireStaff(), async (req, res) => {
+  const order = await queryOne<{ company_id: string }>(`SELECT company_id FROM orders WHERE id=$1`, [req.params.id]);
+  if (!order) return sendJson(res, 404, { error: "Order not found" });
+  const company = await queryOne<{ fulfillment_method: string }>(
+    `SELECT fulfillment_method FROM companies WHERE id=$1`,
+    [order.company_id]
+  );
+  if (company?.fulfillment_method !== "somlink") {
+    return sendJson(res, 200, { fulfillmentMethod: company?.fulfillment_method ?? "ussd", transaction: null });
+  }
+  const transaction = await queryOne(
+    `SELECT status, bundle_id, response_code, response_message, paid_amount, balance_after, error_detail, requested_at, responded_at
+     FROM somlink_transactions WHERE order_id=$1 ORDER BY created_at DESC LIMIT 1`,
+    [req.params.id]
+  );
+  sendJson(res, 200, { fulfillmentMethod: "somlink", transaction });
 });
 
 // For an order that's verified + USSD-generated but has zero dial attempts
