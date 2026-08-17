@@ -25,6 +25,7 @@ export const PERMISSIONS = [
   "referrals.manage",
   "finance.manage",
   "exchange.manage",
+  "resellers.manage",
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
