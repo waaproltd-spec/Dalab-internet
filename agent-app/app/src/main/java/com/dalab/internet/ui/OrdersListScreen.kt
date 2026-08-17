@@ -45,7 +45,12 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private val DalabIndigo = Color(0xFF1D2E8C)
+// DALAB brand — Dark Azure + Soft Blue, shared with the Customer App and
+// Admin Dashboard. DalabGreen stays separate: it's the functional
+// success/money-earned color (line below and the sale-amount text further
+// down), not brand, per the shared two-color rule's own carve-out.
+private val DalabIndigo = Color(0xFF003152)
+private val DalabSoftBlue = Color(0xFFADDFF1)
 private val DalabGreen = Color(0xFF16A34A)
 
 private enum class OrdersFilter(val label: String, val apiStatus: String?) {
@@ -263,7 +268,7 @@ private fun AgentHomeHeader(
         modifier = Modifier
             .fillMaxWidth()
             .background(
-                Brush.linearGradient(listOf(DalabIndigo, DalabGreen)),
+                Brush.linearGradient(listOf(DalabIndigo, DalabSoftBlue)),
                 shape = RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp),
             )
             .padding(20.dp),

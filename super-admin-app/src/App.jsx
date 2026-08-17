@@ -13,8 +13,13 @@ import {
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 
 // ---- DALAB INTERNET / Admin design tokens ----
+// INDIGO is the shared brand color, kept under its old name (avoids a
+// ~49-usage rename across this file) but now Dark Azure #003152 — same
+// value as the Customer App's kDarkAzure and the Agent App's colors.xml.
+// GREEN/amber/red/blue below stay separate: functional status colors, not
+// brand.
 const INK = "#0B1240";
-const INDIGO = "#1D2E8C";
+const INDIGO = "#003152";
 const INDIGO_SOFT = "#EEF0FB";
 const GREEN = "#16A34A";
 const SLATE = "#5B6389";
@@ -400,7 +405,7 @@ function normalizeCompany(c) {
     id: c.id,
     name: c.name,
     group: c.groupNumber,
-    color: c.colorHex || "#1D2E8C",
+    color: c.colorHex || "#003152",
     status: c.status === "online" ? "enabled" : "disabled",
     payNumber: c.paymentNumber || "Not set",
     providerNumber: c.providerNumber || "Not set",
@@ -1442,7 +1447,7 @@ function FinancialOverview({ admin }) {
   );
 }
 
-const NEW_COMPANY_FORM = { name: "", group: 1, color: "#1D2E8C", slug: "", description: "", sortOrder: 0, status: "enabled", logoBase64: null };
+const NEW_COMPANY_FORM = { name: "", group: 1, color: "#003152", slug: "", description: "", sortOrder: 0, status: "enabled", logoBase64: null };
 
 function Companies({ companies, setCompanies, refreshCompanies, admin }) {
   const [editing, setEditing] = useState(null);
@@ -1631,7 +1636,7 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
 
           <Field label="Provider logo (image)">
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{ width: 44, height: 44, borderRadius: 10, background: form.color || "#1D2E8C", display: "flex", alignItems: "center", justifyContent: "center", padding: 6, overflow: "hidden", flexShrink: 0 }}>
+              <div style={{ width: 44, height: 44, borderRadius: 10, background: form.color || "#003152", display: "flex", alignItems: "center", justifyContent: "center", padding: 6, overflow: "hidden", flexShrink: 0 }}>
                 {form.logoBase64 ? (
                   <img src={form.logoBase64} alt="Logo preview" style={{ maxHeight: "100%", maxWidth: "100%", objectFit: "contain" }} />
                 ) : editing !== "new" && form.hasLogo ? (

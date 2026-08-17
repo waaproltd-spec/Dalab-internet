@@ -1,8 +1,16 @@
 <resources>
-    <color name="dalab_indigo">#1D2E8C</color>
-    <color name="dalab_indigo_dark">#16209E</color>
+    <!-- DALAB brand — Dark Azure, shared with the Customer App
+         (kDarkAzure in customer-app/lib/theme/app_colors.dart) and Admin
+         Dashboard (super-admin-app's INDIGO constant). dalab_indigo_dark
+         is unused elsewhere in this app but kept pointed at the same value
+         rather than a third shade, matching the strict two-color system. -->
+    <color name="dalab_indigo">#003152</color>
+    <color name="dalab_indigo_dark">#003152</color>
+    <color name="dalab_soft_blue">#ADDFF1</color>
     <color name="dalab_green">#22B24C</color>
-    <color name="dalab_ink">#0B1240</color>
+    <!-- Status bar / branded dark bar — same Dark Azure, was a separate
+         near-black #0B1240 before this rebrand. -->
+    <color name="dalab_ink">#003152</color>
     <color name="dalab_bg">#F5F6FB</color>
     <color name="white">#FFFFFF</color>
     <color name="black">#000000</color>

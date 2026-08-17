@@ -368,8 +368,12 @@ private fun SyncStatusBanner(state: PendingSalesSyncStatus.State, pendingCount: 
             Color(0xFFFFF3CD), Color(0xFF7A5B00),
             "Offline — $pendingCount sale${if (pendingCount == 1) "" else "s"} waiting to send",
         )
+        // Functional "in progress" status color, not brand — was the old
+        // Dalab Indigo hex coincidentally, now the same info-blue the
+        // Customer App/Admin Dashboard use for status (not Dark Azure,
+        // which is reserved for actual brand elements).
         PendingSalesSyncStatus.State.SYNCING -> Triple(
-            Color(0xFFD6E4FF), Color(0xFF1D2E8C),
+            Color(0xFFD6E4FF), Color(0xFF1D4ED8),
             "Syncing $pendingCount pending sale${if (pendingCount == 1) "" else "s"}…",
         )
         PendingSalesSyncStatus.State.COMPLETED -> Triple(
