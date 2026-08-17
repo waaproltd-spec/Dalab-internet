@@ -128,22 +128,21 @@ resellersRouter.put("/admin/resellers/:id/wallet/adjust", requirePermission("res
 
 // ---------------- Companies, rates, and payment numbers (Stage 2) ----------------
 
-// Reseller-facing: every company + this reseller's current rate and balance
-// for it. All existing companies are reseller-visible (no separate curated
-// subset) — same catalog Internet Store customers see, minus the
-// visible_customer_app filter, since that flag is specific to that app's
-// own audience gating, not a general on/off switch.
-resellersRouter.get("/reseller/companies", requireAuth("reseller"), async (req, res) => {
+// Reseller-facing: every company + its current order rate. There is a
+// single overall reseller wallet balance (see GET /reseller/me), not a
+// per-company balance, so no balance is joined in here. All existing
+// companies are reseller-visible (no separate curated subset) — same
+// catalog Internet Store customers see, minus the visible_customer_app
+// filter, since that flag is specific to that app's own audience gating,
+// not a general on/off switch.
+resellersRouter.get("/reseller/companies", requireAuth("reseller"), async (_req, res) => {
   const rows = await query(
     `SELECT c.id, c.name, c.color_hex, c.logo_url, (c.logo_data IS NOT NULL) AS has_logo,
-            cr.rate,
-            COALESCE(cb.balance, 0) AS balance
+            cr.rate
      FROM companies c
      LEFT JOIN reseller_company_rates cr ON cr.company_id = c.id
-     LEFT JOIN reseller_company_balances cb ON cb.company_id = c.id AND cb.reseller_id = $1
      WHERE c.deleted_at IS NULL AND c.status = 'online'
-     ORDER BY c.group_number, c.sort_order, c.name`,
-    [req.auth!.sub]
+     ORDER BY c.group_number, c.sort_order, c.name`
   );
   sendJson(res, 200, rows);
 });
@@ -238,7 +237,7 @@ resellersRouter.delete("/admin/payment-numbers/:numberId", requirePermission("re
   sendJson(res, 200, { deleted: true });
 });
 
-// ---------------- Company rates (order rate) and exchange rates (Stage 2) ----------------
+// ---------------- Company order rates (Stage 2) ----------------
 
 resellersRouter.get("/admin/reseller-company-rates", requireStaff(), async (_req, res) => {
   sendJson(
@@ -269,54 +268,3 @@ resellersRouter.put("/admin/reseller-company-rates/:companyId", requirePermissio
   sendJson(res, 200, { companyId: req.params.companyId, rate });
 });
 
-resellersRouter.get("/admin/reseller-exchange-rates", requireStaff(), async (_req, res) => {
-  sendJson(
-    res,
-    200,
-    await query(
-      `SELECT er.id, er.from_company_id, fc.name AS from_company_name, er.to_company_id, tc.name AS to_company_name,
-              er.rate, er.enabled, er.updated_at
-       FROM reseller_exchange_rates er
-       JOIN companies fc ON fc.id = er.from_company_id
-       JOIN companies tc ON tc.id = er.to_company_id
-       ORDER BY fc.name, tc.name`
-    )
-  );
-});
-
-resellersRouter.post("/admin/reseller-exchange-rates", requirePermission("resellers.manage"), async (req, res) => {
-  const { fromCompanyId, toCompanyId, rate } = req.body;
-  if (!fromCompanyId || !toCompanyId || fromCompanyId === toCompanyId) {
-    return sendJson(res, 400, { error: "fromCompanyId and toCompanyId are required and must differ" });
-  }
-  const rateNum = Number(rate);
-  if (!Number.isFinite(rateNum) || rateNum <= 0) return sendJson(res, 400, { error: "rate must be a positive number" });
-  const id = randomUUID();
-  try {
-    await query(
-      `INSERT INTO reseller_exchange_rates (id, from_company_id, to_company_id, rate, updated_by_admin_id) VALUES ($1,$2,$3,$4,$5)`,
-      [id, fromCompanyId, toCompanyId, rateNum, req.auth!.sub]
-    );
-  } catch (err) {
-    if ((err as { code?: string }).code === "23505") {
-      return sendJson(res, 409, { error: "A rate for this company pair already exists — update it instead" });
-    }
-    throw err;
-  }
-  sendJson(res, 201, { id, fromCompanyId, toCompanyId, rate: rateNum, enabled: true });
-});
-
-resellersRouter.put("/admin/reseller-exchange-rates/:id", requirePermission("resellers.manage"), async (req, res) => {
-  const existing = await queryOne(`SELECT * FROM reseller_exchange_rates WHERE id=$1`, [req.params.id]);
-  if (!existing) return sendJson(res, 404, { error: "Exchange rate not found" });
-  const rate = req.body.rate !== undefined ? Number(req.body.rate) : Number(existing.rate);
-  if (!Number.isFinite(rate) || rate <= 0) return sendJson(res, 400, { error: "rate must be a positive number" });
-  const enabled = req.body.enabled !== undefined ? Boolean(req.body.enabled) : existing.enabled;
-  await query(`UPDATE reseller_exchange_rates SET rate=$1, enabled=$2, updated_at=now(), updated_by_admin_id=$3 WHERE id=$4`, [
-    rate,
-    enabled,
-    req.auth!.sub,
-    req.params.id,
-  ]);
-  sendJson(res, 200, { id: req.params.id, rate, enabled });
-});
