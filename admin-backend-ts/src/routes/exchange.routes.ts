@@ -8,6 +8,7 @@ import { sendJson } from "../utils/camelCase.js";
 import { broadcast } from "../realtime/orderEvents.js";
 import { recordActivity } from "../utils/activityLog.js";
 import { rateLimit } from "../auth/rateLimit.js";
+import { notifyCustomer as notifyCustomerShared } from "../services/customerNotify.js";
 
 export const exchangeRouter = Router();
 
@@ -113,22 +114,11 @@ async function loadCollectionPhoneNumber(walletId: string): Promise<string | nul
   return row?.phone_number ?? null;
 }
 
-// Best-effort customer notification, reusing the same generic `notifications`
-// table/`exchange_update` type the completion path already writes to —
-// wrapped so a notification failure can never fail the status change that
-// triggered it.
+// Thin wrapper over the shared notifyCustomer (in-app notifications row +
+// FCM push, both best-effort) that keeps every one of this file's existing
+// call sites unchanged — they only ever needed (customerId, title, body).
 async function notifyCustomer(customerId: string | null, title: string, body: string): Promise<void> {
-  if (!customerId) return;
-  try {
-    await query(`INSERT INTO notifications (id, type, title, body, customer_id) VALUES ($1,'exchange_update',$2,$3,$4)`, [
-      randomUUID(),
-      title,
-      body,
-      customerId,
-    ]);
-  } catch {
-    // Best-effort — never fails the caller's already-committed status change.
-  }
+  await notifyCustomerShared(customerId, "exchange_update", title, body);
 }
 
 // ---------------- Wallet catalog (reuses payment_wallets) ----------------
@@ -755,22 +745,11 @@ exchangeRouter.put("/agent/exchange/dial-attempts/:attemptId/step2", requireAuth
     );
     if (completed.length > 0) {
       const eo = completed[0] as any;
-      if (eo.customer_id) {
-        try {
-          await query(
-            `INSERT INTO notifications (id, type, title, body, customer_id) VALUES ($1,'exchange_update',$2,$3,$4)`,
-            [
-              randomUUID(),
-              "Your money exchange is complete",
-              `Your exchange of ${eo.amount_sent} is complete — ${eo.receiver_phone} received ${eo.amount_received}.`,
-              eo.customer_id,
-            ]
-          );
-        } catch {
-          // Best-effort — a notification failure must never fail the
-          // already-completed exchange.
-        }
-      }
+      await notifyCustomer(
+        eo.customer_id,
+        "Your money exchange is complete",
+        `Your exchange of ${eo.amount_sent} is complete — ${eo.receiver_phone} received ${eo.amount_received}.`
+      );
       await recordActivity({
         adminId: undefined,
         action: "exchange_completed",

@@ -14,6 +14,7 @@ import { refundRedeemedPointsIfNeeded } from "../utils/loyaltyPoints.js";
 import { isAlreadyCompleted } from "../utils/paymentTransactions.js";
 import { rateLimit } from "../auth/rateLimit.js";
 import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
+import { notifyCustomer } from "../services/customerNotify.js";
 
 export const ordersRouter = Router();
 
@@ -582,6 +583,19 @@ export async function completeOrderById(orderId: string): Promise<{ order: any; 
   await creditCommissionIfNeeded(order);
   await creditReferralBonusIfNeeded(order);
   broadcast({ type: "order.updated", orderId });
+  // Covers every path an order reaches 'completed' through — the agent's
+  // manual "mark complete" tap, an SMS-matched payment auto-advancing an
+  // in_progress order, and a successful SOMLINK API delivery (see
+  // somlink.routes.ts's call into this same function) — one hook instead
+  // of three.
+  const pkg = await queryOne<{ name: string }>(`SELECT name FROM packages WHERE id=$1`, [order.package_id]);
+  await notifyCustomer(
+    order.customer_id,
+    "order_update",
+    "Your order is complete",
+    pkg ? `Your ${pkg.name} package has been activated and is ready to use.` : "Your order has been activated and is ready to use.",
+    { screen: "notifications", orderId: order.id }
+  );
   await recordActivity({
     adminId: undefined,
     action: "payment_completed",
@@ -865,6 +879,14 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
       await creditMacaashIfNeeded(order);
       await creditCommissionIfNeeded(order);
       await creditReferralBonusIfNeeded(order);
+      const pkg = await queryOne<{ name: string }>(`SELECT name FROM packages WHERE id=$1`, [order.package_id]);
+      await notifyCustomer(
+        order.customer_id,
+        "order_update",
+        "Your order is complete",
+        pkg ? `Your ${pkg.name} package has been activated and is ready to use.` : "Your order has been activated and is ready to use.",
+        { screen: "notifications", orderId: order.id }
+      );
     }
   } else if (status === "in_progress") {
     const result = await query(
@@ -887,7 +909,18 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
     }
   } else {
     await query(`UPDATE orders SET status=$1, updated_at=now() WHERE id=$2`, [status, req.params.id]);
-    if (status === "failed" || status === "cancelled") await refundRedeemedPointsIfNeeded(req.params.id);
+    if (status === "failed" || status === "cancelled") {
+      await refundRedeemedPointsIfNeeded(req.params.id);
+      await notifyCustomer(
+        order.customer_id,
+        "order_update",
+        status === "failed" ? "Your order could not be completed" : "Your order was cancelled",
+        status === "failed"
+          ? "We couldn't complete your order. Please contact support for assistance."
+          : "Your order was cancelled. Please contact support if you have questions.",
+        { screen: "notifications", orderId: order.id }
+      );
+    }
   }
   broadcast({ type: "order.updated", orderId: req.params.id });
   sendJson(res, 200, maskOrder(await loadOrder(req.params.id)));
