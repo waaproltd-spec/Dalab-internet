@@ -34,6 +34,7 @@ import com.dalab.internet.queue.QueueDrainer
 import com.dalab.internet.queue.RetryClassifier
 import com.dalab.internet.sms.SmsSenderIdRepository
 import com.dalab.internet.ussd.ExchangeSelfHealSweeper
+import com.dalab.internet.ussd.ResellerWithdrawalSelfHealSweeper
 import com.dalab.internet.ussd.SelfHealSweeper
 import com.dalab.internet.ussd.SimRoutingRepository
 import com.dalab.internet.ussd.UssdDialer
@@ -134,15 +135,23 @@ class AgentBackgroundService : Service() {
             }
         }
         newScope.launch {
+            try {
+                ResellerWithdrawalSelfHealSweeper.sweep(applicationContext)
+            } catch (e: Exception) {
+                DiagnosticsLog.record("reseller_withdrawal_self_heal_sweep", "Initial sweep failed: ${e.stackTraceToString().take(2000)}")
+            }
+        }
+        newScope.launch {
             // Near-instant recovery the moment a Super Admin fixes whatever
             // blocked generation (a missing PIN/template) — the backend's own
             // self-heal broadcasts order.updated over this same SSE stream
             // OrdersListScreen already listens to, so this is a second,
             // independent consumer of an event that already exists. Also
-            // fires on exchange_order.updated (same generic stream/event
-            // bus), which is what makes Money Exchange payouts start the
-            // moment a payment SMS auto-verifies an order — see
-            // ExchangeSelfHealSweeper.
+            // fires on exchange_order.updated and reseller_withdrawal.updated
+            // (same generic stream/event bus), which is what makes Money
+            // Exchange and Reseller Withdraw payouts start the moment a
+            // payment is verified/a withdrawal is created — see
+            // ExchangeSelfHealSweeper/ResellerWithdrawalSelfHealSweeper.
             AgentEventBus.orderEvents.collect {
                 try {
                     SelfHealSweeper.sweep(applicationContext)
@@ -154,6 +163,11 @@ class AgentBackgroundService : Service() {
                 } catch (e: Exception) {
                     DiagnosticsLog.record("exchange_self_heal_sweep", "Event-triggered sweep failed: ${e.stackTraceToString().take(2000)}")
                 }
+                try {
+                    ResellerWithdrawalSelfHealSweeper.sweep(applicationContext)
+                } catch (e: Exception) {
+                    DiagnosticsLog.record("reseller_withdrawal_self_heal_sweep", "Event-triggered sweep failed: ${e.stackTraceToString().take(2000)}")
+                }
             }
         }
 
@@ -162,6 +176,7 @@ class AgentBackgroundService : Service() {
         newScope.launch { queueDrainLoop() }
         newScope.launch { selfHealSweepLoop() }
         newScope.launch { exchangeSelfHealSweepLoop() }
+        newScope.launch { resellerWithdrawalSelfHealSweepLoop() }
         newScope.launch {
             // There's no login screen to send the agent to anymore, so a dead
             // session first tries to silently re-authenticate itself the same
@@ -268,6 +283,13 @@ class AgentBackgroundService : Service() {
                         ExchangeSelfHealSweeper.sweep(applicationContext)
                     } catch (e: Exception) {
                         DiagnosticsLog.record("exchange_self_heal_sweep", "Network-available sweep failed: ${e.stackTraceToString().take(2000)}")
+                    }
+                }
+                scope.launch {
+                    try {
+                        ResellerWithdrawalSelfHealSweeper.sweep(applicationContext)
+                    } catch (e: Exception) {
+                        DiagnosticsLog.record("reseller_withdrawal_self_heal_sweep", "Network-available sweep failed: ${e.stackTraceToString().take(2000)}")
                     }
                 }
             }
@@ -401,6 +423,22 @@ class AgentBackgroundService : Service() {
                 ExchangeSelfHealSweeper.sweep(applicationContext)
             } catch (e: Exception) {
                 DiagnosticsLog.record("exchange_self_heal_sweep_loop", "Tick failed: ${e.stackTraceToString().take(2000)}")
+            }
+        }
+    }
+
+    // Same backstop role as selfHealSweepLoop()/exchangeSelfHealSweepLoop()
+    // above, for Reseller Withdraw's own queue — a separate loop because
+    // it's a third, independent business line with its own queue,
+    // orchestrator, and failure modes.
+    private suspend fun resellerWithdrawalSelfHealSweepLoop() {
+        val currentScope = scope ?: return
+        while (currentScope.isActive) {
+            delay(SELF_HEAL_SWEEP_INTERVAL_MS)
+            try {
+                ResellerWithdrawalSelfHealSweeper.sweep(applicationContext)
+            } catch (e: Exception) {
+                DiagnosticsLog.record("reseller_withdrawal_self_heal_sweep_loop", "Tick failed: ${e.stackTraceToString().take(2000)}")
             }
         }
     }

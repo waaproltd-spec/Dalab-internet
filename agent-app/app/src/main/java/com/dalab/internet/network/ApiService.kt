@@ -8,6 +8,7 @@ import com.dalab.internet.data.CustomerSummary
 import com.dalab.internet.data.ExchangeOrder
 import com.dalab.internet.data.Order
 import com.dalab.internet.data.PackageItem
+import com.dalab.internet.data.ResellerWithdrawalPendingPayout
 import com.dalab.internet.data.SmsLogEntry
 import com.dalab.internet.data.Transaction
 import com.dalab.internet.data.AgentNotification
@@ -270,4 +271,29 @@ interface ApiService {
         @Path("attemptId") attemptId: String,
         @Body body: ExchangeStepRequest,
     ): Response<ExchangeDialAttemptDto>
+
+    // ---------------- Reseller Withdraw (automatic payout — see ussd/ResellerWithdrawalUssdOrchestrator.kt) ----------------
+    // Same one-shot combined-string USSD dial as Internet Store above (not
+    // Money Exchange's two-step interactive PIN flow) — reuses UssdDialer,
+    // not ExchangeUssdDialer. Deliberately separate endpoints/models from
+    // both existing pipelines: the automation is analogous to Internet
+    // Store's, but a dial result here never completes the withdrawal itself
+    // (only the real outgoing SMS does — see this file's/backend's own doc
+    // comments), which is why this isn't just reusing startDialAttempt/
+    // reportDialResult above.
+
+    @GET("agent/reseller-withdrawals/pending-payout")
+    suspend fun getResellerWithdrawalsPendingPayout(): Response<List<ResellerWithdrawalPendingPayout>>
+
+    @POST("agent/reseller-withdrawals/{id}/dial-attempts")
+    suspend fun startResellerWithdrawalDialAttempt(
+        @Path("id") withdrawalId: String,
+        @Body body: DialAttemptStartRequest,
+    ): Response<DialAttemptStartResponse>
+
+    @PUT("agent/reseller-withdrawal-dial-attempts/{attemptId}")
+    suspend fun reportResellerWithdrawalDialResult(
+        @Path("attemptId") attemptId: String,
+        @Body body: DialAttemptResultRequest,
+    ): Response<DialAttemptResultResponse>
 }
