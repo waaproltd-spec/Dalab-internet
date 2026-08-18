@@ -7642,9 +7642,10 @@ function ResellerDepositsTab({ canManage }) {
             <tr style={{ background: "#FAFBFF" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Ref #</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Reseller</th>
-              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
-              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>From → To</th>
-              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Amount</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payment Method</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Customer Phone</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Deposit Amount</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Wallet Balance</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Status</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Date</th>
               {canManage && <th style={{ padding: "10px 14px" }} />}
@@ -7655,9 +7656,10 @@ function ResellerDepositsTab({ canManage }) {
               <tr key={d.id} style={{ borderTop: `1px solid ${BORDER}` }}>
                 <td style={{ padding: "10px 14px", fontSize: 12, fontFamily: "monospace", color: INK }}>{d.id}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{d.resellerLoginId} — {d.resellerName}</td>
-                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{d.companyName}</td>
-                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, fontFamily: "monospace" }}>{d.fromNumber} → {d.toNumber}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{d.methodLabel}</td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, fontFamily: "monospace" }}>{d.fromNumber}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>${Number(d.amount).toFixed(2)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK }}>${Number(d.resellerWalletBalance ?? 0).toFixed(2)}</td>
                 <td style={{ padding: "10px 14px" }}>{statusBadge(RESELLER_DEPOSIT_STATUS_META, d.status)}</td>
                 <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE }}>{formatDateTime(d.createdAt)}</td>
                 {canManage && (
@@ -7677,7 +7679,7 @@ function ResellerDepositsTab({ canManage }) {
               </tr>
             ))}
             {deposits.length === 0 && (
-              <tr><td colSpan={8} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No deposits yet.</td></tr>
+              <tr><td colSpan={9} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No deposits yet.</td></tr>
             )}
           </tbody>
         </table>
@@ -7724,12 +7726,14 @@ function ResellerWithdrawalsTab({ canManage }) {
             <tr style={{ background: "#FAFBFF" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Ref #</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Reseller</th>
-              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
-              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>To</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payout Company</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Customer Phone</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Wallet Amount</th>
-              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Commission</th>
-              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Bonus</th>
-              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Customer Receives</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Wallet Balance</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Commission %</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Commission Amt</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Sent to Customer</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payout Agent</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Status</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Date</th>
               {canManage && <th style={{ padding: "10px 14px" }} />}
@@ -7743,9 +7747,11 @@ function ResellerWithdrawalsTab({ canManage }) {
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{w.companyName}</td>
                 <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, fontFamily: "monospace" }}>{w.destinationNumber}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>${Number(w.amount).toFixed(2)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK }}>${Number(w.resellerWalletBalance ?? 0).toFixed(2)}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{Number(w.commissionPercentage ?? 0).toFixed(0)}%</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>${Number(w.bonusAmount ?? 0).toFixed(2)}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK }}>${Number(w.customerReceivesAmount ?? w.amount).toFixed(2)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE }}>{w.confirmedByAdminEmail || "—"}</td>
                 <td style={{ padding: "10px 14px" }}>{statusBadge(RESELLER_WITHDRAWAL_STATUS_META, w.status)}</td>
                 <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE }}>{formatDateTime(w.createdAt)}</td>
                 {canManage && (
@@ -7768,7 +7774,7 @@ function ResellerWithdrawalsTab({ canManage }) {
               </tr>
             ))}
             {withdrawals.length === 0 && (
-              <tr><td colSpan={11} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No withdrawals yet.</td></tr>
+              <tr><td colSpan={13} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No withdrawals yet.</td></tr>
             )}
           </tbody>
         </table>

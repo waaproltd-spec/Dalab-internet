@@ -78,10 +78,11 @@ resellerDepositsWithdrawalsRouter.get("/reseller/deposits/:id", requireAuth("res
 resellerDepositsWithdrawalsRouter.get("/admin/reseller-deposits", requireStaff(), async (req, res) => {
   const status = req.query.status ? String(req.query.status) : null;
   const params: unknown[] = [];
-  let sql = `SELECT d.*, m.label AS method_label, r.reseller_login_id, r.name AS reseller_name
+  let sql = `SELECT d.*, m.label AS method_label, r.reseller_login_id, r.name AS reseller_name, rw.balance AS reseller_wallet_balance
              FROM reseller_deposits d
              JOIN reseller_deposit_methods m ON m.method = d.method
-             JOIN resellers r ON r.id = d.reseller_id`;
+             JOIN resellers r ON r.id = d.reseller_id
+             LEFT JOIN reseller_wallets rw ON rw.reseller_id = d.reseller_id`;
   if (status) {
     params.push(status);
     sql += ` WHERE d.status=$1`;
@@ -274,8 +275,13 @@ resellerDepositsWithdrawalsRouter.put("/reseller/withdrawals/:id/cancel", requir
 resellerDepositsWithdrawalsRouter.get("/admin/reseller-withdrawals", requireStaff(), async (req, res) => {
   const status = req.query.status ? String(req.query.status) : null;
   const params: unknown[] = [];
-  let sql = `SELECT w.*, c.name AS company_name, r.reseller_login_id, r.name AS reseller_name
-             FROM reseller_withdrawals w JOIN companies c ON c.id = w.company_id JOIN resellers r ON r.id = w.reseller_id`;
+  let sql = `SELECT w.*, c.name AS company_name, r.reseller_login_id, r.name AS reseller_name,
+                    rw.balance AS reseller_wallet_balance, au.email AS confirmed_by_admin_email
+             FROM reseller_withdrawals w
+             JOIN companies c ON c.id = w.company_id
+             JOIN resellers r ON r.id = w.reseller_id
+             LEFT JOIN reseller_wallets rw ON rw.reseller_id = w.reseller_id
+             LEFT JOIN admin_users au ON au.id = w.confirmed_by_admin_id`;
   if (status) {
     params.push(status);
     sql += ` WHERE w.status=$1`;
