@@ -64,43 +64,39 @@ resellerPaymentConfigRouter.put("/admin/companies/:id/payout-ussd-template", req
   sendJson(res, 200, { id: req.params.id, payoutUssdTemplate: ussdTemplate });
 });
 
-// ---------------- Deposit Bonus, per company (migration 054) ----------------
+// ---------------- Withdraw Rate, per company (migration 054) ----------------
 //
 // Deliberately its own table/routes, entirely separate from the Internet
-// Store's rate/pricing config — see migration 054's header comment. Keyed
-// by company (Hormuud/Somtel/Somnet/Amtel) even though Deposit itself only
-// offers EVC Plus/eDahab: each method maps to one company's bonus
-// (reseller_deposit_methods.bonus_company_id), so Admin can still configure
-// every company's percentage ahead of that company getting its own deposit
-// rail.
+// Store's rate/pricing config — see migration 054's header comment. Applies
+// only to Withdraw: Deposit is always a plain 1:1 credit, no rate involved.
 
-resellerPaymentConfigRouter.get("/admin/reseller-deposit-bonus", requireStaff(), async (_req, res) => {
+resellerPaymentConfigRouter.get("/admin/reseller-withdrawal-rates", requireStaff(), async (_req, res) => {
   sendJson(
     res,
     200,
     await query(
-      `SELECT c.id AS company_id, c.name AS company_name, COALESCE(b.bonus_percentage, 0) AS bonus_percentage, b.updated_at
+      `SELECT c.id AS company_id, c.name AS company_name, COALESCE(r.rate_percentage, 100) AS rate_percentage, r.updated_at
        FROM companies c
-       LEFT JOIN reseller_deposit_bonus_config b ON b.company_id = c.id
+       LEFT JOIN reseller_withdrawal_rate_config r ON r.company_id = c.id
        WHERE c.deleted_at IS NULL
        ORDER BY c.name`
     )
   );
 });
 
-resellerPaymentConfigRouter.put("/admin/reseller-deposit-bonus/:companyId", requirePermission("resellers.manage"), async (req, res) => {
-  const bonusPercentage = Number(req.body.bonusPercentage);
-  if (!Number.isFinite(bonusPercentage) || bonusPercentage < 0 || bonusPercentage > 100) {
-    return sendJson(res, 400, { error: "bonusPercentage must be a number between 0 and 100" });
+resellerPaymentConfigRouter.put("/admin/reseller-withdrawal-rates/:companyId", requirePermission("resellers.manage"), async (req, res) => {
+  const ratePercentage = Number(req.body.ratePercentage);
+  if (!Number.isFinite(ratePercentage) || ratePercentage <= 0) {
+    return sendJson(res, 400, { error: "ratePercentage must be a positive number" });
   }
   if (!(await queryOne(`SELECT id FROM companies WHERE id=$1 AND deleted_at IS NULL`, [req.params.companyId]))) {
     return sendJson(res, 404, { error: "Company not found" });
   }
   await query(
-    `INSERT INTO reseller_deposit_bonus_config (company_id, bonus_percentage, updated_at, updated_by)
+    `INSERT INTO reseller_withdrawal_rate_config (company_id, rate_percentage, updated_at, updated_by)
      VALUES ($1,$2,now(),$3)
-     ON CONFLICT (company_id) DO UPDATE SET bonus_percentage=$2, updated_at=now(), updated_by=$3`,
-    [req.params.companyId, bonusPercentage, req.auth!.sub]
+     ON CONFLICT (company_id) DO UPDATE SET rate_percentage=$2, updated_at=now(), updated_by=$3`,
+    [req.params.companyId, ratePercentage, req.auth!.sub]
   );
-  sendJson(res, 200, { companyId: req.params.companyId, bonusPercentage });
+  sendJson(res, 200, { companyId: req.params.companyId, ratePercentage });
 });

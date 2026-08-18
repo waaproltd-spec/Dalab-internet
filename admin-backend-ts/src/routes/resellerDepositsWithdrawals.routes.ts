@@ -19,10 +19,9 @@ function withdrawalRef(): string {
 // ==================== Deposit ("Lacag Ku Shub", Req. 8) ====================
 
 const DEPOSIT_SELECT = `
-  SELECT d.*, m.label AS method_label, bc.name AS bonus_company_name
+  SELECT d.*, m.label AS method_label
   FROM reseller_deposits d
   JOIN reseller_deposit_methods m ON m.method = d.method
-  LEFT JOIN companies bc ON bc.id = d.bonus_company_id
 `;
 
 // Shows Dalab's own collection number for the chosen payment method
@@ -79,10 +78,9 @@ resellerDepositsWithdrawalsRouter.get("/reseller/deposits/:id", requireAuth("res
 resellerDepositsWithdrawalsRouter.get("/admin/reseller-deposits", requireStaff(), async (req, res) => {
   const status = req.query.status ? String(req.query.status) : null;
   const params: unknown[] = [];
-  let sql = `SELECT d.*, m.label AS method_label, bc.name AS bonus_company_name, r.reseller_login_id, r.name AS reseller_name
+  let sql = `SELECT d.*, m.label AS method_label, r.reseller_login_id, r.name AS reseller_name
              FROM reseller_deposits d
              JOIN reseller_deposit_methods m ON m.method = d.method
-             LEFT JOIN companies bc ON bc.id = d.bonus_company_id
              JOIN resellers r ON r.id = d.reseller_id`;
   if (status) {
     params.push(status);
@@ -99,36 +97,18 @@ resellerDepositsWithdrawalsRouter.get("/admin/reseller-deposits", requireStaff()
 // debiting. CAS from 'pending' only, so a double-click can never
 // double-credit.
 //
-// Deposit Bonus (Admin -> Resellers -> Payment) is resolved and snapshotted
-// right here, not at request creation — the percentage that applies is
-// whatever Admin has configured at the moment the deposit is actually
-// processed/credited, and once snapshotted it never changes even if Admin
-// edits the percentage afterward (product instruction).
+// Deposit is a plain 1:1 credit — no rate or bonus applies here (product
+// instruction: "Deposit is only for receiving money. No rate or bonus
+// should be applied."). The company-specific rate applies only to
+// Withdraw — see reseller_withdrawal_rate_config / POST /reseller/withdrawals.
 resellerDepositsWithdrawalsRouter.put("/admin/reseller-deposits/:id/verify", requirePermission("resellers.manage"), async (req, res) => {
   const deposit = await queryOne(`SELECT * FROM reseller_deposits WHERE id=$1`, [req.params.id]);
   if (!deposit) return sendJson(res, 404, { error: "Deposit not found" });
   if (deposit.status !== "pending") return sendJson(res, 409, { error: `Deposit is '${deposit.status}', not 'pending' — cannot verify` });
 
-  const method = await queryOne<{ bonus_company_id: string | null }>(
-    `SELECT bonus_company_id FROM reseller_deposit_methods WHERE method=$1`,
-    [deposit.method]
-  );
-  const bonusCompanyId = method?.bonus_company_id ?? null;
-  let bonusPercentage = 0;
-  if (bonusCompanyId) {
-    const cfg = await queryOne<{ bonus_percentage: string }>(
-      `SELECT bonus_percentage FROM reseller_deposit_bonus_config WHERE company_id=$1`,
-      [bonusCompanyId]
-    );
-    bonusPercentage = cfg ? Number(cfg.bonus_percentage) : 0;
-  }
-  const depositAmount = Number(deposit.amount);
-  const bonusAmount = Math.round(depositAmount * bonusPercentage) / 100;
-  const creditedAmount = Math.round((depositAmount + bonusAmount) * 100) / 100;
-
   const walletResult = await adjustResellerWallet({
     resellerId: deposit.reseller_id,
-    changeAmount: creditedAmount,
+    changeAmount: Number(deposit.amount),
     referenceType: "deposit",
     referenceId: deposit.id,
     source: "admin_manual",
@@ -136,16 +116,14 @@ resellerDepositsWithdrawalsRouter.put("/admin/reseller-deposits/:id/verify", req
   });
 
   const rows = await query(
-    `UPDATE reseller_deposits
-     SET status='verified', verified_at=now(), verified_by_admin_id=$1, updated_at=now(),
-         bonus_company_id=$2, bonus_percentage=$3, bonus_amount=$4, credited_amount=$5
-     WHERE id=$6 AND status='pending' RETURNING id`,
-    [req.auth!.sub, bonusCompanyId, bonusPercentage, bonusAmount, creditedAmount, req.params.id]
+    `UPDATE reseller_deposits SET status='verified', verified_at=now(), verified_by_admin_id=$1, updated_at=now()
+     WHERE id=$2 AND status='pending' RETURNING id`,
+    [req.auth!.sub, req.params.id]
   );
   if (rows.length === 0) {
     return sendJson(res, 500, { error: "Wallet was credited but the deposit status change lost a race — check admin activity log" });
   }
-  sendJson(res, 200, { id: req.params.id, status: "verified", bonusAmount, creditedAmount, wallet: walletResult });
+  sendJson(res, 200, { id: req.params.id, status: "verified", wallet: walletResult });
 });
 
 resellerDepositsWithdrawalsRouter.put("/admin/reseller-deposits/:id/complete", requirePermission("resellers.manage"), async (req, res) => {
@@ -183,6 +161,15 @@ const WITHDRAWAL_SELECT = `
 // reserved/deducted... so the same balance cannot be used for another
 // transaction" (spec, Req. 9). Both the wallet debit and the withdrawal
 // row happen in one transaction: if either fails, neither is left behind.
+//
+// The Withdraw Rate (Admin -> Resellers -> Payment, per company) is
+// resolved and snapshotted right here, at request time — the Wallet is
+// still only deducted by `amount`, but the customer must be sent MORE than
+// that (rate_percentage% of it), and the app needs that customer_receives_
+// amount immediately after creation to dial the correct payout USSD amount.
+// Once snapshotted the rate never changes for this withdrawal even if
+// Admin edits the company's percentage afterward (same "don't mutate
+// history" principle as the rest of this feature).
 resellerDepositsWithdrawalsRouter.post("/reseller/withdrawals", requireAuth("reseller"), async (req, res) => {
   const companyId = String(req.body.companyId ?? "");
   const destinationNumber = String(req.body.destinationNumber ?? "").trim();
@@ -198,6 +185,14 @@ resellerDepositsWithdrawalsRouter.post("/reseller/withdrawals", requireAuth("res
   if (!(await queryOne(`SELECT id FROM companies WHERE id=$1 AND deleted_at IS NULL`, [companyId]))) {
     return sendJson(res, 404, { error: "Company not found" });
   }
+
+  const rateCfg = await queryOne<{ rate_percentage: string }>(
+    `SELECT rate_percentage FROM reseller_withdrawal_rate_config WHERE company_id=$1`,
+    [companyId]
+  );
+  const ratePercentage = rateCfg ? Number(rateCfg.rate_percentage) : 100;
+  const customerReceivesAmount = Math.round(amount * ratePercentage) / 100;
+  const bonusAmount = Math.round((customerReceivesAmount - amount) * 100) / 100;
 
   const id = withdrawalRef();
   try {
@@ -216,9 +211,12 @@ resellerDepositsWithdrawalsRouter.post("/reseller/withdrawals", requireAuth("res
       );
       const reservationTxId = txRow.rows[0]?.id ?? null;
       await client.query(
-        `INSERT INTO reseller_withdrawals (id, reseller_id, company_id, destination_number, amount, status, reservation_tx_id, client_request_id)
-         VALUES ($1,$2,$3,$4,$5,'reserved',$6,$7)`,
-        [id, req.auth!.sub, companyId, destinationNumber, amount, reservationTxId, clientRequestId]
+        `INSERT INTO reseller_withdrawals
+           (id, reseller_id, company_id, destination_number, amount, status, reservation_tx_id, client_request_id,
+            rate_percentage, bonus_amount, customer_receives_amount)
+         VALUES ($1,$2,$3,$4,$5,'reserved',$6,$7,$8,$9,$10)`,
+        [id, req.auth!.sub, companyId, destinationNumber, amount, reservationTxId, clientRequestId,
+          ratePercentage, bonusAmount, customerReceivesAmount]
       );
       return walletResult;
     });

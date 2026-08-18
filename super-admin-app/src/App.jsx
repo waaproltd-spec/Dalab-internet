@@ -411,9 +411,9 @@ const DalabAdminApi = {
   setResellerDepositMethod: (method, body) => dalabAdminApiRequest(`/admin/reseller-deposit-methods/${method}`, { method: "PUT", body }),
   setCompanyPayoutUssdTemplate: (companyId, payoutUssdTemplate) =>
     dalabAdminApiRequest(`/admin/companies/${companyId}/payout-ussd-template`, { method: "PUT", body: { payoutUssdTemplate } }),
-  getResellerDepositBonusConfig: () => dalabAdminApiRequest("/admin/reseller-deposit-bonus"),
-  setResellerDepositBonus: (companyId, bonusPercentage) =>
-    dalabAdminApiRequest(`/admin/reseller-deposit-bonus/${companyId}`, { method: "PUT", body: { bonusPercentage } }),
+  getResellerWithdrawalRates: () => dalabAdminApiRequest("/admin/reseller-withdrawal-rates"),
+  setResellerWithdrawalRate: (companyId, ratePercentage) =>
+    dalabAdminApiRequest(`/admin/reseller-withdrawal-rates/${companyId}`, { method: "PUT", body: { ratePercentage } }),
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -7300,10 +7300,10 @@ function ResellerPaymentTab({ canManage, companies }) {
   const [savingPayout, setSavingPayout] = useState(null);
   const [payoutError, setPayoutError] = useState({});
 
-  const [bonusRows, setBonusRows] = useState([]);
-  const [bonusEdits, setBonusEdits] = useState({});
-  const [savingBonus, setSavingBonus] = useState(null);
-  const [bonusError, setBonusError] = useState({});
+  const [rateRows, setRateRows] = useState([]);
+  const [rateEdits, setRateEdits] = useState({});
+  const [savingRate, setSavingRate] = useState(null);
+  const [rateError, setRateError] = useState({});
 
   const fetchMethods = async () => {
     try { setMethods(await DalabAdminApi.getResellerDepositMethods()); }
@@ -7311,28 +7311,28 @@ function ResellerPaymentTab({ canManage, companies }) {
   };
   useEffect(() => { fetchMethods(); }, []);
 
-  const fetchBonus = async () => {
-    try { setBonusRows(await DalabAdminApi.getResellerDepositBonusConfig()); }
-    catch (err) { console.error("getResellerDepositBonusConfig failed:", err.message); }
+  const fetchRates = async () => {
+    try { setRateRows(await DalabAdminApi.getResellerWithdrawalRates()); }
+    catch (err) { console.error("getResellerWithdrawalRates failed:", err.message); }
   };
-  useEffect(() => { fetchBonus(); }, []);
+  useEffect(() => { fetchRates(); }, []);
 
-  const saveBonus = async (row) => {
-    const raw = bonusEdits[row.companyId] ?? row.bonusPercentage;
-    const bonusPercentage = Number(raw);
-    if (!Number.isFinite(bonusPercentage) || bonusPercentage < 0 || bonusPercentage > 100) {
-      return setBonusError((m) => ({ ...m, [row.companyId]: "Enter a number between 0 and 100." }));
+  const saveRate = async (row) => {
+    const raw = rateEdits[row.companyId] ?? row.ratePercentage;
+    const ratePercentage = Number(raw);
+    if (!Number.isFinite(ratePercentage) || ratePercentage <= 0) {
+      return setRateError((m) => ({ ...m, [row.companyId]: "Enter a positive number." }));
     }
-    setSavingBonus(row.companyId);
-    setBonusError((m) => ({ ...m, [row.companyId]: "" }));
+    setSavingRate(row.companyId);
+    setRateError((m) => ({ ...m, [row.companyId]: "" }));
     try {
-      await DalabAdminApi.setResellerDepositBonus(row.companyId, bonusPercentage);
-      setBonusEdits((m) => ({ ...m, [row.companyId]: undefined }));
-      fetchBonus();
+      await DalabAdminApi.setResellerWithdrawalRate(row.companyId, ratePercentage);
+      setRateEdits((m) => ({ ...m, [row.companyId]: undefined }));
+      fetchRates();
     } catch (err) {
-      setBonusError((m) => ({ ...m, [row.companyId]: err.message || "Couldn't save this bonus." }));
+      setRateError((m) => ({ ...m, [row.companyId]: err.message || "Couldn't save this rate." }));
     } finally {
-      setSavingBonus(null);
+      setSavingRate(null);
     }
   };
 
@@ -7478,42 +7478,42 @@ function ResellerPaymentTab({ canManage, companies }) {
         </table>
       </Card>
 
-      <div style={{ fontWeight: 800, fontSize: 15, color: INK, marginTop: 24, marginBottom: 4 }}>Deposit Bonus by Company</div>
+      <div style={{ fontWeight: 800, fontSize: 15, color: INK, marginTop: 24, marginBottom: 4 }}>Withdraw Rate by Company</div>
       <div style={{ fontSize: 12, color: MUTE, marginBottom: 12 }}>
-        Applied when a Deposit is verified: Wallet Credit = Deposit Amount + (Deposit Amount &times; Bonus %). A Deposit already verified keeps the percentage that applied at the time — changing this here only affects Deposits verified from now on. Separate from Internet Store rates.
+        Applied when a Withdraw is requested: the Wallet is still deducted by the requested amount, but the customer receives Amount &times; Rate % (e.g. 115% on $100 deducts $100 from the Wallet and sends the customer $115). A Withdraw already requested keeps the rate that applied at the time — changing this here only affects Withdraws requested from now on. Deposit never uses a rate. Separate from Internet Store rates.
       </div>
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: "#FAFBFF" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
-              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Bonus %</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Rate %</th>
               {canManage && <th style={{ padding: "10px 14px" }} />}
             </tr>
           </thead>
           <tbody>
-            {bonusRows.map((row) => (
+            {rateRows.map((row) => (
               <tr key={row.companyId} style={{ borderTop: `1px solid ${BORDER}` }}>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK }}>{row.companyName}</td>
                 {canManage ? (
                   <td style={{ padding: "10px 14px" }}>
                     <input
-                      type="number" min="0" max="100" step="0.01"
+                      type="number" min="0" step="0.01"
                       style={{ ...inputStyle, width: 90 }}
-                      value={bonusEdits[row.companyId] ?? row.bonusPercentage}
-                      onChange={(e) => setBonusEdits((m) => ({ ...m, [row.companyId]: e.target.value }))}
+                      value={rateEdits[row.companyId] ?? row.ratePercentage}
+                      onChange={(e) => setRateEdits((m) => ({ ...m, [row.companyId]: e.target.value }))}
                     />
                     <span style={{ marginLeft: 4, fontSize: 12.5, color: MUTE }}>%</span>
                   </td>
                 ) : (
-                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{row.bonusPercentage}%</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{row.ratePercentage}%</td>
                 )}
                 {canManage && (
                   <td style={{ padding: "10px 14px" }}>
-                    <Button variant="subtle" disabled={savingBonus === row.companyId} onClick={() => saveBonus(row)}>
-                      {savingBonus === row.companyId ? "Saving…" : "Save"}
+                    <Button variant="subtle" disabled={savingRate === row.companyId} onClick={() => saveRate(row)}>
+                      {savingRate === row.companyId ? "Saving…" : "Save"}
                     </Button>
-                    {bonusError[row.companyId] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{bonusError[row.companyId]}</div>}
+                    {rateError[row.companyId] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{rateError[row.companyId]}</div>}
                   </td>
                 )}
               </tr>
@@ -7726,7 +7726,10 @@ function ResellerWithdrawalsTab({ canManage }) {
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Reseller</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>To</th>
-              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Amount</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Wallet Amount</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Rate</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Bonus</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Customer Receives</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Status</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Date</th>
               {canManage && <th style={{ padding: "10px 14px" }} />}
@@ -7740,6 +7743,9 @@ function ResellerWithdrawalsTab({ canManage }) {
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{w.companyName}</td>
                 <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, fontFamily: "monospace" }}>{w.destinationNumber}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>${Number(w.amount).toFixed(2)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{Number(w.ratePercentage ?? 100).toFixed(0)}%</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>${Number(w.bonusAmount ?? 0).toFixed(2)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK }}>${Number(w.customerReceivesAmount ?? w.amount).toFixed(2)}</td>
                 <td style={{ padding: "10px 14px" }}>{statusBadge(RESELLER_WITHDRAWAL_STATUS_META, w.status)}</td>
                 <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE }}>{formatDateTime(w.createdAt)}</td>
                 {canManage && (
@@ -7762,7 +7768,7 @@ function ResellerWithdrawalsTab({ canManage }) {
               </tr>
             ))}
             {withdrawals.length === 0 && (
-              <tr><td colSpan={8} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No withdrawals yet.</td></tr>
+              <tr><td colSpan={11} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No withdrawals yet.</td></tr>
             )}
           </tbody>
         </table>
