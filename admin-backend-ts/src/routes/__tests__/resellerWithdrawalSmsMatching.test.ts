@@ -230,3 +230,94 @@ test("a normal Internet Store payment SMS is completely unaffected — Reseller 
   assert.equal(withdrawal!.status, "reserved", "the reseller withdrawal must remain untouched");
   assert.equal(await walletBalance(), 0.5);
 });
+
+// The exact real SMS that confirmed the real production withdrawal
+// WDR220317059 — a genuine 5%-commission scenario, unlike every test above
+// (which intentionally uses 0% commission to isolate other concerns). This
+// is what actually broke in production: WDR220317059's customer_receives_amount
+// was 1.05 (base $1.00 + 5% bonus), the real Hormuud "E-Voucher" SMS
+// reports exactly "$1.05", and the backend matching logic below was already
+// correct — the gap was entirely that the mobile parser never extracted
+// parsedAmount/parsedPhone/parsedProvider from this SMS shape in the first
+// place (see agent-app's PaymentSmsParsersTest.kt, HormuudEVoucherPayoutSentParser,
+// for that half of the fix). These two tests exercise exactly the backend
+// half: given the parser now DID extract those fields correctly, does the
+// commission-aware withdrawal complete and debit the right amount, exactly
+// once, even under redelivery.
+const WDR220317059_SMS_BODY =
+  "[-E-Voucher-] $1.05 ayaad uwareejisay YAASIIN MAXAMED AADAN(617080008), Haraagaagu waa $2.27.\nLa soo deg App-ka WAAFI http://onelink.to/waafi";
+
+test("the real WDR220317059 scenario: $1.00 base + 5% commission ($1.05 customer_receives) — the real SMS completes it and debits exactly the base $1.00, never the commission-inclusive $1.05", async () => {
+  await fundWallet(2.0);
+  const withdrawalId = "WDR" + Math.floor(100000000 + Math.random() * 900000000);
+  await query(
+    `INSERT INTO reseller_withdrawals (id, reseller_id, company_id, destination_number, amount, status, commission_percentage, bonus_amount, customer_receives_amount)
+     VALUES ($1,$2,$3,$4,1.00,'sent',5,0.05,1.05)`,
+    [withdrawalId, RESELLER_ID, HORMUUD_ID, "617080008"]
+  );
+
+  const result = await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: HORMUUD_SMS_SENDER,
+    body: WDR220317059_SMS_BODY,
+    parsedProvider: "Hormuud",
+    parsedAmount: 1.05,
+    parsedPhone: "617080008",
+    receivedAt: "2026-08-18T20:25:16Z",
+  });
+  assert.equal(result.body.matchedResellerWithdrawalId, withdrawalId);
+
+  const withdrawal = await queryOne<{ status: string; matched_sms_log_id: string }>(
+    `SELECT status, matched_sms_log_id FROM reseller_withdrawals WHERE id=$1`,
+    [withdrawalId]
+  );
+  assert.equal(withdrawal!.status, "completed");
+  assert.equal(withdrawal!.matched_sms_log_id, result.body.id);
+  assert.equal(await walletBalance(), 1.0, "wallet must debit exactly the base $1.00, never the commission-inclusive $1.05");
+
+  const ledgerRows = await query<{ change_amount: string; reference_id: string }>(
+    `SELECT change_amount, reference_id FROM reseller_wallet_transactions WHERE reference_id=$1`,
+    [withdrawalId]
+  );
+  assert.equal(ledgerRows.length, 1, "exactly one ledger transaction — not zero, not more than one");
+  assert.equal(Number(ledgerRows[0].change_amount), -1.0);
+  assert.equal(ledgerRows[0].reference_id, withdrawalId);
+});
+
+test("the real WDR220317059 SMS re-delivered a second time does not debit the wallet again", async () => {
+  await fundWallet(2.0);
+  const withdrawalId = "WDR" + Math.floor(100000000 + Math.random() * 900000000);
+  await query(
+    `INSERT INTO reseller_withdrawals (id, reseller_id, company_id, destination_number, amount, status, commission_percentage, bonus_amount, customer_receives_amount)
+     VALUES ($1,$2,$3,$4,1.00,'sent',5,0.05,1.05)`,
+    [withdrawalId, RESELLER_ID, HORMUUD_ID, "617080008"]
+  );
+  const receivedAt = "2026-08-18T20:40:00Z";
+
+  const first = await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: HORMUUD_SMS_SENDER,
+    body: WDR220317059_SMS_BODY,
+    parsedProvider: "Hormuud",
+    parsedAmount: 1.05,
+    parsedPhone: "617080008",
+    receivedAt,
+  });
+  assert.equal(first.body.matchedResellerWithdrawalId, withdrawalId);
+  assert.equal(await walletBalance(), 1.0);
+
+  const second = await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: HORMUUD_SMS_SENDER,
+    body: WDR220317059_SMS_BODY,
+    parsedProvider: "Hormuud",
+    parsedAmount: 1.05,
+    parsedPhone: "617080008",
+    receivedAt,
+  });
+  assert.equal(second.body.duplicate, true);
+  assert.equal(await walletBalance(), 1.0, "the redelivered SMS must not deduct a second time");
+
+  const ledgerRows = await query(`SELECT id FROM reseller_wallet_transactions WHERE reference_id=$1`, [withdrawalId]);
+  assert.equal(ledgerRows.length, 1, "still exactly one ledger row after the duplicate delivery");
+});

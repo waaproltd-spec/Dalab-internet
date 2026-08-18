@@ -332,9 +332,45 @@ object HormuudEvcPlusPayoutSentParser : ExchangePayoutSentParser {
     }
 }
 
+/**
+ * Hormuud's OTHER outgoing-transfer confirmation format — sent from its
+ * "E-Voucher" sender (740), not the "[-EVCPLUS-]"/192-or-EVCPLUS one
+ * [HormuudEvcPlusPayoutSentParser] already handles. Confirmed live three
+ * times for the same real Reseller Withdraw payout (WDR220317059):
+ * "[-E-Voucher-] $1.05 ayaad uwareejisay YAASIIN MAXAMED AADAN(617080008),
+ *  Haraagaagu waa $2.27.\nLa soo deg App-ka WAAFI http://onelink.to/waafi"
+ * Hormuud apparently sends this same kind of outgoing-transfer confirmation
+ * through either channel depending on the transaction/route — this app
+ * needs to recognize both. Sender 740 is also [HormuudEVoucherParser]'s own
+ * sender, but that parser's English "transferred...to..." wording never
+ * matches this Somali "ayaad uwareejisay...(...)" phrasing (confirmed: all
+ * three real captured samples went completely unparsed — parsed_provider/
+ * parsed_amount/parsed_phone all null in sms_logs — until this parser was
+ * added), so the two coexist safely: at most one of them will ever match a
+ * given real message body, never both.
+ */
+object HormuudEVoucherPayoutSentParser : ExchangePayoutSentParser {
+    override val senders: List<String>
+        get() = SmsSenderIdRepository.sendersFor("hormuud_e_voucher", listOf("740"))
+
+    private val pattern = Regex(
+        """\$$AMOUNT_PATTERN\s*ayaad\s+uwareejisay\s+.+?\((\d{6,15})\)""",
+        RegexOption.IGNORE_CASE
+    )
+
+    override fun tryParse(sender: String, body: String): ExchangePayoutConfirmedEntry? {
+        if (senders.none { it.equals(sender.trim(), ignoreCase = true) }) return null
+        if (!body.contains("uwareejisay", ignoreCase = true)) return null
+        val match = pattern.find(body) ?: return null
+        val (amount, phone) = match.destructured
+        val parsedAmount = parseAmount(amount) ?: return null
+        return ExchangePayoutConfirmedEntry(receiverPhone = phone, amount = parsedAmount, provider = "Hormuud", rawText = body)
+    }
+}
+
 /** Registry for Money Exchange payout confirmations — mirrors [VoucherSentParsers]. */
 object ExchangePayoutSentParsers {
-    val ALL: List<ExchangePayoutSentParser> = listOf(SomtelEdahabPayoutSentParser, HormuudEvcPlusPayoutSentParser)
+    val ALL: List<ExchangePayoutSentParser> = listOf(SomtelEdahabPayoutSentParser, HormuudEvcPlusPayoutSentParser, HormuudEVoucherPayoutSentParser)
 
     fun parse(sender: String, body: String): ExchangePayoutConfirmedEntry? {
         for (parser in ALL) {
