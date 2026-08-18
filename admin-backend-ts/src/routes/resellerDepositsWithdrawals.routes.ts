@@ -19,42 +19,41 @@ function withdrawalRef(): string {
 // ==================== Deposit ("Lacag Ku Shub", Req. 8) ====================
 
 const DEPOSIT_SELECT = `
-  SELECT d.*, c.name AS company_name, c.color_hex AS company_color
+  SELECT d.*, m.label AS method_label
   FROM reseller_deposits d
-  JOIN companies c ON c.id = d.company_id
+  JOIN reseller_deposit_methods m ON m.method = d.method
 `;
 
-// Shows Dalab's own collection number for the company (companies.payment_
-// number, the same field Internet Store orders already display — see
-// migration 052's header comment for why this isn't a new per-reseller
-// table). Does NOT touch the wallet — "must not be increased simply
-// because the Reseller submits a Deposit request" (spec, Req. 8).
+// Shows Dalab's own collection number for the chosen payment method
+// (reseller_deposit_methods, managed from Admin -> Resellers -> Payment —
+// see migration 053's header comment for why deposits moved off companies.
+// payment_number: the wallet has no per-company split, so neither should
+// its deposit collection number). Does NOT touch the wallet — "must not be
+// increased simply because the Reseller submits a Deposit request" (spec,
+// Req. 8).
 resellerDepositsWithdrawalsRouter.post("/reseller/deposits", requireAuth("reseller"), async (req, res) => {
-  const companyId = String(req.body.companyId ?? "");
+  const method = String(req.body.method ?? "");
   const fromNumber = String(req.body.fromNumber ?? "").trim();
   const amount = Number(req.body.amount);
   const clientRequestId = req.body.clientRequestId ? String(req.body.clientRequestId) : null;
 
-  if (!companyId || !fromNumber || !Number.isFinite(amount) || amount <= 0) {
-    return sendJson(res, 400, { error: "companyId, fromNumber, and a positive amount are required" });
+  if (!method || !fromNumber || !Number.isFinite(amount) || amount <= 0) {
+    return sendJson(res, 400, { error: "method, fromNumber, and a positive amount are required" });
   }
   if (!PAYMENT_NUMBER_RE.test(fromNumber)) return sendJson(res, 400, { error: "fromNumber must be 6-15 digits" });
 
-  const company = await queryOne<{ payment_number: string | null }>(
-    `SELECT payment_number FROM companies WHERE id=$1 AND deleted_at IS NULL`,
-    [companyId]
+  const depositMethod = await queryOne<{ payment_number: string }>(
+    `SELECT payment_number FROM reseller_deposit_methods WHERE method=$1`,
+    [method]
   );
-  if (!company) return sendJson(res, 404, { error: "Company not found" });
-  if (!company.payment_number) {
-    return sendJson(res, 400, { error: "This company has no collection number configured yet — ask Admin to set one" });
-  }
+  if (!depositMethod) return sendJson(res, 404, { error: "Unknown payment method" });
 
   const id = depositRef();
   try {
     await query(
-      `INSERT INTO reseller_deposits (id, reseller_id, company_id, to_number, from_number, amount, client_request_id)
+      `INSERT INTO reseller_deposits (id, reseller_id, method, to_number, from_number, amount, client_request_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [id, req.auth!.sub, companyId, company.payment_number, fromNumber, amount, clientRequestId]
+      [id, req.auth!.sub, method, depositMethod.payment_number, fromNumber, amount, clientRequestId]
     );
   } catch (err) {
     const pgErr = err as { code?: string; constraint?: string };
@@ -79,8 +78,10 @@ resellerDepositsWithdrawalsRouter.get("/reseller/deposits/:id", requireAuth("res
 resellerDepositsWithdrawalsRouter.get("/admin/reseller-deposits", requireStaff(), async (req, res) => {
   const status = req.query.status ? String(req.query.status) : null;
   const params: unknown[] = [];
-  let sql = `SELECT d.*, c.name AS company_name, r.reseller_login_id, r.name AS reseller_name
-             FROM reseller_deposits d JOIN companies c ON c.id = d.company_id JOIN resellers r ON r.id = d.reseller_id`;
+  let sql = `SELECT d.*, m.label AS method_label, r.reseller_login_id, r.name AS reseller_name
+             FROM reseller_deposits d
+             JOIN reseller_deposit_methods m ON m.method = d.method
+             JOIN resellers r ON r.id = d.reseller_id`;
   if (status) {
     params.push(status);
     sql += ` WHERE d.status=$1`;
@@ -141,8 +142,12 @@ resellerDepositsWithdrawalsRouter.put("/admin/reseller-deposits/:id/fail", requi
 
 // ==================== Withdrawal ("Lacag Bixi", Req. 9) ====================
 
+// payout_ussd_template travels with every withdrawal read so the app can
+// build the "Dial to Pay" (send-money) USSD code itself — see
+// utils/ussd.dart's buildPayoutUssdDialUri, substituting {number} (the
+// destination_number on this same row) and {amount}.
 const WITHDRAWAL_SELECT = `
-  SELECT w.*, c.name AS company_name, c.color_hex AS company_color
+  SELECT w.*, c.name AS company_name, c.color_hex AS company_color, c.payout_ussd_template
   FROM reseller_withdrawals w
   JOIN companies c ON c.id = w.company_id
 `;

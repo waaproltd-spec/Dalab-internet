@@ -36,6 +36,7 @@ import { somlinkRouter } from "./routes/somlink.routes.js";
 import { resellersRouter } from "./routes/resellers.routes.js";
 import { resellerOrdersRouter } from "./routes/resellerOrders.routes.js";
 import { resellerDepositsWithdrawalsRouter } from "./routes/resellerDepositsWithdrawals.routes.js";
+import { resellerPaymentConfigRouter } from "./routes/resellerPaymentConfig.routes.js";
 import { pool, queryOne } from "./db/pool.js";
 import { seedAll } from "./db/seed.js";
 import { sendJson } from "./utils/camelCase.js";
@@ -281,6 +282,7 @@ app.use(somlinkRouter);
 app.use(resellersRouter);
 app.use(resellerOrdersRouter);
 app.use(resellerDepositsWithdrawalsRouter);
+app.use(resellerPaymentConfigRouter);
 
 app.use((_req: Request, res: Response) => {
   res.status(404).json({ error: "Not found" });
