@@ -15,7 +15,12 @@ import { extractBalanceFromSms, resolveCompanyIdByProviderName, resolveDeviceSlo
 import { broadcast } from "../realtime/orderEvents.js";
 import { verifyOrderAndGenerateUssd } from "./orders.routes.js";
 import { autoAdvanceExchangeOrderToInProgress } from "./exchange.routes.js";
-import { findMatchingResellerDeposit, confirmResellerDepositViaSms } from "./resellerSmsMatching.js";
+import {
+  findMatchingResellerDeposit,
+  confirmResellerDepositViaSms,
+  findMatchingResellerWithdrawal,
+  confirmResellerWithdrawalViaSms,
+} from "./resellerSmsMatching.js";
 
 export const smsLogsRouter = Router();
 
@@ -365,6 +370,7 @@ type IngestSmsResult = {
     matchedOrderId: string | null;
     matchedExchangeOrderId?: string | null;
     matchedResellerDepositId?: string | null;
+    matchedResellerWithdrawalId?: string | null;
     requiresManualApproval: boolean;
     duplicate: boolean;
     orderAlreadyCompleted?: boolean;
@@ -499,13 +505,25 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
     resellerMatchFailureReason = resellerResult.reason;
   }
 
+  // Reseller Withdraw matching (the OUTGOING payout-sent confirmation) only
+  // runs when Store, Exchange, AND Reseller Deposit have all found nothing
+  // — same "always last" guarantee, one level further out.
+  let resellerWithdrawalMatch: Awaited<ReturnType<typeof findMatchingResellerWithdrawal>>["withdrawal"] = null;
+  let resellerWithdrawalMatchFailureReason: string | null = null;
+  if (!match && !exchangeMatch && !resellerDepositMatch) {
+    const resellerWithdrawalResult = await findMatchingResellerWithdrawal(parsedAmount, parsedPhone, parsedProvider);
+    resellerWithdrawalMatch = resellerWithdrawalResult.withdrawal;
+    resellerWithdrawalMatchFailureReason = resellerWithdrawalResult.reason;
+  }
+
   const combinedFailureReason =
-    match || exchangeMatch || resellerDepositMatch
+    match || exchangeMatch || resellerDepositMatch || resellerWithdrawalMatch
       ? null
       : [
           matchFailureReason,
           exchangeMatchFailureReason ? `Exchange: ${exchangeMatchFailureReason}` : null,
           resellerMatchFailureReason ? `Reseller Deposit: ${resellerMatchFailureReason}` : null,
+          resellerWithdrawalMatchFailureReason ? `Reseller Withdraw: ${resellerWithdrawalMatchFailureReason}` : null,
         ]
           .filter(Boolean)
           .join(" | ");
@@ -517,11 +535,11 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
   // different truncated minute than the row that actually won.
   try {
     await query(
-      `INSERT INTO sms_logs (id, agent_id, sender, body, parsed_provider, parsed_amount, parsed_phone, matched_order_id, matched_exchange_order_id, matched_reseller_deposit_id, received_at, transaction_ref, sim_slot, match_failure_reason)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+      `INSERT INTO sms_logs (id, agent_id, sender, body, parsed_provider, parsed_amount, parsed_phone, matched_order_id, matched_exchange_order_id, matched_reseller_deposit_id, matched_reseller_withdrawal_id, received_at, transaction_ref, sim_slot, match_failure_reason)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
       [
         id, agentId, sender, body, parsedProvider ?? null, parsedAmount ?? null, parsedPhone ?? null,
-        match?.id ?? null, exchangeMatch?.id ?? null, resellerDepositMatch?.id ?? null,
+        match?.id ?? null, exchangeMatch?.id ?? null, resellerDepositMatch?.id ?? null, resellerWithdrawalMatch?.id ?? null,
         effectiveReceivedAt, transactionRef ?? null, simSlot ?? null,
         combinedFailureReason || null,
       ]
@@ -652,6 +670,14 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
     await confirmResellerDepositViaSms(resellerDepositMatch, id);
   }
 
+  // Reseller Withdraw: "the Wallet amount is deducted only after the
+  // outgoing payment is successfully confirmed" (product instruction) —
+  // fully automatic, no admin tap required. Same atomic claim-before-
+  // deduct safety as confirmResellerDepositViaSms.
+  if (resellerWithdrawalMatch) {
+    await confirmResellerWithdrawalViaSms(resellerWithdrawalMatch, id);
+  }
+
   // The ledger row for this genuinely-new payment attempt — 'pending' until
   // the Agent App's verify-payment/dial-attempt calls advance it. A null
   // return means idx_payment_tx_order_active's atomic backstop (migration
@@ -681,6 +707,7 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
       matchedOrderId: match?.id ?? null,
       matchedExchangeOrderId: exchangeMatch?.id ?? null,
       matchedResellerDepositId: resellerDepositMatch?.id ?? null,
+      matchedResellerWithdrawalId: resellerWithdrawalMatch?.id ?? null,
       requiresManualApproval,
       duplicate: false,
       status: "new",
@@ -700,6 +727,7 @@ type OrphanedSmsRow = {
   agent_id: string;
   parsed_amount: number | null;
   parsed_phone: string | null;
+  parsed_provider: string | null;
   sim_slot: number | null;
   transaction_ref: string | null;
   received_at: string;
@@ -723,8 +751,9 @@ type OrphanedSmsRow = {
  */
 export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; stillUnmatched: number }> {
   const orphans = await query<OrphanedSmsRow>(
-    `SELECT id, agent_id, parsed_amount, parsed_phone, sim_slot, transaction_ref, received_at FROM sms_logs
+    `SELECT id, agent_id, parsed_amount, parsed_phone, parsed_provider, sim_slot, transaction_ref, received_at FROM sms_logs
      WHERE matched_order_id IS NULL AND matched_exchange_order_id IS NULL AND matched_reseller_deposit_id IS NULL
+       AND matched_reseller_withdrawal_id IS NULL
        AND received_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
      ORDER BY received_at ASC`
   );
@@ -818,7 +847,7 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
         continue;
       }
 
-      // No Store or Exchange match — try Reseller Deposit last, same order
+      // No Store or Exchange match — try Reseller Deposit next, same order
       // as the live upload path. A delayed match here (the SMS beat the
       // deposit-request creation, or the payment method's device wasn't
       // linked yet) still ends up fully credited automatically.
@@ -828,17 +857,37 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
         sms.agent_id,
         sms.sim_slot
       );
-      if (!resellerMatch) {
+      if (resellerMatch) {
+        const result = await confirmResellerDepositViaSms(resellerMatch, sms.id);
+        if (result.credited) relinked++;
+        continue;
+      }
+
+      // Still nothing — try Reseller Withdraw last (the outgoing
+      // payout-sent confirmation). A delayed match here (the SMS beat the
+      // withdrawal-request creation) still ends up fully completed
+      // automatically, with the wallet deducted at that exact moment.
+      const { withdrawal: resellerWithdrawalMatch, reason: resellerWithdrawalReason } = await findMatchingResellerWithdrawal(
+        sms.parsed_amount ?? undefined,
+        sms.parsed_phone ?? undefined,
+        sms.parsed_provider ?? undefined
+      );
+      if (!resellerWithdrawalMatch) {
         await query(`UPDATE sms_logs SET match_failure_reason=$1 WHERE id=$2`, [
-          [reason, exchangeReason ? `Exchange: ${exchangeReason}` : null, resellerReason ? `Reseller Deposit: ${resellerReason}` : null]
+          [
+            reason,
+            exchangeReason ? `Exchange: ${exchangeReason}` : null,
+            resellerReason ? `Reseller Deposit: ${resellerReason}` : null,
+            resellerWithdrawalReason ? `Reseller Withdraw: ${resellerWithdrawalReason}` : null,
+          ]
             .filter(Boolean)
             .join(" | "),
           sms.id,
         ]);
         continue;
       }
-      const result = await confirmResellerDepositViaSms(resellerMatch, sms.id);
-      if (result.credited) relinked++;
+      const withdrawalResult = await confirmResellerWithdrawalViaSms(resellerWithdrawalMatch, sms.id);
+      if (withdrawalResult.completed) relinked++;
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error(`resweepUnmatchedSmsLogs failed for sms_log ${sms.id}:`, (err as Error).message);

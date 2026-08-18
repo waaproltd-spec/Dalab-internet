@@ -7713,35 +7713,15 @@ function ResellerWithdrawalsTab({ canManage }) {
     finally { setActingId(null); }
   };
 
-  // "Withdraw SMS = confirms outgoing money after payout... linked to the
-  // Withdraw transaction" (product instruction) — optional: find the
-  // matching row on the SMS Logs screen first (search by the customer's
-  // phone number), copy its ID, and paste it here. Leaving it blank still
-  // completes the withdrawal exactly as before.
-  const completeWithOptionalSms = async (row) => {
-    const smsLogId = window.prompt(
-      "Optional: paste the SMS Log ID that confirms this payout was sent (see Admin -> SMS Logs, searchable by phone number). Leave blank to complete without one.",
-      ""
-    );
-    if (smsLogId === null) return; // cancelled
-    setActingId(row.id);
-    setActionError((m) => ({ ...m, [row.id]: "" }));
-    try {
-      await DalabAdminApi.completeResellerWithdrawal(row.id, smsLogId.trim() || undefined);
-      fetchWithdrawals();
-    } catch (err) {
-      setActionError((m) => ({ ...m, [row.id]: err.message || "Couldn't complete this withdrawal." }));
-    } finally {
-      setActingId(null);
-    }
-  };
-
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
         <div>
           <div style={{ fontWeight: 800, fontSize: 15, color: INK }}>Withdrawals (Lacag Bixi)</div>
-          <div style={{ fontSize: 12, color: MUTE, marginTop: 2 }}>The amount was already reserved from the reseller's wallet the moment they requested it.</div>
+          <div style={{ fontSize: 12, color: MUTE, marginTop: 2 }}>
+            Fully automatic: once the payout SMS confirms, the matching withdrawal completes and the Wallet is deducted with no admin action needed.
+            "Complete" below is a manual fallback for the rare case the SMS never arrives.
+          </div>
         </div>
         <select style={{ ...inputStyle, width: 180 }} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
           <option value="all">All statuses</option>
@@ -7762,6 +7742,9 @@ function ResellerWithdrawalsTab({ canManage }) {
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Commission Amt</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Sent to Customer</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payout Agent</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>SMS Confirmation</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>SMS Timestamp</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>SMS Ref</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Status</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Date</th>
               {canManage && <th style={{ padding: "10px 14px" }} />}
@@ -7780,6 +7763,11 @@ function ResellerWithdrawalsTab({ canManage }) {
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>${Number(w.bonusAmount ?? 0).toFixed(2)}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK }}>${Number(w.customerReceivesAmount ?? w.amount).toFixed(2)}</td>
                 <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE }}>{w.confirmedByAdminEmail || "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 11, color: MUTE, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={w.smsConfirmationText || ""}>
+                  {w.smsConfirmationText || "—"}
+                </td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE }}>{w.smsConfirmedAt ? formatDateTime(w.smsConfirmedAt) : "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 10.5, color: MUTE, fontFamily: "monospace" }}>{w.matchedSmsLogId ? w.matchedSmsLogId.slice(0, 8) : "—"}</td>
                 <td style={{ padding: "10px 14px" }}>{statusBadge(RESELLER_WITHDRAWAL_STATUS_META, w.status)}</td>
                 <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE }}>{formatDateTime(w.createdAt)}</td>
                 {canManage && (
@@ -7792,7 +7780,7 @@ function ResellerWithdrawalsTab({ canManage }) {
                     )}
                     {w.status === "sent" && (
                       <>
-                        <Button variant="subtle" disabled={actingId === w.id} onClick={() => completeWithOptionalSms(w)}>Complete</Button>
+                        <Button variant="subtle" disabled={actingId === w.id} onClick={() => act(w, DalabAdminApi.completeResellerWithdrawal, "complete")}>Complete</Button>
                         <Button variant="danger" style={{ marginLeft: 6 }} disabled={actingId === w.id} onClick={() => act(w, DalabAdminApi.failResellerWithdrawal, "fail")}>Fail</Button>
                       </>
                     )}
@@ -7802,7 +7790,7 @@ function ResellerWithdrawalsTab({ canManage }) {
               </tr>
             ))}
             {withdrawals.length === 0 && (
-              <tr><td colSpan={13} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No withdrawals yet.</td></tr>
+              <tr><td colSpan={16} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No withdrawals yet.</td></tr>
             )}
           </tbody>
         </table>

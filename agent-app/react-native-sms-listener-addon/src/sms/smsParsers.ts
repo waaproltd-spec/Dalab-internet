@@ -146,11 +146,102 @@ export const amtelParser: OperatorSmsParser = {
 export const OPERATOR_PARSERS: OperatorSmsParser[] = [hormuudParser, somnetParser, somtelParser, amtelParser];
 
 /**
- * Tries every registered parser. Returns null for anything that isn't a
- * recognized, well-formed payment confirmation — this is the single
- * enforcement point for "only process payment confirmation SMS, ignore
- * everything else" (see useSMSListener.ts, which discards non-matches
- * before they're ever logged or uploaded).
+ * Reseller Withdraw ("Lacag Bixi") OUTGOING confirmations — the reseller
+ * sent money OUT to a customer (via the existing "Dial to Pay" send-money
+ * USSD), and this is the telecom's own "you sent $X to Y" SMS back. Kept
+ * as a completely separate registry from OPERATOR_PARSERS above (which are
+ * all "you RECEIVED $X from Y" — the opposite direction, used for Internet
+ * Store/eBadal/Reseller Deposit) — reusing ParsedPaymentSms's shape is fine
+ * (the wire format to POST /agent/sms-logs is direction-agnostic; the
+ * backend's ingestPaymentSms decides what a given amount+phone means by
+ * which matcher — Deposit vs Withdraw — actually claims it), but the
+ * PARSING itself must never be shared between companies whose real SMS
+ * formats differ, confirmed against real samples for exactly two operators
+ * so far. Somtel/Somnet have no confirmed outgoing sample yet — do not add
+ * placeholder/guessed parsers for them; an unconfirmed regex risks either
+ * silently never matching (harmless) or, worse, matching the wrong SMS.
+ */
+
+/**
+ * Hormuud E-Voucher (EVC Plus) send-money confirmation — confirmed real
+ * format (from the project's own SMS sample):
+ *   "[-E-Voucher-] $0.5 ayaad uwareejisay YAASIIN MAXAMED AADAN(617080008), Haraagaagu waa $2.37."
+ * Sender: "740". Distinct from hormuudParser above (sender "192"/"EVCPLUS",
+ * "waxaad ... ka heshay" — received wording) — different sender ID AND
+ * different wording, so there is no ambiguity between the two directions.
+ */
+export const hormuudOutgoingParser: OperatorSmsParser = {
+  operator: "Hormuud",
+  senderIds: ["740"],
+  matchesSender(sender) {
+    const s = normalizeSender(sender);
+    return this.senderIds.some((id) => s === id || s.includes(id));
+  },
+  tryParse(raw) {
+    if (!this.matchesSender(raw.sender)) return null;
+    const match = raw.body.match(
+      /\$?([\d.]+)\s*ayaad\s+uwareejisay\s+(.+?)\((\d{6,12})\),?\s*Haraagaagu\s+waa\s*\$?([\d.]+)/i
+    );
+    if (!match) return null;
+    const [, amountStr, , phone] = match;
+    const amount = Number(amountStr);
+    if (!Number.isFinite(amount) || amount <= 0) return null;
+
+    return {
+      operator: "Hormuud",
+      customerPhone: phone,
+      amount,
+      transactionDateTime: new Date(raw.timestampMs).toISOString(),
+      rawSender: raw.sender,
+      rawBody: raw.body,
+    };
+  },
+};
+
+/**
+ * Amtel send-money confirmation — confirmed real format (from the
+ * project's own SMS sample):
+ *   "You have transferred $1-252711444497. Date-Time: 18/08/2026 09:04:48. Transaction ID: 04247700000025841807. Your balance $0.35."
+ * Sender: "913". Distinct from amtelParser above (sender "AMTEL", the
+ * "received $X from Y" placeholder wording).
+ */
+export const amtelOutgoingParser: OperatorSmsParser = {
+  operator: "Amtel",
+  senderIds: ["913"],
+  matchesSender(sender) {
+    const s = normalizeSender(sender);
+    return this.senderIds.some((id) => s === id || s.includes(id));
+  },
+  tryParse(raw) {
+    if (!this.matchesSender(raw.sender)) return null;
+    const match = raw.body.match(
+      /You have transferred\s*\$?([\d.]+)-(\d{6,15})\.\s*Date-Time:\s*([\d/]+\s+[\d:]+)\.\s*Transaction ID:\s*([^.\s]+)\.\s*Your balance\s*\$?([\d.]+)/i
+    );
+    if (!match) return null;
+    const [, amountStr, phone, dateTimeStr] = match;
+    const amount = Number(amountStr);
+    if (!Number.isFinite(amount) || amount <= 0) return null;
+
+    return {
+      operator: "Amtel",
+      customerPhone: phone,
+      amount,
+      transactionDateTime: parseDdMmYyyyHms(dateTimeStr) ?? new Date(raw.timestampMs).toISOString(),
+      rawSender: raw.sender,
+      rawBody: raw.body,
+    };
+  },
+};
+
+export const OUTGOING_OPERATOR_PARSERS: OperatorSmsParser[] = [hormuudOutgoingParser, amtelOutgoingParser];
+
+/**
+ * Tries every registered RECEIVED-payment parser first, then every
+ * registered SENT-payment (Withdraw) parser. Returns null for anything
+ * that isn't a recognized, well-formed confirmation of either direction —
+ * this is the single enforcement point for "only process payment
+ * confirmation SMS, ignore everything else" (see useSMSListener.ts, which
+ * discards non-matches before they're ever logged or uploaded).
  */
 export function parsePaymentSms(raw: RawSms): ParsedPaymentSms | null {
   for (const parser of OPERATOR_PARSERS) {
@@ -158,7 +249,24 @@ export function parsePaymentSms(raw: RawSms): ParsedPaymentSms | null {
     const result = parser.tryParse(raw);
     if (result) return result;
   }
+  for (const parser of OUTGOING_OPERATOR_PARSERS) {
+    if (!parser.matchesSender(raw.sender)) continue;
+    const result = parser.tryParse(raw);
+    if (result) return result;
+  }
   return null;
+}
+
+/** "18/08/2026 09:04:48" -> ISO string, best-effort; returns null if unparseable. */
+function parseDdMmYyyyHms(input: string): string | null {
+  const dateMatch = input.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})$/);
+  if (!dateMatch) return null;
+  const [, dayStr, monthStr, yearStr, hourStr, minuteStr, secondStr] = dateMatch;
+  const date = new Date(
+    Date.UTC(Number(yearStr), Number(monthStr) - 1, Number(dayStr), Number(hourStr), Number(minuteStr), Number(secondStr))
+  );
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
 }
 
 /** "24/07/26" -> ISO string, best-effort; returns null if unparseable. */

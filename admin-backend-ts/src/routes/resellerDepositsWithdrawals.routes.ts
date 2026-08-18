@@ -159,20 +159,31 @@ const WITHDRAWAL_SELECT = `
   JOIN companies c ON c.id = w.company_id
 `;
 
-// Reserves the amount atomically with row creation — "the amount must be
-// reserved/deducted... so the same balance cannot be used for another
-// transaction" (spec, Req. 9). Both the wallet debit and the withdrawal
-// row happen in one transaction: if either fails, neither is left behind.
+// "The Wallet amount is deducted only after the outgoing payment is
+// successfully confirmed" (product instruction) — so, unlike the previous
+// design, creating a withdrawal never touches reseller_wallets.balance at
+// all. Double-spend protection instead comes from an AVAILABLE-balance
+// check: ledger balance minus every other withdrawal of this reseller's
+// still in-flight (status 'reserved' or 'sent', i.e. not yet completed/
+// cancelled/failed). Both reads happen inside one transaction that holds
+// a row lock on the wallet (SELECT ... FOR UPDATE) for its whole duration,
+// so two concurrent requests for the same reseller can't both compute a
+// stale "available" figure and both succeed — the second blocks until the
+// first commits, then sees the first's new row in its own in-flight sum.
+// This preserves the exact same "the same balance cannot be used for two
+// transactions" guarantee the old reservation-based design had; it just
+// achieves it without moving money in the ledger until settlement.
 //
 // The Withdraw Commission (Admin -> Resellers -> Payment, per company) is
 // resolved and snapshotted right here, at request time, based on the payout
 // company the customer selected — never on the Deposit payment method. The
-// Wallet is still only deducted by `amount`, but the customer must be sent
-// MORE than that (amount + amount x commission%), and the app needs that
-// customer_receives_amount immediately after creation to dial the correct
-// payout USSD amount. Once snapshotted the commission never changes for
-// this withdrawal even if Admin edits the company's percentage afterward
-// (same "don't mutate history" principle as the rest of this feature).
+// Wallet will only ever be deducted by `amount`, but the customer must be
+// sent MORE than that (amount + amount x commission%), and the app needs
+// that customer_receives_amount immediately after creation to dial the
+// correct payout USSD amount. Once snapshotted the commission never
+// changes for this withdrawal even if Admin edits the company's percentage
+// afterward (same "don't mutate history" principle as the rest of this
+// feature).
 resellerDepositsWithdrawalsRouter.post("/reseller/withdrawals", requireAuth("reseller"), async (req, res) => {
   const companyId = String(req.body.companyId ?? "");
   const destinationNumber = String(req.body.destinationNumber ?? "").trim();
@@ -199,31 +210,29 @@ resellerDepositsWithdrawalsRouter.post("/reseller/withdrawals", requireAuth("res
 
   const id = withdrawalRef();
   try {
-    const created = await withTransaction(async (client) => {
-      const walletResult = await adjustResellerWallet({
-        resellerId: req.auth!.sub,
-        changeAmount: -amount,
-        referenceType: "withdrawal_reservation",
-        referenceId: id,
-        source: "system",
-        client,
-      });
-      const txRow = await client.query(
-        `SELECT id FROM reseller_wallet_transactions WHERE reseller_id=$1 AND reference_id=$2 AND reference_type='withdrawal_reservation' ORDER BY created_at DESC LIMIT 1`,
-        [req.auth!.sub, id]
+    await withTransaction(async (client) => {
+      const walletRow = await client.query<{ balance: string }>(
+        `SELECT balance FROM reseller_wallets WHERE reseller_id=$1 FOR UPDATE`,
+        [req.auth!.sub]
       );
-      const reservationTxId = txRow.rows[0]?.id ?? null;
+      if (walletRow.rows.length === 0) throw new Error(`No wallet row for reseller ${req.auth!.sub}`);
+      const inFlightRow = await client.query<{ total: string }>(
+        `SELECT COALESCE(SUM(amount),0) AS total FROM reseller_withdrawals WHERE reseller_id=$1 AND status IN ('reserved','sent')`,
+        [req.auth!.sub]
+      );
+      const available = Number(walletRow.rows[0].balance) - Number(inFlightRow.rows[0].total);
+      if (amount > available) throw new Error("Insufficient wallet balance");
+
       await client.query(
         `INSERT INTO reseller_withdrawals
-           (id, reseller_id, company_id, destination_number, amount, status, reservation_tx_id, client_request_id,
+           (id, reseller_id, company_id, destination_number, amount, status, client_request_id,
             commission_percentage, bonus_amount, customer_receives_amount)
-         VALUES ($1,$2,$3,$4,$5,'reserved',$6,$7,$8,$9,$10)`,
-        [id, req.auth!.sub, companyId, destinationNumber, amount, reservationTxId, clientRequestId,
+         VALUES ($1,$2,$3,$4,$5,'reserved',$6,$7,$8,$9)`,
+        [id, req.auth!.sub, companyId, destinationNumber, amount, clientRequestId,
           commissionPercentage, bonusAmount, customerReceivesAmount]
       );
-      return walletResult;
     });
-    sendJson(res, 201, { ...(await queryOne(`${WITHDRAWAL_SELECT} WHERE w.id=$1`, [id])), wallet: created });
+    sendJson(res, 201, await queryOne(`${WITHDRAWAL_SELECT} WHERE w.id=$1`, [id]));
   } catch (err) {
     const pgErr = err as { code?: string; constraint?: string; message?: string };
     if (pgErr.code === "23505" && pgErr.constraint === "idx_reseller_withdrawals_client_request_id") {
@@ -246,8 +255,10 @@ resellerDepositsWithdrawalsRouter.get("/reseller/withdrawals/:id", requireAuth("
   sendJson(res, 200, withdrawal);
 });
 
-// Reseller backs out before Admin has sent the payout — releases the
-// reservation via a reversing ledger row (never mutates the original).
+// Reseller backs out before the payout is confirmed. No wallet adjustment
+// needed — nothing was deducted at creation (see POST /reseller/withdrawals'
+// doc comment), so cancelling just needs to move the row out of the
+// "in-flight" set that route's availability check sums over.
 resellerDepositsWithdrawalsRouter.put("/reseller/withdrawals/:id/cancel", requireAuth("reseller"), async (req, res) => {
   const withdrawal = await queryOne(`SELECT * FROM reseller_withdrawals WHERE id=$1 AND reseller_id=$2`, [req.params.id, req.auth!.sub]);
   if (!withdrawal) return sendJson(res, 404, { error: "Withdrawal not found" });
@@ -255,20 +266,11 @@ resellerDepositsWithdrawalsRouter.put("/reseller/withdrawals/:id/cancel", requir
     return sendJson(res, 409, { error: `Withdrawal is '${withdrawal.status}', not 'reserved' — cannot cancel` });
   }
 
-  await adjustResellerWallet({
-    resellerId: withdrawal.reseller_id,
-    changeAmount: Number(withdrawal.amount),
-    referenceType: "withdrawal_release",
-    referenceId: withdrawal.id,
-    source: "system",
-  });
   const rows = await query(
     `UPDATE reseller_withdrawals SET status='cancelled', cancelled_at=now(), updated_at=now() WHERE id=$1 AND status='reserved' RETURNING id`,
     [req.params.id]
   );
-  if (rows.length === 0) {
-    return sendJson(res, 500, { error: "Reservation was released but the withdrawal status change lost a race — check admin activity log" });
-  }
+  if (rows.length === 0) return sendJson(res, 409, { error: "Withdrawal is no longer in a reserved state" });
   sendJson(res, 200, { id: req.params.id, status: "cancelled" });
 });
 
@@ -276,12 +278,14 @@ resellerDepositsWithdrawalsRouter.get("/admin/reseller-withdrawals", requireStaf
   const status = req.query.status ? String(req.query.status) : null;
   const params: unknown[] = [];
   let sql = `SELECT w.*, c.name AS company_name, r.reseller_login_id, r.name AS reseller_name,
-                    rw.balance AS reseller_wallet_balance, au.email AS confirmed_by_admin_email
+                    rw.balance AS reseller_wallet_balance, au.email AS confirmed_by_admin_email,
+                    sl.body AS sms_confirmation_text, sl.received_at AS sms_confirmed_at
              FROM reseller_withdrawals w
              JOIN companies c ON c.id = w.company_id
              JOIN resellers r ON r.id = w.reseller_id
              LEFT JOIN reseller_wallets rw ON rw.reseller_id = w.reseller_id
-             LEFT JOIN admin_users au ON au.id = w.confirmed_by_admin_id`;
+             LEFT JOIN admin_users au ON au.id = w.confirmed_by_admin_id
+             LEFT JOIN sms_logs sl ON sl.id = w.matched_sms_log_id`;
   if (status) {
     params.push(status);
     sql += ` WHERE w.status=$1`;
@@ -289,10 +293,12 @@ resellerDepositsWithdrawalsRouter.get("/admin/reseller-withdrawals", requireStaf
   sendJson(res, 200, await query(sql + ` ORDER BY w.created_at DESC`, params));
 });
 
-// Admin has dialed/sent the payout via that company's configured payment
-// method (Agent App / USSD infra, outside this route's scope) and is
-// recording that here. No balance change — the amount was already
-// reserved at request time.
+// Optional manual bookkeeping step — the automatic SMS matcher (see
+// resellerSmsMatching.ts) matches a withdrawal straight from 'reserved' OR
+// 'sent' to 'completed', so nothing requires this to run first. Still
+// useful for admin visibility ("this one's been dialed, just waiting on
+// the SMS"). No balance change either way — nothing is deducted until
+// Complete.
 resellerDepositsWithdrawalsRouter.put("/admin/reseller-withdrawals/:id/mark-sent", requirePermission("resellers.manage"), async (req, res) => {
   const rows = await query(
     `UPDATE reseller_withdrawals SET status='sent', sent_at=now(), confirmed_by_admin_id=$1, updated_at=now()
@@ -303,56 +309,63 @@ resellerDepositsWithdrawalsRouter.put("/admin/reseller-withdrawals/:id/mark-sent
   sendJson(res, 200, { id: req.params.id, status: "sent" });
 });
 
-// "Withdraw SMS = confirms outgoing money after payout... linked to the
-// Withdraw transaction and used to confirm that the payout was
-// successfully sent" (product instruction). smsLogId is optional — the
-// wallet was already debited at request time (see POST /reseller/withdrawals'
-// own doc comment for why: reserving atomically at request time is what
-// prevents the same balance being used for two withdrawals, a requirement
-// that predates and takes priority over this SMS step) — so Complete's
-// only remaining job is recording that the outgoing payment was confirmed
-// and, when admin has a matching sms_logs row, attaching it as evidence.
+// Manual fallback for the (currently common, until real "money sent" SMS
+// samples exist to build a mobile-side parser for — see resellerSmsMatching.ts's
+// header comment) case where the automatic SMS match never fires. This is
+// the only place besides the automatic matcher that actually deducts the
+// wallet — "the Wallet amount is deducted only after the outgoing payment
+// is successfully confirmed" (product instruction) — via the exact same
+// claim-before-deduct ordering confirmResellerWithdrawalViaSms uses: the
+// CAS (status IN ('reserved','sent') in the WHERE) runs first, and only a
+// successful claim is allowed to touch the wallet, so a race between this
+// endpoint and the automatic matcher can never double-deduct.
 resellerDepositsWithdrawalsRouter.put("/admin/reseller-withdrawals/:id/complete", requirePermission("resellers.manage"), async (req, res) => {
   const smsLogId = req.body.smsLogId ? String(req.body.smsLogId) : null;
   if (smsLogId && !(await queryOne(`SELECT id FROM sms_logs WHERE id=$1`, [smsLogId]))) {
     return sendJson(res, 404, { error: "SMS log not found" });
   }
 
-  const rows = await query(
-    `UPDATE reseller_withdrawals SET status='completed', completed_at=now(), matched_sms_log_id=COALESCE($1, matched_sms_log_id), updated_at=now()
-     WHERE id=$2 AND status='sent' RETURNING id`,
-    [smsLogId, req.params.id]
-  );
-  if (rows.length === 0) return sendJson(res, 409, { error: "Withdrawal not found or not in a sent state" });
-  sendJson(res, 200, { id: req.params.id, status: "completed", smsLogId });
+  try {
+    const walletResult = await withTransaction(async (client) => {
+      const claimed = await client.query<{ id: string; amount: string; reseller_id: string }>(
+        `UPDATE reseller_withdrawals SET status='completed', completed_at=now(), confirmed_by_admin_id=$1,
+           matched_sms_log_id=COALESCE($2, matched_sms_log_id), updated_at=now()
+         WHERE id=$3 AND status IN ('reserved','sent') RETURNING id, amount, reseller_id`,
+        [req.auth!.sub, smsLogId, req.params.id]
+      );
+      if (claimed.rows.length === 0) throw new Error("WITHDRAWAL_NOT_CLAIMABLE");
+
+      // Wrapped in the same transaction as the status CAS above: if this
+      // throws (e.g. a true insufficient-balance edge case), the status
+      // flip rolls back with it rather than leaving the withdrawal stuck
+      // 'completed' with no money actually moved.
+      return adjustResellerWallet({
+        resellerId: claimed.rows[0].reseller_id,
+        changeAmount: -Number(claimed.rows[0].amount),
+        referenceType: "withdrawal",
+        referenceId: req.params.id,
+        source: "admin_manual",
+        changedByAdminId: req.auth!.sub,
+        client,
+      });
+    });
+    sendJson(res, 200, { id: req.params.id, status: "completed", smsLogId, wallet: walletResult });
+  } catch (err) {
+    if (err instanceof Error && err.message === "WITHDRAWAL_NOT_CLAIMABLE") {
+      return sendJson(res, 409, { error: "Withdrawal not found or already resolved" });
+    }
+    throw err;
+  }
 });
 
-// "If a withdrawal is cancelled or fails after the amount was reserved, the
-// reserved amount must be returned" (spec, Req. 9) — same release pattern
-// as the reseller-initiated cancel above, usable from either 'reserved' or
-// 'sent' (a payout attempt that failed after being dialed still needs its
-// reservation released).
+// No wallet adjustment needed — nothing was deducted for a withdrawal still
+// 'reserved' or 'sent' (see POST /reseller/withdrawals' doc comment), so
+// failing one just needs to move it out of the "in-flight" set.
 resellerDepositsWithdrawalsRouter.put("/admin/reseller-withdrawals/:id/fail", requirePermission("resellers.manage"), async (req, res) => {
-  const withdrawal = await queryOne(`SELECT * FROM reseller_withdrawals WHERE id=$1`, [req.params.id]);
-  if (!withdrawal) return sendJson(res, 404, { error: "Withdrawal not found" });
-  if (!["reserved", "sent"].includes(withdrawal.status)) {
-    return sendJson(res, 409, { error: `Withdrawal is '${withdrawal.status}' — cannot fail from this state` });
-  }
-
-  await adjustResellerWallet({
-    resellerId: withdrawal.reseller_id,
-    changeAmount: Number(withdrawal.amount),
-    referenceType: "withdrawal_release",
-    referenceId: withdrawal.id,
-    source: "admin_manual",
-    changedByAdminId: req.auth!.sub,
-  });
   const rows = await query(
-    `UPDATE reseller_withdrawals SET status='failed', updated_at=now() WHERE id=$1 AND status=$2 RETURNING id`,
-    [req.params.id, withdrawal.status]
+    `UPDATE reseller_withdrawals SET status='failed', updated_at=now() WHERE id=$1 AND status IN ('reserved','sent') RETURNING id`,
+    [req.params.id]
   );
-  if (rows.length === 0) {
-    return sendJson(res, 500, { error: "Reservation was released but the withdrawal status change lost a race — check admin activity log" });
-  }
+  if (rows.length === 0) return sendJson(res, 409, { error: "Withdrawal not found or already resolved" });
   sendJson(res, 200, { id: req.params.id, status: "failed" });
 });
