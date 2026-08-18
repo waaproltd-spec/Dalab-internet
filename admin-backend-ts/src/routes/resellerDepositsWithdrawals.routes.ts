@@ -176,20 +176,26 @@ const WITHDRAWAL_SELECT = `
   JOIN companies c ON c.id = w.company_id
 `;
 
-// "The Wallet amount is deducted only after the outgoing payment is
-// successfully confirmed" (product instruction) — so, unlike the previous
-// design, creating a withdrawal never touches reseller_wallets.balance at
-// all. Double-spend protection instead comes from an AVAILABLE-balance
-// check: ledger balance minus every other withdrawal of this reseller's
-// still in-flight (status 'reserved' or 'sent', i.e. not yet completed/
-// cancelled/failed). Both reads happen inside one transaction that holds
-// a row lock on the wallet (SELECT ... FOR UPDATE) for its whole duration,
-// so two concurrent requests for the same reseller can't both compute a
-// stale "available" figure and both succeed — the second blocks until the
-// first commits, then sees the first's new row in its own in-flight sum.
-// This preserves the exact same "the same balance cannot be used for two
-// transactions" guarantee the old reservation-based design had; it just
-// achieves it without moving money in the ledger until settlement.
+// "The reseller's wallet must NOT be locked or deducted just because a
+// withdrawal is created or is Reserved/Sent — only a successfully sent
+// payout with a matching real outgoing SMS deducts anything" (product
+// instruction). So a Reserved/Sent withdrawal no longer reserves any
+// capacity at all: creating one only checks against the wallet's current
+// raw balance, never against other in-flight withdrawals, and never
+// touches reseller_wallets.balance itself. A reseller can have several
+// withdrawals open at once that collectively exceed the wallet balance —
+// that's intentional now, not a bug.
+//
+// The actual safety net moved entirely to settlement time:
+// adjustResellerWallet (utils/resellerWallet.ts) locks the wallet row and
+// throws "Insufficient wallet balance" if a completion's debit would ever
+// take it negative, so the ledger itself can never go negative no matter
+// how many withdrawals were left open. The tradeoff this accepts: if two
+// withdrawals are both genuinely paid out by an Agent but together exceed
+// the wallet, the SMS confirmation for whichever completes second will
+// fail at that floor — a real-money-sent-but-uncredited edge case that
+// needs an admin's manual reconciliation, which this product instruction
+// explicitly chose over blocking withdrawal creation up front.
 //
 // The Withdraw Commission (Admin -> Resellers -> Payment, per company) is
 // resolved and snapshotted right here, at request time, based on the payout
@@ -228,17 +234,16 @@ resellerDepositsWithdrawalsRouter.post("/reseller/withdrawals", requireAuth("res
   const id = withdrawalRef();
   try {
     await withTransaction(async (client) => {
+      // Checked against the wallet's current raw balance only — no
+      // subtraction for other Reserved/Sent withdrawals, and this lock is
+      // released without ever writing to reseller_wallets (see this
+      // route's doc comment above for why).
       const walletRow = await client.query<{ balance: string }>(
         `SELECT balance FROM reseller_wallets WHERE reseller_id=$1 FOR UPDATE`,
         [req.auth!.sub]
       );
       if (walletRow.rows.length === 0) throw new Error(`No wallet row for reseller ${req.auth!.sub}`);
-      const inFlightRow = await client.query<{ total: string }>(
-        `SELECT COALESCE(SUM(amount),0) AS total FROM reseller_withdrawals WHERE reseller_id=$1 AND status IN ('reserved','sent')`,
-        [req.auth!.sub]
-      );
-      const available = Number(walletRow.rows[0].balance) - Number(inFlightRow.rows[0].total);
-      if (amount > available) throw new Error("Insufficient wallet balance");
+      if (amount > Number(walletRow.rows[0].balance)) throw new Error("Insufficient wallet balance");
 
       await client.query(
         `INSERT INTO reseller_withdrawals

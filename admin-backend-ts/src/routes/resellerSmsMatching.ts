@@ -247,37 +247,79 @@ export async function findMatchingResellerWithdrawal(
  * endpoint: the CAS runs first, and only a successful claim is allowed to
  * touch the wallet, so this function, the manual endpoint, and a
  * concurrent resweep pass can never double-deduct the same withdrawal.
+ *
+ * The claim and the wallet debit run in one transaction — required now
+ * that withdrawal creation no longer reserves any wallet capacity (see
+ * POST /reseller/withdrawals' doc comment): a reseller can have several
+ * withdrawals open that collectively exceed the wallet, so
+ * adjustResellerWallet's negative-balance floor can genuinely fire here in
+ * normal operation now, not just as a defensive check that can never
+ * trigger. If it does, the whole transaction rolls back — the claim itself
+ * is undone, so the withdrawal lands back at its prior status ('reserved'/
+ * 'sent') instead of getting stuck 'completed' with no matching deduction —
+ * and this is reported as `completed: false` with a needsReconciliation
+ * flag rather than thrown, so a real payout the Agent already sent
+ * successfully surfaces for a Super Admin to resolve by hand instead of
+ * crashing SMS ingestion.
  */
 export async function confirmResellerWithdrawalViaSms(
   withdrawal: ResellerWithdrawalCandidate,
   smsLogId: string
-): Promise<{ completed: boolean; newBalance?: number }> {
-  const claimed = await query<{ id: string; reseller_id: string }>(
-    `UPDATE reseller_withdrawals SET status='completed', completed_at=now(), matched_sms_log_id=$1, updated_at=now()
-     WHERE id=$2 AND status IN ('reserved','sent') RETURNING id, reseller_id`,
-    [smsLogId, withdrawal.id]
-  );
-  if (claimed.length === 0) {
-    // Lost the race, or already resolved (admin Complete, or cancelled/failed) — no deduction.
-    return { completed: false };
+): Promise<{ completed: boolean; newBalance?: number; needsReconciliation?: boolean }> {
+  try {
+    return await withTransaction(async (client) => {
+      const claimed = await client.query<{ id: string; reseller_id: string }>(
+        `UPDATE reseller_withdrawals SET status='completed', completed_at=now(), matched_sms_log_id=$1, updated_at=now()
+         WHERE id=$2 AND status IN ('reserved','sent') RETURNING id, reseller_id`,
+        [smsLogId, withdrawal.id]
+      );
+      if (claimed.rows.length === 0) {
+        // Lost the race, or already resolved (admin Complete, or cancelled/failed) — no deduction.
+        return { completed: false };
+      }
+
+      const walletResult = await adjustResellerWallet({
+        resellerId: claimed.rows[0].reseller_id,
+        changeAmount: -Number(withdrawal.amount),
+        referenceType: "withdrawal",
+        referenceId: withdrawal.id,
+        source: "sms",
+        client,
+      });
+
+      await client.query(`UPDATE sms_logs SET matched_reseller_withdrawal_id=$1 WHERE id=$2`, [withdrawal.id, smsLogId]);
+      return { completed: true, newBalance: walletResult.newBalance };
+    }).then(async (result) => {
+      if (result.completed) {
+        await recordActivity({
+          adminId: undefined,
+          action: "reseller_withdrawal_completed_via_sms",
+          entityType: "reseller_withdrawal",
+          entityId: withdrawal.id,
+          oldValue: null,
+          newValue: { smsLogId, amount: withdrawal.amount, customerReceivesAmount: withdrawal.customer_receives_amount, newBalance: result.newBalance },
+        });
+      }
+      return result;
+    });
+  } catch (err) {
+    if (err instanceof Error && err.message === "Insufficient wallet balance") {
+      // The Agent's payout SMS confirmed real money went out, but this
+      // reseller's wallet can't cover it — almost certainly because another
+      // of their withdrawals was paid out and completed first. Never silent:
+      // logged for a Super Admin to reconcile manually (e.g. Admin ->
+      // Resellers -> Withdrawals -> Complete, once the wallet is topped up
+      // or the conflicting withdrawal is resolved).
+      await recordActivity({
+        adminId: undefined,
+        action: "reseller_withdrawal_completion_wallet_insufficient",
+        entityType: "reseller_withdrawal",
+        entityId: withdrawal.id,
+        oldValue: null,
+        newValue: { smsLogId, amount: withdrawal.amount, reason: "SMS matched but wallet balance could not cover the debit — needs manual reconciliation" },
+      });
+      return { completed: false, needsReconciliation: true };
+    }
+    throw err;
   }
-
-  const walletResult = await adjustResellerWallet({
-    resellerId: claimed[0].reseller_id,
-    changeAmount: -Number(withdrawal.amount),
-    referenceType: "withdrawal",
-    referenceId: withdrawal.id,
-    source: "sms",
-  });
-
-  await query(`UPDATE sms_logs SET matched_reseller_withdrawal_id=$1 WHERE id=$2`, [withdrawal.id, smsLogId]);
-  await recordActivity({
-    adminId: undefined,
-    action: "reseller_withdrawal_completed_via_sms",
-    entityType: "reseller_withdrawal",
-    entityId: withdrawal.id,
-    oldValue: null,
-    newValue: { smsLogId, amount: withdrawal.amount, customerReceivesAmount: withdrawal.customer_receives_amount, newBalance: walletResult.newBalance },
-  });
-  return { completed: true, newBalance: walletResult.newBalance };
 }
