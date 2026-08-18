@@ -11,7 +11,6 @@ import com.dalab.internet.queue.RetryClassifier
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import java.util.Locale
 import java.util.UUID
 
 /** Gson-serialized payload for a queued dial-attempt audit replay — mirrors
@@ -65,14 +64,11 @@ class ResellerWithdrawalUssdOrchestrator(context: Context, private val maxAttemp
     }
 
     private suspend fun processLocked(withdrawal: ResellerWithdrawalPendingPayout): DialResult {
-        // Locale.US explicitly — unlike this codebase's other "%.2f".format
-        // call sites (all pure UI display text), this string is dialed
-        // straight to the carrier: a device locale that formats decimals
-        // with a comma (e.g. "2,30") would send a malformed or wrong-amount
-        // USSD command.
-        val ussdString = withdrawal.payoutUssdTemplate
-            .replace("{number}", withdrawal.destinationNumber)
-            .replace("{amount}", String.format(Locale.US, "%.2f", withdrawal.customerReceivesAmount))
+        val ussdString = buildResellerWithdrawalUssdString(
+            withdrawal.payoutUssdTemplate,
+            withdrawal.destinationNumber,
+            withdrawal.customerReceivesAmount,
+        )
 
         // Reseller Withdraw's OWN routing table (reseller_withdrawal_sim_routing,
         // migration 058) — deliberately not SimRoutingRepository (Internet
@@ -198,4 +194,50 @@ class ResellerWithdrawalUssdOrchestrator(context: Context, private val maxAttemp
             )
         }
     }
+}
+
+/**
+ * Hormuud's *726* payout code does NOT accept a decimal amount as one
+ * token. Confirmed live by manually dialing both forms on a real device:
+ * "*726*617080008*1.05*8233#" (the previous behavior — a single "%.2f"
+ * decimal token) got back "Haraaga xisaabtaadu kuguma filna, haraagaagu
+ * waa: 5.367" — a generic-sounding insufficient-balance rejection that
+ * restates the SIM's real balance and looks entirely plausible on its own,
+ * but was actually a malformed-command rejection, not a real balance
+ * problem: "*726*617080008*1*05*8233#" (dollars and cents as two separate
+ * *-delimited tokens instead) succeeded for real — the carrier's own
+ * outgoing confirmation SMS showed exactly $1.05 sent and the SIM balance
+ * dropping by that amount. So {amount} in a payout template now expands to
+ * "<dollars>*<cents>" (e.g. "1*05" for $1.05), not a plain decimal string —
+ * the template's own surrounding literal "*"s (e.g.
+ * "*726*{number}*{amount}*8233#") are what turn that into the carrier's
+ * expected four-segment amount field once substituted.
+ *
+ * Only Hormuud has a payout_ussd_template configured today, so this is the
+ * only real-world case this has been verified against — if a future
+ * company's carrier genuinely wants plain decimal notation instead, that
+ * would need its own per-company flag rather than assuming every provider
+ * shares Hormuud's split-token requirement.
+ */
+internal fun formatHormuudSplitAmount(amount: Double): String {
+    // Cents are computed by rounding amount*100 to the nearest whole cent
+    // BEFORE splitting into dollars/cents, not by multiplying and
+    // truncating the fractional part directly — a Double like 1.05 is not
+    // stored exactly (it's ~1.0499999999999998 or ~1.0500000000000000444
+    // depending on how it arrived), and splitting without rounding first
+    // can silently produce the wrong cent (e.g. "1*04" instead of "1*05").
+    val totalCents = Math.round(amount * 100)
+    val dollars = totalCents / 100
+    val cents = totalCents % 100
+    return "$dollars*${cents.toString().padStart(2, '0')}"
+}
+
+/** Pulled out of [ResellerWithdrawalUssdOrchestrator.processLocked] as a
+ * pure function (no Context/Android dependency) so the exact string dialed
+ * to the carrier can be unit-tested directly — see
+ * ResellerWithdrawalUssdOrchestratorTest. */
+internal fun buildResellerWithdrawalUssdString(payoutUssdTemplate: String, destinationNumber: String, customerReceivesAmount: Double): String {
+    return payoutUssdTemplate
+        .replace("{number}", destinationNumber)
+        .replace("{amount}", formatHormuudSplitAmount(customerReceivesAmount))
 }
