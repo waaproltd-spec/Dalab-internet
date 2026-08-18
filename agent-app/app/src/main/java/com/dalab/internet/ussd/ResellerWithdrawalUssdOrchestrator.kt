@@ -74,12 +74,17 @@ class ResellerWithdrawalUssdOrchestrator(context: Context, private val maxAttemp
             .replace("{number}", withdrawal.destinationNumber)
             .replace("{amount}", String.format(Locale.US, "%.2f", withdrawal.customerReceivesAmount))
 
-        val slot = when (val result = SimRoutingRepository.simSlotFor(withdrawal.companyId)) {
-            is SimSlotResult.Slot -> result.slot
-            SimSlotResult.NotConfigured -> return DialResult(DialOutcome.NO_SIM_CONFIGURED, "No SIM routing configured for ${withdrawal.companyName}.")
-            SimSlotResult.LoadFailed -> return DialResult(DialOutcome.NETWORK_UNAVAILABLE, "Could not load SIM routing (network) — will retry.")
+        // Reseller Withdraw's OWN routing table (reseller_withdrawal_sim_routing,
+        // migration 058) — deliberately not SimRoutingRepository (Internet
+        // Store/eBadal recharge's own routing), per product decision: a
+        // company's withdrawal payout SIM can be a different device/slot
+        // than that same company's recharge SIM.
+        val route = when (val result = ResellerWithdrawalSimRoutingRepository.routeFor(withdrawal.companyId)) {
+            is ResellerWithdrawalSimRouteResult.Route -> result.route
+            ResellerWithdrawalSimRouteResult.NotConfigured -> return DialResult(DialOutcome.NO_SIM_CONFIGURED, "No withdrawal SIM routing configured for ${withdrawal.companyName}.")
+            ResellerWithdrawalSimRouteResult.LoadFailed -> return DialResult(DialOutcome.NETWORK_UNAVAILABLE, "Could not load withdrawal SIM routing (network) — will retry.")
         }
-        return dialWithRetry(withdrawal.id, slot, ussdString)
+        return dialWithRetry(withdrawal.id, route.simSlot, ussdString)
     }
 
     private suspend fun dialWithRetry(withdrawalId: String, simSlot: Int, ussdString: String): DialResult {
@@ -95,7 +100,12 @@ class ResellerWithdrawalUssdOrchestrator(context: Context, private val maxAttemp
                 SubscriptionLookupResult.NotPresent -> DialResult(DialOutcome.NO_SIM_PRESENT, "SIM $simSlot isn't physically inserted on this device.")
                 is SubscriptionLookupResult.Found -> {
                     try {
-                        dialer.dial(lookup.subscriptionId, ussdString)
+                        // Reseller Withdraw's own stricter three-way classifier
+                        // (SUCCESS/FAILED/AMBIGUOUS, never defaults unknown text
+                        // to SUCCESS) — see classifyResellerWithdrawalUssdResponse
+                        // in UssdDialer.kt for why this can't just reuse the
+                        // Internet Store recharge default.
+                        dialer.dial(lookup.subscriptionId, ussdString, classify = ::classifyResellerWithdrawalUssdResponse)
                     } catch (e: Exception) {
                         DiagnosticsLog.record("reseller_withdrawal_ussd_dial", "Dial threw (withdrawal $withdrawalId, attempt $attempt): ${e.message}", isError = true)
                         DialResult(DialOutcome.FAILED, "Dial error: ${e.message}")

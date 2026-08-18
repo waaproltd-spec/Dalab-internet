@@ -9,6 +9,7 @@ import com.dalab.internet.data.ExchangeOrder
 import com.dalab.internet.data.Order
 import com.dalab.internet.data.PackageItem
 import com.dalab.internet.data.ResellerWithdrawalPendingPayout
+import com.dalab.internet.data.ResellerWithdrawalSimRoutingEntry
 import com.dalab.internet.data.SmsLogEntry
 import com.dalab.internet.data.Transaction
 import com.dalab.internet.data.AgentNotification
@@ -296,4 +297,12 @@ interface ApiService {
         @Path("attemptId") attemptId: String,
         @Body body: DialAttemptResultRequest,
     ): Response<DialAttemptResultResponse>
+
+    // Reseller Withdraw's OWN SIM routing (company -> device + physical
+    // slot) — deliberately separate from getSimRouting above (which is
+    // Internet Store/eBadal recharge's own routing table), so a Reseller
+    // Withdraw payout SIM can be managed independently. Mirrors
+    // getSimRouting's shape/scoping exactly (see SimRoutingRepository.kt).
+    @GET("agent/reseller-withdrawal-sim-routing")
+    suspend fun getResellerWithdrawalSimRouting(@Query("deviceId") deviceId: String? = null): Response<List<ResellerWithdrawalSimRoutingEntry>>
 }

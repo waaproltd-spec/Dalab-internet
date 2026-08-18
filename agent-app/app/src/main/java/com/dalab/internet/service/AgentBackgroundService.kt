@@ -37,6 +37,7 @@ import com.dalab.internet.ussd.ExchangeSelfHealSweeper
 import com.dalab.internet.ussd.ResellerWithdrawalSelfHealSweeper
 import com.dalab.internet.ussd.SelfHealSweeper
 import com.dalab.internet.ussd.SimRoutingRepository
+import com.dalab.internet.ussd.ResellerWithdrawalSimRoutingRepository
 import com.dalab.internet.ussd.UssdDialer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -112,6 +113,7 @@ class AgentBackgroundService : Service() {
         // loops below still get a defensive try/catch since they run unattended
         // for as long as the service is alive.
         newScope.launch { SimRoutingRepository.refresh() }
+        newScope.launch { ResellerWithdrawalSimRoutingRepository.refresh() }
         newScope.launch { SmsSenderIdRepository.refresh() }
         newScope.launch {
             try {
@@ -371,6 +373,7 @@ class AgentBackgroundService : Service() {
             try {
                 if (DeviceIdentity.isSet() && SessionManager.isLoggedIn()) {
                     SimRoutingRepository.refresh()
+                    ResellerWithdrawalSimRoutingRepository.refresh()
                     SmsSenderIdRepository.refresh()
                 }
             } catch (e: Exception) {

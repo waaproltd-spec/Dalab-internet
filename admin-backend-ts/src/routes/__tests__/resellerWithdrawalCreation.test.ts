@@ -42,10 +42,18 @@ let baseUrl: string;
 let resellerToken: string;
 
 before(async () => {
-  await query(`DELETE FROM reseller_withdrawals WHERE reseller_id=$1`, [RESELLER_ID]);
-  await query(`DELETE FROM reseller_wallet_transactions WHERE reseller_id=$1`, [RESELLER_ID]);
-  await query(`DELETE FROM reseller_wallets WHERE reseller_id=$1`, [RESELLER_ID]);
-  await query(`DELETE FROM resellers WHERE id=$1`, [RESELLER_ID]);
+  // RESELLER_ID is a fresh randomUUID() every run, but the row it creates
+  // below has a fixed reseller_login_id — cleanup has to find any leftover
+  // row from a PRIOR run by that stable login id (not by this run's new
+  // RESELLER_ID, which a prior run's row will never match) or repeated
+  // local runs collide on the unique login-id constraint.
+  const priorReseller = await queryOne<{ id: string }>(`SELECT id FROM resellers WHERE reseller_login_id='RSLWDCREATE'`);
+  if (priorReseller) {
+    await query(`DELETE FROM reseller_withdrawals WHERE reseller_id=$1`, [priorReseller.id]);
+    await query(`DELETE FROM reseller_wallet_transactions WHERE reseller_id=$1`, [priorReseller.id]);
+    await query(`DELETE FROM reseller_wallets WHERE reseller_id=$1`, [priorReseller.id]);
+    await query(`DELETE FROM resellers WHERE id=$1`, [priorReseller.id]);
+  }
   await query(`DELETE FROM reseller_withdrawal_commission_config WHERE company_id=$1`, [COMPANY_ID]);
   await query(`DELETE FROM companies WHERE id=$1`, [COMPANY_ID]);
 
@@ -76,6 +84,8 @@ async function fundWallet(amount: number) {
   ]);
 }
 
+type WithdrawalResponse = { status: string; amount: string; customerReceivesAmount: string; error?: string };
+
 function postWithdrawal(body: unknown) {
   return fetch(`${baseUrl}/reseller/withdrawals`, {
     method: "POST",
@@ -88,7 +98,7 @@ test("a withdrawal at or under the reseller's actual wallet balance succeeds —
   await fundWallet(5.36);
   const res = await postWithdrawal({ companyId: COMPANY_ID, destinationNumber: "617080008", amount: 2.0, clientRequestId: randomUUID() });
   assert.equal(res.status, 201);
-  const body = await res.json();
+  const body = (await res.json()) as WithdrawalResponse;
   assert.equal(body.status, "reserved");
   assert.equal(Number(body.amount), 2.0);
   // 5% commission on $2 = $2.10 to the customer — but the wallet balance
@@ -106,7 +116,7 @@ test("a withdrawal over the reseller's actual wallet balance is rejected with ex
   await fundWallet(5.36);
   const res = await postWithdrawal({ companyId: COMPANY_ID, destinationNumber: "617080008", amount: 10.0, clientRequestId: randomUUID() });
   assert.equal(res.status, 400);
-  const body = await res.json();
+  const body = (await res.json()) as WithdrawalResponse;
   assert.equal(body.error, "Insufficient wallet balance");
 
   const rows = await query(`SELECT id FROM reseller_withdrawals WHERE reseller_id=$1 AND amount=10.00`, [RESELLER_ID]);

@@ -307,13 +307,19 @@ resellerDepositsWithdrawalsRouter.get("/admin/reseller-withdrawals", requireStaf
   const params: unknown[] = [];
   let sql = `SELECT w.*, c.name AS company_name, r.reseller_login_id, r.name AS reseller_name,
                     rw.balance AS reseller_wallet_balance, au.email AS confirmed_by_admin_email,
-                    sl.body AS sms_confirmation_text, sl.received_at AS sms_confirmed_at
+                    sl.body AS sms_confirmation_text, sl.received_at AS sms_confirmed_at,
+                    da.sim_mobile_number, da.sim_device_id, d.name AS sim_device_name, da.status AS dial_attempt_status
              FROM reseller_withdrawals w
              JOIN companies c ON c.id = w.company_id
              JOIN resellers r ON r.id = w.reseller_id
              LEFT JOIN reseller_wallets rw ON rw.reseller_id = w.reseller_id
              LEFT JOIN admin_users au ON au.id = w.confirmed_by_admin_id
-             LEFT JOIN sms_logs sl ON sl.id = w.matched_sms_log_id`;
+             LEFT JOIN sms_logs sl ON sl.id = w.matched_sms_log_id
+             LEFT JOIN LATERAL (
+               SELECT * FROM reseller_withdrawal_dial_attempts a
+               WHERE a.withdrawal_id = w.id ORDER BY a.attempt_number DESC LIMIT 1
+             ) da ON true
+             LEFT JOIN agent_devices d ON d.id = da.sim_device_id`;
   if (status) {
     params.push(status);
     sql += ` WHERE w.status=$1`;
@@ -449,7 +455,9 @@ resellerDepositsWithdrawalsRouter.get("/agent/reseller-withdrawals/pending-payou
 resellerDepositsWithdrawalsRouter.post("/agent/reseller-withdrawals/:id/dial-attempts", requireAuth("agent"), async (req, res) => {
   const { simSlot, ussdString, attemptNumber } = req.body;
   if (!ussdString) return sendJson(res, 400, { error: "ussdString is required" });
-  const withdrawal = await queryOne<{ id: string }>(`SELECT id FROM reseller_withdrawals WHERE id=$1`, [req.params.id]);
+  const withdrawal = await queryOne<{ id: string; company_id: string }>(`SELECT id, company_id FROM reseller_withdrawals WHERE id=$1`, [
+    req.params.id,
+  ]);
   if (!withdrawal) return sendJson(res, 404, { error: "Withdrawal not found" });
 
   const agent = await queryOne<{ device_id: string | null }>(`SELECT device_id FROM agents WHERE id=$1`, [req.auth!.sub]);
@@ -460,12 +468,24 @@ resellerDepositsWithdrawalsRouter.post("/agent/reseller-withdrawals/:id/dial-att
     }
   }
 
+  // Snapshotted onto the attempt row (not just referenced) so a later Admin
+  // edit to the route — a new mobile number, a different device — never
+  // rewrites what this specific attempt actually used. Resolved server-side
+  // from the agent's own device rather than trusted from the request body,
+  // consistent with "backend is the source of truth" for SIM routing.
+  const simRoute = agent?.device_id
+    ? await queryOne<{ mobile_number: string | null }>(
+        `SELECT mobile_number FROM reseller_withdrawal_sim_routing WHERE company_id=$1 AND device_id=$2`,
+        [withdrawal.company_id, agent.device_id]
+      )
+    : null;
+
   const id = randomUUID();
   try {
     await query(
-      `INSERT INTO reseller_withdrawal_dial_attempts (id, withdrawal_id, agent_id, sim_slot, ussd_string, attempt_number, status)
-       VALUES ($1,$2,$3,$4,$5,$6,'pending')`,
-      [id, req.params.id, req.auth!.sub, simSlot ?? null, ussdString, attemptNumber ?? 1]
+      `INSERT INTO reseller_withdrawal_dial_attempts (id, withdrawal_id, agent_id, sim_slot, ussd_string, attempt_number, status, sim_device_id, sim_mobile_number)
+       VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8)`,
+      [id, req.params.id, req.auth!.sub, simSlot ?? null, ussdString, attemptNumber ?? 1, agent?.device_id ?? null, simRoute?.mobile_number ?? null]
     );
   } catch (err: any) {
     if (err?.code !== "23505" || err?.constraint !== "idx_reseller_withdrawal_dial_attempts_withdrawal_attempt") throw err;

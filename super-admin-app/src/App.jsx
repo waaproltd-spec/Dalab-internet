@@ -235,6 +235,18 @@ const DalabAdminApi = {
     dalabAdminApiRequest(`/admin/sim-routing/${companyId}/${deviceId}`, { method: "PUT", body: { simSlot, priority } }),
   deleteSimRouting: (companyId, deviceId) =>
     dalabAdminApiRequest(`/admin/sim-routing/${companyId}/${deviceId}`, { method: "DELETE" }),
+  // Reseller Withdraw's OWN SIM routing — deliberately separate from
+  // getSimRouting/setSimRouting/deleteSimRouting above (Internet Store/
+  // eBadal recharge's routing), so a company's withdrawal payout SIM can be
+  // managed independently of its recharge SIM.
+  getResellerWithdrawalSimRouting: () => dalabAdminApiRequest("/admin/reseller-withdrawal-sim-routing"),
+  setResellerWithdrawalSimRouting: (companyId, deviceId, simSlot, mobileNumber, active, priority) =>
+    dalabAdminApiRequest(`/admin/reseller-withdrawal-sim-routing/${companyId}/${deviceId}`, {
+      method: "PUT",
+      body: { simSlot, mobileNumber, active, priority },
+    }),
+  deleteResellerWithdrawalSimRouting: (companyId, deviceId) =>
+    dalabAdminApiRequest(`/admin/reseller-withdrawal-sim-routing/${companyId}/${deviceId}`, { method: "DELETE" }),
   getUssdLogs: (orderId) => dalabAdminApiRequest(`/admin/ussd-logs${orderId ? `?orderId=${orderId}` : ""}`),
   getSmsLogs: (filters = {}) => {
     const qs = new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([, v]) => v))).toString();
@@ -6893,6 +6905,7 @@ const RESELLER_TABS = [
   { id: "orders", label: "Orders" },
   { id: "deposits", label: "Deposits" },
   { id: "withdrawals", label: "Withdrawals" },
+  { id: "sim-routing", label: "Withdraw SIMs" },
 ];
 
 function ResellerManagement({ admin, companies }) {
@@ -6928,6 +6941,7 @@ function ResellerManagement({ admin, companies }) {
       {tab === "orders" && <ResellerOrdersTab canManage={canManage} />}
       {tab === "deposits" && <ResellerDepositsTab canManage={canManage} />}
       {tab === "withdrawals" && <ResellerWithdrawalsTab canManage={canManage} />}
+      {tab === "sim-routing" && <ResellerWithdrawSimRoutingTab companies={companies} canManage={isSuperAdmin} />}
     </div>
   );
 }
@@ -7666,6 +7680,7 @@ function ResellerWithdrawalsTab({ canManage }) {
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Commission Amt</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Sent to Customer</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payout Agent</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>SIM Used</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>SMS Confirmation</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>SMS Timestamp</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>SMS Ref</th>
@@ -7687,6 +7702,11 @@ function ResellerWithdrawalsTab({ canManage }) {
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>${Number(w.bonusAmount ?? 0).toFixed(2)}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK }}>${Number(w.customerReceivesAmount ?? w.amount).toFixed(2)}</td>
                 <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE }}>{w.confirmedByAdminEmail || "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE }}>
+                  {w.simMobileNumber || w.simDeviceName
+                    ? <span title={w.simDeviceName ? `Device: ${w.simDeviceName}` : ""}>{w.simMobileNumber || w.simDeviceName}</span>
+                    : "—"}
+                </td>
                 <td style={{ padding: "10px 14px", fontSize: 11, color: MUTE, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={w.smsConfirmationText || ""}>
                   {w.smsConfirmationText || "—"}
                 </td>
@@ -7714,11 +7734,205 @@ function ResellerWithdrawalsTab({ canManage }) {
               </tr>
             ))}
             {withdrawals.length === 0 && (
-              <tr><td colSpan={16} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No withdrawals yet.</td></tr>
+              <tr><td colSpan={17} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No withdrawals yet.</td></tr>
             )}
           </tbody>
         </table>
       </Card>
+    </div>
+  );
+}
+
+// Reseller Withdraw's OWN SIM routing — deliberately its own table/UI
+// (reseller_withdrawal_sim_routing) separate from SimRoutingPanel above
+// (Internet Store/eBadal recharge's routing), per product decision: a
+// company's withdrawal payout SIM can be pointed at a different device than
+// that same company's recharge SIM. Structurally mirrors SimRoutingPanel
+// (same priority-ranked multi-device pattern) plus two additions: a
+// mobileNumber label (display/audit only — see migration 058's header
+// comment for why it can't be enforced against the physically inserted
+// SIM) and an active toggle (a per-route kill switch finer-grained than a
+// whole device's enabled flag).
+function ResellerWithdrawSimRoutingTab({ companies, canManage }) {
+  const [routes, setRoutes] = useState([]);
+  const [devices, setDevices] = useState([]);
+  const [savingKey, setSavingKey] = useState(null);
+  const [error, setError] = useState("");
+  const [addForm, setAddForm] = useState({}); // companyId -> { deviceId, simSlot, mobileNumber }
+
+  const fetchAll = async () => {
+    try {
+      const [routeRows, deviceRows] = await Promise.all([DalabAdminApi.getResellerWithdrawalSimRouting(), DalabAdminApi.getAgentDevices()]);
+      setRoutes(routeRows);
+      setDevices(deviceRows);
+    } catch (err) {
+      setError(err.message || "Could not load Reseller Withdraw SIM routing.");
+    }
+  };
+  useEffect(() => { fetchAll(); }, []);
+
+  const routesFor = (companyId) => routes.filter((r) => r.companyId === companyId).sort((a, b) => a.priority - b.priority);
+  const unassigned = companies.filter((c) => routesFor(c.id).length === 0);
+
+  const upsert = async (companyId, deviceId, simSlot, mobileNumber, active, priority) => {
+    const key = `${companyId}:${deviceId}`;
+    setSavingKey(key);
+    setError("");
+    try {
+      await DalabAdminApi.setResellerWithdrawalSimRouting(companyId, deviceId, simSlot, mobileNumber, active, priority);
+      await fetchAll();
+    } catch (err) {
+      setError(err.message || "Could not save the withdrawal SIM route.");
+    } finally {
+      setSavingKey(null);
+    }
+  };
+
+  const remove = async (companyId, deviceId) => {
+    const key = `${companyId}:${deviceId}`;
+    setSavingKey(key);
+    setError("");
+    try {
+      await DalabAdminApi.deleteResellerWithdrawalSimRouting(companyId, deviceId);
+      await fetchAll();
+    } catch (err) {
+      setError(err.message || "Could not remove the withdrawal SIM route.");
+    } finally {
+      setSavingKey(null);
+    }
+  };
+
+  const addDevice = async (companyId) => {
+    const form = addForm[companyId];
+    if (!form?.deviceId) return;
+    const existingCount = routesFor(companyId).length;
+    await upsert(companyId, form.deviceId, form.simSlot || 1, form.mobileNumber || null, true, existingCount + 1);
+    setAddForm((prev) => ({ ...prev, [companyId]: { deviceId: "", simSlot: 1, mobileNumber: "" } }));
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage Withdraw SIMs.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>
+        Which Agent device + physical SIM slot sends each company's Reseller Withdraw payouts — independent of that same company's Internet Store recharge routing (see the SIM Routing tab).
+        A withdrawal auto-dials whichever active route is priority 1 for its company; disabling a route (or setting no route at all) stops that company's withdrawals from auto-dialing until fixed.
+        The mobile number is a label you enter for your own records — it isn't read from the SIM itself, so keep it matched to whatever card is actually inserted in that slot.
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      {unassigned.length > 0 && (
+        <Card style={{ padding: 16, marginBottom: 16, background: "#FFF8E8", border: "1px solid #F4E3B0" }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#A9720A", marginBottom: 8 }}>No withdrawal payout SIM routed yet — that company's Reseller Withdraw requests will stay unpaid until assigned:</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {unassigned.map((c) => (
+              <Badge key={c.id} tone="amber">{c.name}</Badge>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {companies.map((c) => {
+          const companyRoutes = routesFor(c.id);
+          const usedDeviceIds = new Set(companyRoutes.map((r) => r.deviceId));
+          const availableDevices = devices.filter((d) => !usedDeviceIds.has(d.id));
+          const form = addForm[c.id] || { deviceId: "", simSlot: 1, mobileNumber: "" };
+
+          return (
+            <Card key={c.id} style={{ padding: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                <div style={{ width: 8, height: 8, borderRadius: 4, background: c.color }} />
+                <span style={{ fontWeight: 800, fontSize: 14, color: INK }}>{c.name}</span>
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+                {companyRoutes.map((r, idx) => {
+                  const device = devices.find((d) => d.id === r.deviceId);
+                  const key = `${r.companyId}:${r.deviceId}`;
+                  return (
+                    <div key={r.deviceId} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, border: `1px solid ${BORDER}` }}>
+                      <Badge tone={idx === 0 ? "blue" : "gray"}>{idx === 0 ? "Primary" : `Backup ${idx}`}</Badge>
+                      <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: INK }}>{r.deviceName || "Unknown device"}</span>
+                      {device && (device.enabled === false || isHeartbeatStale(device.lastHeartbeatAt)) && (
+                        <Badge tone="amber"><AlertTriangle size={11} style={{ marginRight: 4, verticalAlign: -1 }} />{device.enabled === false ? "Disabled" : "No recent heartbeat"}</Badge>
+                      )}
+                      {canManage ? (
+                        <>
+                          <select
+                            value={r.simSlot}
+                            onChange={(e) => upsert(r.companyId, r.deviceId, Number(e.target.value), r.mobileNumber, r.active, r.priority)}
+                            style={{ ...inputStyle, width: 90, padding: "5px 8px" }}
+                          >
+                            <option value={1}>SIM 1</option>
+                            <option value={2}>SIM 2</option>
+                          </select>
+                          <input
+                            defaultValue={r.mobileNumber || ""}
+                            placeholder="Mobile number"
+                            onBlur={(e) => e.target.value !== (r.mobileNumber || "") && upsert(r.companyId, r.deviceId, r.simSlot, e.target.value || null, r.active, r.priority)}
+                            style={{ ...inputStyle, width: 140, padding: "5px 8px" }}
+                          />
+                          <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11.5, color: MUTE, cursor: "pointer" }}>
+                            <input type="checkbox" checked={r.active} onChange={(e) => upsert(r.companyId, r.deviceId, r.simSlot, r.mobileNumber, e.target.checked, r.priority)} />
+                            Active
+                          </label>
+                        </>
+                      ) : (
+                        <>
+                          <span style={{ fontSize: 12, color: MUTE }}>SIM {r.simSlot}</span>
+                          <span style={{ fontSize: 12, color: MUTE, fontFamily: "monospace" }}>{r.mobileNumber || "—"}</span>
+                          <Badge tone={r.active ? "green" : "gray"}>{r.active ? "Active" : "Inactive"}</Badge>
+                        </>
+                      )}
+                      {savingKey === key && <Loader2 size={13} className="animate-spin" color={MUTE} />}
+                      {canManage && (
+                        <button onClick={() => remove(r.companyId, r.deviceId)} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                          <Trash2 size={14} color="#C81E2C" />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+                {companyRoutes.length === 0 && (
+                  <div style={{ fontSize: 12, color: MUTE, padding: "8px 10px" }}>No withdrawal payout SIM routed for {c.name} yet.</div>
+                )}
+              </div>
+
+              {canManage && availableDevices.length > 0 && (
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <select
+                    value={form.deviceId}
+                    onChange={(e) => setAddForm((prev) => ({ ...prev, [c.id]: { ...form, deviceId: e.target.value } }))}
+                    style={{ ...inputStyle, flex: 1, padding: "6px 10px" }}
+                  >
+                    <option value="">Add device...</option>
+                    {availableDevices.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  </select>
+                  <select
+                    value={form.simSlot}
+                    onChange={(e) => setAddForm((prev) => ({ ...prev, [c.id]: { ...form, simSlot: Number(e.target.value) } }))}
+                    style={{ ...inputStyle, width: 90, padding: "6px 10px" }}
+                  >
+                    <option value={1}>SIM 1</option>
+                    <option value={2}>SIM 2</option>
+                  </select>
+                  <input
+                    value={form.mobileNumber}
+                    onChange={(e) => setAddForm((prev) => ({ ...prev, [c.id]: { ...form, mobileNumber: e.target.value } }))}
+                    placeholder="Mobile number"
+                    style={{ ...inputStyle, width: 140, padding: "6px 10px" }}
+                  />
+                  <Button variant="ghost" onClick={() => addDevice(c.id)} disabled={!form.deviceId}>Add</Button>
+                </div>
+              )}
+            </Card>
+          );
+        })}
+      </div>
     </div>
   );
 }

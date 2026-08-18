@@ -37,6 +37,7 @@ import { resellersRouter } from "./routes/resellers.routes.js";
 import { resellerOrdersRouter } from "./routes/resellerOrders.routes.js";
 import { resellerDepositsWithdrawalsRouter } from "./routes/resellerDepositsWithdrawals.routes.js";
 import { resellerPaymentConfigRouter } from "./routes/resellerPaymentConfig.routes.js";
+import { resellerWithdrawalSimRoutingRouter } from "./routes/resellerWithdrawalSimRouting.routes.js";
 import { pool, queryOne } from "./db/pool.js";
 import { seedAll } from "./db/seed.js";
 import { sendJson } from "./utils/camelCase.js";
@@ -283,6 +284,7 @@ app.use(resellersRouter);
 app.use(resellerOrdersRouter);
 app.use(resellerDepositsWithdrawalsRouter);
 app.use(resellerPaymentConfigRouter);
+app.use(resellerWithdrawalSimRoutingRouter);
 
 app.use((_req: Request, res: Response) => {
   res.status(404).json({ error: "Not found" });
