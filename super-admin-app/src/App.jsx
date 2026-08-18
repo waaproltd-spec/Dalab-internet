@@ -378,6 +378,35 @@ const DalabAdminApi = {
   createSmsSenderId: (body) => dalabAdminApiRequest("/admin/sms-sender-ids", { method: "POST", body }),
   setSmsSenderIdStatus: (id, enabled) => dalabAdminApiRequest(`/admin/sms-sender-ids/${id}/status`, { method: "PUT", body: { enabled } }),
   deleteSmsSenderId: (id) => dalabAdminApiRequest(`/admin/sms-sender-ids/${id}`, { method: "DELETE" }),
+  // Resellers — wholesale users with an admin-issued ID + 8-digit PIN (no
+  // self-registration) and a single overall wallet balance. Matches
+  // admin-backend-ts/src/routes/resellers.routes.ts, resellerOrders.routes.ts,
+  // and resellerDepositsWithdrawals.routes.ts exactly.
+  getResellers: () => dalabAdminApiRequest("/admin/resellers"),
+  getReseller: (id) => dalabAdminApiRequest(`/admin/resellers/${id}`),
+  createReseller: (body) => dalabAdminApiRequest("/admin/resellers", { method: "POST", body }),
+  setResellerStatus: (id) => dalabAdminApiRequest(`/admin/resellers/${id}/status`, { method: "PUT" }),
+  resetResellerPin: (id) => dalabAdminApiRequest(`/admin/resellers/${id}/pin`, { method: "PUT" }),
+  adjustResellerWallet: (id, changeAmount) => dalabAdminApiRequest(`/admin/resellers/${id}/wallet/adjust`, { method: "PUT", body: { changeAmount } }),
+  getResellerPaymentNumbers: (id) => dalabAdminApiRequest(`/admin/resellers/${id}/payment-numbers`),
+  createResellerPaymentNumber: (id, body) => dalabAdminApiRequest(`/admin/resellers/${id}/payment-numbers`, { method: "POST", body }),
+  updateResellerPaymentNumber: (numberId, body) => dalabAdminApiRequest(`/admin/payment-numbers/${numberId}`, { method: "PUT", body }),
+  setResellerPaymentNumberStatus: (numberId) => dalabAdminApiRequest(`/admin/payment-numbers/${numberId}/status`, { method: "PUT" }),
+  deleteResellerPaymentNumber: (numberId) => dalabAdminApiRequest(`/admin/payment-numbers/${numberId}`, { method: "DELETE" }),
+  getResellerCompanyRates: () => dalabAdminApiRequest("/admin/reseller-company-rates"),
+  setResellerCompanyRate: (companyId, rate) => dalabAdminApiRequest(`/admin/reseller-company-rates/${companyId}`, { method: "PUT", body: { rate } }),
+  getResellerOrders: (status) => dalabAdminApiRequest(`/admin/reseller-orders${status ? `?status=${status}` : ""}`),
+  confirmResellerOrder: (id) => dalabAdminApiRequest(`/admin/reseller-orders/${id}/confirm`, { method: "PUT" }),
+  completeResellerOrder: (id) => dalabAdminApiRequest(`/admin/reseller-orders/${id}/complete`, { method: "PUT" }),
+  cancelResellerOrder: (id) => dalabAdminApiRequest(`/admin/reseller-orders/${id}/cancel`, { method: "PUT" }),
+  getResellerDeposits: (status) => dalabAdminApiRequest(`/admin/reseller-deposits${status ? `?status=${status}` : ""}`),
+  verifyResellerDeposit: (id) => dalabAdminApiRequest(`/admin/reseller-deposits/${id}/verify`, { method: "PUT" }),
+  completeResellerDeposit: (id) => dalabAdminApiRequest(`/admin/reseller-deposits/${id}/complete`, { method: "PUT" }),
+  failResellerDeposit: (id) => dalabAdminApiRequest(`/admin/reseller-deposits/${id}/fail`, { method: "PUT" }),
+  getResellerWithdrawals: (status) => dalabAdminApiRequest(`/admin/reseller-withdrawals${status ? `?status=${status}` : ""}`),
+  markResellerWithdrawalSent: (id) => dalabAdminApiRequest(`/admin/reseller-withdrawals/${id}/mark-sent`, { method: "PUT" }),
+  completeResellerWithdrawal: (id) => dalabAdminApiRequest(`/admin/reseller-withdrawals/${id}/complete`, { method: "PUT" }),
+  failResellerWithdrawal: (id) => dalabAdminApiRequest(`/admin/reseller-withdrawals/${id}/fail`, { method: "PUT" }),
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -398,6 +427,7 @@ const PERMISSION_OPTIONS = [
   { key: "referrals.manage", label: "Manage referral reward rules" },
   { key: "finance.manage", label: "Manage financial expenses" },
   { key: "exchange.manage", label: "Manage money exchange" },
+  { key: "resellers.manage", label: "Manage resellers" },
 ];
 
 // Normalizes a GET /admin/companies row into the shape every section of this
@@ -692,6 +722,7 @@ const NAV = [
   { id: "payment-transactions", label: "Payment Transactions", icon: Activity },
   { id: "commissions", label: "Commissions", icon: Percent },
   { id: "money-exchange", label: "Money Exchange", icon: ArrowLeftRight },
+  { id: "resellers", label: "Resellers", icon: Landmark },
   { id: "sms-sender-ids", label: "SMS Sender IDs", icon: MessageSquare, superAdminOnly: true },
   { id: "referrals", label: "Referral Rewards", icon: Share2 },
   { id: "pending-recovery", label: "Pending Recovery", icon: RotateCcw },
@@ -6817,6 +6848,681 @@ function MoneyExchangePanel({ admin }) {
   );
 }
 
+// Resellers — wholesale users with an admin-issued ID + 8-digit PIN (no
+// self-registration) and a single overall wallet balance, no per-company
+// balances (see admin-backend-ts/src/db/migrations/048-052). Modeled on
+// MoneyExchangePanel's shape (fetch-per-section, save/toggle with per-form
+// error state, table+filter+action-button rows) but without a live SSE
+// stream — no backend event source exists for reseller activity yet, so
+// each tab just refetches after every mutating action.
+const RESELLER_ORDER_STATUS_META = {
+  pending: { tone: "amber", label: "Pending" },
+  payment_sent: { tone: "blue", label: "Payment Sent" },
+  confirmed: { tone: "blue", label: "Confirmed" },
+  completed: { tone: "green", label: "Completed" },
+  cancelled: { tone: "gray", label: "Cancelled" },
+  failed: { tone: "red", label: "Failed" },
+};
+const RESELLER_DEPOSIT_STATUS_META = {
+  pending: { tone: "amber", label: "Pending" },
+  verified: { tone: "blue", label: "Verified" },
+  completed: { tone: "green", label: "Completed" },
+  failed: { tone: "red", label: "Failed" },
+};
+const RESELLER_WITHDRAWAL_STATUS_META = {
+  reserved: { tone: "amber", label: "Reserved" },
+  sent: { tone: "blue", label: "Sent" },
+  completed: { tone: "green", label: "Completed" },
+  cancelled: { tone: "gray", label: "Cancelled" },
+  failed: { tone: "red", label: "Failed" },
+};
+function statusBadge(meta, status) {
+  const m = meta[status] || { tone: "neutral", label: status };
+  return <Badge tone={m.tone}>{m.label}</Badge>;
+}
+
+const RESELLER_TABS = [
+  { id: "resellers", label: "Resellers" },
+  { id: "numbers", label: "Payment Numbers" },
+  { id: "rates", label: "Rates" },
+  { id: "orders", label: "Orders" },
+  { id: "deposits", label: "Deposits" },
+  { id: "withdrawals", label: "Withdrawals" },
+];
+
+function ResellerManagement({ admin, companies }) {
+  const canManage = hasPermission(admin, "resellers.manage");
+  const isSuperAdmin = admin?.role === "super_admin";
+  const [tab, setTab] = useState("resellers");
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage Resellers.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 18, flexWrap: "wrap" }}>
+        {RESELLER_TABS.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            style={{
+              padding: "8px 14px", borderRadius: 10, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
+              border: `1px solid ${tab === t.id ? INDIGO : BORDER}`,
+              background: tab === t.id ? INDIGO_SOFT : "#fff",
+              color: tab === t.id ? INDIGO : SLATE,
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {tab === "resellers" && <ResellersTab canManage={canManage} isSuperAdmin={isSuperAdmin} />}
+      {tab === "numbers" && <ResellerNumbersTab canManage={canManage} companies={companies} />}
+      {tab === "rates" && <ResellerRatesTab canManage={canManage} companies={companies} />}
+      {tab === "orders" && <ResellerOrdersTab canManage={canManage} />}
+      {tab === "deposits" && <ResellerDepositsTab canManage={canManage} />}
+      {tab === "withdrawals" && <ResellerWithdrawalsTab canManage={canManage} />}
+    </div>
+  );
+}
+
+const NEW_RESELLER_FORM = { name: "", phone: "", notes: "" };
+
+function ResellersTab({ canManage, isSuperAdmin }) {
+  const [resellers, setResellers] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [form, setForm] = useState(NEW_RESELLER_FORM);
+  const [formError, setFormError] = useState("");
+  const [saving, setSaving] = useState(false);
+  // One-time reveal panel for a freshly-generated/reset PIN — never
+  // refetchable afterward, same convention as resetCustomerPassword.
+  const [revealed, setRevealed] = useState(null); // { resellerLoginId, tempPin } | null
+  const [adjustFor, setAdjustFor] = useState(null); // reseller id | null
+  const [adjustAmount, setAdjustAmount] = useState("");
+  const [adjustError, setAdjustError] = useState("");
+  const [actingId, setActingId] = useState(null);
+
+  const fetchResellers = async () => {
+    setLoading(true);
+    try { setResellers(await DalabAdminApi.getResellers()); }
+    catch (err) { console.error("getResellers failed:", err.message); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { fetchResellers(); }, []);
+
+  const openCreate = () => { setCreating(true); setForm(NEW_RESELLER_FORM); setFormError(""); };
+  const saveCreate = async () => {
+    if (!form.name.trim()) return setFormError("Name is required.");
+    setSaving(true);
+    setFormError("");
+    try {
+      const result = await DalabAdminApi.createReseller({ name: form.name.trim(), phone: form.phone.trim() || undefined, notes: form.notes.trim() || undefined });
+      setCreating(false);
+      setRevealed({ resellerLoginId: result.resellerLoginId, tempPin: result.tempPin });
+      fetchResellers();
+    } catch (err) {
+      setFormError(err.message || "Couldn't create this reseller.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleStatus = async (r) => {
+    setActingId(r.id);
+    try { await DalabAdminApi.setResellerStatus(r.id); fetchResellers(); }
+    catch (err) { console.error("setResellerStatus failed:", err.message); }
+    finally { setActingId(null); }
+  };
+  const resetPin = async (r) => {
+    setActingId(r.id);
+    try {
+      const result = await DalabAdminApi.resetResellerPin(r.id);
+      setRevealed({ resellerLoginId: r.resellerLoginId, tempPin: result.tempPin });
+    } catch (err) {
+      console.error("resetResellerPin failed:", err.message);
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  const openAdjust = (r) => { setAdjustFor(r.id); setAdjustAmount(""); setAdjustError(""); };
+  const saveAdjust = async () => {
+    const amount = Number(adjustAmount);
+    if (!amount) return setAdjustError("Enter a non-zero amount (negative to debit).");
+    setSaving(true);
+    setAdjustError("");
+    try {
+      await DalabAdminApi.adjustResellerWallet(adjustFor, amount);
+      setAdjustFor(null);
+      fetchResellers();
+    } catch (err) {
+      setAdjustError(err.message || "Couldn't adjust this wallet.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ fontWeight: 800, fontSize: 15, color: INK }}>Resellers</div>
+        {canManage && <Button icon={Plus} onClick={openCreate}>Add Reseller</Button>}
+      </div>
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Reseller ID</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Name</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Wallet Balance</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Status</th>
+              {canManage && <th style={{ padding: "10px 14px" }} />}
+            </tr>
+          </thead>
+          <tbody>
+            {resellers.map((r) => (
+              <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK, fontFamily: "monospace" }}>{r.resellerLoginId}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{r.name}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>${Number(r.walletBalance).toFixed(2)}</td>
+                <td style={{ padding: "10px 14px" }}><Badge tone={r.status === "active" ? "green" : "red"}>{r.status === "active" ? "Active" : "Suspended"}</Badge></td>
+                {canManage && (
+                  <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                    <Button variant="subtle" style={{ marginRight: 6 }} disabled={actingId === r.id} onClick={() => openAdjust(r)}>Adjust Wallet</Button>
+                    {isSuperAdmin && (
+                      <Button variant="ghost" icon={KeyRound} style={{ marginRight: 6 }} disabled={actingId === r.id} onClick={() => resetPin(r)}>Reset PIN</Button>
+                    )}
+                    <Button variant={r.status === "active" ? "danger" : "ghost"} icon={Power} disabled={actingId === r.id} onClick={() => toggleStatus(r)}>
+                      {r.status === "active" ? "Suspend" : "Activate"}
+                    </Button>
+                  </td>
+                )}
+              </tr>
+            ))}
+            {!loading && resellers.length === 0 && (
+              <tr><td colSpan={5} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No resellers yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+
+      {creating && (
+        <Modal title="Add Reseller" onClose={() => setCreating(false)}>
+          <Field label="Name"><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
+          <Field label="Phone (optional)"><input style={inputStyle} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></Field>
+          <Field label="Notes (optional)"><input style={inputStyle} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></Field>
+          {formError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{formError}</div>}
+          <Button onClick={saveCreate} disabled={saving} style={{ width: "100%", justifyContent: "center" }}>
+            {saving ? "Creating…" : "Create Reseller"}
+          </Button>
+        </Modal>
+      )}
+
+      {revealed && (
+        <Modal title="Reseller Credentials" onClose={() => setRevealed(null)}>
+          <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>
+            Shown once — write these down now. They cannot be retrieved again after closing this dialog.
+          </div>
+          <Field label="Reseller ID"><div style={{ ...inputStyle, fontFamily: "monospace", fontWeight: 700 }}>{revealed.resellerLoginId}</div></Field>
+          <Field label="PIN"><div style={{ ...inputStyle, fontFamily: "monospace", fontWeight: 700, fontSize: 18, letterSpacing: 2 }}>{revealed.tempPin}</div></Field>
+          <Button onClick={() => setRevealed(null)} style={{ width: "100%", justifyContent: "center" }}>Done</Button>
+        </Modal>
+      )}
+
+      {adjustFor && (
+        <Modal title="Adjust Wallet Balance" onClose={() => setAdjustFor(null)}>
+          <Field label="Amount (negative to debit)">
+            <input type="number" step="0.01" style={inputStyle} value={adjustAmount} onChange={(e) => setAdjustAmount(e.target.value)} />
+          </Field>
+          {adjustError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{adjustError}</div>}
+          <Button onClick={saveAdjust} disabled={saving} style={{ width: "100%", justifyContent: "center" }}>
+            {saving ? "Saving…" : "Apply Adjustment"}
+          </Button>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+const NEW_RESELLER_NUMBER_FORM = { companyId: "", role: "sending", paymentNumber: "", label: "" };
+
+function ResellerNumbersTab({ canManage, companies }) {
+  const [resellers, setResellers] = useState([]);
+  const [resellerId, setResellerId] = useState("");
+  const [numbers, setNumbers] = useState([]);
+  const [creating, setCreating] = useState(false);
+  const [form, setForm] = useState(NEW_RESELLER_NUMBER_FORM);
+  const [formError, setFormError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => { DalabAdminApi.getResellers().then(setResellers).catch((err) => console.error("getResellers failed:", err.message)); }, []);
+
+  const fetchNumbers = async (id) => {
+    if (!id) return setNumbers([]);
+    try { setNumbers(await DalabAdminApi.getResellerPaymentNumbers(id)); }
+    catch (err) { console.error("getResellerPaymentNumbers failed:", err.message); }
+  };
+  useEffect(() => { fetchNumbers(resellerId); }, [resellerId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const companyName = (id) => companies.find((c) => c.id === id)?.name || id;
+
+  const openCreate = () => { setCreating(true); setForm(NEW_RESELLER_NUMBER_FORM); setFormError(""); };
+  const saveCreate = async () => {
+    if (!form.companyId) return setFormError("Choose a company.");
+    if (!/^\d{6,15}$/.test(form.paymentNumber)) return setFormError("Payment number must be 6-15 digits.");
+    setSaving(true);
+    setFormError("");
+    try {
+      await DalabAdminApi.createResellerPaymentNumber(resellerId, form);
+      setCreating(false);
+      fetchNumbers(resellerId);
+    } catch (err) {
+      setFormError(err.message || "Couldn't save this number.");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const toggleNumber = async (n) => {
+    try { await DalabAdminApi.setResellerPaymentNumberStatus(n.id); fetchNumbers(resellerId); }
+    catch (err) { console.error("setResellerPaymentNumberStatus failed:", err.message); }
+  };
+  const deleteNumber = async (n) => {
+    try { await DalabAdminApi.deleteResellerPaymentNumber(n.id); fetchNumbers(resellerId); }
+    catch (err) { console.error("deleteResellerPaymentNumber failed:", err.message); }
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 12 }}>
+        <select style={{ ...inputStyle, width: 280 }} value={resellerId} onChange={(e) => setResellerId(e.target.value)}>
+          <option value="">Choose a reseller…</option>
+          {resellers.map((r) => <option key={r.id} value={r.id}>{r.resellerLoginId} — {r.name}</option>)}
+        </select>
+        {canManage && resellerId && <Button icon={Plus} onClick={openCreate}>Register Number</Button>}
+      </div>
+      {resellerId && (
+        <Card style={{ padding: 0, overflow: "hidden" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: "#FAFBFF" }}>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Role</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Number</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Label</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Enabled</th>
+                {canManage && <th style={{ padding: "10px 14px" }} />}
+              </tr>
+            </thead>
+            <tbody>
+              {numbers.map((n) => (
+                <tr key={n.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{companyName(n.companyId)}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, textTransform: "capitalize" }}>{n.role}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontFamily: "monospace" }}>{n.paymentNumber}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE }}>{n.label || "—"}</td>
+                  <td style={{ padding: "10px 14px" }}><Badge tone={n.enabled ? "green" : "gray"}>{n.enabled ? "Enabled" : "Disabled"}</Badge></td>
+                  {canManage && (
+                    <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                      <Button variant="ghost" style={{ marginRight: 6 }} onClick={() => toggleNumber(n)}>{n.enabled ? "Disable" : "Enable"}</Button>
+                      <Button variant="danger" icon={Trash2} onClick={() => deleteNumber(n)}>Delete</Button>
+                    </td>
+                  )}
+                </tr>
+              ))}
+              {numbers.length === 0 && (
+                <tr><td colSpan={6} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No numbers registered for this reseller yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </Card>
+      )}
+
+      {creating && (
+        <Modal title="Register Payment Number" onClose={() => setCreating(false)}>
+          <Field label="Company">
+            <select style={inputStyle} value={form.companyId} onChange={(e) => setForm({ ...form, companyId: e.target.value })}>
+              <option value="">Choose a company…</option>
+              {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Role">
+            <select style={inputStyle} value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
+              <option value="sending">Sending (reseller's own number, used for Orders)</option>
+              <option value="receiving">Receiving (Dalab's number override for this reseller)</option>
+            </select>
+          </Field>
+          <Field label="Payment Number"><input style={inputStyle} value={form.paymentNumber} onChange={(e) => setForm({ ...form, paymentNumber: e.target.value })} /></Field>
+          <Field label="Label (optional)"><input style={inputStyle} value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} /></Field>
+          {formError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{formError}</div>}
+          <Button onClick={saveCreate} disabled={saving} style={{ width: "100%", justifyContent: "center" }}>
+            {saving ? "Saving…" : "Register Number"}
+          </Button>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function ResellerRatesTab({ canManage, companies }) {
+  const [rates, setRates] = useState([]);
+  const [editValues, setEditValues] = useState({});
+  const [savingId, setSavingId] = useState(null);
+  const [error, setError] = useState({});
+
+  const fetchRates = async () => {
+    try { setRates(await DalabAdminApi.getResellerCompanyRates()); }
+    catch (err) { console.error("getResellerCompanyRates failed:", err.message); }
+  };
+  useEffect(() => { fetchRates(); }, []);
+
+  const saveRate = async (companyId) => {
+    const rate = Number(editValues[companyId]);
+    if (!rate || rate <= 0) return setError((m) => ({ ...m, [companyId]: "Enter a valid positive rate." }));
+    setSavingId(companyId);
+    setError((m) => ({ ...m, [companyId]: "" }));
+    try {
+      await DalabAdminApi.setResellerCompanyRate(companyId, rate);
+      fetchRates();
+    } catch (err) {
+      setError((m) => ({ ...m, [companyId]: err.message || "Couldn't save this rate." }));
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ fontWeight: 800, fontSize: 15, color: INK, marginBottom: 4 }}>Company Order Rates</div>
+      <div style={{ fontSize: 12, color: MUTE, marginBottom: 12 }}>
+        The current rate applied to new reseller Orders. Changing a rate never affects an order already created — each order freezes the rate it saw at creation time.
+      </div>
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Current Rate</th>
+              {canManage && <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Set New Rate</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {rates.map((r) => (
+              <tr key={r.companyId} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK }}>{r.companyName}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{r.rate != null ? Number(r.rate).toFixed(6) : "Not set"}</td>
+                {canManage && (
+                  <td style={{ padding: "10px 14px" }}>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      <input
+                        type="number" step="0.000001" placeholder={r.rate != null ? String(r.rate) : "e.g. 18"}
+                        style={{ ...inputStyle, width: 120 }}
+                        value={editValues[r.companyId] ?? ""}
+                        onChange={(e) => setEditValues({ ...editValues, [r.companyId]: e.target.value })}
+                      />
+                      <Button variant="subtle" disabled={savingId === r.companyId} onClick={() => saveRate(r.companyId)}>
+                        {savingId === r.companyId ? "Saving…" : "Save"}
+                      </Button>
+                    </div>
+                    {error[r.companyId] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{error[r.companyId]}</div>}
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
+function ResellerOrdersTab({ canManage }) {
+  const [orders, setOrders] = useState([]);
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [actingId, setActingId] = useState(null);
+  const [actionError, setActionError] = useState({});
+
+  const fetchOrders = async () => {
+    try { setOrders(await DalabAdminApi.getResellerOrders(statusFilter === "all" ? undefined : statusFilter)); }
+    catch (err) { console.error("getResellerOrders failed:", err.message); }
+  };
+  useEffect(() => { fetchOrders(); }, [statusFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const act = async (order, fn, label) => {
+    setActingId(order.id);
+    setActionError((m) => ({ ...m, [order.id]: "" }));
+    try { await fn(order.id); fetchOrders(); }
+    catch (err) { setActionError((m) => ({ ...m, [order.id]: err.message || `Couldn't ${label} this order.` })); }
+    finally { setActingId(null); }
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ fontWeight: 800, fontSize: 15, color: INK }}>Reseller Orders</div>
+        <select style={{ ...inputStyle, width: 180 }} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+          <option value="all">All statuses</option>
+          {Object.keys(RESELLER_ORDER_STATUS_META).map((s) => <option key={s} value={s}>{RESELLER_ORDER_STATUS_META[s].label}</option>)}
+        </select>
+      </div>
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Order #</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Reseller</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Amount</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Rate</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Status</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Date</th>
+              {canManage && <th style={{ padding: "10px 14px" }} />}
+            </tr>
+          </thead>
+          <tbody>
+            {orders.map((o) => (
+              <tr key={o.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontSize: 12, fontFamily: "monospace", color: INK }}>{o.id}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{o.resellerLoginId} — {o.resellerName}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{o.companyName}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>${Number(o.amount).toFixed(2)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE }}>{Number(o.rateApplied).toFixed(6)}</td>
+                <td style={{ padding: "10px 14px" }}>{statusBadge(RESELLER_ORDER_STATUS_META, o.status)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE }}>{formatDateTime(o.createdAt)}</td>
+                {canManage && (
+                  <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                    {o.status === "payment_sent" && (
+                      <Button variant="subtle" disabled={actingId === o.id} onClick={() => act(o, DalabAdminApi.confirmResellerOrder, "confirm")}>Confirm</Button>
+                    )}
+                    {o.status === "confirmed" && (
+                      <Button variant="subtle" disabled={actingId === o.id} onClick={() => act(o, DalabAdminApi.completeResellerOrder, "complete")}>Complete</Button>
+                    )}
+                    {(o.status === "pending" || o.status === "payment_sent") && (
+                      <Button variant="danger" style={{ marginLeft: 6 }} disabled={actingId === o.id} onClick={() => act(o, DalabAdminApi.cancelResellerOrder, "cancel")}>Cancel</Button>
+                    )}
+                    {actionError[o.id] && <div style={{ color: "#C81E2C", fontSize: 11, marginTop: 4 }}>{actionError[o.id]}</div>}
+                  </td>
+                )}
+              </tr>
+            ))}
+            {orders.length === 0 && (
+              <tr><td colSpan={8} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No orders yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
+function ResellerDepositsTab({ canManage }) {
+  const [deposits, setDeposits] = useState([]);
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [actingId, setActingId] = useState(null);
+  const [actionError, setActionError] = useState({});
+
+  const fetchDeposits = async () => {
+    try { setDeposits(await DalabAdminApi.getResellerDeposits(statusFilter === "all" ? undefined : statusFilter)); }
+    catch (err) { console.error("getResellerDeposits failed:", err.message); }
+  };
+  useEffect(() => { fetchDeposits(); }, [statusFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const act = async (row, fn, label) => {
+    setActingId(row.id);
+    setActionError((m) => ({ ...m, [row.id]: "" }));
+    try { await fn(row.id); fetchDeposits(); }
+    catch (err) { setActionError((m) => ({ ...m, [row.id]: err.message || `Couldn't ${label} this deposit.` })); }
+    finally { setActingId(null); }
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 15, color: INK }}>Deposits (Lacag Ku Shub)</div>
+          <div style={{ fontSize: 12, color: MUTE, marginTop: 2 }}>Verifying credits the reseller's wallet — it is not credited just from the request being submitted.</div>
+        </div>
+        <select style={{ ...inputStyle, width: 180 }} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+          <option value="all">All statuses</option>
+          {Object.keys(RESELLER_DEPOSIT_STATUS_META).map((s) => <option key={s} value={s}>{RESELLER_DEPOSIT_STATUS_META[s].label}</option>)}
+        </select>
+      </div>
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Ref #</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Reseller</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>From → To</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Amount</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Status</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Date</th>
+              {canManage && <th style={{ padding: "10px 14px" }} />}
+            </tr>
+          </thead>
+          <tbody>
+            {deposits.map((d) => (
+              <tr key={d.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontSize: 12, fontFamily: "monospace", color: INK }}>{d.id}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{d.resellerLoginId} — {d.resellerName}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{d.companyName}</td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, fontFamily: "monospace" }}>{d.fromNumber} → {d.toNumber}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>${Number(d.amount).toFixed(2)}</td>
+                <td style={{ padding: "10px 14px" }}>{statusBadge(RESELLER_DEPOSIT_STATUS_META, d.status)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE }}>{formatDateTime(d.createdAt)}</td>
+                {canManage && (
+                  <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                    {d.status === "pending" && (
+                      <>
+                        <Button variant="subtle" disabled={actingId === d.id} onClick={() => act(d, DalabAdminApi.verifyResellerDeposit, "verify")}>Verify</Button>
+                        <Button variant="danger" style={{ marginLeft: 6 }} disabled={actingId === d.id} onClick={() => act(d, DalabAdminApi.failResellerDeposit, "fail")}>Fail</Button>
+                      </>
+                    )}
+                    {d.status === "verified" && (
+                      <Button variant="subtle" disabled={actingId === d.id} onClick={() => act(d, DalabAdminApi.completeResellerDeposit, "complete")}>Complete</Button>
+                    )}
+                    {actionError[d.id] && <div style={{ color: "#C81E2C", fontSize: 11, marginTop: 4 }}>{actionError[d.id]}</div>}
+                  </td>
+                )}
+              </tr>
+            ))}
+            {deposits.length === 0 && (
+              <tr><td colSpan={8} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No deposits yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
+function ResellerWithdrawalsTab({ canManage }) {
+  const [withdrawals, setWithdrawals] = useState([]);
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [actingId, setActingId] = useState(null);
+  const [actionError, setActionError] = useState({});
+
+  const fetchWithdrawals = async () => {
+    try { setWithdrawals(await DalabAdminApi.getResellerWithdrawals(statusFilter === "all" ? undefined : statusFilter)); }
+    catch (err) { console.error("getResellerWithdrawals failed:", err.message); }
+  };
+  useEffect(() => { fetchWithdrawals(); }, [statusFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const act = async (row, fn, label) => {
+    setActingId(row.id);
+    setActionError((m) => ({ ...m, [row.id]: "" }));
+    try { await fn(row.id); fetchWithdrawals(); }
+    catch (err) { setActionError((m) => ({ ...m, [row.id]: err.message || `Couldn't ${label} this withdrawal.` })); }
+    finally { setActingId(null); }
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 15, color: INK }}>Withdrawals (Lacag Bixi)</div>
+          <div style={{ fontSize: 12, color: MUTE, marginTop: 2 }}>The amount was already reserved from the reseller's wallet the moment they requested it.</div>
+        </div>
+        <select style={{ ...inputStyle, width: 180 }} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+          <option value="all">All statuses</option>
+          {Object.keys(RESELLER_WITHDRAWAL_STATUS_META).map((s) => <option key={s} value={s}>{RESELLER_WITHDRAWAL_STATUS_META[s].label}</option>)}
+        </select>
+      </div>
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Ref #</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Reseller</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>To</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Amount</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Status</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Date</th>
+              {canManage && <th style={{ padding: "10px 14px" }} />}
+            </tr>
+          </thead>
+          <tbody>
+            {withdrawals.map((w) => (
+              <tr key={w.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontSize: 12, fontFamily: "monospace", color: INK }}>{w.id}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{w.resellerLoginId} — {w.resellerName}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{w.companyName}</td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, fontFamily: "monospace" }}>{w.destinationNumber}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>${Number(w.amount).toFixed(2)}</td>
+                <td style={{ padding: "10px 14px" }}>{statusBadge(RESELLER_WITHDRAWAL_STATUS_META, w.status)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE }}>{formatDateTime(w.createdAt)}</td>
+                {canManage && (
+                  <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                    {w.status === "reserved" && (
+                      <>
+                        <Button variant="subtle" disabled={actingId === w.id} onClick={() => act(w, DalabAdminApi.markResellerWithdrawalSent, "mark sent")}>Mark Sent</Button>
+                        <Button variant="danger" style={{ marginLeft: 6 }} disabled={actingId === w.id} onClick={() => act(w, DalabAdminApi.failResellerWithdrawal, "fail")}>Fail</Button>
+                      </>
+                    )}
+                    {w.status === "sent" && (
+                      <>
+                        <Button variant="subtle" disabled={actingId === w.id} onClick={() => act(w, DalabAdminApi.completeResellerWithdrawal, "complete")}>Complete</Button>
+                        <Button variant="danger" style={{ marginLeft: 6 }} disabled={actingId === w.id} onClick={() => act(w, DalabAdminApi.failResellerWithdrawal, "fail")}>Fail</Button>
+                      </>
+                    )}
+                    {actionError[w.id] && <div style={{ color: "#C81E2C", fontSize: 11, marginTop: 4 }}>{actionError[w.id]}</div>}
+                  </td>
+                )}
+              </tr>
+            ))}
+            {withdrawals.length === 0 && (
+              <tr><td colSpan={8} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No withdrawals yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
 const FEEDBACK_STATUS_META = {
   pending: { tone: "amber", label: "Pending" },
   reviewed: { tone: "blue", label: "Reviewed" },
@@ -9699,6 +10405,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "payment-transactions" && <PaymentTransactionsPanel companies={companies} />}
           {active === "commissions" && <CommissionsPanel companies={companies} packages={packages} admin={admin} />}
           {active === "money-exchange" && <MoneyExchangePanel admin={admin} />}
+          {active === "resellers" && <ResellerManagement admin={admin} companies={companies} />}
           {active === "sms-sender-ids" && <SmsSenderIdsPanel />}
           {active === "feedback" && <FeedbackPanel admin={admin} />}
           {active === "referrals" && <ReferralRewardsPanel admin={admin} />}

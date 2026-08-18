@@ -475,6 +475,37 @@ authRouter.post("/admin/auth/reset-password", rateLimit("reset-password", 10, 15
 });
 
 // ---------------- Refresh (shared by all roles) ----------------
+// ---------------- Reseller login (admin-issued reseller ID + 8-digit PIN, no self-registration) ----------------
+// A Reseller must be created by an Admin first (POST /admin/resellers) —
+// there is no equivalent of /auth/register here. Same "never reveal which
+// part was wrong" convention as every other login in this file: a bad
+// resellerId, a bad PIN, and an inactive account all return the exact same
+// message the Customer App is required to show verbatim.
+authRouter.post("/reseller/auth/login", rateLimit("reseller-login", 5, 15 * 60 * 1000), async (req, res) => {
+  const resellerLoginId = String(req.body.resellerId ?? "").trim();
+  const pin = String(req.body.pin ?? "");
+  const genericError = () => sendJson(res, 401, { error: "Invalid ID/PIN. Please contact Admin." });
+  if (!resellerLoginId || !pin) return genericError();
+
+  const reseller = await queryOne(`SELECT * FROM resellers WHERE reseller_login_id=$1`, [resellerLoginId]);
+  if (!reseller) return genericError();
+  if (!(await verifyPassword(pin, reseller.pin_hash))) return genericError();
+  if (reseller.status !== "active") return genericError();
+
+  await query(`UPDATE resellers SET last_login_at = now() WHERE id=$1`, [reseller.id]);
+  const wallet = await queryOne(`SELECT balance FROM reseller_wallets WHERE reseller_id=$1`, [reseller.id]);
+  const tokens = await issueTokens(reseller.id, "reseller");
+  sendJson(res, 200, {
+    ...tokens,
+    reseller: {
+      id: reseller.id,
+      resellerLoginId: reseller.reseller_login_id,
+      name: reseller.name,
+      walletBalance: wallet?.balance ?? 0,
+    },
+  });
+});
+
 authRouter.post("/auth/refresh", async (req, res) => {
   const refreshToken = String(req.body.refreshToken ?? "");
   const payload = verifyToken(refreshToken);

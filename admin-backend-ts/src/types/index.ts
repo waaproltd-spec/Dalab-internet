@@ -1,4 +1,4 @@
-export type Role = "super_admin" | "admin" | "agent" | "customer";
+export type Role = "super_admin" | "admin" | "agent" | "customer" | "reseller";
 
 export interface JwtPayload {
   sub: string;
@@ -18,3 +18,4 @@ export type OrderStatus = "pending" | "in_progress" | "completed" | "failed" | "
 export type CompanyStatus = "online" | "offline";
 export type AgentStatus = "active" | "suspended";
 export type CustomerStatus = "active" | "blocked";
+export type ResellerStatus = "active" | "suspended";
