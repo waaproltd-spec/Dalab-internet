@@ -405,7 +405,7 @@ const DalabAdminApi = {
   failResellerDeposit: (id) => dalabAdminApiRequest(`/admin/reseller-deposits/${id}/fail`, { method: "PUT" }),
   getResellerWithdrawals: (status) => dalabAdminApiRequest(`/admin/reseller-withdrawals${status ? `?status=${status}` : ""}`),
   markResellerWithdrawalSent: (id) => dalabAdminApiRequest(`/admin/reseller-withdrawals/${id}/mark-sent`, { method: "PUT" }),
-  completeResellerWithdrawal: (id) => dalabAdminApiRequest(`/admin/reseller-withdrawals/${id}/complete`, { method: "PUT" }),
+  completeResellerWithdrawal: (id, smsLogId) => dalabAdminApiRequest(`/admin/reseller-withdrawals/${id}/complete`, { method: "PUT", body: smsLogId ? { smsLogId } : {} }),
   failResellerWithdrawal: (id) => dalabAdminApiRequest(`/admin/reseller-withdrawals/${id}/fail`, { method: "PUT" }),
   getResellerDepositMethods: () => dalabAdminApiRequest("/admin/reseller-deposit-methods"),
   setResellerDepositMethod: (method, body) => dalabAdminApiRequest(`/admin/reseller-deposit-methods/${method}`, { method: "PUT", body }),
@@ -7660,7 +7660,12 @@ function ResellerDepositsTab({ canManage }) {
                 <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, fontFamily: "monospace" }}>{d.fromNumber}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>${Number(d.amount).toFixed(2)}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK }}>${Number(d.resellerWalletBalance ?? 0).toFixed(2)}</td>
-                <td style={{ padding: "10px 14px" }}>{statusBadge(RESELLER_DEPOSIT_STATUS_META, d.status)}</td>
+                <td style={{ padding: "10px 14px" }}>
+                  {statusBadge(RESELLER_DEPOSIT_STATUS_META, d.status)}
+                  {d.matchedSmsLogId && !d.verifiedByAdminId && (
+                    <div style={{ fontSize: 10.5, color: MUTE, marginTop: 2 }}>Auto-verified via SMS</div>
+                  )}
+                </td>
                 <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE }}>{formatDateTime(d.createdAt)}</td>
                 {canManage && (
                   <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
@@ -7706,6 +7711,29 @@ function ResellerWithdrawalsTab({ canManage }) {
     try { await fn(row.id); fetchWithdrawals(); }
     catch (err) { setActionError((m) => ({ ...m, [row.id]: err.message || `Couldn't ${label} this withdrawal.` })); }
     finally { setActingId(null); }
+  };
+
+  // "Withdraw SMS = confirms outgoing money after payout... linked to the
+  // Withdraw transaction" (product instruction) — optional: find the
+  // matching row on the SMS Logs screen first (search by the customer's
+  // phone number), copy its ID, and paste it here. Leaving it blank still
+  // completes the withdrawal exactly as before.
+  const completeWithOptionalSms = async (row) => {
+    const smsLogId = window.prompt(
+      "Optional: paste the SMS Log ID that confirms this payout was sent (see Admin -> SMS Logs, searchable by phone number). Leave blank to complete without one.",
+      ""
+    );
+    if (smsLogId === null) return; // cancelled
+    setActingId(row.id);
+    setActionError((m) => ({ ...m, [row.id]: "" }));
+    try {
+      await DalabAdminApi.completeResellerWithdrawal(row.id, smsLogId.trim() || undefined);
+      fetchWithdrawals();
+    } catch (err) {
+      setActionError((m) => ({ ...m, [row.id]: err.message || "Couldn't complete this withdrawal." }));
+    } finally {
+      setActingId(null);
+    }
   };
 
   return (
@@ -7764,7 +7792,7 @@ function ResellerWithdrawalsTab({ canManage }) {
                     )}
                     {w.status === "sent" && (
                       <>
-                        <Button variant="subtle" disabled={actingId === w.id} onClick={() => act(w, DalabAdminApi.completeResellerWithdrawal, "complete")}>Complete</Button>
+                        <Button variant="subtle" disabled={actingId === w.id} onClick={() => completeWithOptionalSms(w)}>Complete</Button>
                         <Button variant="danger" style={{ marginLeft: 6 }} disabled={actingId === w.id} onClick={() => act(w, DalabAdminApi.failResellerWithdrawal, "fail")}>Fail</Button>
                       </>
                     )}

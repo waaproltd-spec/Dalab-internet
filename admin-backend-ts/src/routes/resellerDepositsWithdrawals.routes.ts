@@ -303,14 +303,28 @@ resellerDepositsWithdrawalsRouter.put("/admin/reseller-withdrawals/:id/mark-sent
   sendJson(res, 200, { id: req.params.id, status: "sent" });
 });
 
+// "Withdraw SMS = confirms outgoing money after payout... linked to the
+// Withdraw transaction and used to confirm that the payout was
+// successfully sent" (product instruction). smsLogId is optional — the
+// wallet was already debited at request time (see POST /reseller/withdrawals'
+// own doc comment for why: reserving atomically at request time is what
+// prevents the same balance being used for two withdrawals, a requirement
+// that predates and takes priority over this SMS step) — so Complete's
+// only remaining job is recording that the outgoing payment was confirmed
+// and, when admin has a matching sms_logs row, attaching it as evidence.
 resellerDepositsWithdrawalsRouter.put("/admin/reseller-withdrawals/:id/complete", requirePermission("resellers.manage"), async (req, res) => {
+  const smsLogId = req.body.smsLogId ? String(req.body.smsLogId) : null;
+  if (smsLogId && !(await queryOne(`SELECT id FROM sms_logs WHERE id=$1`, [smsLogId]))) {
+    return sendJson(res, 404, { error: "SMS log not found" });
+  }
+
   const rows = await query(
-    `UPDATE reseller_withdrawals SET status='completed', completed_at=now(), updated_at=now()
-     WHERE id=$1 AND status='sent' RETURNING id`,
-    [req.params.id]
+    `UPDATE reseller_withdrawals SET status='completed', completed_at=now(), matched_sms_log_id=COALESCE($1, matched_sms_log_id), updated_at=now()
+     WHERE id=$2 AND status='sent' RETURNING id`,
+    [smsLogId, req.params.id]
   );
   if (rows.length === 0) return sendJson(res, 409, { error: "Withdrawal not found or not in a sent state" });
-  sendJson(res, 200, { id: req.params.id, status: "completed" });
+  sendJson(res, 200, { id: req.params.id, status: "completed", smsLogId });
 });
 
 // "If a withdrawal is cancelled or fails after the amount was reserved, the
