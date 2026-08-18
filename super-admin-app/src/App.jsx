@@ -411,6 +411,9 @@ const DalabAdminApi = {
   setResellerDepositMethod: (method, body) => dalabAdminApiRequest(`/admin/reseller-deposit-methods/${method}`, { method: "PUT", body }),
   setCompanyPayoutUssdTemplate: (companyId, payoutUssdTemplate) =>
     dalabAdminApiRequest(`/admin/companies/${companyId}/payout-ussd-template`, { method: "PUT", body: { payoutUssdTemplate } }),
+  getResellerDepositBonusConfig: () => dalabAdminApiRequest("/admin/reseller-deposit-bonus"),
+  setResellerDepositBonus: (companyId, bonusPercentage) =>
+    dalabAdminApiRequest(`/admin/reseller-deposit-bonus/${companyId}`, { method: "PUT", body: { bonusPercentage } }),
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -7297,11 +7300,41 @@ function ResellerPaymentTab({ canManage, companies }) {
   const [savingPayout, setSavingPayout] = useState(null);
   const [payoutError, setPayoutError] = useState({});
 
+  const [bonusRows, setBonusRows] = useState([]);
+  const [bonusEdits, setBonusEdits] = useState({});
+  const [savingBonus, setSavingBonus] = useState(null);
+  const [bonusError, setBonusError] = useState({});
+
   const fetchMethods = async () => {
     try { setMethods(await DalabAdminApi.getResellerDepositMethods()); }
     catch (err) { console.error("getResellerDepositMethods failed:", err.message); }
   };
   useEffect(() => { fetchMethods(); }, []);
+
+  const fetchBonus = async () => {
+    try { setBonusRows(await DalabAdminApi.getResellerDepositBonusConfig()); }
+    catch (err) { console.error("getResellerDepositBonusConfig failed:", err.message); }
+  };
+  useEffect(() => { fetchBonus(); }, []);
+
+  const saveBonus = async (row) => {
+    const raw = bonusEdits[row.companyId] ?? row.bonusPercentage;
+    const bonusPercentage = Number(raw);
+    if (!Number.isFinite(bonusPercentage) || bonusPercentage < 0 || bonusPercentage > 100) {
+      return setBonusError((m) => ({ ...m, [row.companyId]: "Enter a number between 0 and 100." }));
+    }
+    setSavingBonus(row.companyId);
+    setBonusError((m) => ({ ...m, [row.companyId]: "" }));
+    try {
+      await DalabAdminApi.setResellerDepositBonus(row.companyId, bonusPercentage);
+      setBonusEdits((m) => ({ ...m, [row.companyId]: undefined }));
+      fetchBonus();
+    } catch (err) {
+      setBonusError((m) => ({ ...m, [row.companyId]: err.message || "Couldn't save this bonus." }));
+    } finally {
+      setSavingBonus(null);
+    }
+  };
 
   const edit = (method, field, value) =>
     setMethodEdits((m) => ({ ...m, [method]: { ...m[method], [field]: value } }));
@@ -7437,6 +7470,50 @@ function ResellerPaymentTab({ canManage, companies }) {
                       {savingPayout === c.id ? "Saving…" : "Save"}
                     </Button>
                     {payoutError[c.id] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{payoutError[c.id]}</div>}
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+
+      <div style={{ fontWeight: 800, fontSize: 15, color: INK, marginTop: 24, marginBottom: 4 }}>Deposit Bonus by Company</div>
+      <div style={{ fontSize: 12, color: MUTE, marginBottom: 12 }}>
+        Applied when a Deposit is verified: Wallet Credit = Deposit Amount + (Deposit Amount &times; Bonus %). A Deposit already verified keeps the percentage that applied at the time — changing this here only affects Deposits verified from now on. Separate from Internet Store rates.
+      </div>
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Bonus %</th>
+              {canManage && <th style={{ padding: "10px 14px" }} />}
+            </tr>
+          </thead>
+          <tbody>
+            {bonusRows.map((row) => (
+              <tr key={row.companyId} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK }}>{row.companyName}</td>
+                {canManage ? (
+                  <td style={{ padding: "10px 14px" }}>
+                    <input
+                      type="number" min="0" max="100" step="0.01"
+                      style={{ ...inputStyle, width: 90 }}
+                      value={bonusEdits[row.companyId] ?? row.bonusPercentage}
+                      onChange={(e) => setBonusEdits((m) => ({ ...m, [row.companyId]: e.target.value }))}
+                    />
+                    <span style={{ marginLeft: 4, fontSize: 12.5, color: MUTE }}>%</span>
+                  </td>
+                ) : (
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{row.bonusPercentage}%</td>
+                )}
+                {canManage && (
+                  <td style={{ padding: "10px 14px" }}>
+                    <Button variant="subtle" disabled={savingBonus === row.companyId} onClick={() => saveBonus(row)}>
+                      {savingBonus === row.companyId ? "Saving…" : "Save"}
+                    </Button>
+                    {bonusError[row.companyId] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{bonusError[row.companyId]}</div>}
                   </td>
                 )}
               </tr>

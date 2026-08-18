@@ -63,3 +63,44 @@ resellerPaymentConfigRouter.put("/admin/companies/:id/payout-ussd-template", req
   if (rows.length === 0) return sendJson(res, 404, { error: "Company not found" });
   sendJson(res, 200, { id: req.params.id, payoutUssdTemplate: ussdTemplate });
 });
+
+// ---------------- Deposit Bonus, per company (migration 054) ----------------
+//
+// Deliberately its own table/routes, entirely separate from the Internet
+// Store's rate/pricing config — see migration 054's header comment. Keyed
+// by company (Hormuud/Somtel/Somnet/Amtel) even though Deposit itself only
+// offers EVC Plus/eDahab: each method maps to one company's bonus
+// (reseller_deposit_methods.bonus_company_id), so Admin can still configure
+// every company's percentage ahead of that company getting its own deposit
+// rail.
+
+resellerPaymentConfigRouter.get("/admin/reseller-deposit-bonus", requireStaff(), async (_req, res) => {
+  sendJson(
+    res,
+    200,
+    await query(
+      `SELECT c.id AS company_id, c.name AS company_name, COALESCE(b.bonus_percentage, 0) AS bonus_percentage, b.updated_at
+       FROM companies c
+       LEFT JOIN reseller_deposit_bonus_config b ON b.company_id = c.id
+       WHERE c.deleted_at IS NULL
+       ORDER BY c.name`
+    )
+  );
+});
+
+resellerPaymentConfigRouter.put("/admin/reseller-deposit-bonus/:companyId", requirePermission("resellers.manage"), async (req, res) => {
+  const bonusPercentage = Number(req.body.bonusPercentage);
+  if (!Number.isFinite(bonusPercentage) || bonusPercentage < 0 || bonusPercentage > 100) {
+    return sendJson(res, 400, { error: "bonusPercentage must be a number between 0 and 100" });
+  }
+  if (!(await queryOne(`SELECT id FROM companies WHERE id=$1 AND deleted_at IS NULL`, [req.params.companyId]))) {
+    return sendJson(res, 404, { error: "Company not found" });
+  }
+  await query(
+    `INSERT INTO reseller_deposit_bonus_config (company_id, bonus_percentage, updated_at, updated_by)
+     VALUES ($1,$2,now(),$3)
+     ON CONFLICT (company_id) DO UPDATE SET bonus_percentage=$2, updated_at=now(), updated_by=$3`,
+    [req.params.companyId, bonusPercentage, req.auth!.sub]
+  );
+  sendJson(res, 200, { companyId: req.params.companyId, bonusPercentage });
+});
