@@ -64,39 +64,41 @@ resellerPaymentConfigRouter.put("/admin/companies/:id/payout-ussd-template", req
   sendJson(res, 200, { id: req.params.id, payoutUssdTemplate: ussdTemplate });
 });
 
-// ---------------- Withdraw Rate, per company (migration 054) ----------------
+// ---------------- Withdraw Commission, per company (migration 054) ----------------
 //
 // Deliberately its own table/routes, entirely separate from the Internet
 // Store's rate/pricing config — see migration 054's header comment. Applies
-// only to Withdraw: Deposit is always a plain 1:1 credit, no rate involved.
+// only to Withdraw, based on the payout company the customer selects there
+// — Deposit is always a plain 1:1 credit, and its payment method (EVC
+// Plus/eDahab) never determines the Withdraw commission.
 
-resellerPaymentConfigRouter.get("/admin/reseller-withdrawal-rates", requireStaff(), async (_req, res) => {
+resellerPaymentConfigRouter.get("/admin/reseller-withdrawal-commissions", requireStaff(), async (_req, res) => {
   sendJson(
     res,
     200,
     await query(
-      `SELECT c.id AS company_id, c.name AS company_name, COALESCE(r.rate_percentage, 100) AS rate_percentage, r.updated_at
+      `SELECT c.id AS company_id, c.name AS company_name, COALESCE(cm.commission_percentage, 0) AS commission_percentage, cm.updated_at
        FROM companies c
-       LEFT JOIN reseller_withdrawal_rate_config r ON r.company_id = c.id
+       LEFT JOIN reseller_withdrawal_commission_config cm ON cm.company_id = c.id
        WHERE c.deleted_at IS NULL
        ORDER BY c.name`
     )
   );
 });
 
-resellerPaymentConfigRouter.put("/admin/reseller-withdrawal-rates/:companyId", requirePermission("resellers.manage"), async (req, res) => {
-  const ratePercentage = Number(req.body.ratePercentage);
-  if (!Number.isFinite(ratePercentage) || ratePercentage <= 0) {
-    return sendJson(res, 400, { error: "ratePercentage must be a positive number" });
+resellerPaymentConfigRouter.put("/admin/reseller-withdrawal-commissions/:companyId", requirePermission("resellers.manage"), async (req, res) => {
+  const commissionPercentage = Number(req.body.commissionPercentage);
+  if (!Number.isFinite(commissionPercentage) || commissionPercentage < 0) {
+    return sendJson(res, 400, { error: "commissionPercentage must be a non-negative number" });
   }
   if (!(await queryOne(`SELECT id FROM companies WHERE id=$1 AND deleted_at IS NULL`, [req.params.companyId]))) {
     return sendJson(res, 404, { error: "Company not found" });
   }
   await query(
-    `INSERT INTO reseller_withdrawal_rate_config (company_id, rate_percentage, updated_at, updated_by)
+    `INSERT INTO reseller_withdrawal_commission_config (company_id, commission_percentage, updated_at, updated_by)
      VALUES ($1,$2,now(),$3)
-     ON CONFLICT (company_id) DO UPDATE SET rate_percentage=$2, updated_at=now(), updated_by=$3`,
-    [req.params.companyId, ratePercentage, req.auth!.sub]
+     ON CONFLICT (company_id) DO UPDATE SET commission_percentage=$2, updated_at=now(), updated_by=$3`,
+    [req.params.companyId, commissionPercentage, req.auth!.sub]
   );
-  sendJson(res, 200, { companyId: req.params.companyId, ratePercentage });
+  sendJson(res, 200, { companyId: req.params.companyId, commissionPercentage });
 });

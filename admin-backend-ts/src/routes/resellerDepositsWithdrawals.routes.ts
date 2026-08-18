@@ -97,10 +97,11 @@ resellerDepositsWithdrawalsRouter.get("/admin/reseller-deposits", requireStaff()
 // debiting. CAS from 'pending' only, so a double-click can never
 // double-credit.
 //
-// Deposit is a plain 1:1 credit — no rate or bonus applies here (product
-// instruction: "Deposit is only for receiving money. No rate or bonus
-// should be applied."). The company-specific rate applies only to
-// Withdraw — see reseller_withdrawal_rate_config / POST /reseller/withdrawals.
+// Deposit is a plain 1:1 credit — no commission or bonus applies here, and
+// the payment method used (EVC Plus/eDahab) never determines the Withdraw
+// commission (product instruction). The company-specific commission
+// applies only to Withdraw — see reseller_withdrawal_commission_config /
+// POST /reseller/withdrawals.
 resellerDepositsWithdrawalsRouter.put("/admin/reseller-deposits/:id/verify", requirePermission("resellers.manage"), async (req, res) => {
   const deposit = await queryOne(`SELECT * FROM reseller_deposits WHERE id=$1`, [req.params.id]);
   if (!deposit) return sendJson(res, 404, { error: "Deposit not found" });
@@ -162,14 +163,15 @@ const WITHDRAWAL_SELECT = `
 // transaction" (spec, Req. 9). Both the wallet debit and the withdrawal
 // row happen in one transaction: if either fails, neither is left behind.
 //
-// The Withdraw Rate (Admin -> Resellers -> Payment, per company) is
-// resolved and snapshotted right here, at request time — the Wallet is
-// still only deducted by `amount`, but the customer must be sent MORE than
-// that (rate_percentage% of it), and the app needs that customer_receives_
-// amount immediately after creation to dial the correct payout USSD amount.
-// Once snapshotted the rate never changes for this withdrawal even if
-// Admin edits the company's percentage afterward (same "don't mutate
-// history" principle as the rest of this feature).
+// The Withdraw Commission (Admin -> Resellers -> Payment, per company) is
+// resolved and snapshotted right here, at request time, based on the payout
+// company the customer selected — never on the Deposit payment method. The
+// Wallet is still only deducted by `amount`, but the customer must be sent
+// MORE than that (amount + amount x commission%), and the app needs that
+// customer_receives_amount immediately after creation to dial the correct
+// payout USSD amount. Once snapshotted the commission never changes for
+// this withdrawal even if Admin edits the company's percentage afterward
+// (same "don't mutate history" principle as the rest of this feature).
 resellerDepositsWithdrawalsRouter.post("/reseller/withdrawals", requireAuth("reseller"), async (req, res) => {
   const companyId = String(req.body.companyId ?? "");
   const destinationNumber = String(req.body.destinationNumber ?? "").trim();
@@ -186,13 +188,13 @@ resellerDepositsWithdrawalsRouter.post("/reseller/withdrawals", requireAuth("res
     return sendJson(res, 404, { error: "Company not found" });
   }
 
-  const rateCfg = await queryOne<{ rate_percentage: string }>(
-    `SELECT rate_percentage FROM reseller_withdrawal_rate_config WHERE company_id=$1`,
+  const commissionCfg = await queryOne<{ commission_percentage: string }>(
+    `SELECT commission_percentage FROM reseller_withdrawal_commission_config WHERE company_id=$1`,
     [companyId]
   );
-  const ratePercentage = rateCfg ? Number(rateCfg.rate_percentage) : 100;
-  const customerReceivesAmount = Math.round(amount * ratePercentage) / 100;
-  const bonusAmount = Math.round((customerReceivesAmount - amount) * 100) / 100;
+  const commissionPercentage = commissionCfg ? Number(commissionCfg.commission_percentage) : 0;
+  const bonusAmount = Math.round(amount * commissionPercentage) / 100;
+  const customerReceivesAmount = Math.round((amount + bonusAmount) * 100) / 100;
 
   const id = withdrawalRef();
   try {
@@ -213,10 +215,10 @@ resellerDepositsWithdrawalsRouter.post("/reseller/withdrawals", requireAuth("res
       await client.query(
         `INSERT INTO reseller_withdrawals
            (id, reseller_id, company_id, destination_number, amount, status, reservation_tx_id, client_request_id,
-            rate_percentage, bonus_amount, customer_receives_amount)
+            commission_percentage, bonus_amount, customer_receives_amount)
          VALUES ($1,$2,$3,$4,$5,'reserved',$6,$7,$8,$9,$10)`,
         [id, req.auth!.sub, companyId, destinationNumber, amount, reservationTxId, clientRequestId,
-          ratePercentage, bonusAmount, customerReceivesAmount]
+          commissionPercentage, bonusAmount, customerReceivesAmount]
       );
       return walletResult;
     });
