@@ -407,6 +407,10 @@ const DalabAdminApi = {
   markResellerWithdrawalSent: (id) => dalabAdminApiRequest(`/admin/reseller-withdrawals/${id}/mark-sent`, { method: "PUT" }),
   completeResellerWithdrawal: (id) => dalabAdminApiRequest(`/admin/reseller-withdrawals/${id}/complete`, { method: "PUT" }),
   failResellerWithdrawal: (id) => dalabAdminApiRequest(`/admin/reseller-withdrawals/${id}/fail`, { method: "PUT" }),
+  getResellerDepositMethods: () => dalabAdminApiRequest("/admin/reseller-deposit-methods"),
+  setResellerDepositMethod: (method, body) => dalabAdminApiRequest(`/admin/reseller-deposit-methods/${method}`, { method: "PUT", body }),
+  setCompanyPayoutUssdTemplate: (companyId, payoutUssdTemplate) =>
+    dalabAdminApiRequest(`/admin/companies/${companyId}/payout-ussd-template`, { method: "PUT", body: { payoutUssdTemplate } }),
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -6885,6 +6889,7 @@ const RESELLER_TABS = [
   { id: "resellers", label: "Resellers" },
   { id: "numbers", label: "Payment Numbers" },
   { id: "rates", label: "Rates" },
+  { id: "payment", label: "Payment" },
   { id: "orders", label: "Orders" },
   { id: "deposits", label: "Deposits" },
   { id: "withdrawals", label: "Withdrawals" },
@@ -6920,6 +6925,7 @@ function ResellerManagement({ admin, companies }) {
       {tab === "resellers" && <ResellersTab canManage={canManage} isSuperAdmin={isSuperAdmin} />}
       {tab === "numbers" && <ResellerNumbersTab canManage={canManage} companies={companies} />}
       {tab === "rates" && <ResellerRatesTab canManage={canManage} companies={companies} />}
+      {tab === "payment" && <ResellerPaymentTab canManage={canManage} companies={companies} />}
       {tab === "orders" && <ResellerOrdersTab canManage={canManage} />}
       {tab === "deposits" && <ResellerDepositsTab canManage={canManage} />}
       {tab === "withdrawals" && <ResellerWithdrawalsTab canManage={canManage} />}
@@ -7266,6 +7272,171 @@ function ResellerRatesTab({ canManage, companies }) {
                       </Button>
                     </div>
                     {error[r.companyId] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{error[r.companyId]}</div>}
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
+// Deposit ("Lacag Ku Shub") collection methods, EVC Plus / eDahab —
+// company-agnostic (the reseller wallet has no per-company split, see
+// resellerWallet.ts), plus each company's Withdrawal ("Lacag Bixi") payout
+// USSD template. See migration 053_reseller_payment_config.sql.
+function ResellerPaymentTab({ canManage, companies }) {
+  const [methods, setMethods] = useState([]);
+  const [methodEdits, setMethodEdits] = useState({});
+  const [savingMethod, setSavingMethod] = useState(null);
+  const [methodError, setMethodError] = useState({});
+
+  const [payoutEdits, setPayoutEdits] = useState({});
+  const [savingPayout, setSavingPayout] = useState(null);
+  const [payoutError, setPayoutError] = useState({});
+
+  const fetchMethods = async () => {
+    try { setMethods(await DalabAdminApi.getResellerDepositMethods()); }
+    catch (err) { console.error("getResellerDepositMethods failed:", err.message); }
+  };
+  useEffect(() => { fetchMethods(); }, []);
+
+  const edit = (method, field, value) =>
+    setMethodEdits((m) => ({ ...m, [method]: { ...m[method], [field]: value } }));
+
+  const saveMethod = async (row) => {
+    const draft = methodEdits[row.method] || {};
+    const label = draft.label ?? row.label;
+    const paymentNumber = draft.paymentNumber ?? row.paymentNumber;
+    const ussdTemplate = draft.ussdTemplate ?? row.ussdTemplate;
+    if (!paymentNumber || !/^\d{6,15}$/.test(paymentNumber)) {
+      return setMethodError((m) => ({ ...m, [row.method]: "Payment number must be 6-15 digits." }));
+    }
+    if (!ussdTemplate.includes("{amount}")) {
+      return setMethodError((m) => ({ ...m, [row.method]: "USSD template must include {amount}." }));
+    }
+    setSavingMethod(row.method);
+    setMethodError((m) => ({ ...m, [row.method]: "" }));
+    try {
+      await DalabAdminApi.setResellerDepositMethod(row.method, { label, paymentNumber, ussdTemplate });
+      setMethodEdits((m) => ({ ...m, [row.method]: {} }));
+      fetchMethods();
+    } catch (err) {
+      setMethodError((m) => ({ ...m, [row.method]: err.message || "Couldn't save this method." }));
+    } finally {
+      setSavingMethod(null);
+    }
+  };
+
+  const savePayout = async (company) => {
+    const template = payoutEdits[company.id] ?? company.payoutUssdTemplate ?? "";
+    if (!template.includes("{number}") || !template.includes("{amount}")) {
+      return setPayoutError((m) => ({ ...m, [company.id]: "Template must include both {number} and {amount}." }));
+    }
+    setSavingPayout(company.id);
+    setPayoutError((m) => ({ ...m, [company.id]: "" }));
+    try {
+      await DalabAdminApi.setCompanyPayoutUssdTemplate(company.id, template);
+      setPayoutEdits((m) => ({ ...m, [company.id]: undefined }));
+    } catch (err) {
+      setPayoutError((m) => ({ ...m, [company.id]: err.message || "Couldn't save this template." }));
+    } finally {
+      setSavingPayout(null);
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ fontWeight: 800, fontSize: 15, color: INK, marginBottom: 4 }}>Deposit Collection Methods</div>
+      <div style={{ fontSize: 12, color: MUTE, marginBottom: 12 }}>
+        EVC Plus / eDahab — the numbers a Reseller dials to send a Deposit. Shared across every Reseller regardless of which company they later spend the wallet balance with.
+      </div>
+      <Card style={{ padding: 0, overflow: "hidden", marginBottom: 24 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Method</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Label</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payment Number</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>USSD Template</th>
+              {canManage && <th style={{ padding: "10px 14px" }} />}
+            </tr>
+          </thead>
+          <tbody>
+            {methods.map((row) => (
+              <tr key={row.method} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK }}>{row.method}</td>
+                {canManage ? (
+                  <>
+                    <td style={{ padding: "10px 14px" }}>
+                      <input style={{ ...inputStyle, width: 110 }} value={methodEdits[row.method]?.label ?? row.label}
+                        onChange={(e) => edit(row.method, "label", e.target.value)} />
+                    </td>
+                    <td style={{ padding: "10px 14px" }}>
+                      <input style={{ ...inputStyle, width: 130 }} value={methodEdits[row.method]?.paymentNumber ?? row.paymentNumber}
+                        onChange={(e) => edit(row.method, "paymentNumber", e.target.value)} />
+                    </td>
+                    <td style={{ padding: "10px 14px" }}>
+                      <input style={{ ...inputStyle, width: 220 }} value={methodEdits[row.method]?.ussdTemplate ?? row.ussdTemplate}
+                        onChange={(e) => edit(row.method, "ussdTemplate", e.target.value)} />
+                    </td>
+                    <td style={{ padding: "10px 14px" }}>
+                      <Button variant="subtle" disabled={savingMethod === row.method} onClick={() => saveMethod(row)}>
+                        {savingMethod === row.method ? "Saving…" : "Save"}
+                      </Button>
+                      {methodError[row.method] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{methodError[row.method]}</div>}
+                    </td>
+                  </>
+                ) : (
+                  <>
+                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{row.label}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{row.paymentNumber}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontFamily: "monospace" }}>{row.ussdTemplate}</td>
+                  </>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+
+      <div style={{ fontWeight: 800, fontSize: 15, color: INK, marginBottom: 4 }}>Withdrawal Payout Templates</div>
+      <div style={{ fontSize: 12, color: MUTE, marginBottom: 12 }}>
+        Per company — the USSD code a Reseller dials to send a Withdrawal out to a customer. Must include both <code>{"{number}"}</code> and <code>{"{amount}"}</code>, e.g. <code>*726*{"{number}"}*{"{amount}"}*8233#</code>.
+      </div>
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payout USSD Template</th>
+              {canManage && <th style={{ padding: "10px 14px" }} />}
+            </tr>
+          </thead>
+          <tbody>
+            {companies.map((c) => (
+              <tr key={c.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK }}>{c.name}</td>
+                {canManage ? (
+                  <td style={{ padding: "10px 14px" }}>
+                    <input
+                      style={{ ...inputStyle, width: 260 }}
+                      placeholder="*726*{number}*{amount}*8233#"
+                      value={payoutEdits[c.id] ?? c.payoutUssdTemplate ?? ""}
+                      onChange={(e) => setPayoutEdits((m) => ({ ...m, [c.id]: e.target.value }))}
+                    />
+                  </td>
+                ) : (
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontFamily: "monospace" }}>{c.payoutUssdTemplate || "Not set"}</td>
+                )}
+                {canManage && (
+                  <td style={{ padding: "10px 14px" }}>
+                    <Button variant="subtle" disabled={savingPayout === c.id} onClick={() => savePayout(c)}>
+                      {savingPayout === c.id ? "Saving…" : "Save"}
+                    </Button>
+                    {payoutError[c.id] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{payoutError[c.id]}</div>}
                   </td>
                 )}
               </tr>

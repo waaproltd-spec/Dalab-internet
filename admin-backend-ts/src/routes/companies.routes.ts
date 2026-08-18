@@ -16,7 +16,7 @@ export const packagesRouter = Router();
 // routes — logo_data is only ever read by the dedicated .../logo route below
 // (raw bytes, not through sendJson); has_logo is a cheap boolean so the
 // dashboard/apps know whether to point an <img> at that route at all.
-const COMPANY_COLUMNS = `id, name, group_number, color_hex, logo_url, status, gateway, payment_number, payment_ussd_template, provider_number, ussd_code, visible_customer_app, visible_agent_app, auto_process_enabled, slug, description, sort_order, fulfillment_method, (logo_data IS NOT NULL) AS has_logo, created_at, updated_at`;
+const COMPANY_COLUMNS = `id, name, group_number, color_hex, logo_url, status, gateway, payment_number, payment_ussd_template, payout_ussd_template, provider_number, ussd_code, visible_customer_app, visible_agent_app, auto_process_enabled, slug, description, sort_order, fulfillment_method, (logo_data IS NOT NULL) AS has_logo, created_at, updated_at`;
 
 // provider_amount is the internal cost actually requested from the telecom
 // via USSD — it can differ from the customer-facing price (e.g. a

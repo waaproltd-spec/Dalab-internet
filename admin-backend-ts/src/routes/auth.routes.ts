@@ -518,6 +518,19 @@ authRouter.post("/auth/refresh", async (req, res) => {
   );
   if (!row) return sendJson(res, 401, { error: "Refresh token revoked or expired" });
 
+  // A Reseller session must end the moment Admin disables the account —
+  // otherwise a device that logged in while still active keeps silently
+  // refreshing forever, ignoring that later change (Req: "login should only
+  // be required again if the Admin disables the Reseller account"). Scoped
+  // to just this role: every other role's refresh behavior is unchanged.
+  if (payload.role === "reseller") {
+    const reseller = await queryOne<{ status: string }>(`SELECT status FROM resellers WHERE id=$1`, [payload.sub]);
+    if (!reseller || reseller.status !== "active") {
+      await query(`UPDATE refresh_tokens SET revoked=true WHERE id=$1`, [row.id]);
+      return sendJson(res, 401, { error: "This Reseller account is no longer active" });
+    }
+  }
+
   await query(`UPDATE refresh_tokens SET revoked=true WHERE id=$1`, [row.id]);
   const tokens = await issueTokens(payload.sub, payload.role);
   sendJson(res, 200, tokens);
