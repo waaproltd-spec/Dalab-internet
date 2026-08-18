@@ -173,6 +173,17 @@ private val FAILURE_RESPONSE_KEYWORDS = listOf(
     "error", "fail", "timeout", "timed out", "invalid", "incorrect",
     "insufficient", "try again", "unable", "sorry", "declined", "cancelled",
     "canceled", "expired", "denied", "not available", "busy", "khalad",
+    // Somali insufficient-balance phrasing, confirmed live from a real
+    // Reseller Withdraw payout dial (Hormuud): "Haraaga xisaabtaadu kuguma
+    // filna, haraagaagu waa: 5.367" ("your account balance is not
+    // sufficient for it, your balance is: 5.367") — this response was
+    // previously misclassified SUCCESS because no Somali failure phrasing
+    // beyond "khalad" was in this list, which silently stranded that
+    // withdrawal at 'sent' forever (a false-success dial attempt blocks the
+    // self-heal sweeper from ever retrying it). "kuguma filna"/"kuma filna"
+    // is the negated form of "filan" (sufficient/enough) Hormuud's USSD
+    // responses use specifically for insufficient balance.
+    "kuguma filna", "kuma filna",
 )
 
 fun looksLikeFailureResponse(text: String): Boolean {
