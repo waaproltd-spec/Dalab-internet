@@ -21,6 +21,8 @@ defaults:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -84,3 +86,24 @@ jobs:
           name: dalab-agent-release-apk
           path: agent-app/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
+
+      # actions/upload-artifact always produces a .zip, and it can only be
+      # downloaded through an authenticated GitHub session — both a
+      # dealbreaker for tapping "install" straight from a phone browser. A
+      # Release asset is the one place GitHub serves a raw, directly
+      # downloadable file, and it's uploaded here by the runner itself
+      # rather than fetched by a client, so it works even from networks
+      # that can't reach GitHub's artifact blob storage host.
+      - name: Publish direct-download release
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="agent-app-run-${{ github.run_number }}"
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          gh release create "$TAG" \
+            agent-app/app/build/outputs/apk/release/app-release.apk \
+            --repo "${{ github.repository }}" \
+            --title "Agent App build #${{ github.run_number }} ($SHORT_SHA)" \
+            --notes "Automated build from commit $SHORT_SHA on ${{ github.ref_name }}. Direct-installable APK — no zip, no GitHub login needed." \
+            --target "${{ github.sha }}"
