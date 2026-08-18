@@ -393,8 +393,6 @@ const DalabAdminApi = {
   updateResellerPaymentNumber: (numberId, body) => dalabAdminApiRequest(`/admin/payment-numbers/${numberId}`, { method: "PUT", body }),
   setResellerPaymentNumberStatus: (numberId) => dalabAdminApiRequest(`/admin/payment-numbers/${numberId}/status`, { method: "PUT" }),
   deleteResellerPaymentNumber: (numberId) => dalabAdminApiRequest(`/admin/payment-numbers/${numberId}`, { method: "DELETE" }),
-  getResellerCompanyRates: () => dalabAdminApiRequest("/admin/reseller-company-rates"),
-  setResellerCompanyRate: (companyId, rate) => dalabAdminApiRequest(`/admin/reseller-company-rates/${companyId}`, { method: "PUT", body: { rate } }),
   getResellerOrders: (status) => dalabAdminApiRequest(`/admin/reseller-orders${status ? `?status=${status}` : ""}`),
   confirmResellerOrder: (id) => dalabAdminApiRequest(`/admin/reseller-orders/${id}/confirm`, { method: "PUT" }),
   completeResellerOrder: (id) => dalabAdminApiRequest(`/admin/reseller-orders/${id}/complete`, { method: "PUT" }),
@@ -6891,7 +6889,6 @@ function statusBadge(meta, status) {
 const RESELLER_TABS = [
   { id: "resellers", label: "Resellers" },
   { id: "numbers", label: "Payment Numbers" },
-  { id: "rates", label: "Rates" },
   { id: "payment", label: "Payment" },
   { id: "orders", label: "Orders" },
   { id: "deposits", label: "Deposits" },
@@ -6927,7 +6924,6 @@ function ResellerManagement({ admin, companies }) {
       </div>
       {tab === "resellers" && <ResellersTab canManage={canManage} isSuperAdmin={isSuperAdmin} />}
       {tab === "numbers" && <ResellerNumbersTab canManage={canManage} companies={companies} />}
-      {tab === "rates" && <ResellerRatesTab canManage={canManage} companies={companies} />}
       {tab === "payment" && <ResellerPaymentTab canManage={canManage} companies={companies} />}
       {tab === "orders" && <ResellerOrdersTab canManage={canManage} />}
       {tab === "deposits" && <ResellerDepositsTab canManage={canManage} />}
@@ -7210,78 +7206,6 @@ function ResellerNumbersTab({ canManage, companies }) {
           </Button>
         </Modal>
       )}
-    </div>
-  );
-}
-
-function ResellerRatesTab({ canManage, companies }) {
-  const [rates, setRates] = useState([]);
-  const [editValues, setEditValues] = useState({});
-  const [savingId, setSavingId] = useState(null);
-  const [error, setError] = useState({});
-
-  const fetchRates = async () => {
-    try { setRates(await DalabAdminApi.getResellerCompanyRates()); }
-    catch (err) { console.error("getResellerCompanyRates failed:", err.message); }
-  };
-  useEffect(() => { fetchRates(); }, []);
-
-  const saveRate = async (companyId) => {
-    const rate = Number(editValues[companyId]);
-    if (!rate || rate <= 0) return setError((m) => ({ ...m, [companyId]: "Enter a valid positive rate." }));
-    setSavingId(companyId);
-    setError((m) => ({ ...m, [companyId]: "" }));
-    try {
-      await DalabAdminApi.setResellerCompanyRate(companyId, rate);
-      fetchRates();
-    } catch (err) {
-      setError((m) => ({ ...m, [companyId]: err.message || "Couldn't save this rate." }));
-    } finally {
-      setSavingId(null);
-    }
-  };
-
-  return (
-    <div>
-      <div style={{ fontWeight: 800, fontSize: 15, color: INK, marginBottom: 4 }}>Company Order Rates</div>
-      <div style={{ fontSize: 12, color: MUTE, marginBottom: 12 }}>
-        The current rate applied to new reseller Orders. Changing a rate never affects an order already created — each order freezes the rate it saw at creation time.
-      </div>
-      <Card style={{ padding: 0, overflow: "hidden" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ background: "#FAFBFF" }}>
-              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
-              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Current Rate</th>
-              {canManage && <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Set New Rate</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {rates.map((r) => (
-              <tr key={r.companyId} style={{ borderTop: `1px solid ${BORDER}` }}>
-                <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK }}>{r.companyName}</td>
-                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{r.rate != null ? Number(r.rate).toFixed(6) : "Not set"}</td>
-                {canManage && (
-                  <td style={{ padding: "10px 14px" }}>
-                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                      <input
-                        type="number" step="0.000001" placeholder={r.rate != null ? String(r.rate) : "e.g. 18"}
-                        style={{ ...inputStyle, width: 120 }}
-                        value={editValues[r.companyId] ?? ""}
-                        onChange={(e) => setEditValues({ ...editValues, [r.companyId]: e.target.value })}
-                      />
-                      <Button variant="subtle" disabled={savingId === r.companyId} onClick={() => saveRate(r.companyId)}>
-                        {savingId === r.companyId ? "Saving…" : "Save"}
-                      </Button>
-                    </div>
-                    {error[r.companyId] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{error[r.companyId]}</div>}
-                  </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Card>
     </div>
   );
 }
