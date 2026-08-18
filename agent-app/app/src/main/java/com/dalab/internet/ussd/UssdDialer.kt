@@ -184,6 +184,12 @@ private val FAILURE_RESPONSE_KEYWORDS = listOf(
     // is the negated form of "filan" (sufficient/enough) Hormuud's USSD
     // responses use specifically for insufficient balance.
     "kuguma filna", "kuma filna",
+    // Also confirmed live: "Receiver Account Not Found" (English) for a
+    // destination number Hormuud doesn't recognize as a registered account
+    // — "not available" didn't cover this since the wording is "not found",
+    // not "not available". Same false-SUCCESS/stranded-withdrawal failure
+    // mode as the Somali phrasing above.
+    "not found",
 )
 
 fun looksLikeFailureResponse(text: String): Boolean {
