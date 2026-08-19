@@ -37,17 +37,31 @@ export const PHONE_COMPANIES: readonly PhoneCompany[] = [
 const NINE_DIGITS = /^\d{9}$/;
 
 /**
- * Strips everything but digits — does NOT strip a leading "252" country
- * code. Product decision: a customer typing "252617080008" must be told to
- * re-enter it as "617080008" and learn the correct format, not have it
- * silently accepted as if they'd typed it correctly (see validateMobileNumber's
- * dedicated 252 check below, which fires before this would even matter).
- * Also deliberately does NOT strip a leading '0' — "0617080008" is a real
+ * Strips everything but digits, then strips one leading "252" country code
+ * if present — so "+252617080008", "252617080008" and "617080008" all
+ * normalize to the same 9-digit local form before validation.
+ *
+ * This MUST stay permissive here: every legitimate client (customer-app,
+ * agent-app, reseller flows) formats phone numbers as full E.164
+ * ("+252...") before ever sending them to this API — that's the correct,
+ * expected wire format, not a customer's typo. The "reject a customer who
+ * literally typed 252 into the field" product rule belongs in the
+ * client-side validators only (customer-app's phone_validator.dart,
+ * agent-app's PhoneValidator.kt), which run on the raw keystrokes BEFORE
+ * E.164 conversion — see e.g. login_screen.dart's
+ * phoneFieldValidator(_phoneController.text) call, which validates the
+ * unprefixed controller text directly. Rejecting "252..." here too was a
+ * real incident: it silently broke every registration/login/order/
+ * exchange/reseller request, since 100% of legitimate traffic arrives
+ * with the country code attached.
+ *
+ * Deliberately does NOT strip a leading '0' — "0617080008" is a real
  * format error (10 digits) the caller must still see, not something to
  * silently fix.
  */
 export function normalizeMobileDigits(raw: string | null | undefined): string {
-  return String(raw ?? "").replace(/\D/g, "");
+  const digits = String(raw ?? "").replace(/\D/g, "");
+  return digits.startsWith("252") && digits.length > 9 ? digits.slice(3) : digits;
 }
 
 /** Which configured company a 9-digit local number's prefix belongs to, or
@@ -92,18 +106,6 @@ export interface PhoneValidationResult {
  */
 export function validateMobileNumber(raw: string | null | undefined, companyKey?: string | null): PhoneValidationResult {
   const digits = normalizeMobileDigits(raw);
-  // No valid 9-digit local number can ever start with "252" (every known
-  // carrier prefix — 61/77/62/68/71 — starts with 6 or 7), so this is
-  // always the customer's own country code leaking into the field, never a
-  // coincidental real number. Checked before the generic 9-digit check
-  // specifically so this gets its own clear, teachable message instead of
-  // the generic "enter exactly 9 digits" one.
-  if (digits.startsWith("252")) {
-    return {
-      valid: false,
-      error: "Enter your number as 9 digits without the 252 country code, e.g. 617080008 — not 252617080008.",
-    };
-  }
   if (!NINE_DIGITS.test(digits) || digits.startsWith("0")) {
     return { valid: false, error: "Invalid phone number. Enter exactly 9 digits." };
   }

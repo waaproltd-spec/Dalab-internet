@@ -30,19 +30,13 @@ test("letters are rejected", () => {
   assert.equal(isValidMobileNumber("abcdefghi"), false);
 });
 
-test("a 252 country code prefix is rejected, not silently normalized away", () => {
-  const result1 = validateMobileNumber("+252617080008");
-  assert.equal(result1.valid, false);
-  assert.equal(result1.error, "Enter your number as 9 digits without the 252 country code, e.g. 617080008 — not 252617080008.");
-  const result2 = validateMobileNumber("252617080008");
-  assert.equal(result2.valid, false);
-  assert.equal(result2.error, "Enter your number as 9 digits without the 252 country code, e.g. 617080008 — not 252617080008.");
-  // Every supported prefix, all rejected the same way when 252-prefixed.
-  assert.equal(isValidMobileNumber("252617080008"), false);
-  assert.equal(isValidMobileNumber("252777080008"), false);
-  assert.equal(isValidMobileNumber("252687080008"), false);
-  assert.equal(isValidMobileNumber("252627080008"), false);
-  assert.equal(isValidMobileNumber("252717080008"), false);
+test("a +252 country code prefix is tolerated and normalized away -- this is the standard E.164 wire format every client sends", () => {
+  assert.equal(isValidMobileNumber("+252617080008"), true);
+  assert.equal(isValidMobileNumber("252617080008"), true);
+  assert.equal(isValidMobileNumber("252777080008"), true);
+  assert.equal(isValidMobileNumber("252687080008"), true);
+  assert.equal(isValidMobileNumber("252627080008"), true);
+  assert.equal(isValidMobileNumber("252717080008"), true);
 });
 
 test("all four provider prefixes are valid as plain 9-digit local numbers", () => {
