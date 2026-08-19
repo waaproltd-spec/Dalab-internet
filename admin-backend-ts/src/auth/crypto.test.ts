@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { signRefreshToken, verifyToken, refreshTtlMsForRole } from "./crypto.js";
+import { signRefreshToken, verifyToken, refreshTtlMsForRole, isValidCustomerPassword, isStrongPassword } from "./crypto.js";
 
 const ONE_YEAR_SECONDS = 365 * 24 * 60 * 60;
 const THIRTY_DAYS_SECONDS = 30 * 24 * 60 * 60;
@@ -33,4 +33,29 @@ test("refreshTtlMsForRole matches what signRefreshToken actually signs, per role
   assert.equal(refreshTtlMsForRole("customer"), THIRTY_DAYS_SECONDS * 1000);
   assert.equal(refreshTtlMsForRole("agent"), THIRTY_DAYS_SECONDS * 1000);
   assert.equal(refreshTtlMsForRole("admin"), THIRTY_DAYS_SECONDS * 1000);
+});
+
+// isValidCustomerPassword: customer registration/forgot-password only
+// requires 6+ characters -- no required mix of letter/number/symbol,
+// though a symbol is still welcome. Matches the exact examples from the
+// product request.
+test("isValidCustomerPassword accepts letters+numbers with no symbol, 6+ chars", () => {
+  assert.equal(isValidCustomerPassword("Nuur12"), true);
+  assert.equal(isValidCustomerPassword("Nuur123"), true);
+  assert.equal(isValidCustomerPassword("Nuur1234"), true);
+});
+
+test("isValidCustomerPassword accepts a password with a symbol too", () => {
+  assert.equal(isValidCustomerPassword("Nuur1234@"), true);
+});
+
+test("isValidCustomerPassword rejects fewer than 6 characters", () => {
+  assert.equal(isValidCustomerPassword("Nuur1"), false);
+});
+
+test("isValidCustomerPassword is unrelated to isStrongPassword (admin/staff rule stays strict)", () => {
+  // "Nuur1234" satisfies the new customer rule but not the old strict one
+  // (no symbol) -- confirms the two rules are genuinely independent.
+  assert.equal(isValidCustomerPassword("Nuur1234"), true);
+  assert.equal(isStrongPassword("Nuur1234"), false);
 });

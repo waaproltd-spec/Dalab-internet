@@ -3,7 +3,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { query, queryOne } from "../db/pool.js";
 import {
   hashPassword, verifyPassword, signAccessToken, signRefreshToken, verifyToken,
-  isValidEmail, isStrongPassword, isValidPin, refreshTtlMsForRole,
+  isValidEmail, isStrongPassword, isValidCustomerPassword, isValidPin, refreshTtlMsForRole,
 } from "../auth/crypto.js";
 import { requireAuth } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
@@ -49,8 +49,8 @@ authRouter.post("/auth/register", rateLimit("customer-register", 10, 15 * 60 * 1
   const pin = req.body.pin != null ? String(req.body.pin) : null;
   const phoneCheck = validateMobileNumber(phone);
   if (!phoneCheck.valid) return sendJson(res, 400, { error: phoneCheck.error });
-  if (!isStrongPassword(password)) {
-    return sendJson(res, 400, { error: "Password must be at least 8 characters and include a letter, a number, and a symbol" });
+  if (!isValidCustomerPassword(password)) {
+    return sendJson(res, 400, { error: "Password must be at least 6 characters." });
   }
   if (email && !isValidEmail(email)) return sendJson(res, 400, { error: "Provide a valid email" });
   if (pin != null && !isValidPin(pin)) return sendJson(res, 400, { error: "PIN must be 4-8 digits" });
@@ -188,8 +188,8 @@ authRouter.post("/auth/customer/forgot-password/reset", rateLimit("customer-forg
   const pin = String(req.body.pin ?? "");
   const newPassword = String(req.body.newPassword ?? "");
   if (!phone || !pin || !newPassword) return sendJson(res, 400, { error: "phone, pin, and newPassword are required" });
-  if (!isStrongPassword(newPassword)) {
-    return sendJson(res, 400, { error: "Password must be at least 8 characters and include a letter, a number, and a symbol" });
+  if (!isValidCustomerPassword(newPassword)) {
+    return sendJson(res, 400, { error: "Password must be at least 6 characters." });
   }
 
   const customer = await queryOne<{ id: string; pin_hash: string | null; status: string }>(

@@ -104,8 +104,24 @@ export function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
 }
 
+// Staff/admin account passwords (users.routes.ts admin creation, an admin's
+// own change-password/forgot-password flows below) keep the stricter rule
+// -- only the customer-facing rule was asked to relax.
 export function isStrongPassword(password: string): boolean {
   return password.length >= 8 && /[A-Za-z]/.test(password) && /[0-9]/.test(password) && /[^A-Za-z0-9]/.test(password);
+}
+
+/**
+ * Customer registration/password-reset rule: at least 6 characters, no
+ * required mix of letter/number/symbol -- a symbol is welcome but never
+ * mandatory. Deliberately a separate, more permissive function from
+ * isStrongPassword rather than changing that one, so admin/staff account
+ * passwords (users.routes.ts, an admin's own password routes) keep their
+ * original stricter requirement; only customer registration and the
+ * customer forgot-password reset use this.
+ */
+export function isValidCustomerPassword(password: string): boolean {
+  return password.length >= 6;
 }
 
 export function isValidPin(pin: string): boolean {
