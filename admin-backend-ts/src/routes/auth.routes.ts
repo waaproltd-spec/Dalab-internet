@@ -3,7 +3,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { query, queryOne } from "../db/pool.js";
 import {
   hashPassword, verifyPassword, signAccessToken, signRefreshToken, verifyToken,
-  isValidEmail, isStrongPassword, isValidPin, REFRESH_TTL_MS,
+  isValidEmail, isStrongPassword, isValidPin, refreshTtlMsForRole,
 } from "../auth/crypto.js";
 import { requireAuth } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
@@ -18,7 +18,7 @@ async function issueTokens(subjectId: string, role: Role) {
   const jti = randomUUID();
   const refreshToken = signRefreshToken(subjectId, role, jti);
   const tokenHash = createHash("sha256").update(refreshToken).digest("hex");
-  const expiresAt = new Date(Date.now() + REFRESH_TTL_MS);
+  const expiresAt = new Date(Date.now() + refreshTtlMsForRole(role));
   await query(
     `INSERT INTO refresh_tokens (id, subject_id, subject_role, token_hash, expires_at) VALUES ($1,$2,$3,$4,$5)`,
     [randomUUID(), subjectId, role, tokenHash, expiresAt]
