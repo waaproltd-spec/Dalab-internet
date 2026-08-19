@@ -99,7 +99,7 @@ class ResellerWithdrawalInteractiveUssdOrchestrator(private val context: Context
         wakeLock?.acquire(120_000)
         ResellerWithdrawalInteractiveUssdBridge.activeWakeLock = wakeLock
 
-        ResellerWithdrawalInteractiveUssdBridge.arm()
+        ResellerWithdrawalInteractiveUssdBridge.arm(replies.size)
         try {
             dialer.dial(subscriptionId, payout.initialDial)
 

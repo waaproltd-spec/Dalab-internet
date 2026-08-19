@@ -107,13 +107,24 @@ object ResellerWithdrawalInteractiveUssdBridge {
         return enabled.split(':').any { it.equals(expected, ignoreCase = true) }
     }
 
+    /** How many replies this attempt will submit in total (including the
+     * PIN) — set once by [arm] and never changed for the life of the
+     * attempt. The only stage eligible for a blind confirm-tap is the one
+     * AFTER every reply has already been submitted (the final receipt
+     * screen) — see [isEligibleForConfirmTapAtCurrentStage]'s doc comment
+     * for why every earlier stage must never blind-tap. */
+    @Volatile
+    private var totalReplies: Int = 0
+
     /** Starts a fresh watch session — a new channel so a stale event from a
      * previous, already-finished attempt can never be misread as belonging
-     * to this one. */
-    fun arm() {
+     * to this one. [replyCount] is the total number of replies this attempt
+     * will submit (see [totalReplies]). */
+    fun arm(replyCount: Int) {
         events = Channel(capacity = Channel.CONFLATED)
         pendingReplyToInject = null
         repliesSubmittedCount = 0
+        totalReplies = replyCount
         lastAutoConfirmTextByStage.clear()
         autoConfirmTappedByStage.clear()
         lockedPackageName = null
@@ -246,12 +257,36 @@ object ResellerWithdrawalInteractiveUssdBridge {
     }
 
     /** True while a screen at the current stage should still be evaluated as
-     * a possible confirm-tap target rather than read as final content — the
-     * current stage hasn't had a confirm screen auto-tapped yet. Mirrors
-     * [ExchangeUssdBridge.isEligibleForPostPinConfirmTap] generalized to any
-     * stage, not just post-PIN. */
+     * a possible confirm-tap target rather than read as final content.
+     * Mirrors [ExchangeUssdBridge.isEligibleForPostPinConfirmTap] generalized
+     * to any stage — but critically, ONLY once every reply (including the
+     * PIN) has already been submitted this attempt, i.e. only for the truly
+     * final receipt screen. Every earlier stage still expects a real typed
+     * reply next, exactly like Exchange's own PRE_PIN stage does — Exchange
+     * only ever has one reply (the PIN) so "before it's submitted" and
+     * "every stage before the last" happen to be the same thing there; this
+     * flow has several replies in a row ("3", number, amount, PIN), so
+     * generalizing "PRE_PIN" to merely "stage > 0" would still blind-tap
+     * every one of those intermediate reply screens once past stage 0.
+     *
+     * Confirmed live as a real bug, not theoretical, in an earlier version
+     * of this check that used `stage > 0`: at stage 0 (before the very
+     * first reply — the menu selection "3" — has been typed), it returned
+     * true unconditionally whenever nothing had been auto-tapped yet at
+     * that stage. Combined with the accessibility service's
+     * `inputNode == null || isEligibleForConfirmTapAtCurrentStage()` check,
+     * that meant the genuine first menu screen (which DOES have a real
+     * input field waiting for "3") got blind-tapped as a "confirm screen"
+     * instead of receiving the typed reply — submitting an empty USSD
+     * response to the carrier. Confirmed against the real eDahab flow
+     * (production diagnostics, 2026-08-19 ~01:16-01:23 UTC): a window
+     * locked onto com.android.phone (the real *300# menu appeared), a
+     * confirmation_advanced event fired immediately after with no reply
+     * ever armed, the on-device toast read "Input required. Try again."
+     * (Android/carrier's response to a blank USSD reply), and the window
+     * was gone on the next scan. */
     internal fun isEligibleForConfirmTapAtCurrentStage(): Boolean =
-        currentStage() !in autoConfirmTappedByStage
+        isConfirmTapEligible(currentStage(), totalReplies, currentStage() in autoConfirmTappedByStage)
 
     internal fun drainStaleEvents() {
         while (events.tryReceive().isSuccess) {
@@ -263,3 +298,18 @@ object ResellerWithdrawalInteractiveUssdBridge {
         events.receive()
     }
 }
+
+/** Pulled out of [ResellerWithdrawalInteractiveUssdBridge.isEligibleForConfirmTapAtCurrentStage]
+ * as a pure function (no Android/object-state dependency, since the bridge
+ * object itself can't run in a plain JVM test — it constructs a
+ * `Handler(Looper.getMainLooper())` at load time) so the exact eligibility
+ * rule can be unit-tested directly — see
+ * ResellerWithdrawalInteractiveUssdBridgeTest. `stage` is how many replies
+ * have been submitted so far this attempt (0 before the first); a screen is
+ * only eligible for a blind confirm-tap once `stage == totalReplies` — i.e.
+ * every reply, including the PIN, has already been sent and there is
+ * nothing left to type — matching the true final receipt screen. Any
+ * earlier stage still expects a real typed reply next and must never be
+ * blind-tapped. */
+internal fun isConfirmTapEligible(stage: Int, totalReplies: Int, alreadyTappedThisStage: Boolean): Boolean =
+    stage >= totalReplies && !alreadyTappedThisStage
