@@ -39,9 +39,28 @@ class PhoneValidatorTest {
     }
 
     @Test
-    fun `a +252 country code prefix is tolerated and normalized away`() {
-        assertTrue(isValidMobileNumber("+252617080008"))
-        assertTrue(isValidMobileNumber("252617080008"))
+    fun `a 252 country code prefix is rejected, not silently normalized away`() {
+        val result1 = validateMobileNumber("+252617080008")
+        assertFalse(result1.valid)
+        assertEquals("Enter your number as 9 digits without the 252 country code, e.g. 617080008 — not 252617080008.", result1.error)
+        val result2 = validateMobileNumber("252617080008")
+        assertFalse(result2.valid)
+        assertEquals("Enter your number as 9 digits without the 252 country code, e.g. 617080008 — not 252617080008.", result2.error)
+        // Every supported prefix, all rejected the same way when 252-prefixed.
+        assertFalse(isValidMobileNumber("252617080008"))
+        assertFalse(isValidMobileNumber("252777080008"))
+        assertFalse(isValidMobileNumber("252687080008"))
+        assertFalse(isValidMobileNumber("252627080008"))
+        assertFalse(isValidMobileNumber("252717080008"))
+    }
+
+    @Test
+    fun `all four provider prefixes are valid as plain 9-digit local numbers`() {
+        assertTrue(isValidMobileNumber("617080008")) // Hormuud
+        assertTrue(isValidMobileNumber("777080008")) // Hormuud
+        assertTrue(isValidMobileNumber("687080008")) // Somnet
+        assertTrue(isValidMobileNumber("627080008")) // Somtel
+        assertTrue(isValidMobileNumber("717080008")) // Amtel
     }
 
     @Test

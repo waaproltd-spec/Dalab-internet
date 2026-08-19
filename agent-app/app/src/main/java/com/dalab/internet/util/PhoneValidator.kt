@@ -34,15 +34,15 @@ val PHONE_COMPANIES: List<PhoneCompany> = listOf(
 private val NINE_DIGITS = Regex("^\\d{9}$")
 private val NON_DIGIT = Regex("\\D")
 
-/** Strips everything but digits, then strips one leading "252" country code
- * if present -- so "+252617080008", "252617080008" and "617080008" all
- * normalize to the same 9-digit local form before validation. Deliberately
- * does NOT strip a leading '0' -- "0617080008" is a real format error
- * (10 digits) the caller must still see, not something to silently fix. */
-fun normalizeMobileDigits(raw: String?): String {
-    val digits = (raw ?: "").replace(NON_DIGIT, "")
-    return if (digits.startsWith("252") && digits.length > 9) digits.substring(3) else digits
-}
+/** Strips everything but digits -- does NOT strip a leading "252" country
+ * code. Product decision: a customer/agent typing "252617080008" must be
+ * told to re-enter it as "617080008" and learn the correct format, not
+ * have it silently accepted as if typed correctly (see
+ * [validateMobileNumber]'s dedicated 252 check, which fires before this
+ * would even matter). Also deliberately does NOT strip a leading '0' --
+ * "0617080008" is a real format error (10 digits) the caller must still
+ * see, not something to silently fix. */
+fun normalizeMobileDigits(raw: String?): String = (raw ?: "").replace(NON_DIGIT, "")
 
 /** Which configured company a 9-digit local number's prefix belongs to, or
  * null if it doesn't match any known carrier prefix. */
@@ -77,6 +77,18 @@ fun companyKeyFromLabel(nameOrId: String?): String? {
  */
 fun validateMobileNumber(raw: String?, companyKey: String? = null): PhoneValidationResult {
     val digits = normalizeMobileDigits(raw)
+    // No valid 9-digit local number can ever start with "252" (every known
+    // carrier prefix -- 61/77/62/68/71 -- starts with 6 or 7), so this is
+    // always the customer's own country code leaking into the field, never
+    // a coincidental real number. Checked before the generic 9-digit check
+    // specifically so this gets its own clear, teachable message instead of
+    // the generic "enter exactly 9 digits" one.
+    if (digits.startsWith("252")) {
+        return PhoneValidationResult(
+            valid = false,
+            error = "Enter your number as 9 digits without the 252 country code, e.g. 617080008 — not 252617080008.",
+        )
+    }
     if (!NINE_DIGITS.matches(digits) || digits.startsWith("0")) {
         return PhoneValidationResult(valid = false, error = "Invalid phone number. Enter exactly 9 digits.")
     }
