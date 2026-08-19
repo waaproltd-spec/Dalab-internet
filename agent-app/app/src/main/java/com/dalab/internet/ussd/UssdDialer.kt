@@ -230,17 +230,29 @@ fun looksLikeFailureResponse(text: String): Boolean {
  * verbs already confirmed live for this same Hormuud/Somtel money-transfer-
  * out operation, just captured via the follow-up SMS rather than the
  * immediate on-screen response (see HormuudEvcPlusPayoutSentParser/
- * SomtelEdahabPayoutSentParser in PaymentSmsParsers.kt: "...uwareejisay...
- * "/"...warejisay..."/"...transferred..."). Both channels describe the
- * identical transaction and this telecom's own templated wording is
- * consistent across channels (e.g. HormuudEvcPlusParser's incoming vs.
+ * SomtelEdahabPayoutSentParser/SomtelWareejisayPayoutSentParser in
+ * PaymentSmsParsers.kt: "...uwareejisay..."/"...warejisay..."/"...ku
+ * wareejisay..."/"...transferred..."). Both channels describe the identical
+ * transaction and this telecom's own templated wording is consistent across
+ * channels (e.g. HormuudEvcPlusParser's incoming vs.
  * HormuudEvcPlusPayoutSentParser's outgoing both keep the "[-EVCPLUS-]" tag
  * and near-identical structure) — reasonable evidence, not a guess, but
  * still provisional until a real on-screen SUCCESS sample is captured (see
  * Diagnostics -> reseller_withdrawal_self_heal_sweep entries) to lock this
  * down further.
+ *
+ * "wareejisay" (double-e — SomtelWareejisayPayoutSentParser's real captured
+ * "Waxaad ku wareejisay $X Dollars macmiilka...") was missing here even
+ * though its SMS-side parser was added specifically because that exact
+ * wording is real and confirmed — this on-screen classifier was never
+ * updated to match, so a Somtel interactive payout whose on-screen
+ * confirmation used this spelling stayed AMBIGUOUS (stuck at 'sent') on
+ * the very first dial attempt instead of completing immediately, the same
+ * way Hormuud's "uwareejisay" already does. "uwareejisay" itself already
+ * contains "wareejisay" as a substring, so this one addition also covers
+ * Hormuud without changing its existing behavior.
  */
-private val SUCCESS_RESPONSE_KEYWORDS = listOf("uwareejisay", "warejisay", "transferred")
+private val SUCCESS_RESPONSE_KEYWORDS = listOf("wareejisay", "warejisay", "transferred")
 
 fun classifyResellerWithdrawalUssdResponse(text: String): DialOutcome {
     val trimmed = text.trim()
