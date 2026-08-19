@@ -6,6 +6,7 @@ import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { hashPassword, verifyPassword, isValidPin } from "../auth/crypto.js";
 import { parseDataUri } from "../utils/dataUri.js";
+import { validateMobileNumber } from "../lib/phoneValidation.js";
 
 export const customersRouter = Router();
 
@@ -36,7 +37,6 @@ const ADMIN_CUSTOMER_COLUMNS = `id, phone, name, email, status, macaash_points, 
 // Admin override PUT /admin/customers/:id/wallet-numbers below — a wallet
 // (EVC Plus, eDahab) is always a name+number pair, saved and cleared
 // together (047_exchange_wallet_lock_and_limits.sql).
-const WALLET_PHONE_RE = /^\+?\d{6,15}$/;
 const WALLET_LOCK_WINDOW_MS = 2 * 60 * 60 * 1000;
 function walletPairError(label: string) {
   return { error: `Provide both a name and a number for ${label}, or clear both` };
@@ -55,6 +55,10 @@ customersRouter.put("/admin/customers/:id", requirePermission("customers.manage"
   if (!existing) return sendJson(res, 404, { error: "Customer not found" });
   const name = req.body.name ?? existing.name;
   const phone = req.body.phone ?? existing.phone;
+  if (phone !== existing.phone) {
+    const phoneCheck = validateMobileNumber(String(phone));
+    if (!phoneCheck.valid) return sendJson(res, 400, { error: phoneCheck.error });
+  }
   if (phone !== existing.phone && (await queryOne(`SELECT id FROM customers WHERE phone=$1`, [phone]))) {
     return sendJson(res, 409, { error: "A customer with this phone already exists" });
   }
@@ -92,8 +96,9 @@ customersRouter.put("/admin/customers/:id/wallet-numbers", requirePermission("cu
   const body = req.body ?? {};
 
   for (const field of ["evcPlusNumber", "edahabNumber"] as const) {
-    if (field in body && body[field] != null && !WALLET_PHONE_RE.test(String(body[field]))) {
-      return sendJson(res, 400, { error: `Provide a valid ${field === "evcPlusNumber" ? "EVC Plus" : "eDahab"} number` });
+    if (field in body && body[field] != null) {
+      const check = validateMobileNumber(String(body[field]), field === "evcPlusNumber" ? "evc_plus" : "edahab");
+      if (!check.valid) return sendJson(res, 400, { error: check.error });
     }
   }
 
@@ -279,7 +284,8 @@ customersRouter.get("/agent/customers", requireAuth("agent"), async (req, res) =
 
 customersRouter.post("/agent/customers", requireAuth("agent"), async (req, res) => {
   const phone = String(req.body.phone ?? "").trim();
-  if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid phone number" });
+  const phoneCheck = validateMobileNumber(phone);
+  if (!phoneCheck.valid) return sendJson(res, 400, { error: phoneCheck.error });
   const name = req.body.name ? String(req.body.name).trim() : null;
 
   const existing = await queryOne(`SELECT ${AGENT_CUSTOMER_COLUMNS} FROM customers WHERE phone=$1`, [phone]);
@@ -346,8 +352,9 @@ customersRouter.delete("/customer/profile/photo", requireAuth("customer"), async
 customersRouter.put("/customer/wallet-numbers", requireAuth("customer"), async (req, res) => {
   const body = req.body ?? {};
   for (const field of ["evcPlusNumber", "edahabNumber"] as const) {
-    if (field in body && body[field] != null && !WALLET_PHONE_RE.test(String(body[field]))) {
-      return sendJson(res, 400, { error: `Provide a valid ${field === "evcPlusNumber" ? "EVC Plus" : "eDahab"} number` });
+    if (field in body && body[field] != null) {
+      const check = validateMobileNumber(String(body[field]), field === "evcPlusNumber" ? "evc_plus" : "edahab");
+      if (!check.valid) return sendJson(res, 400, { error: check.error });
     }
   }
   const existing = await queryOne<{

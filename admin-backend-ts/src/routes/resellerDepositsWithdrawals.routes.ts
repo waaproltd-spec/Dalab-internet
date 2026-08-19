@@ -7,10 +7,9 @@ import { sendJson } from "../utils/camelCase.js";
 import { adjustResellerWallet } from "../utils/resellerWallet.js";
 import { broadcast } from "../realtime/orderEvents.js";
 import { decrypt } from "../auth/crypto.js";
+import { validateMobileNumber, companyKeyFromLabel } from "../lib/phoneValidation.js";
 
 export const resellerDepositsWithdrawalsRouter = Router();
-
-const PAYMENT_NUMBER_RE = /^\d{6,15}$/;
 
 // payout_ussd_template carries the payout company's PIN inlined (the Agent
 // App needs the real string to dial automatically — see GET
@@ -58,7 +57,8 @@ resellerDepositsWithdrawalsRouter.post("/reseller/deposits", requireAuth("resell
   if (!method || !fromNumber || !Number.isFinite(amount) || amount <= 0) {
     return sendJson(res, 400, { error: "method, fromNumber, and a positive amount are required" });
   }
-  if (!PAYMENT_NUMBER_RE.test(fromNumber)) return sendJson(res, 400, { error: "fromNumber must be 6-15 digits" });
+  const fromNumberCheck = validateMobileNumber(fromNumber, companyKeyFromLabel(method));
+  if (!fromNumberCheck.valid) return sendJson(res, 400, { error: fromNumberCheck.error });
 
   const depositMethod = await queryOne<{ payment_number: string }>(
     `SELECT payment_number FROM reseller_deposit_methods WHERE method=$1`,
@@ -217,12 +217,12 @@ resellerDepositsWithdrawalsRouter.post("/reseller/withdrawals", requireAuth("res
   if (!companyId || !destinationNumber || !Number.isFinite(amount) || amount <= 0) {
     return sendJson(res, 400, { error: "companyId, destinationNumber, and a positive amount are required" });
   }
-  if (!PAYMENT_NUMBER_RE.test(destinationNumber)) {
-    return sendJson(res, 400, { error: "destinationNumber must be 6-15 digits" });
-  }
-  if (!(await queryOne(`SELECT id FROM companies WHERE id=$1 AND deleted_at IS NULL`, [companyId]))) {
+  const company = await queryOne<{ id: string; name: string }>(`SELECT id, name FROM companies WHERE id=$1 AND deleted_at IS NULL`, [companyId]);
+  if (!company) {
     return sendJson(res, 404, { error: "Company not found" });
   }
+  const destinationCheck = validateMobileNumber(destinationNumber, companyKeyFromLabel(company.id) ?? companyKeyFromLabel(company.name));
+  if (!destinationCheck.valid) return sendJson(res, 400, { error: destinationCheck.error });
 
   const commissionCfg = await queryOne<{ commission_percentage: string }>(
     `SELECT commission_percentage FROM reseller_withdrawal_commission_config WHERE company_id=$1`,

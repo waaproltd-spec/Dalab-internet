@@ -9,6 +9,7 @@ import { broadcast } from "../realtime/orderEvents.js";
 import { recordActivity } from "../utils/activityLog.js";
 import { rateLimit } from "../auth/rateLimit.js";
 import { notifyCustomer as notifyCustomerShared } from "../services/customerNotify.js";
+import { validateMobileNumber } from "../lib/phoneValidation.js";
 
 export const exchangeRouter = Router();
 
@@ -348,6 +349,15 @@ async function createExchangeOrder(params: {
 }): Promise<{ error?: string; status?: number; order?: any }> {
   const corridor = await loadCorridor(params.corridorId);
   if (!corridor || !corridor.enabled) return { error: "Corridor not found or disabled", status: 404 };
+
+  // senderPhone pays out of from_wallet_id, receiverPhone is paid into
+  // to_wallet_id -- both are real payment_wallets.id values (evc_plus/
+  // edahab/jeeb/amtel_pay), so this is an exact match, not a keyword guess.
+  const senderCheck = validateMobileNumber(params.senderPhone, corridor.from_wallet_id);
+  if (!senderCheck.valid) return { error: senderCheck.error, status: 400 };
+  const receiverCheck = validateMobileNumber(params.receiverPhone, corridor.to_wallet_id);
+  if (!receiverCheck.valid) return { error: receiverCheck.error, status: 400 };
+
   if (corridor.min_amount && params.amountSent < Number(corridor.min_amount)) {
     return { error: `Minimum amount for this corridor is ${corridor.min_amount}`, status: 400 };
   }
@@ -904,8 +914,6 @@ exchangeRouter.post("/admin/exchange/orders/:id/reverse", requirePermission("exc
 // one's own exchange orders requires requireAuth("customer"), exactly like
 // POST/GET /orders (Internet Store).
 
-const PHONE_RE = /^\+?\d{6,15}$/;
-
 // dial_prefix is public/harmless to expose here — it's the same USSD
 // carrier code (e.g. "712" for EVC Plus) the Customer App already builds
 // Internet Store payment dial codes from via each company's ussdTemplate.
@@ -947,8 +955,11 @@ exchangeRouter.post(
   rateLimit("customer-exchange-create", 20, 15 * 60 * 1000),
   async (req, res) => {
     const { corridorId, amount, senderPhone, receiverPhone, clientRequestId } = req.body ?? {};
-    if (!senderPhone || !PHONE_RE.test(String(senderPhone))) return sendJson(res, 400, { error: "Provide a valid sending phone number" });
-    if (!receiverPhone || !PHONE_RE.test(String(receiverPhone))) return sendJson(res, 400, { error: "Provide a valid receiving phone number" });
+    if (!senderPhone) return sendJson(res, 400, { error: "Provide a valid sending phone number" });
+    if (!receiverPhone) return sendJson(res, 400, { error: "Provide a valid receiving phone number" });
+    // Real format + carrier-prefix-vs-corridor-wallet validation happens
+    // inside createExchangeOrder below (it knows the corridor's actual
+    // from_wallet_id/to_wallet_id) -- this is just a presence check.
     if (clientRequestId != null && typeof clientRequestId !== "string") {
       return sendJson(res, 400, { error: "clientRequestId must be a string" });
     }

@@ -9,6 +9,7 @@ import { requireAuth } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
 import { Role } from "../types/index.js";
 import { rateLimit } from "../auth/rateLimit.js";
+import { validateMobileNumber } from "../lib/phoneValidation.js";
 
 export const authRouter = Router();
 
@@ -46,7 +47,8 @@ authRouter.post("/auth/register", rateLimit("customer-register", 10, 15 * 60 * 1
   // reuses this same endpoint without a pin, and must keep working exactly
   // as before.
   const pin = req.body.pin != null ? String(req.body.pin) : null;
-  if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid phone number" });
+  const phoneCheck = validateMobileNumber(phone);
+  if (!phoneCheck.valid) return sendJson(res, 400, { error: phoneCheck.error });
   if (!isStrongPassword(password)) {
     return sendJson(res, 400, { error: "Password must be at least 8 characters and include a letter, a number, and a symbol" });
   }
@@ -218,7 +220,8 @@ authRouter.post("/auth/customer/forgot-password/reset", rateLimit("customer-forg
 authRouter.post("/auth/identify", rateLimit("customer-identify", 20, 15 * 60 * 1000), async (req, res) => {
   const phone = normalizeCustomerPhone(req.body.phone);
   const name = req.body.name ? String(req.body.name).trim() : "";
-  if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid phone number" });
+  const phoneCheck = validateMobileNumber(phone);
+  if (!phoneCheck.valid) return sendJson(res, 400, { error: phoneCheck.error });
   if (!name) return sendJson(res, 400, { error: "Full name is required" });
 
   let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
@@ -283,7 +286,8 @@ authRouter.post("/auth/customer/signup", rateLimit("customer-pin-signup", 10, 15
   const phone = normalizeCustomerPhone(req.body.phone);
   const name = req.body.name ? String(req.body.name).trim() : "";
   const pin = String(req.body.pin ?? "");
-  if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid phone number" });
+  const phoneCheck = validateMobileNumber(phone);
+  if (!phoneCheck.valid) return sendJson(res, 400, { error: phoneCheck.error });
   if (!name) return sendJson(res, 400, { error: "Full name is required" });
   if (!isFourDigitPin(pin)) return sendJson(res, 400, { error: "PIN must be exactly 4 digits" });
 

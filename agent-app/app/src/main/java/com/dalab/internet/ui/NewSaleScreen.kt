@@ -22,6 +22,8 @@ import com.dalab.internet.queue.PendingActionQueue
 import com.dalab.internet.queue.PendingSalesSyncStatus
 import com.dalab.internet.queue.RetryClassifier
 import com.dalab.internet.queue.SaleCreateAction
+import com.dalab.internet.util.companyKeyFromLabel
+import com.dalab.internet.util.validateMobileNumber
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -157,11 +159,22 @@ fun NewSaleScreen() {
                         Spacer(Modifier.height(20.dp))
                         Text("3. Customer & payment", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(8.dp))
+                        // No company context for the customer's own number
+                        // (any known carrier is accepted, same as
+                        // registration) -- receiverPhone below is the SIM
+                        // actually getting topped up, so it must belong to
+                        // the selected provider's own carrier.
+                        val customerPhoneError = if (customerPhone.isNotBlank()) validateMobileNumber(customerPhone.trim()).error else null
+                        val receiverPhoneError = if (receiverPhone.isNotBlank()) {
+                            validateMobileNumber(receiverPhone.trim(), selectedCompany?.let { companyKeyFromLabel(it.name) }).error
+                        } else null
                         OutlinedTextField(
                             value = customerPhone,
                             onValueChange = { customerPhone = it },
                             label = { Text("Customer phone number") },
                             singleLine = true,
+                            isError = customerPhoneError != null,
+                            supportingText = customerPhoneError?.let { { Text(it) } },
                             modifier = Modifier.fillMaxWidth(),
                         )
                         Spacer(Modifier.height(8.dp))
@@ -170,6 +183,8 @@ fun NewSaleScreen() {
                             onValueChange = { receiverPhone = it },
                             label = { Text("Receiver number (if different)") },
                             singleLine = true,
+                            isError = receiverPhoneError != null,
+                            supportingText = receiverPhoneError?.let { { Text(it) } },
                             modifier = Modifier.fillMaxWidth(),
                         )
                         Spacer(Modifier.height(8.dp))
@@ -256,7 +271,7 @@ fun NewSaleScreen() {
                                     submitting = false
                                 }
                             },
-                            enabled = customerPhone.isNotBlank() && !submitting,
+                            enabled = customerPhone.isNotBlank() && customerPhoneError == null && receiverPhoneError == null && !submitting,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Text(

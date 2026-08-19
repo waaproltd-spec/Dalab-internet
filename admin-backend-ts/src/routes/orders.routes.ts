@@ -15,6 +15,7 @@ import { isAlreadyCompleted } from "../utils/paymentTransactions.js";
 import { rateLimit } from "../auth/rateLimit.js";
 import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
 import { notifyCustomer } from "../services/customerNotify.js";
+import { validateMobileNumber, companyKeyFromLabel } from "../lib/phoneValidation.js";
 
 export const ordersRouter = Router();
 
@@ -83,6 +84,21 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
       [paymentMethodId, companyId]
     );
     if (!selectedMethod) return sendJson(res, 404, { error: "Payment method not found for this company" });
+  }
+
+  // receiverPhone is the SIM actually getting topped up, so it must belong
+  // to the selected company's own carrier; senderPhone is whichever wallet
+  // is paying, so it's checked against the selected payment method instead
+  // when one was picked. Both fields stay optional here (falls back to the
+  // customer's own already-validated phone below) -- only format-check
+  // whatever was actually provided, never require presence.
+  if (receiverPhone) {
+    const check = validateMobileNumber(String(receiverPhone), companyKeyFromLabel(company.name));
+    if (!check.valid) return sendJson(res, 400, { error: check.error });
+  }
+  if (senderPhone) {
+    const check = validateMobileNumber(String(senderPhone), companyKeyFromLabel(selectedMethod?.label));
+    if (!check.valid) return sendJson(res, 400, { error: check.error });
   }
 
   const customer = await queryOne(`SELECT * FROM customers WHERE id=$1`, [req.auth!.sub]);
@@ -231,7 +247,8 @@ ordersRouter.get("/orders/:id", requireAuth("customer"), async (req, res) => {
 ordersRouter.post("/guest/orders", rateLimit("guest-order-create", 20, 15 * 60 * 1000), async (req, res) => {
   const { companyId, packageId, customerPhone, senderPhone, receiverPhone, paymentMethod, paymentMethodId, clientRequestId } = req.body;
   const phone = String(customerPhone ?? receiverPhone ?? "").trim();
-  if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid phone number" });
+  const phoneCheck = validateMobileNumber(phone);
+  if (!phoneCheck.valid) return sendJson(res, 400, { error: phoneCheck.error });
 
   const company = await queryOne(`SELECT * FROM companies WHERE id=$1 AND deleted_at IS NULL`, [companyId]);
   if (!company) return sendJson(res, 404, { error: "Company not found" });
@@ -250,6 +267,20 @@ ordersRouter.post("/guest/orders", rateLimit("guest-order-create", 20, 15 * 60 *
       [paymentMethodId, companyId]
     );
     if (!selectedMethod) return sendJson(res, 404, { error: "Payment method not found for this company" });
+  }
+
+  // Same reasoning as the customer-authenticated /orders above: receiverPhone
+  // must belong to the selected company's carrier, senderPhone to the
+  // selected payment method's — only checked when explicitly distinct from
+  // `phone` above (already validated), so a guest that only ever provided
+  // one number isn't double-validated against two different rules.
+  if (receiverPhone && String(receiverPhone) !== phone) {
+    const check = validateMobileNumber(String(receiverPhone), companyKeyFromLabel(company.name));
+    if (!check.valid) return sendJson(res, 400, { error: check.error });
+  }
+  if (senderPhone && String(senderPhone) !== phone) {
+    const check = validateMobileNumber(String(senderPhone), companyKeyFromLabel(selectedMethod?.label));
+    if (!check.valid) return sendJson(res, 400, { error: check.error });
   }
 
   let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
@@ -360,7 +391,8 @@ ordersRouter.get("/guest/orders/:id", async (req, res) => {
 ordersRouter.post("/agent/orders", requireAuth("agent"), async (req, res) => {
   const { customerPhone, companyId, packageId, receiverPhone, paymentMethod, clientRequestId } = req.body;
   const phone = String(customerPhone ?? "").trim();
-  if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid customer phone number" });
+  const phoneCheck = validateMobileNumber(phone);
+  if (!phoneCheck.valid) return sendJson(res, 400, { error: phoneCheck.error });
 
   const company = await queryOne(`SELECT * FROM companies WHERE id=$1 AND deleted_at IS NULL`, [companyId]);
   if (!company) return sendJson(res, 404, { error: "Company not found" });
@@ -370,6 +402,13 @@ ordersRouter.post("/agent/orders", requireAuth("agent"), async (req, res) => {
   if (!pkg) return sendJson(res, 404, { error: "Package not found" });
   if (pkg.company_id !== companyId) {
     return sendJson(res, 400, { error: "Package does not belong to the selected company" });
+  }
+
+  // receiverPhone (who actually gets the package, if different from the
+  // customer's own phone above) must belong to the selected company's carrier.
+  if (receiverPhone && String(receiverPhone) !== phone) {
+    const check = validateMobileNumber(String(receiverPhone), companyKeyFromLabel(company.name));
+    if (!check.valid) return sendJson(res, 400, { error: check.error });
   }
 
   let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);

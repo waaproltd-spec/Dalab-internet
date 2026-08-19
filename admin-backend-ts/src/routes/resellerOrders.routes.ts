@@ -4,10 +4,9 @@ import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { adjustResellerWallet } from "../utils/resellerWallet.js";
+import { validateMobileNumber, companyKeyFromLabel } from "../lib/phoneValidation.js";
 
 export const resellerOrdersRouter = Router();
-
-const PAYMENT_NUMBER_RE = /^\d{6,15}$/;
 
 function resellerOrderRef(): string {
   return "DRS" + Math.floor(100000000 + Math.random() * 900000000);
@@ -34,9 +33,10 @@ resellerOrdersRouter.post("/reseller/orders", requireAuth("reseller"), async (re
   if (!companyId || !receivingNumber || !Number.isFinite(amount) || amount <= 0) {
     return sendJson(res, 400, { error: "companyId, receivingNumber, and a positive amount are required" });
   }
-  if (!PAYMENT_NUMBER_RE.test(receivingNumber)) {
-    return sendJson(res, 400, { error: "receivingNumber must be 6-15 digits" });
-  }
+  const company = await queryOne<{ id: string; name: string }>(`SELECT id, name FROM companies WHERE id=$1 AND deleted_at IS NULL`, [companyId]);
+  if (!company) return sendJson(res, 404, { error: "Company not found" });
+  const receivingNumberCheck = validateMobileNumber(receivingNumber, companyKeyFromLabel(company.id) ?? companyKeyFromLabel(company.name));
+  if (!receivingNumberCheck.valid) return sendJson(res, 400, { error: receivingNumberCheck.error });
 
   const rateRow = await queryOne<{ rate: string }>(`SELECT rate FROM reseller_company_rates WHERE company_id=$1`, [companyId]);
   if (!rateRow) return sendJson(res, 400, { error: "No rate is configured for this company yet — ask Admin to set one" });
