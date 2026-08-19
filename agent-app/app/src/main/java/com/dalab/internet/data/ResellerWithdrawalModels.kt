@@ -21,6 +21,7 @@ data class ResellerWithdrawalPendingPayout(
     val payoutUssdTemplate: String?,   // {number}/{amount} substituted, PIN inlined — see ussd/ResellerWithdrawalUssdOrchestrator.kt
     val destinationNumber: String,
     val customerReceivesAmount: Double, // amount + company bonus — what's actually dialed out, not the raw Wallet amount
+    val createdAt: String,      // the withdrawal's real creation time -- used only to order this request against a concurrent eBadal one in InteractiveUssdSessionQueue, see ResellerWithdrawalInteractiveUssdOrchestrator
     val interactivePayout: ResellerWithdrawalInteractivePayout? = null,
 )
 

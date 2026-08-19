@@ -475,12 +475,13 @@ resellerDepositsWithdrawalsRouter.get("/agent/reseller-withdrawals/pending-payou
     payout_ussd_template: string | null;
     destination_number: string;
     customer_receives_amount: string;
+    created_at: string;
     interactive_initial_dial: string | null;
     interactive_reply_steps: string[] | null;
     interactive_pin_encrypted: string | null;
   }>(
     `SELECT w.id, w.company_id, c.name AS company_name, c.payout_ussd_template,
-            w.destination_number, w.customer_receives_amount,
+            w.destination_number, w.customer_receives_amount, w.created_at,
             ic.initial_dial AS interactive_initial_dial,
             ic.reply_steps AS interactive_reply_steps,
             ic.pin_encrypted AS interactive_pin_encrypted

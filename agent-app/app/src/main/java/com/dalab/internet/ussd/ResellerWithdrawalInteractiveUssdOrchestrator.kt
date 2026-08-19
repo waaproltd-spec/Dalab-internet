@@ -8,6 +8,7 @@ import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.DialAttemptResultRequest
 import com.dalab.internet.network.DialAttemptStartRequest
 import com.dalab.internet.queue.PendingActionQueue
+import com.dalab.internet.util.parseApiDate
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.UUID
@@ -96,6 +97,16 @@ class ResellerWithdrawalInteractiveUssdOrchestrator(private val context: Context
                 PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
                 "DalabAgent:ResellerWithdrawalInteractiveUssdDial",
             )
+        // Waits its turn behind eBadal's own interactive flow (if any)
+        // before touching the wake lock/screen at all -- see
+        // InteractiveUssdSessionQueue's doc comment for why a plain Mutex
+        // isn't enough to keep the two flows' AccessibilityService sessions
+        // from ever overlapping. Internet Store never calls into this queue.
+        val sessionTicket = InteractiveUssdSessionQueue.acquire(
+            requestId = "reseller:${withdrawal.id}",
+            arrivalTimeMs = parseApiDate(withdrawal.createdAt)?.time ?: System.currentTimeMillis(),
+        )
+
         wakeLock?.acquire(120_000)
         ResellerWithdrawalInteractiveUssdBridge.activeWakeLock = wakeLock
 
@@ -146,6 +157,7 @@ class ResellerWithdrawalInteractiveUssdOrchestrator(private val context: Context
             ResellerWithdrawalInteractiveUssdBridge.disarm()
             if (wakeLock?.isHeld == true) wakeLock.release()
             ResellerWithdrawalInteractiveUssdBridge.activeWakeLock = null
+            InteractiveUssdSessionQueue.release(sessionTicket)
         }
     }
 
