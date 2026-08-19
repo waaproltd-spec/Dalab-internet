@@ -114,3 +114,69 @@ class PaymentSmsParsersTest {
         assertEquals("617080008", entry.receiverPhone)
     }
 }
+
+/**
+ * Regression coverage for Somtel eDahab's second real outgoing-transfer
+ * wording — see SomtelWareejisayPayoutSentParser's doc comment: this exact
+ * format went completely unparsed for a real, successfully-paid Reseller
+ * Withdraw eDahab payout (WDR569919272, 2026-08-19) — the dial automation
+ * correctly typed every reply but the on-screen result was AMBIGUOUS (no
+ * final confirmation within budget), and the real confirming SMS that
+ * arrived seconds later matched neither this app's existing Somtel parser
+ * (different wording entirely) nor any sender it recognized.
+ */
+class SomtelWareejisayPayoutSentParserTest {
+
+    // The exact real SMS that confirmed WDR569919272's payout — captured
+    // live, unaltered.
+    private val realWdr569919272Body = "Waxaad ku wareejisay 1.2000 Dollars macmiilka 629309509."
+
+    @Test
+    fun `sender 252888 is recognized`() {
+        assertEquals(listOf("252888"), SomtelWareejisayPayoutSentParser.senders)
+    }
+
+    @Test
+    fun `the real WDR569919272 confirmation SMS parses correctly end to end`() {
+        val entry = SomtelWareejisayPayoutSentParser.tryParse("252888", realWdr569919272Body)
+        requireNotNull(entry) { "Expected the real captured SMS to parse — it did not." }
+        assertEquals("Somtel", entry.provider)
+        assertEquals(1.20, entry.amount, 0.0001)
+        assertEquals("629309509", entry.receiverPhone)
+    }
+
+    @Test
+    fun `a whole-dollar amount with no decimal point is still parsed correctly`() {
+        val entry = SomtelWareejisayPayoutSentParser.tryParse("252888", "Waxaad ku wareejisay 5 Dollars macmiilka 620338686.")
+        assertEquals(5.0, entry?.amount ?: -1.0, 0.0001)
+    }
+
+    @Test
+    fun `a wrong sender is rejected even with matching wording`() {
+        assertNull(SomtelWareejisayPayoutSentParser.tryParse("eDahab", realWdr569919272Body))
+    }
+
+    @Test
+    fun `an unrelated SMS from sender 252888 is rejected`() {
+        assertNull(SomtelWareejisayPayoutSentParser.tryParse("252888", "Macaamiil promotion kaaga bilaash ka ah."))
+    }
+
+    @Test
+    fun `SomtelEdahabPayoutSentParser's different wording does not falsely match this parser, and vice versa`() {
+        // The two Somtel outgoing parsers must never both match the same
+        // real message — confirms they're genuinely mutually exclusive on
+        // real message shapes.
+        val otherWording = "1.98 Dollar ayad u warejisay Yaasiin Maxamed Aadan. No: 620346060.Tixrac: PP260808.2240.E07703 Haraaga: 7.08 Dollar Kharashyada Adeegga:0"
+        assertNull(SomtelWareejisayPayoutSentParser.tryParse("eDahab", otherWording))
+        assertNull(SomtelEdahabPayoutSentParser.tryParse("252888", realWdr569919272Body))
+    }
+
+    @Test
+    fun `registered in ExchangePayoutSentParsers so SmsReceiver actually reaches it`() {
+        val entry = ExchangePayoutSentParsers.parse("252888", realWdr569919272Body)
+        requireNotNull(entry) { "SomtelWareejisayPayoutSentParser must be registered in ExchangePayoutSentParsers.ALL" }
+        assertEquals("Somtel", entry.provider)
+        assertEquals(1.20, entry.amount, 0.0001)
+        assertEquals("629309509", entry.receiverPhone)
+    }
+}
