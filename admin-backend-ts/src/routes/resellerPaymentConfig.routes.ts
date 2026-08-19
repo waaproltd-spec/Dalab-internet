@@ -3,6 +3,7 @@ import { query, queryOne } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
+import { encrypt, isValidPin } from "../auth/crypto.js";
 
 // Admin -> Resellers -> Payment: the two admin-managed pieces the mobile
 // app's Deposit/Withdraw screens read from instead of anything hard-coded —
@@ -63,6 +64,74 @@ resellerPaymentConfigRouter.put("/admin/companies/:id/payout-ussd-template", req
   if (rows.length === 0) return sendJson(res, 404, { error: "Company not found" });
   sendJson(res, 200, { id: req.params.id, payoutUssdTemplate: ussdTemplate });
 });
+
+// ---------------- Withdrawal interactive payout config, per company (migration 060) ----------------
+// For a payout provider whose carrier menu is a multi-step interactive
+// session (eDahab's Reseller Service -> Transfer -> number -> amount -> PIN)
+// rather than Hormuud's single one-shot dial string above. See migration
+// 060's header comment for the full shape. The PIN is a separate,
+// write-only endpoint — mirrors PUT /admin/exchange/payout-wallets/:id/pin
+// exactly: never returned by the GET below, only a pinIsSet flag, and the
+// activity log (if any is added here later) must only ever record that it
+// changed, never the value.
+
+resellerPaymentConfigRouter.get("/admin/reseller-withdrawal-interactive-payout", requireStaff(), async (_req, res) => {
+  sendJson(
+    res,
+    200,
+    await query(
+      `SELECT c.id AS company_id, c.name AS company_name, ic.initial_dial, ic.reply_steps,
+              (ic.pin_encrypted IS NOT NULL) AS pin_is_set, ic.updated_at
+       FROM companies c
+       JOIN reseller_withdrawal_interactive_payout_config ic ON ic.company_id = c.id
+       WHERE c.deleted_at IS NULL
+       ORDER BY c.name`
+    )
+  );
+});
+
+resellerPaymentConfigRouter.put(
+  "/admin/companies/:id/payout-interactive-steps",
+  requirePermission("resellers.manage"),
+  async (req, res) => {
+    const initialDial = String(req.body.initialDial ?? "").trim();
+    const replySteps = req.body.replySteps;
+    if (!initialDial) return sendJson(res, 400, { error: "initialDial is required" });
+    if (!Array.isArray(replySteps) || replySteps.length === 0 || !replySteps.every((s) => typeof s === "string" && s.trim())) {
+      return sendJson(res, 400, { error: "replySteps must be a non-empty array of non-empty strings" });
+    }
+    if (!(await queryOne(`SELECT id FROM companies WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]))) {
+      return sendJson(res, 404, { error: "Company not found" });
+    }
+    await query(
+      `INSERT INTO reseller_withdrawal_interactive_payout_config (company_id, initial_dial, reply_steps, updated_at, updated_by)
+       VALUES ($1,$2,$3,now(),$4)
+       ON CONFLICT (company_id) DO UPDATE SET initial_dial=$2, reply_steps=$3, updated_at=now(), updated_by=$4`,
+      [req.params.id, initialDial, JSON.stringify(replySteps), req.auth!.sub]
+    );
+    sendJson(res, 200, { companyId: req.params.id, initialDial, replySteps });
+  }
+);
+
+resellerPaymentConfigRouter.put(
+  "/admin/companies/:id/payout-interactive-pin",
+  requireAuth("super_admin"),
+  async (req, res) => {
+    const { pin } = req.body ?? {};
+    if (!isValidPin(String(pin ?? ""))) return sendJson(res, 400, { error: "PIN must be 4-8 digits" });
+    const existing = await queryOne(`SELECT company_id FROM reseller_withdrawal_interactive_payout_config WHERE company_id=$1`, [
+      req.params.id,
+    ]);
+    if (!existing) {
+      return sendJson(res, 409, { error: "Set initialDial/replySteps for this company before setting its PIN" });
+    }
+    await query(
+      `UPDATE reseller_withdrawal_interactive_payout_config SET pin_encrypted=$1, updated_at=now(), updated_by=$2 WHERE company_id=$3`,
+      [encrypt(String(pin)), req.auth!.sub, req.params.id]
+    );
+    sendJson(res, 200, { companyId: req.params.id, pinIsSet: true });
+  }
+);
 
 // ---------------- Withdraw Commission, per company (migration 054) ----------------
 //

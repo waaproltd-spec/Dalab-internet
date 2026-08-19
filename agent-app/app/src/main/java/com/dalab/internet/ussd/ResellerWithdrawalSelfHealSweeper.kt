@@ -46,7 +46,8 @@ object ResellerWithdrawalSelfHealSweeper {
         }
         if (candidates.isEmpty()) return
 
-        val orchestrator = ResellerWithdrawalUssdOrchestrator(context)
+        val oneShotOrchestrator = ResellerWithdrawalUssdOrchestrator(context)
+        val interactiveOrchestrator = ResellerWithdrawalInteractiveUssdOrchestrator(context)
         // Sequential, not parallel — same reasoning as ExchangeSelfHealSweeper:
         // this device only has so many SIMs, and dialing two payouts at once
         // risks one dial's response being misread as the other's.
@@ -57,7 +58,15 @@ object ResellerWithdrawalSelfHealSweeper {
             if (!claimed) continue
             try {
                 DiagnosticsLog.record("reseller_withdrawal_self_heal_sweep", "Auto-dialing withdrawal ${withdrawal.id} (${withdrawal.companyName}).", isError = false)
-                val result = orchestrator.processPendingPayout(withdrawal)
+                // Exactly one of payoutUssdTemplate/interactivePayout is ever
+                // set per row (see ResellerWithdrawalPendingPayout's own doc
+                // comment) — which one decides whether this is Hormuud's
+                // one-shot dial or eDahab's multi-step reply sequence.
+                val result = if (withdrawal.interactivePayout != null) {
+                    interactiveOrchestrator.processPendingPayout(withdrawal)
+                } else {
+                    oneShotOrchestrator.processPendingPayout(withdrawal)
+                }
                 DiagnosticsLog.record(
                     "reseller_withdrawal_self_heal_sweep",
                     "Withdrawal ${withdrawal.id} (${withdrawal.companyName}) auto-payout result: ${result.outcome}${result.responseMessage?.let { " — $it" } ?: ""}",

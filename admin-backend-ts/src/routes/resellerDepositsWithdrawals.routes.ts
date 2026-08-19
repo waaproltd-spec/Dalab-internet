@@ -6,6 +6,7 @@ import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { adjustResellerWallet } from "../utils/resellerWallet.js";
 import { broadcast } from "../realtime/orderEvents.js";
+import { decrypt } from "../auth/crypto.js";
 
 export const resellerDepositsWithdrawalsRouter = Router();
 
@@ -407,14 +408,28 @@ resellerDepositsWithdrawalsRouter.put("/admin/reseller-withdrawals/:id/fail", re
 // ==================== Automatic payout (Agent App) ====================
 // Withdraw is now fully automatic end-to-end: Reserved -> the Agent App
 // dials the payout with no human entering or triggering the USSD itself ->
-// the real outgoing SMS confirms it (resellerSmsMatching.ts) -> Completed.
-// This section is the Agent-facing half of that pipeline — mirrors
-// UssdOrchestrator's Internet Store shape (GET .../self-heal-candidates,
-// POST .../dial-attempts, PUT /agent/dial-attempts/:id) exactly, since
-// payout_ussd_template is the same one-shot combined-string dial Internet
-// Store recharge already automates (TelephonyManager.sendUssdRequest via
-// UssdDialer.kt) — not Money Exchange's two-step interactive PIN flow, which
-// needs its AccessibilityService for a reason that doesn't apply here.
+// the dial result completes it (see completeResellerWithdrawalFromDialResult
+// below) -> the real outgoing SMS is secondary reconciliation
+// (resellerSmsMatching.ts). This section is the Agent-facing half of that
+// pipeline — mirrors UssdOrchestrator's Internet Store shape (GET
+// .../self-heal-candidates, POST .../dial-attempts, PUT
+// /agent/dial-attempts/:id) exactly.
+//
+// Two payout shapes exist per company, both returned by GET
+// .../pending-payout below and both reported through the exact same
+// POST .../dial-attempts + PUT .../dial-attempts/:attemptId pair — reporting
+// is agnostic to how the dial was actually driven:
+//   - payoutUssdTemplate: a one-shot combined number+amount+PIN dial string
+//     (Hormuud's `*726*{number}*{amount}*PIN#`), automated the same way
+//     Internet Store recharge is (TelephonyManager.sendUssdRequest via
+//     UssdDialer.kt) — no reply dialog, no AccessibilityService.
+//   - interactivePayout: an initial dial plus an ordered sequence of replies
+//     to the carrier's own multi-step menu (eDahab's Reseller Service ->
+//     Transfer -> number -> amount -> PIN), which needs the same kind of
+//     AccessibilityService-driven reply automation Money Exchange's
+//     ExchangeUssdOrchestrator already uses for its own two-step PIN flow —
+//     see ResellerWithdrawalInteractiveUssdOrchestrator (agent-app),
+//     generalized from a single PIN slot to an arbitrary reply queue.
 //
 // The dial result (see PUT .../dial-attempts/:attemptId below) is now the
 // PRIMARY signal that completes a withdrawal and debits the wallet — a real
@@ -453,17 +468,50 @@ resellerDepositsWithdrawalsRouter.put("/admin/reseller-withdrawals/:id/fail", re
 // waiting for an admin's manual Complete/mark-sent rather than risking a
 // second real payout for the same withdrawal.
 resellerDepositsWithdrawalsRouter.get("/agent/reseller-withdrawals/pending-payout", requireAuth("agent"), async (_req, res) => {
-  const rows = await query(
+  const rows = await query<{
+    id: string;
+    company_id: string;
+    company_name: string;
+    payout_ussd_template: string | null;
+    destination_number: string;
+    customer_receives_amount: string;
+    interactive_initial_dial: string | null;
+    interactive_reply_steps: string[] | null;
+    interactive_pin_encrypted: string | null;
+  }>(
     `SELECT w.id, w.company_id, c.name AS company_name, c.payout_ussd_template,
-            w.destination_number, w.customer_receives_amount
+            w.destination_number, w.customer_receives_amount,
+            ic.initial_dial AS interactive_initial_dial,
+            ic.reply_steps AS interactive_reply_steps,
+            ic.pin_encrypted AS interactive_pin_encrypted
      FROM reseller_withdrawals w
      JOIN companies c ON c.id = w.company_id
+     LEFT JOIN reseller_withdrawal_interactive_payout_config ic ON ic.company_id = c.id
      WHERE w.status = 'reserved'
-       AND c.payout_ussd_template IS NOT NULL AND c.payout_ussd_template != ''
+       AND (
+         (c.payout_ussd_template IS NOT NULL AND c.payout_ussd_template != '')
+         OR (ic.company_id IS NOT NULL AND ic.pin_encrypted IS NOT NULL)
+       )
        AND NOT EXISTS (SELECT 1 FROM reseller_withdrawal_dial_attempts a WHERE a.withdrawal_id = w.id)
      ORDER BY w.created_at ASC`
   );
-  sendJson(res, 200, rows);
+  // interactivePayout only attached (and the PIN only ever decrypted) for a
+  // row actually being handed to the Agent App to dial right now — same
+  // trust boundary Hormuud's inlined-PIN payout_ussd_template already has.
+  // A company with interactive config but no PIN set yet is silently
+  // excluded rather than dialed with no way to finish the transfer.
+  const result = rows.map(({ interactive_initial_dial, interactive_reply_steps, interactive_pin_encrypted, ...rest }) => {
+    if (!interactive_initial_dial || !interactive_pin_encrypted) return rest;
+    return {
+      ...rest,
+      interactivePayout: {
+        initialDial: interactive_initial_dial,
+        replySteps: interactive_reply_steps ?? [],
+        pin: decrypt(interactive_pin_encrypted),
+      },
+    };
+  });
+  sendJson(res, 200, result);
 });
 
 // Natural key for one logical attempt is (withdrawal_id, attempt_number) —

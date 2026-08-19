@@ -47,6 +47,7 @@ import com.dalab.internet.ui.DeviceSetupScreen
 import com.dalab.internet.ui.DiagnosticsScreen
 import com.dalab.internet.ui.ExchangeAccessibilitySetupScreen
 import com.dalab.internet.ui.ExchangeOrderDetailScreen
+import com.dalab.internet.ui.ResellerWithdrawalInteractiveAccessibilitySetupScreen
 import com.dalab.internet.ui.ExchangeOrdersListScreen
 import com.dalab.internet.ui.NewSaleScreen
 import com.dalab.internet.ui.NotificationsScreen
@@ -122,7 +123,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, NOTIFICATIONS }
+private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, NOTIFICATIONS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP }
 private enum class HomeTab { ORDERS, SALES, CUSTOMERS, REPORTS, MORE }
 
 @Composable
@@ -229,6 +230,7 @@ private fun AgentApp() {
             onOpenReliabilityDashboard = { screen = Screen.RELIABILITY_DASHBOARD },
             onOpenMoneyExchange = { screen = Screen.EXCHANGE_LIST },
             onOpenNotifications = { screen = Screen.NOTIFICATIONS },
+            onOpenResellerWithdrawalSetup = { screen = Screen.RESELLER_WITHDRAWAL_INTERACTIVE_SETUP },
         )
 
         Screen.ORDER_DETAIL -> selectedOrder?.let { order ->
@@ -268,6 +270,8 @@ private fun AgentApp() {
         Screen.EXCHANGE_SETUP -> ExchangeAccessibilitySetupScreen(onBack = { screen = Screen.EXCHANGE_LIST })
 
         Screen.NOTIFICATIONS -> NotificationsScreen(onBack = { screen = Screen.HOME })
+
+        Screen.RESELLER_WITHDRAWAL_INTERACTIVE_SETUP -> ResellerWithdrawalInteractiveAccessibilitySetupScreen(onBack = { screen = Screen.HOME })
     }
 }
 
@@ -291,6 +295,7 @@ private fun AgentHome(
     onOpenReliabilityDashboard: () -> Unit,
     onOpenMoneyExchange: () -> Unit,
     onOpenNotifications: () -> Unit,
+    onOpenResellerWithdrawalSetup: () -> Unit,
 ) {
     var tab by remember { mutableStateOf(HomeTab.ORDERS) }
 
@@ -346,6 +351,7 @@ private fun AgentHome(
                     onOpenReliabilityDashboard = onOpenReliabilityDashboard,
                     onOpenMoneyExchange = onOpenMoneyExchange,
                     onOpenNotifications = onOpenNotifications,
+                    onOpenResellerWithdrawalSetup = onOpenResellerWithdrawalSetup,
                 )
             }
         }
@@ -363,6 +369,7 @@ private fun MoreScreen(
     onOpenReliabilityDashboard: () -> Unit,
     onOpenMoneyExchange: () -> Unit,
     onOpenNotifications: () -> Unit,
+    onOpenResellerWithdrawalSetup: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         ListItem(
@@ -377,6 +384,13 @@ private fun MoreScreen(
             supportingContent = { Text("Verified exchanges waiting for payout") },
             leadingContent = { Icon(Icons.Filled.CurrencyExchange, contentDescription = null) },
             modifier = Modifier.clickable(onClick = onOpenMoneyExchange),
+        )
+        Divider()
+        ListItem(
+            headlineContent = { Text("Reseller Withdraw Setup") },
+            supportingContent = { Text("Enable automated multi-step payouts (e.g. eDahab)") },
+            leadingContent = { Icon(Icons.Filled.AccountBalanceWallet, contentDescription = null) },
+            modifier = Modifier.clickable(onClick = onOpenResellerWithdrawalSetup),
         )
         Divider()
         ListItem(

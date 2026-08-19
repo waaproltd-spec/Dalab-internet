@@ -64,8 +64,10 @@ class ResellerWithdrawalUssdOrchestrator(context: Context, private val maxAttemp
     }
 
     private suspend fun processLocked(withdrawal: ResellerWithdrawalPendingPayout): DialResult {
+        val template = withdrawal.payoutUssdTemplate
+            ?: return DialResult(DialOutcome.FAILED, "No one-shot payout template on this withdrawal — nothing to dial.")
         val ussdString = buildResellerWithdrawalUssdString(
-            withdrawal.payoutUssdTemplate,
+            template,
             withdrawal.destinationNumber,
             withdrawal.customerReceivesAmount,
         )
