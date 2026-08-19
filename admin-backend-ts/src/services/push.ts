@@ -128,6 +128,16 @@ export async function sendPushToTokens(tokens: string[], payload: PushPayload): 
           successCount++;
         } else {
           failureCount++;
+          // Previously silent -- successCount/failureCount alone gave no way
+          // to tell "wrong project credentials", "token belongs to a
+          // different Firebase project", "unregistered token", and a dozen
+          // other FCM failure modes apart from each other. Token itself is
+          // truncated (not a secret, but no reason to spam full tokens into
+          // logs) -- the real diagnostic value is r.error.code/message.
+          // eslint-disable-next-line no-console
+          console.error(
+            `FCM send failed for token ...${batch[idx].slice(-10)}: ${r.error?.code ?? "unknown"} - ${r.error?.message ?? "no message"}`
+          );
           if (r.error && UNREGISTERED_ERROR_CODES.has(r.error.code)) {
             invalidTokens.push(batch[idx]);
           }
