@@ -11,7 +11,7 @@ export type ResellerWalletReferenceType =
   | "withdrawal"
   | "admin_adjustment";
 
-export type ResellerWalletSource = "sms" | "admin_manual" | "system";
+export type ResellerWalletSource = "sms" | "admin_manual" | "system" | "ussd_dial";
 
 /**
  * The single call site every reseller-balance-changing path must go

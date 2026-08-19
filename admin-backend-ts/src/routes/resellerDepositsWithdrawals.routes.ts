@@ -416,14 +416,36 @@ resellerDepositsWithdrawalsRouter.put("/admin/reseller-withdrawals/:id/fail", re
 // UssdDialer.kt) — not Money Exchange's two-step interactive PIN flow, which
 // needs its AccessibilityService for a reason that doesn't apply here.
 //
-// Deliberately never marks the withdrawal 'completed' from a dial result —
-// unlike Internet Store's PUT /agent/dial-attempts/:attemptId, which
-// completes the order on a 'success' report. A USSD callback firing only
-// means the OS/carrier accepted the request; it is not proof the customer
-// was actually paid. Only the real outgoing SMS (matched via
-// resellerSmsMatching.ts) or an admin's manual Complete ever moves this
-// withdrawal to 'completed' or touches the wallet — see this file's other
-// routes above.
+// The dial result (see PUT .../dial-attempts/:attemptId below) is now the
+// PRIMARY signal that completes a withdrawal and debits the wallet — a real
+// outgoing SMS (matched via resellerSmsMatching.ts) is secondary
+// reconciliation, not the thing the debit depends on. This changed from an
+// earlier design where only the SMS could complete a withdrawal: with
+// several same-amount, same-destination withdrawals in flight at once (a
+// common real case — the same reseller topping up the same customer
+// repeatedly), the SMS matcher's FIFO-by-creation-time pairing could
+// correctly complete an OLDER withdrawal while a NEWER one with an
+// identical amount+destination sat unmatched indefinitely, waiting on a
+// confirmation SMS that would never arrive for it specifically. Dialing is
+// already 1:1 with a specific withdrawal (each dial attempt is tied to
+// exactly one withdrawal_id), so there's no ambiguity to resolve.
+//
+// Every dial status maps to exactly one withdrawal outcome:
+//   'success'   -> complete + debit exactly once (see completeResellerWithdrawalFromDialResult)
+//   'failed'    -> mark 'failed', no wallet touch (nothing was ever
+//                  reserved at creation — see POST /reseller/withdrawals'
+//                  doc comment — so "refund" is simply "never deduct")
+//   'ambiguous' -> withdrawal status is left untouched, still 'reserved'/
+//                  'sent' — never auto-completed, never auto-failed, so a
+//                  transfer that might have actually succeeded is neither
+//                  silently paid twice nor silently written off. Needs a
+//                  human (Admin -> Resellers -> Withdrawals -> Complete/Fail)
+//                  or a later corroborating SMS to resolve it.
+// The real outgoing SMS can still independently complete a withdrawal
+// (resellerSmsMatching.ts's confirmResellerWithdrawalViaSms) exactly as
+// before — both paths share the same atomic claim-before-deduct CAS
+// (status IN ('reserved','sent') -> 'completed'), so whichever fires first
+// wins and the second is always a safe no-op, never a double debit.
 
 // Self-heal target list: 'reserved' withdrawals with no dial attempt yet.
 // Once ANY attempt exists for a withdrawal — success, failure, or ambiguous —
@@ -503,6 +525,47 @@ resellerDepositsWithdrawalsRouter.post("/agent/reseller-withdrawals/:id/dial-att
   sendJson(res, 201, { id });
 });
 
+// Same claim-before-deduct ordering as confirmResellerWithdrawalViaSms
+// (resellerSmsMatching.ts): the status CAS runs first, and only a
+// successful claim is allowed to touch the wallet, so a race against the
+// SMS matcher — or a retried/duplicate dial-result report — can never
+// double-deduct. If adjustResellerWallet throws (a genuine insufficient-
+// balance edge case), the whole transaction rolls back, so the withdrawal
+// lands back at its prior status instead of getting stuck 'completed' with
+// no matching deduction.
+export async function completeResellerWithdrawalFromDialResult(withdrawalId: string): Promise<{ completed: boolean }> {
+  try {
+    const completed = await withTransaction(async (client) => {
+      const claimed = await client.query<{ id: string; reseller_id: string; amount: string }>(
+        `UPDATE reseller_withdrawals SET status='completed', completed_at=now(), updated_at=now()
+         WHERE id=$1 AND status IN ('reserved','sent') RETURNING id, reseller_id, amount`,
+        [withdrawalId]
+      );
+      if (claimed.rows.length === 0) return false; // already resolved (SMS beat us to it, or admin already acted)
+
+      await adjustResellerWallet({
+        resellerId: claimed.rows[0].reseller_id,
+        changeAmount: -Number(claimed.rows[0].amount),
+        referenceType: "withdrawal",
+        referenceId: withdrawalId,
+        source: "ussd_dial",
+        client,
+      });
+      return true;
+    });
+    return { completed };
+  } catch (err) {
+    if (err instanceof Error && err.message === "Insufficient wallet balance") {
+      // A confirmed-successful payout that the wallet can't cover — almost
+      // certainly another of this reseller's withdrawals completed first.
+      // Never silent: the withdrawal stays 'reserved'/'sent' (the CAS
+      // itself rolled back), needing a Super Admin to reconcile manually.
+      return { completed: false };
+    }
+    throw err;
+  }
+}
+
 resellerDepositsWithdrawalsRouter.put("/agent/reseller-withdrawal-dial-attempts/:attemptId", requireAuth("agent"), async (req, res) => {
   const { status, responseMessage } = req.body;
   if (!["success", "failed", "ambiguous"].includes(status)) {
@@ -521,6 +584,22 @@ resellerDepositsWithdrawalsRouter.put("/agent/reseller-withdrawal-dial-attempts/
     return sendJson(res, 200, existing);
   }
   const withdrawalId = (result[0] as { withdrawal_id: string }).withdrawal_id;
+
+  if (status === "success") {
+    await completeResellerWithdrawalFromDialResult(withdrawalId);
+  } else if (status === "failed") {
+    // No wallet adjustment — nothing was ever deducted at creation time, so
+    // "refund" here is simply never debiting. CAS guards the same race: a
+    // withdrawal the SMS matcher already completed must never be knocked
+    // back to 'failed'.
+    await query(
+      `UPDATE reseller_withdrawals SET status='failed', updated_at=now() WHERE id=$1 AND status IN ('reserved','sent')`,
+      [withdrawalId]
+    );
+  }
+  // 'ambiguous': withdrawal status is deliberately left untouched — see this
+  // section's header comment.
+
   broadcast({ type: "reseller_withdrawal.updated", withdrawalId });
   sendJson(res, 200, await queryOne(`SELECT * FROM reseller_withdrawal_dial_attempts WHERE id=$1`, [req.params.attemptId]));
 });

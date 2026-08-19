@@ -37,6 +37,19 @@ const AMTEL_SMS_SENDER = "913";
 
 before(async () => {
   await query(`DELETE FROM sms_logs`);
+  // Scoped by the fixed HORMUUD_ID/AMTEL_ID, not the freshly-randomized
+  // RESELLER_ID — a prior run's leftover rows (e.g. one left intentionally
+  // 'reserved'/'sent' by design, or a run that crashed mid-test) were
+  // created under a DIFFERENT random reseller_id but the SAME fixed company
+  // ids, so cleaning up only by reseller_id here would leave them behind
+  // and break the `DELETE FROM companies` below (FK violation).
+  await query(`DELETE FROM reseller_withdrawals WHERE company_id IN ($1,$2)`, [HORMUUD_ID, AMTEL_ID]);
+  const priorReseller = await queryOne<{ id: string }>(`SELECT id FROM resellers WHERE reseller_login_id='RSLWDTEST'`);
+  if (priorReseller) {
+    await query(`DELETE FROM reseller_wallet_transactions WHERE reseller_id=$1`, [priorReseller.id]);
+    await query(`DELETE FROM reseller_wallets WHERE reseller_id=$1`, [priorReseller.id]);
+    await query(`DELETE FROM resellers WHERE id=$1`, [priorReseller.id]);
+  }
   await query(`DELETE FROM reseller_withdrawals WHERE reseller_id=$1`, [RESELLER_ID]);
   await query(`DELETE FROM reseller_wallet_transactions WHERE reseller_id=$1`, [RESELLER_ID]);
   await query(`DELETE FROM reseller_wallets WHERE reseller_id=$1`, [RESELLER_ID]);
