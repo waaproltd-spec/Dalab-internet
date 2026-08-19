@@ -83,8 +83,10 @@ resellerDepositsWithdrawalsRouter.post("/reseller/deposits", requireAuth("resell
   sendJson(res, 201, await queryOne(`${DEPOSIT_SELECT} WHERE d.id=$1`, [id]));
 });
 
+// Capped at 100 -- was unbounded; see orders.routes.ts's GET /orders for
+// the same fix and reasoning.
 resellerDepositsWithdrawalsRouter.get("/reseller/deposits", requireAuth("reseller"), async (req, res) => {
-  sendJson(res, 200, await query(`${DEPOSIT_SELECT} WHERE d.reseller_id=$1 ORDER BY d.created_at DESC`, [req.auth!.sub]));
+  sendJson(res, 200, await query(`${DEPOSIT_SELECT} WHERE d.reseller_id=$1 ORDER BY d.created_at DESC LIMIT 100`, [req.auth!.sub]));
 });
 
 resellerDepositsWithdrawalsRouter.get("/reseller/deposits/:id", requireAuth("reseller"), async (req, res) => {
@@ -274,8 +276,10 @@ resellerDepositsWithdrawalsRouter.post("/reseller/withdrawals", requireAuth("res
   }
 });
 
+// Capped at 100 -- was unbounded; see orders.routes.ts's GET /orders for
+// the same fix and reasoning.
 resellerDepositsWithdrawalsRouter.get("/reseller/withdrawals", requireAuth("reseller"), async (req, res) => {
-  sendJson(res, 200, maskWithdrawalsForReseller(await query(`${WITHDRAWAL_SELECT} WHERE w.reseller_id=$1 ORDER BY w.created_at DESC`, [req.auth!.sub])));
+  sendJson(res, 200, maskWithdrawalsForReseller(await query(`${WITHDRAWAL_SELECT} WHERE w.reseller_id=$1 ORDER BY w.created_at DESC LIMIT 100`, [req.auth!.sub])));
 });
 
 resellerDepositsWithdrawalsRouter.get("/reseller/withdrawals/:id", requireAuth("reseller"), async (req, res) => {

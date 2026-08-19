@@ -992,8 +992,10 @@ exchangeRouter.post(
   }
 );
 
+// Capped at 100 -- was unbounded; see orders.routes.ts's GET /orders for
+// the same fix and reasoning.
 exchangeRouter.get("/exchange/orders", requireAuth("customer"), async (req, res) => {
-  sendJson(res, 200, await query(`${EXCHANGE_ORDER_LIST_SELECT} WHERE eo.customer_id=$1 ORDER BY eo.created_at DESC`, [req.auth!.sub]));
+  sendJson(res, 200, await query(`${EXCHANGE_ORDER_LIST_SELECT} WHERE eo.customer_id=$1 ORDER BY eo.created_at DESC LIMIT 100`, [req.auth!.sub]));
 });
 
 exchangeRouter.get("/exchange/orders/:id", requireAuth("customer"), async (req, res) => {

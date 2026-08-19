@@ -61,8 +61,10 @@ resellerOrdersRouter.post("/reseller/orders", requireAuth("reseller"), async (re
   sendJson(res, 201, await queryOne(`${ORDER_LIST_SELECT} WHERE o.id=$1`, [id]));
 });
 
+// Capped at 100 -- was unbounded; see orders.routes.ts's GET /orders for
+// the same fix and reasoning.
 resellerOrdersRouter.get("/reseller/orders", requireAuth("reseller"), async (req, res) => {
-  sendJson(res, 200, await query(`${ORDER_LIST_SELECT} WHERE o.reseller_id=$1 ORDER BY o.created_at DESC`, [req.auth!.sub]));
+  sendJson(res, 200, await query(`${ORDER_LIST_SELECT} WHERE o.reseller_id=$1 ORDER BY o.created_at DESC LIMIT 100`, [req.auth!.sub]));
 });
 
 resellerOrdersRouter.get("/reseller/orders/:id", requireAuth("reseller"), async (req, res) => {

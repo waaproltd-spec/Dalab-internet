@@ -209,11 +209,16 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
   sendJson(res, 201, maskOrder(await loadOrder(id)));
 });
 
+// Capped at 100 -- previously unbounded, so a long-tenured customer's order
+// history grew as a full, ever-larger payload on every single Orders tab
+// open. 100 is already this codebase's own convention for a self-service
+// history list (see e.g. reseller_orders/withdrawals below); a customer
+// essentially never needs more than that in a mobile list.
 ordersRouter.get("/orders", requireAuth("customer"), async (req, res) => {
   const rows = await query(
     `SELECT o.*, co.name AS company_name, p.name AS package_name
      FROM orders o JOIN companies co ON co.id=o.company_id JOIN packages p ON p.id=o.package_id
-     WHERE o.customer_id=$1 ORDER BY o.created_at DESC`,
+     WHERE o.customer_id=$1 ORDER BY o.created_at DESC LIMIT 100`,
     [req.auth!.sub]
   );
   sendJson(res, 200, maskOrders(rows));
