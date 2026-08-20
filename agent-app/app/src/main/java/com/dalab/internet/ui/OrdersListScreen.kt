@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.CurrencyExchange
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SettingsInputAntenna
+import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -41,6 +42,7 @@ import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.ConnectionState
 import com.dalab.internet.notifications.AgentAlertsState
 import com.dalab.internet.service.AgentBackgroundService
+import com.dalab.internet.support.SupportQueueState
 import com.dalab.internet.ussd.SimRoutingRepository
 import com.dalab.internet.ussd.SimSlotResult
 import com.dalab.internet.ussd.UssdOrchestrator
@@ -71,6 +73,7 @@ fun OrdersListScreen(
     onOpenAlerts: () -> Unit = {},
     onOpenWallet: () -> Unit = {},
     onOpenMoneyExchange: () -> Unit = {},
+    onOpenSupport: () -> Unit = {},
 ) {
     val context = LocalContext.current
     var orders by remember { mutableStateOf<List<Order>>(emptyList()) }
@@ -83,6 +86,7 @@ fun OrdersListScreen(
     var resultMessage by remember { mutableStateOf<String?>(null) }
     val connectionState by AgentEventBus.connectionState.collectAsState()
     val unreadAlerts by AgentAlertsState.unreadCount.collectAsState()
+    val waitingSupportCustomers by SupportQueueState.waitingCount.collectAsState()
     val scope = rememberCoroutineScope()
     val orchestrator = remember { UssdOrchestrator(context) }
 
@@ -99,6 +103,15 @@ fun OrdersListScreen(
             try {
                 val notifications = ApiClient.service.getNotifications().body().orEmpty()
                 AgentAlertsState.updateUnreadCount(notifications)
+            } catch (_: Exception) {
+                // Badge just keeps its last known count on failure.
+            }
+            try {
+                // Any agent (online or not) can see how many customers are
+                // waiting -- requireSupportActor() only gates claiming, not
+                // viewing the queue -- so this is safe to fetch unconditionally.
+                val supportQueue = ApiClient.service.getSupportQueue().body().orEmpty()
+                SupportQueueState.update(supportQueue)
             } catch (_: Exception) {
                 // Badge just keeps its last known count on failure.
             }
@@ -177,7 +190,12 @@ fun OrdersListScreen(
                 onOpenAlerts = onOpenAlerts,
             )
 
-            QuickActionsRow(onOpenWallet = onOpenWallet, onOpenMoneyExchange = onOpenMoneyExchange)
+            QuickActionsRow(
+                onOpenWallet = onOpenWallet,
+                onOpenMoneyExchange = onOpenMoneyExchange,
+                onOpenSupport = onOpenSupport,
+                waitingSupportCustomers = waitingSupportCustomers,
+            )
 
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
@@ -360,27 +378,47 @@ private fun NotificationBellButton(unreadCount: Int, onClick: () -> Unit) {
     }
 }
 
-// The two money-facing actions an agent checks constantly but that used to
+// The money-facing actions an agent checks constantly but that used to
 // require a trip into More on every visit — promoted onto Home per the
 // redesign, everything else that's checked far less often (Packages,
-// Device, Diagnostics, ...) stays in More.
+// Device, Diagnostics, ...) stays in More. Agent Support joined this row
+// (rather than staying More-only) specifically so a waiting customer is
+// impossible to miss — its badge is the one thing on Home that demands
+// immediate action, same reasoning as the notification bell up in the
+// header.
 @Composable
-private fun QuickActionsRow(onOpenWallet: () -> Unit, onOpenMoneyExchange: () -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
+private fun QuickActionsRow(
+    onOpenWallet: () -> Unit,
+    onOpenMoneyExchange: () -> Unit,
+    onOpenSupport: () -> Unit,
+    waitingSupportCustomers: Int,
+) {
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+            QuickActionCard(
+                icon = Icons.Filled.AccountBalanceWallet,
+                label = "Wallet",
+                onClick = onOpenWallet,
+                modifier = Modifier.weight(1f),
+            )
+            QuickActionCard(
+                icon = Icons.Filled.CurrencyExchange,
+                label = "Money Exchange",
+                onClick = onOpenMoneyExchange,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        Spacer(Modifier.height(12.dp))
         QuickActionCard(
-            icon = Icons.Filled.AccountBalanceWallet,
-            label = "Wallet",
-            onClick = onOpenWallet,
-            modifier = Modifier.weight(1f),
-        )
-        QuickActionCard(
-            icon = Icons.Filled.CurrencyExchange,
-            label = "Money Exchange",
-            onClick = onOpenMoneyExchange,
-            modifier = Modifier.weight(1f),
+            icon = Icons.Filled.SupportAgent,
+            label = if (waitingSupportCustomers > 0) {
+                "Agent Support — $waitingSupportCustomers waiting"
+            } else {
+                "Agent Support"
+            },
+            onClick = onOpenSupport,
+            modifier = Modifier.fillMaxWidth(),
+            badgeCount = waitingSupportCustomers,
         )
     }
 }
@@ -391,10 +429,11 @@ private fun QuickActionCard(
     label: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    badgeCount: Int = 0,
 ) {
     Surface(
         onClick = onClick,
-        color = MaterialTheme.colorScheme.surfaceVariant,
+        color = if (badgeCount > 0) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceVariant,
         shape = RoundedCornerShape(14.dp),
         modifier = modifier.heightIn(min = 56.dp),
     ) {
@@ -402,7 +441,13 @@ private fun QuickActionCard(
             modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(icon, contentDescription = null, tint = DalabIndigo, modifier = Modifier.size(20.dp))
+            if (badgeCount > 0) {
+                BadgedBox(badge = { Badge(containerColor = Color(0xFFF87171)) { Text(if (badgeCount > 9) "9+" else badgeCount.toString()) } }) {
+                    Icon(icon, contentDescription = null, tint = DalabIndigo, modifier = Modifier.size(20.dp))
+                }
+            } else {
+                Icon(icon, contentDescription = null, tint = DalabIndigo, modifier = Modifier.size(20.dp))
+            }
             Spacer(Modifier.width(10.dp))
             Text(label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
         }

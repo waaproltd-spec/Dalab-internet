@@ -11,6 +11,7 @@ import com.dalab.internet.data.PackageItem
 import com.dalab.internet.data.ResellerWithdrawalPendingPayout
 import com.dalab.internet.data.ResellerWithdrawalSimRoutingEntry
 import com.dalab.internet.data.SmsLogEntry
+import com.dalab.internet.data.SupportConversation
 import com.dalab.internet.data.Transaction
 import com.dalab.internet.data.AgentNotification
 import com.dalab.internet.data.AgentPaymentTransaction
@@ -102,6 +103,14 @@ data class DialAttemptStartResponse(val id: String)
 // "Failed" moments before a later retry might still succeed.
 data class DialAttemptResultRequest(val status: String, val responseMessage: String?, val isFinalAttempt: Boolean = true)
 data class DialAttemptResultResponse(val id: String, val status: String)
+// ---------------- Agent Support ----------------
+
+data class SupportStatusResponse(val online: Boolean, val activeConversationId: String? = null)
+data class SupportStatusUpdateRequest(val online: Boolean)
+data class SupportClaimNextResponse(val claimed: SupportConversation? = null)
+data class SupportSendMessageRequest(val message: String)
+data class SupportEndConversationResponse(val ended: Boolean, val next: SupportConversation? = null)
+
 data class CreateCustomerRequest(val phone: String, val name: String? = null)
 data class CreateSaleRequest(
     val customerPhone: String,
@@ -200,6 +209,39 @@ interface ApiService {
 
     @GET("notifications/campaigns")
     suspend fun getNotificationCampaigns(): Response<List<NotificationCampaign>>
+
+    // ---------------- Agent Support ----------------
+    // Same routes the Admin Dashboard's "Agent Support" panel uses (registered
+    // at both /admin/support/... and /agent/support/... by support.routes.ts's
+    // dual() helper) — any online field agent may claim/handle a conversation,
+    // same as any staff member with the support.manage permission.
+
+    @GET("agent/support/status")
+    suspend fun getSupportStatus(): Response<SupportStatusResponse>
+
+    @PUT("agent/support/status")
+    suspend fun setSupportStatus(@Body body: SupportStatusUpdateRequest): Response<SupportStatusResponse>
+
+    @GET("agent/support/queue")
+    suspend fun getSupportQueue(): Response<List<SupportConversation>>
+
+    @GET("agent/support/conversations/{id}")
+    suspend fun getSupportConversation(@Path("id") id: String): Response<SupportConversation>
+
+    @POST("agent/support/claim-next")
+    suspend fun claimNextSupportConversation(): Response<SupportClaimNextResponse>
+
+    @POST("agent/support/conversations/{id}/claim")
+    suspend fun claimSupportConversation(@Path("id") id: String): Response<SupportConversation>
+
+    @POST("agent/support/conversations/{id}/messages")
+    suspend fun sendSupportMessage(@Path("id") id: String, @Body body: SupportSendMessageRequest): Response<SupportConversation>
+
+    @POST("agent/support/conversations/{id}/resolve")
+    suspend fun resolveSupportConversation(@Path("id") id: String): Response<SupportEndConversationResponse>
+
+    @POST("agent/support/conversations/{id}/close")
+    suspend fun closeSupportConversation(@Path("id") id: String): Response<SupportEndConversationResponse>
 
     @GET("agent/sim-routing")
     suspend fun getSimRouting(@Query("deviceId") deviceId: String? = null): Response<List<SimRoutingEntry>>

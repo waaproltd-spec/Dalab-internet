@@ -135,6 +135,54 @@ data class AgentNotification(
     val sentAt: String,
 )
 
+// ---------------- Agent Support (support.routes.ts, /agent/support/*) ----------------
+// Same support_conversations/support_messages rows the Admin Dashboard's
+// "Agent Support" panel already reads and writes (super-admin-app/src/App.jsx)
+// — a field agent claiming, chatting in, and resolving/closing a conversation
+// here is indistinguishable server-side from a staff member doing the same
+// thing from the dashboard. See serializeConversation() in support.routes.ts
+// for the exact shape; the queue-listing endpoint returns a subset (no
+// queuePosition/customersAhead/agentName/messages), hence all of those being
+// nullable/defaulted here rather than required.
+
+enum class SupportConversationStatus {
+    @SerializedName("queued") QUEUED,
+    @SerializedName("pending") PENDING,
+    @SerializedName("assigned") ASSIGNED,
+    @SerializedName("resolved") RESOLVED,
+    @SerializedName("closed") CLOSED,
+}
+
+data class SupportMessage(
+    val id: String,
+    // "customer" | "agent" | "system"
+    val senderType: String,
+    val body: String,
+    val createdAt: String? = null,
+)
+
+data class SupportConversation(
+    val id: String,
+    val customerId: String? = null,
+    val topic: String,
+    val status: SupportConversationStatus,
+    val agentId: String? = null,
+    val agentRole: String? = null,
+    val agentOfflineAtStart: Boolean = false,
+    val queuePosition: Int? = null,
+    val customersAhead: Int? = null,
+    val agentName: String? = null,
+    val customerName: String? = null,
+    val customerPhone: String? = null,
+    val firstMessage: String? = null,
+    val createdAt: String? = null,
+    val updatedAt: String? = null,
+    val assignedAt: String? = null,
+    val resolvedAt: String? = null,
+    val closedAt: String? = null,
+    val messages: List<SupportMessage> = emptyList(),
+)
+
 /** Mirrors GET /companies (admin-backend-ts, companies.routes.ts) — public, no auth required. */
 data class Company(
     val id: String,

@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Sell
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -66,6 +67,7 @@ import com.dalab.internet.ui.ReliabilityDashboardScreen
 import com.dalab.internet.ui.ReliabilitySetupScreen
 import com.dalab.internet.ui.ReportsScreen
 import com.dalab.internet.ui.SmsPermissionScreen
+import com.dalab.internet.ui.SupportScreen
 import com.dalab.internet.ui.TransactionHistoryScreen
 import com.dalab.internet.ui.WalletDashboardScreen
 import kotlinx.coroutines.launch
@@ -131,7 +133,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, NOTIFICATIONS, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP }
+private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, NOTIFICATIONS, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP, SUPPORT }
 private enum class HomeTab { ORDERS, SALES, CUSTOMERS, REPORTS, MORE }
 
 @Composable
@@ -240,6 +242,7 @@ private fun AgentApp() {
             onOpenNotifications = { screen = Screen.NOTIFICATIONS },
             onOpenAlerts = { screen = Screen.ALERTS },
             onOpenResellerWithdrawalSetup = { screen = Screen.RESELLER_WITHDRAWAL_INTERACTIVE_SETUP },
+            onOpenSupport = { screen = Screen.SUPPORT },
         )
 
         Screen.ORDER_DETAIL -> selectedOrder?.let { order ->
@@ -283,6 +286,8 @@ private fun AgentApp() {
         Screen.ALERTS -> AlertsScreen(onBack = { screen = Screen.HOME })
 
         Screen.RESELLER_WITHDRAWAL_INTERACTIVE_SETUP -> ResellerWithdrawalInteractiveAccessibilitySetupScreen(onBack = { screen = Screen.HOME })
+
+        Screen.SUPPORT -> SupportScreen(onBack = { screen = Screen.HOME })
     }
 }
 
@@ -308,6 +313,7 @@ private fun AgentHome(
     onOpenNotifications: () -> Unit,
     onOpenAlerts: () -> Unit,
     onOpenResellerWithdrawalSetup: () -> Unit,
+    onOpenSupport: () -> Unit,
 ) {
     var tab by remember { mutableStateOf(HomeTab.ORDERS) }
 
@@ -354,6 +360,7 @@ private fun AgentHome(
                     onOpenAlerts = onOpenAlerts,
                     onOpenWallet = onOpenWallet,
                     onOpenMoneyExchange = onOpenMoneyExchange,
+                    onOpenSupport = onOpenSupport,
                 )
                 HomeTab.SALES -> NewSaleScreen()
                 HomeTab.CUSTOMERS -> CustomersScreen()
@@ -369,6 +376,7 @@ private fun AgentHome(
                     onOpenMoneyExchange = onOpenMoneyExchange,
                     onOpenNotifications = onOpenNotifications,
                     onOpenResellerWithdrawalSetup = onOpenResellerWithdrawalSetup,
+                    onOpenSupport = onOpenSupport,
                 )
             }
         }
@@ -393,6 +401,7 @@ private fun MoreScreen(
     onOpenMoneyExchange: () -> Unit,
     onOpenNotifications: () -> Unit,
     onOpenResellerWithdrawalSetup: () -> Unit,
+    onOpenSupport: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         MoreSection(title = "Money") {
@@ -430,6 +439,12 @@ private fun MoreScreen(
             )
         }
         MoreSection(title = "Communication") {
+            MoreItem(
+                title = "Agent Support",
+                subtitle = "Chat with waiting customers — claim, reply, resolve",
+                icon = Icons.Filled.SupportAgent,
+                onClick = onOpenSupport,
+            )
             MoreItem(
                 title = "Customer Broadcast",
                 subtitle = "Send a push notification to customers",
