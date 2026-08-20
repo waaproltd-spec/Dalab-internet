@@ -69,9 +69,13 @@ class SmsReceiver : BroadcastReceiver() {
             return
         }
 
+        // Pulled out of the parse try/catch below — resolveSimSlot never throws
+        // (it has its own internal try/catch) — so it can be reused both for
+        // PaymentSmsParsers.parse's simSlot argument and, further down, for the
+        // Reseller Withdraw upload built from an exchangePayoutSent match.
+        val resolvedSimSlot = resolveSimSlot(context, intent)
         val (parsed, voucherSent, exchangePayoutSent) = try {
-            val simSlot = resolveSimSlot(context, intent)
-            val p = PaymentSmsParsers.parse(sender, body, receivedAt, simSlot)
+            val p = PaymentSmsParsers.parse(sender, body, receivedAt, resolvedSimSlot)
             val v = if (p == null) VoucherSentParsers.parse(sender, body) else null
             val e = if (p == null && v == null) ExchangePayoutSentParsers.parse(sender, body) else null
             Triple(p, v, e)
@@ -156,6 +160,38 @@ class SmsReceiver : BroadcastReceiver() {
                             id = UUID.randomUUID().toString(),
                             type = PendingActionQueue.Type.EXCHANGE_PAYOUT_CONFIRMATION,
                             payload = ExchangePayoutConfirmationAction(exchangePayoutSent),
+                        )
+                    }
+                    // Reseller Withdraw's payout-sent SMS is the exact same
+                    // outgoing shape ("$X ayaad uwareejisay ..."/"Dollar ayad u
+                    // warejisay ...") as a Money Exchange payout confirmation,
+                    // with no parser of its own — this device can't tell which
+                    // one a given SMS confirms without checking in-flight rows,
+                    // and only the backend has those. So this same parsed entry
+                    // is also uploaded through the generic SMS pipeline
+                    // (POST /agent/sms-logs) to give findMatchingResellerWithdrawal
+                    // (resellerSmsMatching.ts) a chance at it — a no-op there
+                    // unless amount+phone+company also match a 'reserved'/'sent'
+                    // withdrawal, so a real Exchange payout is never mistaken
+                    // for a Reseller Withdraw one. This is what lets a Reserved
+                    // withdrawal actually reach Completed and deduct the
+                    // wallet — without this upload, the confirmation SMS was
+                    // only ever reported to the Exchange-only endpoint above
+                    // and reseller_withdrawals had nothing to ever match on.
+                    val withdrawalPayoutEntry = SmsLogEntry(
+                        sender = sender,
+                        body = body,
+                        parsedProvider = exchangePayoutSent.provider,
+                        parsedAmount = exchangePayoutSent.amount,
+                        parsedPhone = exchangePayoutSent.receiverPhone,
+                        receivedAt = receivedAt,
+                        simSlot = resolvedSimSlot,
+                    )
+                    if (SmsUploadFlow.uploadAndProcess(appContext, withdrawalPayoutEntry) is UploadOutcome.RetryableUpload) {
+                        PendingActionQueue.enqueue(
+                            id = UUID.randomUUID().toString(),
+                            type = PendingActionQueue.Type.SMS_UPLOAD,
+                            payload = SmsUploadAction(withdrawalPayoutEntry),
                         )
                     }
                     return@launch

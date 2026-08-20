@@ -138,9 +138,10 @@ resellersRouter.put("/admin/resellers/:id/wallet/adjust", requirePermission("res
 resellersRouter.get("/reseller/companies", requireAuth("reseller"), async (_req, res) => {
   const rows = await query(
     `SELECT c.id, c.name, c.color_hex, c.logo_url, (c.logo_data IS NOT NULL) AS has_logo,
-            cr.rate
+            cr.rate, COALESCE(cm.commission_percentage, 0) AS withdraw_commission_percentage
      FROM companies c
      LEFT JOIN reseller_company_rates cr ON cr.company_id = c.id
+     LEFT JOIN reseller_withdrawal_commission_config cm ON cm.company_id = c.id
      WHERE c.deleted_at IS NULL AND c.status = 'online'
      ORDER BY c.group_number, c.sort_order, c.name`
   );

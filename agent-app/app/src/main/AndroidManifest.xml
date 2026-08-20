@@ -25,6 +25,8 @@
          to keep running unattended in the background, which the payment-monitoring
          service is. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Recording a voice message in Agent Support (SupportScreen). -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:name=".DalabAgentApp"
@@ -91,6 +93,29 @@
             <meta-data
                 android:name="android.accessibilityservice"
                 android:resource="@xml/exchange_accessibility_service_config" />
+        </service>
+
+        <!--
+          Reseller Withdraw's interactive (eDahab-style multi-step) USSD
+          payout engine — reads and drives the native USSD reply dialog (see
+          ResellerWithdrawalInteractiveUssdAccessibilityService). A separate
+          service from ExchangeUssdAccessibilityService above so this new,
+          less-proven eDahab flow can never affect Money Exchange's own
+          working automation, even though both drive the same kind of native
+          USSD reply dialog. The agent must manually enable this via
+          Settings > Accessibility (Android does not allow silently granting
+          it).
+        -->
+        <service
+            android:name=".ussd.ResellerWithdrawalInteractiveUssdAccessibilityService"
+            android:exported="false"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/reseller_withdrawal_interactive_accessibility_service_config" />
         </service>
 
     </application>
