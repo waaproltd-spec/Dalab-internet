@@ -95,6 +95,20 @@ CREATE TABLE IF NOT EXISTS exchange_dial_attempts (
 -- Reuses the existing generic notifications table for "your exchange
 -- completed" messages — same widening pattern 030_feedback.sql already used
 -- for feedback_update.
-ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_type_check;
-ALTER TABLE notifications ADD CONSTRAINT notifications_type_check
-  CHECK (type IN ('push','promotion','maintenance','feedback_update','exchange_update'));
+--
+-- The notifications_type_check constraint itself is intentionally NOT set
+-- here anymore, for the exact reason 030_feedback.sql's own comment already
+-- documents for its own now-removed version of this block: migrate.ts
+-- replays every migration file on every deploy (no tracking table), so this
+-- file must stay safe to re-run indefinitely. This block used to
+-- unconditionally narrow the constraint to
+-- ('push','promotion','maintenance','feedback_update','exchange_update') on
+-- every replay -- fine on a fresh database, but once
+-- 051_notification_campaigns.sql's later, wider constraint (which adds
+-- 'order_update' and 'campaign') has actually been applied and real rows of
+-- those types exist, replaying THIS narrower version first on every
+-- subsequent deploy fails with "check constraint ... is violated by some
+-- row" and blocks every migration after it, forever.
+-- 051_notification_campaigns.sql (which runs after this file, sorted by
+-- filename) is the sole source of truth for this constraint's final,
+-- correct value.
