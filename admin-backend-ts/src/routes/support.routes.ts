@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { Router } from "express";
+import { Request, Response, NextFunction, Router } from "express";
 import { query, queryOne } from "../db/pool.js";
 import { requireAuth } from "../auth/middleware.js";
-import { requirePermission } from "../auth/permissions.js";
 import { rateLimit } from "../auth/rateLimit.js";
 import { sendJson } from "../utils/camelCase.js";
 import { broadcast } from "../realtime/orderEvents.js";
@@ -13,6 +12,61 @@ const OPEN_STATUSES = ["queued", "pending", "assigned"];
 const SUPPORT_TOPICS = ["dalab_internet", "payment_services", "agent_support"];
 
 // ---------------- Shared helpers ----------------
+
+type SupportActorRole = "admin" | "agent";
+interface SupportActor {
+  id: string;
+  role: SupportActorRole;
+}
+
+/** A JWT's `role` claim collapses to exactly two support-handling actor kinds. */
+function actorFromAuth(auth: { sub: string; role: string }): SupportActor {
+  return { id: auth.sub, role: auth.role === "agent" ? "agent" : "admin" };
+}
+
+/**
+ * Gate for every conversation-handling route: Admin Dashboard staff need the
+ * 'support.manage' permission (unchanged from before -- super_admin always
+ * passes, a regular admin needs it granted, checked live against the DB),
+ * OR a native Agent App field agent (the `agents` table, device-based
+ * login) -- any online agent may handle support, the same way any staff
+ * member with the permission could; agents have no individual per-feature
+ * permission toggle the way admin_users.permissions does.
+ */
+function requireSupportActor() {
+  const auth = requireAuth("super_admin", "admin", "agent");
+  return (req: Request, res: Response, next: NextFunction): void => {
+    auth(req, res, async () => {
+      if (req.auth!.role === "agent" || req.auth!.role === "super_admin") return next();
+
+      const admin = await queryOne<{ permissions: string[] }>(
+        `SELECT permissions FROM admin_users WHERE id=$1`,
+        [req.auth!.sub]
+      );
+      if (admin?.permissions?.includes("support.manage")) return next();
+
+      res.status(403).json({ error: "Missing the 'support.manage' permission — ask a Super Admin to grant it." });
+    });
+  };
+}
+
+/**
+ * Registers the exact same handler at both an /admin/support/... path
+ * (Admin Dashboard) and the equivalent /agent/support/... path (Agent App)
+ * -- not a second implementation, literally the same function reference
+ * twice. Express's own path-array overload works fine at runtime, but this
+ * project's installed @types/express doesn't accept it, so two calls it is.
+ */
+function dual(
+  method: "get" | "post" | "put",
+  adminPath: string,
+  agentPath: string,
+  middleware: (req: Request, res: Response, next: NextFunction) => void,
+  handler: (req: Request, res: Response) => void | Promise<void>
+): void {
+  supportRouter[method](adminPath, middleware, handler);
+  supportRouter[method](agentPath, middleware, handler);
+}
 
 /** Position (1-based) among every currently 'queued' conversation, oldest first. Null once no longer queued. */
 async function queuePositionFor(conversationId: string): Promise<number | null> {
@@ -37,8 +91,13 @@ async function serializeConversation(row: any, opts: { includeMessages?: boolean
     out.customersAhead = null;
   }
   if (row.agent_id) {
-    const agent = await queryOne<{ email: string }>(`SELECT email FROM admin_users WHERE id=$1`, [row.agent_id]);
-    out.agentName = agent?.email ?? null;
+    if (row.agent_role === "agent") {
+      const agent = await queryOne<{ name: string }>(`SELECT name FROM agents WHERE id=$1`, [row.agent_id]);
+      out.agentName = agent?.name ?? null;
+    } else {
+      const admin = await queryOne<{ email: string }>(`SELECT email FROM admin_users WHERE id=$1`, [row.agent_id]);
+      out.agentName = admin?.email ?? null;
+    }
   } else {
     out.agentName = null;
   }
@@ -78,14 +137,18 @@ supportRouter.post(
       return sendJson(res, 200, await serializeConversation(existing, { includeMessages: true }));
     }
 
-    // Look for an online agent with nothing currently assigned to them --
-    // if found, the customer skips the queue entirely and connects
-    // immediately. Otherwise: queued (an agent is online, just busy) or
-    // pending (nobody is online at all -- the "leave a message" case).
-    const idleAgent = await queryOne<{ admin_id: string }>(
-      `SELECT s.admin_id FROM support_agent_status s
+    // Look for an online actor (staff or field agent) with nothing
+    // currently assigned to them -- if found, the customer skips the queue
+    // entirely and connects immediately. Otherwise: queued (someone is
+    // online, just busy) or pending (nobody is online at all -- the "leave
+    // a message" case).
+    const idleActor = await queryOne<{ actor_id: string; actor_role: SupportActorRole }>(
+      `SELECT s.admin_id AS actor_id, s.actor_role FROM support_agent_status s
        WHERE s.online = true
-         AND NOT EXISTS (SELECT 1 FROM support_conversations c WHERE c.agent_id = s.admin_id AND c.status = 'assigned')
+         AND NOT EXISTS (
+           SELECT 1 FROM support_conversations c
+           WHERE c.agent_id = s.admin_id AND c.agent_role = s.actor_role AND c.status = 'assigned'
+         )
        ORDER BY s.updated_at ASC
        LIMIT 1`
     );
@@ -94,15 +157,24 @@ supportRouter.post(
     );
     const agentOnline = anyOnline?.exists === true;
 
-    const status = idleAgent ? "assigned" : agentOnline ? "queued" : "pending";
+    const status = idleActor ? "assigned" : agentOnline ? "queued" : "pending";
     const id = randomUUID();
 
     let conversation;
     try {
       const inserted = await query(
-        `INSERT INTO support_conversations (id, customer_id, topic, status, agent_id, agent_offline_at_start, assigned_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-        [id, req.auth!.sub, topic, status, idleAgent?.admin_id ?? null, !agentOnline, status === "assigned" ? new Date() : null]
+        `INSERT INTO support_conversations (id, customer_id, topic, status, agent_id, agent_role, agent_offline_at_start, assigned_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+        [
+          id,
+          req.auth!.sub,
+          topic,
+          status,
+          idleActor?.actor_id ?? null,
+          idleActor?.actor_role ?? null,
+          !agentOnline,
+          status === "assigned" ? new Date() : null,
+        ]
       );
       conversation = inserted[0];
     } catch (err) {
@@ -205,35 +277,46 @@ supportRouter.post("/support/ai-assist", requireAuth("customer"), async (req, re
   sendJson(res, 200, { answered: !!match, answer: match?.answer ?? null });
 });
 
-// ---------------- Agent-facing (Admin Dashboard) ----------------
+// ---------------- Agent-facing (Admin Dashboard AND Agent App) ----------------
+// Every route below is reachable at both an /admin/support/... path (Admin
+// Dashboard, kept for backward compatibility with the existing web UI) and
+// the equivalent /agent/support/... path (native Agent App), registered as
+// one array of paths pointing at the exact same handler -- not a second
+// implementation, the same code, same queue, same data. requireSupportActor()
+// is what actually decides who's allowed through either path.
 
-supportRouter.get("/admin/support/status", requirePermission("support.manage"), async (req, res) => {
-  const status = await queryOne<{ online: boolean }>(`SELECT online FROM support_agent_status WHERE admin_id=$1`, [
-    req.auth!.sub,
-  ]);
-  const active = await queryOne(`SELECT id FROM support_conversations WHERE agent_id=$1 AND status='assigned'`, [
-    req.auth!.sub,
-  ]);
+dual("get", "/admin/support/status", "/agent/support/status", requireSupportActor(), async (req, res) => {
+  const actor = actorFromAuth(req.auth!);
+  const status = await queryOne<{ online: boolean }>(
+    `SELECT online FROM support_agent_status WHERE admin_id=$1 AND actor_role=$2`,
+    [actor.id, actor.role]
+  );
+  const active = await queryOne(
+    `SELECT id FROM support_conversations WHERE agent_id=$1 AND agent_role=$2 AND status='assigned'`,
+    [actor.id, actor.role]
+  );
   sendJson(res, 200, { online: status?.online ?? false, activeConversationId: active?.id ?? null });
 });
 
-supportRouter.put("/admin/support/status", requirePermission("support.manage"), async (req, res) => {
+dual("put", "/admin/support/status", "/agent/support/status", requireSupportActor(), async (req, res) => {
+  const actor = actorFromAuth(req.auth!);
   const online = Boolean(req.body.online);
   await query(
-    `INSERT INTO support_agent_status (admin_id, online, updated_at) VALUES ($1,$2,now())
-     ON CONFLICT (admin_id) DO UPDATE SET online=$2, updated_at=now()`,
-    [req.auth!.sub, online]
+    `INSERT INTO support_agent_status (admin_id, actor_role, online, updated_at) VALUES ($1,$2,$3,now())
+     ON CONFLICT (admin_id) DO UPDATE SET online=$3, actor_role=$2, updated_at=now()`,
+    [actor.id, actor.role, online]
   );
 
   if (!online) {
     // Never drop the conversation -- free it back into the assignable pool
     // (queued/pending, whichever the next claim-next call would prefer is
     // irrelevant: both are eligible) so the next available agent picks it
-    // up, all messages intact.
+    // up, all messages intact. Same behavior regardless of whether it was a
+    // staff member or a field agent who went offline.
     const reassigned = await query<{ id: string }>(
-      `UPDATE support_conversations SET status='pending', agent_id=NULL, updated_at=now()
-       WHERE agent_id=$1 AND status='assigned' RETURNING id`,
-      [req.auth!.sub]
+      `UPDATE support_conversations SET status='pending', agent_id=NULL, agent_role=NULL, updated_at=now()
+       WHERE agent_id=$1 AND agent_role=$2 AND status='assigned' RETURNING id`,
+      [actor.id, actor.role]
     );
     for (const row of reassigned) {
       await query(`INSERT INTO support_messages (id, conversation_id, sender_type, body) VALUES ($1,$2,'system',$3)`, [
@@ -248,7 +331,7 @@ supportRouter.put("/admin/support/status", requirePermission("support.manage"), 
   sendJson(res, 200, { online });
 });
 
-supportRouter.get("/admin/support/queue", requirePermission("support.manage"), async (req, res) => {
+dual("get", "/admin/support/queue", "/agent/support/queue", requireSupportActor(), async (req, res) => {
   const rows = await query(
     `SELECT c.*, cu.name AS customer_name, cu.phone AS customer_phone,
             (SELECT body FROM support_messages m WHERE m.conversation_id=c.id ORDER BY m.created_at ASC LIMIT 1) AS first_message
@@ -260,7 +343,7 @@ supportRouter.get("/admin/support/queue", requirePermission("support.manage"), a
   sendJson(res, 200, rows);
 });
 
-supportRouter.get("/admin/support/conversations/:id", requirePermission("support.manage"), async (req, res) => {
+dual("get", "/admin/support/conversations/:id", "/agent/support/conversations/:id", requireSupportActor(), async (req, res) => {
   const conversation = await queryOne(
     `SELECT c.*, cu.name AS customer_name, cu.phone AS customer_phone
      FROM support_conversations c JOIN customers cu ON cu.id = c.customer_id
@@ -274,11 +357,11 @@ supportRouter.get("/admin/support/conversations/:id", requirePermission("support
 // The single atomic "give me the oldest waiting customer" claim -- same
 // FOR UPDATE SKIP LOCKED-on-the-candidate-row idiom used for every other
 // work queue in this codebase (see smsLogs/resellerSmsMatching/orders
-// matching), so two agents hitting this at the same instant can never both
-// walk away with the same customer.
-async function claimNextForAgent(adminId: string) {
+// matching), so two actors (staff or field agents, any mix) hitting this at
+// the same instant can never both walk away with the same customer.
+async function claimNextForAgent(actor: SupportActor) {
   return queryOne(
-    `UPDATE support_conversations SET status='assigned', agent_id=$1, assigned_at=now(), updated_at=now()
+    `UPDATE support_conversations SET status='assigned', agent_id=$1, agent_role=$2, assigned_at=now(), updated_at=now()
      WHERE id = (
        SELECT id FROM support_conversations
        WHERE status IN ('queued','pending')
@@ -287,118 +370,150 @@ async function claimNextForAgent(adminId: string) {
        LIMIT 1
      )
      RETURNING *`,
-    [adminId]
+    [actor.id, actor.role]
   );
 }
 
-supportRouter.post("/admin/support/claim-next", requirePermission("support.manage"), async (req, res) => {
-  const status = await queryOne<{ online: boolean }>(`SELECT online FROM support_agent_status WHERE admin_id=$1`, [
-    req.auth!.sub,
-  ]);
+dual("post", "/admin/support/claim-next", "/agent/support/claim-next", requireSupportActor(), async (req, res) => {
+  const actor = actorFromAuth(req.auth!);
+  const status = await queryOne<{ online: boolean }>(
+    `SELECT online FROM support_agent_status WHERE admin_id=$1 AND actor_role=$2`,
+    [actor.id, actor.role]
+  );
   if (!status?.online) return sendJson(res, 409, { error: "Go online before claiming a conversation" });
 
-  const alreadyActive = await queryOne(`SELECT id FROM support_conversations WHERE agent_id=$1 AND status='assigned'`, [
-    req.auth!.sub,
-  ]);
+  const alreadyActive = await queryOne(
+    `SELECT id FROM support_conversations WHERE agent_id=$1 AND agent_role=$2 AND status='assigned'`,
+    [actor.id, actor.role]
+  );
   if (alreadyActive) return sendJson(res, 409, { error: "Finish your current conversation first" });
 
-  const claimed = await claimNextForAgent(req.auth!.sub);
+  const claimed = await claimNextForAgent(actor);
   if (!claimed) return sendJson(res, 200, { claimed: null });
 
   broadcast({ type: "support_conversation.updated", conversationId: claimed.id });
   sendJson(res, 200, { claimed: await serializeConversation(claimed, { includeMessages: true }) });
 });
 
-// Claim one specific waiting conversation (the dashboard lets an agent pick
-// a particular customer out of the list, not just always take the oldest).
-supportRouter.post("/admin/support/conversations/:id/claim", requirePermission("support.manage"), async (req, res) => {
-  const status = await queryOne<{ online: boolean }>(`SELECT online FROM support_agent_status WHERE admin_id=$1`, [
-    req.auth!.sub,
-  ]);
-  if (!status?.online) return sendJson(res, 409, { error: "Go online before claiming a conversation" });
+// Claim one specific waiting conversation (lets an agent pick a particular
+// customer out of the list, not just always take the oldest).
+dual(
+  "post",
+  "/admin/support/conversations/:id/claim",
+  "/agent/support/conversations/:id/claim",
+  requireSupportActor(),
+  async (req, res) => {
+    const actor = actorFromAuth(req.auth!);
+    const status = await queryOne<{ online: boolean }>(
+      `SELECT online FROM support_agent_status WHERE admin_id=$1 AND actor_role=$2`,
+      [actor.id, actor.role]
+    );
+    if (!status?.online) return sendJson(res, 409, { error: "Go online before claiming a conversation" });
 
-  const alreadyActive = await queryOne(`SELECT id FROM support_conversations WHERE agent_id=$1 AND status='assigned'`, [
-    req.auth!.sub,
-  ]);
-  if (alreadyActive) return sendJson(res, 409, { error: "Finish your current conversation first" });
+    const alreadyActive = await queryOne(
+      `SELECT id FROM support_conversations WHERE agent_id=$1 AND agent_role=$2 AND status='assigned'`,
+      [actor.id, actor.role]
+    );
+    if (alreadyActive) return sendJson(res, 409, { error: "Finish your current conversation first" });
 
-  const claimed = await queryOne(
-    `UPDATE support_conversations SET status='assigned', agent_id=$1, assigned_at=now(), updated_at=now()
-     WHERE id=$2 AND status IN ('queued','pending') RETURNING *`,
-    [req.auth!.sub, req.params.id]
-  );
-  if (!claimed) return sendJson(res, 409, { error: "This conversation was already claimed or is no longer waiting" });
+    const claimed = await queryOne(
+      `UPDATE support_conversations SET status='assigned', agent_id=$1, agent_role=$2, assigned_at=now(), updated_at=now()
+       WHERE id=$3 AND status IN ('queued','pending') RETURNING *`,
+      [actor.id, actor.role, req.params.id]
+    );
+    if (!claimed) return sendJson(res, 409, { error: "This conversation was already claimed or is no longer waiting" });
 
-  broadcast({ type: "support_conversation.updated", conversationId: claimed.id });
-  sendJson(res, 200, await serializeConversation(claimed, { includeMessages: true }));
-});
-
-supportRouter.post("/admin/support/conversations/:id/messages", requirePermission("support.manage"), async (req, res) => {
-  const body = String(req.body.message ?? "").trim();
-  if (!body) return sendJson(res, 400, { error: "Message cannot be empty" });
-
-  const conversation = await queryOne(`SELECT * FROM support_conversations WHERE id=$1`, [req.params.id]);
-  if (!conversation) return sendJson(res, 404, { error: "Conversation not found" });
-  if (conversation.agent_id !== req.auth!.sub) {
-    return sendJson(res, 403, { error: "This conversation is assigned to a different agent" });
+    broadcast({ type: "support_conversation.updated", conversationId: claimed.id });
+    sendJson(res, 200, await serializeConversation(claimed, { includeMessages: true }));
   }
-  if (conversation.status !== "assigned") {
-    return sendJson(res, 409, { error: "This conversation is not active" });
+);
+
+dual(
+  "post",
+  "/admin/support/conversations/:id/messages",
+  "/agent/support/conversations/:id/messages",
+  requireSupportActor(),
+  async (req, res) => {
+    const actor = actorFromAuth(req.auth!);
+    const body = String(req.body.message ?? "").trim();
+    if (!body) return sendJson(res, 400, { error: "Message cannot be empty" });
+
+    const conversation = await queryOne(`SELECT * FROM support_conversations WHERE id=$1`, [req.params.id]);
+    if (!conversation) return sendJson(res, 404, { error: "Conversation not found" });
+    if (conversation.agent_id !== actor.id || conversation.agent_role !== actor.role) {
+      return sendJson(res, 403, { error: "This conversation is assigned to a different agent" });
+    }
+    if (conversation.status !== "assigned") {
+      return sendJson(res, 409, { error: "This conversation is not active" });
+    }
+
+    await query(
+      `INSERT INTO support_messages (id, conversation_id, sender_type, sender_admin_id, sender_role, body)
+       VALUES ($1,$2,'agent',$3,$4,$5)`,
+      [randomUUID(), req.params.id, actor.id, actor.role, body]
+    );
+    await query(`UPDATE support_conversations SET updated_at=now() WHERE id=$1`, [req.params.id]);
+
+    broadcast({ type: "support_conversation.updated", conversationId: req.params.id });
+    sendJson(res, 201, await serializeConversation(conversation, { includeMessages: true }));
   }
-
-  await query(
-    `INSERT INTO support_messages (id, conversation_id, sender_type, sender_admin_id, body) VALUES ($1,$2,'agent',$3,$4)`,
-    [randomUUID(), req.params.id, req.auth!.sub, body]
-  );
-  await query(`UPDATE support_conversations SET updated_at=now() WHERE id=$1`, [req.params.id]);
-
-  broadcast({ type: "support_conversation.updated", conversationId: req.params.id });
-  sendJson(res, 201, await serializeConversation(conversation, { includeMessages: true }));
-});
+);
 
 /**
- * Shared by /resolve and /close: ends the agent's current conversation, then
+ * Shared by /resolve and /close: ends the actor's current conversation, then
  * immediately tries to hand them the next oldest waiting one — "when the
  * agent finishes, the next waiting customer should automatically become
  * available" (spec), done server-side rather than requiring a separate
- * manual claim from the dashboard.
+ * manual claim.
  */
 async function endConversationAndAutoClaim(
   id: string,
-  adminId: string,
+  actor: SupportActor,
   finalStatus: "resolved" | "closed"
 ): Promise<{ ok: true; next: any } | { ok: false }> {
   const timestampColumn = finalStatus === "resolved" ? "resolved_at" : "closed_at";
   const ended = await queryOne(
     `UPDATE support_conversations SET status=$1, ${timestampColumn}=now(), updated_at=now()
-     WHERE id=$2 AND agent_id=$3 AND status='assigned' RETURNING id`,
-    [finalStatus, id, adminId]
+     WHERE id=$2 AND agent_id=$3 AND agent_role=$4 AND status='assigned' RETURNING id`,
+    [finalStatus, id, actor.id, actor.role]
   );
   if (!ended) return { ok: false };
   broadcast({ type: "support_conversation.updated", conversationId: id });
 
-  const next = await claimNextForAgent(adminId);
+  const next = await claimNextForAgent(actor);
   if (next) broadcast({ type: "support_conversation.updated", conversationId: next.id });
   return { ok: true, next };
 }
 
-supportRouter.post("/admin/support/conversations/:id/resolve", requirePermission("support.manage"), async (req, res) => {
-  const result = await endConversationAndAutoClaim(req.params.id, req.auth!.sub, "resolved");
-  if (!result.ok) return sendJson(res, 409, { error: "Conversation not found, not yours, or not active" });
-  sendJson(res, 200, {
-    ended: true,
-    next: result.next ? await serializeConversation(result.next, { includeMessages: true }) : null,
-  });
-});
+dual(
+  "post",
+  "/admin/support/conversations/:id/resolve",
+  "/agent/support/conversations/:id/resolve",
+  requireSupportActor(),
+  async (req, res) => {
+    const result = await endConversationAndAutoClaim(req.params.id, actorFromAuth(req.auth!), "resolved");
+    if (!result.ok) return sendJson(res, 409, { error: "Conversation not found, not yours, or not active" });
+    sendJson(res, 200, {
+      ended: true,
+      next: result.next ? await serializeConversation(result.next, { includeMessages: true }) : null,
+    });
+  }
+);
 
-supportRouter.post("/admin/support/conversations/:id/close", requirePermission("support.manage"), async (req, res) => {
-  const result = await endConversationAndAutoClaim(req.params.id, req.auth!.sub, "closed");
-  if (!result.ok) return sendJson(res, 409, { error: "Conversation not found, not yours, or not active" });
-  sendJson(res, 200, {
-    ended: true,
-    next: result.next ? await serializeConversation(result.next, { includeMessages: true }) : null,
-  });
-});
+dual(
+  "post",
+  "/admin/support/conversations/:id/close",
+  "/agent/support/conversations/:id/close",
+  requireSupportActor(),
+  async (req, res) => {
+    const result = await endConversationAndAutoClaim(req.params.id, actorFromAuth(req.auth!), "closed");
+    if (!result.ok) return sendJson(res, 409, { error: "Conversation not found, not yours, or not active" });
+    sendJson(res, 200, {
+      ended: true,
+      next: result.next ? await serializeConversation(result.next, { includeMessages: true }) : null,
+    });
+  }
+);
 
 // ---------------- 1-hour waiting-queue timeout sweep ----------------
 // A 'queued' conversation (live position shown to the customer) that ages
