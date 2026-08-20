@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.BrokenImage
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicNone
@@ -111,6 +112,11 @@ fun SupportScreen(onBack: () -> Unit) {
     var recordingSeconds by remember { mutableIntStateOf(0) }
     var playingMessageId by remember { mutableStateOf<String?>(null) }
     var loadingAudioId by remember { mutableStateOf<String?>(null) }
+    var voicePositionMs by remember { mutableIntStateOf(0) }
+    // Keyed by message id so a duration learned once (on first play) survives
+    // recomposition -- MediaPlayer only reports it once prepare() finishes,
+    // there's no server-side duration field to read up front.
+    val voiceDurationsMs = remember { mutableStateMapOf<String, Int>() }
     val scope = rememberCoroutineScope()
 
     val recorderHolder = remember { MediaRecorderHolder(context) }
@@ -300,6 +306,7 @@ fun SupportScreen(onBack: () -> Unit) {
             player.stop()
             player.reset()
             playingMessageId = null
+            voicePositionMs = 0
             return
         }
         loadingAudioId = message.id
@@ -324,14 +331,33 @@ fun SupportScreen(onBack: () -> Unit) {
                 player.setDataSource(tempFile.absolutePath)
                 player.setOnCompletionListener {
                     playingMessageId = null
+                    voicePositionMs = 0
                 }
                 player.prepare()
+                voiceDurationsMs[message.id] = player.duration
+                voicePositionMs = 0
                 player.start()
                 playingMessageId = message.id
             } catch (e: Exception) {
                 error = "Couldn't play voice message: ${e.message ?: "unknown error"}"
             }
             loadingAudioId = null
+        }
+    }
+
+    // Polls MediaPlayer's own position while something is playing --
+    // MediaPlayer has no position-changed callback, unlike audioplayers on
+    // the Customer App side, so this is the Android-native equivalent of
+    // that stream.
+    LaunchedEffect(playingMessageId) {
+        while (playingMessageId != null) {
+            kotlinx.coroutines.delay(200)
+            try {
+                if (player.isPlaying) voicePositionMs = player.currentPosition
+            } catch (e: IllegalStateException) {
+                // Player was reset/released concurrently -- next tick (or
+                // the loop's own exit once playingMessageId clears) recovers.
+            }
         }
     }
 
@@ -406,6 +432,8 @@ fun SupportScreen(onBack: () -> Unit) {
                     recordingSeconds = recordingSeconds,
                     playingMessageId = playingMessageId,
                     loadingAudioId = loadingAudioId,
+                    voicePositionMs = voicePositionMs,
+                    voiceDurationsMs = voiceDurationsMs,
                     onPickImage = {
                         imagePickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                     },
@@ -601,6 +629,8 @@ private fun SupportConversationView(
     recordingSeconds: Int,
     playingMessageId: String?,
     loadingAudioId: String?,
+    voicePositionMs: Int,
+    voiceDurationsMs: Map<String, Int>,
     onPickImage: () -> Unit,
     onToggleRecording: () -> Unit,
     onCancelRecording: () -> Unit,
@@ -629,6 +659,7 @@ private fun SupportConversationView(
                 itemsIndexed(messages.asReversed()) { reversedIndex, message ->
                     val realIndex = messages.size - 1 - reversedIndex
                     val previous = if (realIndex > 0) messages[realIndex - 1] else null
+                    val next = if (realIndex < messages.size - 1) messages[realIndex + 1] else null
                     // reverseLayout only reverses which slot sits at the
                     // bottom overall -- content *within* one item's own
                     // lambda still stacks top-to-bottom normally, so the
@@ -637,10 +668,17 @@ private fun SupportConversationView(
                     if (shouldShowDateSeparator(previous, message)) {
                         DateSeparator(message.createdAt)
                     }
+                    val isFirstInGroup = shouldShowDateSeparator(previous, message) || !isSameGroup(previous, message)
+                    val isLastInGroup = shouldShowDateSeparator(message, next) || !isSameGroup(message, next)
+                    val isPlaying = playingMessageId == message.id
                     MessageBubble(
                         message = message,
-                        isPlaying = playingMessageId == message.id,
+                        isFirstInGroup = isFirstInGroup,
+                        isLastInGroup = isLastInGroup,
+                        isPlaying = isPlaying,
                         isLoadingAudio = loadingAudioId == message.id,
+                        voicePositionMs = if (isPlaying) voicePositionMs else 0,
+                        voiceDurationMs = voiceDurationsMs[message.id],
                         onPlayVoice = { onPlayVoice(message) },
                     )
                 }
@@ -744,13 +782,29 @@ private fun RecordingBar(seconds: Int, onCancel: () -> Unit, onSend: () -> Unit)
     }
 }
 
-private fun shouldShowDateSeparator(previous: SupportMessage?, current: SupportMessage): Boolean {
+private fun shouldShowDateSeparator(previous: SupportMessage?, current: SupportMessage?): Boolean {
+    if (current == null) return false
     val currentDate = parseApiDate(current.createdAt) ?: return previous == null
     val previousDate = previous?.createdAt?.let { parseApiDate(it) } ?: return true
     val cal1 = Calendar.getInstance().apply { time = currentDate }
     val cal2 = Calendar.getInstance().apply { time = previousDate }
     return cal1.get(Calendar.YEAR) != cal2.get(Calendar.YEAR) ||
         cal1.get(Calendar.DAY_OF_YEAR) != cal2.get(Calendar.DAY_OF_YEAR)
+}
+
+/**
+ * Whether [a] and [b] should render as one visually "stacked" group -- same
+ * sender, back to back, within a few minutes of each other. Purely a display
+ * grouping (collapses repeated avatars, tightens spacing, like WhatsApp/
+ * Telegram) -- never changes what's sent/stored.
+ */
+private fun isSameGroup(a: SupportMessage?, b: SupportMessage?): Boolean {
+    if (a == null || b == null) return false
+    if (a.senderType == "system" || b.senderType == "system") return false
+    if (a.senderType != b.senderType) return false
+    val at = parseApiDate(a.createdAt) ?: return false
+    val bt = parseApiDate(b.createdAt) ?: return false
+    return kotlin.math.abs(bt.time - at.time) <= 3 * 60 * 1000L
 }
 
 @Composable
@@ -784,8 +838,12 @@ private fun DateSeparator(createdAt: String?) {
 @Composable
 private fun MessageBubble(
     message: SupportMessage,
+    isFirstInGroup: Boolean,
+    isLastInGroup: Boolean,
     isPlaying: Boolean,
     isLoadingAudio: Boolean,
+    voicePositionMs: Int,
+    voiceDurationMs: Int?,
     onPlayVoice: () -> Unit,
 ) {
     if (message.senderType == "system") {
@@ -808,45 +866,64 @@ private fun MessageBubble(
     val bubbleColor = if (isMe) ChatIndigo else MaterialTheme.colorScheme.surface
     val textColor = if (isMe) Color.White else MaterialTheme.colorScheme.onSurface
     val timeColor = if (isMe) Color.White.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant
+    // The "connecting" side (right for me, left for the customer) loses its
+    // rounding between grouped messages so consecutive bubbles read as one
+    // stacked block, like WhatsApp/Telegram -- the far side always stays
+    // fully rounded so the group still reads as chat bubbles, not a card.
+    val topConnecting = if (isFirstInGroup) 14.dp else 4.dp
+    val bottomConnecting = 4.dp
 
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        modifier = Modifier.fillMaxWidth().padding(top = if (isFirstInGroup) 10.dp else 2.dp, bottom = 2.dp),
         horizontalArrangement = if (isMe) Arrangement.End else Arrangement.Start,
         verticalAlignment = Alignment.Bottom,
     ) {
         if (!isMe) {
-            Box(
-                modifier = Modifier.size(28.dp).background(MaterialTheme.colorScheme.surfaceVariant, CircleShape),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(Icons.Filled.SupportAgent, contentDescription = null, modifier = Modifier.size(16.dp), tint = ChatIndigo)
+            if (isLastInGroup) {
+                Box(
+                    modifier = Modifier.size(28.dp).background(MaterialTheme.colorScheme.surfaceVariant, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Filled.SupportAgent, contentDescription = null, modifier = Modifier.size(16.dp), tint = ChatIndigo)
+                }
+            } else {
+                Spacer(Modifier.size(28.dp))
             }
             Spacer(Modifier.width(6.dp))
         }
         Surface(
             color = bubbleColor,
             shape = RoundedCornerShape(
-                topStart = 14.dp,
-                topEnd = 14.dp,
-                bottomStart = if (isMe) 14.dp else 4.dp,
-                bottomEnd = if (isMe) 4.dp else 14.dp,
+                topStart = if (isMe) 14.dp else topConnecting,
+                topEnd = if (isMe) topConnecting else 14.dp,
+                bottomStart = if (isMe) 14.dp else bottomConnecting,
+                bottomEnd = if (isMe) bottomConnecting else 14.dp,
             ),
             modifier = Modifier.widthIn(max = 280.dp),
         ) {
             when (message.messageType) {
-                "image" -> ImageBubbleContent(message = message, timeLabel = timeLabel)
+                "image" -> ImageBubbleContent(message = message, timeLabel = timeLabel, isMe = isMe)
                 "voice" -> VoiceBubbleContent(
                     textColor = textColor,
                     timeColor = timeColor,
                     timeLabel = timeLabel,
+                    isMe = isMe,
                     isPlaying = isPlaying,
                     isLoading = isLoadingAudio,
+                    positionMs = voicePositionMs,
+                    durationMs = voiceDurationMs,
                     onTap = onPlayVoice,
                 )
                 else -> Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                     Text(message.body ?: "", color = textColor, style = MaterialTheme.typography.bodyMedium)
                     Spacer(Modifier.height(3.dp))
-                    Text(timeLabel, color = timeColor, style = MaterialTheme.typography.labelSmall)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(timeLabel, color = timeColor, style = MaterialTheme.typography.labelSmall)
+                        if (isMe) {
+                            Spacer(Modifier.width(3.dp))
+                            Icon(Icons.Filled.Done, contentDescription = null, tint = timeColor, modifier = Modifier.size(13.dp))
+                        }
+                    }
                 }
             }
         }
@@ -854,7 +931,7 @@ private fun MessageBubble(
 }
 
 @Composable
-private fun ImageBubbleContent(message: SupportMessage, timeLabel: String) {
+private fun ImageBubbleContent(message: SupportMessage, timeLabel: String, isMe: Boolean) {
     var bitmap by remember(message.id) { mutableStateOf<ImageBitmap?>(null) }
     var failed by remember(message.id) { mutableStateOf(false) }
 
@@ -897,9 +974,25 @@ private fun ImageBubbleContent(message: SupportMessage, timeLabel: String) {
             shape = RoundedCornerShape(6.dp),
             modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp),
         ) {
-            Text(timeLabel, color = Color.White, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+            ) {
+                Text(timeLabel, color = Color.White, style = MaterialTheme.typography.labelSmall)
+                if (isMe) {
+                    Spacer(Modifier.width(3.dp))
+                    Icon(Icons.Filled.Done, contentDescription = null, tint = Color.White, modifier = Modifier.size(12.dp))
+                }
+            }
         }
     }
+}
+
+private fun formatMs(ms: Int): String {
+    val totalSeconds = ms / 1000
+    val m = totalSeconds / 60
+    val s = totalSeconds % 60
+    return "%d:%02d".format(m, s)
 }
 
 @Composable
@@ -907,11 +1000,27 @@ private fun VoiceBubbleContent(
     textColor: Color,
     timeColor: Color,
     timeLabel: String,
+    isMe: Boolean,
     isPlaying: Boolean,
     isLoading: Boolean,
+    // Only meaningful while isPlaying -- live playback position.
+    positionMs: Int,
+    // Learned from the file itself on first play (see playVoice); null
+    // until then, in which case we show the mic icon alone rather than a
+    // fake 0:00.
+    durationMs: Int?,
     onTap: () -> Unit,
 ) {
-    Column(modifier = Modifier.width(190.dp).padding(horizontal = 12.dp, vertical = 10.dp)) {
+    val progress = if (isPlaying && durationMs != null && durationMs > 0) {
+        (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+    } else 0f
+    val durationLabel = if (isPlaying) {
+        "${formatMs(positionMs)} / ${durationMs?.let { formatMs(it) } ?: "--:--"}"
+    } else {
+        durationMs?.let { formatMs(it) }
+    }
+
+    Column(modifier = Modifier.width(200.dp).padding(horizontal = 12.dp, vertical = 10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 modifier = Modifier.size(30.dp).clickable(enabled = !isLoading, onClick = onTap),
@@ -929,11 +1038,30 @@ private fun VoiceBubbleContent(
                 }
             }
             Spacer(Modifier.width(8.dp))
-            Box(modifier = Modifier.weight(1f).height(3.dp).background(textColor.copy(alpha = 0.35f), RoundedCornerShape(2.dp)))
+            Box(modifier = Modifier.weight(1f).height(3.dp)) {
+                Box(
+                    modifier = Modifier.fillMaxWidth().height(3.dp)
+                        .background(textColor.copy(alpha = 0.3f), RoundedCornerShape(2.dp)),
+                )
+                Box(
+                    modifier = Modifier.fillMaxWidth(progress).height(3.dp)
+                        .background(textColor, RoundedCornerShape(2.dp)),
+                )
+            }
             Spacer(Modifier.width(8.dp))
             Icon(Icons.Filled.Mic, contentDescription = null, tint = textColor.copy(alpha = 0.7f), modifier = Modifier.size(15.dp))
         }
         Spacer(Modifier.height(3.dp))
-        Text(timeLabel, color = timeColor, style = MaterialTheme.typography.labelSmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (durationLabel != null) {
+                Text(durationLabel, color = timeColor, style = MaterialTheme.typography.labelSmall)
+                Spacer(Modifier.width(6.dp))
+            }
+            Text(timeLabel, color = timeColor, style = MaterialTheme.typography.labelSmall)
+            if (isMe) {
+                Spacer(Modifier.width(3.dp))
+                Icon(Icons.Filled.Done, contentDescription = null, tint = timeColor, modifier = Modifier.size(13.dp))
+            }
+        }
     }
 }
