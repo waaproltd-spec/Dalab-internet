@@ -5,6 +5,7 @@ import { requireAuth } from "../auth/middleware.js";
 import { rateLimit } from "../auth/rateLimit.js";
 import { sendJson } from "../utils/camelCase.js";
 import { broadcast } from "../realtime/orderEvents.js";
+import { parseDataUri } from "../utils/dataUri.js";
 
 export const supportRouter = Router();
 
@@ -33,18 +34,17 @@ function actorFromAuth(auth: { sub: string; role: string }): SupportActor {
  * member with the permission could; agents have no individual per-feature
  * permission toggle the way admin_users.permissions does.
  */
+async function adminHasSupportManage(adminId: string): Promise<boolean> {
+  const admin = await queryOne<{ permissions: string[] }>(`SELECT permissions FROM admin_users WHERE id=$1`, [adminId]);
+  return admin?.permissions?.includes("support.manage") === true;
+}
+
 function requireSupportActor() {
   const auth = requireAuth("super_admin", "admin", "agent");
   return (req: Request, res: Response, next: NextFunction): void => {
     auth(req, res, async () => {
       if (req.auth!.role === "agent" || req.auth!.role === "super_admin") return next();
-
-      const admin = await queryOne<{ permissions: string[] }>(
-        `SELECT permissions FROM admin_users WHERE id=$1`,
-        [req.auth!.sub]
-      );
-      if (admin?.permissions?.includes("support.manage")) return next();
-
+      if (await adminHasSupportManage(req.auth!.sub)) return next();
       res.status(403).json({ error: "Missing the 'support.manage' permission — ask a Super Admin to grant it." });
     });
   };
@@ -102,12 +102,67 @@ async function serializeConversation(row: any, opts: { includeMessages?: boolean
     out.agentName = null;
   }
   if (opts.includeMessages) {
-    out.messages = await query(
-      `SELECT id, sender_type, body, created_at FROM support_messages WHERE conversation_id=$1 ORDER BY created_at ASC`,
+    // media_data (BYTEA) is deliberately never selected here — same pattern
+    // promo_images uses — it's only ever read by GET /support/messages/:id/media,
+    // served raw rather than through sendJson. media_url is what a client
+    // actually fetches for an image/voice message; null for plain text.
+    const rows = await query<{
+      id: string;
+      sender_type: string;
+      message_type: string;
+      body: string | null;
+      media_mime_type: string | null;
+      created_at: string;
+    }>(
+      `SELECT id, sender_type, message_type, body, media_mime_type, created_at
+       FROM support_messages WHERE conversation_id=$1 ORDER BY created_at ASC`,
       [row.id]
     );
+    out.messages = rows.map((m) => ({
+      ...m,
+      media_url: m.message_type === "text" ? null : `/support/messages/${m.id}/media`,
+    }));
   }
   return out;
+}
+
+type SupportMessageType = "text" | "image" | "voice";
+const SUPPORT_MESSAGE_TYPES: SupportMessageType[] = ["text", "image", "voice"];
+
+/**
+ * Validates and normalizes a message-send request body into what
+ * INSERT INTO support_messages actually needs, shared by both the
+ * customer-facing and agent-facing message endpoints so the text/image/voice
+ * validation lives in exactly one place. `messageType` defaults to "text"
+ * (every pre-existing caller/client only ever sent a plain body, so this
+ * keeps them working unchanged); "image"/"voice" require `mediaBase64` as a
+ * data:<mime>;base64,<data> string instead of a body.
+ */
+function composeMessage(
+  body: unknown,
+  messageType: unknown,
+  mediaBase64: unknown
+): { messageType: SupportMessageType; body: string | null; mediaData: Buffer | null; mediaMimeType: string | null } | { error: string } {
+  const type: SupportMessageType =
+    typeof messageType === "string" && SUPPORT_MESSAGE_TYPES.includes(messageType as SupportMessageType)
+      ? (messageType as SupportMessageType)
+      : "text";
+
+  if (type === "text") {
+    const text = String(body ?? "").trim();
+    if (!text) return { error: "Message cannot be empty" };
+    return { messageType: "text", body: text, mediaData: null, mediaMimeType: null };
+  }
+
+  const parsed = parseDataUri(mediaBase64);
+  if (!parsed) return { error: "mediaBase64 must be a data:<mime>;base64,<data> string" };
+  if (type === "image" && !parsed.mimeType.startsWith("image/")) {
+    return { error: "An image message's media must be an image/* mime type" };
+  }
+  if (type === "voice" && !parsed.mimeType.startsWith("audio/")) {
+    return { error: "A voice message's media must be an audio/* mime type" };
+  }
+  return { messageType: type, body: null, mediaData: parsed.data, mediaMimeType: parsed.mimeType };
 }
 
 /**
@@ -233,8 +288,8 @@ supportRouter.post(
   requireAuth("customer"),
   rateLimit("support-message-send", 30, 5 * 60 * 1000),
   async (req, res) => {
-    const body = String(req.body.message ?? "").trim();
-    if (!body) return sendJson(res, 400, { error: "Message cannot be empty" });
+    const composed = composeMessage(req.body.message, req.body.messageType, req.body.mediaBase64);
+    if ("error" in composed) return sendJson(res, 400, { error: composed.error });
 
     const conversation = await queryOne(`SELECT * FROM support_conversations WHERE id=$1 AND customer_id=$2`, [
       req.params.id,
@@ -245,11 +300,11 @@ supportRouter.post(
       return sendJson(res, 409, { error: "This conversation is closed" });
     }
 
-    await query(`INSERT INTO support_messages (id, conversation_id, sender_type, body) VALUES ($1,$2,'customer',$3)`, [
-      randomUUID(),
-      req.params.id,
-      body,
-    ]);
+    await query(
+      `INSERT INTO support_messages (id, conversation_id, sender_type, message_type, body, media_data, media_mime_type)
+       VALUES ($1,$2,'customer',$3,$4,$5,$6)`,
+      [randomUUID(), req.params.id, composed.messageType, composed.body, composed.mediaData, composed.mediaMimeType]
+    );
     await query(`UPDATE support_conversations SET updated_at=now() WHERE id=$1`, [req.params.id]);
 
     broadcast({ type: "support_conversation.updated", conversationId: req.params.id });
@@ -269,6 +324,9 @@ supportRouter.post("/support/conversations/:id/cancel", requireAuth("customer"),
   if (rows.length === 0) {
     return sendJson(res, 409, { error: "Conversation not found, not yours, or already being handled" });
   }
+  // Ephemeral by design -- see endConversationAndAutoClaim's comment below
+  // for why the same delete happens on every path that ends a conversation.
+  await query(`DELETE FROM support_messages WHERE conversation_id=$1`, [req.params.id]);
   broadcast({ type: "support_conversation.updated", conversationId: req.params.id });
   sendJson(res, 200, { id: req.params.id, status: "closed" });
 });
@@ -313,6 +371,56 @@ supportRouter.post("/support/ai-assist", requireAuth("customer"), async (req, re
   const match = question ? SUPPORT_FAQ.find((f) => f.keywords.some((k) => question.includes(k))) : undefined;
   sendJson(res, 200, { answered: !!match, answer: match?.answer ?? null });
 });
+
+// ---------------- Shared: message media (customer AND Admin Dashboard/Agent App) ----------------
+// The one route both sides need: an image/voice message's `mediaUrl` in
+// serializeConversation's output points here. Deliberately its own combined
+// auth (not requireAuth("customer") or requireSupportActor() alone) since
+// both a customer and an authorized staff member/agent need to reach the
+// exact same bytes for the exact same message -- "only the customer and the
+// assigned/authorized agent should be able to access ... media files" is
+// enforced below, per-request, rather than by two separate routes.
+supportRouter.get(
+  "/support/messages/:id/media",
+  requireAuth("customer", "super_admin", "admin", "agent"),
+  async (req, res) => {
+    const message = await queryOne<{
+      conversation_id: string;
+      message_type: string;
+      media_data: Buffer | null;
+      media_mime_type: string | null;
+    }>(
+      `SELECT conversation_id, message_type, media_data, media_mime_type FROM support_messages WHERE id=$1`,
+      [req.params.id]
+    );
+    if (!message || message.message_type === "text" || !message.media_data) {
+      return sendJson(res, 404, { error: "Media not found" });
+    }
+
+    const conversation = await queryOne<{ customer_id: string }>(
+      `SELECT customer_id FROM support_conversations WHERE id=$1`,
+      [message.conversation_id]
+    );
+    if (!conversation) return sendJson(res, 404, { error: "Media not found" });
+
+    if (req.auth!.role === "customer") {
+      if (conversation.customer_id !== req.auth!.sub) {
+        return sendJson(res, 403, { error: "Not your conversation" });
+      }
+    } else if (req.auth!.role === "admin") {
+      if (!(await adminHasSupportManage(req.auth!.sub))) {
+        return sendJson(res, 403, { error: "Missing the 'support.manage' permission — ask a Super Admin to grant it." });
+      }
+    }
+    // super_admin and agent: always allowed, same as requireSupportActor().
+
+    res.setHeader("Content-Type", message.media_mime_type ?? "application/octet-stream");
+    // private, not public -- this is a customer's own conversation media,
+    // never suitable for a shared/CDN cache the way promo_images' is.
+    res.setHeader("Cache-Control", "private, max-age=3600");
+    res.send(message.media_data);
+  }
+);
 
 // ---------------- Agent-facing (Admin Dashboard AND Agent App) ----------------
 // Every route below is reachable at both an /admin/support/... path (Admin
@@ -496,8 +604,8 @@ dual(
   requireSupportActor(),
   async (req, res) => {
     const actor = actorFromAuth(req.auth!);
-    const body = String(req.body.message ?? "").trim();
-    if (!body) return sendJson(res, 400, { error: "Message cannot be empty" });
+    const composed = composeMessage(req.body.message, req.body.messageType, req.body.mediaBase64);
+    if ("error" in composed) return sendJson(res, 400, { error: composed.error });
 
     const conversation = await queryOne(`SELECT * FROM support_conversations WHERE id=$1`, [req.params.id]);
     if (!conversation) return sendJson(res, 404, { error: "Conversation not found" });
@@ -509,9 +617,9 @@ dual(
     }
 
     await query(
-      `INSERT INTO support_messages (id, conversation_id, sender_type, sender_admin_id, sender_role, body)
-       VALUES ($1,$2,'agent',$3,$4,$5)`,
-      [randomUUID(), req.params.id, actor.id, actor.role, body]
+      `INSERT INTO support_messages (id, conversation_id, sender_type, sender_admin_id, sender_role, message_type, body, media_data, media_mime_type)
+       VALUES ($1,$2,'agent',$3,$4,$5,$6,$7,$8)`,
+      [randomUUID(), req.params.id, actor.id, actor.role, composed.messageType, composed.body, composed.mediaData, composed.mediaMimeType]
     );
     await query(`UPDATE support_conversations SET updated_at=now() WHERE id=$1`, [req.params.id]);
 
@@ -539,6 +647,15 @@ async function endConversationAndAutoClaim(
     [finalStatus, id, actor.id, actor.role]
   );
   if (!ended) return { ok: false };
+  // Agent Support conversation content (text, images, voice) is ephemeral --
+  // it exists only for the session it belongs to. Deleting the message rows
+  // deletes their media_data BYTEA in the same statement, since media lives
+  // on the message row itself (migration 063) -- no separate blob cleanup to
+  // keep in sync. The conversation row itself (status, timestamps, who
+  // handled it) is kept for queue history/oversight; only the message
+  // content is ephemeral. Same delete on the customer-facing /cancel path
+  // above, the only other route that ends a conversation.
+  await query(`DELETE FROM support_messages WHERE conversation_id=$1`, [id]);
   broadcast({ type: "support_conversation.updated", conversationId: id });
 
   const next = await claimNextForAgent(actor);

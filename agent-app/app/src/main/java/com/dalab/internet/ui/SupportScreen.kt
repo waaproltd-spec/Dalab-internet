@@ -1,22 +1,52 @@
 package com.dalab.internet.ui
 
+import android.content.Context
+import android.graphics.BitmapFactory
+import android.media.MediaPlayer
+import android.util.Base64
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.BrokenImage
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MicNone
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import android.Manifest
+import android.content.pm.PackageManager
+import android.media.MediaRecorder
 import com.dalab.internet.data.SupportConversation
 import com.dalab.internet.data.SupportConversationStatus
 import com.dalab.internet.data.SupportMessage
@@ -26,7 +56,21 @@ import com.dalab.internet.network.SupportSendMessageRequest
 import com.dalab.internet.network.SupportStatusUpdateRequest
 import com.dalab.internet.support.SupportQueueState
 import com.dalab.internet.util.formatApiDateTime
+import com.dalab.internet.util.parseApiDate
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+
+// Shared with the Customer App's Agent Support chat -- same brand indigo
+// (see OrdersListScreen.kt's DalabIndigo), used as the fixed fill for the
+// agent's own outgoing bubbles so they read the same dark-navy regardless
+// of light/dark theme, same as the customer side.
+private val ChatIndigo = Color(0xFF003152)
 
 /**
  * The Agent App's counterpart to the Admin Dashboard's "Agent Support" panel
@@ -34,15 +78,23 @@ import kotlinx.coroutines.launch
  * /admin/support/... and /agent/support/... by support.routes.ts), same
  * queue, same conversations. Online/offline toggle, the live waiting list
  * with a claim-next shortcut, and — once a conversation is assigned to this
- * agent — the chat itself with Resolve/Close. Real time comes from the same
- * SSE stream (agent/orders/stream, via AgentEventBus.orderEvents) every
- * other screen in this app already reuses; the backend broadcasts
+ * agent — a WhatsApp/Telegram-style chat (text, images, voice messages)
+ * with Resolve/Close. Real time comes from the same SSE stream
+ * (agent/orders/stream, via AgentEventBus.orderEvents) every other screen
+ * in this app already reuses; the backend broadcasts
  * support_conversation.updated on it exactly like it does order.updated, so
  * this screen just re-fetches on any event rather than trusting a payload.
+ *
+ * Message content (text, images, voice) is ephemeral by design: the backend
+ * hard-deletes every message row for a conversation the instant it ends
+ * (resolve/close) -- see support.routes.ts's endConversationAndAutoClaim.
+ * This screen doesn't need to do anything special for that; once ended,
+ * refresh() simply stops returning an assigned conversation, same as always.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SupportScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
     var online by remember { mutableStateOf(false) }
     var activeConversationId by remember { mutableStateOf<String?>(null) }
     var queue by remember { mutableStateOf<List<SupportConversation>>(emptyList()) }
@@ -53,8 +105,22 @@ fun SupportScreen(onBack: () -> Unit) {
     var togglingOnline by remember { mutableStateOf(false) }
     var messageText by remember { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
+    var sendingMedia by remember { mutableStateOf(false) }
     var ending by remember { mutableStateOf(false) }
+    var recording by remember { mutableStateOf(false) }
+    var recordingSeconds by remember { mutableIntStateOf(0) }
+    var playingMessageId by remember { mutableStateOf<String?>(null) }
+    var loadingAudioId by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+
+    val recorderHolder = remember { MediaRecorderHolder(context) }
+    val player = remember { MediaPlayer() }
+    DisposableEffect(Unit) {
+        onDispose {
+            recorderHolder.cancel()
+            player.release()
+        }
+    }
 
     suspend fun refresh() {
         try {
@@ -136,13 +202,136 @@ fun SupportScreen(onBack: () -> Unit) {
         sending = true
         scope.launch {
             try {
-                val updated = ApiClient.service.sendSupportMessage(id, SupportSendMessageRequest(text)).body()
+                val updated = ApiClient.service.sendSupportMessage(id, SupportSendMessageRequest(message = text)).body()
                 if (updated != null) conversation = updated
                 messageText = ""
             } catch (e: Exception) {
                 error = "Couldn't send: ${e.message ?: "network error"}"
             }
             sending = false
+        }
+    }
+
+    fun sendMedia(type: String, bytes: ByteArray, mime: String) {
+        val id = activeConversationId ?: return
+        sendingMedia = true
+        scope.launch {
+            try {
+                val dataUri = "data:$mime;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
+                val updated = ApiClient.service.sendSupportMessage(
+                    id,
+                    SupportSendMessageRequest(messageType = type, mediaBase64 = dataUri),
+                ).body()
+                if (updated != null) conversation = updated
+            } catch (e: Exception) {
+                error = "Couldn't send: ${e.message ?: "network error"}"
+            }
+            sendingMedia = false
+        }
+    }
+
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            try {
+                val bytes = withContext(Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                }
+                if (bytes != null) {
+                    val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
+                    sendMedia("image", bytes, mime)
+                }
+            } catch (e: Exception) {
+                error = "Couldn't attach image: ${e.message ?: "unknown error"}"
+            }
+        }
+    }
+
+    val recordPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            recording = true
+            recordingSeconds = 0
+            recorderHolder.start()
+        }
+    }
+
+    fun hasRecordPermission() =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+    fun toggleRecording() {
+        if (recording) {
+            recording = false
+            val file = recorderHolder.stop()
+            if (file != null && file.length() > 0) {
+                scope.launch {
+                    val bytes = withContext(Dispatchers.IO) { file.readBytes() }
+                    sendMedia("voice", bytes, "audio/m4a")
+                    file.delete()
+                }
+            }
+        } else if (hasRecordPermission()) {
+            recording = true
+            recordingSeconds = 0
+            recorderHolder.start()
+        } else {
+            recordPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    LaunchedEffect(recording) {
+        while (recording) {
+            kotlinx.coroutines.delay(1000)
+            recordingSeconds += 1
+        }
+    }
+
+    fun cancelRecording() {
+        recording = false
+        recorderHolder.cancel()
+    }
+
+    fun playVoice(message: SupportMessage) {
+        if (message.mediaUrl == null) return
+        if (playingMessageId == message.id) {
+            player.stop()
+            player.reset()
+            playingMessageId = null
+            return
+        }
+        loadingAudioId = message.id
+        scope.launch {
+            try {
+                // GET .../support/messages/{id}/media takes the message's own
+                // id as the path param -- message.mediaUrl only signals
+                // "this is a media message" (see ImageBubbleContent, same
+                // pattern), it isn't parsed for a path segment.
+                val responseBody = ApiClient.service.getSupportMessageMedia(message.id).body()
+                if (responseBody == null) {
+                    error = "Couldn't load voice message"
+                    loadingAudioId = null
+                    return@launch
+                }
+                val tempFile = withContext(Dispatchers.IO) {
+                    val file = File.createTempFile("support_voice_${message.id}", ".m4a", context.cacheDir)
+                    file.outputStream().use { out -> responseBody.byteStream().copyTo(out) }
+                    file
+                }
+                player.reset()
+                player.setDataSource(tempFile.absolutePath)
+                player.setOnCompletionListener {
+                    playingMessageId = null
+                }
+                player.prepare()
+                player.start()
+                playingMessageId = message.id
+            } catch (e: Exception) {
+                error = "Couldn't play voice message: ${e.message ?: "unknown error"}"
+            }
+            loadingAudioId = null
         }
     }
 
@@ -166,7 +355,30 @@ fun SupportScreen(onBack: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Agent Support") },
+                title = {
+                    Column {
+                        Text("Agent Support")
+                        if (conversation != null) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    conversation!!.customerName ?: conversation!!.customerPhone ?: "Customer",
+                                    style = MaterialTheme.typography.labelSmall,
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Box(
+                                    modifier = Modifier.size(7.dp).background(Color(0xFF16A34A), CircleShape)
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    "Online",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color(0xFF16A34A),
+                                    fontWeight = FontWeight.Bold,
+                                )
+                            }
+                        }
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back") }
                 },
@@ -189,6 +401,17 @@ fun SupportScreen(onBack: () -> Unit) {
                     onMessageChange = { messageText = it },
                     onSend = { sendMessage() },
                     sending = sending,
+                    sendingMedia = sendingMedia,
+                    recording = recording,
+                    recordingSeconds = recordingSeconds,
+                    playingMessageId = playingMessageId,
+                    loadingAudioId = loadingAudioId,
+                    onPickImage = {
+                        imagePickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    },
+                    onToggleRecording = { toggleRecording() },
+                    onCancelRecording = { cancelRecording() },
+                    onPlayVoice = { playVoice(it) },
                     onResolve = { endConversation(true) },
                     onClose = { endConversation(false) },
                     ending = ending,
@@ -204,6 +427,58 @@ fun SupportScreen(onBack: () -> Unit) {
                 )
             }
         }
+    }
+}
+
+/** Wraps [android.media.MediaRecorder] with the same start/stop/cancel shape SupportScreen needs. */
+private class MediaRecorderHolder(private val context: Context) {
+    private var recorder: MediaRecorder? = null
+    private var outputFile: File? = null
+
+    fun start() {
+        cancel()
+        val file = File.createTempFile("support_voice_", ".m4a", context.cacheDir)
+        outputFile = file
+        @Suppress("DEPRECATION")
+        val newRecorder = MediaRecorder()
+        newRecorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+        newRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+        newRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+        newRecorder.setOutputFile(file.absolutePath)
+        try {
+            newRecorder.prepare()
+            newRecorder.start()
+            recorder = newRecorder
+        } catch (e: Exception) {
+            newRecorder.release()
+            recorder = null
+        }
+    }
+
+    /** Stops and returns the recorded file, or null if nothing was recording. */
+    fun stop(): File? {
+        val current = recorder ?: return null
+        return try {
+            current.stop()
+            outputFile
+        } catch (e: Exception) {
+            null
+        } finally {
+            current.release()
+            recorder = null
+        }
+    }
+
+    fun cancel() {
+        try {
+            recorder?.stop()
+        } catch (e: Exception) {
+            // Never actually started recording anything -- nothing to stop.
+        }
+        recorder?.release()
+        recorder = null
+        outputFile?.delete()
+        outputFile = null
     }
 }
 
@@ -321,18 +596,21 @@ private fun SupportConversationView(
     onMessageChange: (String) -> Unit,
     onSend: () -> Unit,
     sending: Boolean,
+    sendingMedia: Boolean,
+    recording: Boolean,
+    recordingSeconds: Int,
+    playingMessageId: String?,
+    loadingAudioId: String?,
+    onPickImage: () -> Unit,
+    onToggleRecording: () -> Unit,
+    onCancelRecording: () -> Unit,
+    onPlayVoice: (SupportMessage) -> Unit,
     onResolve: () -> Unit,
     onClose: () -> Unit,
     ending: Boolean,
     error: String?,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
-        Surface(color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
-                Text(conversation.customerName ?: conversation.customerPhone ?: "Customer", fontWeight = FontWeight.Bold)
-                Text(conversation.customerPhone ?: "", style = MaterialTheme.typography.bodySmall)
-            }
-        }
         error?.let {
             Text(
                 it,
@@ -342,12 +620,30 @@ private fun SupportConversationView(
             )
         }
 
-        LazyColumn(
-            modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp),
-            reverseLayout = true,
-        ) {
-            items(conversation.messages.reversed(), key = { it.id }) { message ->
-                MessageBubble(message)
+        Box(modifier = Modifier.weight(1f).fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+                reverseLayout = true,
+            ) {
+                val messages = conversation.messages
+                itemsIndexed(messages.asReversed()) { reversedIndex, message ->
+                    val realIndex = messages.size - 1 - reversedIndex
+                    val previous = if (realIndex > 0) messages[realIndex - 1] else null
+                    // reverseLayout only reverses which slot sits at the
+                    // bottom overall -- content *within* one item's own
+                    // lambda still stacks top-to-bottom normally, so the
+                    // separator must be emitted before the bubble to land
+                    // above (not below) the first message of that day.
+                    if (shouldShowDateSeparator(previous, message)) {
+                        DateSeparator(message.createdAt)
+                    }
+                    MessageBubble(
+                        message = message,
+                        isPlaying = playingMessageId == message.id,
+                        isLoadingAudio = loadingAudioId == message.id,
+                        onPlayVoice = { onPlayVoice(message) },
+                    )
+                }
             }
         }
 
@@ -367,48 +663,277 @@ private fun SupportConversationView(
             }
         }
 
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            OutlinedTextField(
-                value = messageText,
-                onValueChange = onMessageChange,
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("Type a reply…") },
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                maxLines = 4,
+        if (recording) {
+            RecordingBar(
+                seconds = recordingSeconds,
+                onCancel = onCancelRecording,
+                onSend = onToggleRecording,
             )
-            IconButton(onClick = onSend, enabled = !sending && messageText.isNotBlank()) {
-                Icon(Icons.Filled.Send, contentDescription = "Send")
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ComposerIconButton(icon = Icons.Filled.Image, enabled = !sendingMedia, onClick = onPickImage)
+                OutlinedTextField(
+                    value = messageText,
+                    onValueChange = onMessageChange,
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("Type a reply…") },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    maxLines = 4,
+                    shape = RoundedCornerShape(24.dp),
+                )
+                if (messageText.isNotBlank()) {
+                    SendButton(sending = sending, onClick = onSend)
+                } else {
+                    ComposerIconButton(icon = Icons.Filled.MicNone, enabled = !sendingMedia, onClick = onToggleRecording)
+                }
             }
         }
     }
 }
 
 @Composable
-private fun MessageBubble(message: SupportMessage) {
-    val isAgent = message.senderType == "agent"
-    val isSystem = message.senderType == "system"
-    val alignment = if (isAgent) Alignment.CenterEnd else Alignment.CenterStart
-    val bubbleColor = when {
-        isSystem -> MaterialTheme.colorScheme.surfaceVariant
-        isAgent -> MaterialTheme.colorScheme.primaryContainer
-        else -> MaterialTheme.colorScheme.secondaryContainer
+private fun ComposerIconButton(icon: androidx.compose.ui.graphics.vector.ImageVector, enabled: Boolean, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surfaceVariant,
+    ) {
+        Icon(icon, contentDescription = null, modifier = Modifier.padding(10.dp).size(22.dp))
+    }
+}
+
+@Composable
+private fun SendButton(sending: Boolean, onClick: () -> Unit) {
+    Surface(onClick = onClick, enabled = !sending, shape = CircleShape, color = ChatIndigo) {
+        Box(modifier = Modifier.padding(10.dp), contentAlignment = Alignment.Center) {
+            if (sending) {
+                CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp, color = Color.White)
+            } else {
+                Icon(Icons.Filled.Send, contentDescription = "Send", tint = Color.White, modifier = Modifier.size(22.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecordingBar(seconds: Int, onCancel: () -> Unit, onSend: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        ComposerIconButton(icon = Icons.Filled.Delete, enabled = true, onClick = onCancel)
+        Row(
+            modifier = Modifier.weight(1f)
+                .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(24.dp))
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(modifier = Modifier.size(9.dp).background(Color(0xFFC81E2C), CircleShape))
+            Spacer(Modifier.width(8.dp))
+            Text("Recording…", fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.weight(1f))
+            Text("%d:%02d".format(seconds / 60, seconds % 60))
+        }
+        SendButton(sending = false, onClick = onSend)
+    }
+}
+
+private fun shouldShowDateSeparator(previous: SupportMessage?, current: SupportMessage): Boolean {
+    val currentDate = parseApiDate(current.createdAt) ?: return previous == null
+    val previousDate = previous?.createdAt?.let { parseApiDate(it) } ?: return true
+    val cal1 = Calendar.getInstance().apply { time = currentDate }
+    val cal2 = Calendar.getInstance().apply { time = previousDate }
+    return cal1.get(Calendar.YEAR) != cal2.get(Calendar.YEAR) ||
+        cal1.get(Calendar.DAY_OF_YEAR) != cal2.get(Calendar.DAY_OF_YEAR)
+}
+
+@Composable
+private fun DateSeparator(createdAt: String?) {
+    val label = remember(createdAt) {
+        val date = parseApiDate(createdAt)
+        if (date == null) {
+            "Today"
+        } else {
+            val today = Calendar.getInstance()
+            val target = Calendar.getInstance().apply { time = date }
+            if (today.get(Calendar.YEAR) == target.get(Calendar.YEAR) && today.get(Calendar.DAY_OF_YEAR) == target.get(Calendar.DAY_OF_YEAR)) {
+                "Today"
+            } else {
+                SimpleDateFormat("MMM d", Locale.US).format(date)
+            }
+        }
+    }
+    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalArrangement = Arrangement.Center) {
+        Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(50)) {
+            Text(
+                label,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MessageBubble(
+    message: SupportMessage,
+    isPlaying: Boolean,
+    isLoadingAudio: Boolean,
+    onPlayVoice: () -> Unit,
+) {
+    if (message.senderType == "system") {
+        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.Center) {
+            Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(50)) {
+                Text(
+                    message.body ?: "",
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+        }
+        return
     }
 
-    Box(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), contentAlignment = alignment) {
+    val isMe = message.senderType == "agent"
+    val timeLabel = remember(message.createdAt) {
+        parseApiDate(message.createdAt)?.let { SimpleDateFormat("HH:mm", Locale.US).format(it) } ?: ""
+    }
+    val bubbleColor = if (isMe) ChatIndigo else MaterialTheme.colorScheme.surface
+    val textColor = if (isMe) Color.White else MaterialTheme.colorScheme.onSurface
+    val timeColor = if (isMe) Color.White.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant
+
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        horizontalArrangement = if (isMe) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        if (!isMe) {
+            Box(
+                modifier = Modifier.size(28.dp).background(MaterialTheme.colorScheme.surfaceVariant, CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Filled.SupportAgent, contentDescription = null, modifier = Modifier.size(16.dp), tint = ChatIndigo)
+            }
+            Spacer(Modifier.width(6.dp))
+        }
         Surface(
             color = bubbleColor,
-            shape = RoundedCornerShape(14.dp),
+            shape = RoundedCornerShape(
+                topStart = 14.dp,
+                topEnd = 14.dp,
+                bottomStart = if (isMe) 14.dp else 4.dp,
+                bottomEnd = if (isMe) 4.dp else 14.dp,
+            ),
+            modifier = Modifier.widthIn(max = 280.dp),
         ) {
-            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
-                Text(message.body, style = MaterialTheme.typography.bodyMedium)
-                message.createdAt?.let {
-                    Text(formatApiDateTime(it), style = MaterialTheme.typography.labelSmall)
+            when (message.messageType) {
+                "image" -> ImageBubbleContent(message = message, timeLabel = timeLabel)
+                "voice" -> VoiceBubbleContent(
+                    textColor = textColor,
+                    timeColor = timeColor,
+                    timeLabel = timeLabel,
+                    isPlaying = isPlaying,
+                    isLoading = isLoadingAudio,
+                    onTap = onPlayVoice,
+                )
+                else -> Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                    Text(message.body ?: "", color = textColor, style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(3.dp))
+                    Text(timeLabel, color = timeColor, style = MaterialTheme.typography.labelSmall)
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ImageBubbleContent(message: SupportMessage, timeLabel: String) {
+    var bitmap by remember(message.id) { mutableStateOf<ImageBitmap?>(null) }
+    var failed by remember(message.id) { mutableStateOf(false) }
+
+    LaunchedEffect(message.id) {
+        val mediaId = message.id
+        try {
+            val response = ApiClient.service.getSupportMessageMedia(mediaId)
+            val bytes = response.body()?.bytes()
+            if (bytes != null) {
+                val decoded = withContext(Dispatchers.Default) { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
+                bitmap = decoded?.asImageBitmap()
+                if (decoded == null) failed = true
+            } else {
+                failed = true
+            }
+        } catch (e: Exception) {
+            failed = true
+        }
+    }
+
+    Box(modifier = Modifier.padding(4.dp)) {
+        Box(
+            modifier = Modifier.size(180.dp).clip(RoundedCornerShape(10.dp)).background(Color.Black.copy(alpha = 0.06f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            val current = bitmap
+            when {
+                current != null -> Image(
+                    bitmap = current,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                failed -> Icon(Icons.Filled.BrokenImage, contentDescription = null)
+                else -> CircularProgressIndicator(strokeWidth = 2.dp)
+            }
+        }
+        Surface(
+            color = Color.Black.copy(alpha = 0.45f),
+            shape = RoundedCornerShape(6.dp),
+            modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp),
+        ) {
+            Text(timeLabel, color = Color.White, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+        }
+    }
+}
+
+@Composable
+private fun VoiceBubbleContent(
+    textColor: Color,
+    timeColor: Color,
+    timeLabel: String,
+    isPlaying: Boolean,
+    isLoading: Boolean,
+    onTap: () -> Unit,
+) {
+    Column(modifier = Modifier.width(190.dp).padding(horizontal = 12.dp, vertical = 10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier.size(30.dp).clickable(enabled = !isLoading, onClick = onTap),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (isLoading) {
+                    CircularProgressIndicator(strokeWidth = 2.dp, color = textColor, modifier = Modifier.size(22.dp))
+                } else {
+                    Icon(
+                        if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                        contentDescription = if (isPlaying) "Pause" else "Play",
+                        tint = textColor,
+                        modifier = Modifier.size(28.dp),
+                    )
+                }
+            }
+            Spacer(Modifier.width(8.dp))
+            Box(modifier = Modifier.weight(1f).height(3.dp).background(textColor.copy(alpha = 0.35f), RoundedCornerShape(2.dp)))
+            Spacer(Modifier.width(8.dp))
+            Icon(Icons.Filled.Mic, contentDescription = null, tint = textColor.copy(alpha = 0.7f), modifier = Modifier.size(15.dp))
+        }
+        Spacer(Modifier.height(3.dp))
+        Text(timeLabel, color = timeColor, style = MaterialTheme.typography.labelSmall)
     }
 }

@@ -18,6 +18,7 @@ import com.dalab.internet.data.AgentPaymentTransaction
 import com.dalab.internet.data.WalletBalanceEntry
 import com.dalab.internet.sms.SmsSenderIdEntry
 import com.dalab.internet.ussd.SimRoutingEntry
+import okhttp3.ResponseBody
 import retrofit2.Response
 import retrofit2.http.*
 
@@ -108,7 +109,14 @@ data class DialAttemptResultResponse(val id: String, val status: String)
 data class SupportStatusResponse(val online: Boolean, val activeConversationId: String? = null)
 data class SupportStatusUpdateRequest(val online: Boolean)
 data class SupportClaimNextResponse(val claimed: SupportConversation? = null)
-data class SupportSendMessageRequest(val message: String)
+// messageType is "text" (default -- message required), "image", or "voice"
+// (mediaBase64 required for the latter two -- a data:<mime>;base64,<data>
+// string, see support.routes.ts's composeMessage).
+data class SupportSendMessageRequest(
+    val message: String? = null,
+    val messageType: String = "text",
+    val mediaBase64: String? = null,
+)
 data class SupportEndConversationResponse(val ended: Boolean, val next: SupportConversation? = null)
 
 data class CreateCustomerRequest(val phone: String, val name: String? = null)
@@ -236,6 +244,13 @@ interface ApiService {
 
     @POST("agent/support/conversations/{id}/messages")
     suspend fun sendSupportMessage(@Path("id") id: String, @Body body: SupportSendMessageRequest): Response<SupportConversation>
+
+    // Note: registered at /support/messages/{id}/media (no /agent prefix) --
+    // shared by the customer and any authorized staff/agent, see
+    // support.routes.ts's combined auth check on that one route.
+    @Streaming
+    @GET("support/messages/{id}/media")
+    suspend fun getSupportMessageMedia(@Path("id") id: String): Response<ResponseBody>
 
     @POST("agent/support/conversations/{id}/resolve")
     suspend fun resolveSupportConversation(@Path("id") id: String): Response<SupportEndConversationResponse>

@@ -25,6 +25,8 @@
          to keep running unattended in the background, which the payment-monitoring
          service is. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Recording a voice message in Agent Support (SupportScreen). -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:name=".DalabAgentApp"

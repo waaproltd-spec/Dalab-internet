@@ -157,7 +157,14 @@ data class SupportMessage(
     val id: String,
     // "customer" | "agent" | "system"
     val senderType: String,
-    val body: String,
+    // "text" | "image" | "voice" -- see support.routes.ts's composeMessage.
+    val messageType: String = "text",
+    val body: String? = null,
+    // Path (not a full URL), e.g. "/support/messages/{id}/media" -- resolve
+    // against ApiClient.BASE_URL and attach the same bearer token as every
+    // other call. Non-null only for image/voice messages.
+    val mediaUrl: String? = null,
+    val mediaMimeType: String? = null,
     val createdAt: String? = null,
 )
 
