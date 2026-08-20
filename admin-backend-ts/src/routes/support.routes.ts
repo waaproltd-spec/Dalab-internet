@@ -139,15 +139,6 @@ async function isAnyAgentOnline(): Promise<boolean> {
 
 // ---------------- Customer-facing ----------------
 
-// Lets the Customer App check "is anyone actually online right now" before
-// committing to Contact an Agent -- distinct from the queued/pending
-// fallback POST /support/conversations itself still offers (leave a message,
-// an agent responds later): this is for a caller that wants a hard yes/no
-// instead of always getting a conversation record back.
-supportRouter.get("/support/agent-availability", requireAuth("customer"), async (_req, res) => {
-  sendJson(res, 200, { online: await isAnyAgentOnline() });
-});
-
 // Idempotent by design: a customer can only ever have one open (queued /
 // pending / assigned) conversation at a time -- enforced twice, once here
 // (a plain read, the common case) and again by the DB's own partial unique
@@ -288,10 +279,32 @@ supportRouter.post("/support/conversations/:id/cancel", requireAuth("customer"),
 // invent that kind of information). Anything not confidently matched here
 // is the app's cue to hand off to the real queue via POST /support/conversations.
 const SUPPORT_FAQ: { keywords: string[]; answer: string }[] = [
+  // Payments / EVC Plus / deposits
   { keywords: ["evc", "evc plus"], answer: "EVC Plus is Hormuud's mobile money wallet. Choose it as your payment method and follow the USSD prompt to complete payment." },
+  { keywords: ["deposit", "top up", "add money", "add funds"], answer: "To deposit, open Wallet from the app menu, choose Deposit, pick your payment method, and follow the USSD prompt. Your balance updates automatically once the payment is confirmed." },
+  { keywords: ["payment failed", "payment not going through", "payment declined"], answer: "A failed payment is usually the USSD prompt being cancelled or timing out, or an insufficient wallet balance on your phone. Try again, and make sure you approve the prompt promptly." },
+  { keywords: ["payment method", "how to pay", "how do i pay"], answer: "You can pay with EVC Plus, eDahab, Sahal, or another supported mobile wallet — pick your provider at checkout and follow the USSD prompt." },
+  // Withdrawals
+  { keywords: ["withdraw", "withdrawal", "cash out"], answer: "Withdrawals are available for Reseller accounts from the Reseller section. Choose Withdraw, enter the amount, and confirm — it's sent automatically to your registered payment number." },
+  // Orders / order status
+  { keywords: ["order status", "track order", "where is my order", "my order"], answer: "You can check any order's status from Orders in the app menu — it shows pending, in progress, completed, or failed in real time." },
+  { keywords: ["create order", "how to order", "buy package", "new order"], answer: "To place an order, pick a company and package from Home, choose the receiving phone number, then pay — the package is delivered automatically once payment is confirmed." },
+  { keywords: ["cancel order"], answer: "An order can only be cancelled before payment is completed. Once a payment is confirmed, an agent needs to help with any changes — start a request below." },
   { keywords: ["how long", "how much time", "delivery time"], answer: "Most internet/data orders are delivered within a few minutes of a confirmed payment. If it's been longer, an agent can check the specific order for you." },
-  { keywords: ["macaash", "points", "loyalty"], answer: "Macaash points are DALAB's loyalty points, earned on qualifying purchases and usable as a discount on a future order." },
+  // Internet packages
+  { keywords: ["package", "data plan", "internet plan", "bundle"], answer: "Browse all available internet/data packages and pricing from Home — pick a company to see its packages." },
+  // eBadal
+  { keywords: ["ebadal"], answer: "eBadal lets you exchange money between supported providers. Open eBadal from the app menu, choose the companies and amount, and confirm." },
+  // Reseller
+  { keywords: ["reseller"], answer: "Reseller accounts can buy packages in bulk, sell to their own customers, and manage deposits/withdrawals from the Reseller section of the app." },
+  // Account
   { keywords: ["change password", "reset password", "forgot password"], answer: "You can reset your password from the login screen using \"Forgot password\" — you'll need your registered phone number." },
+  { keywords: ["update profile", "change name", "change phone number"], answer: "You can update your profile details from Settings in the app menu." },
+  { keywords: ["delete account", "close account"], answer: "To delete your account, contact support with the phone number registered on your account and we'll verify and process the deletion." },
+  { keywords: ["macaash", "points", "loyalty"], answer: "Macaash points are DALAB's loyalty points, earned on qualifying purchases and usable as a discount on a future order." },
+  // App usage / general
+  { keywords: ["notification", "not receiving notifications"], answer: "Make sure notifications are enabled for the app in your phone's system settings, and that you're signed in — notifications are tied to your account." },
+  { keywords: ["update app", "new version"], answer: "Updates are published to the Play Store — open the Play Store, search DALAB, and tap Update if one's available." },
   { keywords: ["what is dalab", "what does dalab", "about dalab"], answer: "DALAB Internet lets you buy internet/data packages, exchange money, and manage your wallet, all from one app." },
 ];
 
@@ -364,6 +377,16 @@ dual("put", "/admin/support/status", "/agent/support/status", requireSupportActo
       if (!claimed) break;
       broadcast({ type: "support_conversation.updated", conversationId: claimed.id });
     }
+  } else {
+    // Coming online: this actor is immediately idle (they can't have
+    // anything assigned yet -- claim endpoints refuse a second one), so
+    // hand them the oldest waiting customer right now instead of leaving
+    // them to sit in the pool until someone taps claim-next. This is what
+    // lets a customer already waiting get connected automatically the
+    // moment any agent becomes available, not just when their own agent
+    // frees up.
+    const claimed = await claimNextForAgent(actor);
+    if (claimed) broadcast({ type: "support_conversation.updated", conversationId: claimed.id });
   }
 
   sendJson(res, 200, { online });
