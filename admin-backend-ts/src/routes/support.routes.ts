@@ -336,34 +336,42 @@ supportRouter.post("/support/conversations/:id/cancel", requireAuth("customer"),
 // orders, or account status (per the product requirement: AI must not
 // invent that kind of information). Anything not confidently matched here
 // is the app's cue to hand off to the real queue via POST /support/conversations.
+//
+// Agent Assist (the customer-facing chat this backs) speaks Somali only, per
+// spec, regardless of the app's own EN/SO language toggle -- answers here
+// are Somali; keywords include both English and Somali spellings since a
+// customer typing a question may use either.
 const SUPPORT_FAQ: { keywords: string[]; answer: string }[] = [
   // Payments / EVC Plus / deposits
-  { keywords: ["evc", "evc plus"], answer: "EVC Plus is Hormuud's mobile money wallet. Choose it as your payment method and follow the USSD prompt to complete payment." },
-  { keywords: ["deposit", "top up", "add money", "add funds"], answer: "To deposit, open Wallet from the app menu, choose Deposit, pick your payment method, and follow the USSD prompt. Your balance updates automatically once the payment is confirmed." },
-  { keywords: ["payment failed", "payment not going through", "payment declined"], answer: "A failed payment is usually the USSD prompt being cancelled or timing out, or an insufficient wallet balance on your phone. Try again, and make sure you approve the prompt promptly." },
-  { keywords: ["payment method", "how to pay", "how do i pay"], answer: "You can pay with EVC Plus, eDahab, Sahal, or another supported mobile wallet — pick your provider at checkout and follow the USSD prompt." },
+  { keywords: ["evc", "evc plus"], answer: "EVC Plus waa boorsada lacagta ee mobilka ee Hormuud. Xulo EVC Plus habka aad ku bixinayso, kadibna raac talaabooyinka USSD si aad u dhammaystirto lacag-bixinta." },
+  { keywords: ["deposit", "top up", "add money", "add funds", "dhig lacag", "ku dar lacag", "kudar"], answer: "Si aad lacag ugu dhigto, fur Boorsada (Wallet) ee menu-ga app-ka, dooro Deposit, xulo habka lacag-bixinta, kadibna raac talaabada USSD. Balance-kaaga waa la cusboonaysiiyaa si toos ah marka lacag-bixinta la xaqiijiyo." },
+  { keywords: ["payment failed", "payment not going through", "payment declined", "lacag bixin way fashilantay", "lama guulaysan"], answer: "Lacag-bixin fashilan waxaa badanaa sababa in codsiga USSD la joojiyay ama uu waqtigu dhammaaday, ama balance-ka mobilkaaga uusan ku filneyn. Isku day mar kale, oo hubi inaad si degdeg ah u ansixiso codsiga USSD." },
+  { keywords: ["payment method", "how to pay", "how do i pay", "sida loo bixiyo"], answer: "Waxaad ku bixin kartaa EVC Plus, eDahab, Sahal, ama boorso kale oo la taageero — xulo bixiyahaaga marka aad wax iibsanayso oo raac talaabada USSD." },
   // Withdrawals
-  { keywords: ["withdraw", "withdrawal", "cash out"], answer: "Withdrawals are available for Reseller accounts from the Reseller section. Choose Withdraw, enter the amount, and confirm — it's sent automatically to your registered payment number." },
+  { keywords: ["withdraw", "withdrawal", "cash out", "ka bixi lacag"], answer: "Ka bixinta lacagta (Withdraw) waxay u furan tahay xisaabaha Reseller-ka oo kaliya, waxaana laga helaa qaybta Reseller. Dooro Withdraw, geli lacagta, oo xaqiiji — si toos ah ayaa loogu diri doonaa lambarkaaga lacag-bixinta ee diiwaan gashan." },
   // Orders / order status
-  { keywords: ["order status", "track order", "where is my order", "my order"], answer: "You can check any order's status from Orders in the app menu — it shows pending, in progress, completed, or failed in real time." },
-  { keywords: ["create order", "how to order", "buy package", "new order"], answer: "To place an order, pick a company and package from Home, choose the receiving phone number, then pay — the package is delivered automatically once payment is confirmed." },
-  { keywords: ["cancel order"], answer: "An order can only be cancelled before payment is completed. Once a payment is confirmed, an agent needs to help with any changes — start a request below." },
-  { keywords: ["how long", "how much time", "delivery time"], answer: "Most internet/data orders are delivered within a few minutes of a confirmed payment. If it's been longer, an agent can check the specific order for you." },
+  { keywords: ["order status", "track order", "where is my order", "my order", "xaalada dalabka", "halka dalabkeyga"], answer: "Waxaad ka hubin kartaa xaalada dalab kasta bogga Orders ee menu-ga app-ka — wuxuu tusayaa pending, in progress, completed, ama failed waqti dhab ah." },
+  { keywords: ["create order", "how to order", "buy package", "new order", "sida loo dalabsado"], answer: "Si aad dalab u samayso, dooro shirkad iyo baakidh bogga Home, dooro lambarka telefoonka helaya, kadibna bixi — baakidhka si toos ah ayaa loo geeyaa marka lacag-bixinta la xaqiijiyo." },
+  { keywords: ["cancel order", "jooji dalabka"], answer: "Dalab waxaa la joojin karaa kaliya ka hor inta aan lacag-bixintu dhammaan. Marka lacag-bixintu xaqiijsanto, wakiil ayaa kaa caawin kara isbeddel kasta — riix \"La xiriir Agent\" hoose." },
+  { keywords: ["how long", "how much time", "delivery time", "waqti intee"], answer: "Inta badan dalabyada internetka/data-da waxaa la geeyaa dhawr daqiiqo gudahood marka lacag-bixinta la xaqiijiyo. Haddii ay ka badan tahay, wakiil ayaa kuu hubin kara dalabkaaga gaarka ah." },
   // Internet packages
-  { keywords: ["package", "data plan", "internet plan", "bundle"], answer: "Browse all available internet/data packages and pricing from Home — pick a company to see its packages." },
+  { keywords: ["package", "data plan", "internet plan", "bundle", "baakidh"], answer: "Baakidhyada internetka/data-da oo dhan iyo qiimahooda waxaad ka arki kartaa bogga Home — dooro shirkad si aad u aragto baakidhyadeeda." },
   // eBadal
-  { keywords: ["ebadal"], answer: "eBadal lets you exchange money between supported providers. Open eBadal from the app menu, choose the companies and amount, and confirm." },
+  { keywords: ["ebadal"], answer: "eBadal wuxuu kuu ogolaanayaa inaad lacag ka beddesho bixiyeyaasha la taageero. Fur eBadal ee menu-ga app-ka, dooro shirkadaha iyo lacagta, kadibna xaqiiji." },
   // Reseller
-  { keywords: ["reseller"], answer: "Reseller accounts can buy packages in bulk, sell to their own customers, and manage deposits/withdrawals from the Reseller section of the app." },
-  // Account
-  { keywords: ["change password", "reset password", "forgot password"], answer: "You can reset your password from the login screen using \"Forgot password\" — you'll need your registered phone number." },
-  { keywords: ["update profile", "change name", "change phone number"], answer: "You can update your profile details from Settings in the app menu." },
-  { keywords: ["delete account", "close account"], answer: "To delete your account, contact support with the phone number registered on your account and we'll verify and process the deletion." },
-  { keywords: ["macaash", "points", "loyalty"], answer: "Macaash points are DALAB's loyalty points, earned on qualifying purchases and usable as a discount on a future order." },
-  // App usage / general
-  { keywords: ["notification", "not receiving notifications"], answer: "Make sure notifications are enabled for the app in your phone's system settings, and that you're signed in — notifications are tied to your account." },
-  { keywords: ["update app", "new version"], answer: "Updates are published to the Play Store — open the Play Store, search DALAB, and tap Update if one's available." },
-  { keywords: ["what is dalab", "what does dalab", "about dalab"], answer: "DALAB Internet lets you buy internet/data packages, exchange money, and manage your wallet, all from one app." },
+  { keywords: ["reseller"], answer: "Xisaabaha Reseller-ka waxay iibsan karaan baakidhyo tiro badan, u iibiyaan macaamiishooda, oo ka maamuli karaan deposits/withdrawals qaybta Reseller ee app-ka." },
+  // Account / login / settings
+  { keywords: ["change password", "reset password", "forgot password", "furaha sirta"], answer: "Waxaad ka beddeli kartaa password-kaaga bogga login-ka adigoo isticmaalaya \"Forgot password\" — waxaad u baahan doontaa lambarka telefoonka ee diiwaan gashan." },
+  { keywords: ["login", "sign in", "cannot log in", "gal account", "gali account"], answer: "Haddii aadan geli karin, hubi lambarka telefoonkaaga iyo password-ka. Haddii aad illowday password-ka, isticmaal \"Forgot password\" bogga login-ka." },
+  { keywords: ["update profile", "change name", "change phone number", "settings", "account settings"], answer: "Waxaad ka cusboonaysiin kartaa macluumaadka profile-kaaga iyo settings-ka bogga Settings ee menu-ga app-ka." },
+  { keywords: ["delete account", "close account", "tirtir account"], answer: "Si aad account-kaaga u tirtirto, la xiriir taageerada adigoo bixinaya lambarka telefoonka ee diiwaan gashan — waa la xaqiijin doonaa oo la tirtiri doonaa." },
+  { keywords: ["macaash", "points", "loyalty"], answer: "Dhibcaha Macaash waa dhibcaha daacadnimo ee DALAB, kuwaas oo lagu helo iibsiga u qalma oo loo isticmaali karo qiimo-dhimis dalab mustaqbal ah." },
+  // App usage / notifications / errors / general
+  { keywords: ["notification", "not receiving notifications", "ogeysiisyo"], answer: "Hubi in ogeysiisyada (notifications) loo furay app-ka settings-ka taleefankaaga, iyo inaad soo gashay account-kaaga — ogeysiisyadu waxay ku xidhan yihiin account-kaaga." },
+  { keywords: ["update app", "new version", "cusboonaysii app"], answer: "Cusboonaysiinta waxaa lagu daabacaa Play Store — fur Play Store, raadi DALAB, kadibna riix Update haddii ay jirto mid diyaar ah." },
+  { keywords: ["what is dalab", "what does dalab", "about dalab", "dalab waa maxay"], answer: "DALAB Internet waxay kuu ogolaanaysaa inaad iibsato baakidhyada internetka/data-da, lacag ka beddesho, iyo inaad maamusho boorsadaada — dhammaan hal app dhexdiisa." },
+  { keywords: ["error", "crash", "not working", "bug", "khalad", "ma shaqeynayo"], answer: "Waan ka xumahay dhibaatadaas. Marka hore isku day inaad app-ka dib u furto ama cusboonaysiiso. Haddii dhibaatadu sii socoto, wakiil dhab ah ayaa kaa caawin kara — riix \"La xiriir Agent\" hoose." },
+  { keywords: ["how to use", "how does this app work", "sida loo isticmaalo", "sida app-ka"], answer: "DALAB wuxuu kuu ogolaanayaa inaad iibsato baakidhyo internet ah, aad bixiso lacag, ooad maamusho boorsadaada. Bogga Home ka dooro shirkad iyo baakidh, kadibna bixi — i weydii qayb gaar ah haddii aad su'aal dheeraad ah qabto." },
 ];
 
 supportRouter.post("/support/ai-assist", requireAuth("customer"), async (req, res) => {
