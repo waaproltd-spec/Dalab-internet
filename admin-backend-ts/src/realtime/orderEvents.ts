@@ -13,7 +13,8 @@ export type OrderEvent =
   | { type: "sim_balance.updated"; deviceId: string; simSlot: number }
   | { type: "feedback.updated" }
   | { type: "exchange_order.updated"; exchangeOrderId: string }
-  | { type: "reseller_withdrawal.updated"; withdrawalId: string };
+  | { type: "reseller_withdrawal.updated"; withdrawalId: string }
+  | { type: "support_conversation.updated"; conversationId: string };
 
 const subscribers = new Set<Response>();
 

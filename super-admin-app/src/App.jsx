@@ -340,6 +340,19 @@ const DalabAdminApi = {
   getFeedbackCategories: () => dalabAdminApiRequest("/admin/feedback/categories"),
   getFeedbackPendingCount: () => dalabAdminApiRequest("/admin/feedback/pending-count"),
   updateFeedback: (id, body) => dalabAdminApiRequest(`/admin/feedback/${id}`, { method: "PUT", body }),
+  // Agent Support — real-time FIFO queue (see admin-backend-ts's
+  // support.routes.ts). getSupportStatus/setSupportStatus are this admin's
+  // own online/offline toggle; everything else operates on the shared queue.
+  getSupportStatus: () => dalabAdminApiRequest("/admin/support/status"),
+  setSupportStatus: (online) => dalabAdminApiRequest("/admin/support/status", { method: "PUT", body: { online } }),
+  getSupportQueue: () => dalabAdminApiRequest("/admin/support/queue"),
+  getSupportConversation: (id) => dalabAdminApiRequest(`/admin/support/conversations/${id}`),
+  claimNextSupportConversation: () => dalabAdminApiRequest("/admin/support/claim-next", { method: "POST" }),
+  claimSupportConversation: (id) => dalabAdminApiRequest(`/admin/support/conversations/${id}/claim`, { method: "POST" }),
+  sendSupportMessage: (id, message) =>
+    dalabAdminApiRequest(`/admin/support/conversations/${id}/messages`, { method: "POST", body: { message } }),
+  resolveSupportConversation: (id) => dalabAdminApiRequest(`/admin/support/conversations/${id}/resolve`, { method: "POST" }),
+  closeSupportConversation: (id) => dalabAdminApiRequest(`/admin/support/conversations/${id}/close`, { method: "POST" }),
   // Referral / Loyalty Points — reuses the existing Macaash balance/ledger;
   // this dashboard only manages the reward rule and views referral activity.
   getReferralRules: () => dalabAdminApiRequest("/admin/referral-rules"),
@@ -445,6 +458,7 @@ const PERMISSION_OPTIONS = [
   { key: "finance.manage", label: "Manage financial expenses" },
   { key: "exchange.manage", label: "Manage money exchange" },
   { key: "resellers.manage", label: "Manage resellers" },
+  { key: "support.manage", label: "Handle Agent Support conversations" },
 ];
 
 // Normalizes a GET /admin/companies row into the shape every section of this
@@ -733,6 +747,7 @@ const NAV = [
   { id: "agents", label: "Agents", icon: UserCog },
   { id: "notifications", label: "Notifications", icon: Bell },
   { id: "feedback", label: "Feedback & Suggestions", icon: Lightbulb },
+  { id: "support", label: "Agent Support", icon: MessageCircle },
   { id: "promo-images", label: "Promo Images", icon: ImageIcon },
   { id: "devices", label: "Device & USSD", icon: SmartphoneNfc },
   { id: "sms-logs", label: "SMS Monitor", icon: MessageSquare },
@@ -8181,6 +8196,321 @@ function FeedbackPanel({ admin }) {
   );
 }
 
+const SUPPORT_TOPIC_LABELS = {
+  dalab_internet: "Dalab Internet",
+  payment_services: "Payment & Services",
+  agent_support: "Agent Support",
+};
+
+function timeAgoLabel(iso) {
+  if (!iso) return "";
+  const ms = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(ms / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ${mins % 60}m ago`;
+  return formatDateTime(iso);
+}
+
+// Real-time Agent Support queue — this admin's own online/offline toggle,
+// the shared FIFO waiting list (queued + pending across every agent), and
+// whichever single conversation is currently assigned to THIS admin (the
+// backend enforces one active conversation per agent at a time). Refetches
+// on the same shared order-events stream every other live panel already
+// subscribes to (support_conversation.updated is one of its event types),
+// so two admins with this panel open both see claims/messages/resolutions
+// land in real time without polling.
+function SupportQueuePanel({ admin }) {
+  const canManage = hasPermission(admin, "support.manage");
+
+  const [online, setOnline] = useState(false);
+  const [statusLoading, setStatusLoading] = useState(true);
+  const [togglingOnline, setTogglingOnline] = useState(false);
+
+  const [queue, setQueue] = useState([]);
+  const [queueLoading, setQueueLoading] = useState(false);
+
+  const [activeConversation, setActiveConversation] = useState(null);
+  const [reply, setReply] = useState("");
+  const [sending, setSending] = useState(false);
+  const [claimingNext, setClaimingNext] = useState(false);
+  const [claimingId, setClaimingId] = useState(null);
+  const [ending, setEnding] = useState(false);
+  const [actionError, setActionError] = useState("");
+
+  const fetchStatus = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setStatusLoading(true);
+    try {
+      const s = await DalabAdminApi.getSupportStatus();
+      setOnline(s.online);
+      if (s.activeConversationId) {
+        setActiveConversation(await DalabAdminApi.getSupportConversation(s.activeConversationId));
+      } else {
+        setActiveConversation(null);
+      }
+    } catch (err) {
+      console.error("getSupportStatus failed:", err.message);
+    } finally {
+      setStatusLoading(false);
+    }
+  };
+
+  const fetchQueue = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setQueueLoading(true);
+    try {
+      setQueue(await DalabAdminApi.getSupportQueue());
+    } catch (err) {
+      console.error("getSupportQueue failed:", err.message);
+    } finally {
+      setQueueLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchStatus();
+    fetchQueue();
+  }, []);
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    const unsubscribe = subscribeOrderEvents("/admin/orders/stream", {
+      onEvent: () => {
+        fetchQueue();
+        fetchStatus();
+      },
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const toggleOnline = async () => {
+    setTogglingOnline(true);
+    setActionError("");
+    try {
+      const result = await DalabAdminApi.setSupportStatus(!online);
+      setOnline(result.online);
+      await fetchStatus();
+      await fetchQueue();
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setTogglingOnline(false);
+    }
+  };
+
+  const claimNext = async () => {
+    setClaimingNext(true);
+    setActionError("");
+    try {
+      const result = await DalabAdminApi.claimNextSupportConversation();
+      if (result.claimed) setActiveConversation(result.claimed);
+      else setActionError("No one is waiting right now.");
+      await fetchQueue();
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setClaimingNext(false);
+    }
+  };
+
+  const claimSpecific = async (id) => {
+    setClaimingId(id);
+    setActionError("");
+    try {
+      setActiveConversation(await DalabAdminApi.claimSupportConversation(id));
+      await fetchQueue();
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setClaimingId(null);
+    }
+  };
+
+  const sendReply = async () => {
+    if (!reply.trim() || !activeConversation) return;
+    setSending(true);
+    setActionError("");
+    try {
+      setActiveConversation(await DalabAdminApi.sendSupportMessage(activeConversation.id, reply.trim()));
+      setReply("");
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const endConversation = async (kind) => {
+    if (!activeConversation) return;
+    setEnding(true);
+    setActionError("");
+    try {
+      const fn = kind === "resolve" ? DalabAdminApi.resolveSupportConversation : DalabAdminApi.closeSupportConversation;
+      const result = await fn(activeConversation.id);
+      setActiveConversation(result.next || null);
+      await fetchQueue();
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setEnding(false);
+    }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to view Agent Support.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+        <div style={{ fontWeight: 800, fontSize: 15, color: INK }}>Agent Support</div>
+        {canManage ? (
+          <Button
+            variant={online ? "primary" : "ghost"}
+            icon={online ? CheckCircle2 : XCircle}
+            onClick={toggleOnline}
+            disabled={togglingOnline || statusLoading}
+            spin={togglingOnline}
+          >
+            {online ? "You're online" : "You're offline"}
+          </Button>
+        ) : (
+          <Badge tone={online ? "green" : "gray"}>{online ? "Online" : "Offline"}</Badge>
+        )}
+      </div>
+
+      {actionError && (
+        <div style={{ background: "#FEF2F2", border: "1px solid #FCA5A5", color: "#C81E2C", borderRadius: 10, padding: "10px 14px", fontSize: 12.5, marginBottom: 14 }}>
+          {actionError}
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1fr", gap: 16, alignItems: "start" }}>
+        {/* Current conversation */}
+        <Card style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ padding: "14px 16px", borderBottom: `1px solid ${BORDER}`, fontWeight: 700, fontSize: 13, color: INK }}>
+            Current Conversation
+          </div>
+          {!activeConversation ? (
+            <div style={{ padding: 24, textAlign: "center" }}>
+              <div style={{ fontSize: 12.5, color: MUTE, marginBottom: canManage ? 14 : 0 }}>
+                {online ? "No customer assigned right now." : "Go online to be offered waiting customers."}
+              </div>
+              {canManage && (
+                <Button onClick={claimNext} disabled={!online || claimingNext || queue.length === 0} spin={claimingNext}>
+                  Claim next customer
+                </Button>
+              )}
+            </div>
+          ) : (
+            <div>
+              <div style={{ padding: "12px 16px", borderBottom: `1px solid ${BORDER}` }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: INK }}>
+                  {activeConversation.customerName || "Customer"} — {activeConversation.customerPhone}
+                </div>
+                <div style={{ display: "flex", gap: 6, marginTop: 4, alignItems: "center" }}>
+                  <Badge tone="blue">{SUPPORT_TOPIC_LABELS[activeConversation.topic] || activeConversation.topic}</Badge>
+                  {activeConversation.agentOfflineAtStart && <Badge tone="amber">Left while offline</Badge>}
+                </div>
+              </div>
+              <div style={{ maxHeight: 360, overflowY: "auto", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
+                {(activeConversation.messages || []).map((m) => (
+                  <div
+                    key={m.id}
+                    style={{
+                      alignSelf: m.senderType === "agent" ? "flex-end" : "flex-start",
+                      maxWidth: "80%",
+                      background: m.senderType === "system" ? "transparent" : m.senderType === "agent" ? INDIGO : INDIGO_SOFT,
+                      color: m.senderType === "agent" ? "#fff" : m.senderType === "system" ? MUTE : INK,
+                      borderRadius: 12,
+                      padding: m.senderType === "system" ? "2px 0" : "8px 12px",
+                      fontSize: m.senderType === "system" ? 11 : 13,
+                      fontStyle: m.senderType === "system" ? "italic" : "normal",
+                      textAlign: m.senderType === "system" ? "center" : "left",
+                      width: m.senderType === "system" ? "100%" : "auto",
+                    }}
+                  >
+                    {m.body}
+                  </div>
+                ))}
+              </div>
+              {canManage && (
+                <div style={{ padding: "12px 16px", borderTop: `1px solid ${BORDER}` }}>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                    <input
+                      style={{ ...inputStyle, flex: 1 }}
+                      placeholder="Type a reply…"
+                      value={reply}
+                      onChange={(e) => setReply(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && sendReply()}
+                    />
+                    <Button onClick={sendReply} disabled={sending || !reply.trim()} spin={sending}>Send</Button>
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <Button variant="subtle" onClick={() => endConversation("resolve")} disabled={ending} spin={ending}>
+                      Resolve
+                    </Button>
+                    <Button variant="ghost" onClick={() => endConversation("close")} disabled={ending}>
+                      Close
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </Card>
+
+        {/* Waiting customers */}
+        <Card style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ padding: "14px 16px", borderBottom: `1px solid ${BORDER}`, fontWeight: 700, fontSize: 13, color: INK, display: "flex", justifyContent: "space-between" }}>
+            <span>Waiting Customers</span>
+            <Badge tone={queue.length > 0 ? "amber" : "gray"}>{queue.length}</Badge>
+          </div>
+          {queueLoading && queue.length === 0 ? (
+            <div style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>Loading…</div>
+          ) : queue.length === 0 ? (
+            <div style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No one is waiting.</div>
+          ) : (
+            <div>
+              {queue.map((c, index) => (
+                <div key={c.id} style={{ padding: "12px 16px", borderTop: index === 0 ? "none" : `1px solid ${BORDER}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                    <div>
+                      <div style={{ fontSize: 12.5, fontWeight: 700, color: INK }}>
+                        #{index + 1} {c.customerName || "Customer"} — {c.customerPhone}
+                      </div>
+                      <div style={{ fontSize: 11, color: MUTE, marginTop: 2 }}>
+                        {SUPPORT_TOPIC_LABELS[c.topic] || c.topic} · waiting {timeAgoLabel(c.createdAt)}
+                        {c.status === "pending" && " · pending"}
+                      </div>
+                      {c.firstMessage && (
+                        <div style={{ fontSize: 12, color: SLATE, marginTop: 4, maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          “{c.firstMessage}”
+                        </div>
+                      )}
+                    </div>
+                    {canManage && (
+                      <Button
+                        variant="ghost"
+                        onClick={() => claimSpecific(c.id)}
+                        disabled={!online || !!activeConversation || claimingId === c.id}
+                        spin={claimingId === c.id}
+                      >
+                        Claim
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      </div>
+    </div>
+  );
+}
+
 // Referral / Loyalty Points: reuses the existing Macaash balance/ledger as the
 // one points currency (per explicit product decision) — this panel only
 // configures the reward rule (points per successful referral purchase,
@@ -10556,6 +10886,7 @@ function AdminDashboardShell({ admin, onLogout }) {
   const [pendingRecoveryCount, setPendingRecoveryCount] = useState(0);
   const [missingTemplateCount, setMissingTemplateCount] = useState(0);
   const [pendingFeedbackCount, setPendingFeedbackCount] = useState(0);
+  const [pendingSupportCount, setPendingSupportCount] = useState(0);
 
   // Companies used to be mock-only everywhere (Companies/PaymentNumbers never
   // called GET /admin/companies) — this is now the single source of truth,
@@ -10702,6 +11033,25 @@ function AdminDashboardShell({ admin, onLogout }) {
     return () => unsubscribe();
   }, []);
 
+  // Agent Support: waiting (queued + pending) conversations across every
+  // agent — same live-badge pattern as Feedback above, refreshed on the
+  // same shared order-events stream (support_conversation.updated is one of
+  // the event types it broadcasts).
+  const refreshSupportCount = async () => {
+    if (!DALAB_API_ENABLED) return;
+    try {
+      setPendingSupportCount((await DalabAdminApi.getSupportQueue()).length);
+    } catch (err) {
+      console.error("Failed to load support queue count:", err.message);
+    }
+  };
+  useEffect(() => { refreshSupportCount(); }, []);
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    const unsubscribe = subscribeOrderEvents("/admin/orders/stream", { onEvent: refreshSupportCount });
+    return () => unsubscribe();
+  }, []);
+
   const activeLabel = NAV.find((n) => n.id === active)?.label;
 
   return (
@@ -10765,6 +11115,11 @@ function AdminDashboardShell({ admin, onLogout }) {
                     <Badge tone="amber">{pendingFeedbackCount}</Badge>
                   </span>
                 )}
+                {!collapsed && n.id === "support" && pendingSupportCount > 0 && (
+                  <span style={{ marginLeft: "auto" }} title="Customers waiting for an agent">
+                    <Badge tone="red">{pendingSupportCount}</Badge>
+                  </span>
+                )}
               </button>
             );
           })}
@@ -10822,6 +11177,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "resellers" && <ResellerManagement admin={admin} companies={companies} />}
           {active === "sms-sender-ids" && <SmsSenderIdsPanel />}
           {active === "feedback" && <FeedbackPanel admin={admin} />}
+          {active === "support" && <SupportQueuePanel admin={admin} />}
           {active === "referrals" && <ReferralRewardsPanel admin={admin} />}
           {active === "pending-recovery" && <PendingRecoveryPanel />}
           {active === "execution-logs" && <ExecutionLogs companies={companies} />}
