@@ -16,7 +16,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Circle
+import androidx.compose.material.icons.filled.CurrencyExchange
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SettingsInputAntenna
 import androidx.compose.material3.*
@@ -36,6 +39,7 @@ import com.dalab.internet.data.OrderStatus
 import com.dalab.internet.network.AgentEventBus
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.ConnectionState
+import com.dalab.internet.notifications.AgentAlertsState
 import com.dalab.internet.service.AgentBackgroundService
 import com.dalab.internet.ussd.SimRoutingRepository
 import com.dalab.internet.ussd.SimSlotResult
@@ -47,11 +51,12 @@ import java.util.Locale
 
 // DALAB brand — Dark Azure + Soft Blue, shared with the Customer App and
 // Admin Dashboard. DalabGreen stays separate: it's the functional
-// success/money-earned color (line below and the sale-amount text further
-// down), not brand, per the shared two-color rule's own carve-out.
-private val DalabIndigo = Color(0xFF003152)
-private val DalabSoftBlue = Color(0xFFADDFF1)
-private val DalabGreen = Color(0xFF16A34A)
+// success/money-earned color (order-amount text further down), not brand,
+// per the shared two-color rule's own carve-out. Internal (not private) so
+// other Home-adjacent screens in this module can match the brand exactly.
+internal val DalabIndigo = Color(0xFF003152)
+internal val DalabSoftBlue = Color(0xFFADDFF1)
+internal val DalabGreen = Color(0xFF16A34A)
 
 private enum class OrdersFilter(val label: String, val apiStatus: String?) {
     PENDING("Pending", "pending"),
@@ -61,7 +66,12 @@ private enum class OrdersFilter(val label: String, val apiStatus: String?) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun OrdersListScreen(onOpenOrder: (Order) -> Unit) {
+fun OrdersListScreen(
+    onOpenOrder: (Order) -> Unit,
+    onOpenAlerts: () -> Unit = {},
+    onOpenWallet: () -> Unit = {},
+    onOpenMoneyExchange: () -> Unit = {},
+) {
     val context = LocalContext.current
     var orders by remember { mutableStateOf<List<Order>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
@@ -72,16 +82,9 @@ fun OrdersListScreen(onOpenOrder: (Order) -> Unit) {
     var bulkExecuting by remember { mutableStateOf(false) }
     var resultMessage by remember { mutableStateOf<String?>(null) }
     val connectionState by AgentEventBus.connectionState.collectAsState()
+    val unreadAlerts by AgentAlertsState.unreadCount.collectAsState()
     val scope = rememberCoroutineScope()
     val orchestrator = remember { UssdOrchestrator(context) }
-
-    var todaySales by remember { mutableStateOf(0.0) }
-    var todayOrders by remember { mutableStateOf(0) }
-    // Independent of the filter chips below (Pending/Completed/All) — always
-    // the most recent orders across every status, so this card gives a true
-    // "what just happened" feed regardless of which filter the agent has
-    // selected for the main list.
-    var recentActivity by remember { mutableStateOf<List<Order>>(emptyList()) }
 
     fun smsListeningActive(): Boolean {
         val readGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_SMS) == PackageManager.PERMISSION_GRANTED
@@ -94,16 +97,10 @@ fun OrdersListScreen(onOpenOrder: (Order) -> Unit) {
         listeningActive = smsListeningActive()
         scope.launch {
             try {
-                val report = ApiClient.service.getReports("daily").body()
-                todaySales = report?.series?.sumOf { it.sales } ?: 0.0
-                todayOrders = report?.series?.sumOf { it.orders } ?: 0
+                val notifications = ApiClient.service.getNotifications().body().orEmpty()
+                AgentAlertsState.updateUnreadCount(notifications)
             } catch (_: Exception) {
-                // Dashboard tiles just keep their last known value on failure.
-            }
-            try {
-                recentActivity = ApiClient.service.getOrders(status = null).body().orEmpty().take(5)
-            } catch (_: Exception) {
-                // Leave the previous list in place.
+                // Badge just keeps its last known count on failure.
             }
         }
     }
@@ -175,12 +172,12 @@ fun OrdersListScreen(onOpenOrder: (Order) -> Unit) {
                 listeningActive = listeningActive,
                 connectionState = connectionState,
                 lastSyncedAt = lastSyncedAt,
-                todaySales = todaySales,
-                todayOrders = todayOrders,
+                unreadAlerts = unreadAlerts,
                 onRefresh = { refresh(); refreshDashboard() },
+                onOpenAlerts = onOpenAlerts,
             )
 
-            RecentActivityCard(orders = recentActivity)
+            QuickActionsRow(onOpenWallet = onOpenWallet, onOpenMoneyExchange = onOpenMoneyExchange)
 
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
@@ -246,15 +243,21 @@ fun OrdersListScreen(onOpenOrder: (Order) -> Unit) {
     }
 }
 
+// Compact brand header: identity + the two things an agent actually needs
+// to see at a glance (is the SMS listener running, is the live connection
+// up) collapsed into a single status bar instead of two separate cards.
+// Today's Sales/Orders and the Recent Activity feed used to live here too —
+// removed as duplicated with the Reports tab (which already has a "Today"
+// range) and the orders list immediately below, per the Home redesign.
 @Composable
 private fun AgentHomeHeader(
     agentName: String?,
     listeningActive: Boolean,
     connectionState: ConnectionState,
     lastSyncedAt: Date?,
-    todaySales: Double,
-    todayOrders: Int,
+    unreadAlerts: Int,
     onRefresh: () -> Unit,
+    onOpenAlerts: () -> Unit,
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "listening-pulse")
     val pulseScale by infiniteTransition.animateFloat(
@@ -282,12 +285,15 @@ private fun AgentHomeHeader(
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
-            IconButton(onClick = onRefresh) {
-                Icon(Icons.Filled.Refresh, contentDescription = "Refresh", tint = Color.White)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                NotificationBellButton(unreadCount = unreadAlerts, onClick = onOpenAlerts)
+                IconButton(onClick = onRefresh) {
+                    Icon(Icons.Filled.Refresh, contentDescription = "Refresh", tint = Color.White)
+                }
             }
         }
 
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(14.dp))
 
         Surface(color = Color.White.copy(alpha = 0.15f), shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
             Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -301,7 +307,7 @@ private fun AgentHomeHeader(
                     Icon(Icons.Filled.SettingsInputAntenna, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                 }
                 Spacer(Modifier.width(12.dp))
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         if (listeningActive) "SMS Listening — Active" else "SMS Listening — Inactive",
                         color = Color.White,
@@ -309,92 +315,96 @@ private fun AgentHomeHeader(
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     Text(
-                        if (listeningActive) "Background service is monitoring payment SMS" else "Grant SMS permissions in More → Permissions",
+                        if (listeningActive) "Monitoring payment SMS" else "Grant SMS permissions in More → Permissions",
                         color = Color.White.copy(alpha = 0.8f),
                         style = MaterialTheme.typography.labelSmall,
                     )
                 }
-            }
-        }
-
-        Spacer(Modifier.height(10.dp))
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            val (dotColor, label) = when (connectionState) {
-                ConnectionState.CONNECTED -> Color(0xFF6FE39A) to "Connected"
-                ConnectionState.CONNECTING -> Color(0xFFF2C200) to "Reconnecting…"
-                ConnectionState.DISCONNECTED -> Color(0xFFF87171) to "Disconnected"
-            }
-            Icon(Icons.Filled.Circle, contentDescription = null, tint = dotColor, modifier = Modifier.size(7.dp))
-            Spacer(Modifier.width(5.dp))
-            Text(label, color = Color.White.copy(alpha = 0.85f), style = MaterialTheme.typography.labelSmall)
-            lastSyncedAt?.let {
-                Text(
-                    "  ·  Synced ${SimpleDateFormat("HH:mm:ss", Locale.US).format(it)}",
-                    color = Color.White.copy(alpha = 0.7f),
-                    style = MaterialTheme.typography.labelSmall,
-                )
-            }
-        }
-
-        Spacer(Modifier.height(16.dp))
-
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-            HomeStatCard(label = "Today's Sales", value = "$${"%.2f".format(todaySales)}", modifier = Modifier.weight(1f))
-            HomeStatCard(label = "Today's Orders", value = todayOrders.toString(), modifier = Modifier.weight(1f))
-        }
-    }
-}
-
-@Composable
-private fun HomeStatCard(label: String, value: String, modifier: Modifier = Modifier) {
-    Surface(color = Color.White, shape = RoundedCornerShape(14.dp), modifier = modifier) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Text(value, color = DalabIndigo, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
-            Text(label, color = Color.Gray, style = MaterialTheme.typography.labelSmall)
-        }
-    }
-}
-
-// A separate, self-contained card — deliberately not merged into the
-// filterable orders list below it, which stays scoped to actionable
-// (mostly-pending) work. This one is a quick-glance feed of what just
-// happened across every status, sender-agnostic of the filter chips.
-@Composable
-private fun RecentActivityCard(orders: List<Order>) {
-    if (orders.isEmpty()) return
-
-    Card(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-        shape = RoundedCornerShape(16.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                "Recent Activity",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                color = DalabIndigo,
-            )
-            Spacer(Modifier.height(10.dp))
-            orders.forEachIndexed { index, order ->
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(order.customerName ?: "Customer", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-                        Text(order.companyName, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                Spacer(Modifier.width(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val (dotColor, label) = when (connectionState) {
+                        ConnectionState.CONNECTED -> Color(0xFF6FE39A) to "Connected"
+                        ConnectionState.CONNECTING -> Color(0xFFF2C200) to "Reconnecting…"
+                        ConnectionState.DISCONNECTED -> Color(0xFFF87171) to "Disconnected"
                     }
-                    Column(horizontalAlignment = Alignment.End) {
-                        Text("$${"%.2f".format(order.amount)}", fontWeight = FontWeight.Bold, color = DalabGreen)
-                        Spacer(Modifier.height(4.dp))
-                        StatusChip(order)
+                    Icon(Icons.Filled.Circle, contentDescription = null, tint = dotColor, modifier = Modifier.size(7.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Column {
+                        Text(label, color = Color.White.copy(alpha = 0.85f), style = MaterialTheme.typography.labelSmall)
+                        lastSyncedAt?.let {
+                            Text(
+                                SimpleDateFormat("HH:mm:ss", Locale.US).format(it),
+                                color = Color.White.copy(alpha = 0.7f),
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
                     }
                 }
-                if (index != orders.lastIndex) Divider(modifier = Modifier.padding(top = 2.dp))
             }
+        }
+    }
+}
+
+@Composable
+private fun NotificationBellButton(unreadCount: Int, onClick: () -> Unit) {
+    IconButton(onClick = onClick) {
+        BadgedBox(badge = {
+            if (unreadCount > 0) {
+                Badge(containerColor = Color(0xFFF87171)) {
+                    Text(if (unreadCount > 9) "9+" else unreadCount.toString())
+                }
+            }
+        }) {
+            Icon(Icons.Filled.Notifications, contentDescription = "Notifications", tint = Color.White)
+        }
+    }
+}
+
+// The two money-facing actions an agent checks constantly but that used to
+// require a trip into More on every visit — promoted onto Home per the
+// redesign, everything else that's checked far less often (Packages,
+// Device, Diagnostics, ...) stays in More.
+@Composable
+private fun QuickActionsRow(onOpenWallet: () -> Unit, onOpenMoneyExchange: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        QuickActionCard(
+            icon = Icons.Filled.AccountBalanceWallet,
+            label = "Wallet",
+            onClick = onOpenWallet,
+            modifier = Modifier.weight(1f),
+        )
+        QuickActionCard(
+            icon = Icons.Filled.CurrencyExchange,
+            label = "Money Exchange",
+            onClick = onOpenMoneyExchange,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+@Composable
+private fun QuickActionCard(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        onClick = onClick,
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(14.dp),
+        modifier = modifier.heightIn(min = 56.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(icon, contentDescription = null, tint = DalabIndigo, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(10.dp))
+            Text(label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
         }
     }
 }
@@ -423,7 +433,7 @@ private fun OrderCard(
                 }
             }
             Column(horizontalAlignment = Alignment.End) {
-                Text("$${"%.2f".format(order.amount)}", fontWeight = FontWeight.Bold)
+                Text("$${"%.2f".format(order.amount)}", fontWeight = FontWeight.Bold, color = DalabGreen)
                 StatusChip(order)
             }
         }

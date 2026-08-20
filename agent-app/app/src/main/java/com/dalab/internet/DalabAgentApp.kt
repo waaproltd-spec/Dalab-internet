@@ -4,6 +4,7 @@ import android.app.Application
 import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.auth.SessionManager
 import com.dalab.internet.diagnostics.DiagnosticsLog
+import com.dalab.internet.notifications.AgentAlertsState
 import com.dalab.internet.queue.PendingActionQueue
 import com.dalab.internet.sms.SmsListenerState
 
@@ -57,6 +58,7 @@ class DalabAgentApp : Application() {
         initSafely("device_identity_init") { DeviceIdentity.init(this) }
         initSafely("sms_listener_init") { SmsListenerState.init(this) }
         initSafely("pending_queue_init") { PendingActionQueue.init(this) }
+        initSafely("agent_alerts_init") { AgentAlertsState.init(this) }
     }
 
     private fun installCrashHandler() {

@@ -122,12 +122,17 @@ data class AgentProfile(
     val phone: String,
 )
 
+/**
+ * Mirrors GET /agent/notifications (notifications.routes.ts) — admin-sent
+ * system notices, camelCased from the `notifications` table's sent_at
+ * column. There is no per-agent read state server-side; "unread" is tracked
+ * locally, see AgentAlertsState.
+ */
 data class AgentNotification(
     val id: String,
     val title: String,
     val body: String,
-    val receivedAt: String,
-    val read: Boolean = false,
+    val sentAt: String,
 )
 
 /** Mirrors GET /companies (admin-backend-ts, companies.routes.ts) — public, no auth required. */

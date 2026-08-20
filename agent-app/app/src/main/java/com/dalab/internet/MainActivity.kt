@@ -12,6 +12,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Assessment
@@ -20,16 +23,18 @@ import androidx.compose.material.icons.filled.CurrencyExchange
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.People
-import androidx.compose.material.icons.filled.PointOfSale
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Sell
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.auth.SessionManager
@@ -37,10 +42,12 @@ import com.dalab.internet.data.ExchangeOrder
 import com.dalab.internet.data.Order
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.diagnostics.HeartbeatStats
+import com.dalab.internet.notifications.AgentAlertsState
 import com.dalab.internet.queue.PendingActionQueue
 import com.dalab.internet.service.AgentBackgroundService
 import com.dalab.internet.sms.SmsInboxScanner
 import com.dalab.internet.sms.SmsListenerState
+import com.dalab.internet.ui.AlertsScreen
 import com.dalab.internet.ui.AutoLoginScreen
 import com.dalab.internet.ui.CustomersScreen
 import com.dalab.internet.ui.DeviceSetupScreen
@@ -79,6 +86,7 @@ class MainActivity : ComponentActivity() {
         safely("pending_queue_init") { PendingActionQueue.init(this) }
         safely("diagnostics_init") { DiagnosticsLog.init(this) }
         safely("heartbeat_stats_init") { HeartbeatStats.init(this) }
+        safely("agent_alerts_init") { AgentAlertsState.init(this) }
         safely("notification_channel_init") { createNotificationChannel() }
 
         val loggedIn = try { SessionManager.isLoggedIn() } catch (e: Exception) {
@@ -123,7 +131,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, NOTIFICATIONS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP }
+private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, NOTIFICATIONS, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP }
 private enum class HomeTab { ORDERS, SALES, CUSTOMERS, REPORTS, MORE }
 
 @Composable
@@ -230,6 +238,7 @@ private fun AgentApp() {
             onOpenReliabilityDashboard = { screen = Screen.RELIABILITY_DASHBOARD },
             onOpenMoneyExchange = { screen = Screen.EXCHANGE_LIST },
             onOpenNotifications = { screen = Screen.NOTIFICATIONS },
+            onOpenAlerts = { screen = Screen.ALERTS },
             onOpenResellerWithdrawalSetup = { screen = Screen.RESELLER_WITHDRAWAL_INTERACTIVE_SETUP },
         )
 
@@ -271,6 +280,8 @@ private fun AgentApp() {
 
         Screen.NOTIFICATIONS -> NotificationsScreen(onBack = { screen = Screen.HOME })
 
+        Screen.ALERTS -> AlertsScreen(onBack = { screen = Screen.HOME })
+
         Screen.RESELLER_WITHDRAWAL_INTERACTIVE_SETUP -> ResellerWithdrawalInteractiveAccessibilitySetupScreen(onBack = { screen = Screen.HOME })
     }
 }
@@ -295,6 +306,7 @@ private fun AgentHome(
     onOpenReliabilityDashboard: () -> Unit,
     onOpenMoneyExchange: () -> Unit,
     onOpenNotifications: () -> Unit,
+    onOpenAlerts: () -> Unit,
     onOpenResellerWithdrawalSetup: () -> Unit,
 ) {
     var tab by remember { mutableStateOf(HomeTab.ORDERS) }
@@ -329,7 +341,7 @@ private fun AgentHome(
                 NavigationBarItem(
                     selected = tab == HomeTab.MORE,
                     onClick = { tab = HomeTab.MORE },
-                    icon = { Icon(Icons.Filled.PointOfSale, contentDescription = "More") },
+                    icon = { Icon(Icons.Filled.MoreHoriz, contentDescription = "More") },
                     label = { Text("More") },
                 )
             }
@@ -337,7 +349,12 @@ private fun AgentHome(
     ) { padding ->
         Box(modifier = Modifier.padding(padding)) {
             when (tab) {
-                HomeTab.ORDERS -> OrdersListScreen(onOpenOrder = onOpenOrder)
+                HomeTab.ORDERS -> OrdersListScreen(
+                    onOpenOrder = onOpenOrder,
+                    onOpenAlerts = onOpenAlerts,
+                    onOpenWallet = onOpenWallet,
+                    onOpenMoneyExchange = onOpenMoneyExchange,
+                )
                 HomeTab.SALES -> NewSaleScreen()
                 HomeTab.CUSTOMERS -> CustomersScreen()
                 HomeTab.REPORTS -> ReportsScreen()
@@ -358,6 +375,12 @@ private fun AgentHome(
     }
 }
 
+/**
+ * Grouped into categories instead of one long flat list, so an agent
+ * scanning for something specific isn't reading past unrelated items —
+ * Money first (what's checked most), then Catalog & Sales, Communication,
+ * then Device & Diagnostics (setup/troubleshooting, checked least often).
+ */
 @Composable
 private fun MoreScreen(
     onOpenPackages: () -> Unit,
@@ -371,75 +394,103 @@ private fun MoreScreen(
     onOpenNotifications: () -> Unit,
     onOpenResellerWithdrawalSetup: () -> Unit,
 ) {
-    Column(modifier = Modifier.fillMaxSize()) {
-        ListItem(
-            headlineContent = { Text("Notifications") },
-            supportingContent = { Text("Send a push notification to customers") },
-            leadingContent = { Icon(Icons.Filled.Notifications, contentDescription = null) },
-            modifier = Modifier.clickable(onClick = onOpenNotifications),
-        )
-        Divider()
-        ListItem(
-            headlineContent = { Text("Money Exchange") },
-            supportingContent = { Text("Verified exchanges waiting for payout") },
-            leadingContent = { Icon(Icons.Filled.CurrencyExchange, contentDescription = null) },
-            modifier = Modifier.clickable(onClick = onOpenMoneyExchange),
-        )
-        Divider()
-        ListItem(
-            headlineContent = { Text("Reseller Withdraw Setup") },
-            supportingContent = { Text("Enable automated multi-step payouts (e.g. eDahab)") },
-            leadingContent = { Icon(Icons.Filled.AccountBalanceWallet, contentDescription = null) },
-            modifier = Modifier.clickable(onClick = onOpenResellerWithdrawalSetup),
-        )
-        Divider()
-        ListItem(
-            headlineContent = { Text("Wallet Balances") },
-            supportingContent = { Text("Provider balances and live payment transactions") },
-            leadingContent = { Icon(Icons.Filled.AccountBalanceWallet, contentDescription = null) },
-            modifier = Modifier.clickable(onClick = onOpenWallet),
-        )
-        Divider()
-        ListItem(
-            headlineContent = { Text("Packages") },
-            supportingContent = { Text("Browse the full catalog and pricing") },
-            leadingContent = { Icon(Icons.Filled.List, contentDescription = null) },
-            modifier = Modifier.clickable(onClick = onOpenPackages),
-        )
-        Divider()
-        ListItem(
-            headlineContent = { Text("Transaction History") },
-            supportingContent = { Text("Orders you've completed") },
-            leadingContent = { Icon(Icons.Filled.History, contentDescription = null) },
-            modifier = Modifier.clickable(onClick = onOpenTransactions),
-        )
-        Divider()
-        ListItem(
-            headlineContent = { Text("Device") },
-            supportingContent = { Text(DeviceIdentity.deviceName() ?: "Choose which registered device this phone is") },
-            leadingContent = { Icon(Icons.Filled.PhoneAndroid, contentDescription = null) },
-            modifier = Modifier.clickable(onClick = onOpenDeviceSetup),
-        )
-        Divider()
-        ListItem(
-            headlineContent = { Text("Diagnostics") },
-            supportingContent = { Text("Recent errors and automatic retries on this device") },
-            leadingContent = { Icon(Icons.Filled.BugReport, contentDescription = null) },
-            modifier = Modifier.clickable(onClick = onOpenDiagnostics),
-        )
-        Divider()
-        ListItem(
-            headlineContent = { Text("Permissions") },
-            supportingContent = { Text("SMS + background service status for this device") },
-            leadingContent = { Icon(Icons.Filled.Security, contentDescription = null) },
-            modifier = Modifier.clickable(onClick = onOpenPermissionsStatus),
-        )
-        Divider()
-        ListItem(
-            headlineContent = { Text("Reliability Dashboard") },
-            supportingContent = { Text("Foreground service, heartbeat, SMS reader, connectivity, and offline queue — live") },
-            leadingContent = { Icon(Icons.Filled.Speed, contentDescription = null) },
-            modifier = Modifier.clickable(onClick = onOpenReliabilityDashboard),
-        )
+    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        MoreSection(title = "Money") {
+            MoreItem(
+                title = "Wallet Balances",
+                subtitle = "Provider balances and live payment transactions",
+                icon = Icons.Filled.AccountBalanceWallet,
+                onClick = onOpenWallet,
+            )
+            MoreItem(
+                title = "Money Exchange",
+                subtitle = "Verified exchanges waiting for payout",
+                icon = Icons.Filled.CurrencyExchange,
+                onClick = onOpenMoneyExchange,
+            )
+            MoreItem(
+                title = "Reseller Withdraw Setup",
+                subtitle = "Enable automated multi-step payouts (e.g. eDahab)",
+                icon = Icons.Filled.AccountBalanceWallet,
+                onClick = onOpenResellerWithdrawalSetup,
+            )
+        }
+        MoreSection(title = "Catalog & Sales") {
+            MoreItem(
+                title = "Packages",
+                subtitle = "Browse the full catalog and pricing",
+                icon = Icons.Filled.List,
+                onClick = onOpenPackages,
+            )
+            MoreItem(
+                title = "Transaction History",
+                subtitle = "Orders you've completed",
+                icon = Icons.Filled.History,
+                onClick = onOpenTransactions,
+            )
+        }
+        MoreSection(title = "Communication") {
+            MoreItem(
+                title = "Customer Broadcast",
+                subtitle = "Send a push notification to customers",
+                icon = Icons.Filled.Notifications,
+                onClick = onOpenNotifications,
+            )
+        }
+        MoreSection(title = "Device & Diagnostics") {
+            MoreItem(
+                title = "Device",
+                subtitle = DeviceIdentity.deviceName() ?: "Choose which registered device this phone is",
+                icon = Icons.Filled.PhoneAndroid,
+                onClick = onOpenDeviceSetup,
+            )
+            MoreItem(
+                title = "Permissions",
+                subtitle = "SMS + background service status for this device",
+                icon = Icons.Filled.Security,
+                onClick = onOpenPermissionsStatus,
+            )
+            MoreItem(
+                title = "Reliability Dashboard",
+                subtitle = "Foreground service, heartbeat, SMS reader, connectivity, and offline queue — live",
+                icon = Icons.Filled.Speed,
+                onClick = onOpenReliabilityDashboard,
+            )
+            MoreItem(
+                title = "Diagnostics",
+                subtitle = "Recent errors and automatic retries on this device",
+                icon = Icons.Filled.BugReport,
+                onClick = onOpenDiagnostics,
+            )
+        }
+        Spacer(Modifier.height(16.dp))
     }
+}
+
+@Composable
+private fun MoreSection(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Text(
+        title.uppercase(),
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 4.dp),
+    )
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+        shape = RoundedCornerShape(14.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+    ) {
+        Column(content = content)
+    }
+}
+
+@Composable
+private fun MoreItem(title: String, subtitle: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
+    ListItem(
+        headlineContent = { Text(title) },
+        supportingContent = { Text(subtitle) },
+        leadingContent = { Icon(icon, contentDescription = null) },
+        modifier = Modifier.clickable(onClick = onClick),
+    )
 }
