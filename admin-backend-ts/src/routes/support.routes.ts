@@ -110,7 +110,43 @@ async function serializeConversation(row: any, opts: { includeMessages?: boolean
   return out;
 }
 
+/**
+ * The single "who can take a new conversation right now" lookup, shared by
+ * every place that needs to auto-assign one: starting a new conversation,
+ * checking availability before starting one, and re-homing a conversation
+ * the instant its agent goes offline. An "idle" actor is online with
+ * nothing currently assigned to them.
+ */
+async function findIdleOnlineActor(): Promise<{ actor_id: string; actor_role: SupportActorRole } | null> {
+  return queryOne<{ actor_id: string; actor_role: SupportActorRole }>(
+    `SELECT s.admin_id AS actor_id, s.actor_role FROM support_agent_status s
+     WHERE s.online = true
+       AND NOT EXISTS (
+         SELECT 1 FROM support_conversations c
+         WHERE c.agent_id = s.admin_id AND c.agent_role = s.actor_role AND c.status = 'assigned'
+       )
+     ORDER BY s.updated_at ASC
+     LIMIT 1`
+  );
+}
+
+async function isAnyAgentOnline(): Promise<boolean> {
+  const row = await queryOne<{ exists: boolean }>(
+    `SELECT EXISTS(SELECT 1 FROM support_agent_status WHERE online = true) AS exists`
+  );
+  return row?.exists === true;
+}
+
 // ---------------- Customer-facing ----------------
+
+// Lets the Customer App check "is anyone actually online right now" before
+// committing to Contact an Agent -- distinct from the queued/pending
+// fallback POST /support/conversations itself still offers (leave a message,
+// an agent responds later): this is for a caller that wants a hard yes/no
+// instead of always getting a conversation record back.
+supportRouter.get("/support/agent-availability", requireAuth("customer"), async (_req, res) => {
+  sendJson(res, 200, { online: await isAnyAgentOnline() });
+});
 
 // Idempotent by design: a customer can only ever have one open (queued /
 // pending / assigned) conversation at a time -- enforced twice, once here
@@ -142,20 +178,8 @@ supportRouter.post(
     // entirely and connects immediately. Otherwise: queued (someone is
     // online, just busy) or pending (nobody is online at all -- the "leave
     // a message" case).
-    const idleActor = await queryOne<{ actor_id: string; actor_role: SupportActorRole }>(
-      `SELECT s.admin_id AS actor_id, s.actor_role FROM support_agent_status s
-       WHERE s.online = true
-         AND NOT EXISTS (
-           SELECT 1 FROM support_conversations c
-           WHERE c.agent_id = s.admin_id AND c.agent_role = s.actor_role AND c.status = 'assigned'
-         )
-       ORDER BY s.updated_at ASC
-       LIMIT 1`
-    );
-    const anyOnline = await queryOne<{ exists: boolean }>(
-      `SELECT EXISTS(SELECT 1 FROM support_agent_status WHERE online = true) AS exists`
-    );
-    const agentOnline = anyOnline?.exists === true;
+    const idleActor = await findIdleOnlineActor();
+    const agentOnline = await isAnyAgentOnline();
 
     const status = idleActor ? "assigned" : agentOnline ? "queued" : "pending";
     const id = randomUUID();
@@ -325,6 +349,20 @@ dual("put", "/admin/support/status", "/agent/support/status", requireSupportActo
         "The agent went offline. You'll be connected to the next available agent.",
       ]);
       broadcast({ type: "support_conversation.updated", conversationId: row.id });
+    }
+
+    // Don't just leave the freed conversations sitting in the pool for
+    // whenever someone next hits claim-next -- if another agent is already
+    // online and idle right now, hand them over immediately (oldest-first,
+    // same claimNextForAgent FIFO claim every other auto-assign path uses).
+    // One attempt per conversation just freed; stops as soon as nobody's
+    // idle anymore.
+    for (let i = 0; i < reassigned.length; i++) {
+      const idleActor = await findIdleOnlineActor();
+      if (!idleActor) break;
+      const claimed = await claimNextForAgent({ id: idleActor.actor_id, role: idleActor.actor_role });
+      if (!claimed) break;
+      broadcast({ type: "support_conversation.updated", conversationId: claimed.id });
     }
   }
 
