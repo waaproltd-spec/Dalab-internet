@@ -41,6 +41,7 @@ data class HeartbeatRequest(
     val recentDiagnostics: List<DiagnosticsEntryDto>? = null,
 )
 data class LoginResponse(val accessToken: String, val refreshToken: String, val agent: AgentProfile)
+data class RegisterDeviceTokenRequest(val fcmToken: String)
 data class RefreshRequest(val refreshToken: String)
 data class RefreshResponse(val accessToken: String, val refreshToken: String)
 data class VerifyPaymentRequest(val smsLogId: String? = null)
@@ -217,6 +218,15 @@ interface ApiService {
 
     @GET("notifications/campaigns")
     suspend fun getNotificationCampaigns(): Response<List<NotificationCampaign>>
+
+    // Registers/clears this device's FCM token so a newly-assigned support
+    // conversation can push straight to it -- see notifications/
+    // AgentFcmService.kt and PushTokenRegistrar.kt.
+    @POST("agent/notifications/register-device")
+    suspend fun registerAgentDeviceToken(@Body body: RegisterDeviceTokenRequest): Response<Unit>
+
+    @POST("agent/notifications/unregister-device")
+    suspend fun unregisterAgentDeviceToken(@Body body: RegisterDeviceTokenRequest): Response<Unit>
 
     // ---------------- Agent Support ----------------
     // Same routes the Admin Dashboard's "Agent Support" panel uses (registered

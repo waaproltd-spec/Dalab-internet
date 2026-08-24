@@ -6,6 +6,7 @@ import { rateLimit } from "../auth/rateLimit.js";
 import { sendJson } from "../utils/camelCase.js";
 import { broadcast } from "../realtime/orderEvents.js";
 import { parseDataUri } from "../utils/dataUri.js";
+import { sendPushToAgent } from "../services/push.js";
 
 export const supportRouter = Router();
 
@@ -192,6 +193,32 @@ async function isAnyAgentOnline(): Promise<boolean> {
   return row?.exists === true;
 }
 
+/**
+ * Real mobile push the instant a conversation becomes 'assigned' to an
+ * actor without them having tapped anything themselves — a customer's "La
+ * xiriir Agent" landing directly on an idle agent, or the system
+ * auto-claiming a freed/queued conversation onto whoever just came online
+ * (see the three call sites below). Deliberately NOT called from the
+ * agent-initiated claim-next/claim-one routes — the agent is already
+ * looking at the app there, a push would be redundant.
+ *
+ * Only role==='agent' (the native Agent App, FCM-capable) ever has a
+ * registered device token; Admin Dashboard staff handle support from the
+ * browser and are silently skipped (sendPushToAgent would just find zero
+ * rows for an admin_users id against agent_device_tokens' agents FK).
+ * Best-effort like every other push in this codebase — a delivery failure
+ * must never fail the assignment itself, so this never throws.
+ */
+async function notifyAssignedAgent(actor: SupportActor, conversationId: string): Promise<void> {
+  if (actor.role !== "agent") return;
+  await sendPushToAgent(actor.id, {
+    title: "🔔 Customer Support",
+    body: "Customer ayaa u baahan caawimaad.",
+    channelId: "support_requests",
+    data: { screen: "support_conversation", conversationId },
+  });
+}
+
 // ---------------- Customer-facing ----------------
 
 // Idempotent by design: a customer can only ever have one open (queued /
@@ -266,6 +293,9 @@ supportRouter.post(
     ]);
 
     broadcast({ type: "support_conversation.updated", conversationId: id });
+    if (idleActor) {
+      await notifyAssignedAgent({ id: idleActor.actor_id, role: idleActor.actor_role }, id);
+    }
     sendJson(res, 201, await serializeConversation(conversation, { includeMessages: true }));
   }
 );
@@ -489,9 +519,15 @@ dual("put", "/admin/support/status", "/agent/support/status", requireSupportActo
     for (let i = 0; i < reassigned.length; i++) {
       const idleActor = await findIdleOnlineActor();
       if (!idleActor) break;
-      const claimed = await claimNextForAgent({ id: idleActor.actor_id, role: idleActor.actor_role });
+      const reassignedActor: SupportActor = { id: idleActor.actor_id, role: idleActor.actor_role };
+      const claimed = await claimNextForAgent(reassignedActor);
       if (!claimed) break;
       broadcast({ type: "support_conversation.updated", conversationId: claimed.id });
+      // This actor didn't tap anything -- the conversation just landed on
+      // them because the agent who had it went offline -- so, unlike the
+      // "coming online" branch below (that actor is already looking at the
+      // app), this one genuinely needs a push.
+      await notifyAssignedAgent(reassignedActor, claimed.id);
     }
   } else {
     // Coming online: this actor is immediately idle (they can't have

@@ -157,6 +157,35 @@ notificationsRouter.post("/notifications/unregister-device", requireAuth("custom
   sendJson(res, 200, { ok: true });
 });
 
+// Called once on login/app-start with the device's current FCM token, and
+// again on token refresh — same upsert pattern as the customer route above,
+// scoped to the agents table (native Agent App logins only; Admin Dashboard
+// staff use the browser and never call this). Registered here so an assigned
+// support conversation can push straight to the agent's phone even while the
+// app is backgrounded/minimized/screen-locked — see support.routes.ts's
+// notifyAssignedAgent() and push.ts's sendPushToAgent().
+notificationsRouter.post("/agent/notifications/register-device", requireAuth("agent"), async (req, res) => {
+  const { fcmToken } = req.body;
+  if (!fcmToken || typeof fcmToken !== "string") {
+    return sendJson(res, 400, { error: "fcmToken is required" });
+  }
+  await query(
+    `INSERT INTO agent_device_tokens (id, agent_id, fcm_token, last_seen_at)
+     VALUES ($1,$2,$3,now())
+     ON CONFLICT (fcm_token) DO UPDATE SET agent_id=$2, last_seen_at=now()`,
+    [randomUUID(), req.auth!.sub, fcmToken]
+  );
+  sendJson(res, 200, { ok: true });
+});
+
+notificationsRouter.post("/agent/notifications/unregister-device", requireAuth("agent"), async (req, res) => {
+  const { fcmToken } = req.body;
+  if (fcmToken) {
+    await query(`DELETE FROM agent_device_tokens WHERE fcm_token=$1 AND agent_id=$2`, [fcmToken, req.auth!.sub]);
+  }
+  sendJson(res, 200, { ok: true });
+});
+
 notificationsRouter.post("/admin/notifications/send", requireStaff(), async (req, res) => {
   const { type, title, body } = req.body;
   if (!["push", "promotion", "maintenance"].includes(type) || !title) {

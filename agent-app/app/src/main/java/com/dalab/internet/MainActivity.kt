@@ -3,11 +3,13 @@ package com.dalab.internet
 import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -44,6 +46,8 @@ import com.dalab.internet.data.Order
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.diagnostics.HeartbeatStats
 import com.dalab.internet.notifications.AgentAlertsState
+import com.dalab.internet.notifications.PushTokenRegistrar
+import com.dalab.internet.notifications.SupportDeepLink
 import com.dalab.internet.queue.PendingActionQueue
 import com.dalab.internet.service.AgentBackgroundService
 import com.dalab.internet.sms.SmsInboxScanner
@@ -90,6 +94,7 @@ class MainActivity : ComponentActivity() {
         safely("heartbeat_stats_init") { HeartbeatStats.init(this) }
         safely("agent_alerts_init") { AgentAlertsState.init(this) }
         safely("notification_channel_init") { createNotificationChannel() }
+        safely("support_deep_link_init") { handleIntent(intent) }
 
         val loggedIn = try { SessionManager.isLoggedIn() } catch (e: Exception) {
             DiagnosticsLog.record("session_check", "isLoggedIn() failed: ${e.message}"); false
@@ -114,6 +119,27 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) {
             DiagnosticsLog.record(tag, "Failed: ${e.stackTraceToString().take(2000)}")
         }
+    }
+
+    // Cold start: the notification tap itself launched this Activity, so the
+    // extra is already on the very first Intent onCreate() sees.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        // Warm start: android:launchMode="singleTop" (manifest) routes a
+        // notification tap here instead of spawning a second instance, while
+        // this Activity is already showing some other screen.
+        safely("support_deep_link_new_intent") { handleIntent(intent) }
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_OPEN_SUPPORT, false) == true) {
+            SupportDeepLink.pending = true
+        }
+    }
+
+    companion object {
+        const val EXTRA_OPEN_SUPPORT = "open_support"
     }
 
     private fun createNotificationChannel() {
@@ -178,6 +204,41 @@ private fun AgentApp() {
     var selectedOrder by remember { mutableStateOf<Order?>(null) }
     var selectedExchangeOrder by remember { mutableStateOf<ExchangeOrder?>(null) }
     val scope = rememberCoroutineScope()
+
+    // A support-request push (support.routes.ts's notifyAssignedAgent()) was
+    // tapped -- jump straight to the Support screen, which shows whichever
+    // conversation is actually assigned to this agent (only ever one at a
+    // time), no conversationId needed. Only fires once logged in and past
+    // setup -- an agent who somehow taps a notification before finishing
+    // device setup just lands wherever setup leaves them; the flag stays set
+    // and is picked up the next time this effect re-runs.
+    LaunchedEffect(SupportDeepLink.pending, screen) {
+        if (SupportDeepLink.pending && (screen == Screen.HOME || screen == Screen.SUPPORT)) {
+            SupportDeepLink.pending = false
+            screen = Screen.SUPPORT
+        }
+    }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* Best-effort -- a denial just means no system-tray notification, the
+          push itself still arrives and Support still shows the new
+          conversation once opened. */ }
+
+    // Registers this device's FCM token (and requests POST_NOTIFICATIONS on
+    // Android 13+) once the agent actually reaches Home -- covers both a
+    // fresh login and a resumed session, since a valid session skips
+    // AutoLoginScreen entirely on every subsequent cold start.
+    LaunchedEffect(screen == Screen.HOME) {
+        if (screen == Screen.HOME) {
+            if (Build.VERSION.SDK_INT >= 33 &&
+                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            ) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            PushTokenRegistrar.registerIfNeeded(context)
+        }
+    }
 
     // Granting READ_SMS/RECEIVE_SMS previously only enabled the live receiver
     // for messages from that moment forward — READ_SMS itself was requested

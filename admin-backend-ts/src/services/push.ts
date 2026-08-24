@@ -77,6 +77,12 @@ export interface PushPayload {
    * background/terminated-state handler to decide what tapping it opens.
    * FCM requires every data value to be a string. */
   data?: Record<string, string>;
+  /** Android notification channel to post into — the receiving app must have
+   * already created a channel with this id (Android 8+), or the OS silently
+   * drops the notification. Defaults to "dalab_updates" (the Customer App's
+   * existing channel); the Agent App's support-request push uses its own
+   * "support_requests" channel instead, see support.routes.ts. */
+  channelId?: string;
 }
 
 interface SendResult {
@@ -120,7 +126,7 @@ export async function sendPushToTokens(tokens: string[], payload: PushPayload): 
           // message — required for the "closed app" case the notification
           // still needs to reach.
           priority: "high",
-          notification: { channelId: "dalab_updates" },
+          notification: { channelId: payload.channelId ?? "dalab_updates" },
         },
       });
       response.responses.forEach((r, idx) => {
@@ -180,6 +186,36 @@ export async function sendPushToCustomer(
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("sendPushToCustomer failed:", (err as Error).message);
+    return { attempted: true, delivered: false };
+  }
+}
+
+/** Same as sendPushToCustomer, but for a native Agent App login (the `agents`
+ * table, agent_device_tokens — see migration 064). Only ever called for a
+ * role==='agent' actor: Admin Dashboard staff (admin_users) handle support
+ * from the browser and never register an FCM token, so there is nothing to
+ * look up for them — see support.routes.ts's notifyAssignedAgent(). */
+export async function sendPushToAgent(
+  agentId: string,
+  payload: PushPayload
+): Promise<{ attempted: boolean; delivered: boolean }> {
+  try {
+    const rows = await query<{ fcm_token: string }>(
+      `SELECT fcm_token FROM agent_device_tokens WHERE agent_id=$1`,
+      [agentId]
+    );
+    if (rows.length === 0) return { attempted: false, delivered: false };
+
+    const tokens = rows.map((r) => r.fcm_token);
+    const result = await sendPushToTokens(tokens, payload);
+
+    if (result.invalidTokens.length > 0) {
+      await query(`DELETE FROM agent_device_tokens WHERE fcm_token = ANY($1)`, [result.invalidTokens]);
+    }
+    return { attempted: true, delivered: result.successCount > 0 };
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("sendPushToAgent failed:", (err as Error).message);
     return { attempted: true, delivered: false };
   }
 }
