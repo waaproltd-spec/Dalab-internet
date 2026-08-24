@@ -6,7 +6,7 @@ import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { hashPassword, verifyPassword, isValidPin } from "../auth/crypto.js";
 import { parseDataUri } from "../utils/dataUri.js";
-import { validateMobileNumber } from "../lib/phoneValidation.js";
+import { validateMobileNumber, companyKeyFromLabel } from "../lib/phoneValidation.js";
 
 export const customersRouter = Router();
 
@@ -400,6 +400,104 @@ customersRouter.put("/customer/wallet-numbers", requireAuth("customer"), async (
     [evcPlusName, evcPlusNumber, evcPlusSavedAt, edahabName, edahabNumber, edahabSavedAt, req.auth!.sub]
   );
   sendJson(res, 200, await queryOne(`SELECT ${CUSTOMER_PROFILE_COLUMNS} FROM customers WHERE id=$1`, [req.auth!.sub]));
+});
+
+// ---------------- Customer: Offline Auto-Order profile ----------------
+// A completely separate configuration path from Online ordering (see
+// orders.routes.ts's POST /orders) — Online sender/destination numbers are
+// entered per-order and never read or write anything here (spec requirement
+// 19). This is the customer's own standing "no internet, just send the
+// payment" setup — sender number, destination number, Company, and
+// Package — saved together from one screen and reused by every future
+// automatic Offline order (offlineAutoOrder.ts's matchOrCreateOfflineAutoOrder)
+// until edited again. Admin never configures an individual customer's
+// Offline Profile (spec requirement 4) — only the catalog it's built from:
+// companies/packages/prices/payment numbers, via companies.routes.ts.
+const OFFLINE_PROFILE_COLUMNS =
+  "offline_sender_number, offline_destination_number, offline_company_id, offline_package_id, offline_profile_updated_at";
+
+async function serializeOfflineProfile(customerId: string) {
+  const row = await queryOne<{
+    offline_sender_number: string | null;
+    offline_destination_number: string | null;
+    offline_company_id: string | null;
+    offline_package_id: string | null;
+    offline_profile_updated_at: string | null;
+  }>(`SELECT ${OFFLINE_PROFILE_COLUMNS} FROM customers WHERE id=$1`, [customerId]);
+  if (!row) return null;
+  // The authoritative price always comes from the package row itself, never
+  // stored redundantly on the customer (spec requirement 5) — a later admin
+  // price change is reflected here automatically, and offlineAutoOrder.ts
+  // reads the same live package.price at match time, never a snapshot.
+  const company = row.offline_company_id ? await queryOne(`SELECT id, name, color_hex, logo_url FROM companies WHERE id=$1`, [row.offline_company_id]) : null;
+  const pkg = row.offline_package_id
+    ? await queryOne(
+        `SELECT id, company_id, category_id, name, old_price, price, mb, minutes, sms, validity FROM packages WHERE id=$1`,
+        [row.offline_package_id]
+      )
+    : null;
+  return {
+    senderNumber: row.offline_sender_number,
+    destinationNumber: row.offline_destination_number,
+    company,
+    package: pkg,
+    updatedAt: row.offline_profile_updated_at,
+  };
+}
+
+customersRouter.get("/customer/offline-profile", requireAuth("customer"), async (req, res) => {
+  const profile = await serializeOfflineProfile(req.auth!.sub);
+  if (!profile) return sendJson(res, 404, { error: "Customer not found" });
+  sendJson(res, 200, profile);
+});
+
+// All four fields are saved together, every time — Company and Package are
+// coupled (a package must belong to the chosen company), and the whole
+// point of one screen with one Save button (spec requirement 2/18) is that
+// there's no intermediate, partially-configured profile to reason about.
+// Price is never accepted from the client (spec requirement 5/16) — it's
+// always read back from the package the customer picked, here and again at
+// match time.
+customersRouter.put("/customer/offline-profile", requireAuth("customer"), async (req, res) => {
+  const { senderNumber, destinationNumber, companyId, packageId } = req.body ?? {};
+  if (!senderNumber || !destinationNumber || !companyId || !packageId) {
+    return sendJson(res, 400, { error: "senderNumber, destinationNumber, companyId, and packageId are all required" });
+  }
+
+  const company = await queryOne<{ id: string; name: string; status: string }>(
+    `SELECT id, name, status FROM companies WHERE id=$1 AND deleted_at IS NULL`,
+    [companyId]
+  );
+  if (!company) return sendJson(res, 404, { error: "Company not found" });
+  if (company.status === "offline") return sendJson(res, 409, { error: `${company.name} is currently offline` });
+
+  const pkg = await queryOne<{ id: string; company_id: string }>(`SELECT id, company_id FROM packages WHERE id=$1 AND active=true`, [packageId]);
+  if (!pkg) return sendJson(res, 404, { error: "Package not found" });
+  if (pkg.company_id !== companyId) return sendJson(res, 400, { error: "Package does not belong to the selected company" });
+
+  // Sender: any known carrier accepted, same as Online's optional senderPhone
+  // (no specific payment method to narrow it to — Offline Profile only
+  // saves a Company, not a specific EVC Plus/eDahab/... method within it).
+  const senderCheck = validateMobileNumber(String(senderNumber));
+  if (!senderCheck.valid) return sendJson(res, 400, { error: senderCheck.error });
+  // Destination: must belong to the selected company's own carrier, same
+  // rule Online's receiverPhone already enforces.
+  const destinationCheck = validateMobileNumber(String(destinationNumber), companyKeyFromLabel(company.name));
+  if (!destinationCheck.valid) return sendJson(res, 400, { error: destinationCheck.error });
+
+  await query(
+    `UPDATE customers SET offline_sender_number=$1, offline_destination_number=$2, offline_company_id=$3, offline_package_id=$4, offline_profile_updated_at=now() WHERE id=$5`,
+    [String(senderNumber), String(destinationNumber), companyId, packageId, req.auth!.sub]
+  );
+  sendJson(res, 200, await serializeOfflineProfile(req.auth!.sub));
+});
+
+customersRouter.delete("/customer/offline-profile", requireAuth("customer"), async (req, res) => {
+  await query(
+    `UPDATE customers SET offline_sender_number=NULL, offline_destination_number=NULL, offline_company_id=NULL, offline_package_id=NULL, offline_profile_updated_at=NULL WHERE id=$1`,
+    [req.auth!.sub]
+  );
+  sendJson(res, 200, { ok: true });
 });
 
 // Same ON DELETE RESTRICT constraint as the admin delete route — a customer

@@ -15,6 +15,7 @@ import { extractBalanceFromSms, resolveCompanyIdByProviderName, resolveDeviceSlo
 import { broadcast } from "../realtime/orderEvents.js";
 import { verifyOrderAndGenerateUssd } from "./orders.routes.js";
 import { autoAdvanceExchangeOrderToInProgress } from "./exchange.routes.js";
+import { matchOrCreateOfflineAutoOrder } from "./offlineAutoOrder.js";
 import {
   findMatchingResellerDeposit,
   confirmResellerDepositViaSms,
@@ -482,7 +483,21 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
     if (existingByRef) return buildAlreadyProcessedResult(existingByRef, transactionRef, effectiveReceivedAt, parsedPhone, parsedAmount);
   }
 
-  const { order: match, reason: matchFailureReason } = await findMatchingOrder(parsedAmount, parsedPhone, agentId, simSlot);
+  const { order: storeMatch, reason: matchFailureReason } = await findMatchingOrder(parsedAmount, parsedPhone, agentId, simSlot);
+
+  // Offline Auto-Order only runs when the Store matcher found nothing for
+  // this SMS — a payment that matches a real pending online order always
+  // wins first, exactly like every other fallback matcher below. Unlike
+  // those, a match here also CREATES the order (there's no pre-existing one
+  // to link) — see offlineAutoOrder.ts for why.
+  let offlineAutoMatch: OrderMatch | null = null;
+  let offlineAutoMatchFailureReason: string | null = null;
+  if (!storeMatch) {
+    const offlineResult = await matchOrCreateOfflineAutoOrder(parsedAmount, parsedPhone, parsedProvider, transactionRef, agentId, simSlot);
+    offlineAutoMatch = offlineResult.order;
+    offlineAutoMatchFailureReason = offlineResult.reason;
+  }
+  const match = storeMatch ?? offlineAutoMatch;
 
   // Exchange matching only runs when the Store matcher found nothing — an
   // SMS that's genuinely a Store payment is never redirected here.
@@ -521,6 +536,7 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
       ? null
       : [
           matchFailureReason,
+          offlineAutoMatchFailureReason ? `Offline Auto-Order: ${offlineAutoMatchFailureReason}` : null,
           exchangeMatchFailureReason ? `Exchange: ${exchangeMatchFailureReason}` : null,
           resellerMatchFailureReason ? `Reseller Deposit: ${resellerMatchFailureReason}` : null,
           resellerWithdrawalMatchFailureReason ? `Reseller Withdraw: ${resellerWithdrawalMatchFailureReason}` : null,
