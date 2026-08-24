@@ -1,0 +1,14 @@
+-- Reseller Withdraw automatic SMS matching — same role as
+-- sms_logs.matched_reseller_deposit_id (migration 055): an O(1) "did this
+-- exact SMS already resolve to a Reseller Withdraw" check and a stable
+-- audit trail entry point.
+--
+-- Deliberately NOT paired with a device_id/sim_slot column on any
+-- withdrawal-side table the way Deposit's reseller_deposit_methods got one
+-- (migration 055): the outgoing "payout sent" SMS lands on the RESELLER'S
+-- OWN phone (they dial the payout themselves, per the existing "Dial to
+-- Pay" pattern), which is not one of this system's registered
+-- agent_devices — there is currently no device/SIM identity to verify
+-- against for this direction. See resellerSmsMatching.ts's header comment
+-- on findMatchingResellerWithdrawal for the open question this leaves.
+ALTER TABLE sms_logs ADD COLUMN IF NOT EXISTS matched_reseller_withdrawal_id TEXT REFERENCES reseller_withdrawals(id) ON DELETE SET NULL;

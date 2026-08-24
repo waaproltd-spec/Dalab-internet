@@ -332,9 +332,88 @@ object HormuudEvcPlusPayoutSentParser : ExchangePayoutSentParser {
     }
 }
 
+/**
+ * Hormuud's OTHER outgoing-transfer confirmation format — sent from its
+ * "E-Voucher" sender (740), not the "[-EVCPLUS-]"/192-or-EVCPLUS one
+ * [HormuudEvcPlusPayoutSentParser] already handles. Confirmed live three
+ * times for the same real Reseller Withdraw payout (WDR220317059):
+ * "[-E-Voucher-] $1.05 ayaad uwareejisay YAASIIN MAXAMED AADAN(617080008),
+ *  Haraagaagu waa $2.27.\nLa soo deg App-ka WAAFI http://onelink.to/waafi"
+ * Hormuud apparently sends this same kind of outgoing-transfer confirmation
+ * through either channel depending on the transaction/route — this app
+ * needs to recognize both. Sender 740 is also [HormuudEVoucherParser]'s own
+ * sender, but that parser's English "transferred...to..." wording never
+ * matches this Somali "ayaad uwareejisay...(...)" phrasing (confirmed: all
+ * three real captured samples went completely unparsed — parsed_provider/
+ * parsed_amount/parsed_phone all null in sms_logs — until this parser was
+ * added), so the two coexist safely: at most one of them will ever match a
+ * given real message body, never both.
+ */
+object HormuudEVoucherPayoutSentParser : ExchangePayoutSentParser {
+    override val senders: List<String>
+        get() = SmsSenderIdRepository.sendersFor("hormuud_e_voucher", listOf("740"))
+
+    private val pattern = Regex(
+        """\$$AMOUNT_PATTERN\s*ayaad\s+uwareejisay\s+.+?\((\d{6,15})\)""",
+        RegexOption.IGNORE_CASE
+    )
+
+    override fun tryParse(sender: String, body: String): ExchangePayoutConfirmedEntry? {
+        if (senders.none { it.equals(sender.trim(), ignoreCase = true) }) return null
+        if (!body.contains("uwareejisay", ignoreCase = true)) return null
+        val match = pattern.find(body) ?: return null
+        val (amount, phone) = match.destructured
+        val parsedAmount = parseAmount(amount) ?: return null
+        return ExchangePayoutConfirmedEntry(receiverPhone = phone, amount = parsedAmount, provider = "Hormuud", rawText = body)
+    }
+}
+
+/**
+ * Somtel eDahab's OTHER outgoing-transfer confirmation format — sent from
+ * shortcode "252888", not the "eDahab"-tagged sender
+ * [SomtelEdahabPayoutSentParser] already handles. Confirmed live against a
+ * real Reseller Withdraw eDahab payout (WDR569919272, 2026-08-19): the
+ * automated dial correctly typed every reply but got no final on-screen
+ * confirmation within budget (AMBIGUOUS — a real carrier/OEM timing gap,
+ * not a bug in the dial automation itself), yet the real confirming SMS
+ * still arrived seconds later:
+ * "Waxaad ku wareejisay 1.2000 Dollars macmiilka 629309509." — completely
+ * different wording from [SomtelEdahabPayoutSentParser]'s "X Dollar ayad u
+ * warejisay ... No: Y" template (different verb phrase, "Dollars" not
+ * "Dollar", "macmiilka" not "No:"), so that parser correctly declined to
+ * match it — this is a second real-world Somtel template, not a bug in the
+ * existing one. Mirrors exactly how Hormuud already has two coexisting
+ * outgoing-transfer parsers for its own two real wordings
+ * ([HormuudEvcPlusPayoutSentParser]/[HormuudEVoucherPayoutSentParser]): at
+ * most one of any given provider's parsers will ever match a given real
+ * message body, never both, so they coexist safely.
+ */
+object SomtelWareejisayPayoutSentParser : ExchangePayoutSentParser {
+    // A distinct provider key from SomtelEdahabPayoutSentParser's
+    // "somtel_edahab" — same reasoning as Hormuud's two separate keys —
+    // so an admin-configured sender list for one wording's shortcode can
+    // never accidentally widen or narrow the other's.
+    override val senders: List<String>
+        get() = SmsSenderIdRepository.sendersFor("somtel_edahab_wareejisay", listOf("252888"))
+
+    private val pattern = Regex(
+        """Waxaad\s+ku\s+wareejisay\s+$AMOUNT_PATTERN\s*Dollars\s+macmiilka\s+(\d{6,15})""",
+        RegexOption.IGNORE_CASE
+    )
+
+    override fun tryParse(sender: String, body: String): ExchangePayoutConfirmedEntry? {
+        if (senders.none { it.equals(sender.trim(), ignoreCase = true) }) return null
+        val match = pattern.find(body) ?: return null
+        val (amount, phone) = match.destructured
+        val parsedAmount = parseAmount(amount) ?: return null
+        return ExchangePayoutConfirmedEntry(receiverPhone = phone, amount = parsedAmount, provider = "Somtel", rawText = body)
+    }
+}
+
 /** Registry for Money Exchange payout confirmations — mirrors [VoucherSentParsers]. */
 object ExchangePayoutSentParsers {
-    val ALL: List<ExchangePayoutSentParser> = listOf(SomtelEdahabPayoutSentParser, HormuudEvcPlusPayoutSentParser)
+    val ALL: List<ExchangePayoutSentParser> =
+        listOf(SomtelEdahabPayoutSentParser, SomtelWareejisayPayoutSentParser, HormuudEvcPlusPayoutSentParser, HormuudEVoucherPayoutSentParser)
 
     fun parse(sender: String, body: String): ExchangePayoutConfirmedEntry? {
         for (parser in ALL) {

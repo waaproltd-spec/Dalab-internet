@@ -57,13 +57,30 @@ export function decrypt(stored: string): string {
 const JWT_SECRET: string = requiredSecret("JWT_SECRET", "dev-only-jwt-secret-change-in-production");
 const ACCESS_TTL_SECONDS = 15 * 60;
 const REFRESH_TTL_SECONDS = 30 * 24 * 60 * 60;
+// Resellers get a far longer-lived refresh token than every other role: the
+// product requirement is that a Reseller signs in once with their admin-
+// issued ID + PIN and is never asked again on that device, no matter how
+// long they go between opens ("even after 1 year") -- the only thing that
+// should ever force it is an explicit Logout tap or Admin disabling the
+// account (see /auth/refresh's existing reseller-status check, which this
+// long TTL doesn't change). 10 years is effectively "forever" for a mobile
+// app's realistic lifetime without ever risking an unbounded/non-expiring
+// JWT. Customer/agent/admin keep the original 30-day TTL -- unrelated to
+// this requirement and deliberately left unchanged.
+const RESELLER_REFRESH_TTL_SECONDS = 10 * 365 * 24 * 60 * 60;
+
+function refreshTtlSecondsForRole(role: Role): number {
+  return role === "reseller" ? RESELLER_REFRESH_TTL_SECONDS : REFRESH_TTL_SECONDS;
+}
 
 export function signAccessToken(sub: string, role: Role): string {
   return jwt.sign({ sub, role } as object, JWT_SECRET, { expiresIn: ACCESS_TTL_SECONDS } as SignOptions);
 }
 
 export function signRefreshToken(sub: string, role: Role, jti: string): string {
-  return jwt.sign({ sub, role, type: "refresh", jti } as object, JWT_SECRET, { expiresIn: REFRESH_TTL_SECONDS } as SignOptions);
+  return jwt.sign({ sub, role, type: "refresh", jti } as object, JWT_SECRET, {
+    expiresIn: refreshTtlSecondsForRole(role),
+  } as SignOptions);
 }
 
 export function verifyToken(token: string): JwtPayload | null {
@@ -74,15 +91,37 @@ export function verifyToken(token: string): JwtPayload | null {
   }
 }
 
-export const REFRESH_TTL_MS = REFRESH_TTL_SECONDS * 1000;
+/** The refresh_tokens.expires_at value to store, matching whatever TTL
+ * signRefreshToken actually signed the JWT with for this role -- must stay
+ * in sync with refreshTtlSecondsForRole or /auth/refresh's DB expiry check
+ * would reject a still-JWT-valid reseller token early (or vice versa). */
+export function refreshTtlMsForRole(role: Role): number {
+  return refreshTtlSecondsForRole(role) * 1000;
+}
 
 // ---------- Validation ----------
 export function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
 }
 
+// Staff/admin account passwords (users.routes.ts admin creation, an admin's
+// own change-password/forgot-password flows below) keep the stricter rule
+// -- only the customer-facing rule was asked to relax.
 export function isStrongPassword(password: string): boolean {
   return password.length >= 8 && /[A-Za-z]/.test(password) && /[0-9]/.test(password) && /[^A-Za-z0-9]/.test(password);
+}
+
+/**
+ * Customer registration/password-reset rule: at least 6 characters, no
+ * required mix of letter/number/symbol -- a symbol is welcome but never
+ * mandatory. Deliberately a separate, more permissive function from
+ * isStrongPassword rather than changing that one, so admin/staff account
+ * passwords (users.routes.ts, an admin's own password routes) keep their
+ * original stricter requirement; only customer registration and the
+ * customer forgot-password reset use this.
+ */
+export function isValidCustomerPassword(password: string): boolean {
+  return password.length >= 6;
 }
 
 export function isValidPin(pin: string): boolean {

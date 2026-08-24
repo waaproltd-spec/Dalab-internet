@@ -1,9 +1,14 @@
 package com.dalab.internet
 
 import android.app.Application
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.os.Build
 import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.auth.SessionManager
 import com.dalab.internet.diagnostics.DiagnosticsLog
+import com.dalab.internet.notifications.AgentAlertsState
+import com.dalab.internet.notifications.AgentFcmService
 import com.dalab.internet.queue.PendingActionQueue
 import com.dalab.internet.sms.SmsListenerState
 
@@ -57,6 +62,27 @@ class DalabAgentApp : Application() {
         initSafely("device_identity_init") { DeviceIdentity.init(this) }
         initSafely("sms_listener_init") { SmsListenerState.init(this) }
         initSafely("pending_queue_init") { PendingActionQueue.init(this) }
+        initSafely("agent_alerts_init") { AgentAlertsState.init(this) }
+        // Created here (Application.onCreate — guaranteed to run before any
+        // component, including AgentFcmService) rather than in MainActivity,
+        // so the channel already exists even if a support-request push
+        // arrives before the agent has ever opened a screen this cold start.
+        initSafely("support_notification_channel_init") { createSupportNotificationChannel() }
+    }
+
+    private fun createSupportNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                AgentFcmService.SUPPORT_CHANNEL_ID,
+                "Customer support requests",
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                description = "A customer is waiting for a live agent"
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 300, 150, 300)
+            }
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        }
     }
 
     private fun installCrashHandler() {

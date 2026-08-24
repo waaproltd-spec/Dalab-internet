@@ -80,7 +80,18 @@ class UssdDialer(private val context: Context) {
      * unavailable rather than crash — see MainActivity's Build.VERSION check.
      */
     @RequiresApi(Build.VERSION_CODES.O)
-    suspend fun dial(subscriptionId: Int, ussdCode: String, timeoutMs: Long = 30_000): DialResult {
+    suspend fun dial(
+        subscriptionId: Int,
+        ussdCode: String,
+        timeoutMs: Long = 30_000,
+        // Defaults to the exact classification every existing caller
+        // (Internet Store's UssdOrchestrator) has always used — a caller
+        // that doesn't pass this is byte-for-byte unaffected. Reseller
+        // Withdraw passes its own stricter three-way classifier (see
+        // classifyResellerWithdrawalUssdResponse below) instead of forking
+        // this whole function.
+        classify: (String) -> DialOutcome = { text -> if (looksLikeFailureResponse(text)) DialOutcome.AMBIGUOUS else DialOutcome.SUCCESS },
+    ): DialResult {
         if (!hasRequiredPermissions()) return DialResult(DialOutcome.PERMISSION_DENIED)
 
         val baseManager = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
@@ -125,7 +136,7 @@ class UssdDialer(private val context: Context) {
                         // callback the same as a genuine success message would,
                         // so it must not be treated as SUCCESS without checking
                         // the text itself.
-                        val outcome = if (looksLikeFailureResponse(text)) DialOutcome.AMBIGUOUS else DialOutcome.SUCCESS
+                        val outcome = classify(text)
                         continuation.resume(DialResult(outcome, text))
                     }
 
@@ -173,6 +184,23 @@ private val FAILURE_RESPONSE_KEYWORDS = listOf(
     "error", "fail", "timeout", "timed out", "invalid", "incorrect",
     "insufficient", "try again", "unable", "sorry", "declined", "cancelled",
     "canceled", "expired", "denied", "not available", "busy", "khalad",
+    // Somali insufficient-balance phrasing, confirmed live from a real
+    // Reseller Withdraw payout dial (Hormuud): "Haraaga xisaabtaadu kuguma
+    // filna, haraagaagu waa: 5.367" ("your account balance is not
+    // sufficient for it, your balance is: 5.367") — this response was
+    // previously misclassified SUCCESS because no Somali failure phrasing
+    // beyond "khalad" was in this list, which silently stranded that
+    // withdrawal at 'sent' forever (a false-success dial attempt blocks the
+    // self-heal sweeper from ever retrying it). "kuguma filna"/"kuma filna"
+    // is the negated form of "filan" (sufficient/enough) Hormuud's USSD
+    // responses use specifically for insufficient balance.
+    "kuguma filna", "kuma filna",
+    // Also confirmed live: "Receiver Account Not Found" (English) for a
+    // destination number Hormuud doesn't recognize as a registered account
+    // — "not available" didn't cover this since the wording is "not found",
+    // not "not available". Same false-SUCCESS/stranded-withdrawal failure
+    // mode as the Somali phrasing above.
+    "not found",
 )
 
 fun looksLikeFailureResponse(text: String): Boolean {
@@ -180,4 +208,57 @@ fun looksLikeFailureResponse(text: String): Boolean {
     if (trimmed.isEmpty()) return true
     val lower = trimmed.lowercase()
     return FAILURE_RESPONSE_KEYWORDS.any { lower.contains(it) }
+}
+
+/**
+ * Reseller Withdraw's OWN response classifier — three-way (SUCCESS/FAILED/
+ * AMBIGUOUS), deliberately stricter than [looksLikeFailureResponse]'s
+ * default-to-SUCCESS design above (which stays exactly as-is for Internet
+ * Store recharge — this is a new function, not a change to that one).
+ * Explicit product requirement: a withdrawal must never be marked SUCCESS
+ * just because the on-screen response wasn't recognized as a failure. Only
+ * a response that positively matches a confirmed transfer-confirmation
+ * pattern is SUCCESS; a recognized failure phrase (the same
+ * FAILURE_RESPONSE_KEYWORDS above, including the two real captured
+ * Reseller Withdraw failures this session — Somali insufficient-balance and
+ * English "Receiver Account Not Found") is FAILED outright, not merely
+ * ambiguous; anything else — including a genuine success confirmation this
+ * list simply hasn't seen the exact wording of yet — is AMBIGUOUS, surfaced
+ * for admin review rather than silently trusted either way.
+ *
+ * SUCCESS_RESPONSE_KEYWORDS is not invented wording — it reuses the exact
+ * verbs already confirmed live for this same Hormuud/Somtel money-transfer-
+ * out operation, just captured via the follow-up SMS rather than the
+ * immediate on-screen response (see HormuudEvcPlusPayoutSentParser/
+ * SomtelEdahabPayoutSentParser/SomtelWareejisayPayoutSentParser in
+ * PaymentSmsParsers.kt: "...uwareejisay..."/"...warejisay..."/"...ku
+ * wareejisay..."/"...transferred..."). Both channels describe the identical
+ * transaction and this telecom's own templated wording is consistent across
+ * channels (e.g. HormuudEvcPlusParser's incoming vs.
+ * HormuudEvcPlusPayoutSentParser's outgoing both keep the "[-EVCPLUS-]" tag
+ * and near-identical structure) — reasonable evidence, not a guess, but
+ * still provisional until a real on-screen SUCCESS sample is captured (see
+ * Diagnostics -> reseller_withdrawal_self_heal_sweep entries) to lock this
+ * down further.
+ *
+ * "wareejisay" (double-e — SomtelWareejisayPayoutSentParser's real captured
+ * "Waxaad ku wareejisay $X Dollars macmiilka...") was missing here even
+ * though its SMS-side parser was added specifically because that exact
+ * wording is real and confirmed — this on-screen classifier was never
+ * updated to match, so a Somtel interactive payout whose on-screen
+ * confirmation used this spelling stayed AMBIGUOUS (stuck at 'sent') on
+ * the very first dial attempt instead of completing immediately, the same
+ * way Hormuud's "uwareejisay" already does. "uwareejisay" itself already
+ * contains "wareejisay" as a substring, so this one addition also covers
+ * Hormuud without changing its existing behavior.
+ */
+private val SUCCESS_RESPONSE_KEYWORDS = listOf("wareejisay", "warejisay", "transferred")
+
+fun classifyResellerWithdrawalUssdResponse(text: String): DialOutcome {
+    val trimmed = text.trim()
+    if (trimmed.isEmpty()) return DialOutcome.AMBIGUOUS
+    val lower = trimmed.lowercase()
+    if (FAILURE_RESPONSE_KEYWORDS.any { lower.contains(it) }) return DialOutcome.FAILED
+    if (SUCCESS_RESPONSE_KEYWORDS.any { lower.contains(it) }) return DialOutcome.SUCCESS
+    return DialOutcome.AMBIGUOUS
 }

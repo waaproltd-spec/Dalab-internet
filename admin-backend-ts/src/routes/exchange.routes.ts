@@ -8,6 +8,8 @@ import { sendJson } from "../utils/camelCase.js";
 import { broadcast } from "../realtime/orderEvents.js";
 import { recordActivity } from "../utils/activityLog.js";
 import { rateLimit } from "../auth/rateLimit.js";
+import { notifyCustomer as notifyCustomerShared } from "../services/customerNotify.js";
+import { validateMobileNumber } from "../lib/phoneValidation.js";
 
 export const exchangeRouter = Router();
 
@@ -113,22 +115,11 @@ async function loadCollectionPhoneNumber(walletId: string): Promise<string | nul
   return row?.phone_number ?? null;
 }
 
-// Best-effort customer notification, reusing the same generic `notifications`
-// table/`exchange_update` type the completion path already writes to —
-// wrapped so a notification failure can never fail the status change that
-// triggered it.
+// Thin wrapper over the shared notifyCustomer (in-app notifications row +
+// FCM push, both best-effort) that keeps every one of this file's existing
+// call sites unchanged — they only ever needed (customerId, title, body).
 async function notifyCustomer(customerId: string | null, title: string, body: string): Promise<void> {
-  if (!customerId) return;
-  try {
-    await query(`INSERT INTO notifications (id, type, title, body, customer_id) VALUES ($1,'exchange_update',$2,$3,$4)`, [
-      randomUUID(),
-      title,
-      body,
-      customerId,
-    ]);
-  } catch {
-    // Best-effort — never fails the caller's already-committed status change.
-  }
+  await notifyCustomerShared(customerId, "exchange_update", title, body);
 }
 
 // ---------------- Wallet catalog (reuses payment_wallets) ----------------
@@ -358,6 +349,15 @@ async function createExchangeOrder(params: {
 }): Promise<{ error?: string; status?: number; order?: any }> {
   const corridor = await loadCorridor(params.corridorId);
   if (!corridor || !corridor.enabled) return { error: "Corridor not found or disabled", status: 404 };
+
+  // senderPhone pays out of from_wallet_id, receiverPhone is paid into
+  // to_wallet_id -- both are real payment_wallets.id values (evc_plus/
+  // edahab/jeeb/amtel_pay), so this is an exact match, not a keyword guess.
+  const senderCheck = validateMobileNumber(params.senderPhone, corridor.from_wallet_id);
+  if (!senderCheck.valid) return { error: senderCheck.error, status: 400 };
+  const receiverCheck = validateMobileNumber(params.receiverPhone, corridor.to_wallet_id);
+  if (!receiverCheck.valid) return { error: receiverCheck.error, status: 400 };
+
   if (corridor.min_amount && params.amountSent < Number(corridor.min_amount)) {
     return { error: `Minimum amount for this corridor is ${corridor.min_amount}`, status: 400 };
   }
@@ -755,22 +755,11 @@ exchangeRouter.put("/agent/exchange/dial-attempts/:attemptId/step2", requireAuth
     );
     if (completed.length > 0) {
       const eo = completed[0] as any;
-      if (eo.customer_id) {
-        try {
-          await query(
-            `INSERT INTO notifications (id, type, title, body, customer_id) VALUES ($1,'exchange_update',$2,$3,$4)`,
-            [
-              randomUUID(),
-              "Your money exchange is complete",
-              `Your exchange of ${eo.amount_sent} is complete — ${eo.receiver_phone} received ${eo.amount_received}.`,
-              eo.customer_id,
-            ]
-          );
-        } catch {
-          // Best-effort — a notification failure must never fail the
-          // already-completed exchange.
-        }
-      }
+      await notifyCustomer(
+        eo.customer_id,
+        "Your money exchange is complete",
+        `Your exchange of ${eo.amount_sent} is complete — ${eo.receiver_phone} received ${eo.amount_received}.`
+      );
       await recordActivity({
         adminId: undefined,
         action: "exchange_completed",
@@ -925,8 +914,6 @@ exchangeRouter.post("/admin/exchange/orders/:id/reverse", requirePermission("exc
 // one's own exchange orders requires requireAuth("customer"), exactly like
 // POST/GET /orders (Internet Store).
 
-const PHONE_RE = /^\+?\d{6,15}$/;
-
 // dial_prefix is public/harmless to expose here — it's the same USSD
 // carrier code (e.g. "712" for EVC Plus) the Customer App already builds
 // Internet Store payment dial codes from via each company's ussdTemplate.
@@ -968,8 +955,11 @@ exchangeRouter.post(
   rateLimit("customer-exchange-create", 20, 15 * 60 * 1000),
   async (req, res) => {
     const { corridorId, amount, senderPhone, receiverPhone, clientRequestId } = req.body ?? {};
-    if (!senderPhone || !PHONE_RE.test(String(senderPhone))) return sendJson(res, 400, { error: "Provide a valid sending phone number" });
-    if (!receiverPhone || !PHONE_RE.test(String(receiverPhone))) return sendJson(res, 400, { error: "Provide a valid receiving phone number" });
+    if (!senderPhone) return sendJson(res, 400, { error: "Provide a valid sending phone number" });
+    if (!receiverPhone) return sendJson(res, 400, { error: "Provide a valid receiving phone number" });
+    // Real format + carrier-prefix-vs-corridor-wallet validation happens
+    // inside createExchangeOrder below (it knows the corridor's actual
+    // from_wallet_id/to_wallet_id) -- this is just a presence check.
     if (clientRequestId != null && typeof clientRequestId !== "string") {
       return sendJson(res, 400, { error: "clientRequestId must be a string" });
     }
@@ -1002,8 +992,10 @@ exchangeRouter.post(
   }
 );
 
+// Capped at 100 -- was unbounded; see orders.routes.ts's GET /orders for
+// the same fix and reasoning.
 exchangeRouter.get("/exchange/orders", requireAuth("customer"), async (req, res) => {
-  sendJson(res, 200, await query(`${EXCHANGE_ORDER_LIST_SELECT} WHERE eo.customer_id=$1 ORDER BY eo.created_at DESC`, [req.auth!.sub]));
+  sendJson(res, 200, await query(`${EXCHANGE_ORDER_LIST_SELECT} WHERE eo.customer_id=$1 ORDER BY eo.created_at DESC LIMIT 100`, [req.auth!.sub]));
 });
 
 exchangeRouter.get("/exchange/orders/:id", requireAuth("customer"), async (req, res) => {

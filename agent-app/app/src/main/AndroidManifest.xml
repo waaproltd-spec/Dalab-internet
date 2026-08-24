@@ -25,6 +25,8 @@
          to keep running unattended in the background, which the payment-monitoring
          service is. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Recording a voice message in Agent Support (SupportScreen). -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:name=".DalabAgentApp"
@@ -35,15 +37,44 @@
         android:theme="@style/Theme.DalabAgentApp"
         android:usesCleartextTraffic="false">
 
+        <!--
+          singleTop: a support-request push (support.routes.ts's
+          notifyAssignedAgent()) must open the exact conversation the agent
+          was just assigned, not just relaunch the app fresh — this routes a
+          notification tap into MainActivity.onNewIntent() when the Activity
+          is already on top of the stack, instead of spawning a second
+          instance of it.
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:theme="@style/Theme.DalabAgentApp">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".notifications.AgentFcmService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!-- Fallback used only when the system shows a push notification directly
+             from the FCM payload (app backgrounded/killed) rather than through
+             AgentFcmService.onMessageReceived — see push.ts, which always sends an
+             explicit channelId ("support_requests") that takes precedence over this
+             default whenever it's present. -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="support_requests" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_notification" />
 
         <!--
           Protected system broadcast — a manifest-declared receiver still fires even
@@ -91,6 +122,29 @@
             <meta-data
                 android:name="android.accessibilityservice"
                 android:resource="@xml/exchange_accessibility_service_config" />
+        </service>
+
+        <!--
+          Reseller Withdraw's interactive (eDahab-style multi-step) USSD
+          payout engine — reads and drives the native USSD reply dialog (see
+          ResellerWithdrawalInteractiveUssdAccessibilityService). A separate
+          service from ExchangeUssdAccessibilityService above so this new,
+          less-proven eDahab flow can never affect Money Exchange's own
+          working automation, even though both drive the same kind of native
+          USSD reply dialog. The agent must manually enable this via
+          Settings > Accessibility (Android does not allow silently granting
+          it).
+        -->
+        <service
+            android:name=".ussd.ResellerWithdrawalInteractiveUssdAccessibilityService"
+            android:exported="false"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/reseller_withdrawal_interactive_accessibility_service_config" />
         </service>
 
     </application>

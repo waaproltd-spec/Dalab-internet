@@ -1,13 +1,30 @@
+import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import { query, queryOne, withTransaction } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { adjustResellerWallet } from "../utils/resellerWallet.js";
+import { broadcast } from "../realtime/orderEvents.js";
+import { decrypt } from "../auth/crypto.js";
+import { validateMobileNumber, companyKeyFromLabel } from "../lib/phoneValidation.js";
 
 export const resellerDepositsWithdrawalsRouter = Router();
 
-const PAYMENT_NUMBER_RE = /^\d{6,15}$/;
+// payout_ussd_template carries the payout company's PIN inlined (the Agent
+// App needs the real string to dial automatically — see GET
+// /agent/reseller-withdrawals/pending-payout below). Withdraw is now a fully
+// automatic Agent-device payout (no reseller/agent manual dial), so the
+// Reseller-facing app has no use for this field any more and must never
+// receive the PIN over the wire — masked out here the same way orders.
+// routes.ts's maskOrder() keeps ussd_generated off every non-agent response.
+function maskWithdrawalForReseller<T extends Record<string, any> | undefined | null>(withdrawal: T): T {
+  if (!withdrawal) return withdrawal;
+  return { ...withdrawal, payout_ussd_template: null };
+}
+function maskWithdrawalsForReseller<T extends Record<string, any>>(withdrawals: T[]): T[] {
+  return withdrawals.map(maskWithdrawalForReseller);
+}
 
 function depositRef(): string {
   return "DEP" + Math.floor(100000000 + Math.random() * 900000000);
@@ -19,42 +36,42 @@ function withdrawalRef(): string {
 // ==================== Deposit ("Lacag Ku Shub", Req. 8) ====================
 
 const DEPOSIT_SELECT = `
-  SELECT d.*, c.name AS company_name, c.color_hex AS company_color
+  SELECT d.*, m.label AS method_label
   FROM reseller_deposits d
-  JOIN companies c ON c.id = d.company_id
+  JOIN reseller_deposit_methods m ON m.method = d.method
 `;
 
-// Shows Dalab's own collection number for the company (companies.payment_
-// number, the same field Internet Store orders already display — see
-// migration 052's header comment for why this isn't a new per-reseller
-// table). Does NOT touch the wallet — "must not be increased simply
-// because the Reseller submits a Deposit request" (spec, Req. 8).
+// Shows Dalab's own collection number for the chosen payment method
+// (reseller_deposit_methods, managed from Admin -> Resellers -> Payment —
+// see migration 053's header comment for why deposits moved off companies.
+// payment_number: the wallet has no per-company split, so neither should
+// its deposit collection number). Does NOT touch the wallet — "must not be
+// increased simply because the Reseller submits a Deposit request" (spec,
+// Req. 8).
 resellerDepositsWithdrawalsRouter.post("/reseller/deposits", requireAuth("reseller"), async (req, res) => {
-  const companyId = String(req.body.companyId ?? "");
+  const method = String(req.body.method ?? "");
   const fromNumber = String(req.body.fromNumber ?? "").trim();
   const amount = Number(req.body.amount);
   const clientRequestId = req.body.clientRequestId ? String(req.body.clientRequestId) : null;
 
-  if (!companyId || !fromNumber || !Number.isFinite(amount) || amount <= 0) {
-    return sendJson(res, 400, { error: "companyId, fromNumber, and a positive amount are required" });
+  if (!method || !fromNumber || !Number.isFinite(amount) || amount <= 0) {
+    return sendJson(res, 400, { error: "method, fromNumber, and a positive amount are required" });
   }
-  if (!PAYMENT_NUMBER_RE.test(fromNumber)) return sendJson(res, 400, { error: "fromNumber must be 6-15 digits" });
+  const fromNumberCheck = validateMobileNumber(fromNumber, companyKeyFromLabel(method));
+  if (!fromNumberCheck.valid) return sendJson(res, 400, { error: fromNumberCheck.error });
 
-  const company = await queryOne<{ payment_number: string | null }>(
-    `SELECT payment_number FROM companies WHERE id=$1 AND deleted_at IS NULL`,
-    [companyId]
+  const depositMethod = await queryOne<{ payment_number: string }>(
+    `SELECT payment_number FROM reseller_deposit_methods WHERE method=$1`,
+    [method]
   );
-  if (!company) return sendJson(res, 404, { error: "Company not found" });
-  if (!company.payment_number) {
-    return sendJson(res, 400, { error: "This company has no collection number configured yet — ask Admin to set one" });
-  }
+  if (!depositMethod) return sendJson(res, 404, { error: "Unknown payment method" });
 
   const id = depositRef();
   try {
     await query(
-      `INSERT INTO reseller_deposits (id, reseller_id, company_id, to_number, from_number, amount, client_request_id)
+      `INSERT INTO reseller_deposits (id, reseller_id, method, to_number, from_number, amount, client_request_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [id, req.auth!.sub, companyId, company.payment_number, fromNumber, amount, clientRequestId]
+      [id, req.auth!.sub, method, depositMethod.payment_number, fromNumber, amount, clientRequestId]
     );
   } catch (err) {
     const pgErr = err as { code?: string; constraint?: string };
@@ -66,8 +83,10 @@ resellerDepositsWithdrawalsRouter.post("/reseller/deposits", requireAuth("resell
   sendJson(res, 201, await queryOne(`${DEPOSIT_SELECT} WHERE d.id=$1`, [id]));
 });
 
+// Capped at 100 -- was unbounded; see orders.routes.ts's GET /orders for
+// the same fix and reasoning.
 resellerDepositsWithdrawalsRouter.get("/reseller/deposits", requireAuth("reseller"), async (req, res) => {
-  sendJson(res, 200, await query(`${DEPOSIT_SELECT} WHERE d.reseller_id=$1 ORDER BY d.created_at DESC`, [req.auth!.sub]));
+  sendJson(res, 200, await query(`${DEPOSIT_SELECT} WHERE d.reseller_id=$1 ORDER BY d.created_at DESC LIMIT 100`, [req.auth!.sub]));
 });
 
 resellerDepositsWithdrawalsRouter.get("/reseller/deposits/:id", requireAuth("reseller"), async (req, res) => {
@@ -79,8 +98,11 @@ resellerDepositsWithdrawalsRouter.get("/reseller/deposits/:id", requireAuth("res
 resellerDepositsWithdrawalsRouter.get("/admin/reseller-deposits", requireStaff(), async (req, res) => {
   const status = req.query.status ? String(req.query.status) : null;
   const params: unknown[] = [];
-  let sql = `SELECT d.*, c.name AS company_name, r.reseller_login_id, r.name AS reseller_name
-             FROM reseller_deposits d JOIN companies c ON c.id = d.company_id JOIN resellers r ON r.id = d.reseller_id`;
+  let sql = `SELECT d.*, m.label AS method_label, r.reseller_login_id, r.name AS reseller_name, rw.balance AS reseller_wallet_balance
+             FROM reseller_deposits d
+             JOIN reseller_deposit_methods m ON m.method = d.method
+             JOIN resellers r ON r.id = d.reseller_id
+             LEFT JOIN reseller_wallets rw ON rw.reseller_id = d.reseller_id`;
   if (status) {
     params.push(status);
     sql += ` WHERE d.status=$1`;
@@ -95,6 +117,12 @@ resellerDepositsWithdrawalsRouter.get("/admin/reseller-deposits", requireStaff()
 // flip, mirroring reseller_orders' confirm step crediting instead of
 // debiting. CAS from 'pending' only, so a double-click can never
 // double-credit.
+//
+// Deposit is a plain 1:1 credit — no commission or bonus applies here, and
+// the payment method used (EVC Plus/eDahab) never determines the Withdraw
+// commission (product instruction). The company-specific commission
+// applies only to Withdraw — see reseller_withdrawal_commission_config /
+// POST /reseller/withdrawals.
 resellerDepositsWithdrawalsRouter.put("/admin/reseller-deposits/:id/verify", requirePermission("resellers.manage"), async (req, res) => {
   const deposit = await queryOne(`SELECT * FROM reseller_deposits WHERE id=$1`, [req.params.id]);
   if (!deposit) return sendJson(res, 404, { error: "Deposit not found" });
@@ -141,16 +169,47 @@ resellerDepositsWithdrawalsRouter.put("/admin/reseller-deposits/:id/fail", requi
 
 // ==================== Withdrawal ("Lacag Bixi", Req. 9) ====================
 
+// payout_ussd_template travels with every withdrawal read so the app can
+// build the "Dial to Pay" (send-money) USSD code itself — see
+// utils/ussd.dart's buildPayoutUssdDialUri, substituting {number} (the
+// destination_number on this same row) and {amount}.
 const WITHDRAWAL_SELECT = `
-  SELECT w.*, c.name AS company_name, c.color_hex AS company_color
+  SELECT w.*, c.name AS company_name, c.color_hex AS company_color, c.payout_ussd_template
   FROM reseller_withdrawals w
   JOIN companies c ON c.id = w.company_id
 `;
 
-// Reserves the amount atomically with row creation — "the amount must be
-// reserved/deducted... so the same balance cannot be used for another
-// transaction" (spec, Req. 9). Both the wallet debit and the withdrawal
-// row happen in one transaction: if either fails, neither is left behind.
+// "The reseller's wallet must NOT be locked or deducted just because a
+// withdrawal is created or is Reserved/Sent — only a successfully sent
+// payout with a matching real outgoing SMS deducts anything" (product
+// instruction). So a Reserved/Sent withdrawal no longer reserves any
+// capacity at all: creating one only checks against the wallet's current
+// raw balance, never against other in-flight withdrawals, and never
+// touches reseller_wallets.balance itself. A reseller can have several
+// withdrawals open at once that collectively exceed the wallet balance —
+// that's intentional now, not a bug.
+//
+// The actual safety net moved entirely to settlement time:
+// adjustResellerWallet (utils/resellerWallet.ts) locks the wallet row and
+// throws "Insufficient wallet balance" if a completion's debit would ever
+// take it negative, so the ledger itself can never go negative no matter
+// how many withdrawals were left open. The tradeoff this accepts: if two
+// withdrawals are both genuinely paid out by an Agent but together exceed
+// the wallet, the SMS confirmation for whichever completes second will
+// fail at that floor — a real-money-sent-but-uncredited edge case that
+// needs an admin's manual reconciliation, which this product instruction
+// explicitly chose over blocking withdrawal creation up front.
+//
+// The Withdraw Commission (Admin -> Resellers -> Payment, per company) is
+// resolved and snapshotted right here, at request time, based on the payout
+// company the customer selected — never on the Deposit payment method. The
+// Wallet will only ever be deducted by `amount`, but the customer must be
+// sent MORE than that (amount + amount x commission%), and the app needs
+// that customer_receives_amount immediately after creation to dial the
+// correct payout USSD amount. Once snapshotted the commission never
+// changes for this withdrawal even if Admin edits the company's percentage
+// afterward (same "don't mutate history" principle as the rest of this
+// feature).
 resellerDepositsWithdrawalsRouter.post("/reseller/withdrawals", requireAuth("reseller"), async (req, res) => {
   const companyId = String(req.body.companyId ?? "");
   const destinationNumber = String(req.body.destinationNumber ?? "").trim();
@@ -160,41 +219,55 @@ resellerDepositsWithdrawalsRouter.post("/reseller/withdrawals", requireAuth("res
   if (!companyId || !destinationNumber || !Number.isFinite(amount) || amount <= 0) {
     return sendJson(res, 400, { error: "companyId, destinationNumber, and a positive amount are required" });
   }
-  if (!PAYMENT_NUMBER_RE.test(destinationNumber)) {
-    return sendJson(res, 400, { error: "destinationNumber must be 6-15 digits" });
-  }
-  if (!(await queryOne(`SELECT id FROM companies WHERE id=$1 AND deleted_at IS NULL`, [companyId]))) {
+  const company = await queryOne<{ id: string; name: string }>(`SELECT id, name FROM companies WHERE id=$1 AND deleted_at IS NULL`, [companyId]);
+  if (!company) {
     return sendJson(res, 404, { error: "Company not found" });
   }
+  const destinationCheck = validateMobileNumber(destinationNumber, companyKeyFromLabel(company.id) ?? companyKeyFromLabel(company.name));
+  if (!destinationCheck.valid) return sendJson(res, 400, { error: destinationCheck.error });
+
+  const commissionCfg = await queryOne<{ commission_percentage: string }>(
+    `SELECT commission_percentage FROM reseller_withdrawal_commission_config WHERE company_id=$1`,
+    [companyId]
+  );
+  const commissionPercentage = commissionCfg ? Number(commissionCfg.commission_percentage) : 0;
+  const bonusAmount = Math.round(amount * commissionPercentage) / 100;
+  const customerReceivesAmount = Math.round((amount + bonusAmount) * 100) / 100;
 
   const id = withdrawalRef();
   try {
-    const created = await withTransaction(async (client) => {
-      const walletResult = await adjustResellerWallet({
-        resellerId: req.auth!.sub,
-        changeAmount: -amount,
-        referenceType: "withdrawal_reservation",
-        referenceId: id,
-        source: "system",
-        client,
-      });
-      const txRow = await client.query(
-        `SELECT id FROM reseller_wallet_transactions WHERE reseller_id=$1 AND reference_id=$2 AND reference_type='withdrawal_reservation' ORDER BY created_at DESC LIMIT 1`,
-        [req.auth!.sub, id]
+    await withTransaction(async (client) => {
+      // Checked against the wallet's current raw balance only — no
+      // subtraction for other Reserved/Sent withdrawals, and this lock is
+      // released without ever writing to reseller_wallets (see this
+      // route's doc comment above for why).
+      const walletRow = await client.query<{ balance: string }>(
+        `SELECT balance FROM reseller_wallets WHERE reseller_id=$1 FOR UPDATE`,
+        [req.auth!.sub]
       );
-      const reservationTxId = txRow.rows[0]?.id ?? null;
+      if (walletRow.rows.length === 0) throw new Error(`No wallet row for reseller ${req.auth!.sub}`);
+      if (amount > Number(walletRow.rows[0].balance)) throw new Error("Insufficient wallet balance");
+
       await client.query(
-        `INSERT INTO reseller_withdrawals (id, reseller_id, company_id, destination_number, amount, status, reservation_tx_id, client_request_id)
-         VALUES ($1,$2,$3,$4,$5,'reserved',$6,$7)`,
-        [id, req.auth!.sub, companyId, destinationNumber, amount, reservationTxId, clientRequestId]
+        `INSERT INTO reseller_withdrawals
+           (id, reseller_id, company_id, destination_number, amount, status, client_request_id,
+            commission_percentage, bonus_amount, customer_receives_amount)
+         VALUES ($1,$2,$3,$4,$5,'reserved',$6,$7,$8,$9)`,
+        [id, req.auth!.sub, companyId, destinationNumber, amount, clientRequestId,
+          commissionPercentage, bonusAmount, customerReceivesAmount]
       );
-      return walletResult;
     });
-    sendJson(res, 201, { ...(await queryOne(`${WITHDRAWAL_SELECT} WHERE w.id=$1`, [id])), wallet: created });
+    // Wakes the Agent App's self-heal sweep immediately (same generic
+    // subscribe/broadcast stream its /agent/orders/stream connection is
+    // already listening on — see AgentBackgroundService.kt's
+    // AgentEventBus.orderEvents collector) instead of waiting for its ~60s
+    // periodic backstop poll to pick up this new 'reserved' withdrawal.
+    broadcast({ type: "reseller_withdrawal.updated", withdrawalId: id });
+    sendJson(res, 201, maskWithdrawalForReseller(await queryOne(`${WITHDRAWAL_SELECT} WHERE w.id=$1`, [id])));
   } catch (err) {
     const pgErr = err as { code?: string; constraint?: string; message?: string };
     if (pgErr.code === "23505" && pgErr.constraint === "idx_reseller_withdrawals_client_request_id") {
-      return sendJson(res, 200, await queryOne(`${WITHDRAWAL_SELECT} WHERE w.client_request_id=$1`, [clientRequestId]));
+      return sendJson(res, 200, maskWithdrawalForReseller(await queryOne(`${WITHDRAWAL_SELECT} WHERE w.client_request_id=$1`, [clientRequestId])));
     }
     if (pgErr.message === "Insufficient wallet balance") {
       return sendJson(res, 400, { error: "Insufficient wallet balance" });
@@ -203,18 +276,22 @@ resellerDepositsWithdrawalsRouter.post("/reseller/withdrawals", requireAuth("res
   }
 });
 
+// Capped at 100 -- was unbounded; see orders.routes.ts's GET /orders for
+// the same fix and reasoning.
 resellerDepositsWithdrawalsRouter.get("/reseller/withdrawals", requireAuth("reseller"), async (req, res) => {
-  sendJson(res, 200, await query(`${WITHDRAWAL_SELECT} WHERE w.reseller_id=$1 ORDER BY w.created_at DESC`, [req.auth!.sub]));
+  sendJson(res, 200, maskWithdrawalsForReseller(await query(`${WITHDRAWAL_SELECT} WHERE w.reseller_id=$1 ORDER BY w.created_at DESC LIMIT 100`, [req.auth!.sub])));
 });
 
 resellerDepositsWithdrawalsRouter.get("/reseller/withdrawals/:id", requireAuth("reseller"), async (req, res) => {
   const withdrawal = await queryOne(`${WITHDRAWAL_SELECT} WHERE w.id=$1 AND w.reseller_id=$2`, [req.params.id, req.auth!.sub]);
   if (!withdrawal) return sendJson(res, 404, { error: "Withdrawal not found" });
-  sendJson(res, 200, withdrawal);
+  sendJson(res, 200, maskWithdrawalForReseller(withdrawal));
 });
 
-// Reseller backs out before Admin has sent the payout — releases the
-// reservation via a reversing ledger row (never mutates the original).
+// Reseller backs out before the payout is confirmed. No wallet adjustment
+// needed — nothing was deducted at creation (see POST /reseller/withdrawals'
+// doc comment), so cancelling just needs to move the row out of the
+// "in-flight" set that route's availability check sums over.
 resellerDepositsWithdrawalsRouter.put("/reseller/withdrawals/:id/cancel", requireAuth("reseller"), async (req, res) => {
   const withdrawal = await queryOne(`SELECT * FROM reseller_withdrawals WHERE id=$1 AND reseller_id=$2`, [req.params.id, req.auth!.sub]);
   if (!withdrawal) return sendJson(res, 404, { error: "Withdrawal not found" });
@@ -222,28 +299,32 @@ resellerDepositsWithdrawalsRouter.put("/reseller/withdrawals/:id/cancel", requir
     return sendJson(res, 409, { error: `Withdrawal is '${withdrawal.status}', not 'reserved' — cannot cancel` });
   }
 
-  await adjustResellerWallet({
-    resellerId: withdrawal.reseller_id,
-    changeAmount: Number(withdrawal.amount),
-    referenceType: "withdrawal_release",
-    referenceId: withdrawal.id,
-    source: "system",
-  });
   const rows = await query(
     `UPDATE reseller_withdrawals SET status='cancelled', cancelled_at=now(), updated_at=now() WHERE id=$1 AND status='reserved' RETURNING id`,
     [req.params.id]
   );
-  if (rows.length === 0) {
-    return sendJson(res, 500, { error: "Reservation was released but the withdrawal status change lost a race — check admin activity log" });
-  }
+  if (rows.length === 0) return sendJson(res, 409, { error: "Withdrawal is no longer in a reserved state" });
   sendJson(res, 200, { id: req.params.id, status: "cancelled" });
 });
 
 resellerDepositsWithdrawalsRouter.get("/admin/reseller-withdrawals", requireStaff(), async (req, res) => {
   const status = req.query.status ? String(req.query.status) : null;
   const params: unknown[] = [];
-  let sql = `SELECT w.*, c.name AS company_name, r.reseller_login_id, r.name AS reseller_name
-             FROM reseller_withdrawals w JOIN companies c ON c.id = w.company_id JOIN resellers r ON r.id = w.reseller_id`;
+  let sql = `SELECT w.*, c.name AS company_name, r.reseller_login_id, r.name AS reseller_name,
+                    rw.balance AS reseller_wallet_balance, au.email AS confirmed_by_admin_email,
+                    sl.body AS sms_confirmation_text, sl.received_at AS sms_confirmed_at,
+                    da.sim_mobile_number, da.sim_device_id, d.name AS sim_device_name, da.status AS dial_attempt_status
+             FROM reseller_withdrawals w
+             JOIN companies c ON c.id = w.company_id
+             JOIN resellers r ON r.id = w.reseller_id
+             LEFT JOIN reseller_wallets rw ON rw.reseller_id = w.reseller_id
+             LEFT JOIN admin_users au ON au.id = w.confirmed_by_admin_id
+             LEFT JOIN sms_logs sl ON sl.id = w.matched_sms_log_id
+             LEFT JOIN LATERAL (
+               SELECT * FROM reseller_withdrawal_dial_attempts a
+               WHERE a.withdrawal_id = w.id ORDER BY a.attempt_number DESC LIMIT 1
+             ) da ON true
+             LEFT JOIN agent_devices d ON d.id = da.sim_device_id`;
   if (status) {
     params.push(status);
     sql += ` WHERE w.status=$1`;
@@ -251,10 +332,12 @@ resellerDepositsWithdrawalsRouter.get("/admin/reseller-withdrawals", requireStaf
   sendJson(res, 200, await query(sql + ` ORDER BY w.created_at DESC`, params));
 });
 
-// Admin has dialed/sent the payout via that company's configured payment
-// method (Agent App / USSD infra, outside this route's scope) and is
-// recording that here. No balance change — the amount was already
-// reserved at request time.
+// Optional manual bookkeeping step — the automatic SMS matcher (see
+// resellerSmsMatching.ts) matches a withdrawal straight from 'reserved' OR
+// 'sent' to 'completed', so nothing requires this to run first. Still
+// useful for admin visibility ("this one's been dialed, just waiting on
+// the SMS"). No balance change either way — nothing is deducted until
+// Complete.
 resellerDepositsWithdrawalsRouter.put("/admin/reseller-withdrawals/:id/mark-sent", requirePermission("resellers.manage"), async (req, res) => {
   const rows = await query(
     `UPDATE reseller_withdrawals SET status='sent', sent_at=now(), confirmed_by_admin_id=$1, updated_at=now()
@@ -265,42 +348,311 @@ resellerDepositsWithdrawalsRouter.put("/admin/reseller-withdrawals/:id/mark-sent
   sendJson(res, 200, { id: req.params.id, status: "sent" });
 });
 
+// Manual fallback for the (currently common, until real "money sent" SMS
+// samples exist to build a mobile-side parser for — see resellerSmsMatching.ts's
+// header comment) case where the automatic SMS match never fires. This is
+// the only place besides the automatic matcher that actually deducts the
+// wallet — "the Wallet amount is deducted only after the outgoing payment
+// is successfully confirmed" (product instruction) — via the exact same
+// claim-before-deduct ordering confirmResellerWithdrawalViaSms uses: the
+// CAS (status IN ('reserved','sent') in the WHERE) runs first, and only a
+// successful claim is allowed to touch the wallet, so a race between this
+// endpoint and the automatic matcher can never double-deduct.
 resellerDepositsWithdrawalsRouter.put("/admin/reseller-withdrawals/:id/complete", requirePermission("resellers.manage"), async (req, res) => {
-  const rows = await query(
-    `UPDATE reseller_withdrawals SET status='completed', completed_at=now(), updated_at=now()
-     WHERE id=$1 AND status='sent' RETURNING id`,
-    [req.params.id]
-  );
-  if (rows.length === 0) return sendJson(res, 409, { error: "Withdrawal not found or not in a sent state" });
-  sendJson(res, 200, { id: req.params.id, status: "completed" });
+  const smsLogId = req.body.smsLogId ? String(req.body.smsLogId) : null;
+  if (smsLogId && !(await queryOne(`SELECT id FROM sms_logs WHERE id=$1`, [smsLogId]))) {
+    return sendJson(res, 404, { error: "SMS log not found" });
+  }
+
+  try {
+    const walletResult = await withTransaction(async (client) => {
+      const claimed = await client.query<{ id: string; amount: string; reseller_id: string }>(
+        `UPDATE reseller_withdrawals SET status='completed', completed_at=now(), confirmed_by_admin_id=$1,
+           matched_sms_log_id=COALESCE($2, matched_sms_log_id), updated_at=now()
+         WHERE id=$3 AND status IN ('reserved','sent') RETURNING id, amount, reseller_id`,
+        [req.auth!.sub, smsLogId, req.params.id]
+      );
+      if (claimed.rows.length === 0) throw new Error("WITHDRAWAL_NOT_CLAIMABLE");
+
+      // Wrapped in the same transaction as the status CAS above: if this
+      // throws (e.g. a true insufficient-balance edge case), the status
+      // flip rolls back with it rather than leaving the withdrawal stuck
+      // 'completed' with no money actually moved.
+      return adjustResellerWallet({
+        resellerId: claimed.rows[0].reseller_id,
+        changeAmount: -Number(claimed.rows[0].amount),
+        referenceType: "withdrawal",
+        referenceId: req.params.id,
+        source: "admin_manual",
+        changedByAdminId: req.auth!.sub,
+        client,
+      });
+    });
+    sendJson(res, 200, { id: req.params.id, status: "completed", smsLogId, wallet: walletResult });
+  } catch (err) {
+    if (err instanceof Error && err.message === "WITHDRAWAL_NOT_CLAIMABLE") {
+      return sendJson(res, 409, { error: "Withdrawal not found or already resolved" });
+    }
+    throw err;
+  }
 });
 
-// "If a withdrawal is cancelled or fails after the amount was reserved, the
-// reserved amount must be returned" (spec, Req. 9) — same release pattern
-// as the reseller-initiated cancel above, usable from either 'reserved' or
-// 'sent' (a payout attempt that failed after being dialed still needs its
-// reservation released).
+// No wallet adjustment needed — nothing was deducted for a withdrawal still
+// 'reserved' or 'sent' (see POST /reseller/withdrawals' doc comment), so
+// failing one just needs to move it out of the "in-flight" set.
 resellerDepositsWithdrawalsRouter.put("/admin/reseller-withdrawals/:id/fail", requirePermission("resellers.manage"), async (req, res) => {
-  const withdrawal = await queryOne(`SELECT * FROM reseller_withdrawals WHERE id=$1`, [req.params.id]);
+  const rows = await query(
+    `UPDATE reseller_withdrawals SET status='failed', updated_at=now() WHERE id=$1 AND status IN ('reserved','sent') RETURNING id`,
+    [req.params.id]
+  );
+  if (rows.length === 0) return sendJson(res, 409, { error: "Withdrawal not found or already resolved" });
+  sendJson(res, 200, { id: req.params.id, status: "failed" });
+});
+
+// ==================== Automatic payout (Agent App) ====================
+// Withdraw is now fully automatic end-to-end: Reserved -> the Agent App
+// dials the payout with no human entering or triggering the USSD itself ->
+// the dial result completes it (see completeResellerWithdrawalFromDialResult
+// below) -> the real outgoing SMS is secondary reconciliation
+// (resellerSmsMatching.ts). This section is the Agent-facing half of that
+// pipeline — mirrors UssdOrchestrator's Internet Store shape (GET
+// .../self-heal-candidates, POST .../dial-attempts, PUT
+// /agent/dial-attempts/:id) exactly.
+//
+// Two payout shapes exist per company, both returned by GET
+// .../pending-payout below and both reported through the exact same
+// POST .../dial-attempts + PUT .../dial-attempts/:attemptId pair — reporting
+// is agnostic to how the dial was actually driven:
+//   - payoutUssdTemplate: a one-shot combined number+amount+PIN dial string
+//     (Hormuud's `*726*{number}*{amount}*PIN#`), automated the same way
+//     Internet Store recharge is (TelephonyManager.sendUssdRequest via
+//     UssdDialer.kt) — no reply dialog, no AccessibilityService.
+//   - interactivePayout: an initial dial plus an ordered sequence of replies
+//     to the carrier's own multi-step menu (eDahab's Reseller Service ->
+//     Transfer -> number -> amount -> PIN), which needs the same kind of
+//     AccessibilityService-driven reply automation Money Exchange's
+//     ExchangeUssdOrchestrator already uses for its own two-step PIN flow —
+//     see ResellerWithdrawalInteractiveUssdOrchestrator (agent-app),
+//     generalized from a single PIN slot to an arbitrary reply queue.
+//
+// The dial result (see PUT .../dial-attempts/:attemptId below) is now the
+// PRIMARY signal that completes a withdrawal and debits the wallet — a real
+// outgoing SMS (matched via resellerSmsMatching.ts) is secondary
+// reconciliation, not the thing the debit depends on. This changed from an
+// earlier design where only the SMS could complete a withdrawal: with
+// several same-amount, same-destination withdrawals in flight at once (a
+// common real case — the same reseller topping up the same customer
+// repeatedly), the SMS matcher's FIFO-by-creation-time pairing could
+// correctly complete an OLDER withdrawal while a NEWER one with an
+// identical amount+destination sat unmatched indefinitely, waiting on a
+// confirmation SMS that would never arrive for it specifically. Dialing is
+// already 1:1 with a specific withdrawal (each dial attempt is tied to
+// exactly one withdrawal_id), so there's no ambiguity to resolve.
+//
+// Every dial status maps to exactly one withdrawal outcome:
+//   'success'   -> complete + debit exactly once (see completeResellerWithdrawalFromDialResult)
+//   'failed'    -> mark 'failed', no wallet touch (nothing was ever
+//                  reserved at creation — see POST /reseller/withdrawals'
+//                  doc comment — so "refund" is simply "never deduct")
+//   'ambiguous' -> withdrawal status is left untouched, still 'reserved'/
+//                  'sent' — never auto-completed, never auto-failed, so a
+//                  transfer that might have actually succeeded is neither
+//                  silently paid twice nor silently written off. Needs a
+//                  human (Admin -> Resellers -> Withdrawals -> Complete/Fail)
+//                  or a later corroborating SMS to resolve it.
+// The real outgoing SMS can still independently complete a withdrawal
+// (resellerSmsMatching.ts's confirmResellerWithdrawalViaSms) exactly as
+// before — both paths share the same atomic claim-before-deduct CAS
+// (status IN ('reserved','sent') -> 'completed'), so whichever fires first
+// wins and the second is always a safe no-op, never a double debit.
+
+// Self-heal target list: 'reserved' withdrawals with no dial attempt yet.
+// Once ANY attempt exists for a withdrawal — success, failure, or ambiguous —
+// it must never be auto-dialed again, so a failed automatic payout stays
+// waiting for an admin's manual Complete/mark-sent rather than risking a
+// second real payout for the same withdrawal.
+resellerDepositsWithdrawalsRouter.get("/agent/reseller-withdrawals/pending-payout", requireAuth("agent"), async (_req, res) => {
+  const rows = await query<{
+    id: string;
+    company_id: string;
+    company_name: string;
+    payout_ussd_template: string | null;
+    destination_number: string;
+    customer_receives_amount: string;
+    created_at: string;
+    interactive_initial_dial: string | null;
+    interactive_reply_steps: string[] | null;
+    interactive_pin_encrypted: string | null;
+  }>(
+    `SELECT w.id, w.company_id, c.name AS company_name, c.payout_ussd_template,
+            w.destination_number, w.customer_receives_amount, w.created_at,
+            ic.initial_dial AS interactive_initial_dial,
+            ic.reply_steps AS interactive_reply_steps,
+            ic.pin_encrypted AS interactive_pin_encrypted
+     FROM reseller_withdrawals w
+     JOIN companies c ON c.id = w.company_id
+     LEFT JOIN reseller_withdrawal_interactive_payout_config ic ON ic.company_id = c.id
+     WHERE w.status = 'reserved'
+       AND (
+         (c.payout_ussd_template IS NOT NULL AND c.payout_ussd_template != '')
+         OR (ic.company_id IS NOT NULL AND ic.pin_encrypted IS NOT NULL)
+       )
+       AND NOT EXISTS (SELECT 1 FROM reseller_withdrawal_dial_attempts a WHERE a.withdrawal_id = w.id)
+     ORDER BY w.created_at ASC`
+  );
+  // interactivePayout only attached (and the PIN only ever decrypted) for a
+  // row actually being handed to the Agent App to dial right now — same
+  // trust boundary Hormuud's inlined-PIN payout_ussd_template already has.
+  // A company with interactive config but no PIN set yet is silently
+  // excluded rather than dialed with no way to finish the transfer.
+  const result = rows.map(({ interactive_initial_dial, interactive_reply_steps, interactive_pin_encrypted, ...rest }) => {
+    if (!interactive_initial_dial || !interactive_pin_encrypted) return rest;
+    return {
+      ...rest,
+      interactivePayout: {
+        initialDial: interactive_initial_dial,
+        replySteps: interactive_reply_steps ?? [],
+        pin: decrypt(interactive_pin_encrypted),
+      },
+    };
+  });
+  sendJson(res, 200, result);
+});
+
+// Natural key for one logical attempt is (withdrawal_id, attempt_number) —
+// same idempotent-insert shape as POST /agent/orders/:id/dial-attempts, so a
+// queued/retried audit-log POST after a dropped response returns the
+// existing row's id instead of creating a second one. Also best-effort bumps
+// the withdrawal reserved -> sent (the same transition
+// PUT /admin/reseller-withdrawals/:id/mark-sent makes by hand) purely for
+// dashboard visibility — a no-op if it's already 'sent' or was raced by the
+// SMS matcher straight to 'completed'.
+resellerDepositsWithdrawalsRouter.post("/agent/reseller-withdrawals/:id/dial-attempts", requireAuth("agent"), async (req, res) => {
+  const { simSlot, ussdString, attemptNumber } = req.body;
+  if (!ussdString) return sendJson(res, 400, { error: "ussdString is required" });
+  const withdrawal = await queryOne<{ id: string; company_id: string }>(`SELECT id, company_id FROM reseller_withdrawals WHERE id=$1`, [
+    req.params.id,
+  ]);
   if (!withdrawal) return sendJson(res, 404, { error: "Withdrawal not found" });
-  if (!["reserved", "sent"].includes(withdrawal.status)) {
-    return sendJson(res, 409, { error: `Withdrawal is '${withdrawal.status}' — cannot fail from this state` });
+
+  const agent = await queryOne<{ device_id: string | null }>(`SELECT device_id FROM agents WHERE id=$1`, [req.auth!.sub]);
+  if (agent?.device_id) {
+    const device = await queryOne<{ enabled: boolean }>(`SELECT enabled FROM agent_devices WHERE id=$1`, [agent.device_id]);
+    if (device && !device.enabled) {
+      return sendJson(res, 403, { error: "Your assigned device has been disabled by an admin." });
+    }
   }
 
-  await adjustResellerWallet({
-    resellerId: withdrawal.reseller_id,
-    changeAmount: Number(withdrawal.amount),
-    referenceType: "withdrawal_release",
-    referenceId: withdrawal.id,
-    source: "admin_manual",
-    changedByAdminId: req.auth!.sub,
-  });
-  const rows = await query(
-    `UPDATE reseller_withdrawals SET status='failed', updated_at=now() WHERE id=$1 AND status=$2 RETURNING id`,
-    [req.params.id, withdrawal.status]
-  );
-  if (rows.length === 0) {
-    return sendJson(res, 500, { error: "Reservation was released but the withdrawal status change lost a race — check admin activity log" });
+  // Snapshotted onto the attempt row (not just referenced) so a later Admin
+  // edit to the route — a new mobile number, a different device — never
+  // rewrites what this specific attempt actually used. Resolved server-side
+  // from the agent's own device rather than trusted from the request body,
+  // consistent with "backend is the source of truth" for SIM routing.
+  const simRoute = agent?.device_id
+    ? await queryOne<{ mobile_number: string | null }>(
+        `SELECT mobile_number FROM reseller_withdrawal_sim_routing WHERE company_id=$1 AND device_id=$2`,
+        [withdrawal.company_id, agent.device_id]
+      )
+    : null;
+
+  const id = randomUUID();
+  try {
+    await query(
+      `INSERT INTO reseller_withdrawal_dial_attempts (id, withdrawal_id, agent_id, sim_slot, ussd_string, attempt_number, status, sim_device_id, sim_mobile_number)
+       VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8)`,
+      [id, req.params.id, req.auth!.sub, simSlot ?? null, ussdString, attemptNumber ?? 1, agent?.device_id ?? null, simRoute?.mobile_number ?? null]
+    );
+  } catch (err: any) {
+    if (err?.code !== "23505" || err?.constraint !== "idx_reseller_withdrawal_dial_attempts_withdrawal_attempt") throw err;
+    const existing = await queryOne<{ id: string }>(
+      `SELECT id FROM reseller_withdrawal_dial_attempts WHERE withdrawal_id=$1 AND attempt_number=$2`,
+      [req.params.id, attemptNumber ?? 1]
+    );
+    return sendJson(res, 200, { id: existing!.id });
   }
-  sendJson(res, 200, { id: req.params.id, status: "failed" });
+  await query(
+    `UPDATE reseller_withdrawals SET status='sent', sent_at=now(), updated_at=now() WHERE id=$1 AND status='reserved'`,
+    [req.params.id]
+  );
+  broadcast({ type: "reseller_withdrawal.updated", withdrawalId: req.params.id });
+  sendJson(res, 201, { id });
+});
+
+// Same claim-before-deduct ordering as confirmResellerWithdrawalViaSms
+// (resellerSmsMatching.ts): the status CAS runs first, and only a
+// successful claim is allowed to touch the wallet, so a race against the
+// SMS matcher — or a retried/duplicate dial-result report — can never
+// double-deduct. If adjustResellerWallet throws (a genuine insufficient-
+// balance edge case), the whole transaction rolls back, so the withdrawal
+// lands back at its prior status instead of getting stuck 'completed' with
+// no matching deduction.
+export async function completeResellerWithdrawalFromDialResult(withdrawalId: string): Promise<{ completed: boolean }> {
+  try {
+    const completed = await withTransaction(async (client) => {
+      const claimed = await client.query<{ id: string; reseller_id: string; amount: string }>(
+        `UPDATE reseller_withdrawals SET status='completed', completed_at=now(), updated_at=now()
+         WHERE id=$1 AND status IN ('reserved','sent') RETURNING id, reseller_id, amount`,
+        [withdrawalId]
+      );
+      if (claimed.rows.length === 0) return false; // already resolved (SMS beat us to it, or admin already acted)
+
+      await adjustResellerWallet({
+        resellerId: claimed.rows[0].reseller_id,
+        changeAmount: -Number(claimed.rows[0].amount),
+        referenceType: "withdrawal",
+        referenceId: withdrawalId,
+        source: "ussd_dial",
+        client,
+      });
+      return true;
+    });
+    return { completed };
+  } catch (err) {
+    if (err instanceof Error && err.message === "Insufficient wallet balance") {
+      // A confirmed-successful payout that the wallet can't cover — almost
+      // certainly another of this reseller's withdrawals completed first.
+      // Never silent: the withdrawal stays 'reserved'/'sent' (the CAS
+      // itself rolled back), needing a Super Admin to reconcile manually.
+      return { completed: false };
+    }
+    throw err;
+  }
+}
+
+resellerDepositsWithdrawalsRouter.put("/agent/reseller-withdrawal-dial-attempts/:attemptId", requireAuth("agent"), async (req, res) => {
+  const { status, responseMessage } = req.body;
+  if (!["success", "failed", "ambiguous"].includes(status)) {
+    return sendJson(res, 400, { error: "status must be success, failed, or ambiguous" });
+  }
+  // Atomic compare-and-swap, same as PUT /agent/dial-attempts/:attemptId —
+  // a duplicate/retried report of an already-resolved attempt is a no-op.
+  const result = await query(
+    `UPDATE reseller_withdrawal_dial_attempts SET status=$1, response_message=$2, completed_at=now()
+     WHERE id=$3 AND status='pending' RETURNING withdrawal_id`,
+    [status, responseMessage ?? null, req.params.attemptId]
+  );
+  if (result.length === 0) {
+    const existing = await queryOne(`SELECT * FROM reseller_withdrawal_dial_attempts WHERE id=$1`, [req.params.attemptId]);
+    if (!existing) return sendJson(res, 404, { error: "Dial attempt not found" });
+    return sendJson(res, 200, existing);
+  }
+  const withdrawalId = (result[0] as { withdrawal_id: string }).withdrawal_id;
+
+  if (status === "success") {
+    await completeResellerWithdrawalFromDialResult(withdrawalId);
+  } else if (status === "failed") {
+    // No wallet adjustment — nothing was ever deducted at creation time, so
+    // "refund" here is simply never debiting. CAS guards the same race: a
+    // withdrawal the SMS matcher already completed must never be knocked
+    // back to 'failed'.
+    await query(
+      `UPDATE reseller_withdrawals SET status='failed', updated_at=now() WHERE id=$1 AND status IN ('reserved','sent')`,
+      [withdrawalId]
+    );
+  }
+  // 'ambiguous': withdrawal status is deliberately left untouched — see this
+  // section's header comment.
+
+  broadcast({ type: "reseller_withdrawal.updated", withdrawalId });
+  sendJson(res, 200, await queryOne(`SELECT * FROM reseller_withdrawal_dial_attempts WHERE id=$1`, [req.params.attemptId]));
 });
