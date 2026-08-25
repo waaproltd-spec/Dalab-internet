@@ -50,10 +50,27 @@ class ExchangeUssdOrchestrator(private val context: Context) {
 
     suspend fun executePayout(order: com.dalab.internet.data.ExchangeOrder): ExchangeDialResult {
         if (!claim(order.id)) {
+            DiagnosticsLog.record(
+                "exchange_final_action",
+                "[order=${order.id}] Final action: DUPLICATE_SKIPPED -- already being processed on this device (in-flight guard).",
+                isError = false,
+            )
             return ExchangeDialResult(ExchangeDialOutcome.DUPLICATE_SKIPPED, "Already being processed on this device — skipped to avoid a duplicate payout.")
         }
         try {
-            return executeLocked(order)
+            val result = executeLocked(order)
+            // Single, always-fires diagnostic point covering every return
+            // path in executeLocked (manual payout from
+            // ExchangeOrderDetailScreen and the self-heal sweep both funnel
+            // through here) -- see the user-facing request for a "final
+            // action" line per attempt. Doesn't change what executeLocked
+            // returns or does, only observes it.
+            DiagnosticsLog.record(
+                "exchange_final_action",
+                "[order=${order.id}] Final action: ${result.outcome}${result.message?.let { " -- $it" } ?: ""}",
+                isError = result.outcome != ExchangeDialOutcome.SUCCESS,
+            )
+            return result
         } finally {
             release(order.id)
         }
@@ -122,7 +139,7 @@ class ExchangeUssdOrchestrator(private val context: Context) {
         wakeLock?.acquire(80_000)
         ExchangeUssdBridge.activeWakeLock = wakeLock
 
-        ExchangeUssdBridge.arm()
+        ExchangeUssdBridge.arm(orderId = order.id, attemptId = body.id)
         try {
             dialer.dial(subscriptionId, body.step1UssdString)
 
