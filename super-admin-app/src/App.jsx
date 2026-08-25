@@ -434,6 +434,11 @@ const DalabAdminApi = {
   setResellerDepositMethod: (method, body) => dalabAdminApiRequest(`/admin/reseller-deposit-methods/${method}`, { method: "PUT", body }),
   setCompanyPayoutUssdTemplate: (companyId, payoutUssdTemplate) =>
     dalabAdminApiRequest(`/admin/companies/${companyId}/payout-ussd-template`, { method: "PUT", body: { payoutUssdTemplate } }),
+  getResellerWithdrawalInteractivePayout: () => dalabAdminApiRequest("/admin/reseller-withdrawal-interactive-payout"),
+  setCompanyPayoutInteractiveSteps: (companyId, body) =>
+    dalabAdminApiRequest(`/admin/companies/${companyId}/payout-interactive-steps`, { method: "PUT", body }),
+  setCompanyPayoutInteractivePin: (companyId, pin) =>
+    dalabAdminApiRequest(`/admin/companies/${companyId}/payout-interactive-pin`, { method: "PUT", body: { pin } }),
   getResellerWithdrawalCommissions: () => dalabAdminApiRequest("/admin/reseller-withdrawal-commissions"),
   setResellerWithdrawalCommission: (companyId, commissionPercentage) =>
     dalabAdminApiRequest(`/admin/reseller-withdrawal-commissions/${companyId}`, { method: "PUT", body: { commissionPercentage } }),
@@ -6952,7 +6957,7 @@ function ResellerManagement({ admin, companies }) {
       </div>
       {tab === "resellers" && <ResellersTab canManage={canManage} isSuperAdmin={isSuperAdmin} />}
       {tab === "numbers" && <ResellerNumbersTab canManage={canManage} companies={companies} />}
-      {tab === "payment" && <ResellerPaymentTab canManage={canManage} companies={companies} />}
+      {tab === "payment" && <ResellerPaymentTab canManage={canManage} isSuperAdmin={isSuperAdmin} companies={companies} />}
       {tab === "orders" && <ResellerOrdersTab canManage={canManage} />}
       {tab === "deposits" && <ResellerDepositsTab canManage={canManage} />}
       {tab === "withdrawals" && <ResellerWithdrawalsTab canManage={canManage} />}
@@ -7243,7 +7248,7 @@ function ResellerNumbersTab({ canManage, companies }) {
 // company-agnostic (the reseller wallet has no per-company split, see
 // resellerWallet.ts), plus each company's Withdrawal ("Lacag Bixi") payout
 // USSD template. See migration 053_reseller_payment_config.sql.
-function ResellerPaymentTab({ canManage, companies }) {
+function ResellerPaymentTab({ canManage, isSuperAdmin, companies }) {
   const [methods, setMethods] = useState([]);
   const [methodEdits, setMethodEdits] = useState({});
   const [savingMethod, setSavingMethod] = useState(null);
@@ -7258,6 +7263,18 @@ function ResellerPaymentTab({ canManage, companies }) {
   const [savingCommission, setSavingCommission] = useState(null);
   const [commissionError, setCommissionError] = useState({});
 
+  // Multi-step (eDahab-style) payout config — keyed by companyId, only
+  // present for companies an admin has already configured (the backend
+  // table has no row at all until the first save, unlike the one-shot
+  // payoutUssdTemplate column on `companies` which always exists as null).
+  const [interactiveConfig, setInteractiveConfig] = useState({});
+  const [stepsEdits, setStepsEdits] = useState({});
+  const [savingSteps, setSavingSteps] = useState(null);
+  const [stepsError, setStepsError] = useState({});
+  const [pinEdits, setPinEdits] = useState({});
+  const [savingPin, setSavingPin] = useState(null);
+  const [pinError, setPinError] = useState({});
+
   const fetchMethods = async () => {
     try { setMethods(await DalabAdminApi.getResellerDepositMethods()); }
     catch (err) { console.error("getResellerDepositMethods failed:", err.message); }
@@ -7269,6 +7286,53 @@ function ResellerPaymentTab({ canManage, companies }) {
     catch (err) { console.error("getResellerWithdrawalCommissions failed:", err.message); }
   };
   useEffect(() => { fetchCommissions(); }, []);
+
+  const fetchInteractive = async () => {
+    try {
+      const rows = await DalabAdminApi.getResellerWithdrawalInteractivePayout();
+      const map = {};
+      rows.forEach((r) => { map[r.companyId] = r; });
+      setInteractiveConfig(map);
+    } catch (err) { console.error("getResellerWithdrawalInteractivePayout failed:", err.message); }
+  };
+  useEffect(() => { fetchInteractive(); }, []);
+
+  const saveSteps = async (company) => {
+    const existing = interactiveConfig[company.id];
+    const draft = stepsEdits[company.id] || {};
+    const initialDial = (draft.initialDial ?? existing?.initialDial ?? "").trim();
+    const stepsText = draft.replyStepsText ?? (existing?.replySteps || []).join(", ");
+    const replySteps = stepsText.split(",").map((s) => s.trim()).filter(Boolean);
+    if (!initialDial) return setStepsError((m) => ({ ...m, [company.id]: "Initial dial code is required." }));
+    if (replySteps.length === 0) return setStepsError((m) => ({ ...m, [company.id]: "Enter at least one reply step (comma-separated)." }));
+    setSavingSteps(company.id);
+    setStepsError((m) => ({ ...m, [company.id]: "" }));
+    try {
+      await DalabAdminApi.setCompanyPayoutInteractiveSteps(company.id, { initialDial, replySteps });
+      setStepsEdits((m) => ({ ...m, [company.id]: undefined }));
+      fetchInteractive();
+    } catch (err) {
+      setStepsError((m) => ({ ...m, [company.id]: err.message || "Couldn't save these steps." }));
+    } finally {
+      setSavingSteps(null);
+    }
+  };
+
+  const savePin = async (company) => {
+    const pin = pinEdits[company.id] || "";
+    if (!/^\d{4,8}$/.test(pin)) return setPinError((m) => ({ ...m, [company.id]: "PIN must be 4-8 digits." }));
+    setSavingPin(company.id);
+    setPinError((m) => ({ ...m, [company.id]: "" }));
+    try {
+      await DalabAdminApi.setCompanyPayoutInteractivePin(company.id, pin);
+      setPinEdits((m) => ({ ...m, [company.id]: "" }));
+      fetchInteractive();
+    } catch (err) {
+      setPinError((m) => ({ ...m, [company.id]: err.message || "Couldn't save this PIN." }));
+    } finally {
+      setSavingPin(null);
+    }
+  };
 
   const saveCommission = async (row) => {
     const raw = commissionEdits[row.companyId] ?? row.commissionPercentage;
@@ -7427,6 +7491,88 @@ function ResellerPaymentTab({ canManage, companies }) {
                 )}
               </tr>
             ))}
+          </tbody>
+        </table>
+      </Card>
+
+      <div style={{ fontWeight: 800, fontSize: 15, color: INK, marginTop: 24, marginBottom: 4 }}>Withdrawal Interactive Payout (multi-step)</div>
+      <div style={{ fontSize: 12, color: MUTE, marginBottom: 12 }}>
+        For a carrier menu that isn't one dial string — e.g. eDahab's Reseller Service: dial, then reply to each prompt in turn. List the initial dial code and every reply <em>except</em> the final PIN (always sent last, once the carrier's own PIN prompt appears) as comma-separated steps — a literal like <code>3</code> or a template containing <code>{"{number}"}</code>/<code>{"{amount}"}</code>. Only needed for a company whose payout can't use the single-string template above.
+      </div>
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Initial Dial</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Reply Steps (before PIN)</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>PIN</th>
+              {canManage && <th style={{ padding: "10px 14px" }} />}
+            </tr>
+          </thead>
+          <tbody>
+            {companies.map((c) => {
+              const existing = interactiveConfig[c.id];
+              return (
+                <tr key={c.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK }}>{c.name}</td>
+                  {canManage ? (
+                    <>
+                      <td style={{ padding: "10px 14px" }}>
+                        <input
+                          style={{ ...inputStyle, width: 90 }}
+                          placeholder="*300#"
+                          value={stepsEdits[c.id]?.initialDial ?? existing?.initialDial ?? ""}
+                          onChange={(e) => setStepsEdits((m) => ({ ...m, [c.id]: { ...m[c.id], initialDial: e.target.value } }))}
+                        />
+                      </td>
+                      <td style={{ padding: "10px 14px" }}>
+                        <input
+                          style={{ ...inputStyle, width: 220 }}
+                          placeholder="3, {number}, {amount}"
+                          value={stepsEdits[c.id]?.replyStepsText ?? (existing?.replySteps || []).join(", ")}
+                          onChange={(e) => setStepsEdits((m) => ({ ...m, [c.id]: { ...m[c.id], replyStepsText: e.target.value } }))}
+                        />
+                        <div>
+                          <Button variant="subtle" disabled={savingSteps === c.id} onClick={() => saveSteps(c)} style={{ marginTop: 4 }}>
+                            {savingSteps === c.id ? "Saving…" : "Save Steps"}
+                          </Button>
+                        </div>
+                        {stepsError[c.id] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{stepsError[c.id]}</div>}
+                      </td>
+                    </>
+                  ) : (
+                    <>
+                      <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontFamily: "monospace" }}>{existing?.initialDial || "Not set"}</td>
+                      <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontFamily: "monospace" }}>{(existing?.replySteps || []).join(", ") || "Not set"}</td>
+                    </>
+                  )}
+                  <td style={{ padding: "10px 14px" }}>
+                    {isSuperAdmin ? (
+                      <div>
+                        <input
+                          type="password" inputMode="numeric" placeholder={existing?.pinIsSet ? "PIN set — enter to replace" : "Set PIN"}
+                          style={{ ...inputStyle, width: 110 }}
+                          value={pinEdits[c.id] ?? ""}
+                          onChange={(e) => setPinEdits((m) => ({ ...m, [c.id]: e.target.value }))}
+                        />
+                        <div>
+                          <Button variant="subtle" disabled={savingPin === c.id} onClick={() => savePin(c)} style={{ marginTop: 4 }}>
+                            {savingPin === c.id ? "Saving…" : "Save PIN"}
+                          </Button>
+                        </div>
+                        {pinError[c.id] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{pinError[c.id]}</div>}
+                      </div>
+                    ) : (
+                      <span style={{ fontSize: 12, color: MUTE }}>
+                        {existing?.pinIsSet ? "Set" : "Not set"} — Super Admin only
+                      </span>
+                    )}
+                  </td>
+                  {canManage && <td />}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </Card>
