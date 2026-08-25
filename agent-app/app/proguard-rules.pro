@@ -28,3 +28,18 @@
 -keep class com.google.crypto.tink.** { *; }
 -keepclassmembers class com.google.crypto.tink.** { *; }
 -dontwarn com.google.crypto.tink.**
+
+# Gson's TypeToken subclasses (DiagnosticsLog.listType, PendingActionQueue's
+# own listType — both `object : TypeToken<MutableList<...>>() {}`) rely on
+# their generic superclass signature surviving at runtime: Gson reflects on
+# it via TypeToken.getSuperclassTypeParameter() to recover the type argument.
+# -keepattributes Signature above only preserves that attribute on classes
+# R8 still keeps as distinct classes; it does not stop R8 merging/removing an
+# anonymous TypeToken subclass that has no members of its own, which is
+# exactly the optimization that was collapsing these two. When that happens,
+# Gson throws IllegalStateException("TypeToken must be created with a type
+# argument...") the instant the anonymous subclass is loaded — for
+# DiagnosticsLog that is the very first line of DalabAgentApp.onCreate(),
+# i.e. an unconditional crash on every launch of the release build.
+-keep,allowobfuscation,allowshrinking class com.google.gson.reflect.TypeToken
+-keep,allowobfuscation,allowshrinking class * extends com.google.gson.reflect.TypeToken
