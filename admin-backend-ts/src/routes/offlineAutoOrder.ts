@@ -1,6 +1,5 @@
 import { query, queryOne } from "../db/pool.js";
 import { broadcast } from "../realtime/orderEvents.js";
-import { companyKeyFromLabel } from "../lib/phoneValidation.js";
 
 /**
  * Offline Auto-Order: a customer with no internet can't open the app to
@@ -8,8 +7,12 @@ import { companyKeyFromLabel } from "../lib/phoneValidation.js";
  * the provider's payment number from their registered sender number — this
  * module is what turns that incoming payment SMS into a real order with no
  * app interaction at all, using the customer's own saved Offline Profile
- * (customers.offline_*, migration 065) instead of a pre-existing pending
- * order.
+ * (customers.offline_*, migrations 065/066) instead of a pre-existing
+ * pending order. The profile's offline_payment_method_id (066) pins it to
+ * one specific company_payment_methods row -- EVC Plus/eDahab/JEEB/... --
+ * exactly like an Online order's own payment_method_id, so provider
+ * identity is verified the same mechanical device/SIM way findMatchingOrder
+ * already does, not a separate parallel check.
  *
  * Deliberately its own module rather than inline in smsLogs.routes.ts, same
  * reasoning as resellerSmsMatching.ts: this is a clearly separate matching
@@ -55,47 +58,84 @@ export type OfflineAutoOrderMatch = {
 
 export type OfflineAutoOrderMatchResult = { order: OfflineAutoOrderMatch | null; reason: string | null };
 
+type OfflinePaymentMethodInfo = { id: string; label: string; payment_number: string | null; ussd_template: string | null };
+
 /**
- * Confirms the incoming SMS really did arrive via THIS company's own
- * collection channel — the same device/SIM guardrail findMatchingOrder
- * applies for online orders (company_payment_methods), plus one extra,
- * cheaper check specific to this path: if the SMS's own carrier-parsed
- * provider name is known and doesn't match the profile's company at all,
- * reject outright. This is what stops a Somtel/Somnet/Amtel payment from
- * ever being routed onto a Hormuud-registered Offline Profile (or vice
- * versa) — spec requirement 9.
+ * Confirms the incoming SMS really did arrive via the customer's own
+ * configured payment method's collection channel — the EXACT same
+ * device/SIM verification findMatchingOrder (smsLogs.routes.ts) applies to
+ * an Online order's own payment_method_id, reused here rather than
+ * reinvented (per spec: don't build a separate/weaker matching system for
+ * Offline Auto-Order). This replaces the previous provider-name-string
+ * heuristic (comparing the SMS's parsed carrier name against the profile's
+ * company name) entirely — Online never does a string comparison like that
+ * either; provider identity is established purely by which physical
+ * device/SIM the payment SMS actually arrived on, which is what
+ * distinguishes a genuine EVC Plus payment from an eDahab one even when
+ * both happen to be collected for the same company.
+ *
+ * A profile with no payment method configured (offline_payment_method_id
+ * null — either saved before this field existed, or the company has none
+ * configured) is treated exactly like a legacy order with no
+ * payment_method_id: accepted at the same trust level findMatchingOrder
+ * already gives that case.
  */
-async function verifyOfflineCompanyMatch(
-  companyId: string,
-  companyName: string,
-  parsedProvider: string | null | undefined,
+async function verifyOfflinePaymentMethod(
+  paymentMethodId: string | null,
   uploadingAgentId: string,
   uploadingSimSlot: number | null | undefined
-): Promise<{ ok: boolean; reason: string | null }> {
-  if (parsedProvider) {
-    const expectedKey = companyKeyFromLabel(companyName);
-    const parsedKey = companyKeyFromLabel(parsedProvider);
-    if (expectedKey && parsedKey && expectedKey !== parsedKey) {
-      return { ok: false, reason: `SMS provider "${parsedProvider}" does not match the Offline Profile's company (${companyName})` };
-    }
-  }
+): Promise<{ ok: boolean; reason: string | null; paymentMethod: OfflinePaymentMethodInfo | null }> {
+  if (!paymentMethodId) return { ok: true, reason: null, paymentMethod: null };
 
-  const methods = await query<{ id: string; device_id: string | null; sim_slot: number | null }>(
-    `SELECT id, device_id, sim_slot FROM company_payment_methods WHERE company_id=$1 AND enabled=true`,
-    [companyId]
-  );
-  if (methods.length === 0) return { ok: true, reason: null }; // legacy company, no specific number to verify against — same trust level findMatchingOrder gives it
+  const method = await queryOne<{
+    id: string;
+    label: string;
+    payment_number: string | null;
+    ussd_template: string | null;
+    device_id: string | null;
+    sim_slot: number | null;
+  }>(`SELECT id, label, payment_number, ussd_template, device_id, sim_slot FROM company_payment_methods WHERE id=$1`, [paymentMethodId]);
+  if (!method) return { ok: false, reason: "Offline Profile's saved payment method no longer exists", paymentMethod: null };
+  const methodInfo: OfflinePaymentMethodInfo = {
+    id: method.id,
+    label: method.label,
+    payment_number: method.payment_number,
+    ussd_template: method.ussd_template,
+  };
 
   const uploadingAgent = await queryOne<{ device_id: string | null }>(`SELECT device_id FROM agents WHERE id=$1`, [uploadingAgentId]);
   const uploadingDeviceId = uploadingAgent?.device_id ?? null;
 
-  for (const method of methods) {
-    if (!method.device_id) return { ok: true, reason: null }; // not linked to a device yet — accept, same fallback findMatchingOrder uses
-    if (method.device_id !== uploadingDeviceId) continue;
-    if (method.sim_slot != null && method.sim_slot !== uploadingSimSlot) continue;
-    return { ok: true, reason: null };
+  if (!method.device_id) {
+    // Not yet linked to a device — accept (same fallback findMatchingOrder
+    // uses) and auto-link this method to the device/slot this SMS just
+    // arrived on, since a real amount+phone-matched payment is concrete
+    // proof that's where it's collected. Every payment after this one is
+    // strictly verified against the link just learned here.
+    if (uploadingDeviceId) {
+      await query(`UPDATE company_payment_methods SET device_id=$1, sim_slot=COALESCE(sim_slot, $2) WHERE id=$3`, [
+        uploadingDeviceId,
+        uploadingSimSlot ?? null,
+        method.id,
+      ]);
+    }
+    return { ok: true, reason: null, paymentMethod: methodInfo };
   }
-  return { ok: false, reason: `SMS arrived on a device/SIM not configured for ${companyName}'s payment collection` };
+  if (method.device_id !== uploadingDeviceId) {
+    return {
+      ok: false,
+      reason: `SMS arrived on a device not configured for ${method.label}'s payment collection (expects device ${method.device_id}, got ${uploadingDeviceId ?? "(agent has no device_id set)"})`,
+      paymentMethod: null,
+    };
+  }
+  if (method.sim_slot != null && method.sim_slot !== uploadingSimSlot) {
+    return {
+      ok: false,
+      reason: `SMS arrived on the wrong SIM slot for ${method.label}'s payment collection (expects slot ${method.sim_slot}, got ${uploadingSimSlot ?? "(unresolved)"})`,
+      paymentMethod: null,
+    };
+  }
+  return { ok: true, reason: null, paymentMethod: methodInfo };
 }
 
 /**
@@ -119,7 +159,6 @@ async function verifyOfflineCompanyMatch(
 export async function matchOrCreateOfflineAutoOrder(
   parsedAmount: number | undefined,
   parsedPhone: string | undefined,
-  parsedProvider: string | null | undefined,
   transactionRef: string | null | undefined,
   uploadingAgentId: string,
   uploadingSimSlot: number | null | undefined
@@ -151,8 +190,9 @@ export async function matchOrCreateOfflineAutoOrder(
     offline_destination_number: string;
     offline_company_id: string;
     offline_package_id: string;
+    offline_payment_method_id: string | null;
   }>(
-    `SELECT id, offline_sender_number, offline_destination_number, offline_company_id, offline_package_id
+    `SELECT id, offline_sender_number, offline_destination_number, offline_company_id, offline_package_id, offline_payment_method_id
      FROM customers
      WHERE offline_sender_number IS NOT NULL AND offline_destination_number IS NOT NULL
        AND offline_company_id IS NOT NULL AND offline_package_id IS NOT NULL
@@ -192,14 +232,15 @@ export async function matchOrCreateOfflineAutoOrder(
     return { order: null, reason: `Offline Profile expects $${pkg.price} for its package but the payment was $${parsedAmount}` };
   }
 
-  const companyCheck = await verifyOfflineCompanyMatch(company.id, company.name, parsedProvider, uploadingAgentId, uploadingSimSlot);
-  if (!companyCheck.ok) return { order: null, reason: companyCheck.reason };
+  const methodCheck = await verifyOfflinePaymentMethod(profile.offline_payment_method_id, uploadingAgentId, uploadingSimSlot);
+  if (!methodCheck.ok) return { order: null, reason: methodCheck.reason };
+  const method = methodCheck.paymentMethod;
 
   const id = orderRef();
   const price = Number(pkg.price);
   await query(
-    `INSERT INTO orders (id, customer_id, company_id, package_id, amount, provider_amount, status, sender_phone, receiver_phone, payment_method, channel, macaash_earned, payment_number_used, payment_ussd_template_used)
-     VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,'offline_auto',$10,$11,$12)`,
+    `INSERT INTO orders (id, customer_id, company_id, package_id, amount, provider_amount, status, sender_phone, receiver_phone, payment_method, channel, macaash_earned, payment_number_used, payment_ussd_template_used, payment_method_id)
+     VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,'offline_auto',$10,$11,$12,$13)`,
     [
       id,
       profile.id,
@@ -211,10 +252,15 @@ export async function matchOrCreateOfflineAutoOrder(
       // overridden by anything the SMS itself parsed (spec requirement 11).
       profile.offline_sender_number,
       profile.offline_destination_number,
-      company.name,
+      // Same precedence orders.routes.ts's own POST /orders uses:
+      // the specific method's own label/number/template when one is
+      // configured, falling back to the company's single legacy
+      // number/template only when it isn't.
+      method?.label || company.name,
       Math.round(price * MACAASH_POINTS_PER_DOLLAR),
-      company.payment_number,
-      company.payment_ussd_template,
+      method?.payment_number || company.payment_number,
+      method?.ussd_template || company.payment_ussd_template,
+      profile.offline_payment_method_id,
     ]
   );
   broadcast({ type: "order.created", orderId: id });
@@ -226,7 +272,7 @@ export async function matchOrCreateOfflineAutoOrder(
       receiver_phone: profile.offline_destination_number,
       amount: price,
       company_id: company.id,
-      payment_method_id: null,
+      payment_method_id: profile.offline_payment_method_id,
     },
     reason: null,
   };

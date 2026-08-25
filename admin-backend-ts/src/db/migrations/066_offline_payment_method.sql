@@ -1,0 +1,12 @@
+-- Offline Auto-Order profiles previously only recorded a destination
+-- COMPANY (offline_company_id, migration 065), never which specific
+-- payment method within it (EVC Plus / eDahab / JEEB / ...) the customer
+-- actually pays from -- unlike Online orders, which pin orders.payment_method_id
+-- (migration 034) to one specific company_payment_methods row the customer
+-- chose on PaymentMethodScreen. Without an equivalent field here,
+-- matchOrCreateOfflineAutoOrder (offlineAutoOrder.ts) could only fall back to
+-- a provider-name-string heuristic plus a loose "any enabled method for this
+-- company" device/SIM check -- for a company with more than one configured
+-- payment method, that accepted payment from ANY of them rather than
+-- specifically the one the customer's profile is meant to represent.
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS offline_payment_method_id TEXT REFERENCES company_payment_methods(id) ON DELETE SET NULL;
