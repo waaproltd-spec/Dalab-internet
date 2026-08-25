@@ -75,6 +75,17 @@ android {
         }
         debug {
             signingConfig = signingConfigs.getByName("debug")
+            // Was identical to release (com.dalab.agent / "DALAB Agent") --
+            // installing this couldn't coexist with a real release install
+            // (different signing keys, same package -> Android rejects it
+            // as "App not installed"), and if it ever did land, there was
+            // no way to tell it apart from production on-device. A distinct
+            // applicationId + label makes a debug build install
+            // side-by-side and stay unmistakably identifiable, same
+            // reasoning as the Customer App's own debug/release split.
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+            resValue("string", "app_name", "DALAB Agent Debug")
         }
     }
 
@@ -88,6 +99,9 @@ android {
 
     buildFeatures {
         compose = true
+        // AGP 8+ disables resValue by default -- needed for the debug
+        // build type's app_name override above.
+        resValues = true
     }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.14"
