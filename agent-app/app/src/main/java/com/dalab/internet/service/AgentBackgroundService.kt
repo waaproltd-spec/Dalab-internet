@@ -579,5 +579,19 @@ class AgentBackgroundService : Service() {
         fun stop(context: Context) {
             context.stopService(Intent(context, AgentBackgroundService::class.java))
         }
+
+        /** Used by HeartbeatWatchdogWorker to recover a service instance that
+         * reports [isRunning] but whose heartbeatLoop coroutine has silently
+         * died (the bug this class's own doc comment now documents) --
+         * calling [start] alone on an already-running instance only re-
+         * delivers onStartCommand() to the SAME instance and does nothing,
+         * since onCreate() (where every coroutine, including heartbeatLoop,
+         * is launched) only ever runs once per instance. Stopping first
+         * forces a genuinely fresh instance and a fresh onCreate() on the
+         * next start(). */
+        fun restart(context: Context) {
+            stop(context)
+            start(context)
+        }
     }
 }
