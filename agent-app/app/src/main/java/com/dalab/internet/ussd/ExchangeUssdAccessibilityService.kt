@@ -275,10 +275,12 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
             // filled without the real window, so the safest response is to
             // tell the user to come back rather than silently keep polling
             // for the rest of this step's existing timeout.
+            val detectionAttempt = ExchangeUssdBridge.nextDetectionAttempt()
             if (ExchangeUssdBridge.shouldLogWindowSearchMiss()) {
                 DiagnosticsLog.record(
                     "exchange_window_search_miss",
-                    "Locked window \"$locked\" not found among ${seen.size} visible window(s): ${seen.joinToString()}." +
+                    "${ExchangeUssdBridge.diagnosticsTag()} Detection attempt $detectionAttempt: window not found -- " +
+                        "locked window \"$locked\" not found among ${seen.size} visible window(s): ${seen.joinToString()}." +
                         screenStateDiagnostics(),
                     isError = false,
                 )
@@ -322,11 +324,41 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
      * (each miss gets its own cycle, up to
      * ExchangeUssdBridge.MAX_RECOVERY_ATTEMPTS) -- confirmed live (order
      * DEX441787877) that a single recovery succeeding didn't mean the window
-     * stayed found for the rest of the step's timeout budget. */
+     * stayed found for the rest of the step's timeout budget.
+     *
+     * ROOT CAUSE of the "recovery failed" line immediately followed by a
+     * "recovery succeeded" line: this used to schedule exactly one re-scan
+     * at a single fixed 500ms delay after bringing MainActivity forward.
+     * That foreground transition is an async OS operation with variable
+     * latency -- sometimes the still-visible carrier window is reported by
+     * getWindows() again well before 500ms, sometimes a beat after. A
+     * single point-in-time check turns detection into a timing coin flip:
+     * when the real latency landed just past 500ms, that check reported
+     * "failed", immediately freed the recovery slot, and the very next
+     * scanAndAct() (called right after) hit the same still-missing window,
+     * which was allowed to open a *second* whole recovery cycle -- and by
+     * the time *that* cycle's own foreground bring-up settled, the window
+     * really was there, logging "recovery succeeded" moments later. Same
+     * symptom either way: the outer step's real progress (PIN detection)
+     * was delayed by a whole extra recovery cycle for no reason other than
+     * unlucky timing on the first one.
+     *
+     * Fix: instead of one blind check, poll for the window at several
+     * short, closely-spaced points within this *same* cycle -- stopping
+     * the instant it's found -- rather than giving up after a single look
+     * and letting a fresh cycle re-pay the same foreground-bring-up cost.
+     * Total worst-case wait stays in the same ballpark as before
+     * (RECOVERY_POLL_COUNT * RECOVERY_POLL_INTERVAL_MS); this is still
+     * exactly one recovery cycle against
+     * ExchangeUssdBridge.shouldAttemptWindowRecovery's per-attempt cap, not
+     * an extra retry. */
     private fun attemptForegroundRecovery() {
+        val tag = ExchangeUssdBridge.diagnosticsTag()
+        val attemptNo = ExchangeUssdBridge.recoveryAttemptNumber()
+        val maxAttempts = ExchangeUssdBridge.maxRecoveryAttempts()
         DiagnosticsLog.record(
             "exchange_window_recovery_attempt",
-            "Recovery triggered after window-search-miss.",
+            "$tag Recovery attempt $attemptNo/$maxAttempts started after window-search-miss.",
             isError = false,
         )
         try {
@@ -334,58 +366,66 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
             }
             startActivity(intent)
-            DiagnosticsLog.record(
-                "exchange_window_recovery_attempt",
-                "MainActivity brought to the foreground.",
-                isError = false,
-            )
         } catch (e: Exception) {
             DiagnosticsLog.record(
                 "exchange_window_recovery_attempt",
-                "Recovery failed -- could not bring MainActivity to the foreground: ${e.message}",
+                "$tag Recovery attempt $attemptNo/$maxAttempts failed -- could not bring MainActivity to the foreground: ${e.message}",
                 isError = false,
             )
             ExchangeUssdBridge.recoveryAttemptFinished()
             return
         }
+        pollForRecoveredWindow(tag, attemptNo, maxAttempts, pollsLeft = RECOVERY_POLL_COUNT)
+    }
+
+    /** One re-scan point within a single [attemptForegroundRecovery] cycle --
+     * see that function's ROOT CAUSE note. Recurses up to RECOVERY_POLL_COUNT
+     * times, RECOVERY_POLL_INTERVAL_MS apart, returning as soon as the
+     * window is found; only the last, exhausted poll -- or a genuine find --
+     * ends the cycle (calls ExchangeUssdBridge.recoveryAttemptFinished() and
+     * resumes scanAndAct()). findRelevantRoot() is safe to call directly on
+     * every poll: ExchangeUssdBridge.shouldAttemptWindowRecovery() can't
+     * open a nested cycle while this one is still marked in-progress. */
+    private fun pollForRecoveredWindow(tag: String, attemptNo: Int, maxAttempts: Int, pollsLeft: Int) {
         Handler(Looper.getMainLooper()).postDelayed({
-            DiagnosticsLog.record(
-                "exchange_window_recovery_attempt",
-                "500ms re-scan started.",
-                isError = false,
-            )
             if (!ExchangeUssdBridge.armed) {
                 DiagnosticsLog.record(
                     "exchange_window_recovery_attempt",
-                    "Attempt ended before the re-scan ran -- skipped.",
+                    "$tag Recovery attempt $attemptNo/$maxAttempts ended before its re-scan ran -- skipped.",
                     isError = false,
                 )
                 ExchangeUssdBridge.recoveryAttemptFinished()
                 return@postDelayed
             }
             val recoveredRoot = findRelevantRoot()
+            val pollNumber = RECOVERY_POLL_COUNT - pollsLeft + 1
             if (recoveredRoot != null) {
                 DiagnosticsLog.record(
                     "exchange_window_recovery_attempt",
-                    "Carrier window found again -- recovery succeeded.",
+                    "$tag Recovery attempt $attemptNo/$maxAttempts: carrier window found again on poll $pollNumber/$RECOVERY_POLL_COUNT -- recovery succeeded.",
                     isError = false,
                 )
                 @Suppress("DEPRECATION")
                 recoveredRoot.recycle()
+                ExchangeUssdBridge.recoveryAttemptFinished()
+                scanAndAct()
+            } else if (pollsLeft > 1) {
+                pollForRecoveredWindow(tag, attemptNo, maxAttempts, pollsLeft - 1)
             } else {
                 DiagnosticsLog.record(
                     "exchange_window_recovery_attempt",
-                    "Carrier window still not found -- recovery failed." + screenStateDiagnostics(),
+                    "$tag Recovery attempt $attemptNo/$maxAttempts: carrier window still not found after $RECOVERY_POLL_COUNT polls -- recovery failed." + screenStateDiagnostics(),
                     isError = false,
                 )
+                // Marked finished before the recursive scanAndAct() below so
+                // that if it hits another miss (the window flickered out
+                // again), a fresh recovery cycle is free to start -- up to
+                // the shared per-attempt cap in
+                // ExchangeUssdBridge.shouldAttemptWindowRecovery.
+                ExchangeUssdBridge.recoveryAttemptFinished()
+                scanAndAct()
             }
-            // Marked finished before the recursive scanAndAct() below so that
-            // if it hits another miss (the window flickered out again), a
-            // fresh recovery cycle is free to start -- up to the shared
-            // per-attempt cap in ExchangeUssdBridge.shouldAttemptWindowRecovery.
-            ExchangeUssdBridge.recoveryAttemptFinished()
-            scanAndAct()
-        }, 500L)
+        }, RECOVERY_POLL_INTERVAL_MS)
     }
 
     /** Diagnostic-only snapshot of screen/lock/wake-lock state, appended to
@@ -533,6 +573,14 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
         // SESSION_EXPIRED_NOTIFICATION_ID (1002) -- notification IDs are
         // shared across the whole app's notifications, not per-class.
         private const val WINDOW_LOST_NOTIFICATION_ID = 2001
+
+        // See attemptForegroundRecovery()'s ROOT CAUSE note: several short
+        // polls spread across the same ~500ms window this used to check
+        // just once, so real (if slightly late) window latency is caught
+        // within the *same* recovery cycle instead of forcing a whole new
+        // one.
+        private const val RECOVERY_POLL_INTERVAL_MS = 150L
+        private const val RECOVERY_POLL_COUNT = 4
 
         @Volatile
         var instance: ExchangeUssdAccessibilityService? = null

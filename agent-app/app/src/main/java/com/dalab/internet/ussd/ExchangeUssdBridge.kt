@@ -113,6 +113,26 @@ object ExchangeUssdBridge {
 
     private const val MAX_RECOVERY_ATTEMPTS = 4
 
+    /** The order and dial-attempt this armed session belongs to, set from
+     * [arm]'s params -- purely for tagging diagnostics lines (window
+     * search/recovery, final action) so a Diagnostics screen with several
+     * attempts logged close together (e.g. a self-heal sweep working
+     * through a batch) reads as separate, identifiable stories instead of
+     * an unlabelled pile of "window not found" / "recovery succeeded"
+     * lines. Never read for any decision. */
+    @Volatile
+    private var currentOrderId: String? = null
+
+    @Volatile
+    private var currentAttemptId: String? = null
+
+    /** Running count of window-search checks that came up empty this
+     * attempt -- the initial scan plus every recovery poll -- so a burst of
+     * misses is traceable as "detection attempt 1, 2, 3…" instead of
+     * identical-looking repeated lines. Purely diagnostic. */
+    @Volatile
+    private var detectionAttemptCounter: Int = 0
+
     /** True once this attempt has already logged an exchange_pin_field_miss
      * entry -- caps it to once per attempt for the same reason as
      * [windowSearchMissLogged]: the PIN poll re-scans every 500ms while the
@@ -144,8 +164,9 @@ object ExchangeUssdBridge {
 
     /** Starts a fresh watch session — a new channel so a stale event from a
      * previous, already-finished attempt can never be misread as belonging
-     * to this one. */
-    fun arm() {
+     * to this one. [orderId]/[attemptId] are purely for tagging this
+     * session's diagnostics lines -- see [currentOrderId]. */
+    fun arm(orderId: String? = null, attemptId: String? = null) {
         events = Channel(capacity = Channel.CONFLATED)
         pendingPinToInject = null
         pinSubmitted = false
@@ -159,6 +180,9 @@ object ExchangeUssdBridge {
         pinFieldMissLogged = false
         recoveryAttemptCount = 0
         recoveryInProgress = false
+        currentOrderId = orderId
+        currentAttemptId = attemptId
+        detectionAttemptCounter = 0
         stopPinPolling()
         armed = true
     }
@@ -177,6 +201,9 @@ object ExchangeUssdBridge {
         recoveryAttemptCount = 0
         recoveryInProgress = false
         postPinConfirmationTapped = false
+        currentOrderId = null
+        currentAttemptId = null
+        detectionAttemptCounter = 0
         stopPinPolling()
     }
 
@@ -318,6 +345,28 @@ object ExchangeUssdBridge {
     internal fun recoveryAttemptFinished() {
         recoveryInProgress = false
     }
+
+    /** The 1-based number of the recovery cycle currently in flight (set by
+     * the most recent true result from [shouldAttemptWindowRecovery]) --
+     * purely for tagging that cycle's diagnostics lines as "attempt N of
+     * [maxRecoveryAttempts]". */
+    internal fun recoveryAttemptNumber(): Int = recoveryAttemptCount
+
+    /** The per-attempt cap on recovery cycles -- exposed read-only so
+     * diagnostics can report "N of MAX" without duplicating the constant. */
+    internal fun maxRecoveryAttempts(): Int = MAX_RECOVERY_ATTEMPTS
+
+    /** Increments and returns this attempt's running count of window-search
+     * checks that came up empty -- see [detectionAttemptCounter]. */
+    internal fun nextDetectionAttempt(): Int {
+        detectionAttemptCounter++
+        return detectionAttemptCounter
+    }
+
+    /** "[order=… attempt=…]" prefix for every window-detection/recovery
+     * diagnostics line -- see [currentOrderId]/[currentAttemptId]. */
+    internal fun diagnosticsTag(): String =
+        "[order=${currentOrderId ?: "?"} attempt=${currentAttemptId ?: "?"}]"
 
     /** True the first time this attempt's PIN poll sees its locked window
      * but finds no editable field in it yet -- caps the diagnostic log to
