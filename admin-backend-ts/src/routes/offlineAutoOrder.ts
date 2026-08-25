@@ -160,7 +160,11 @@ export async function matchOrCreateOfflineAutoOrder(
        AND RIGHT(regexp_replace(offline_sender_number, '\\D', '', 'g'), 9) = $1`,
     [target]
   );
-  if (candidates.length === 0) return { order: null, reason: null }; // no Offline Profile for this sender — not an offline-specific failure worth logging
+  // No Offline Profile registered for this sender -- always logged (never
+  // silent) so an admin reviewing Payment History can tell "this customer
+  // simply hasn't set up Offline Auto-Order" apart from every other failure
+  // reason, rather than seeing a blank Offline Auto-Order segment.
+  if (candidates.length === 0) return { order: null, reason: `No Offline Profile registered for phone ...${target}` };
   if (candidates.length > 1) {
     return { order: null, reason: `${candidates.length} Offline Profiles are registered for phone ...${target} — ambiguous, refusing to auto-order` };
   }
