@@ -690,6 +690,7 @@ type OrphanedSmsRow = {
   agent_id: string;
   parsed_amount: number | null;
   parsed_phone: string | null;
+  parsed_provider: string | null;
   sim_slot: number | null;
   transaction_ref: string | null;
   received_at: string;
@@ -707,13 +708,23 @@ type OrphanedSmsRow = {
  * automatically (the existing self-heal-candidates poll then dials it,
  * same as any other in_progress+ussd_generated order).
  *
+ * Also re-attempts matchOrCreateOfflineAutoOrder (same priority as the live
+ * ingestPaymentSms path: after Store, before Exchange) — offlineAutoOrder.ts
+ * has the exact same "only ever runs once, at upload time" limitation as
+ * findMatchingOrder above, but until this fix nothing ever retried it: a
+ * payment SMS that arrived moments before the customer's Offline Profile was
+ * saved (or any other transient reason matchOrCreateOfflineAutoOrder
+ * returned null for) stayed permanently orphaned even after the profile
+ * became valid, unlike the Store/Exchange paths this function already
+ * covers.
+ *
  * Best-effort per-row: one bad row's exception is logged and skipped
  * rather than aborting the whole sweep (mirrors selfHealStuckOrders'
  * try/catch convention in ussd.routes.ts).
  */
 export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; stillUnmatched: number }> {
   const orphans = await query<OrphanedSmsRow>(
-    `SELECT id, agent_id, parsed_amount, parsed_phone, sim_slot, transaction_ref, received_at FROM sms_logs
+    `SELECT id, agent_id, parsed_amount, parsed_phone, parsed_provider, sim_slot, transaction_ref, received_at FROM sms_logs
      WHERE matched_order_id IS NULL AND matched_exchange_order_id IS NULL AND received_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
      ORDER BY received_at ASC`
   );
@@ -769,7 +780,47 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
         continue;
       }
 
-      // No Store order match — try Money Exchange next, same as the live
+      // No Store order match — try Offline Auto-Order next, same priority
+      // the live upload path uses. Unlike findMatchingOrder above, this
+      // CREATES a new order on a match rather than linking an existing one
+      // (see offlineAutoOrder.ts's own comment on why) — the atomic claim
+      // below still guards against a concurrent sweep pass or live upload
+      // processing the exact same sms_log row twice.
+      const offlineResult = await matchOrCreateOfflineAutoOrder(
+        sms.parsed_amount ?? undefined,
+        sms.parsed_phone ?? undefined,
+        sms.parsed_provider,
+        sms.transaction_ref,
+        sms.agent_id,
+        sms.sim_slot
+      );
+      if (offlineResult.order) {
+        const claimedOffline = await query<{ id: string }>(
+          `UPDATE sms_logs SET matched_order_id=$1, match_failure_reason=NULL WHERE id=$2 AND matched_order_id IS NULL RETURNING id`,
+          [offlineResult.order.id, sms.id]
+        );
+        if (claimedOffline.length === 0) continue; // lost the race — the order this just created is now a harmless duplicate for an admin to notice, same accepted risk offlineAutoOrder.ts's own doc comment describes
+        const requiresManualApprovalOffline = await requiresManualApprovalFor(offlineResult.order.id);
+        await linkPaymentTransactionToOrder(sms.id, offlineResult.order.id);
+        await logPaymentActivity({
+          action: "payment_verified",
+          smsLogId: sms.id,
+          order: offlineResult.order,
+          transactionRef: sms.transaction_ref,
+          paymentTimestamp: sms.received_at,
+          status: "verified",
+          requiresManualApproval: requiresManualApprovalOffline,
+        });
+        if (!requiresManualApprovalOffline) {
+          const orderRow = await queryOne<any>(`SELECT * FROM orders WHERE id=$1`, [offlineResult.order.id]);
+          if (orderRow) await verifyOrderAndGenerateUssd(orderRow, sms.agent_id);
+        }
+        broadcast({ type: "sms_log.created", smsLogId: sms.id, orderId: offlineResult.order.id });
+        relinked++;
+        continue;
+      }
+
+      // No Store or Offline Auto-Order match — try Money Exchange next, same as the live
       // upload path does. Never auto-verifies/pays out; only links + logs.
       const { order: exchangeMatch, reason: exchangeReason } = await findMatchingExchangeOrder(
         sms.parsed_amount ?? undefined,
@@ -779,7 +830,13 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
       );
       if (!exchangeMatch) {
         await query(`UPDATE sms_logs SET match_failure_reason=$1 WHERE id=$2`, [
-          [reason, exchangeReason ? `Exchange: ${exchangeReason}` : null].filter(Boolean).join(" | "),
+          [
+            reason,
+            offlineResult.reason ? `Offline Auto-Order: ${offlineResult.reason}` : null,
+            exchangeReason ? `Exchange: ${exchangeReason}` : null,
+          ]
+            .filter(Boolean)
+            .join(" | "),
           sms.id,
         ]);
         continue;
