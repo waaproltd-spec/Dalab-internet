@@ -468,8 +468,8 @@ async function createExchangeOrder(params: {
   broadcast({ type: "exchange_order.updated", exchangeOrderId: id });
   await notifyCustomer(
     customerId,
-    "Exchange request received",
-    `Your request to exchange ${params.amountSent} is being reviewed. We'll notify you once your payment is verified.`
+    "Codsiga sarrifka waa la helay",
+    `Codsigaaga sarrifka ${params.amountSent} ayaa dib loo eegayaa. Waxaan ku ogeysiin doonaa marka lacag-bixintaada la xaqiijiyo.`
   );
   return { order };
 }
@@ -609,8 +609,8 @@ export async function autoAdvanceExchangeOrderToInProgress(
   broadcast({ type: "exchange_order.updated", exchangeOrderId: orderId });
   await notifyCustomer(
     result[0].customer_id,
-    "Payment verified",
-    `We've received your payment of ${result[0].amount_sent} — your exchange is now being processed.`
+    "Lacag-bixinta waa la xaqiijiyey",
+    `Waxaan helnay lacag-bixintaada oo ah ${result[0].amount_sent} — sarrifkaaga hadda waa la farsamaynayaa.`
   );
   return { order: await queryOne(`${EXCHANGE_ORDER_LIST_SELECT} WHERE eo.id=$1`, [orderId]) };
 }
@@ -706,7 +706,7 @@ exchangeRouter.put("/agent/exchange/dial-attempts/:attemptId/step1", requireAuth
     );
     broadcast({ type: "exchange_order.updated", exchangeOrderId: result[0].exchange_order_id });
     if (failed.length > 0) {
-      await notifyCustomer(failed[0].customer_id, "Exchange failed", "We couldn't complete your exchange. Please contact support for assistance.");
+      await notifyCustomer(failed[0].customer_id, "Sarrifku wuu fashilmay", "Ma awoodin inaan dhammaystirno sarrifkaaga. Fadlan la xiriir Taageerada si laguu caawiyo.");
     }
   }
   sendJson(res, 200, await queryOne(`SELECT * FROM exchange_dial_attempts WHERE id=$1`, [req.params.attemptId]));
@@ -761,8 +761,8 @@ exchangeRouter.put("/agent/exchange/dial-attempts/:attemptId/step2", requireAuth
             `INSERT INTO notifications (id, type, title, body, customer_id) VALUES ($1,'exchange_update',$2,$3,$4)`,
             [
               randomUUID(),
-              "Your money exchange is complete",
-              `Your exchange of ${eo.amount_sent} is complete — ${eo.receiver_phone} received ${eo.amount_received}.`,
+              "Sarrifka lacagtaada waa la dhammaystiray",
+              `Sarrifkaaga ${eo.amount_sent} waa la dhammaystiray — ${eo.receiver_phone} waxaa loo diray ${eo.amount_received}.`,
               eo.customer_id,
             ]
           );
@@ -786,7 +786,7 @@ exchangeRouter.put("/agent/exchange/dial-attempts/:attemptId/step2", requireAuth
       [exchangeOrderId]
     );
     if (failed.length > 0) {
-      await notifyCustomer(failed[0].customer_id, "Exchange failed", "We couldn't complete your exchange. Please contact support for assistance.");
+      await notifyCustomer(failed[0].customer_id, "Sarrifku wuu fashilmay", "Ma awoodin inaan dhammaystirno sarrifkaaga. Fadlan la xiriir Taageerada si laguu caawiyo.");
     }
   }
   broadcast({ type: "exchange_order.updated", exchangeOrderId });
@@ -856,8 +856,8 @@ async function completeExchangeOrderByPayoutConfirmation(
   if (eo.customer_id) {
     await notifyCustomer(
       eo.customer_id,
-      "Your money exchange is complete",
-      `Your exchange of ${eo.amount_sent} is complete — ${eo.receiver_phone} received ${eo.amount_received}.`
+      "Sarrifka lacagtaada waa la dhammaystiray",
+      `Sarrifkaaga ${eo.amount_sent} waa la dhammaystiray — ${eo.receiver_phone} waxaa loo diray ${eo.amount_received}.`
     );
   }
   return { order: eo, success: true, alreadyCompleted: false };
@@ -915,7 +915,7 @@ exchangeRouter.post("/admin/exchange/orders/:id/reverse", requirePermission("exc
     newValue: { status: "cancelled" },
   });
   broadcast({ type: "exchange_order.updated", exchangeOrderId: req.params.id });
-  await notifyCustomer(result[0].customer_id, "Exchange cancelled", "Your exchange request was cancelled. Please contact support if you have questions.");
+  await notifyCustomer(result[0].customer_id, "Sarrifka waa la joojiyay", "Codsigaaga sarrifku waa la joojiyay. Haddii aad su'aalo qabto, fadlan la xiriir Taageerada.");
   sendJson(res, 200, await queryOne(`${EXCHANGE_ORDER_LIST_SELECT} WHERE eo.id=$1`, [req.params.id]));
 });
 
