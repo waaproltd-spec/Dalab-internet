@@ -38,6 +38,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import com.dalab.internet.customer.notifications.NotificationsBadgeState
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -321,7 +322,16 @@ private fun HomeHeader(
                 Icon(Icons.Filled.SwapHoriz, contentDescription = "Switch service", tint = Color.White)
             }
             IconButton(onClick = onOpenNotifications) {
-                Icon(Icons.Filled.Notifications, contentDescription = "Notifications", tint = Color.White)
+                BadgedBox(
+                    badge = {
+                        val unread = NotificationsBadgeState.unreadCount
+                        if (unread > 0) {
+                            Badge { Text(if (unread > 9) "9+" else unread.toString()) }
+                        }
+                    },
+                ) {
+                    Icon(Icons.Filled.Notifications, contentDescription = "Notifications", tint = Color.White)
+                }
             }
             IconButton(onClick = onOpenSettings) {
                 Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = Color.White)

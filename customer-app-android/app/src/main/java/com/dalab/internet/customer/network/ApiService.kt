@@ -26,6 +26,7 @@ data class OtpVerifyResponse(val accessToken: String, val refreshToken: String, 
 data class RefreshRequest(val refreshToken: String)
 data class RefreshResponse(val accessToken: String, val refreshToken: String)
 data class UpdateProfileRequest(val name: String)
+data class RegisterDeviceTokenRequest(val fcmToken: String)
 data class PinBody(val pin: String)
 data class PinStatusResponse(val isSet: Boolean)
 data class PinVerifyResponse(val valid: Boolean)
@@ -125,6 +126,17 @@ interface ApiService {
 
     @GET("notifications")
     suspend fun getNotifications(): Response<List<NotificationItem>>
+
+    // Called once on login/app-start with this device's current FCM token,
+    // and again whenever Firebase rotates it -- see notifications/PushTokenRegistrar.kt
+    // and notifications/CustomerFcmService.kt.
+    @POST("notifications/register-device")
+    suspend fun registerDeviceToken(@Body body: RegisterDeviceTokenRequest): Response<Unit>
+
+    // Called on logout so a shared/reset device stops receiving the
+    // previous customer's pushes.
+    @POST("notifications/unregister-device")
+    suspend fun unregisterDeviceToken(@Body body: RegisterDeviceTokenRequest): Response<Unit>
 
     // audience=customer additionally hides a company that's offline or
     // hidden from the Customer App specifically — the backend leaves every

@@ -1,11 +1,17 @@
 package com.dalab.internet.customer
 
+import android.Manifest
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Network
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
@@ -18,8 +24,13 @@ import androidx.compose.material.icons.outlined.Receipt
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import com.dalab.internet.customer.auth.AuthRepository
 import com.dalab.internet.customer.auth.SessionManager
+import com.dalab.internet.customer.notifications.NotificationsBadgeState
+import com.dalab.internet.customer.notifications.NotificationsDeepLink
+import com.dalab.internet.customer.notifications.PushTokenRegistrar
 import com.dalab.internet.customer.data.Company
 import com.dalab.internet.customer.data.CustomerOrder
 import com.dalab.internet.customer.data.ExchangeCorridor
@@ -71,6 +82,9 @@ class MainActivity : ComponentActivity() {
         PendingActionQueue.init(this)
         registerConnectivityCallback()
         activityScope.launch { QueueDrainer.drainAll() }
+        // Cold start: the notification tap itself launched this Activity, so
+        // the extra is already on the very first Intent onCreate() sees.
+        handleIntent(intent)
 
         setContent {
             DalabTheme(darkTheme = ThemeManager.isDark) {
@@ -79,9 +93,29 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // Warm start: android:launchMode="singleTop" (manifest) routes a
+    // notification tap here instead of spawning a second instance, while
+    // this Activity is already showing some other screen.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_OPEN_NOTIFICATIONS, false) == true) {
+            NotificationsDeepLink.pending = true
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         activityScope.launch { QueueDrainer.drainAll() }
+        // Proactive fallback in case a real push never arrives (or hasn't
+        // been wired up on this build yet, see NotificationsBadgeState) --
+        // catches up the unread count every time the app is foregrounded,
+        // not just when the customer thinks to open Notifications.
+        activityScope.launch { NotificationsBadgeState.refresh() }
     }
 
     override fun onDestroy() {
@@ -102,6 +136,10 @@ class MainActivity : ComponentActivity() {
         }
         connectivityManager.registerDefaultNetworkCallback(callback)
         networkCallback = callback
+    }
+
+    companion object {
+        const val EXTRA_OPEN_NOTIFICATIONS = "open_notifications"
     }
 }
 
@@ -128,6 +166,17 @@ private fun CustomerApp() {
     var corridorSelection by remember { mutableStateOf<CorridorSelection?>(null) }
     var exchangeOrder by remember { mutableStateOf<ExchangeOrder?>(null) }
 
+    // A notification was tapped (cold or warm start) -- jump to the Home
+    // shell if we're not already there so CustomerHome's own effect (below)
+    // can open Notifications. Only acts once logged in; otherwise the flag
+    // stays set and is picked up the moment login completes and this effect
+    // re-runs on the next screen change.
+    LaunchedEffect(NotificationsDeepLink.pending, screen) {
+        if (NotificationsDeepLink.pending && SessionManager.isLoggedIn() && screen != Screen.HOME) {
+            screen = Screen.HOME
+        }
+    }
+
     when (screen) {
         Screen.LOGIN -> OtpLoginScreen(onLoggedIn = { screen = Screen.SERVICE_SELECT })
 
@@ -139,12 +188,24 @@ private fun CustomerApp() {
             onSelectMoneyExchange = { screen = Screen.EXCHANGE_CORRIDORS },
         )
 
-        Screen.HOME -> CustomerHome(
-            onOpenCompany = { company -> selectedCompany = company; screen = Screen.COMPANY_CATEGORIES },
-            onOpenOrder = { order -> selectedOrder = order; screen = Screen.ORDER_DETAIL },
-            onLogout = { AuthRepository.logout(); screen = Screen.LOGIN },
-            onSwitchService = { screen = Screen.SERVICE_SELECT },
-        )
+        Screen.HOME -> {
+            val context = LocalContext.current
+            val scope = rememberCoroutineScope()
+            CustomerHome(
+                onOpenCompany = { company -> selectedCompany = company; screen = Screen.COMPANY_CATEGORIES },
+                onOpenOrder = { order -> selectedOrder = order; screen = Screen.ORDER_DETAIL },
+                onLogout = {
+                    // Must run before AuthRepository.logout() clears the session --
+                    // unregistering needs the still-valid access token to authenticate
+                    // the call. Best-effort: a stale token left behind just gets
+                    // pruned server-side the next time a send to it fails.
+                    scope.launch { PushTokenRegistrar.unregister(context) }
+                    AuthRepository.logout()
+                    screen = Screen.LOGIN
+                },
+                onSwitchService = { screen = Screen.SERVICE_SELECT },
+            )
+        }
 
         Screen.COMPANY_CATEGORIES -> selectedCompany?.let { company ->
             CompanyCategoriesScreen(
@@ -244,6 +305,37 @@ private fun CustomerHome(
     var tab by remember { mutableStateOf(HomeTab.HOME) }
     var showNotifications by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* Best-effort -- a denial just means no system-tray notification, the
+          push itself still arrives and the unread badge still updates. */ }
+
+    // Registers this device's FCM token (and requests POST_NOTIFICATIONS on
+    // Android 13+) once the customer actually reaches Home -- covers both a
+    // fresh login and a resumed session, since a valid session skips
+    // OtpLoginScreen entirely on every subsequent cold start. Also does the
+    // first badge refresh so the unread count is right from the moment Home
+    // renders, not just after the first onResume().
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        PushTokenRegistrar.registerIfNeeded(context)
+        NotificationsBadgeState.refresh()
+    }
+
+    // A notification was tapped -- open straight into Notifications. Only
+    // ever one inbox, so no id needs to be threaded through.
+    LaunchedEffect(NotificationsDeepLink.pending) {
+        if (NotificationsDeepLink.pending) {
+            NotificationsDeepLink.pending = false
+            showNotifications = true
+        }
+    }
 
     if (showSettings) {
         SettingsScreen(onBack = { showSettings = false })

@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.dalab.internet.customer.data.NotificationItem
 import com.dalab.internet.customer.network.ApiClient
+import com.dalab.internet.customer.notifications.NotificationsBadgeState
 import com.dalab.internet.customer.prefs.LocalizationManager
 import com.dalab.internet.customer.util.formatApiDateTime
 import kotlinx.coroutines.launch
@@ -47,6 +48,9 @@ fun NotificationsScreen(onBack: () -> Unit) {
         scope.launch {
             try {
                 notifications = ApiClient.service.getNotifications().body().orEmpty()
+                // Opening this screen is what "read" means for the unread
+                // badge on Home -- see NotificationsBadgeState.
+                NotificationsBadgeState.markAllSeen(notifications)
             } catch (_: Exception) {
                 // Leave the list empty; the empty state below covers this.
             }

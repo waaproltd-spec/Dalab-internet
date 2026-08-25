@@ -3,6 +3,8 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Android 13+ requires this for any local notification (order/exchange updates). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:name=".DalabCustomerApp"
@@ -13,15 +15,44 @@
         android:theme="@style/Theme.DalabCustomerApp"
         android:usesCleartextTraffic="false">
 
+        <!--
+          singleTop: a notification tap (order/exchange status update) must
+          open straight into this app's Notifications inbox, not just
+          relaunch fresh -- this routes a tap into MainActivity.onNewIntent()
+          when the Activity is already on top of the stack instead of
+          spawning a second instance of it. Same pattern as agent-app's
+          MainActivity.
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:theme="@style/Theme.DalabCustomerApp">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".notifications.CustomerFcmService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!-- Fallback used only when the system shows a push notification directly
+             from the FCM payload (app backgrounded/killed) rather than through
+             CustomerFcmService.onMessageReceived -- see push.ts, which always sends
+             an explicit channelId ("dalab_updates") that takes precedence over this
+             default whenever it's present. -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="dalab_updates" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_notification" />
 
     </application>
 </manifest>
