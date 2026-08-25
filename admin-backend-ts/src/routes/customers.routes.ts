@@ -363,7 +363,7 @@ customersRouter.put("/customer/wallet-numbers", requireAuth("customer"), async (
 // Offline Profile (spec requirement 4) — only the catalog it's built from:
 // companies/packages/prices/payment numbers, via companies.routes.ts.
 const OFFLINE_PROFILE_COLUMNS =
-  "offline_sender_number, offline_destination_number, offline_company_id, offline_package_id, offline_profile_updated_at";
+  "offline_sender_number, offline_destination_number, offline_company_id, offline_package_id, offline_payment_method_id, offline_profile_updated_at";
 
 async function serializeOfflineProfile(customerId: string) {
   const row = await queryOne<{
@@ -371,6 +371,7 @@ async function serializeOfflineProfile(customerId: string) {
     offline_destination_number: string | null;
     offline_company_id: string | null;
     offline_package_id: string | null;
+    offline_payment_method_id: string | null;
     offline_profile_updated_at: string | null;
   }>(`SELECT ${OFFLINE_PROFILE_COLUMNS} FROM customers WHERE id=$1`, [customerId]);
   if (!row) return null;
@@ -385,11 +386,20 @@ async function serializeOfflineProfile(customerId: string) {
         [row.offline_package_id]
       )
     : null;
+  // Same shape PaymentMethodScreen's own list uses (companyPaymentMethods.routes.ts's
+  // PUBLIC_METHOD_COLUMNS) — no device_id/sim_slot, those never reach the Customer App.
+  const paymentMethod = row.offline_payment_method_id
+    ? await queryOne(
+        `SELECT id, company_id, method, label, payment_number, ussd_template, enabled, sort_order, created_at, updated_at FROM company_payment_methods WHERE id=$1`,
+        [row.offline_payment_method_id]
+      )
+    : null;
   return {
     senderNumber: row.offline_sender_number,
     destinationNumber: row.offline_destination_number,
     company,
     package: pkg,
+    paymentMethod,
     updatedAt: row.offline_profile_updated_at,
   };
 }
@@ -408,7 +418,7 @@ customersRouter.get("/customer/offline-profile", requireAuth("customer"), async 
 // always read back from the package the customer picked, here and again at
 // match time.
 customersRouter.put("/customer/offline-profile", requireAuth("customer"), async (req, res) => {
-  const { senderNumber, destinationNumber, companyId, packageId } = req.body ?? {};
+  const { senderNumber, destinationNumber, companyId, packageId, paymentMethodId } = req.body ?? {};
   if (!senderNumber || !destinationNumber || !companyId || !packageId) {
     return sendJson(res, 400, { error: "senderNumber, destinationNumber, companyId, and packageId are all required" });
   }
@@ -424,9 +434,23 @@ customersRouter.put("/customer/offline-profile", requireAuth("customer"), async 
   if (!pkg) return sendJson(res, 404, { error: "Package not found" });
   if (pkg.company_id !== companyId) return sendJson(res, 400, { error: "Package does not belong to the selected company" });
 
-  // Sender: any known carrier accepted, same as Online's optional senderPhone
-  // (no specific payment method to narrow it to — Offline Profile only
-  // saves a Company, not a specific EVC Plus/eDahab/... method within it).
+  // Which specific payment method (EVC Plus/eDahab/JEEB/...) the customer
+  // pays from -- same lookup+validation orders.routes.ts's POST /orders
+  // already does for paymentMethodId, so an Offline Profile can be pinned to
+  // one exact company_payment_methods row exactly like an Online order is,
+  // rather than accepting payment from any of the company's methods. A
+  // company with none configured yet has nothing to pick (optional, same as
+  // Online's paymentMethodId).
+  let selectedMethod: { id: string } | null = null;
+  if (paymentMethodId) {
+    selectedMethod = await queryOne(
+      `SELECT id FROM company_payment_methods WHERE id=$1 AND company_id=$2 AND enabled=true`,
+      [paymentMethodId, companyId]
+    );
+    if (!selectedMethod) return sendJson(res, 404, { error: "Payment method not found for this company" });
+  }
+
+  // Sender: any known carrier accepted, same as Online's optional senderPhone.
   const senderCheck = validateMobileNumber(String(senderNumber));
   if (!senderCheck.valid) return sendJson(res, 400, { error: senderCheck.error });
   // Destination: must belong to the selected company's own carrier, same
@@ -435,15 +459,15 @@ customersRouter.put("/customer/offline-profile", requireAuth("customer"), async 
   if (!destinationCheck.valid) return sendJson(res, 400, { error: destinationCheck.error });
 
   await query(
-    `UPDATE customers SET offline_sender_number=$1, offline_destination_number=$2, offline_company_id=$3, offline_package_id=$4, offline_profile_updated_at=now() WHERE id=$5`,
-    [String(senderNumber), String(destinationNumber), companyId, packageId, req.auth!.sub]
+    `UPDATE customers SET offline_sender_number=$1, offline_destination_number=$2, offline_company_id=$3, offline_package_id=$4, offline_payment_method_id=$5, offline_profile_updated_at=now() WHERE id=$6`,
+    [String(senderNumber), String(destinationNumber), companyId, packageId, selectedMethod?.id ?? null, req.auth!.sub]
   );
   sendJson(res, 200, await serializeOfflineProfile(req.auth!.sub));
 });
 
 customersRouter.delete("/customer/offline-profile", requireAuth("customer"), async (req, res) => {
   await query(
-    `UPDATE customers SET offline_sender_number=NULL, offline_destination_number=NULL, offline_company_id=NULL, offline_package_id=NULL, offline_profile_updated_at=NULL WHERE id=$1`,
+    `UPDATE customers SET offline_sender_number=NULL, offline_destination_number=NULL, offline_company_id=NULL, offline_package_id=NULL, offline_payment_method_id=NULL, offline_profile_updated_at=NULL WHERE id=$1`,
     [req.auth!.sub]
   );
   sendJson(res, 200, { ok: true });

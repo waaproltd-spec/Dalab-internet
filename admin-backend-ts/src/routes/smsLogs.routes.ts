@@ -485,7 +485,7 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
   let offlineAutoMatch: OrderMatch | null = null;
   let offlineAutoMatchFailureReason: string | null = null;
   if (!storeMatch) {
-    const offlineResult = await matchOrCreateOfflineAutoOrder(parsedAmount, parsedPhone, parsedProvider, transactionRef, agentId, simSlot);
+    const offlineResult = await matchOrCreateOfflineAutoOrder(parsedAmount, parsedPhone, transactionRef, agentId, simSlot);
     offlineAutoMatch = offlineResult.order;
     offlineAutoMatchFailureReason = offlineResult.reason;
   }
@@ -789,7 +789,6 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
       const offlineResult = await matchOrCreateOfflineAutoOrder(
         sms.parsed_amount ?? undefined,
         sms.parsed_phone ?? undefined,
-        sms.parsed_provider,
         sms.transaction_ref,
         sms.agent_id,
         sms.sim_slot

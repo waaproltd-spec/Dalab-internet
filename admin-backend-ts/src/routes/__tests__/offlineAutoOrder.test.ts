@@ -26,11 +26,14 @@ import { ingestPaymentSms, resweepUnmatchedSmsLogs, smsLogsRouter } from "../sms
 import { customersRouter } from "../customers.routes.js";
 
 const AGENT_ID = randomUUID();
+const DEVICE_ID = "test-offline-device";
 const COMPANY_ID = "test-offline-company";
 const OTHER_COMPANY_ID = "test-offline-other-company";
 
 let packageId: string;
 let otherCompanyPackageId: string;
+let hormuudMethodId: string;
+let somtelMethodId: string;
 
 // Minimal HTTP harness (same pattern as exchangeSmsMatching.test.ts's
 // payoutApp), mounting BOTH the real GET /admin/payment-transactions/:id/timeline
@@ -53,10 +56,17 @@ async function makeCustomer(phone: string): Promise<string> {
   return id;
 }
 
-async function saveOfflineProfile(customerId: string, senderNumber: string, destinationNumber: string, companyId: string, pkgId: string) {
+async function saveOfflineProfile(
+  customerId: string,
+  senderNumber: string,
+  destinationNumber: string,
+  companyId: string,
+  pkgId: string,
+  paymentMethodId?: string
+) {
   await query(
-    `UPDATE customers SET offline_sender_number=$1, offline_destination_number=$2, offline_company_id=$3, offline_package_id=$4, offline_profile_updated_at=now() WHERE id=$5`,
-    [senderNumber, destinationNumber, companyId, pkgId, customerId]
+    `UPDATE customers SET offline_sender_number=$1, offline_destination_number=$2, offline_company_id=$3, offline_package_id=$4, offline_payment_method_id=$5, offline_profile_updated_at=now() WHERE id=$6`,
+    [senderNumber, destinationNumber, companyId, pkgId, paymentMethodId ?? null, customerId]
   );
 }
 
@@ -68,13 +78,14 @@ async function saveOfflineProfileViaApi(
   senderNumber: string,
   destinationNumber: string,
   companyId: string,
-  pkgId: string
+  pkgId: string,
+  paymentMethodId?: string
 ) {
   const token = signAccessToken(customerId, "customer");
   const res = await fetch(`${adminBaseUrl}/customer/offline-profile`, {
     method: "PUT",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ senderNumber, destinationNumber, companyId, packageId: pkgId }),
+    body: JSON.stringify({ senderNumber, destinationNumber, companyId, packageId: pkgId, paymentMethodId }),
   });
   if (res.status !== 200) {
     throw new Error(`saveOfflineProfileViaApi failed: ${res.status} ${await res.text()}`);
@@ -88,11 +99,22 @@ before(async () => {
   await query(`DELETE FROM company_payment_methods`);
   await query(`DELETE FROM packages WHERE company_id IN ($1, $2)`, [COMPANY_ID, OTHER_COMPANY_ID]);
   await query(`DELETE FROM customers`);
+  // A payment_wallets row can end up referencing one of these company ids
+  // (some migrations backfill payment_wallets.company_id by matching a
+  // company's name, and "Hormuud"/"Somtel" below are real carrier names) --
+  // this table isn't otherwise touched by this suite's fixtures, so clear
+  // it defensively before the companies DELETE below can hit its FK.
+  await query(`DELETE FROM payment_wallets WHERE company_id IN ($1, $2)`, [COMPANY_ID, OTHER_COMPANY_ID]);
   await query(`DELETE FROM companies WHERE id IN ($1, $2)`, [COMPANY_ID, OTHER_COMPANY_ID]);
+  await query(`DELETE FROM agent_devices`);
   await query(`DELETE FROM agents`);
   await query(`DELETE FROM admin_activity_log`);
 
-  await query(`INSERT INTO agents (id, phone, name, password_hash) VALUES ($1, '252699000077', 'Test Agent', 'x')`, [AGENT_ID]);
+  await query(`INSERT INTO agent_devices (id, name) VALUES ($1, 'Test Offline Device')`, [DEVICE_ID]);
+  await query(
+    `INSERT INTO agents (id, phone, name, password_hash, device_id) VALUES ($1, '252699000077', 'Test Agent', 'x', $2)`,
+    [AGENT_ID, DEVICE_ID]
+  );
   await query(
     `INSERT INTO companies (id, name, group_number, color_hex, gateway, payment_number) VALUES ($1, 'Hormuud', 1, '#000000', 'EVC Plus', '61 0000001')`,
     [COMPANY_ID]
@@ -101,6 +123,21 @@ before(async () => {
     `INSERT INTO companies (id, name, group_number, color_hex, gateway, payment_number) VALUES ($1, 'Somtel', 2, '#111111', 'eDahab', '62 0000002')`,
     [OTHER_COMPANY_ID]
   );
+  // Same physical test device, one SIM slot each — mirrors the real setup
+  // (Mobile 1 / SIM 1 = Hormuud EVC Plus, Mobile 1 / SIM 2 = Somtel eDahab)
+  // and gives the wrong-provider tests below a real device/SIM guardrail to
+  // exercise, the same way findMatchingOrder's Online-order counterpart
+  // works via company_payment_methods.device_id/sim_slot.
+  hormuudMethodId = (await queryOne<{ id: string }>(
+    `INSERT INTO company_payment_methods (id, company_id, method, label, payment_number, ussd_template, enabled, sort_order, device_id, sim_slot)
+     VALUES ($1,$2,'evc_plus','EVC Plus','61 0000001','*712*61 0000001*{amount}#',true,1,$3,1) RETURNING id`,
+    [randomUUID(), COMPANY_ID, DEVICE_ID]
+  ))!.id;
+  somtelMethodId = (await queryOne<{ id: string }>(
+    `INSERT INTO company_payment_methods (id, company_id, method, label, payment_number, ussd_template, enabled, sort_order, device_id, sim_slot)
+     VALUES ($1,$2,'edahab','eDahab','62 0000002','*828*62 0000002*{amount}#',true,1,$3,2) RETURNING id`,
+    [randomUUID(), OTHER_COMPANY_ID, DEVICE_ID]
+  ))!.id;
   packageId = randomUUID();
   await query(`INSERT INTO packages (id, company_id, category_id, name, price) VALUES ($1,$2,$3,'Anfac 2GB',0.89)`, [
     packageId,
@@ -263,10 +300,16 @@ test("the same transaction reference arriving twice creates exactly one order an
   assert.equal(txs.length, 2, "the redelivery still gets its own duplicate_blocked audit-trail row, per this codebase's existing convention");
 });
 
-test("a Hormuud Offline Profile is never matched by a Somtel-provider SMS, even with the same amount+phone", async () => {
+test("a Hormuud Offline Profile is never matched by a Somtel-provider SMS, even with the same amount+phone — exactly the same device/SIM guardrail Online orders use, not a provider-name string check", async () => {
   const customerId = await makeCustomer("252611110006");
-  await saveOfflineProfile(customerId, "611116666", "612226666", COMPANY_ID, packageId);
+  // Profile is pinned to Hormuud's specific EVC Plus payment method, which
+  // is configured on SIM slot 1 of the test device (see before()).
+  await saveOfflineProfile(customerId, "611116666", "612226666", COMPANY_ID, packageId, hormuudMethodId);
 
+  // A real Somtel payment SMS always arrives on Somtel's own SIM slot (2 in
+  // this fixture) — never Hormuud's slot 1 — so simulating "a Somtel SMS"
+  // means the upload resolves slot 2, exactly like the real Agent App would
+  // report for an SMS that landed on the eDahab SIM.
   const result = await ingestPaymentSms({
     agentId: AGENT_ID,
     sender: "192",
@@ -275,6 +318,7 @@ test("a Hormuud Offline Profile is never matched by a Somtel-provider SMS, even 
     parsedAmount: 0.89,
     parsedPhone: "611116666",
     transactionRef: "TX-OFFLINE-006",
+    simSlot: 2,
   });
 
   assert.equal(result.body.matchedOrderId, null);
@@ -569,9 +613,11 @@ test("the resweep uses the customer's CURRENT profile, matching an SMS that only
 
 test("provider validation still applies to the customer's CURRENT profile: changing the profile's company also takes effect immediately, without weakening the Somtel-vs-Hormuud guard", async () => {
   const customerId = await makeCustomer("252611130020");
-  await saveOfflineProfileViaApi(customerId, "611120020", "612220020", COMPANY_ID, packageId); // COMPANY_ID = Hormuud
+  // COMPANY_ID = Hormuud, pinned to its EVC Plus method (SIM slot 1).
+  await saveOfflineProfileViaApi(customerId, "611120020", "612220020", COMPANY_ID, packageId, hormuudMethodId);
 
-  // A Somtel-provider SMS must not match while the profile still points to Hormuud.
+  // A Somtel-provider SMS (arrives on Somtel's SIM slot 2) must not match
+  // while the profile still points to Hormuud's slot-1 method.
   const wrongProvider = await ingestPaymentSms({
     agentId: AGENT_ID,
     sender: "192",
@@ -580,16 +626,18 @@ test("provider validation still applies to the customer's CURRENT profile: chang
     parsedAmount: 0.89,
     parsedPhone: "611120020",
     transactionRef: "TX-PROFILE-PROVIDER-1",
+    simSlot: 2,
   });
   assert.equal(wrongProvider.body.matchedOrderId, null, "a Somtel SMS must not match a Hormuud profile");
 
-  // Customer switches their profile to the Somtel company + a Somtel-valid
-  // destination number, via the real API.
-  await saveOfflineProfileViaApi(customerId, "611120020", "622220020", OTHER_COMPANY_ID, otherCompanyPackageId); // OTHER_COMPANY_ID = Somtel
+  // Customer switches their profile to the Somtel company + its own eDahab
+  // method + a Somtel-valid destination number, via the real API.
+  await saveOfflineProfileViaApi(customerId, "611120020", "622220020", OTHER_COMPANY_ID, otherCompanyPackageId, somtelMethodId); // OTHER_COMPANY_ID = Somtel
 
-  // The same Somtel-provider SMS pattern must now match immediately, since
-  // the profile's company changed -- no restart, no cache, and still the
-  // exact right prefix check (not a weakened one).
+  // The same Somtel-provider SMS pattern (SIM slot 2) must now match
+  // immediately, since the profile's company+method changed -- no restart,
+  // no cache, and still the exact right device/SIM check (not a weakened
+  // one): the same SMS on slot 1 would still be rejected.
   const nowMatches = await ingestPaymentSms({
     agentId: AGENT_ID,
     sender: "192",
@@ -598,6 +646,7 @@ test("provider validation still applies to the customer's CURRENT profile: chang
     parsedAmount: 0.89,
     parsedPhone: "611120020",
     transactionRef: "TX-PROFILE-PROVIDER-2",
+    simSlot: 2,
   });
   assert.ok(nowMatches.body.matchedOrderId, "must match immediately once the profile's company changed to Somtel");
 
