@@ -17,7 +17,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { query, queryOne, pool } from "../../db/pool.js";
-import { ingestPaymentSms } from "../smsLogs.routes.js";
+import { ingestPaymentSms, resweepUnmatchedSmsLogs } from "../smsLogs.routes.js";
 
 const AGENT_ID = randomUUID();
 const COMPANY_ID = "test-offline-company";
@@ -290,4 +290,60 @@ test("Online ordering is unaffected: a customer can still use different sender/d
   ]);
   assert.equal(order!.sender_phone, "613330001");
   assert.equal(order!.receiver_phone, "614440002");
+});
+
+// Reproduces a real production case: a customer sends the payment SMS
+// before (or concurrently with) saving their Offline Profile, so the live
+// ingestPaymentSms call finds zero candidates and silently gives up
+// (matchOrCreateOfflineAutoOrder's "no Offline Profile for this sender —
+// not an offline-specific failure worth logging" branch). Before this
+// resweep coverage existed, that SMS stayed permanently unmatched forever
+// even after the profile became valid, unlike the Store/Exchange paths
+// resweepUnmatchedSmsLogs already retried.
+test("a payment SMS that arrives before the customer's Offline Profile is saved gets matched on the next resweep", async () => {
+  const customerId = await makeCustomer("252611119999");
+
+  const liveResult = await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "192",
+    body: "offline-resweep-test",
+    parsedProvider: "Hormuud",
+    parsedAmount: 0.89,
+    parsedPhone: "611119999",
+    transactionRef: "TX-OFFLINE-RESWEEP",
+  });
+  assert.equal(liveResult.body.matchedOrderId, null, "no Offline Profile exists yet, so nothing can match live");
+
+  // The customer saves their Offline Profile AFTER the payment SMS already arrived.
+  await saveOfflineProfile(customerId, "611119999", "612229999", COMPANY_ID, packageId);
+
+  const { relinked } = await resweepUnmatchedSmsLogs();
+  assert.equal(relinked, 1, "the resweep must catch the now-valid Offline Profile match");
+
+  const sms = await queryOne<{ matched_order_id: string | null }>(`SELECT matched_order_id FROM sms_logs WHERE transaction_ref=$1`, [
+    "TX-OFFLINE-RESWEEP",
+  ]);
+  assert.ok(sms!.matched_order_id, "the SMS must now be linked to a real order");
+
+  const order = await queryOne<{ customer_id: string; channel: string; status: string }>(`SELECT customer_id, channel, status FROM orders WHERE id=$1`, [
+    sms!.matched_order_id,
+  ]);
+  assert.equal(order!.customer_id, customerId);
+  assert.equal(order!.channel, "offline_auto");
+  // Unlike the live ingestPaymentSms path (where the Agent App itself makes
+  // a separate follow-up verify-payment call after seeing the response),
+  // resweepUnmatchedSmsLogs has no client waiting to do that, so it calls
+  // verifyOrderAndGenerateUssd synchronously in-process on a fresh match —
+  // same as the pre-existing Store-match branch right above this one — so
+  // the order is already past "pending" by the time this query runs.
+  assert.equal(order!.status, "in_progress");
+
+  const tx = await queryOne<{ status: string }>(`SELECT status FROM payment_transactions WHERE order_id=$1`, [sms!.matched_order_id]);
+  assert.equal(tx!.status, "pending", "resweep-created orders must get the same ledger row the live path creates, so Verify/dial still works");
+
+  // A second resweep pass must not create a duplicate order for the same SMS.
+  const { relinked: secondPassRelinked } = await resweepUnmatchedSmsLogs();
+  assert.equal(secondPassRelinked, 0, "the SMS is already matched, so it must no longer be a resweep candidate");
+  const orders = await query(`SELECT id FROM orders WHERE customer_id=$1`, [customerId]);
+  assert.equal(orders.length, 1, "must never create a second order for the same already-matched SMS");
 });
