@@ -305,13 +305,27 @@ class AgentBackgroundService : Service() {
     private suspend fun heartbeatLoop() {
         val currentScope = scope ?: return
         while (currentScope.isActive) {
-            val deviceId = DeviceIdentity.deviceId()
-            if (deviceId != null && SessionManager.isLoggedIn()) {
-                // Snapshot before the call, not after — an entry recorded by
-                // this very tick's own failure path below must wait for the
-                // *next* tick to go out, same as any other pending entry.
-                val pendingDiagnostics = DiagnosticsLog.unsyncedEntries()
-                sendHeartbeatWithRetry(deviceId, pendingDiagnostics)
+            // Mirrors simRoutingRefreshLoop/queueDrainLoop's own per-tick
+            // try/catch below -- this loop previously had none, so any
+            // unexpected exception in a single tick (e.g. a diagnostics-
+            // recording failure, not just the network call itself, which
+            // sendHeartbeatWithRetry already retries/classifies on its own)
+            // permanently killed this coroutine, silently stopping every
+            // future heartbeat while the rest of the service kept running
+            // unaffected. Logged and skipped instead, so the very next
+            // regular tick still goes out.
+            try {
+                val deviceId = DeviceIdentity.deviceId()
+                if (deviceId != null && SessionManager.isLoggedIn()) {
+                    // Snapshot before the call, not after — an entry recorded
+                    // by this very tick's own failure path below must wait
+                    // for the *next* tick to go out, same as any other
+                    // pending entry.
+                    val pendingDiagnostics = DiagnosticsLog.unsyncedEntries()
+                    sendHeartbeatWithRetry(deviceId, pendingDiagnostics)
+                }
+            } catch (e: Exception) {
+                DiagnosticsLog.record("heartbeat_loop", "Tick failed: ${e.stackTraceToString().take(2000)}")
             }
             delay(HEARTBEAT_INTERVAL_MS)
         }

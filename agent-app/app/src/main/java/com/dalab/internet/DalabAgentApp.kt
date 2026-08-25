@@ -7,6 +7,7 @@ import android.os.Build
 import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.auth.SessionManager
 import com.dalab.internet.diagnostics.DiagnosticsLog
+import com.dalab.internet.diagnostics.HeartbeatStats
 import com.dalab.internet.notifications.AgentAlertsState
 import com.dalab.internet.notifications.AgentFcmService
 import com.dalab.internet.queue.PendingActionQueue
@@ -63,6 +64,17 @@ class DalabAgentApp : Application() {
         initSafely("sms_listener_init") { SmsListenerState.init(this) }
         initSafely("pending_queue_init") { PendingActionQueue.init(this) }
         initSafely("agent_alerts_init") { AgentAlertsState.init(this) }
+        // Previously only initialized from MainActivity.kt, which never runs
+        // for a process the OS started to host just the background service
+        // (e.g. after a boot or a low-memory restart, with the agent never
+        // manually reopening the app) -- every heartbeat tick's
+        // HeartbeatStats.recordSuccess()/recordFailure() call then threw
+        // UninitializedPropertyAccessException, uncaught, permanently
+        // killing the heartbeat loop's coroutine while every other
+        // background loop (SMS listener, connectivity callback, SIM
+        // routing/queue-drain loops) kept running unaffected -- exactly
+        // "shows Online, heartbeat stale for 5+ minutes and never recovers".
+        initSafely("heartbeat_stats_init") { HeartbeatStats.init(this) }
         // Created here (Application.onCreate — guaranteed to run before any
         // component, including AgentFcmService) rather than in MainActivity,
         // so the channel already exists even if a support-request push
