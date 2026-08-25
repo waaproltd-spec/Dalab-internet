@@ -7497,7 +7497,7 @@ function ResellerPaymentTab({ canManage, isSuperAdmin, companies }) {
 
       <div style={{ fontWeight: 800, fontSize: 15, color: INK, marginTop: 24, marginBottom: 4 }}>Withdrawal Interactive Payout (multi-step)</div>
       <div style={{ fontSize: 12, color: MUTE, marginBottom: 12 }}>
-        For a carrier menu that isn't one dial string — e.g. eDahab's Reseller Service: dial, then reply to each prompt in turn. List the initial dial code and every reply <em>except</em> the final PIN (always sent last, once the carrier's own PIN prompt appears) as comma-separated steps — a literal like <code>3</code> or a template containing <code>{"{number}"}</code>/<code>{"{amount}"}</code>. Only needed for a company whose payout can't use the single-string template above.
+        For a carrier menu that isn't one dial string — e.g. eDahab's Reseller Service: dial, then reply to each prompt in turn. List the initial dial code and every reply as comma-separated steps — a literal like <code>3</code> or a template containing <code>{"{number}"}</code>/<code>{"{amount}"}</code>. By default the PIN is sent last, once the carrier's own PIN prompt appears — omit it from the steps below. If the carrier instead prompts for the PIN somewhere else (e.g. Somnet: dial, then PIN first, then a menu choice, the number twice, the amount, then a Yes/No confirmation), add an explicit <code>{"{pin}"}</code> step at that exact position instead. Only needed for a company whose payout can't use the single-string template above.
       </div>
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -7505,7 +7505,7 @@ function ResellerPaymentTab({ canManage, isSuperAdmin, companies }) {
             <tr style={{ background: "#FAFBFF" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Initial Dial</th>
-              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Reply Steps (before PIN)</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Reply Steps (PIN sent last unless a {"{pin}"} step is included)</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>PIN</th>
               {canManage && <th style={{ padding: "10px 14px" }} />}
             </tr>
@@ -7529,7 +7529,7 @@ function ResellerPaymentTab({ canManage, isSuperAdmin, companies }) {
                       <td style={{ padding: "10px 14px" }}>
                         <input
                           style={{ ...inputStyle, width: 220 }}
-                          placeholder="3, {number}, {amount}"
+                          placeholder="e.g. 3, {number}, {amount}  or  {pin}, 2, {number}, {number}, {amount}, 1"
                           value={stepsEdits[c.id]?.replyStepsText ?? (existing?.replySteps || []).join(", ")}
                           onChange={(e) => setStepsEdits((m) => ({ ...m, [c.id]: { ...m[c.id], replyStepsText: e.target.value } }))}
                         />

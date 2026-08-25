@@ -66,4 +66,30 @@ class ResellerWithdrawalInteractiveUssdOrchestratorTest {
         val replies = buildResellerWithdrawalInteractiveReplies(emptyList(), "620338686", 5.00, "9999")
         assertEquals(listOf("9999"), replies)
     }
+
+    // The real Somnet reply sequence: dial *825# -> PIN first -> "2" selects
+    // Money Transfer -> destination number -> confirm the same number again
+    // -> amount -> "1" confirms Yes. The PIN is the very first reply here,
+    // not the last -- the opposite of eDahab's flow above.
+    private val somnetReplySteps = listOf("{pin}", "2", "{number}", "{number}", "{amount}", "1")
+
+    @Test
+    fun `builds the exact real Somnet reply sequence with the PIN placed first, not appended last`() {
+        val replies = buildResellerWithdrawalInteractiveReplies(somnetReplySteps, "712345678", 50.00, "8233")
+        assertEquals(listOf("8233", "2", "712345678", "712345678", "50.00", "1"), replies)
+    }
+
+    @Test
+    fun `a pin token in the middle of the sequence is substituted only there`() {
+        val replies = buildResellerWithdrawalInteractiveReplies(listOf("3", "{pin}", "{number}"), "620338686", 2.50, "1111")
+        assertEquals(listOf("3", "1111", "620338686"), replies)
+    }
+
+    @Test
+    fun `the audit string masks an inline pin token at its real position instead of appending it`() {
+        val payout = ResellerWithdrawalInteractivePayout("*825#", somnetReplySteps, pin = "8233")
+        val audit = auditUssdString(payout)
+        assertFalse("audit string leaked the real PIN: \"$audit\"", audit.contains("8233"))
+        assertEquals("*825# -> [PIN] -> 2 -> {number} -> {number} -> {amount} -> 1", audit)
+    }
 }

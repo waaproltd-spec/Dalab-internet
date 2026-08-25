@@ -257,8 +257,10 @@ class ResellerWithdrawalInteractiveUssdOrchestrator(private val context: Context
  * especially the PIN) are never sent to the backend at all, only this
  * summary and the eventual success/failed/ambiguous classification. */
 internal fun auditUssdString(payout: com.dalab.internet.data.ResellerWithdrawalInteractivePayout): String {
-    val maskedSteps = payout.replySteps.joinToString(" -> ") + " -> [PIN]"
-    return "${payout.initialDial} -> $maskedSteps"
+    val hasInlinePin = payout.replySteps.any { it.contains("{pin}") }
+    val maskedSteps = payout.replySteps.map { if (hasInlinePin) it.replace("{pin}", "[PIN]") else it }
+    val allSteps = if (hasInlinePin) maskedSteps else maskedSteps + "[PIN]"
+    return (listOf(payout.initialDial) + allSteps).joinToString(" -> ")
 }
 
 /** Pulled out as a pure function (no Context/Android dependency) so the
@@ -266,14 +268,24 @@ internal fun auditUssdString(payout: com.dalab.internet.data.ResellerWithdrawalI
  * see ResellerWithdrawalInteractiveUssdOrchestratorTest. Substitutes
  * {number}/{amount} into each configured reply step (same placeholders
  * ResellerWithdrawalUssdOrchestrator's one-shot template already
- * substitutes) and always appends the PIN as the final reply — the carrier
- * only ever prompts for it after every other reply has been accepted, per
- * the real eDahab flow (Reseller Service -> Transfer -> number -> amount ->
- * PIN). Amount is formatted the same way [formatHormuudSplitAmount] rounds
- * to the nearest cent, but WITHOUT that function's Hormuud-specific
- * dollars*cents split token — eDahab's own flow takes the amount as a plain
- * decimal string in its own separate reply step, not one combined
- * multi-segment USSD field. */
+ * substitutes), same as before.
+ *
+ * PIN placement: originally the PIN was always assumed to be the very last
+ * reply, matching eDahab's flow (Reseller Service -> Transfer -> number ->
+ * amount -> PIN) — every existing config (no {pin} token anywhere in
+ * replySteps) keeps that exact behavior unchanged below, for full backward
+ * compatibility. Somnet's real flow instead needs the PIN as the very
+ * *first* reply, before a menu selection, the destination number (entered
+ * twice), and the amount (*825# -> PIN -> "2" -> number -> number -> amount
+ * -> "1") — a carrier menu that prompts for the PIN immediately, not last.
+ * A company needing the PIN anywhere other than the end now places an
+ * explicit {pin} token in its own replySteps at the right position; when
+ * present, the PIN is substituted only there and is NOT also appended at
+ * the end. Amount is formatted the same way [formatHormuudSplitAmount]
+ * rounds to the nearest cent, but WITHOUT that function's Hormuud-specific
+ * dollars*cents split token — eDahab/Somnet's own flows take the amount as
+ * a plain decimal string in their own separate reply step, not one
+ * combined multi-segment USSD field. */
 internal fun buildResellerWithdrawalInteractiveReplies(
     replySteps: List<String>,
     destinationNumber: String,
@@ -282,9 +294,9 @@ internal fun buildResellerWithdrawalInteractiveReplies(
 ): List<String> {
     val formattedAmount = formatPlainAmount(customerReceivesAmount)
     val substituted = replySteps.map { step ->
-        step.replace("{number}", destinationNumber).replace("{amount}", formattedAmount)
+        step.replace("{number}", destinationNumber).replace("{amount}", formattedAmount).replace("{pin}", pin)
     }
-    return substituted + pin
+    return if (replySteps.any { it.contains("{pin}") }) substituted else substituted + pin
 }
 
 /** Rounds to the nearest cent the same way formatHormuudSplitAmount does

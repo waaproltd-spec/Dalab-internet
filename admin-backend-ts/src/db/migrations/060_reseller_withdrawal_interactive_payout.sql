@@ -15,18 +15,26 @@
 -- own reasoning) rather than new columns there, since this is genuinely
 -- optional per-company config, not every company's shape.
 --
--- reply_steps is the ordered list of replies to send AFTER the initial dial,
--- NOT including the final PIN reply — the PIN is always implicitly the last
--- reply once the carrier's own PIN prompt appears (see
--- ExchangeUssdOrchestrator's own PIN handling for why it's never stored
--- inline in a config string), decrypted fresh from pin_encrypted only when
--- handing a live pending payout to the Agent App
--- (GET /agent/reseller-withdrawals/pending-payout), same trust boundary
--- Hormuud's inlined-PIN payout_ussd_template already has. Each reply_steps
--- entry is either a literal (e.g. "3" for the Transfer menu item) or a
--- template containing {number} and/or {amount}, substituted server-side
--- before the array is ever sent to the device — same substitution Hormuud's
--- one-shot template already does, just per-step instead of once.
+-- reply_steps is the ordered list of replies to send AFTER the initial dial.
+-- By default the PIN is NOT included and is implicitly appended as the very
+-- last reply once the carrier's own PIN prompt appears (eDahab's flow:
+-- Reseller Service -> Transfer -> number -> amount -> PIN) -- this is the
+-- original, still-default behavior, unchanged for every company configured
+-- this way. A company whose carrier prompts for the PIN somewhere other
+-- than last (e.g. Somnet: *825# -> PIN -> "2" -> number -> number -> amount
+-- -> "1", where the PIN is the very first reply) instead places an explicit
+-- {pin} token in its own replySteps at the right position; when {pin}
+-- appears anywhere in replySteps, the PIN is substituted only there and is
+-- NOT also appended at the end. The PIN itself is never stored inline in
+-- this config (see ExchangeUssdOrchestrator's own PIN handling for why),
+-- decrypted fresh from pin_encrypted only when handing a live pending
+-- payout to the Agent App (GET /agent/reseller-withdrawals/pending-payout),
+-- same trust boundary Hormuud's inlined-PIN payout_ussd_template already
+-- has. Each reply_steps entry is either a literal (e.g. "3" for the
+-- Transfer menu item) or a template containing {number}, {amount}, and/or
+-- {pin}, substituted server-side before the array is ever sent to the
+-- device — same substitution Hormuud's one-shot template already does,
+-- just per-step instead of once.
 --
 -- pin_encrypted mirrors exchange_payout_wallets.pin_encrypted exactly:
 -- Super-Admin-write-only, AES-256-GCM via auth/crypto.ts's encrypt/decrypt,
