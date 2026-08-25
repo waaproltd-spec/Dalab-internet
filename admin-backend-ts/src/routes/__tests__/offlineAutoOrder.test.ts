@@ -16,8 +16,13 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+import express from "express";
+import "express-async-errors";
 import { query, queryOne, pool } from "../../db/pool.js";
-import { ingestPaymentSms, resweepUnmatchedSmsLogs } from "../smsLogs.routes.js";
+import { signAccessToken } from "../../auth/crypto.js";
+import { ingestPaymentSms, resweepUnmatchedSmsLogs, smsLogsRouter } from "../smsLogs.routes.js";
 
 const AGENT_ID = randomUUID();
 const COMPANY_ID = "test-offline-company";
@@ -25,6 +30,19 @@ const OTHER_COMPANY_ID = "test-offline-other-company";
 
 let packageId: string;
 let otherCompanyPackageId: string;
+
+// Minimal HTTP harness (same pattern as exchangeSmsMatching.test.ts's
+// payoutApp) for the one test below that exercises the real
+// GET /admin/payment-transactions/:id/timeline endpoint -- the same
+// endpoint the admin dashboard's "Payment history" modal calls -- so that
+// test verifies an Offline Auto-Order-created order shows up there exactly
+// like an Online order does, not just that the right rows exist in the DB.
+const adminApp = express();
+adminApp.use(express.json());
+adminApp.use(smsLogsRouter);
+let adminServer: http.Server;
+let adminBaseUrl: string;
+let staffToken: string;
 
 async function makeCustomer(phone: string): Promise<string> {
   const id = randomUUID();
@@ -71,9 +89,17 @@ before(async () => {
     OTHER_COMPANY_ID,
     randomUUID(),
   ]);
+
+  staffToken = signAccessToken(randomUUID(), "super_admin");
+  adminServer = http.createServer(adminApp as unknown as http.RequestListener);
+  adminServer.listen(0);
+  await new Promise<void>((resolve) => adminServer.once("listening", resolve));
+  const { port } = adminServer.address() as AddressInfo;
+  adminBaseUrl = `http://127.0.0.1:${port}`;
 });
 
 after(async () => {
+  await new Promise<void>((resolve) => adminServer.close(() => resolve()));
   await pool.end();
 });
 
@@ -294,12 +320,11 @@ test("Online ordering is unaffected: a customer can still use different sender/d
 
 // Reproduces a real production case: a customer sends the payment SMS
 // before (or concurrently with) saving their Offline Profile, so the live
-// ingestPaymentSms call finds zero candidates and silently gives up
-// (matchOrCreateOfflineAutoOrder's "no Offline Profile for this sender —
-// not an offline-specific failure worth logging" branch). Before this
-// resweep coverage existed, that SMS stayed permanently unmatched forever
-// even after the profile became valid, unlike the Store/Exchange paths
-// resweepUnmatchedSmsLogs already retried.
+// ingestPaymentSms call finds zero candidates and gives up for now (logging
+// "No Offline Profile registered for phone ...target" -- never silent).
+// Before this resweep coverage existed, that SMS stayed permanently
+// unmatched forever even after the profile became valid, unlike the
+// Store/Exchange paths resweepUnmatchedSmsLogs already retried.
 test("a payment SMS that arrives before the customer's Offline Profile is saved gets matched on the next resweep", async () => {
   const customerId = await makeCustomer("252611119999");
 
@@ -346,4 +371,78 @@ test("a payment SMS that arrives before the customer's Offline Profile is saved 
   assert.equal(secondPassRelinked, 0, "the SMS is already matched, so it must no longer be a resweep candidate");
   const orders = await query(`SELECT id FROM orders WHERE customer_id=$1`, [customerId]);
   assert.equal(orders.length, 1, "must never create a second order for the same already-matched SMS");
+});
+
+// A payment SMS that beats the Store matcher (findMatchingOrder) but ALSO
+// beats the Offline Profile save (like the resweep test above) must never
+// be double-processed once the live path itself already matched something.
+// resweepUnmatchedSmsLogs's own candidate query already excludes any SMS
+// with matched_order_id IS NOT NULL, so this is really a regression guard
+// on that WHERE clause rather than new matching logic.
+test("an SMS the live path already matched (Store or Offline Auto-Order) is never reprocessed by a later resweep", async () => {
+  const customerId = await makeCustomer("252611110009");
+  await saveOfflineProfile(customerId, "611119990", "612229990", COMPANY_ID, packageId);
+
+  const result = await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "192",
+    body: "offline-already-matched-test",
+    parsedProvider: "Hormuud",
+    parsedAmount: 0.89,
+    parsedPhone: "611119990",
+    transactionRef: "TX-OFFLINE-ALREADY-MATCHED",
+  });
+  assert.ok(result.body.matchedOrderId, "the live path must match this one immediately -- profile already existed");
+
+  const { relinked } = await resweepUnmatchedSmsLogs();
+  assert.equal(relinked, 0, "an already-matched SMS is not a resweep candidate at all");
+
+  const orders = await query(`SELECT id FROM orders WHERE customer_id=$1`, [customerId]);
+  assert.equal(orders.length, 1, "the resweep must not create a second order for an SMS the live path already matched");
+});
+
+// Requirement: "Payment History must show the linked Offline Auto-Order and
+// Order ID exactly as it does for Online Orders." Exercises the real
+// GET /admin/payment-transactions/:id/timeline endpoint over actual HTTP
+// (the same one the admin dashboard's "Payment history" modal calls) rather
+// than only asserting on the underlying DB rows.
+test("the admin Payment History timeline shows the Offline Auto-Order's linked order, same as an Online order", async () => {
+  const customerId = await makeCustomer("252611110010");
+  await saveOfflineProfile(customerId, "611110010", "612220010", COMPANY_ID, packageId);
+
+  const result = await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "192",
+    body: "offline-admin-timeline-test",
+    parsedProvider: "Hormuud",
+    parsedAmount: 0.89,
+    parsedPhone: "611110010",
+    transactionRef: "TX-OFFLINE-TIMELINE",
+  });
+  assert.ok(result.body.matchedOrderId);
+
+  const tx = await queryOne<{ id: string }>(`SELECT id FROM payment_transactions WHERE order_id=$1`, [result.body.matchedOrderId]);
+  assert.ok(tx, "the live path must create a payment_transactions ledger row, same as an Online order match");
+
+  const res = await fetch(`${adminBaseUrl}/admin/payment-transactions/${tx!.id}/timeline`, {
+    headers: { Authorization: `Bearer ${staffToken}` },
+  });
+  assert.equal(res.status, 200);
+  // sendJson (utils/camelCase.ts) camelCases every response, same as every
+  // other admin endpoint -- transaction_ref/matched_order_id/etc. above are
+  // transactionRef/matchedOrderId/etc. here.
+  const body = (await res.json()) as {
+    transaction: { orderId: string };
+    smsLog: { transactionRef: string; matchedOrderId: string } | null;
+    order: { id: string; channel: string; senderPhone: string; receiverPhone: string; customerPhone: string } | null;
+  };
+
+  assert.equal(body.transaction.orderId, result.body.matchedOrderId);
+  assert.ok(body.smsLog, "the timeline must include the matched SMS, same shape as an Online order's");
+  assert.equal(body.smsLog!.transactionRef, "TX-OFFLINE-TIMELINE");
+  assert.equal(body.smsLog!.matchedOrderId, result.body.matchedOrderId);
+  assert.ok(body.order, "the timeline must include the Offline Auto-Order-created order itself, not just its id");
+  assert.equal(body.order!.id, result.body.matchedOrderId);
+  assert.equal(body.order!.channel, "offline_auto");
+  assert.equal(body.order!.customerPhone, "252611110010");
 });
