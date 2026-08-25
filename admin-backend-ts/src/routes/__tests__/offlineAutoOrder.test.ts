@@ -23,6 +23,7 @@ import "express-async-errors";
 import { query, queryOne, pool } from "../../db/pool.js";
 import { signAccessToken } from "../../auth/crypto.js";
 import { ingestPaymentSms, resweepUnmatchedSmsLogs, smsLogsRouter } from "../smsLogs.routes.js";
+import { customersRouter } from "../customers.routes.js";
 
 const AGENT_ID = randomUUID();
 const COMPANY_ID = "test-offline-company";
@@ -32,14 +33,16 @@ let packageId: string;
 let otherCompanyPackageId: string;
 
 // Minimal HTTP harness (same pattern as exchangeSmsMatching.test.ts's
-// payoutApp) for the one test below that exercises the real
-// GET /admin/payment-transactions/:id/timeline endpoint -- the same
-// endpoint the admin dashboard's "Payment history" modal calls -- so that
-// test verifies an Offline Auto-Order-created order shows up there exactly
-// like an Online order does, not just that the right rows exist in the DB.
+// payoutApp), mounting BOTH the real GET /admin/payment-transactions/:id/timeline
+// endpoint (the one the admin dashboard's "Payment history" modal calls) and
+// the real PUT /customer/offline-profile endpoint -- so the "profile changes
+// take effect immediately, no caching" tests below exercise the actual
+// production write path (customers.routes.ts), not a hand-rolled SQL proxy
+// for it.
 const adminApp = express();
 adminApp.use(express.json());
 adminApp.use(smsLogsRouter);
+adminApp.use(customersRouter);
 let adminServer: http.Server;
 let adminBaseUrl: string;
 let staffToken: string;
@@ -55,6 +58,27 @@ async function saveOfflineProfile(customerId: string, senderNumber: string, dest
     `UPDATE customers SET offline_sender_number=$1, offline_destination_number=$2, offline_company_id=$3, offline_package_id=$4, offline_profile_updated_at=now() WHERE id=$5`,
     [senderNumber, destinationNumber, companyId, pkgId, customerId]
   );
+}
+
+// Calls the REAL PUT /customer/offline-profile endpoint over actual HTTP,
+// exactly as the Customer App does -- not the raw-SQL saveOfflineProfile
+// helper above (which some earlier tests still use for setup convenience).
+async function saveOfflineProfileViaApi(
+  customerId: string,
+  senderNumber: string,
+  destinationNumber: string,
+  companyId: string,
+  pkgId: string
+) {
+  const token = signAccessToken(customerId, "customer");
+  const res = await fetch(`${adminBaseUrl}/customer/offline-profile`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ senderNumber, destinationNumber, companyId, packageId: pkgId }),
+  });
+  if (res.status !== 200) {
+    throw new Error(`saveOfflineProfileViaApi failed: ${res.status} ${await res.text()}`);
+  }
 }
 
 before(async () => {
@@ -445,4 +469,157 @@ test("the admin Payment History timeline shows the Offline Auto-Order's linked o
   assert.equal(body.order!.id, result.body.matchedOrderId);
   assert.equal(body.order!.channel, "offline_auto");
   assert.equal(body.order!.customerPhone, "252611110010");
+});
+
+// Reproduces a real support question: after a customer changes their Offline
+// Profile's sender number, does the OLD number keep matching (a caching/
+// staleness bug) or does the change take effect immediately? Investigated
+// the full path first -- db/pool.ts is a single pg Pool with no read
+// replica, and matchOrCreateOfflineAutoOrder/PUT /customer/offline-profile
+// both do a single, uncached SQL statement -- so there's no caching layer to
+// go stale in the first place. These tests exercise the REAL
+// PUT /customer/offline-profile endpoint (not the raw-SQL saveOfflineProfile
+// helper) to prove that end-to-end, in the same live process, with no
+// restart of any kind between steps.
+test("changing the Offline Profile's sender number takes effect immediately: the old number stops matching and the new one matches right away, no restart required", async () => {
+  const customerId = await makeCustomer("252611130001");
+  await saveOfflineProfileViaApi(customerId, "611120001", "612220001", COMPANY_ID, packageId);
+
+  // 1. The original sender number matches while it's still the active value.
+  const beforeUpdate = await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "192",
+    body: "profile-live-before",
+    parsedProvider: "Hormuud",
+    parsedAmount: 0.89,
+    parsedPhone: "611120001",
+    transactionRef: "TX-PROFILE-LIVE-BEFORE",
+  });
+  assert.ok(beforeUpdate.body.matchedOrderId, "the original sender number must match while it's the active profile value");
+
+  // Advance the order out of 'pending' -- the same thing the Agent App's own
+  // follow-up verify-payment call does in real usage. Without this, step 3
+  // below would "match" via findMatchingOrder's generic amount+phone Store
+  // lookup (which has no device/SIM check at all for a payment_method_id-less
+  // order like this one) -- a completely different, correct reuse-of-a-
+  // still-pending-order behavior that has nothing to do with the profile
+  // change being tested here.
+  await query(`UPDATE orders SET status='in_progress' WHERE id=$1`, [beforeUpdate.body.matchedOrderId]);
+
+  // 2. Customer changes their sender number via the real API.
+  await saveOfflineProfileViaApi(customerId, "611120002", "612220001", COMPANY_ID, packageId);
+
+  // 3. The OLD number must no longer match -- it's not the current profile
+  // value anymore. If this failed, that would be exactly the caching bug
+  // being asked about.
+  const oldNumberAfterUpdate = await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "192",
+    body: "profile-live-old-after",
+    parsedProvider: "Hormuud",
+    parsedAmount: 0.89,
+    parsedPhone: "611120001",
+    transactionRef: "TX-PROFILE-LIVE-OLD-AFTER",
+  });
+  assert.equal(oldNumberAfterUpdate.body.matchedOrderId, null, "the old sender number must stop matching immediately once the profile changes");
+
+  // 4. The NEW number matches immediately -- same process, no restart, no
+  // cache-invalidation step anywhere.
+  const newNumber = await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "192",
+    body: "profile-live-new",
+    parsedProvider: "Hormuud",
+    parsedAmount: 0.89,
+    parsedPhone: "611120002",
+    transactionRef: "TX-PROFILE-LIVE-NEW",
+  });
+  assert.ok(newNumber.body.matchedOrderId, "the new sender number must match immediately after being saved, no restart required");
+  assert.notEqual(newNumber.body.matchedOrderId, beforeUpdate.body.matchedOrderId, "must be a distinct new order, not a stale reused match");
+});
+
+test("the resweep uses the customer's CURRENT profile, matching an SMS that only failed live because the profile hadn't been updated to it yet", async () => {
+  const customerId = await makeCustomer("252611130010");
+  // Profile starts pointing at a different sender number than the SMS below.
+  await saveOfflineProfileViaApi(customerId, "611199999", "612220010", COMPANY_ID, packageId);
+
+  const liveAttempt = await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "192",
+    body: "profile-resweep-live",
+    parsedProvider: "Hormuud",
+    parsedAmount: 0.89,
+    parsedPhone: "611120010",
+    transactionRef: "TX-PROFILE-RESWEEP-LIVE",
+  });
+  assert.equal(liveAttempt.body.matchedOrderId, null, "the profile doesn't point at this sender number yet");
+
+  // Customer now updates their profile (via the real API) to the number the
+  // SMS already arrived from.
+  await saveOfflineProfileViaApi(customerId, "611120010", "612220010", COMPANY_ID, packageId);
+
+  const { relinked } = await resweepUnmatchedSmsLogs();
+  assert.equal(relinked, 1, "the resweep must use the customer's CURRENT profile, not whatever was active when the SMS first arrived");
+
+  const sms = await queryOne<{ matched_order_id: string | null }>(`SELECT matched_order_id FROM sms_logs WHERE transaction_ref=$1`, [
+    "TX-PROFILE-RESWEEP-LIVE",
+  ]);
+  assert.ok(sms!.matched_order_id, "the resweep-created order must be linked");
+});
+
+test("provider validation still applies to the customer's CURRENT profile: changing the profile's company also takes effect immediately, without weakening the Somtel-vs-Hormuud guard", async () => {
+  const customerId = await makeCustomer("252611130020");
+  await saveOfflineProfileViaApi(customerId, "611120020", "612220020", COMPANY_ID, packageId); // COMPANY_ID = Hormuud
+
+  // A Somtel-provider SMS must not match while the profile still points to Hormuud.
+  const wrongProvider = await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "192",
+    body: "profile-provider-live-1",
+    parsedProvider: "Somtel",
+    parsedAmount: 0.89,
+    parsedPhone: "611120020",
+    transactionRef: "TX-PROFILE-PROVIDER-1",
+  });
+  assert.equal(wrongProvider.body.matchedOrderId, null, "a Somtel SMS must not match a Hormuud profile");
+
+  // Customer switches their profile to the Somtel company + a Somtel-valid
+  // destination number, via the real API.
+  await saveOfflineProfileViaApi(customerId, "611120020", "622220020", OTHER_COMPANY_ID, otherCompanyPackageId); // OTHER_COMPANY_ID = Somtel
+
+  // The same Somtel-provider SMS pattern must now match immediately, since
+  // the profile's company changed -- no restart, no cache, and still the
+  // exact right prefix check (not a weakened one).
+  const nowMatches = await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "192",
+    body: "profile-provider-live-2",
+    parsedProvider: "Somtel",
+    parsedAmount: 0.89,
+    parsedPhone: "611120020",
+    transactionRef: "TX-PROFILE-PROVIDER-2",
+  });
+  assert.ok(nowMatches.body.matchedOrderId, "must match immediately once the profile's company changed to Somtel");
+
+  const order = await queryOne<{ company_id: string }>(`SELECT company_id FROM orders WHERE id=$1`, [nowMatches.body.matchedOrderId]);
+  assert.equal(order!.company_id, OTHER_COMPANY_ID);
+
+  // Advance this order out of 'pending' before the next check, same reason
+  // as the sender-number test above -- otherwise the next SMS (same phone
+  // +amount) would match it via findMatchingOrder's generic Store lookup
+  // instead of actually exercising the provider guard being tested here.
+  await query(`UPDATE orders SET status='in_progress' WHERE id=$1`, [nowMatches.body.matchedOrderId]);
+
+  // And the reverse guard must still hold: an EVC Plus/Hormuud-provider SMS
+  // must NOT match now that the profile points to Somtel.
+  const wrongProviderReversed = await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "192",
+    body: "profile-provider-live-3",
+    parsedProvider: "Hormuud",
+    parsedAmount: 0.89,
+    parsedPhone: "611120020",
+    transactionRef: "TX-PROFILE-PROVIDER-3",
+  });
+  assert.equal(wrongProviderReversed.body.matchedOrderId, null, "a Hormuud SMS must not match a Somtel profile");
 });
