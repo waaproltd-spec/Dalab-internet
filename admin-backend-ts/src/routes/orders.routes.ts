@@ -637,7 +637,7 @@ export async function completeOrderById(orderId: string): Promise<{ order: any; 
     order.customer_id,
     "order_update",
     "Dalabkaaga waa la dhammeeyay",
-    pkg ? `Xirmahaaga ${pkg.name} waa la shubay waxaana diyaar u ah in la isticmaalo.` : "Dalabkaaga waa la shubay waxaana diyaar u ah in la isticmaalo.",
+    pkg ? `Xirmadaada ${pkg.name} waa la hawlgeliyay, waana diyaar in la isticmaalo.` : "Dalabkaaga waa la hawlgeliyay, waana diyaar in la isticmaalo.",
     { screen: "notifications", orderId: order.id }
   );
   await recordActivity({
@@ -928,7 +928,7 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
         order.customer_id,
         "order_update",
         "Dalabkaaga waa la dhammeeyay",
-        pkg ? `Xirmahaaga ${pkg.name} waa la shubay waxaana diyaar u ah in la isticmaalo.` : "Dalabkaaga waa la shubay waxaana diyaar u ah in la isticmaalo.",
+        pkg ? `Xirmadaada ${pkg.name} waa la hawlgeliyay, waana diyaar in la isticmaalo.` : "Dalabkaaga waa la hawlgeliyay, waana diyaar in la isticmaalo.",
         { screen: "notifications", orderId: order.id }
       );
     }
@@ -958,7 +958,7 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
       await notifyCustomer(
         order.customer_id,
         "order_update",
-        status === "failed" ? "Dalabkaagu wuu fashilmay" : "Dalabkaaga waa la joojiyay",
+        status === "failed" ? "Dalabkaaga lama dhamaystiri karin" : "Dalabkaaga waa la joojiyay",
         status === "failed"
           ? "Dalabkaaga lama dhammaystirin karin. Fadlan la xiriir taageerada si aad caawimaad u hesho."
           : "Dalabkaagii waa la joojiyay. Fadlan la xiriir taageerada haddii aad su'aalo qabto.",
