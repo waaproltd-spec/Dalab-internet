@@ -636,8 +636,8 @@ export async function completeOrderById(orderId: string): Promise<{ order: any; 
   await notifyCustomer(
     order.customer_id,
     "order_update",
-    "Your order is complete",
-    pkg ? `Your ${pkg.name} package has been activated and is ready to use.` : "Your order has been activated and is ready to use.",
+    "Dalabkaaga waa la dhammeeyay",
+    pkg ? `Xirmahaaga ${pkg.name} waa la shubay waxaana diyaar u ah in la isticmaalo.` : "Dalabkaaga waa la shubay waxaana diyaar u ah in la isticmaalo.",
     { screen: "notifications", orderId: order.id }
   );
   await recordActivity({
@@ -927,8 +927,8 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
       await notifyCustomer(
         order.customer_id,
         "order_update",
-        "Your order is complete",
-        pkg ? `Your ${pkg.name} package has been activated and is ready to use.` : "Your order has been activated and is ready to use.",
+        "Dalabkaaga waa la dhammeeyay",
+        pkg ? `Xirmahaaga ${pkg.name} waa la shubay waxaana diyaar u ah in la isticmaalo.` : "Dalabkaaga waa la shubay waxaana diyaar u ah in la isticmaalo.",
         { screen: "notifications", orderId: order.id }
       );
     }
@@ -958,10 +958,10 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
       await notifyCustomer(
         order.customer_id,
         "order_update",
-        status === "failed" ? "Your order could not be completed" : "Your order was cancelled",
+        status === "failed" ? "Dalabkaagu wuu fashilmay" : "Dalabkaaga waa la joojiyay",
         status === "failed"
-          ? "We couldn't complete your order. Please contact support for assistance."
-          : "Your order was cancelled. Please contact support if you have questions.",
+          ? "Dalabkaaga lama dhammaystirin karin. Fadlan la xiriir taageerada si aad caawimaad u hesho."
+          : "Dalabkaagii waa la joojiyay. Fadlan la xiriir taageerada haddii aad su'aalo qabto.",
         { screen: "notifications", orderId: order.id }
       );
     }
