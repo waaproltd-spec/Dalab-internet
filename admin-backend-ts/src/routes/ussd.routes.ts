@@ -12,6 +12,7 @@ import { creditCommissionIfNeeded } from "../utils/commissions.js";
 import { creditReferralBonusIfNeeded } from "../utils/referrals.js";
 import { refundRedeemedPointsIfNeeded } from "../utils/loyaltyPoints.js";
 import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
+import { normalizePhoneForUssd, formatUssdAmount } from "../utils/ussdFormatting.js";
 
 export const ussdRouter = Router();
 
@@ -215,6 +216,19 @@ ussdRouter.get("/admin/ussd-logs", requireStaff(), async (req, res) => {
  * (a) any package never migrated to an ID link, and (b) the missing-template
  * validation/listing in companies.routes.ts, so both stay provably in sync
  * with what generateUssdForOrder will actually do at dial time.
+ *
+ * The substring fallback below previously used Array.find() over a query
+ * with no ORDER BY — Postgres gives no ordering guarantee without one, so
+ * whenever a package's name matched more than one template as a substring
+ * (e.g. a company with both "Anfac" and "Anfac Plus" templates and a
+ * package literally named "Anfac Plus 5GB", which contains both names),
+ * the "first" match was effectively random and could silently generate the
+ * wrong provider's USSD code. Now the most specific (longest) matching
+ * template name wins; a genuine tie between two differently-named templates
+ * of equal length is treated as no match at all rather than guessed, same
+ * as a package with zero matches — both surface identically via
+ * templateWarningFor/GET /admin/packages/missing-template for a Super Admin
+ * to resolve with an explicit ussdTemplateId link.
  */
 export async function matchTemplateByName(companyId: string, packageName: string): Promise<{ id: string } | null> {
   const exact = await queryOne<{ id: string }>(
@@ -226,7 +240,13 @@ export async function matchTemplateByName(companyId: string, packageName: string
     `SELECT id, service_name FROM ussd_templates WHERE company_id=$1 AND status='enabled'`,
     [companyId]
   );
-  return candidates.find((t) => packageName.toLowerCase().includes(t.service_name.toLowerCase())) ?? null;
+  const lowerPackageName = packageName.toLowerCase();
+  const matches = candidates.filter((t) => lowerPackageName.includes(t.service_name.toLowerCase()));
+  if (matches.length === 0) return null;
+  const longestLength = Math.max(...matches.map((t) => t.service_name.length));
+  const longestMatches = matches.filter((t) => t.service_name.length === longestLength);
+  if (longestMatches.length > 1) return null;
+  return longestMatches[0];
 }
 
 /**
@@ -281,7 +301,12 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
   // and CheckoutScreen already collects sender/receiver as independent
   // fields. Falls back to sender_phone only for the (pre-existing) rare
   // order that somehow has no receiver_phone recorded.
-  const deliverTo = order.receiver_phone ?? order.sender_phone ?? "";
+  //
+  // normalizePhoneForUssd strips the 252 country code (and any leading 0) to
+  // the bare 9-digit local number every provider's USSD menu actually
+  // expects — previously the full "252XXXXXXXXX" number was dialed verbatim
+  // for every provider, since nothing in this function ever normalized it.
+  const deliverTo = normalizePhoneForUssd(order.receiver_phone ?? order.sender_phone ?? "");
   // order.amount is what the CUSTOMER paid (matched against incoming
   // payment SMS in smsLogs.routes.ts — it must stay the discounted price,
   // or a real payment SMS for the discounted amount would stop matching).
@@ -290,7 +315,13 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
   // packages.provider_amount at order-creation time. Falls back to
   // order.amount for a package that was never given a separate provider
   // amount (provider_amount is nullable — "no discount configured").
-  const providerAmount = order.provider_amount ?? order.amount;
+  //
+  // formatUssdAmount converts the decimal amount into the dollars[*cents]
+  // segments every provider's USSD menu expects — previously the raw
+  // decimal string (e.g. "0.10") was embedded directly, and "." isn't a
+  // valid USSD/MMI dial character, so every dial for every provider carried
+  // a malformed amount.
+  const providerAmountFormatted = formatUssdAmount(order.provider_amount ?? order.amount);
   // {packageCode}/{packageName} are optional — a template that doesn't
   // reference them is unaffected, .replace() is a no-op if the placeholder
   // isn't present in the string.
@@ -298,7 +329,7 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
     .replace("{number}", deliverTo)
     .replace("{customerNumber}", deliverTo)
     .replace("{receiverNumber}", deliverTo)
-    .replace("{amount}", String(providerAmount))
+    .replace("{amount}", providerAmountFormatted)
     .replace("{pin}", pin)
     .replace("{packageCode}", orderWithPackage?.package_code ?? "")
     .replace("{packageName}", orderWithPackage?.package_name ?? "")
@@ -310,7 +341,7 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
     .replace("{number}", deliverTo)
     .replace("{customerNumber}", deliverTo)
     .replace("{receiverNumber}", deliverTo)
-    .replace("{amount}", String(providerAmount))
+    .replace("{amount}", providerAmountFormatted)
     .replace("{pin}", "•".repeat(pin.length))
     .replace("{packageCode}", orderWithPackage?.package_code ?? "")
     .replace("{packageName}", orderWithPackage?.package_name ?? "")

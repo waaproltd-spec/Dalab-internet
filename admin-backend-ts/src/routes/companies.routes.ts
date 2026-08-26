@@ -448,15 +448,24 @@ packagesRouter.delete("/admin/packages/:id", requirePermission("packages.manage"
 // matching today — neither linked by id nor resolvable by the legacy
 // name-fallback — so a Super Admin can find and fix these BEFORE a real
 // customer payment hits one, instead of after a stuck order is reported.
+// Delegates the actual resolution to matchTemplateByName (the same function
+// generateUssdForOrder calls at dial time) rather than a separately
+// maintained SQL predicate, so this listing can never drift out of sync
+// with what dialing will actually do — including matchTemplateByName's own
+// "more than one same-length candidate name matches -> ambiguous, treat as
+// no match" rule, which a duplicated inline query would have to reimplement
+// (and could get wrong) to catch the exact same way.
 packagesRouter.get("/admin/packages/missing-template", requireStaff(), async (_req, res) => {
-  sendJson(res, 200, await query(
+  const candidates = await query<any>(
     `SELECT p.*, c.name AS company_name FROM packages p
      JOIN companies c ON c.id = p.company_id AND c.deleted_at IS NULL
      WHERE p.active = true AND p.ussd_template_id IS NULL
-       AND NOT EXISTS (
-         SELECT 1 FROM ussd_templates t WHERE t.company_id = p.company_id AND t.status='enabled'
-           AND (LOWER(t.service_name) = LOWER(p.name) OR POSITION(LOWER(t.service_name) IN LOWER(p.name)) > 0)
-       )
      ORDER BY c.name, p.name`
-  ));
+  );
+  const flagged: any[] = [];
+  for (const pkg of candidates) {
+    const match = await matchTemplateByName(pkg.company_id, pkg.name);
+    if (!match) flagged.push(pkg);
+  }
+  sendJson(res, 200, flagged);
 });
