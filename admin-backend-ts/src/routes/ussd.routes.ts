@@ -81,6 +81,37 @@ function isValidSimSlot(value: unknown): value is number | null {
   return value === null || value === undefined || value === 1 || value === 2;
 }
 
+// deviceId/simSlot are only ever consumed as a pair (UssdOrchestrator.kt's
+// resolveSlot requires both non-null before it will use a template-level
+// override at all) -- setting just one is never an error today, it's
+// silently ignored in favor of the company-level SIM routing fallback, but
+// that's exactly the kind of "looks configured, isn't actually doing
+// anything" state a Super Admin has no way to notice from the dashboard
+// alone. Catching it at save time turns a silent no-op into a clear error
+// instead.
+function hasMismatchedDeviceSimPair(deviceId: unknown, simSlot: unknown): boolean {
+  const hasDevice = deviceId != null && deviceId !== "";
+  const hasSlot = simSlot != null;
+  return hasDevice !== hasSlot;
+}
+
+/** Whether an enabled template genuinely has *something* to dial through --
+ * either its own device+slot pin, or a company-level SIM routing entry to
+ * fall back on. Neither existing means every order this template ever
+ * generates a USSD string for is guaranteed to hit NO_SIM_CONFIGURED at
+ * dial time (SimRoutingRepository.simSlotFor returns NotConfigured) --
+ * worth telling the Super Admin the moment the template is saved, not
+ * after a customer's payment gets stuck on it. Never blocks the save (the
+ * device/SIM might legitimately be set up in a separate next step), same
+ * non-blocking-warning spirit as templateWarningFor in companies.routes.ts. */
+async function routingWarningFor(companyId: string, status: string, deviceId: string | null, simSlot: number | null): Promise<string | undefined> {
+  if (status !== "enabled") return undefined;
+  if (deviceId != null && simSlot != null) return undefined;
+  const routing = await queryOne(`SELECT 1 FROM sim_routing WHERE company_id=$1`, [companyId]);
+  if (routing) return undefined;
+  return "This provider has no device/SIM routing configured, and this template isn't pinned to a specific device either — set one in SIM Routing (or pin this template to a device) before a customer can pay for a package using it.";
+}
+
 // USSD Template management is Super-Admin-exclusive, not delegable via
 // devices.manage — these directly control what gets dialed on a customer's
 // behalf, same reasoning as the payment-gateway routes above.
@@ -93,6 +124,9 @@ ussdRouter.post("/admin/ussd-templates", requireAuth("super_admin"), async (req,
     return sendJson(res, 400, { error: "ussdCode must contain {number}, {amount}, and {pin} placeholders" });
   }
   if (!isValidSimSlot(simSlot)) return sendJson(res, 400, { error: "simSlot must be 1 or 2" });
+  if (hasMismatchedDeviceSimPair(deviceId, simSlot)) {
+    return sendJson(res, 400, { error: "deviceId and simSlot must be set together, or both left blank to use the provider's default SIM routing" });
+  }
   const company = await queryOne(`SELECT id FROM companies WHERE id=$1`, [companyId]);
   if (!company) return sendJson(res, 404, { error: "Company not found" });
   if (deviceId) {
@@ -117,7 +151,8 @@ ussdRouter.post("/admin/ussd-templates", requireAuth("super_admin"), async (req,
   // Always enabled on create (see the INSERT above) — a brand-new template
   // could be exactly what unblocks a currently-stuck order.
   await selfHealStuckOrders(companyId);
-  sendJson(res, 201, created);
+  const routingWarning = await routingWarningFor(companyId, "enabled", deviceId ?? null, simSlot ?? null);
+  sendJson(res, 201, { ...created, routingWarning });
 });
 
 ussdRouter.put("/admin/ussd-templates/:id", requireAuth("super_admin"), async (req, res) => {
@@ -133,6 +168,11 @@ ussdRouter.put("/admin/ussd-templates/:id", requireAuth("super_admin"), async (r
   if (req.body.simSlot !== undefined && !isValidSimSlot(req.body.simSlot)) {
     return sendJson(res, 400, { error: "simSlot must be 1 or 2" });
   }
+  const effectiveDeviceId = req.body.deviceId !== undefined ? (req.body.deviceId || null) : merged.device_id;
+  const effectiveSimSlot = req.body.simSlot !== undefined ? req.body.simSlot : merged.sim_slot;
+  if (hasMismatchedDeviceSimPair(effectiveDeviceId, effectiveSimSlot)) {
+    return sendJson(res, 400, { error: "deviceId and simSlot must be set together, or both left blank to use the provider's default SIM routing" });
+  }
   if (req.body.deviceId) {
     const device = await queryOne(`SELECT id FROM agent_devices WHERE id=$1`, [req.body.deviceId]);
     if (!device) return sendJson(res, 404, { error: "Device not found" });
@@ -144,8 +184,8 @@ ussdRouter.put("/admin/ussd-templates/:id", requireAuth("super_admin"), async (r
       req.body.ussdCode ?? merged.ussd_code,
       req.body.notes ?? merged.notes,
       req.body.status ?? merged.status,
-      req.body.deviceId !== undefined ? (req.body.deviceId || null) : merged.device_id,
-      req.body.simSlot !== undefined ? req.body.simSlot : merged.sim_slot,
+      effectiveDeviceId,
+      effectiveSimSlot,
       req.params.id,
     ]
   );
@@ -159,7 +199,8 @@ ussdRouter.put("/admin/ussd-templates/:id", requireAuth("super_admin"), async (r
     newValue: updated,
   });
   if (updated?.status === "enabled") await selfHealStuckOrders(updated.company_id);
-  sendJson(res, 200, updated);
+  const routingWarning = await routingWarningFor(updated!.company_id, updated!.status, updated!.device_id, updated!.sim_slot);
+  sendJson(res, 200, { ...updated, routingWarning });
 });
 
 ussdRouter.put("/admin/ussd-templates/:id/status", requireAuth("super_admin"), async (req, res) => {

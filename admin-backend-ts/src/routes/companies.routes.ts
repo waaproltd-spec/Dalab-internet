@@ -301,10 +301,62 @@ packagesRouter.get("/admin/packages", requireStaff(), async (req, res) => {
 // non-blocking warning string for the caller to surface, rather than
 // failing the save: the Super Admin may be linking the template separately,
 // or genuinely wants to save a draft package before USSD Services is set up.
+//
+// Applies to every future package the same way, regardless of provider --
+// this is the one place that decides "can this package actually dial
+// today," so a brand-new company/template/package added tomorrow is
+// checked by the exact same logic as an existing one, with no
+// provider-specific branching. SOMLINK-fulfilled companies are skipped
+// entirely: they never use a USSD template at all (somlinkBundleId is
+// their equivalent link), so warning about a missing one would be a false
+// positive on every single one of their packages.
 async function templateWarningFor(companyId: string, packageName: string, ussdTemplateId: string | null): Promise<string | undefined> {
-  if (ussdTemplateId) return undefined;
-  const match = await matchTemplateByName(companyId, packageName);
-  return match ? undefined : "No USSD template matches this package yet — link one in USSD Services, or a customer paying for it will get stuck.";
+  const company = await queryOne<{ fulfillment_method: string; pin_encrypted: string | null }>(
+    `SELECT fulfillment_method, pin_encrypted FROM companies WHERE id=$1`,
+    [companyId]
+  );
+  if (company?.fulfillment_method === "somlink") return undefined;
+
+  let template: { status: string; device_id: string | null } | null = null;
+  if (ussdTemplateId) {
+    template = await queryOne<{ status: string; device_id: string | null }>(
+      `SELECT status, device_id FROM ussd_templates WHERE id=$1`,
+      [ussdTemplateId]
+    );
+  } else {
+    // Explicit linking is the primary method going forward -- name-matching
+    // is a legacy fallback, not something a new package should silently
+    // depend on. Even when the fallback DOES currently resolve a match,
+    // that's flagged too (distinctly from "no match at all"), since it's
+    // only ever one similarly-named future template away from breaking —
+    // exactly the ambiguity class matchTemplateByName's own tie-breaking
+    // now fails closed on instead of guessing.
+    const match = await matchTemplateByName(companyId, packageName);
+    if (!match) {
+      return "No USSD template matches this package yet — link one in USSD Services, or a customer paying for it will get stuck.";
+    }
+    return "This package has no USSD template explicitly linked — it currently resolves one only by matching its name, which can silently break if a similarly-named template is ever added. Link a template explicitly in USSD Services.";
+  }
+
+  if (!template) {
+    // ussdTemplateId was set but doesn't resolve to a real row -- shouldn't
+    // happen for a save that went through validateUssdTemplateId, but a
+    // template can be deleted out from under an existing package afterward.
+    return "This package's linked USSD template no longer exists — link a new one in USSD Services.";
+  }
+  if (template.status !== "enabled") {
+    return "This package's linked USSD template is currently disabled — it cannot dial until the template is re-enabled in USSD Services.";
+  }
+  if (!company?.pin_encrypted) {
+    return "This provider has no PIN configured yet — set one in USSD Services before a customer can pay for this package.";
+  }
+  if (!template.device_id) {
+    const routing = await queryOne(`SELECT 1 FROM sim_routing WHERE company_id=$1`, [companyId]);
+    if (!routing) {
+      return "This provider has no device/SIM routing configured, and this template isn't pinned to a specific device either — set one in SIM Routing before a customer can pay for this package.";
+    }
+  }
+  return undefined;
 }
 
 async function validateUssdTemplateId(companyId: string, ussdTemplateId: unknown): Promise<string | undefined> {
@@ -444,28 +496,29 @@ packagesRouter.delete("/admin/packages/:id", requirePermission("packages.manage"
   sendJson(res, 200, { deactivated: true });
 });
 
-// Proactive: every active package that will fail generateUssdForOrder's
-// matching today — neither linked by id nor resolvable by the legacy
-// name-fallback — so a Super Admin can find and fix these BEFORE a real
+// Proactive: every active package that generateUssdForOrder cannot
+// successfully dial today, for ANY reason a Super Admin can actually fix —
+// no template match, a disabled linked template, a provider with no PIN
+// set, or a template with no device and no company-level SIM routing to
+// fall back on — so a Super Admin can find and fix these BEFORE a real
 // customer payment hits one, instead of after a stuck order is reported.
-// Delegates the actual resolution to matchTemplateByName (the same function
-// generateUssdForOrder calls at dial time) rather than a separately
-// maintained SQL predicate, so this listing can never drift out of sync
-// with what dialing will actually do — including matchTemplateByName's own
-// "more than one same-length candidate name matches -> ambiguous, treat as
-// no match" rule, which a duplicated inline query would have to reimplement
-// (and could get wrong) to catch the exact same way.
+// Delegates entirely to templateWarningFor (the same check surfaced inline
+// the moment a package is created/edited) rather than a separately
+// maintained predicate, so this listing can never drift out of sync with
+// what saving a package already warns about, and a brand-new provider or
+// package added tomorrow is covered automatically with no separate code
+// path to remember to update.
 packagesRouter.get("/admin/packages/missing-template", requireStaff(), async (_req, res) => {
   const candidates = await query<any>(
     `SELECT p.*, c.name AS company_name FROM packages p
      JOIN companies c ON c.id = p.company_id AND c.deleted_at IS NULL
-     WHERE p.active = true AND p.ussd_template_id IS NULL
+     WHERE p.active = true
      ORDER BY c.name, p.name`
   );
   const flagged: any[] = [];
   for (const pkg of candidates) {
-    const match = await matchTemplateByName(pkg.company_id, pkg.name);
-    if (!match) flagged.push(pkg);
+    const templateWarning = await templateWarningFor(pkg.company_id, pkg.name, pkg.ussd_template_id);
+    if (templateWarning) flagged.push({ ...pkg, templateWarning });
   }
   sendJson(res, 200, flagged);
 });
