@@ -1279,6 +1279,20 @@ function BalanceDashboard({ admin }) {
   );
 }
 
+// Appends "(N of M SIMs confirmed)" to a wallet-balance card's hint only
+// when the total is genuinely incomplete — walletKnownSimCount/
+// walletTotalSimCount come straight from GET /admin/finance/overview's own
+// COUNT(balance)/COUNT(*) over sim_balances (the same table the Balance
+// Dashboard's "Unknown"/"No recent balance" rows come from), so a SIM that's
+// never had a real SMS-or-manual balance confirmed doesn't silently
+// understate this total without any indication why.
+function walletCoverageHint(overview, baseHint) {
+  const known = overview?.walletKnownSimCount;
+  const total = overview?.walletTotalSimCount;
+  if (known == null || total == null || known >= total) return baseHint;
+  return `${baseHint} (${known} of ${total} SIMs confirmed)`;
+}
+
 // Financial Overview — Money Received -> Data Cost -> Other Money Out ->
 // Remaining Balance, plus the real SIM wallet balance, sourced entirely
 // from GET /admin/finance/overview (real orders/finance_expenses/
@@ -1371,11 +1385,11 @@ function FinancialOverview({ admin }) {
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
-        <SummaryMetricCard icon={Landmark} label="Total Money Available" value={money(overview?.totalMoneyAvailable)} color={INDIGO} hint="Sum of all SIM wallet balances" />
+        <SummaryMetricCard icon={Landmark} label="Total Money Available" value={money(overview?.totalMoneyAvailable)} color={INDIGO} hint={walletCoverageHint(overview, "Sum of all SIM wallet balances")} />
         <SummaryMetricCard icon={ArrowDown} label="Total Money Received" value={money(overview?.moneyReceived)} color={GREEN} hint="From completed customer payments" />
         <SummaryMetricCard icon={ArrowUp} label="Total Money Out" value={money(overview?.totalMoneyOut)} color="#C81E2C" hint="Data cost + other expenses" />
         <SummaryMetricCard icon={Wifi} label="Total Data Cost" value={money(overview?.totalDataCost)} color="#A9720A" hint="Paid to providers via USSD" />
-        <SummaryMetricCard icon={Wallet} label="Current Wallet Balance" value={money(overview?.currentWalletBalance)} color={INDIGO} hint="Real, carrier-reported SIM balance" />
+        <SummaryMetricCard icon={Wallet} label="Current Wallet Balance" value={money(overview?.currentWalletBalance)} color={INDIGO} hint={walletCoverageHint(overview, "Real, carrier-reported SIM balance")} />
         <SummaryMetricCard icon={PiggyBank} label="Remaining Balance" value={money(overview?.remainingBalance)} color={overview?.remainingBalance < 0 ? "#C81E2C" : GREEN} hint="Received minus total money out" />
         <SummaryMetricCard icon={TrendingUp} label="Profit / Earnings" value={money(overview?.profit)} color={overview?.profit < 0 ? "#C81E2C" : GREEN} hint="Received minus total money out" />
       </div>

@@ -52,7 +52,7 @@ simBalancesRouter.get("/agent/wallet-balances", requireAuth("agent"), async (req
 // balance", never a fake $0.00 (migration 068). last_source lets the
 // dashboard show whether that confirmed value came from an SMS or a manual
 // override.
-const SIM_BALANCE_LIST_SQL = `
+export const SIM_BALANCE_LIST_SQL = `
   SELECT
     d.id AS device_id, d.name AS device_name,
     (d.enabled AND d.network_online AND d.last_heartbeat_at > now() - interval '5 minutes') AS online,
