@@ -44,6 +44,14 @@ simBalancesRouter.get("/agent/wallet-balances", requireAuth("agent"), async (req
 // just the ones that happen to already have a balance row. Provider/phone
 // number resolve from sim_routing/companies as a fallback when this SIM's
 // own sim_balances row hasn't been manually given an override.
+//
+// balance is passed through NULL, not COALESCEd to 0 — a SIM slot with no
+// row at all, or a row that's only ever had metadata (company/phone/
+// threshold) assigned without a real SMS-or-manual balance update, has
+// never had a confirmed balance and must render as "Unknown"/"No recent
+// balance", never a fake $0.00 (migration 068). last_source lets the
+// dashboard show whether that confirmed value came from an SMS or a manual
+// override.
 const SIM_BALANCE_LIST_SQL = `
   SELECT
     d.id AS device_id, d.name AS device_name,
@@ -54,7 +62,8 @@ const SIM_BALANCE_LIST_SQL = `
     COALESCE(c2.name, c.name) AS provider_name,
     COALESCE(sb.phone_number, c.payment_number) AS phone_number,
     sb.id AS balance_id,
-    COALESCE(sb.balance, 0) AS balance,
+    sb.balance AS balance,
+    sb.last_source AS last_source,
     COALESCE(sb.low_balance_threshold, 5) AS low_balance_threshold,
     sb.updated_at AS balance_updated_at
   FROM agent_devices d
@@ -78,8 +87,13 @@ simBalancesRouter.get("/admin/sim-balances/summary", requireStaff(), async (_req
   const totalRow = await queryOne<{ total: string }>(
     `SELECT COALESCE(SUM(balance), 0) AS total FROM sim_balances`
   );
+  // known_sim_count (COUNT ignores NULLs) lets the dashboard tell "$0 total
+  // because every SIM confirmed a real $0 balance" apart from "$0 total
+  // because none of this provider's SIMs have a confirmed balance yet" —
+  // sim_count (COUNT(*)) still counts every row regardless of balance.
   const byProvider = await query(
-    `SELECT sb.company_id, c.name AS provider_name, COALESCE(SUM(sb.balance), 0) AS total, COUNT(*) AS sim_count
+    `SELECT sb.company_id, c.name AS provider_name, COALESCE(SUM(sb.balance), 0) AS total,
+            COUNT(*) AS sim_count, COUNT(sb.balance) AS known_sim_count
      FROM sim_balances sb
      LEFT JOIN companies c ON c.id = sb.company_id
      GROUP BY sb.company_id, c.name
@@ -185,10 +199,14 @@ simBalancesRouter.put("/admin/sim-balances/:deviceId/:simSlot", requirePermissio
     });
   } else if (companyId || phoneNumber) {
     // Metadata-only change (assign provider/phone without touching balance)
-    // — upsert without writing a history row, since no balance actually moved.
+    // — upsert without writing a history row, since no balance actually
+    // moved. balance is left NULL (not defaulted to 0) on a brand-new row:
+    // assigning a provider/phone number is not the same as confirming a
+    // real balance, and a fake $0.00 here is exactly the stale/invented
+    // value the dashboard must never show (migration 068).
     await query(
-      `INSERT INTO sim_balances (id, device_id, sim_slot, company_id, phone_number, balance)
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, 0)
+      `INSERT INTO sim_balances (id, device_id, sim_slot, company_id, phone_number)
+       VALUES (gen_random_uuid(), $1, $2, $3, $4)
        ON CONFLICT (device_id, sim_slot) DO UPDATE
        SET company_id=COALESCE($3, sim_balances.company_id),
            phone_number=COALESCE($4, sim_balances.phone_number),
@@ -201,8 +219,8 @@ simBalancesRouter.put("/admin/sim-balances/:deviceId/:simSlot", requirePermissio
     const num = Number(threshold);
     if (!Number.isFinite(num) || num < 0) return sendJson(res, 400, { error: "threshold must be a non-negative number" });
     await query(
-      `INSERT INTO sim_balances (id, device_id, sim_slot, low_balance_threshold, balance)
-       VALUES (gen_random_uuid(), $1, $2, $3, 0)
+      `INSERT INTO sim_balances (id, device_id, sim_slot, low_balance_threshold)
+       VALUES (gen_random_uuid(), $1, $2, $3)
        ON CONFLICT (device_id, sim_slot) DO UPDATE SET low_balance_threshold=$3, updated_at=now()`,
       [req.params.deviceId, simSlot, num]
     );
