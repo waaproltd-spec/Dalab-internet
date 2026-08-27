@@ -1129,6 +1129,11 @@ function BalanceDashboard({ admin }) {
   }
 
   const providerTotal = (id) => summary?.byProvider?.find((p) => p.companyId === id)?.total ?? 0;
+  // knownSimCount (backend COUNTs non-NULL balances) is 0 when this
+  // provider's SIM(s) have never had a real SMS-or-manual balance
+  // confirmed — the mini-card must say so instead of showing a fake $0.00
+  // for "no data" (see migration 068 / SIM_BALANCE_LIST_SQL).
+  const providerHasKnownBalance = (id) => Number(summary?.byProvider?.find((p) => p.companyId === id)?.knownSimCount ?? 0) > 0;
 
   return (
     <div>
@@ -1139,7 +1144,7 @@ function BalanceDashboard({ admin }) {
         <SummaryMetricCard
           icon={AlertTriangle}
           label="Low-Balance SIMs"
-          value={rows.filter((r) => Number(r.balance) < Number(r.lowBalanceThreshold)).length}
+          value={rows.filter((r) => r.balance != null && Number(r.balance) < Number(r.lowBalanceThreshold)).length}
           color="#A9720A"
           hint="Below their configured threshold"
         />
@@ -1151,7 +1156,11 @@ function BalanceDashboard({ admin }) {
           return (
             <Card key={id} style={{ padding: 16 }}>
               <div style={{ fontSize: 11.5, fontWeight: 700, color: MUTE }}>{label.toUpperCase()}</div>
-              <div style={{ fontSize: 20, fontWeight: 800, color: INK, marginTop: 6 }}>${Number(providerTotal(id)).toFixed(2)}</div>
+              {providerHasKnownBalance(id) ? (
+                <div style={{ fontSize: 20, fontWeight: 800, color: INK, marginTop: 6 }}>${Number(providerTotal(id)).toFixed(2)}</div>
+              ) : (
+                <div style={{ fontSize: 15, fontWeight: 800, color: MUTE, marginTop: 6 }}>Unknown</div>
+              )}
               <div style={{ fontSize: 11, color: MUTE, marginTop: 2 }}>{grouped.get(id)?.length ?? 0} SIM{(grouped.get(id)?.length ?? 0) === 1 ? "" : "s"}</div>
             </Card>
           );
@@ -1184,14 +1193,24 @@ function BalanceDashboard({ admin }) {
                 </thead>
                 <tbody>
                   {list.map((r) => {
-                    const low = Number(r.balance) < Number(r.lowBalanceThreshold);
+                    // r.balance is NULL when this SIM has never had a real
+                    // SMS-or-manual balance confirmed (see migration 068) —
+                    // shown as "No recent balance", never treated as $0 for
+                    // the low-balance flag either.
+                    const hasBalance = r.balance != null;
+                    const low = hasBalance && Number(r.balance) < Number(r.lowBalanceThreshold);
                     return (
                       <tr key={`${r.deviceId}:${r.simSlot}`} style={{ borderTop: `1px solid ${BORDER}` }}>
                         <td style={{ padding: "8px" }}>{r.phoneNumber || "—"}</td>
                         <td style={{ padding: "8px" }}>{r.deviceName}</td>
                         <td style={{ padding: "8px" }}>SIM {r.simSlot}</td>
-                        <td style={{ padding: "8px", fontWeight: 800, color: low ? "#C81E2C" : INK, background: low ? "#FCE7E8" : "transparent" }}>
-                          ${Number(r.balance).toFixed(2)}{low && " ⚠"}
+                        <td style={{ padding: "8px", fontWeight: 800, color: low ? "#C81E2C" : hasBalance ? INK : MUTE, background: low ? "#FCE7E8" : "transparent" }}>
+                          {hasBalance ? `$${Number(r.balance).toFixed(2)}${low ? " ⚠" : ""}` : "No recent balance"}
+                          {hasBalance && r.lastSource && (
+                            <span style={{ marginLeft: 6, fontWeight: 700, fontSize: 10.5, color: MUTE }}>
+                              ({r.lastSource === "manual" ? "manual" : "SMS"})
+                            </span>
+                          )}
                         </td>
                         <td style={{ padding: "8px", color: MUTE }}>{r.balanceUpdatedAt ? formatDateTime(r.balanceUpdatedAt) : "Never"}</td>
                         <td style={{ padding: "8px" }}><Badge tone={r.online ? "green" : "gray"}>{r.online ? "Online" : "Offline"}</Badge></td>
