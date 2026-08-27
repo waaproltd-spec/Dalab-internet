@@ -11,7 +11,7 @@ import {
   linkPaymentTransactionToOrder,
   markPaymentTransactionDuplicateForSms,
 } from "../utils/paymentTransactions.js";
-import { extractBalanceFromSms, resolveCompanyIdByProviderName, resolveDeviceSlotForCompany, applyBalanceUpdate } from "../utils/simBalances.js";
+import { extractBalanceFromSms, resolveCompanyForDeviceSlot, applyBalanceUpdate } from "../utils/simBalances.js";
 import { broadcast } from "../realtime/orderEvents.js";
 import { verifyOrderAndGenerateUssd } from "./orders.routes.js";
 import { autoAdvanceExchangeOrderToInProgress } from "./exchange.routes.js";
@@ -557,13 +557,28 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
   // since the carrier-reported balance is real information either way.
   try {
     const detected = extractBalanceFromSms(body);
-    if (detected) {
-      const companyId = match?.company_id ?? (await resolveCompanyIdByProviderName(detected.provider));
-      const slot = companyId ? await resolveDeviceSlotForCompany(companyId) : null;
-      if (slot) {
+    // Attribution is by which physical SIM actually received this SMS —
+    // never by guessing a provider from the balance phrase's wording, since
+    // several providers phrase their own "remaining balance" line
+    // identically (see simBalances.ts's BALANCE_VALUE_PATTERNS doc comment
+    // — this used to attribute Hormuud's own balance to Somnet's dashboard
+    // card). simSlot is the same Android-resolved value findMatchingOrder
+    // above already trusts for payment-number verification; when it's
+    // unresolved (~6% of deliveries per SmsReceiver.kt) this simply skips
+    // the update rather than guessing which of a device's two SIMs it was.
+    if (detected && simSlot != null) {
+      const uploadingAgent = await queryOne<{ device_id: string | null }>(`SELECT device_id FROM agents WHERE id=$1`, [agentId]);
+      const deviceId = uploadingAgent?.device_id ?? null;
+      // Falls back to a matched order's own company only when this exact
+      // device+slot isn't itself registered in sim_routing yet — that
+      // company is still a verified value (findMatchingOrder/
+      // findMatchingExchangeOrder already confirmed the payment arrived on
+      // ITS expected device/SIM before allowing the match), not a guess.
+      const companyId = deviceId ? (await resolveCompanyForDeviceSlot(deviceId, simSlot)) ?? match?.company_id ?? null : null;
+      if (deviceId && companyId) {
         await applyBalanceUpdate({
-          deviceId: slot.deviceId,
-          simSlot: slot.simSlot,
+          deviceId,
+          simSlot,
           newBalance: detected.balance,
           companyId,
           orderId: match?.id ?? null,

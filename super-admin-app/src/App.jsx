@@ -1129,6 +1129,11 @@ function BalanceDashboard({ admin }) {
   }
 
   const providerTotal = (id) => summary?.byProvider?.find((p) => p.companyId === id)?.total ?? 0;
+  // knownSimCount (backend COUNTs non-NULL balances) is 0 when this
+  // provider's SIM(s) have never had a real SMS-or-manual balance
+  // confirmed — the mini-card must say so instead of showing a fake $0.00
+  // for "no data" (see migration 068 / SIM_BALANCE_LIST_SQL).
+  const providerHasKnownBalance = (id) => Number(summary?.byProvider?.find((p) => p.companyId === id)?.knownSimCount ?? 0) > 0;
 
   return (
     <div>
@@ -1139,7 +1144,7 @@ function BalanceDashboard({ admin }) {
         <SummaryMetricCard
           icon={AlertTriangle}
           label="Low-Balance SIMs"
-          value={rows.filter((r) => Number(r.balance) < Number(r.lowBalanceThreshold)).length}
+          value={rows.filter((r) => r.balance != null && Number(r.balance) < Number(r.lowBalanceThreshold)).length}
           color="#A9720A"
           hint="Below their configured threshold"
         />
@@ -1151,7 +1156,11 @@ function BalanceDashboard({ admin }) {
           return (
             <Card key={id} style={{ padding: 16 }}>
               <div style={{ fontSize: 11.5, fontWeight: 700, color: MUTE }}>{label.toUpperCase()}</div>
-              <div style={{ fontSize: 20, fontWeight: 800, color: INK, marginTop: 6 }}>${Number(providerTotal(id)).toFixed(2)}</div>
+              {providerHasKnownBalance(id) ? (
+                <div style={{ fontSize: 20, fontWeight: 800, color: INK, marginTop: 6 }}>${Number(providerTotal(id)).toFixed(2)}</div>
+              ) : (
+                <div style={{ fontSize: 15, fontWeight: 800, color: MUTE, marginTop: 6 }}>Unknown</div>
+              )}
               <div style={{ fontSize: 11, color: MUTE, marginTop: 2 }}>{grouped.get(id)?.length ?? 0} SIM{(grouped.get(id)?.length ?? 0) === 1 ? "" : "s"}</div>
             </Card>
           );
@@ -1184,14 +1193,24 @@ function BalanceDashboard({ admin }) {
                 </thead>
                 <tbody>
                   {list.map((r) => {
-                    const low = Number(r.balance) < Number(r.lowBalanceThreshold);
+                    // r.balance is NULL when this SIM has never had a real
+                    // SMS-or-manual balance confirmed (see migration 068) —
+                    // shown as "No recent balance", never treated as $0 for
+                    // the low-balance flag either.
+                    const hasBalance = r.balance != null;
+                    const low = hasBalance && Number(r.balance) < Number(r.lowBalanceThreshold);
                     return (
                       <tr key={`${r.deviceId}:${r.simSlot}`} style={{ borderTop: `1px solid ${BORDER}` }}>
                         <td style={{ padding: "8px" }}>{r.phoneNumber || "—"}</td>
                         <td style={{ padding: "8px" }}>{r.deviceName}</td>
                         <td style={{ padding: "8px" }}>SIM {r.simSlot}</td>
-                        <td style={{ padding: "8px", fontWeight: 800, color: low ? "#C81E2C" : INK, background: low ? "#FCE7E8" : "transparent" }}>
-                          ${Number(r.balance).toFixed(2)}{low && " ⚠"}
+                        <td style={{ padding: "8px", fontWeight: 800, color: low ? "#C81E2C" : hasBalance ? INK : MUTE, background: low ? "#FCE7E8" : "transparent" }}>
+                          {hasBalance ? `$${Number(r.balance).toFixed(2)}${low ? " ⚠" : ""}` : "No recent balance"}
+                          {hasBalance && r.lastSource && (
+                            <span style={{ marginLeft: 6, fontWeight: 700, fontSize: 10.5, color: MUTE }}>
+                              ({r.lastSource === "manual" ? "manual" : "SMS"})
+                            </span>
+                          )}
                         </td>
                         <td style={{ padding: "8px", color: MUTE }}>{r.balanceUpdatedAt ? formatDateTime(r.balanceUpdatedAt) : "Never"}</td>
                         <td style={{ padding: "8px" }}><Badge tone={r.online ? "green" : "gray"}>{r.online ? "Online" : "Offline"}</Badge></td>
@@ -1258,6 +1277,20 @@ function BalanceDashboard({ admin }) {
       )}
     </div>
   );
+}
+
+// Appends "(N of M SIMs confirmed)" to a wallet-balance card's hint only
+// when the total is genuinely incomplete — walletKnownSimCount/
+// walletTotalSimCount come straight from GET /admin/finance/overview's own
+// COUNT(balance)/COUNT(*) over sim_balances (the same table the Balance
+// Dashboard's "Unknown"/"No recent balance" rows come from), so a SIM that's
+// never had a real SMS-or-manual balance confirmed doesn't silently
+// understate this total without any indication why.
+function walletCoverageHint(overview, baseHint) {
+  const known = overview?.walletKnownSimCount;
+  const total = overview?.walletTotalSimCount;
+  if (known == null || total == null || known >= total) return baseHint;
+  return `${baseHint} (${known} of ${total} SIMs confirmed)`;
 }
 
 // Financial Overview — Money Received -> Data Cost -> Other Money Out ->
@@ -1352,11 +1385,11 @@ function FinancialOverview({ admin }) {
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
-        <SummaryMetricCard icon={Landmark} label="Total Money Available" value={money(overview?.totalMoneyAvailable)} color={INDIGO} hint="Sum of all SIM wallet balances" />
+        <SummaryMetricCard icon={Landmark} label="Total Money Available" value={money(overview?.totalMoneyAvailable)} color={INDIGO} hint={walletCoverageHint(overview, "Sum of all SIM wallet balances")} />
         <SummaryMetricCard icon={ArrowDown} label="Total Money Received" value={money(overview?.moneyReceived)} color={GREEN} hint="From completed customer payments" />
         <SummaryMetricCard icon={ArrowUp} label="Total Money Out" value={money(overview?.totalMoneyOut)} color="#C81E2C" hint="Data cost + other expenses" />
         <SummaryMetricCard icon={Wifi} label="Total Data Cost" value={money(overview?.totalDataCost)} color="#A9720A" hint="Paid to providers via USSD" />
-        <SummaryMetricCard icon={Wallet} label="Current Wallet Balance" value={money(overview?.currentWalletBalance)} color={INDIGO} hint="Real, carrier-reported SIM balance" />
+        <SummaryMetricCard icon={Wallet} label="Current Wallet Balance" value={money(overview?.currentWalletBalance)} color={INDIGO} hint={walletCoverageHint(overview, "Real, carrier-reported SIM balance")} />
         <SummaryMetricCard icon={PiggyBank} label="Remaining Balance" value={money(overview?.remainingBalance)} color={overview?.remainingBalance < 0 ? "#C81E2C" : GREEN} hint="Received minus total money out" />
         <SummaryMetricCard icon={TrendingUp} label="Profit / Earnings" value={money(overview?.profit)} color={overview?.profit < 0 ? "#C81E2C" : GREEN} hint="Received minus total money out" />
       </div>
