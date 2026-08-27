@@ -75,6 +75,26 @@ test("Amtel (amtel_pay) only accepts the 71 prefix", () => {
   assert.equal(validateMobileNumber("627080008", "amtel_pay").valid, false);
 });
 
+test("Somlink (somlink) only accepts the 64 prefix, rejecting 61 and 68", () => {
+  assert.equal(validateMobileNumber("647080008", "somlink").valid, true);
+  const rejected61 = validateMobileNumber("617080008", "somlink");
+  assert.equal(rejected61.valid, false);
+  assert.equal(rejected61.error, "Invalid number. Somlink numbers must start with 64.");
+  const rejected68 = validateMobileNumber("687080008", "somlink");
+  assert.equal(rejected68.valid, false);
+  assert.equal(rejected68.error, "Invalid number. Somlink numbers must start with 64.");
+});
+
+test("companyForPrefix identifies Somlink for the 64 prefix", () => {
+  assert.equal(companyForPrefix("647080008")?.key, "somlink");
+});
+
+test("companyKeyFromLabel recognizes SOMLIMK and Somlink spellings", () => {
+  assert.equal(companyKeyFromLabel("SOMLIMK"), "somlink");
+  assert.equal(companyKeyFromLabel("Somlink"), "somlink");
+  assert.equal(companyKeyFromLabel("somlink"), "somlink");
+});
+
 test("a number with a prefix belonging to no known carrier at all is rejected even with no company selected", () => {
   const result = validateMobileNumber("997080008");
   assert.equal(result.valid, false);
