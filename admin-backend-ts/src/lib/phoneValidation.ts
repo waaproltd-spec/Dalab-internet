@@ -32,6 +32,11 @@ export const PHONE_COMPANIES: readonly PhoneCompany[] = [
   { key: "edahab", label: "Somtel", prefixes: ["62"] },
   { key: "jeeb", label: "Somnet", prefixes: ["68"] },
   { key: "amtel_pay", label: "Amtel", prefixes: ["71"] },
+  // Somlink is topped up over its own network (prefix 64) but paid for
+  // through the existing EVC Plus wallet -- unlike the four above, this key
+  // has no corresponding payment_wallets row, since it's a destination
+  // carrier only, never itself a payment method.
+  { key: "somlink", label: "Somlink", prefixes: ["64"] },
 ];
 
 const NINE_DIGITS = /^\d{9}$/;
@@ -87,6 +92,7 @@ export function companyKeyFromLabel(nameOrId: string | null | undefined): string
   if (s.includes("somtel") || s.includes("edahab")) return "edahab";
   if (s.includes("somnet") || s.includes("jeeb")) return "jeeb";
   if (s.includes("amtel")) return "amtel_pay";
+  if (s.includes("somlimk") || s.includes("somlink")) return "somlink";
   return null;
 }
 
