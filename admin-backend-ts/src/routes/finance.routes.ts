@@ -5,6 +5,7 @@ import { requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { recordActivity } from "../utils/activityLog.js";
+import { SIM_BALANCE_LIST_SQL } from "./simBalances.routes.js";
 
 export const financeRouter = Router();
 
@@ -96,15 +97,35 @@ async function periodTotals() {
 }
 
 // The single source of truth for "real money currently available": the sum
-// of every SIM's carrier-reported balance (see sim_balances / the Balance
-// Dashboard). This is always the current figure — it isn't meaningful to
-// ask what the wallet balance "was" over a date range, so it ignores
-// from/to. Shown to the Super Admin as both "Total Money Available" and
-// "Current Wallet Balance" — same real number, since that IS the money the
-// system currently has on hand.
-async function walletBalance(): Promise<number> {
-  const row = await queryOne<{ total: string }>(`SELECT COALESCE(SUM(balance), 0) AS total FROM sim_balances`);
-  return Number(row?.total ?? 0);
+// of every SIM's carrier-reported balance. Queries the EXACT SAME
+// SIM_BALANCE_LIST_SQL the Balance Dashboard's /admin/sim-balances and
+// /admin/sim-balances/summary read from (imported, not reimplemented), so
+// this can never drift into a second hand-maintained "universe" of what
+// counts as a SIM — every present slot on every registered device, whether
+// or not it happens to have a sim_balances row yet. This is always the
+// current figure — it isn't meaningful to ask what the wallet balance "was"
+// over a date range, so it ignores from/to. Shown to the Super Admin as
+// both "Total Money Available" and "Current Wallet Balance" — same real
+// number, since that IS the money the system currently has on hand.
+//
+// A slot's balance is NULL when it's never had a real SMS-or-manual update
+// confirmed (migration 068, and any slot with no sim_balances row at all) —
+// excluded from the sum without inventing a $0 contribution, but the raw
+// total alone can't tell a Super Admin "this total is missing 2 of our 4
+// SIMs" from "this total is genuinely everything". knownSimCount/
+// totalSimCount make that coverage explicit instead of silently
+// understating the real total.
+async function walletBalance(): Promise<{ total: number; knownSimCount: number; totalSimCount: number }> {
+  const rows = await query<{ balance: string | null }>(`SELECT balance FROM (${SIM_BALANCE_LIST_SQL}) rows`);
+  let total = 0;
+  let knownSimCount = 0;
+  for (const r of rows) {
+    if (r.balance != null) {
+      total += Number(r.balance);
+      knownSimCount++;
+    }
+  }
+  return { total: Number(total.toFixed(3)), knownSimCount, totalSimCount: rows.length };
 }
 
 // GET /admin/finance/overview?from=&to= — the full Financial Overview:
@@ -121,12 +142,14 @@ financeRouter.get("/admin/finance/overview", requireStaff(), async (req, res) =>
 
   sendJson(res, 200, {
     range: { from, to },
-    totalMoneyAvailable: wallet,
+    totalMoneyAvailable: wallet.total,
+    walletKnownSimCount: wallet.knownSimCount,
+    walletTotalSimCount: wallet.totalSimCount,
     moneyReceived: totals.moneyReceived,
     totalDataCost: totals.dataCost,
     otherMoneyOut: totals.otherMoneyOut,
     totalMoneyOut: totals.totalMoneyOut,
-    currentWalletBalance: wallet,
+    currentWalletBalance: wallet.total,
     remainingBalance: totals.remainingBalance,
     // No cost category exists beyond data cost + other expenses, so profit
     // is exactly what's left after money out — same formula as
