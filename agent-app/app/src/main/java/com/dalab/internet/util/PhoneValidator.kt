@@ -29,6 +29,13 @@ val PHONE_COMPANIES: List<PhoneCompany> = listOf(
     PhoneCompany("edahab", "Somtel", listOf("62")),
     PhoneCompany("jeeb", "Somnet", listOf("68")),
     PhoneCompany("amtel_pay", "Amtel", listOf("71")),
+    // Somlink is topped up over its own network (prefix 64) but paid for
+    // through the existing EVC Plus wallet -- unlike the four above, this
+    // key has no corresponding payment_wallets row, since it's a
+    // destination carrier only, never itself a payment method. Matches
+    // the identical fix in admin-backend-ts's phoneValidation.ts and
+    // customer-app's phone_validator.dart.
+    PhoneCompany("somlink", "Somlink", listOf("64")),
 )
 
 private val NINE_DIGITS = Regex("^\\d{9}$")
@@ -65,6 +72,7 @@ fun companyKeyFromLabel(nameOrId: String?): String? {
         s.contains("somtel") || s.contains("edahab") -> "edahab"
         s.contains("somnet") || s.contains("jeeb") -> "jeeb"
         s.contains("amtel") -> "amtel_pay"
+        s.contains("somlimk") || s.contains("somlink") -> "somlink"
         else -> null
     }
 }

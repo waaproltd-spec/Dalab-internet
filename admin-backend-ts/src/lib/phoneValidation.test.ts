@@ -101,6 +101,42 @@ test("companyForPrefix identifies Somlink for the 64 prefix", () => {
   assert.equal(companyForPrefix("647080008")?.key, "somlink");
 });
 
+// Exact scenarios reported against a real device: "647177774" (Somlink,
+// prefix 64) was being rejected as "not recognized for any supported
+// carrier". These pin the reported number itself (both bare and with the
+// +252 country code, which this backend module -- unlike the client-side
+// Dart/Kotlin validators -- normalizes away, see normalizeMobileDigits'
+// own doc comment) alongside the three prefixes that must NOT resolve to
+// Somlink, since each already belongs to a different carrier.
+test("the reported Somlink number (647177774) is valid, bare and with +252, with no company selected", () => {
+  assert.equal(isValidMobileNumber("647177774"), true);
+  assert.equal(isValidMobileNumber("+252647177774"), true);
+  assert.equal(companyForPrefix("647177774")?.key, "somlink");
+});
+
+test("the reported Somlink number (647177774) is valid specifically as the somlink company, bare and with +252", () => {
+  assert.equal(validateMobileNumber("647177774", "somlink").valid, true);
+  assert.equal(validateMobileNumber("+252647177774", "somlink").valid, true);
+});
+
+test("619991299 (EVC Plus), 629991299 (eDahab), and 719991299 (Amtel) must NOT be classified as Somlink", () => {
+  assert.notEqual(companyForPrefix("619991299")?.key, "somlink");
+  assert.notEqual(companyForPrefix("629991299")?.key, "somlink");
+  assert.notEqual(companyForPrefix("719991299")?.key, "somlink");
+
+  const rejected61 = validateMobileNumber("619991299", "somlink");
+  assert.equal(rejected61.valid, false);
+  assert.equal(rejected61.error, "Invalid number. Somlink numbers must start with 64.");
+
+  const rejected62 = validateMobileNumber("629991299", "somlink");
+  assert.equal(rejected62.valid, false);
+  assert.equal(rejected62.error, "Invalid number. Somlink numbers must start with 64.");
+
+  const rejected71 = validateMobileNumber("719991299", "somlink");
+  assert.equal(rejected71.valid, false);
+  assert.equal(rejected71.error, "Invalid number. Somlink numbers must start with 64.");
+});
+
 test("companyKeyFromLabel recognizes SOMLIMK and Somlink spellings", () => {
   assert.equal(companyKeyFromLabel("SOMLIMK"), "somlink");
   assert.equal(companyKeyFromLabel("Somlink"), "somlink");

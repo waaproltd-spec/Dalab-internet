@@ -109,6 +109,67 @@ class PhoneValidatorTest {
     }
 
     @Test
+    fun `companyForPrefix identifies Somlink for the 64 prefix`() {
+        assertEquals("somlink", companyForPrefix("647080008")?.key)
+    }
+
+    @Test
+    fun `Somlink (somlink) only accepts the 64 prefix, rejecting 61 and 68`() {
+        assertTrue(validateMobileNumber("647080008", "somlink").valid)
+        val rejected61 = validateMobileNumber("617080008", "somlink")
+        assertFalse(rejected61.valid)
+        assertEquals("Invalid number. Somlink numbers must start with 64.", rejected61.error)
+        val rejected68 = validateMobileNumber("687080008", "somlink")
+        assertFalse(rejected68.valid)
+        assertEquals("Invalid number. Somlink numbers must start with 64.", rejected68.error)
+    }
+
+    @Test
+    fun `companyKeyFromLabel recognizes SOMLIMK and Somlink spellings`() {
+        assertEquals("somlink", companyKeyFromLabel("SOMLIMK"))
+        assertEquals("somlink", companyKeyFromLabel("Somlink"))
+        assertEquals("somlink", companyKeyFromLabel("somlink"))
+    }
+
+    // Exact scenario reported against a real device: "647177774" (Somlink,
+    // prefix 64) was being rejected as "not recognized for any supported
+    // carrier". Pins the reported number itself, both bare and with the
+    // +252 country code (which this validator -- like customer-app's Dart
+    // one, unlike admin-backend-ts's -- rejects rather than normalizes,
+    // since this runs on raw agent keystrokes), alongside the three
+    // prefixes that must NOT resolve to Somlink since each already belongs
+    // to a different carrier.
+    @Test
+    fun `the reported Somlink number (647177774) is valid, but +252647177774 is rejected the same way as any other +252 number`() {
+        assertTrue(isValidMobileNumber("647177774"))
+        assertEquals("somlink", companyForPrefix("647177774")?.key)
+        assertTrue(validateMobileNumber("647177774", "somlink").valid)
+
+        val withCountryCode = validateMobileNumber("+252647177774", "somlink")
+        assertFalse(withCountryCode.valid)
+        assertEquals("Enter your number as 9 digits without the 252 country code, e.g. 617080008 — not 252617080008.", withCountryCode.error)
+    }
+
+    @Test
+    fun `619991299 (EVC Plus), 629991299 (eDahab), and 719991299 (Amtel) must NOT be classified as Somlink`() {
+        assertEquals("evc_plus", companyForPrefix("619991299")?.key)
+        assertEquals("edahab", companyForPrefix("629991299")?.key)
+        assertEquals("amtel_pay", companyForPrefix("719991299")?.key)
+
+        val rejected61 = validateMobileNumber("619991299", "somlink")
+        assertFalse(rejected61.valid)
+        assertEquals("Invalid number. Somlink numbers must start with 64.", rejected61.error)
+
+        val rejected62 = validateMobileNumber("629991299", "somlink")
+        assertFalse(rejected62.valid)
+        assertEquals("Invalid number. Somlink numbers must start with 64.", rejected62.error)
+
+        val rejected71 = validateMobileNumber("719991299", "somlink")
+        assertFalse(rejected71.valid)
+        assertEquals("Invalid number. Somlink numbers must start with 64.", rejected71.error)
+    }
+
+    @Test
     fun `a number with a prefix belonging to no known carrier at all is rejected even with no company selected`() {
         val result = validateMobileNumber("997080008")
         assertFalse(result.valid)
