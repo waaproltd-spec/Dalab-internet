@@ -10,7 +10,7 @@ import { recordActivity } from "../utils/activityLog.js";
 import { creditCommissionIfNeeded, reverseCommissionIfNeeded } from "../utils/commissions.js";
 import { creditReferralBonusIfNeeded, reverseReferralBonusIfNeeded } from "../utils/referrals.js";
 import { refundRedeemedPointsIfNeeded } from "../utils/loyaltyPoints.js";
-import { isAlreadyCompleted } from "../utils/paymentTransactions.js";
+import { isAlreadyCompleted, hasActivePaymentTransaction, linkPaymentTransactionToOrder, markPaymentTransactionDuplicateForSms } from "../utils/paymentTransactions.js";
 import { rateLimit } from "../auth/rateLimit.js";
 import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
 
@@ -499,7 +499,31 @@ ordersRouter.post("/agent/orders/:id/verify-payment", requireAuth("agent"), asyn
   if (!order) return sendJson(res, 404, { error: "Order not found" });
 
   if (req.body.smsLogId) {
-    await query(`UPDATE sms_logs SET matched_order_id=$1 WHERE id=$2`, [order.id, req.body.smsLogId]);
+    // Same guards as the admin manual-link route (smsLogs.routes.ts's
+    // POST /admin/sms-logs/:id/link-order): one payment SMS can only ever be
+    // linked to one order, and one order can only ever be credited by one
+    // payment. Without these, an agent submitting the wrong smsLogId could
+    // silently reassign a real payment from one order to another, or let a
+    // second payment double-credit an order that's already paid.
+    const sms = await queryOne<{ id: string; matched_order_id: string | null }>(
+      `SELECT id, matched_order_id FROM sms_logs WHERE id=$1`,
+      [req.body.smsLogId]
+    );
+    if (!sms) return sendJson(res, 404, { error: "SMS log not found" });
+    if (sms.matched_order_id && sms.matched_order_id !== order.id) {
+      return sendJson(res, 409, { error: `This SMS is already linked to order ${sms.matched_order_id}.` });
+    }
+    if (!sms.matched_order_id) {
+      if (await hasActivePaymentTransaction(order.id)) {
+        await markPaymentTransactionDuplicateForSms(sms.id, order.id);
+        return sendJson(res, 409, { error: "This order already has a linked payment." });
+      }
+      const claimed = await query<{ id: string }>(
+        `UPDATE sms_logs SET matched_order_id=$1, match_failure_reason=NULL WHERE id=$2 AND matched_order_id IS NULL RETURNING id`,
+        [order.id, sms.id]
+      );
+      if (claimed.length > 0) await linkPaymentTransactionToOrder(sms.id, order.id);
+    }
   }
 
   const result = await verifyOrderAndGenerateUssd(order, req.auth!.sub);
