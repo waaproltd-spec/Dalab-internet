@@ -29,8 +29,8 @@ export interface PhoneCompany {
 
 export const PHONE_COMPANIES: readonly PhoneCompany[] = [
   { key: "evc_plus", label: "EVC Plus", prefixes: ["61", "77"] },
-  { key: "edahab", label: "Somtel", prefixes: ["62"] },
-  { key: "jeeb", label: "Somnet", prefixes: ["68"] },
+  { key: "edahab", label: "eDahab", prefixes: ["62"] },
+  { key: "jeeb", label: "Jeeb", prefixes: ["68"] },
   { key: "amtel_pay", label: "Amtel", prefixes: ["71"] },
 ];
 

@@ -62,7 +62,7 @@ test("Somnet (jeeb) only accepts the 68 prefix", () => {
   assert.equal(validateMobileNumber("687080008", "jeeb").valid, true);
   const rejected = validateMobileNumber("617080008", "jeeb");
   assert.equal(rejected.valid, false);
-  assert.equal(rejected.error, "Invalid number. Somnet numbers must start with 68.");
+  assert.equal(rejected.error, "Invalid number. Jeeb numbers must start with 68.");
 });
 
 test("Somtel (edahab) only accepts the 62 prefix", () => {
