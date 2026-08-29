@@ -45,9 +45,11 @@ import com.dalab.internet.data.ExchangeOrder
 import com.dalab.internet.data.Order
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.diagnostics.HeartbeatStats
+import com.dalab.internet.network.ApiClient
 import com.dalab.internet.notifications.AgentAlertsState
 import com.dalab.internet.notifications.PushTokenRegistrar
 import com.dalab.internet.notifications.SupportDeepLink
+import com.dalab.internet.notifications.SupportUnreadState
 import com.dalab.internet.queue.PendingActionQueue
 import com.dalab.internet.service.AgentBackgroundService
 import com.dalab.internet.sms.SmsInboxScanner
@@ -159,8 +161,12 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, NOTIFICATIONS, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP, SUPPORT }
-private enum class HomeTab { ORDERS, SALES, CUSTOMERS, REPORTS, MORE }
+private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, NOTIFICATIONS, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP, SALES, CUSTOMERS, REPORTS }
+// Bottom nav is exactly 4 tabs: Home, Support Agent, Broadcast, More --
+// Sales/Customers/Reports (formerly their own tabs) moved under More as
+// ordinary Screen.X destinations instead (see MoreScreen's "My Work"
+// section), and Support/Broadcast (formerly under More) became tabs here.
+private enum class HomeTab { HOME, SUPPORT, BROADCAST, MORE }
 
 @Composable
 private fun AgentApp() {
@@ -205,17 +211,17 @@ private fun AgentApp() {
     var selectedExchangeOrder by remember { mutableStateOf<ExchangeOrder?>(null) }
     val scope = rememberCoroutineScope()
 
-    // A support-request push (support.routes.ts's notifyAssignedAgent()) was
-    // tapped -- jump straight to the Support screen, which shows whichever
-    // conversation is actually assigned to this agent (only ever one at a
-    // time), no conversationId needed. Only fires once logged in and past
-    // setup -- an agent who somehow taps a notification before finishing
-    // device setup just lands wherever setup leaves them; the flag stays set
-    // and is picked up the next time this effect re-runs.
-    LaunchedEffect(SupportDeepLink.pending, screen) {
-        if (SupportDeepLink.pending && (screen == Screen.HOME || screen == Screen.SUPPORT)) {
-            SupportDeepLink.pending = false
-            screen = Screen.SUPPORT
+    // A support-request push (support.routes.ts's notifyAssignedAgent()/
+    // notifyAgentOfNewMessage()) was tapped -- jump to Home so AgentHome gets
+    // composed, which is where the flag is actually consumed (it switches its
+    // own Support tab -- see AgentHome's own LaunchedEffect below). Only
+    // forces navigation once logged in and past setup -- an agent who somehow
+    // taps a notification before finishing device setup just lands wherever
+    // setup leaves them; the flag stays set and is picked up the next time
+    // this effect re-runs, same as before.
+    LaunchedEffect(SupportDeepLink.pending) {
+        if (SupportDeepLink.pending && screen != Screen.HOME) {
+            screen = Screen.HOME
         }
     }
 
@@ -300,10 +306,11 @@ private fun AgentApp() {
             onOpenPermissionsStatus = { screen = Screen.PERMISSIONS_STATUS },
             onOpenReliabilityDashboard = { screen = Screen.RELIABILITY_DASHBOARD },
             onOpenMoneyExchange = { screen = Screen.EXCHANGE_LIST },
-            onOpenNotifications = { screen = Screen.NOTIFICATIONS },
             onOpenAlerts = { screen = Screen.ALERTS },
             onOpenResellerWithdrawalSetup = { screen = Screen.RESELLER_WITHDRAWAL_INTERACTIVE_SETUP },
-            onOpenSupport = { screen = Screen.SUPPORT },
+            onOpenSales = { screen = Screen.SALES },
+            onOpenCustomers = { screen = Screen.CUSTOMERS },
+            onOpenReports = { screen = Screen.REPORTS },
         )
 
         Screen.ORDER_DETAIL -> selectedOrder?.let { order ->
@@ -342,13 +349,15 @@ private fun AgentApp() {
 
         Screen.EXCHANGE_SETUP -> ExchangeAccessibilitySetupScreen(onBack = { screen = Screen.EXCHANGE_LIST })
 
-        Screen.NOTIFICATIONS -> NotificationsScreen(onBack = { screen = Screen.HOME })
-
         Screen.ALERTS -> AlertsScreen(onBack = { screen = Screen.HOME })
 
         Screen.RESELLER_WITHDRAWAL_INTERACTIVE_SETUP -> ResellerWithdrawalInteractiveAccessibilitySetupScreen(onBack = { screen = Screen.HOME })
 
-        Screen.SUPPORT -> SupportScreen(onBack = { screen = Screen.HOME })
+        Screen.SALES -> NewSaleScreen(onBack = { screen = Screen.HOME })
+
+        Screen.CUSTOMERS -> CustomersScreen(onBack = { screen = Screen.HOME })
+
+        Screen.REPORTS -> ReportsScreen(onBack = { screen = Screen.HOME })
     }
 }
 
@@ -359,7 +368,7 @@ private fun rememberLauncherForSmsPermissions(
     ActivityResultContracts.RequestMultiplePermissions(), onResult
 )
 
-/** Bottom-nav shell for the logged-in agent: Orders, Sales, Customers, Reports, More. */
+/** Bottom-nav shell for the logged-in agent: Home, Support Agent, Broadcast, More. */
 @Composable
 private fun AgentHome(
     onOpenOrder: (Order) -> Unit,
@@ -371,39 +380,67 @@ private fun AgentHome(
     onOpenPermissionsStatus: () -> Unit,
     onOpenReliabilityDashboard: () -> Unit,
     onOpenMoneyExchange: () -> Unit,
-    onOpenNotifications: () -> Unit,
     onOpenAlerts: () -> Unit,
     onOpenResellerWithdrawalSetup: () -> Unit,
-    onOpenSupport: () -> Unit,
+    onOpenSales: () -> Unit,
+    onOpenCustomers: () -> Unit,
+    onOpenReports: () -> Unit,
 ) {
-    var tab by remember { mutableStateOf(HomeTab.ORDERS) }
+    var tab by remember { mutableStateOf(HomeTab.HOME) }
+
+    // A support push tapped while this composable already exists (warm
+    // start, or the agent was mid-session on some other tab) -- AgentApp's
+    // own effect only gets the agent as far as Screen.HOME; this is what
+    // actually switches to the Support tab and clears the badge, since `tab`
+    // is local state that only exists here.
+    LaunchedEffect(SupportDeepLink.pending) {
+        if (SupportDeepLink.pending) {
+            SupportDeepLink.pending = false
+            tab = HomeTab.SUPPORT
+            SupportUnreadState.clear()
+        }
+    }
+
+    // Covers a support push that arrived while the app was backgrounded or
+    // killed -- the OS shows the system-tray notification straight from the
+    // FCM payload in that case, bypassing AgentFcmService.onMessageReceived
+    // (and therefore SupportUnreadState.markUnread()) entirely. If the agent
+    // reopens the app normally (tapping the launcher icon, not the
+    // notification) rather than through the deep link above, this is what
+    // still shows the badge for whatever's waiting.
+    LaunchedEffect(Unit) {
+        try {
+            val status = ApiClient.service.getSupportStatus().body()
+            if (status?.activeConversationId != null) SupportUnreadState.markUnread()
+        } catch (e: Exception) {
+            DiagnosticsLog.record("support_unread_check", "Failed: ${e.message}")
+        }
+    }
 
     Scaffold(
         bottomBar = {
             NavigationBar {
                 NavigationBarItem(
-                    selected = tab == HomeTab.ORDERS,
-                    onClick = { tab = HomeTab.ORDERS },
+                    selected = tab == HomeTab.HOME,
+                    onClick = { tab = HomeTab.HOME },
                     icon = { Icon(Icons.Filled.Home, contentDescription = "Home") },
                     label = { Text("Home") },
                 )
                 NavigationBarItem(
-                    selected = tab == HomeTab.SALES,
-                    onClick = { tab = HomeTab.SALES },
-                    icon = { Icon(Icons.Filled.Sell, contentDescription = "New Sale") },
-                    label = { Text("Sales") },
+                    selected = tab == HomeTab.SUPPORT,
+                    onClick = { tab = HomeTab.SUPPORT; SupportUnreadState.clear() },
+                    icon = {
+                        BadgedBox(badge = { if (SupportUnreadState.hasUnread && tab != HomeTab.SUPPORT) Badge() }) {
+                            Icon(Icons.Filled.SupportAgent, contentDescription = "Support Agent")
+                        }
+                    },
+                    label = { Text("Support Agent") },
                 )
                 NavigationBarItem(
-                    selected = tab == HomeTab.CUSTOMERS,
-                    onClick = { tab = HomeTab.CUSTOMERS },
-                    icon = { Icon(Icons.Filled.People, contentDescription = "Customers") },
-                    label = { Text("Customers") },
-                )
-                NavigationBarItem(
-                    selected = tab == HomeTab.REPORTS,
-                    onClick = { tab = HomeTab.REPORTS },
-                    icon = { Icon(Icons.Filled.Assessment, contentDescription = "Reports") },
-                    label = { Text("Reports") },
+                    selected = tab == HomeTab.BROADCAST,
+                    onClick = { tab = HomeTab.BROADCAST },
+                    icon = { Icon(Icons.Filled.Notifications, contentDescription = "Broadcast") },
+                    label = { Text("Broadcast") },
                 )
                 NavigationBarItem(
                     selected = tab == HomeTab.MORE,
@@ -416,16 +453,15 @@ private fun AgentHome(
     ) { padding ->
         Box(modifier = Modifier.padding(padding)) {
             when (tab) {
-                HomeTab.ORDERS -> OrdersListScreen(
+                HomeTab.HOME -> OrdersListScreen(
                     onOpenOrder = onOpenOrder,
                     onOpenAlerts = onOpenAlerts,
                     onOpenWallet = onOpenWallet,
                     onOpenMoneyExchange = onOpenMoneyExchange,
-                    onOpenSupport = onOpenSupport,
+                    onOpenSupport = { tab = HomeTab.SUPPORT; SupportUnreadState.clear() },
                 )
-                HomeTab.SALES -> NewSaleScreen()
-                HomeTab.CUSTOMERS -> CustomersScreen()
-                HomeTab.REPORTS -> ReportsScreen()
+                HomeTab.SUPPORT -> SupportScreen(onBack = { tab = HomeTab.HOME })
+                HomeTab.BROADCAST -> NotificationsScreen(onBack = { tab = HomeTab.HOME })
                 HomeTab.MORE -> MoreScreen(
                     onOpenPackages = onOpenPackages,
                     onOpenTransactions = onOpenTransactions,
@@ -435,9 +471,10 @@ private fun AgentHome(
                     onOpenPermissionsStatus = onOpenPermissionsStatus,
                     onOpenReliabilityDashboard = onOpenReliabilityDashboard,
                     onOpenMoneyExchange = onOpenMoneyExchange,
-                    onOpenNotifications = onOpenNotifications,
                     onOpenResellerWithdrawalSetup = onOpenResellerWithdrawalSetup,
-                    onOpenSupport = onOpenSupport,
+                    onOpenSales = onOpenSales,
+                    onOpenCustomers = onOpenCustomers,
+                    onOpenReports = onOpenReports,
                 )
             }
         }
@@ -446,9 +483,12 @@ private fun AgentHome(
 
 /**
  * Grouped into categories instead of one long flat list, so an agent
- * scanning for something specific isn't reading past unrelated items —
- * Money first (what's checked most), then Catalog & Sales, Communication,
- * then Device & Diagnostics (setup/troubleshooting, checked least often).
+ * scanning for something specific isn't reading past unrelated items — My
+ * Work first (Sales/Customers/Reports, demoted here from their own bottom-nav
+ * tabs when the bar was cut down to exactly 4), then Money, then Catalog &
+ * Sales, then Device & Diagnostics (setup/troubleshooting, checked least
+ * often). Agent Support and Customer Broadcast are no longer here at all —
+ * they're their own bottom-nav tabs now (Support Agent / Broadcast).
  */
 @Composable
 private fun MoreScreen(
@@ -460,11 +500,37 @@ private fun MoreScreen(
     onOpenPermissionsStatus: () -> Unit,
     onOpenReliabilityDashboard: () -> Unit,
     onOpenMoneyExchange: () -> Unit,
-    onOpenNotifications: () -> Unit,
     onOpenResellerWithdrawalSetup: () -> Unit,
-    onOpenSupport: () -> Unit,
+    onOpenSales: () -> Unit,
+    onOpenCustomers: () -> Unit,
+    onOpenReports: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        // Sales/Customers/Reports were their own bottom-nav tabs before the
+        // bar was cut down to exactly 4 (Home/Support Agent/Broadcast/More)
+        // to make room for Support Agent and Broadcast -- kept first and
+        // together here since they're still core, frequently-used agent
+        // work, not just occasional setup/diagnostics.
+        MoreSection(title = "My Work") {
+            MoreItem(
+                title = "Sales",
+                subtitle = "Start a new sale for a walk-in customer",
+                icon = Icons.Filled.Sell,
+                onClick = onOpenSales,
+            )
+            MoreItem(
+                title = "Customers",
+                subtitle = "Search or register customers",
+                icon = Icons.Filled.People,
+                onClick = onOpenCustomers,
+            )
+            MoreItem(
+                title = "Reports",
+                subtitle = "Your completed-sales totals and breakdown",
+                icon = Icons.Filled.Assessment,
+                onClick = onOpenReports,
+            )
+        }
         MoreSection(title = "Money") {
             MoreItem(
                 title = "Wallet Balances",
@@ -499,20 +565,8 @@ private fun MoreScreen(
                 onClick = onOpenTransactions,
             )
         }
-        MoreSection(title = "Communication") {
-            MoreItem(
-                title = "Agent Support",
-                subtitle = "Chat with waiting customers — claim, reply, resolve",
-                icon = Icons.Filled.SupportAgent,
-                onClick = onOpenSupport,
-            )
-            MoreItem(
-                title = "Customer Broadcast",
-                subtitle = "Send a push notification to customers",
-                icon = Icons.Filled.Notifications,
-                onClick = onOpenNotifications,
-            )
-        }
+        // Agent Support and Customer Broadcast moved to their own bottom-nav
+        // tabs (Support Agent / Broadcast) -- no longer listed here.
         MoreSection(title = "Device & Diagnostics") {
             MoreItem(
                 title = "Device",

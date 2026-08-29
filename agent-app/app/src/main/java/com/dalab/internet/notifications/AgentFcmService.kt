@@ -52,6 +52,16 @@ class AgentFcmService : FirebaseMessagingService() {
         val body = message.notification?.body ?: message.data["body"] ?: ""
         val conversationId = message.data["conversationId"]
 
+        // Every support push (a fresh assignment or a customer's follow-up
+        // message -- see support.routes.ts's notifyAssignedAgent()/
+        // notifyAgentOfNewMessage()) means there's an unread customer message
+        // waiting in the Support tab. Set unconditionally, before the
+        // POST_NOTIFICATIONS check below -- the in-app badge must still work
+        // even if the system-tray notification itself couldn't be shown.
+        if (message.data["screen"] == "support_conversation") {
+            SupportUnreadState.markUnread()
+        }
+
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(MainActivity.EXTRA_OPEN_SUPPORT, true)
