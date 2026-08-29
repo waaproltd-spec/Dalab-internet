@@ -840,8 +840,74 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
         continue;
       }
 
-      // No Store order match — try Money Exchange next, same as the live
-      // upload path does. Never auto-verifies/pays out; only links + logs.
+      // No Store order match — try Offline Auto-Order next, same position
+      // the live upload path (ingestPaymentSms) gives it. Unlike every
+      // other matcher in this sweep, findMatchingOrder et al. only ever
+      // LINK a pre-existing order; matchOrCreateOfflineAutoOrder also
+      // CREATES one (see offlineAutoOrder.ts) — but until this branch
+      // existed, this sweep never called it at all, so a customer whose
+      // Offline Profile was saved even a few seconds after their payment
+      // SMS arrived had that SMS orphaned forever: the one-shot live match
+      // found no profile yet, and nothing ever retried it (every other
+      // matcher already gets this same resweep; this one didn't).
+      const { order: offlineAutoMatch, reason: offlineAutoReason } = await matchOrCreateOfflineAutoOrder(
+        sms.parsed_amount ?? undefined,
+        sms.parsed_phone ?? undefined,
+        sms.parsed_provider,
+        sms.transaction_ref,
+        sms.agent_id,
+        sms.sim_slot
+      );
+      if (offlineAutoMatch) {
+        // Same atomic claim as the Store branch above — guards the same
+        // narrow race, and also covers matchOrCreateOfflineAutoOrder's own
+        // documented risk of creating an order this claim then loses (left
+        // as a harmless orphaned 'pending' order, same as it already
+        // accepts on the live path).
+        const claimedOffline = await query<{ id: string }>(
+          `UPDATE sms_logs SET matched_order_id=$1, match_failure_reason=NULL WHERE id=$2 AND matched_order_id IS NULL RETURNING id`,
+          [offlineAutoMatch.id, sms.id]
+        );
+        if (claimedOffline.length === 0) continue;
+
+        const requiresManualApproval = await requiresManualApprovalFor(offlineAutoMatch.id);
+        if (await hasActivePaymentTransaction(offlineAutoMatch.id)) {
+          await markPaymentTransactionDuplicateForSms(sms.id, offlineAutoMatch.id);
+          await logPaymentActivity({
+            action: "duplicate_delivery_prevented",
+            smsLogId: sms.id,
+            order: offlineAutoMatch,
+            transactionRef: sms.transaction_ref,
+            paymentTimestamp: sms.received_at,
+            status: "duplicate_blocked",
+            requiresManualApproval,
+          });
+          broadcast({ type: "sms_log.created", smsLogId: sms.id, orderId: offlineAutoMatch.id });
+          continue;
+        }
+
+        await linkPaymentTransactionToOrder(sms.id, offlineAutoMatch.id);
+        await logPaymentActivity({
+          action: "payment_verified",
+          smsLogId: sms.id,
+          order: offlineAutoMatch,
+          transactionRef: sms.transaction_ref,
+          paymentTimestamp: sms.received_at,
+          status: "verified",
+          requiresManualApproval,
+        });
+        if (!requiresManualApproval) {
+          const orderRow = await queryOne<any>(`SELECT * FROM orders WHERE id=$1`, [offlineAutoMatch.id]);
+          if (orderRow) await verifyOrderAndGenerateUssd(orderRow, sms.agent_id);
+        }
+        broadcast({ type: "sms_log.created", smsLogId: sms.id, orderId: offlineAutoMatch.id });
+        relinked++;
+        continue;
+      }
+
+      // No Store or Offline Auto-Order match — try Money Exchange next,
+      // same as the live upload path does. Never auto-verifies/pays out;
+      // only links + logs.
       const { order: exchangeMatch, reason: exchangeReason } = await findMatchingExchangeOrder(
         sms.parsed_amount ?? undefined,
         sms.parsed_phone ?? undefined,
@@ -907,6 +973,7 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
         await query(`UPDATE sms_logs SET match_failure_reason=$1 WHERE id=$2`, [
           [
             reason,
+            offlineAutoReason ? `Offline Auto-Order: ${offlineAutoReason}` : null,
             exchangeReason ? `Exchange: ${exchangeReason}` : null,
             resellerReason ? `Reseller Deposit: ${resellerReason}` : null,
             resellerWithdrawalReason ? `Reseller Withdraw: ${resellerWithdrawalReason}` : null,
