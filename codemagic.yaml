@@ -1,0 +1,30 @@
+workflows:
+  agent-app-android:
+    name: Agent App (Android)
+    max_build_duration: 60
+    instance_type: linux_x2
+    working_directory: agent-app
+    environment:
+      java: 17
+      vars:
+        PACKAGE_NAME: "com.dalab.agent"
+    scripts:
+      - name: Run unit tests
+        script: |
+          ./gradlew testDebugUnitTest --no-daemon
+      - name: Build debug APK
+        script: |
+          ./gradlew assembleDebug --no-daemon
+      # Release build is signed automatically once Codemagic's Android code
+      # signing is configured for this workflow (Codemagic UI -> this app ->
+      # workflow settings -> Code signing identities -> Android). Without
+      # it, agent-app/app/build.gradle.kts's own AGENT_KEYSTORE_* env-var
+      # check falls back to the committed app/release.keystore, same
+      # fallback the GitHub Actions workflow (agent-app-build-apk.yml)
+      # already relies on -- either way this step never fails the build.
+      - name: Build release APK
+        script: |
+          ./gradlew assembleRelease --no-daemon
+    artifacts:
+      - app/build/outputs/apk/**/*.apk
+      - app/build/reports/tests/testDebugUnitTest
