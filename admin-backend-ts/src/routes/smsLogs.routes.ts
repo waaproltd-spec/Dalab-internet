@@ -493,7 +493,7 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
   let offlineAutoMatch: OrderMatch | null = null;
   let offlineAutoMatchFailureReason: string | null = null;
   if (!storeMatch) {
-    const offlineResult = await matchOrCreateOfflineAutoOrder(parsedAmount, parsedPhone, parsedProvider, transactionRef, agentId, simSlot);
+    const offlineResult = await matchOrCreateOfflineAutoOrder(parsedAmount, parsedPhone, parsedProvider, transactionRef, agentId, simSlot, body);
     offlineAutoMatch = offlineResult.order;
     offlineAutoMatchFailureReason = offlineResult.reason;
   }
@@ -756,6 +756,7 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
 type OrphanedSmsRow = {
   id: string;
   agent_id: string;
+  body: string | null;
   parsed_amount: number | null;
   parsed_phone: string | null;
   parsed_provider: string | null;
@@ -782,7 +783,7 @@ type OrphanedSmsRow = {
  */
 export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; stillUnmatched: number }> {
   const orphans = await query<OrphanedSmsRow>(
-    `SELECT id, agent_id, parsed_amount, parsed_phone, parsed_provider, sim_slot, transaction_ref, received_at FROM sms_logs
+    `SELECT id, agent_id, body, parsed_amount, parsed_phone, parsed_provider, sim_slot, transaction_ref, received_at FROM sms_logs
      WHERE matched_order_id IS NULL AND matched_exchange_order_id IS NULL AND matched_reseller_deposit_id IS NULL
        AND matched_reseller_withdrawal_id IS NULL
        AND received_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
@@ -856,14 +857,17 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
         sms.parsed_provider,
         sms.transaction_ref,
         sms.agent_id,
-        sms.sim_slot
+        sms.sim_slot,
+        sms.body
       );
       if (offlineAutoMatch) {
-        // Same atomic claim as the Store branch above — guards the same
-        // narrow race, and also covers matchOrCreateOfflineAutoOrder's own
-        // documented risk of creating an order this claim then loses (left
-        // as a harmless orphaned 'pending' order, same as it already
-        // accepts on the live path).
+        // Same atomic claim as the Store branch above — guards this SMS
+        // row's own downstream side effects (payment_transactions, verify,
+        // dial) from running twice if two passes reach here for the same
+        // row. offlineAutoMatch.id itself can never be a duplicate order
+        // even under a true race: matchOrCreateOfflineAutoOrder's own
+        // orders.offline_auto_dedup_key uniqueness (069_offline_auto_order_
+        // dedup.sql) already resolved that at the database level.
         const claimedOffline = await query<{ id: string }>(
           `UPDATE sms_logs SET matched_order_id=$1, match_failure_reason=NULL WHERE id=$2 AND matched_order_id IS NULL RETURNING id`,
           [offlineAutoMatch.id, sms.id]
