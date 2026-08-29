@@ -39,6 +39,25 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v3
 
+      # Firebase Cloud Messaging config for this app's own applicationId
+      # (com.dalab.agent) -- see agent-app/app/build.gradle.kts's own comment
+      # on this file. Without it the build still succeeds (the
+      # google-services plugin is applied conditionally on the file's
+      # presence) but push notifications stay silently inert: FCM never
+      # initializes, so no device token is ever registered and
+      # sendPushToAgent() has nothing to deliver to. Same optional-secret
+      # pattern as the release keystore below -- decode only if configured,
+      # never fail the build over a missing secret.
+      - name: Decode google-services.json
+        env:
+          AGENT_GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.AGENT_GOOGLE_SERVICES_JSON_BASE64 }}
+        run: |
+          if [ -z "$AGENT_GOOGLE_SERVICES_JSON_BASE64" ]; then
+            echo "No AGENT_GOOGLE_SERVICES_JSON_BASE64 secret set — building with push notifications inert."
+            exit 0
+          fi
+          echo "$AGENT_GOOGLE_SERVICES_JSON_BASE64" | base64 -d > app/google-services.json
+
       - name: Run unit tests
         run: gradle testDebugUnitTest --no-daemon
 

@@ -219,6 +219,34 @@ async function notifyAssignedAgent(actor: SupportActor, conversationId: string):
   });
 }
 
+/**
+ * The push notifyAssignedAgent above does NOT cover: a customer sending a
+ * FOLLOW-UP message into a conversation that's already 'assigned' (the
+ * agent doesn't tap or re-claim anything for that — nothing in the
+ * assignment routes runs again, so no push fired). An agent who has since
+ * navigated away from the Support screen, backgrounded the app, or is
+ * mid-USSD-dial on a payment order had no way to know a reply was waiting.
+ * Called from the customer-facing POST .../messages route, right after the
+ * message is durably inserted — same best-effort/never-throws contract as
+ * notifyAssignedAgent (a push delivery failure must never fail the
+ * customer's message send), same channel/deep-link payload shape so
+ * AgentFcmService.kt's existing tap-to-open handling needs no changes.
+ * Gated on status==='assigned' (nothing to notify while still
+ * queued/pending — see the /messages route's own OPEN_STATUSES guard,
+ * which already rejects a message into a closed conversation) and
+ * role==='agent' for the same reason notifyAssignedAgent only pushes to
+ * the native Agent App, never Admin Dashboard staff.
+ */
+export async function notifyAgentOfNewMessage(conversation: { status: string; agent_id: string | null; agent_role: string | null }, conversationId: string): Promise<void> {
+  if (conversation.status !== "assigned" || conversation.agent_role !== "agent" || !conversation.agent_id) return;
+  await sendPushToAgent(conversation.agent_id, {
+    title: "New Customer Message",
+    body: "Customer sent you a new message in Agent Support.",
+    channelId: "support_requests",
+    data: { screen: "support_conversation", conversationId },
+  });
+}
+
 // ---------------- Customer-facing ----------------
 
 // Idempotent by design: a customer can only ever have one open (queued /
@@ -338,6 +366,7 @@ supportRouter.post(
     await query(`UPDATE support_conversations SET updated_at=now() WHERE id=$1`, [req.params.id]);
 
     broadcast({ type: "support_conversation.updated", conversationId: req.params.id });
+    await notifyAgentOfNewMessage(conversation, req.params.id);
     sendJson(res, 201, await serializeConversation(conversation, { includeMessages: true }));
   }
 );
