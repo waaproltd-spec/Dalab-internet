@@ -72,12 +72,19 @@ function buildHormuudEvcPlusFallbackRef(
   body: string | null | undefined
 ): string | null {
   if (parsedProvider !== "Hormuud" || !body) return null;
+  // parsedAmount is typed as a real number, and always genuinely is one on
+  // the live upload path -- but resweepUnmatchedSmsLogs reads it back from
+  // sms_logs.parsed_amount (a NUMERIC column), which node-postgres returns
+  // as a string, not a number, unless a custom type parser is registered.
+  // Coerce defensively rather than trust the caller's declared type.
+  const amount = Number(parsedAmount);
+  if (!Number.isFinite(amount)) return null;
   const match = HORMUUD_TAR_DATETIME_PATTERN.exec(body);
   if (!match) return null;
   const [, date, time] = match;
   const phone = normalizePhone(parsedPhone);
   if (!phone) return null;
-  return `SYN-HORMUUD-${phone}-${parsedAmount.toFixed(2)}-${date}-${time}`;
+  return `SYN-HORMUUD-${phone}-${amount.toFixed(2)}-${date}-${time}`;
 }
 
 // Mirrors orders.routes.ts's own MACAASH_POINTS_PER_DOLLAR — kept as a

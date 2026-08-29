@@ -21,7 +21,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { query, queryOne, pool } from "../../db/pool.js";
-import { ingestPaymentSms } from "../smsLogs.routes.js";
+import { ingestPaymentSms, resweepUnmatchedSmsLogs } from "../smsLogs.routes.js";
 
 const AGENT_ID = randomUUID();
 const COMPANY_ID = "test-hormuud-fallback-company";
@@ -286,4 +286,48 @@ test("a real transaction reference still takes priority over the fallback and be
     result.body.matchedOrderId,
   ]);
   assert.equal(order!.offline_auto_dedup_key, "TX-REAL-REF-001", "a real reference must be used as-is, never overridden by the synthetic fallback");
+});
+
+test("regression: resweepUnmatchedSmsLogs relinks an orphaned Hormuud SMS whose parsed_amount round-tripped through Postgres as a string", async () => {
+  // This is the exact production bug this test pins: node-postgres returns
+  // a NUMERIC column (sms_logs.parsed_amount) as a string, not a number,
+  // unless a custom type parser is registered -- buildHormuudEvcPlusFallbackRef
+  // called parsedAmount.toFixed(2) directly, which works when
+  // ingestPaymentSms is called with a real JS number literal (the live
+  // upload path, and every other test in this file), but throws
+  // "parsedAmount.toFixed is not a function" the instant resweep reads a
+  // real orphaned row back from the database and passes sms.parsed_amount
+  // straight through. This must go through a genuine direct INSERT + real
+  // SELECT round-trip, not ingestPaymentSms with a literal, to actually
+  // exercise the string-typed value that broke in production.
+  const customerId = await makeCustomer("252611119009");
+
+  const smsId = randomUUID();
+  await query(
+    `INSERT INTO sms_logs (id, agent_id, sender, body, parsed_provider, parsed_amount, parsed_phone, received_at, match_failure_reason)
+     VALUES ($1,$2,'192',$3,'Hormuud',0.09,'611119009', now(), 'requires a transaction reference to safely dedupe — SMS had none')`,
+    [smsId, AGENT_ID, hormuudBody("0.09", "29/08/26", "20:00:00")]
+  );
+
+  // The profile is saved AFTER the SMS was logged -- same race
+  // offlineAutoOrderResweep.test.ts covers, now combined with the Hormuud
+  // fallback needing to run against data read back from Postgres.
+  await saveOfflineProfile(customerId, "611119009", "612229009", COMPANY_ID, packageId);
+
+  // Not asserting on stillUnmatched here: resweepUnmatchedSmsLogs scans
+  // every orphaned row database-wide, including the ones the malformed-
+  // timestamp tests above deliberately leave unmatched -- relinked is the
+  // only count that isolates this test's own row.
+  const { relinked } = await resweepUnmatchedSmsLogs();
+  assert.equal(relinked, 1, "the fallback must succeed even when parsedAmount arrives as a string from the database");
+
+  const smsLog = await queryOne<{ matched_order_id: string | null }>(`SELECT matched_order_id FROM sms_logs WHERE id=$1`, [smsId]);
+  assert.ok(smsLog!.matched_order_id);
+
+  const order = await queryOne<{ offline_auto_dedup_key: string | null; amount: string }>(
+    `SELECT offline_auto_dedup_key, amount FROM orders WHERE id=$1`,
+    [smsLog!.matched_order_id]
+  );
+  assert.ok(order!.offline_auto_dedup_key?.startsWith("SYN-HORMUUD-"));
+  assert.equal(Number(order!.amount), 0.09);
 });
