@@ -2,7 +2,7 @@ workflows:
   agent-app-android:
     name: Agent App (Android)
     max_build_duration: 60
-    instance_type: linux_x2
+    instance_type: linux
     working_directory: agent-app
     environment:
       java: 17
