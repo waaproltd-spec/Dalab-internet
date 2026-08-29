@@ -1,34 +1,26 @@
 package com.dalab.internet.customer.ui
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Call
-import androidx.compose.material.icons.filled.Schedule
-import androidx.compose.material.icons.filled.SimCard
-import androidx.compose.material.icons.filled.Sms
-import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.dalab.internet.customer.data.Company
 import com.dalab.internet.customer.data.PackageItem
-import com.dalab.internet.customer.data.companyLogoRes
 import com.dalab.internet.customer.network.ApiClient
 import com.dalab.internet.customer.network.RealtimeClient
+import com.dalab.internet.customer.prefs.LocalizationManager
 import kotlinx.coroutines.launch
 
 /**
@@ -103,10 +95,9 @@ fun CompanyPackagesScreen(
                     )
                 }
             } else {
-                val logoRes = remember(company.id) { companyLogoRes(company.id) }
                 LazyColumn(modifier = Modifier.weight(1f).padding(vertical = 4.dp)) {
                     items(packages, key = { it.id }) { pkg ->
-                        PackageCard(pkg = pkg, brandColor = brandColor, logoRes = logoRes, enabled = !offline, onBuy = { onBuy(pkg) })
+                        PackageCard(pkg = pkg, brandColor = brandColor, enabled = !offline, onBuy = { onBuy(pkg) })
                     }
                 }
             }
@@ -115,80 +106,72 @@ fun CompanyPackagesScreen(
 }
 
 @Composable
-private fun PackageCard(pkg: PackageItem, brandColor: Color, logoRes: Int?, enabled: Boolean, onBuy: () -> Unit) {
+private fun PackageCard(pkg: PackageItem, brandColor: Color, enabled: Boolean, onBuy: () -> Unit) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 6.dp)
-            .clickable(enabled = enabled, onClick = onBuy),
+            .padding(horizontal = 16.dp, vertical = 6.dp),
         shape = RoundedCornerShape(16.dp),
     ) {
-        Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
-            Box(
-                modifier = Modifier
-                    .width(92.dp)
-                    .fillMaxHeight()
-                    .background(if (enabled) brandColor else Color.LightGray),
-                contentAlignment = Alignment.Center,
-            ) {
-                if (logoRes != null) {
-                    Box(
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                if (pkg.oldPrice != null && pkg.oldPrice > pkg.price) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
-                            .size(52.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color.White),
-                        contentAlignment = Alignment.Center,
+                            .clip(RoundedCornerShape(50))
+                            .background((if (enabled) brandColor else Color.LightGray).copy(alpha = 0.12f))
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
                     ) {
-                        Image(
-                            painter = painterResource(id = logoRes),
-                            contentDescription = null,
-                            modifier = Modifier.size(44.dp).clip(RoundedCornerShape(8.dp)),
+                        Text(
+                            "$${"%.2f".format(pkg.oldPrice)}",
+                            style = MaterialTheme.typography.labelMedium,
+                            textDecoration = TextDecoration.LineThrough,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "$${"%.2f".format(pkg.price)}",
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF16A34A),
                         )
                     }
                 } else {
-                    Icon(
-                        Icons.Filled.SimCard,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(40.dp),
-                    )
-                }
-            }
-            Column(modifier = Modifier.weight(1f).padding(16.dp)) {
-                Text(pkg.name, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(4.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (pkg.oldPrice != null && pkg.oldPrice > pkg.price) {
-                        Text(
-                            "$${"%.2f".format(pkg.oldPrice)}",
-                            style = MaterialTheme.typography.bodyMedium,
-                            textDecoration = TextDecoration.LineThrough,
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                        Spacer(Modifier.width(6.dp))
-                    }
                     Text(
                         "$${"%.2f".format(pkg.price)}",
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFF16A34A),
                     )
                 }
-                val details = buildList {
-                    if (pkg.mb > 0) add(Icons.Filled.Wifi to "${pkg.mb} MB")
-                    if (pkg.minutes > 0) add(Icons.Filled.Call to "${pkg.minutes} min")
-                    if (pkg.sms > 0) add(Icons.Filled.Sms to "${pkg.sms} SMS")
-                    pkg.validity?.takeIf { it.isNotBlank() }?.let { add(Icons.Filled.Schedule to it) }
+                Spacer(Modifier.height(8.dp))
+                Text(pkg.name, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge)
+                val subtitle = buildList {
+                    if (pkg.mb > 0) add("${pkg.mb} MB")
+                    if (pkg.minutes > 0) add("${pkg.minutes} min")
+                    if (pkg.sms > 0) add("${pkg.sms} SMS")
+                    pkg.validity?.takeIf { it.isNotBlank() }?.let { add(it) }
+                }.joinToString(" · ")
+                if (subtitle.isNotEmpty()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                if (details.isNotEmpty()) {
-                    Spacer(Modifier.height(6.dp))
-                    details.forEach { (icon, label) ->
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 1.dp)) {
-                            Icon(icon, contentDescription = null, tint = Color(0xFF16A34A), modifier = Modifier.size(15.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(label, style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
-                }
+            }
+            Spacer(Modifier.width(12.dp))
+            Button(
+                onClick = onBuy,
+                enabled = enabled,
+                shape = RoundedCornerShape(50),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
+                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp),
+            ) {
+                Text(
+                    LocalizationManager.tr("BUY NOW", "IIBSO"),
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.labelLarge,
+                )
             }
         }
     }
