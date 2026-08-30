@@ -11,7 +11,7 @@ import { recordActivity } from "../utils/activityLog.js";
 import { creditCommissionIfNeeded, reverseCommissionIfNeeded } from "../utils/commissions.js";
 import { creditReferralBonusIfNeeded, reverseReferralBonusIfNeeded } from "../utils/referrals.js";
 import { refundRedeemedPointsIfNeeded } from "../utils/loyaltyPoints.js";
-import { isAlreadyCompleted } from "../utils/paymentTransactions.js";
+import { isAlreadyCompleted, createPaymentTransaction } from "../utils/paymentTransactions.js";
 import { rateLimit } from "../auth/rateLimit.js";
 import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
 import { notifyCustomer } from "../services/customerNotify.js";
@@ -567,11 +567,42 @@ export async function verifyOrderAndGenerateUssd(
 }
 
 ordersRouter.post("/agent/orders/:id/verify-payment", requireAuth("agent"), async (req, res) => {
-  const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
+  const order = await queryOne<any>(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
   if (!order) return sendJson(res, 404, { error: "Order not found" });
 
   if (req.body.smsLogId) {
     await query(`UPDATE sms_logs SET matched_order_id=$1 WHERE id=$2`, [order.id, req.body.smsLogId]);
+  }
+
+  // Ensure this order has a payment_transactions ledger row BEFORE ever
+  // flipping it to in_progress. The automatic SMS-matched path
+  // (UssdOrchestrator.processMatchedOrder) always already has one by this
+  // point (created at SMS-ingest time — see smsLogs.routes.ts), so this is
+  // a no-op there. But the manual "Execute SIM" dial path
+  // (UssdOrchestrator.executeManually, used by OrdersListScreen/
+  // OrderDetailScreen) calls this same endpoint with no SMS match at all —
+  // without a ledger row, a network drop between this request succeeding
+  // here and its response reaching the app leaves the order verified and
+  // USSD-generated but permanently invisible to both the Agent App's own
+  // self-heal sweep (self-heal-candidates below requires an existing
+  // payment_transactions row) and the "Send to Agent" manual recovery
+  // endpoint (/admin/orders/:id/recover, same requirement) — a real stuck
+  // order with zero recovery path, confirmed in production. Guarded by an
+  // existence check (not unconditional) so this never creates a second row
+  // for an order that already has one; createPaymentTransaction's own
+  // idx_payment_tx_order_active conflict handling is still the final
+  // backstop against a concurrent double-insert race.
+  const hasPayment = await queryOne(`SELECT id FROM payment_transactions WHERE order_id=$1 LIMIT 1`, [order.id]);
+  if (!hasPayment) {
+    await createPaymentTransaction({
+      smsLogId: req.body.smsLogId ?? null,
+      orderId: order.id,
+      transactionRef: null,
+      customerPhone: order.sender_phone ?? null,
+      amount: order.amount ?? null,
+      paymentTimestamp: new Date().toISOString(),
+      status: "pending",
+    });
   }
 
   const result = await verifyOrderAndGenerateUssd(order, req.auth!.sub);
