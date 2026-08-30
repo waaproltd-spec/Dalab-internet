@@ -18,13 +18,6 @@ export const packagesRouter = Router();
 // dashboard/apps know whether to point an <img> at that route at all.
 const COMPANY_COLUMNS = `id, name, group_number, color_hex, logo_url, status, gateway, payment_number, payment_ussd_template, payout_ussd_template, provider_number, ussd_code, visible_customer_app, visible_agent_app, auto_process_enabled, slug, description, sort_order, fulfillment_method, (logo_data IS NOT NULL) AS has_logo, created_at, updated_at`;
 
-// provider_amount is the internal cost actually requested from the telecom
-// via USSD — it can differ from the customer-facing price (e.g. a
-// discounted sale), so it's excluded here the same way pin_encrypted is
-// excluded from COMPANY_COLUMNS: an implementation detail of the fulfilment
-// pipeline, not something the public Customer/Agent App package list needs.
-const PUBLIC_PACKAGE_COLUMNS = `id, company_id, category_id, name, old_price, price, mb, minutes, sms, validity, active, code, created_at`;
-
 // Also called by the Agent App (NewSaleScreen/PackagesScreen) for its own
 // unrelated "create a sale" flow, so the default (no ?audience=) stays
 // unfiltered beyond soft-delete — only an explicit ?audience=customer
@@ -56,8 +49,29 @@ companiesRouter.get("/companies/:id/logo", async (req, res) => {
 companiesRouter.get("/companies/:id/packages", async (req, res) => {
   const company = await queryOne(`SELECT id FROM companies WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
   if (!company) return sendJson(res, 200, []);
+  // provider_amount is excluded here (same as pin_encrypted from
+  // COMPANY_COLUMNS): an implementation detail of the fulfilment pipeline,
+  // not something the public Customer/Agent App package list needs.
+  //
+  // categoryId (packages.category_id) is the category's slug, not its
+  // display name (see the "free text with no DB-level FK" comment on the
+  // package-editing routes below) -- it's meant to be a stable grouping
+  // key, safe for an admin to rename the category's real name without
+  // touching every package. The Customer App previously had no way to
+  // reach that real name at all, so it fell back to title-casing the slug
+  // itself (e.g. "adsl-plu" -> "Adsl Plu", including a stale slug typo
+  // that already dropped a trailing "s"), out of step with whatever the
+  // Admin Dashboard's own Category name field says. LEFT JOIN (not INNER)
+  // so a package whose category_id doesn't match any current category slug
+  // still returns, with category_name simply null -- never dropped from
+  // the list over this.
   const rows = await query(
-    `SELECT ${PUBLIC_PACKAGE_COLUMNS} FROM packages WHERE company_id=$1 AND active=true ORDER BY category_id, price`,
+    `SELECT p.id, p.company_id, p.category_id, p.name, p.old_price, p.price, p.mb, p.minutes, p.sms, p.validity, p.active, p.code, p.created_at,
+            sc.name AS category_name
+     FROM packages p
+     LEFT JOIN service_categories sc ON sc.company_id = p.company_id AND sc.slug = p.category_id
+     WHERE p.company_id=$1 AND p.active=true
+     ORDER BY p.category_id, p.price`,
     [req.params.id]
   );
   sendJson(res, 200, rows);
