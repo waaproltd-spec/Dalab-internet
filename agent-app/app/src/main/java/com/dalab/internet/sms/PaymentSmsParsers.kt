@@ -228,9 +228,45 @@ object HormuudEVoucherParser : VoucherSentParser {
     }
 }
 
+/**
+ * Hormuud E-Voucher's THIRD confirmation wording, from the same sender 740
+ * as [HormuudEVoucherParser] (English "transferred...to...") and
+ * [HormuudEVoucherPayoutSentParser] (Somali "ayaad uwareejisay NAME(PHONE)"
+ * — a transfer to a named person, for Money Exchange/Reseller payouts).
+ * This one has no name at all, just the phone directly after "ugu shubtay"
+ * ("topped up onto") — the shape of a plain Internet Store top-up, not a
+ * person-to-person transfer. Confirmed live, went completely unrecognized
+ * (sms_receiver_unrecognized, parsed_provider/parsed_amount/parsed_phone
+ * all null) for a real in_progress Store order despite the direct USSD
+ * dial response already reporting SUCCESS for that same order — this
+ * parser is what lets the corroboration safety net catch it next time the
+ * direct response is ambiguous/failed instead, exactly the DEX254812266
+ * class of bug HormuudEvcPlusPayoutSentParser's own doc comment describes:
+ * "[-E-Voucher-] Waxaad $0.1 ugu shubtay 252619991299, Haraagaagu waa
+ *  $0.51.\nLa soo deg App-ka WAAFI http://onelink.to/waafi"
+ */
+object HormuudEVoucherSomaliParser : VoucherSentParser {
+    override val senders: List<String>
+        get() = SmsSenderIdRepository.sendersFor("hormuud_e_voucher", listOf("740"))
+
+    private val pattern = Regex(
+        """\$$AMOUNT_PATTERN\s*ugu\s+shubtay\s+(\d{6,15})""",
+        RegexOption.IGNORE_CASE
+    )
+
+    override fun tryParse(sender: String, body: String): VoucherSentEntry? {
+        if (senders.none { it.equals(sender.trim(), ignoreCase = true) }) return null
+        if (!body.contains("ugu shubtay", ignoreCase = true)) return null
+        val match = pattern.find(body) ?: return null
+        val (amount, phone) = match.destructured
+        val parsedAmount = parseAmount(amount) ?: return null
+        return VoucherSentEntry(receiverPhone = phone, amount = parsedAmount, provider = "Hormuud")
+    }
+}
+
 /** Registry for outgoing voucher-sent confirmations — mirrors [PaymentSmsParsers]. */
 object VoucherSentParsers {
-    val ALL: List<VoucherSentParser> = listOf(HormuudEVoucherParser)
+    val ALL: List<VoucherSentParser> = listOf(HormuudEVoucherParser, HormuudEVoucherSomaliParser)
 
     fun parse(sender: String, body: String): VoucherSentEntry? {
         for (parser in ALL) {
