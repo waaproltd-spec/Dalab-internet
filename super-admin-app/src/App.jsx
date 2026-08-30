@@ -1949,6 +1949,7 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
   const [categories, setCategories] = useState([]);
   const [templates, setTemplates] = useState([]);
   const [companyFilter, setCompanyFilter] = useState("all");
+  const [search, setSearch] = useState("");
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({});
   const [error, setError] = useState("");
@@ -1980,11 +1981,33 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
     DalabAdminApi.getUssdTemplates(form.companyId).then(setTemplates).catch(() => setTemplates([]));
   }, [editing, form.companyId]);
 
-  const shown = DALAB_API_ENABLED
+  const companyFiltered = DALAB_API_ENABLED
     ? livePackages
     : companyFilter === "all"
       ? packages
       : packages.filter((p) => p.company === companies.find((c) => c.id === companyFilter)?.name);
+
+  // Client-side only -- companyFiltered is already fully loaded in memory
+  // (live-fetched or mock), so this filters instantly as the Admin types
+  // with zero extra API calls, and stacks on top of the company pills
+  // above rather than replacing them. Matches package name, the company/
+  // operator name (resolved the same way the table's own Company column
+  // already does, so a mock-mode package's companyId-only shape still
+  // matches), and price (both current and old/struck-through price, as
+  // plain text so "22.85" or "0.09" match without needing an exact
+  // $-prefixed or 2-decimal string).
+  const searchTerm = search.trim().toLowerCase();
+  const shown = searchTerm
+    ? companyFiltered.filter((p) => {
+        const companyName = (p.company || companies.find((c) => c.id === p.companyId)?.name || "").toLowerCase();
+        const priceText = `${p.price ?? ""} ${p.oldPrice ?? p.old ?? ""}`.toLowerCase();
+        return (
+          (p.name || "").toLowerCase().includes(searchTerm) ||
+          companyName.includes(searchTerm) ||
+          priceText.includes(searchTerm)
+        );
+      })
+    : companyFiltered;
 
   const openNew = () => {
     const companyId = companyFilter !== "all" ? companyFilter : companies[0]?.id || "";
@@ -2080,6 +2103,16 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
             border: `1px solid ${companyFilter === c.id ? INDIGO : BORDER}`, background: companyFilter === c.id ? INDIGO : "#fff", color: companyFilter === c.id ? "#fff" : SLATE,
           }}>{c.name}</button>
         ))}
+      </div>
+
+      <div style={{ position: "relative", maxWidth: 320, marginBottom: 12 }}>
+        <Search size={14} color={MUTE} style={{ position: "absolute", left: 10, top: 10 }} />
+        <input
+          style={{ ...inputStyle, paddingLeft: 30, width: "100%" }}
+          placeholder="Search by package name, company, or price"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
       </div>
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
