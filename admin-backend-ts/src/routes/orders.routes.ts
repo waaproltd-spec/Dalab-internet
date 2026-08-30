@@ -969,6 +969,26 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
       [req.params.id]
     );
     if (result.length > 0) {
+      // Same ledger-row requirement as /agent/orders/:id/verify-payment
+      // (see that route's own comment for the full production incident this
+      // guards against): this admin "Start Processing" action is a second,
+      // independent way an order reaches in_progress+USSD-generated with no
+      // prior SMS match -- without a payment_transactions row here too, the
+      // order would be just as invisible to the Agent App's self-heal sweep
+      // and to "Send to Agent" manual recovery as the bug this mirrors.
+      const hasPayment = await queryOne(`SELECT id FROM payment_transactions WHERE order_id=$1 LIMIT 1`, [order.id]);
+      if (!hasPayment) {
+        await createPaymentTransaction({
+          smsLogId: null,
+          orderId: order.id,
+          transactionRef: null,
+          customerPhone: order.sender_phone ?? null,
+          amount: order.amount ?? null,
+          paymentTimestamp: new Date().toISOString(),
+          status: "pending",
+        });
+      }
+
       const genResult = await generateUssdForOrder(order, req.auth!.sub);
       await query(`UPDATE orders SET ussd_generation_failed_reason=$1 WHERE id=$2`, [genResult.error ?? null, req.params.id]);
       if (genResult.error) {

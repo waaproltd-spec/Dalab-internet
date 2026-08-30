@@ -35,7 +35,7 @@ import type { AddressInfo } from "node:net";
 import express from "express";
 import "express-async-errors";
 import { query, queryOne, pool } from "../../db/pool.js";
-import { signAccessToken } from "../../auth/crypto.js";
+import { signAccessToken, encrypt } from "../../auth/crypto.js";
 import { ordersRouter } from "../orders.routes.js";
 
 const COMPANY_ID = "test-verify-ledger-co";
@@ -83,6 +83,22 @@ function recover(orderId: string) {
   });
 }
 
+function startProcessing(orderId: string) {
+  return fetch(`${baseUrl}/admin/orders/${orderId}/status`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+    body: JSON.stringify({ status: "in_progress" }),
+  });
+}
+
+async function selfHealCandidateIds(): Promise<string[]> {
+  const res = await fetch(`${baseUrl}/agent/orders/self-heal-candidates`, {
+    headers: { Authorization: `Bearer ${agentToken}` },
+  });
+  const body: any = await res.json();
+  return body.map((o: any) => o.id);
+}
+
 async function paymentTxRowsFor(orderId: string) {
   return query<{ id: string; status: string; sms_log_id: string | null }>(
     `SELECT id, status, sms_log_id FROM payment_transactions WHERE order_id=$1`,
@@ -94,6 +110,7 @@ before(async () => {
   await query(`DELETE FROM payment_transactions WHERE order_id LIKE 'TEST%'`);
   await query(`DELETE FROM orders WHERE company_id=$1`, [COMPANY_ID]);
   await query(`DELETE FROM packages WHERE company_id=$1`, [COMPANY_ID]);
+  await query(`DELETE FROM ussd_templates WHERE company_id=$1`, [COMPANY_ID]);
   await query(`DELETE FROM service_categories WHERE id=$1`, [CATEGORY_ID]);
   await query(`DELETE FROM companies WHERE id=$1`, [COMPANY_ID]);
   await query(`DELETE FROM customers WHERE id=$1 OR phone=$2`, [CUSTOMER_ID, "252619999129"]);
@@ -101,12 +118,21 @@ before(async () => {
   await query(`DELETE FROM agent_devices WHERE id=$1`, [DEVICE_ID]);
   await query(`DELETE FROM admin_users WHERE id=$1 OR email=$2`, [ADMIN_ID, "verify-ledger-test-admin@example.com"]);
 
-  await query(`INSERT INTO companies (id, name, group_number, color_hex) VALUES ($1,'Test Verify Ledger Co',1,'#000000')`, [COMPANY_ID]);
+  await query(`INSERT INTO companies (id, name, group_number, color_hex, pin_encrypted) VALUES ($1,'Test Verify Ledger Co',1,'#000000',$2)`, [
+    COMPANY_ID,
+    encrypt("8233"),
+  ]);
   await query(`INSERT INTO service_categories (id, company_id, slug, name) VALUES ($1,$2,'data','Data')`, [CATEGORY_ID, COMPANY_ID]);
+  const templateId = (
+    await queryOne<{ id: string }>(
+      `INSERT INTO ussd_templates (id, company_id, service_name, ussd_code, status) VALUES (gen_random_uuid(),$1,'Test Package','*727*{number}*{amount}*{pin}#','enabled') RETURNING id`,
+      [COMPANY_ID]
+    )
+  )!.id;
   packageId = (
     await queryOne<{ id: string }>(
-      `INSERT INTO packages (id, company_id, category_id, name, price) VALUES (gen_random_uuid(),$1,$2,'Test Package',22.85) RETURNING id`,
-      [COMPANY_ID, CATEGORY_ID]
+      `INSERT INTO packages (id, company_id, category_id, name, price, ussd_template_id) VALUES (gen_random_uuid(),$1,$2,'Test Package',22.85,$3) RETURNING id`,
+      [COMPANY_ID, CATEGORY_ID, templateId]
     )
   )!.id;
   await query(`INSERT INTO customers (id, phone) VALUES ($1,'252619999129')`, [CUSTOMER_ID]);
@@ -140,6 +166,7 @@ after(async () => {
   await query(`DELETE FROM sms_logs WHERE sender='192' AND body='Test SMS body'`);
   await query(`DELETE FROM orders WHERE company_id=$1`, [COMPANY_ID]);
   await query(`DELETE FROM packages WHERE company_id=$1`, [COMPANY_ID]);
+  await query(`DELETE FROM ussd_templates WHERE company_id=$1`, [COMPANY_ID]);
   await query(`DELETE FROM service_categories WHERE id=$1`, [CATEGORY_ID]);
   await query(`DELETE FROM companies WHERE id=$1`, [COMPANY_ID]);
   await query(`DELETE FROM customers WHERE id=$1 OR phone=$2`, [CUSTOMER_ID, "252619999129"]);
@@ -223,4 +250,59 @@ test("concurrent verify-payment calls for the same order never create more than 
 
   const rows = await paymentTxRowsFor(orderId);
   assert.equal(rows.length, 1, `expected exactly one ledger row after a concurrent race, got ${rows.length}`);
+});
+
+// Regression coverage for a second, independent entry point into the exact
+// same gap: the admin dashboard's "Start Processing" button
+// (PUT /admin/orders/:id/status {status:"in_progress"}) flips a pending
+// order straight to in_progress and generates a real USSD string, with no
+// SMS match involved at all -- the same shape of bug as verify-payment
+// above, just reached from the Admin Dashboard instead of the Agent App.
+// Confirmed in production: an admin testing with a real insufficient-
+// balance SIM used "Start Processing" on a pending test order, and it sat
+// generated-but-never-dialed because the Agent App's self-heal sweep had
+// nothing to find (no payment_transactions row) despite the order itself
+// looking fully ready to go.
+test("admin 'Start Processing' creates a pending ledger row before generating the USSD string", async () => {
+  const orderId = await insertPendingOrder();
+  assert.deepEqual(await paymentTxRowsFor(orderId), []);
+
+  const res = await startProcessing(orderId);
+  assert.equal(res.status, 200);
+
+  const order = await queryOne<{ status: string }>(`SELECT status FROM orders WHERE id=$1`, [orderId]);
+  assert.equal(order?.status, "in_progress");
+
+  const rows = await paymentTxRowsFor(orderId);
+  assert.equal(rows.length, 1, "expected exactly one payment_transactions row to be created");
+  assert.equal(rows[0].status, "pending");
+});
+
+test("after 'Start Processing', the order is a real self-heal candidate the Agent App will actually pick up and dial", async () => {
+  const orderId = await insertPendingOrder();
+
+  const res = await startProcessing(orderId);
+  assert.equal(res.status, 200);
+
+  // This is the concrete, end-to-end proof the fix closes the real gap: not
+  // just "a ledger row exists somewhere", but that the exact endpoint the
+  // Agent App polls (GET /agent/orders/self-heal-candidates, ussd.routes.ts)
+  // now genuinely returns this order for a real device to dial.
+  const candidateIds = await selfHealCandidateIds();
+  assert.ok(candidateIds.includes(orderId), `expected ${orderId} to be a self-heal candidate, got ${JSON.stringify(candidateIds)}`);
+});
+
+test("'Start Processing' never creates a duplicate ledger row for an order that already has one", async () => {
+  const orderId = await insertPendingOrder();
+  await query(
+    `INSERT INTO payment_transactions (id, order_id, customer_phone, amount, payment_timestamp, status)
+     VALUES (gen_random_uuid(),$1,'252619999129',22.85,now(),'pending')`,
+    [orderId]
+  );
+
+  const res = await startProcessing(orderId);
+  assert.equal(res.status, 200);
+
+  const rows = await paymentTxRowsFor(orderId);
+  assert.equal(rows.length, 1, "Start Processing must not create a second ledger row for an order that already has one");
 });
