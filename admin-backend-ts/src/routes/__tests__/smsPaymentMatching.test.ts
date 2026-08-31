@@ -122,10 +122,6 @@ async function insertOrder(params: {
   return id;
 }
 
-async function asJson(res: Response): Promise<any> {
-  return res.json();
-}
-
 // ==================== Provider 1: Hormuud EVC Plus (sender 192) ====================
 
 test("EVC Plus (Hormuud, sender 192): real SMS matches the correct order and completes the full pending -> in_progress -> completed pipeline", async () => {
