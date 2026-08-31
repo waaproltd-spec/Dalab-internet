@@ -13,6 +13,7 @@ import { companyPaymentMethodsRouter } from "./routes/companyPaymentMethods.rout
 import { categoriesRouter } from "./routes/categories.routes.js";
 import { ordersRouter } from "./routes/orders.routes.js";
 import { customersRouter } from "./routes/customers.routes.js";
+import { offlineAdminRouter } from "./routes/offlineAdmin.routes.js";
 import { agentsRouter } from "./routes/agents.routes.js";
 import { smsLogsRouter } from "./routes/smsLogs.routes.js";
 import { reportsRouter } from "./routes/reports.routes.js";
@@ -261,6 +262,7 @@ app.use(packagesRouter);
 app.use(categoriesRouter);
 app.use(ordersRouter);
 app.use(customersRouter);
+app.use(offlineAdminRouter);
 app.use(agentsRouter);
 app.use(smsLogsRouter);
 app.use(reportsRouter);

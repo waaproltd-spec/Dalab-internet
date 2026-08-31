@@ -278,6 +278,21 @@ const DalabAdminApi = {
     return dalabAdminApiRequest(`/admin/execution-logs${qs ? `?${qs}` : ""}`);
   },
   getOrderDeliveryStatus: (orderId) => dalabAdminApiRequest(`/admin/orders/${orderId}/delivery-status`),
+  // Admin > Offline (Rukumo) — read-only projections over the exact same
+  // orders/payment_transactions/ussd_dial_attempts/sim_routing/agent_devices
+  // rows Online already uses, scoped to channel='offline_auto'. See
+  // offlineAdmin.routes.ts.
+  getOfflineCustomers: (search) => dalabAdminApiRequest(`/admin/offline/customers${search ? `?search=${encodeURIComponent(search)}` : ""}`),
+  getOfflineOrders: (filters = {}) => {
+    const qs = new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([, v]) => v))).toString();
+    return dalabAdminApiRequest(`/admin/offline/orders${qs ? `?${qs}` : ""}`);
+  },
+  getOfflineOrderDetail: (id) => dalabAdminApiRequest(`/admin/offline/orders/${id}`),
+  getOfflinePaymentTransactions: (filters = {}) => {
+    const qs = new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([, v]) => v))).toString();
+    return dalabAdminApiRequest(`/admin/offline/payment-transactions${qs ? `?${qs}` : ""}`);
+  },
+  getOfflineStats: (companyId) => dalabAdminApiRequest(`/admin/offline/stats${companyId ? `?companyId=${companyId}` : ""}`),
   // Roles & Permissions (Super Admin only, enforced server-side too)
   getAdminUsers: () => dalabAdminApiRequest("/admin/users"),
   createAdminUser: (body) => dalabAdminApiRequest("/admin/users", { method: "POST", body }),
@@ -748,6 +763,7 @@ const NAV = [
   { id: "packages", label: "Packages & Pricing", icon: Package },
   { id: "categories", label: "Categories", icon: Tags },
   { id: "orders", label: "Orders", icon: ShoppingCart },
+  { id: "offline", label: "Offline (Rukumo)", icon: WifiOff },
   { id: "customers", label: "Customers", icon: Users },
   { id: "agents", label: "Agents", icon: UserCog },
   { id: "notifications", label: "Notifications", icon: Bell },
@@ -5883,6 +5899,609 @@ function explainFailure(message) {
   if (!message) return null;
   const hit = USSD_FAILURE_EXPLANATIONS.find((e) => e.match.test(message));
   return hit ? hit.text : null;
+}
+
+// ==================== Admin > Offline (Rukumo) ====================
+// One place to see everything about Offline Auto-Order customers, orders,
+// payments, and USSD execution — reusing the exact same orders/
+// payment_transactions/ussd_dial_attempts/sim_routing/agent_devices data
+// Online already uses (offlineAdmin.routes.ts), scoped to
+// channel === "offline_auto" (confirmed by reading offlineAutoOrder.ts
+// before writing any of this).
+const OFFLINE_STATUS_META = {
+  PENDING_PAYMENT: { label: "Pending Payment", tone: "gray" },
+  PAYMENT_VERIFIED: { label: "Payment Verified", tone: "blue" },
+  WAITING_FOR_AGENT: { label: "Waiting for Agent", tone: "amber" },
+  WAITING_FOR_USSD: { label: "Waiting for USSD", tone: "amber" },
+  USSD_PROCESSING: { label: "USSD Processing", tone: "blue" },
+  SUCCESS: { label: "Success", tone: "green" },
+  FAILED: { label: "Failed", tone: "red" },
+  RETRY: { label: "Retry", tone: "amber" },
+  CANCELLED: { label: "Cancelled", tone: "gray" },
+  DUPLICATE: { label: "Duplicate", tone: "red" },
+  SYNC_PENDING: { label: "Sync Pending", tone: "gray" },
+  SYNCED: { label: "Synced", tone: "green" },
+};
+const OFFLINE_STATUS_FILTERS = [
+  "PENDING_PAYMENT", "PAYMENT_VERIFIED", "WAITING_FOR_AGENT", "WAITING_FOR_USSD", "USSD_PROCESSING",
+  "SUCCESS", "FAILED", "RETRY", "DUPLICATE", "SYNC_PENDING", "SYNCED",
+];
+// HH:MM only, Somalia-pinned — for the compact timeline column (the full
+// date is already shown right above it in the ORDER section's "Created" row).
+function offlineTimelineClock(value) {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", timeZone: SOMALIA_TIME_ZONE });
+}
+function OfflineStatusBadge({ status }) {
+  const meta = OFFLINE_STATUS_META[status] || { label: status || "—", tone: "neutral" };
+  return <Badge tone={meta.tone}>{meta.label}</Badge>;
+}
+
+function OfflinePanel({ companies }) {
+  const [tab, setTab] = useState("orders");
+  const [openOrderId, setOpenOrderId] = useState(null);
+  // Set by the Customers/Payment Transactions tabs to jump into Orders
+  // pre-filtered by a specific phone/order id — one panel, genuinely
+  // cross-linked, rather than three unrelated screens.
+  const [ordersSearchHandoff, setOrdersSearchHandoff] = useState(null);
+
+  const goToOrders = (search) => {
+    setOrdersSearchHandoff(search);
+    setTab("orders");
+  };
+
+  return (
+    <div>
+      <div style={{ marginBottom: 4 }}>
+        <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Offline (Rukumo)</div>
+        <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>
+          Customers who pay directly by USSD with no app/internet interaction — one place to see the customer, payment, order, agent, SIM, USSD execution, and result.
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 6, marginTop: 16, marginBottom: 16, borderBottom: `1px solid ${BORDER}` }}>
+        {[
+          { id: "orders", label: "Offline Orders" },
+          { id: "customers", label: "Offline Customers" },
+          { id: "transactions", label: "Payment Transactions" },
+        ].map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            style={{
+              padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", background: "none", border: "none",
+              color: tab === t.id ? INDIGO : MUTE,
+              borderBottom: tab === t.id ? `2px solid ${INDIGO}` : "2px solid transparent",
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "orders" && (
+        <OfflineOrdersTab
+          companies={companies}
+          initialSearch={ordersSearchHandoff}
+          onOpenOrder={setOpenOrderId}
+        />
+      )}
+      {tab === "customers" && <OfflineCustomersTab onViewOrders={goToOrders} />}
+      {tab === "transactions" && <OfflinePaymentTransactionsTab companies={companies} onViewOrder={setOpenOrderId} />}
+
+      {openOrderId && <OfflineOrderDetailDrawer orderId={openOrderId} onClose={() => setOpenOrderId(null)} />}
+    </div>
+  );
+}
+
+function OfflineOrdersTab({ companies, initialSearch, onOpenOrder }) {
+  const [rows, setRows] = useState([]);
+  const [stats, setStats] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [companyFilter, setCompanyFilter] = useState("all");
+  const [deviceFilter, setDeviceFilter] = useState("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [search, setSearch] = useState(initialSearch || "");
+  const [devices, setDevices] = useState([]);
+
+  // A handoff from another tab (e.g. "View Orders" for a specific
+  // customer) should immediately take effect even if this tab was already
+  // mounted with a different search in place.
+  useEffect(() => {
+    if (initialSearch) setSearch(initialSearch);
+  }, [initialSearch]);
+
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    DalabAdminApi.getAgentDevices().then(setDevices).catch(() => {});
+  }, []);
+
+  const fetchRows = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setLoading(true);
+    setError("");
+    try {
+      const [data, statsData] = await Promise.all([
+        DalabAdminApi.getOfflineOrders({
+          status: statusFilter === "all" ? undefined : statusFilter,
+          companyId: companyFilter === "all" ? undefined : companyFilter,
+          deviceId: deviceFilter === "all" ? undefined : deviceFilter,
+          dateFrom: dateFrom || undefined,
+          dateTo: dateTo || undefined,
+          search: search.trim() || undefined,
+        }),
+        DalabAdminApi.getOfflineStats(companyFilter === "all" ? undefined : companyFilter),
+      ]);
+      setRows(data);
+      setStats(statsData);
+    } catch (err) {
+      setError(err.message || "Could not load Offline orders.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { fetchRows(); }, [statusFilter, companyFilter, deviceFilter, dateFrom, dateTo]);
+  useEffect(() => {
+    const timer = setTimeout(fetchRows, 350);
+    return () => clearTimeout(timer);
+  }, [search]);
+  useEffect(() => {
+    const timer = setInterval(fetchRows, 10000);
+    return () => clearInterval(timer);
+  }, [statusFilter, companyFilter, deviceFilter, dateFrom, dateTo, search]);
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to view Offline orders.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        <StatusCountTile label="All" count={stats?.all ?? "—"} tone="neutral" active={statusFilter === "all"} onClick={() => setStatusFilter("all")} />
+        {["SUCCESS", "FAILED", "RETRY", "USSD_PROCESSING", "WAITING_FOR_AGENT", "DUPLICATE"].map((s) => (
+          <StatusCountTile
+            key={s}
+            label={OFFLINE_STATUS_META[s].label}
+            count={s === "DUPLICATE" ? (stats?.duplicate ?? "—") : (stats?.[s] ?? 0)}
+            tone={OFFLINE_STATUS_META[s].tone}
+            active={statusFilter === s}
+            onClick={() => setStatusFilter(s)}
+          />
+        ))}
+      </div>
+
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ position: "relative", flex: "1 1 240px", maxWidth: 300 }}>
+          <Search size={14} color={MUTE} style={{ position: "absolute", left: 10, top: 10 }} />
+          <input
+            style={{ ...inputStyle, paddingLeft: 30, width: "100%" }}
+            placeholder="Search order ID, customer name, or phone"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={{ ...inputStyle, width: 190 }}>
+          <option value="all">All statuses</option>
+          {OFFLINE_STATUS_FILTERS.map((s) => <option key={s} value={s}>{OFFLINE_STATUS_META[s].label}</option>)}
+        </select>
+        <select value={companyFilter} onChange={(e) => setCompanyFilter(e.target.value)} style={{ ...inputStyle, width: 170 }}>
+          <option value="all">All operators</option>
+          {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        <select value={deviceFilter} onChange={(e) => setDeviceFilter(e.target.value)} style={{ ...inputStyle, width: 160 }}>
+          <option value="all">All devices</option>
+          {devices.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+        </select>
+        <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} style={{ ...inputStyle, width: 150 }} title="From date" />
+        <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ ...inputStyle, width: 150 }} title="To date" />
+        <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={fetchRows} disabled={loading}>Refresh</Button>
+      </div>
+
+      {statusFilter === "SYNC_PENDING" && (
+        <div style={{ fontSize: 12, color: MUTE, marginBottom: 12, background: "#FAFBFF", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "8px 12px" }}>
+          Sync Pending describes a result still sitting on an Agent device's own local queue, not yet uploaded — the backend has no visibility into that by design, so this is always empty here. Check the device's own Diagnostics screen for anything queued locally.
+        </div>
+      )}
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              {["Order ID", "Customer", "Operator", "Package", "Amount", "Status", "Agent / Device", "SIM", "Dial Attempts", "Created", ""].map((h) => (
+                <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((o) => (
+              <tr key={o.id} style={{ borderTop: `1px solid ${BORDER}`, cursor: "pointer" }} onClick={() => onOpenOrder(o.id)}>
+                <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, color: INK }}>{o.id}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>
+                  {o.customerName || "—"}
+                  <div style={{ fontSize: 11, color: MUTE, fontFamily: "monospace" }}>{o.customerPhone}</div>
+                </td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{o.companyName}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE }}>{o.packageName}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>${Number(o.amount).toFixed(2)}</td>
+                <td style={{ padding: "10px 14px" }}>
+                  <OfflineStatusBadge status={o.offlineStatus} />
+                  {o.hasDuplicateAttempt && <span style={{ marginLeft: 6 }}><Badge tone="red">Duplicate seen</Badge></span>}
+                </td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE }}>
+                  {o.latestAttemptAgentName || o.orderAgentName || "—"}
+                  <div>{o.assignedDeviceName || "—"}</div>
+                </td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{o.simSlot ?? "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{o.dialAttemptCount}</td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(o.createdAt)}</td>
+                <td style={{ padding: "10px 14px" }}><ChevronRight size={15} color={MUTE} /></td>
+              </tr>
+            ))}
+            {rows.length === 0 && !loading && (
+              <tr><td colSpan={11} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No Offline orders match these filters.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
+function OfflineCustomersTab({ onViewOrders }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [search, setSearch] = useState("");
+
+  const fetchRows = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setLoading(true);
+    setError("");
+    try {
+      setRows(await DalabAdminApi.getOfflineCustomers(search.trim() || undefined));
+    } catch (err) {
+      setError(err.message || "Could not load Offline Profile customers.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
+    const timer = setTimeout(fetchRows, 350);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to view Offline Profile customers.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "center" }}>
+        <div style={{ position: "relative", flex: "1 1 280px", maxWidth: 340 }}>
+          <Search size={14} color={MUTE} style={{ position: "absolute", left: 10, top: 10 }} />
+          <input
+            style={{ ...inputStyle, paddingLeft: 30, width: "100%" }}
+            placeholder="Search customer number, name, or order ID"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={fetchRows} disabled={loading}>Refresh</Button>
+      </div>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              {["Customer", "Number", "Sender / Payment #", "Operator", "Package", "Payment Method", "Profile Since", "Orders", "Last Payment", "Status", ""].map((h) => (
+                <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((c) => (
+              <tr key={c.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontWeight: 600 }}>{c.name || "Not provided"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontFamily: "monospace" }}>{c.phone}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE, fontFamily: "monospace" }}>{c.offlineSenderNumber}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{c.companyName || "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE }}>{c.packageName || "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE }}>{c.paymentMethodLabel || "Any"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{c.offlineProfileUpdatedAt ? formatDateTime(c.offlineProfileUpdatedAt) : "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{c.orderCount ?? 0}</td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{c.lastPaymentAt ? formatDateTime(c.lastPaymentAt) : "Never"}</td>
+                <td style={{ padding: "10px 14px" }}>{c.lastStatus ? <OfflineStatusBadge status={{ completed: "SUCCESS", failed: "FAILED", in_progress: "USSD_PROCESSING", pending: "PAYMENT_VERIFIED", cancelled: "CANCELLED" }[c.lastStatus] || c.lastStatus} /> : <span style={{ fontSize: 12, color: MUTE }}>No orders yet</span>}</td>
+                <td style={{ padding: "10px 14px" }}>
+                  <button
+                    onClick={() => onViewOrders(c.phone)}
+                    style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "5px 10px", fontSize: 11.5, fontWeight: 700, color: INDIGO, cursor: "pointer" }}
+                  >
+                    View Orders
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {rows.length === 0 && !loading && (
+              <tr><td colSpan={11} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No Offline Profile customers match this search.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
+function OfflinePaymentTransactionsTab({ companies, onViewOrder }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [companyFilter, setCompanyFilter] = useState("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [search, setSearch] = useState("");
+
+  const fetchRows = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setLoading(true);
+    setError("");
+    try {
+      setRows(await DalabAdminApi.getOfflinePaymentTransactions({
+        companyId: companyFilter === "all" ? undefined : companyFilter,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
+        search: search.trim() || undefined,
+      }));
+    } catch (err) {
+      setError(err.message || "Could not load Offline payment transactions.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { fetchRows(); }, [companyFilter, dateFrom, dateTo]);
+  useEffect(() => {
+    const timer = setTimeout(fetchRows, 350);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to view Offline payment transactions.</div>;
+  }
+
+  const PT_STATUS_TONE = { pending: "amber", processing: "blue", completed: "green", failed: "red", duplicate_blocked: "red" };
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ position: "relative", flex: "1 1 240px", maxWidth: 300 }}>
+          <Search size={14} color={MUTE} style={{ position: "absolute", left: 10, top: 10 }} />
+          <input
+            style={{ ...inputStyle, paddingLeft: 30, width: "100%" }}
+            placeholder="Search transaction ref, phone, or order ID"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <select value={companyFilter} onChange={(e) => setCompanyFilter(e.target.value)} style={{ ...inputStyle, width: 170 }}>
+          <option value="all">All operators</option>
+          {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} style={{ ...inputStyle, width: 150 }} title="From date" />
+        <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ ...inputStyle, width: 150 }} title="To date" />
+        <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={fetchRows} disabled={loading}>Refresh</Button>
+      </div>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              {["Transaction Ref", "Customer #", "Amount", "Operator", "Payment Method", "SMS Received", "Status", "Matched Order", ""].map((h) => (
+                <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((t) => (
+              <tr key={t.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontSize: 12, color: INK, fontFamily: "monospace" }}>{t.transactionRef || "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontFamily: "monospace" }}>{t.customerPhone}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>${Number(t.amount ?? 0).toFixed(2)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{t.companyName}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE }}>{t.paymentMethod || "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{t.smsReceivedAt ? formatDateTime(t.smsReceivedAt) : "—"}</td>
+                <td style={{ padding: "10px 14px" }}><Badge tone={PT_STATUS_TONE[t.status] || "neutral"}>{t.status}</Badge></td>
+                <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, color: INK }}>{t.orderId || "—"}</td>
+                <td style={{ padding: "10px 14px" }}>
+                  {t.orderId && (
+                    <button
+                      onClick={() => onViewOrder(t.orderId)}
+                      style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "5px 10px", fontSize: 11.5, fontWeight: 700, color: INDIGO, cursor: "pointer" }}
+                    >
+                      View Order
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+            {rows.length === 0 && !loading && (
+              <tr><td colSpan={9} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No Offline payment transactions match these filters.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
+// One complete view: Customer, Payment, Order, Agent, SIM Routing, USSD,
+// Transaction, and a real timeline assembled from the actual timestamps
+// each piece already carries — never a separately-invented "timeline"
+// data source.
+function OfflineOrderDetailDrawer({ orderId, onClose }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setData(null);
+    setError("");
+    setLoading(true);
+    DalabAdminApi.getOfflineOrderDetail(orderId)
+      .then((d) => { if (!cancelled) setData(d); })
+      .catch((err) => { if (!cancelled) setError(err.message || "Could not load this Offline order."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [orderId]);
+
+  const row = (label, value, mono) => (
+    <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderTop: `1px solid ${BORDER}`, gap: 12 }}>
+      <span style={{ fontSize: 12.5, color: MUTE, flexShrink: 0 }}>{label}</span>
+      <span style={{ fontSize: 12.5, color: INK, fontWeight: 600, fontFamily: mono ? "monospace" : "inherit", textAlign: "right" }}>{value ?? "—"}</span>
+    </div>
+  );
+  const section = (label) => <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>{label}</div>;
+
+  // Assembled from real timestamps already returned above -- never a
+  // separate, invented "timeline" table. Only entries whose timestamp
+  // actually exists are shown, in order.
+  const timeline = useMemo(() => {
+    if (!data) return [];
+    const { order, paymentTransactions, dialAttempts } = data;
+    const sms = paymentTransactions.find((t) => t.smsReceivedAt);
+    const entries = [
+      sms?.smsReceivedAt && { at: sms.smsReceivedAt, label: "Payment SMS received" },
+      paymentTransactions[0]?.createdAt && { at: paymentTransactions[0].createdAt, label: "Payment verified" },
+      order.createdAt && { at: order.createdAt, label: "Offline order created" },
+      order.status !== "pending" && order.updatedAt && { at: order.updatedAt, label: "Agent verified — USSD generated" },
+      ...dialAttempts.map((a) => ({ at: a.createdAt, label: `USSD dial attempt #${a.attemptNumber} (${a.deviceName || "unknown device"}, SIM ${a.simSlot ?? "?"})` })),
+      ...dialAttempts.filter((a) => a.completedAt).map((a) => ({
+        at: a.completedAt,
+        label: `Response received — ${a.status.toUpperCase()}${a.responseMessage ? `: ${a.responseMessage}` : ""}`,
+      })),
+      order.completedAt && { at: order.completedAt, label: order.status === "completed" ? "SUCCESS" : "Final result" },
+    ].filter(Boolean);
+    return entries.sort((a, b) => new Date(a.at) - new Date(b.at));
+  }, [data]);
+
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: "fixed", inset: 0, background: "rgba(11,18,64,0.45)", display: "flex", justifyContent: "flex-end", zIndex: 60 }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{ width: 460, maxWidth: "100%", background: "#fff", height: "100%", overflowY: "auto", padding: 24 }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>OFFLINE ORDER (RUKUMO)</div>
+            <div style={{ fontSize: 17, fontWeight: 800, color: INK, marginTop: 2, fontFamily: "monospace" }}>{orderId}</div>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer" }}>
+            <X size={20} color={MUTE} />
+          </button>
+        </div>
+
+        {loading && <div style={{ padding: 20, fontSize: 12.5, color: MUTE }}>Loading…</div>}
+        {error && <div style={{ padding: 20, fontSize: 12.5, color: "#C81E2C" }}>{error}</div>}
+
+        {data && (
+          <>
+            {section("CUSTOMER")}
+            {row("Name", data.order.customerName || "Not provided")}
+            {row("Number", data.order.customerPhone, true)}
+            {row("Sender / payment #", data.order.senderPhone, true)}
+            {row("Receiver #", data.order.receiverPhone, true)}
+
+            {section("ORDER")}
+            {row("Operator", data.order.companyName)}
+            {row("Package", data.order.packageName)}
+            {row("Amount", `$${Number(data.order.amount).toFixed(2)}`)}
+            {row("Channel", "Offline Auto-Order (Rukumo)")}
+            {row("Order status", <OfflineStatusBadge status={
+              { completed: "SUCCESS", failed: "FAILED", cancelled: "CANCELLED", in_progress: "USSD_PROCESSING", pending: "PAYMENT_VERIFIED" }[data.order.status]
+            } />)}
+            {row("Created", formatDateTime(data.order.createdAt), true)}
+            {data.order.completedAt && row("Completed", formatDateTime(data.order.completedAt), true)}
+            {data.order.ussdGenerationFailedReason && (
+              <div style={{ fontSize: 12.5, color: "#C81E2C", fontWeight: 600, marginTop: 6 }}>
+                USSD generation failed: {data.order.ussdGenerationFailedReason}
+              </div>
+            )}
+
+            {section("PAYMENT TRANSACTIONS")}
+            {data.paymentTransactions.length === 0 && <div style={{ fontSize: 12, color: MUTE, marginTop: 6 }}>No payment transaction linked yet.</div>}
+            {data.paymentTransactions.map((t) => (
+              <div key={t.id} style={{ padding: "8px 10px", marginTop: 6, borderRadius: 8, border: `1px solid ${t.status === "duplicate_blocked" ? "#F4E3B0" : BORDER}`, background: t.status === "duplicate_blocked" ? "#FFFBEF" : "transparent" }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 11.5 }}>
+                  <Badge tone={{ pending: "amber", processing: "blue", completed: "green", failed: "red", duplicate_blocked: "red" }[t.status] || "neutral"}>{t.status}</Badge>
+                  <span style={{ color: MUTE, fontFamily: "monospace" }}>{t.transactionRef || "no ref"}</span>
+                  <span style={{ color: MUTE, marginLeft: "auto" }}>{formatDateTime(t.createdAt)}</span>
+                </div>
+                {t.smsSender && <div style={{ fontSize: 11, color: MUTE, marginTop: 3 }}>SMS from {t.smsSender} at {formatDateTime(t.smsReceivedAt)}</div>}
+              </div>
+            ))}
+
+            {section("SIM ROUTING (this operator)")}
+            {data.simRouting.length === 0 && <div style={{ fontSize: 12, color: MUTE, marginTop: 6 }}>No SIM routing configured for this operator.</div>}
+            {data.simRouting.map((r) => (
+              <div key={r.deviceId} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, color: INK, marginTop: 4 }}>
+                <Badge tone={r.deviceOnline ? "green" : "red"}>{r.deviceOnline ? "Online" : "Offline"}</Badge>
+                <span>{r.deviceName}</span>
+                <span style={{ color: MUTE }}>SIM {r.simSlot}</span>
+                <span style={{ color: MUTE, marginLeft: "auto" }}>priority {r.priority}</span>
+              </div>
+            ))}
+
+            {section("USSD TEMPLATE")}
+            {data.ussdLog?.templateServiceName ? (
+              <>
+                {row("Service", data.ussdLog.templateServiceName)}
+                <div style={{ padding: "6px 0", fontSize: 12, color: SLATE, fontFamily: "monospace", wordBreak: "break-all" }}>{data.ussdLog.templateUssdCode}</div>
+              </>
+            ) : (
+              <div style={{ fontSize: 12, color: MUTE, marginTop: 6 }}>{data.order.ussdGenerated ? "Template config not available (deleted since generation)." : "Not generated yet."}</div>
+            )}
+            {row("Exact generated request", data.order.ussdGenerated || "—", true)}
+
+            {section(`USSD DIAL ATTEMPTS (${data.dialAttempts.length})`)}
+            {data.dialAttempts.length === 0 && <div style={{ fontSize: 12, color: MUTE, marginTop: 6 }}>No dial attempts recorded yet.</div>}
+            {data.dialAttempts.map((a) => (
+              <div key={a.id} style={{ padding: "8px 10px", marginTop: 6, borderRadius: 8, border: `1px solid ${BORDER}`, fontSize: 11.5 }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <Badge tone={a.status === "success" ? "green" : a.status === "failed" ? "red" : "amber"}>{a.status}</Badge>
+                  <span style={{ color: MUTE }}>attempt #{a.attemptNumber}</span>
+                  <span style={{ color: MUTE, marginLeft: "auto" }}>{formatDateTime(a.createdAt)}</span>
+                </div>
+                <div style={{ color: MUTE, marginTop: 3 }}>Agent: {a.agentName || "—"} · Device: {a.deviceName || "—"} · SIM {a.simSlot ?? "—"}</div>
+                {a.ussdString && <div style={{ color: SLATE, fontFamily: "monospace", marginTop: 3, wordBreak: "break-all" }}>{a.ussdString}</div>}
+                {a.responseMessage && <div style={{ color: MUTE, marginTop: 3 }}>Network response: {a.responseMessage}</div>}
+                {explainFailure(a.responseMessage) && <div style={{ color: "#C81E2C", fontWeight: 600, marginTop: 3 }}>{explainFailure(a.responseMessage)}</div>}
+              </div>
+            ))}
+
+            {section("TIMELINE")}
+            <div style={{ marginTop: 8 }}>
+              {timeline.map((e, i) => (
+                <div key={i} style={{ display: "flex", gap: 10, fontSize: 12, marginBottom: 6 }}>
+                  <span style={{ color: MUTE, fontFamily: "monospace", flexShrink: 0, width: 46 }}>{offlineTimelineClock(e.at)}</span>
+                  <span style={{ color: INK }}>{e.label}</span>
+                </div>
+              ))}
+              {timeline.length === 0 && <div style={{ fontSize: 12, color: MUTE }}>No timeline events yet.</div>}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
 }
 
 const NEW_COMMISSION_RULE_FORM = { name: "", scopeType: "global", companyId: "", packageId: "", ruleType: "percentage", value: "" };
@@ -11377,6 +11996,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "packages" && <Packages packages={packages} setPackages={setPackages} companies={companies} admin={admin} onPackagesChanged={refreshMissingTemplateCount} />}
           {active === "categories" && <Categories companies={companies} admin={admin} />}
           {active === "orders" && <Orders orders={orders} setOrders={setOrders} companies={companies} admin={admin} />}
+          {active === "offline" && <OfflinePanel companies={companies} />}
           {active === "customers" && <Customers customers={customers} setCustomers={setCustomers} refreshCustomers={refreshCustomers} admin={admin} />}
           {active === "agents" && <AgentsSection companies={companies} admin={admin} />}
           {active === "notifications" && <Notifications />}
