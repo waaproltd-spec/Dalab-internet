@@ -530,6 +530,11 @@ customersRouter.delete("/customer/offline-profile", requireAuth("customer"), asy
 customersRouter.delete("/customer/profile", requireAuth("customer"), async (req, res) => {
   try {
     await query(`DELETE FROM customers WHERE id=$1`, [req.auth!.sub]);
+    // A deleted account's already-issued refresh token must not still be
+    // usable to mint new access tokens for an identity that no longer
+    // exists -- revoke it the same instant the row is gone, not left to
+    // expire naturally.
+    await query(`UPDATE refresh_tokens SET revoked=true WHERE subject_id=$1 AND subject_role='customer'`, [req.auth!.sub]);
     sendJson(res, 200, { deleted: true });
   } catch (err: any) {
     if (err?.code === "23503") {
