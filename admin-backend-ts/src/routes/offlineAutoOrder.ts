@@ -41,6 +41,55 @@ function orderRef(): string {
   return "DLB" + Math.floor(100000000 + Math.random() * 900000000);
 }
 
+// Matches the "Tar: 29/08/26 22:12:34" date+time Hormuud's own SMS already
+// includes — deliberately requires BOTH date and time to-the-second, not
+// date alone (see buildHormuudEvcPlusFallbackRef below for why).
+const HORMUUD_TAR_DATETIME_PATTERN = /Tar:\s*(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{1,2}:\d{2}:\d{2})/i;
+
+/**
+ * Hormuud EVC Plus's real "waxaad ... ka heshay ..." confirmation SMS has
+ * no distinct transaction-reference field at all (unlike e.g. Somtel
+ * eDahab's "Aqanoosiga" code) — the hard transactionRef requirement below
+ * made Offline Auto-Order structurally impossible for Hormuud regardless of
+ * how correctly everything else in this file worked. This builds a
+ * deterministic, synthetic dedup key from fields already stable in the
+ * message itself — the sender phone, the amount, and the SMS's own "Tar:"
+ * date+time — nothing invented, only repurposed.
+ *
+ * Deliberately requires the FULL to-the-second timestamp, not the date
+ * alone: two genuinely different real payments from the same sender for the
+ * same amount essentially never land in the same second, but two on the
+ * same day are a completely ordinary occurrence (repeat top-ups) that a
+ * date-only key would wrongly collapse into a single order. Returns null —
+ * never a best-effort guess — the instant anything expected is missing or
+ * doesn't parse: this only ever makes Offline Auto-Order MORE available for
+ * Hormuud, never less safe than the hard-reference requirement it stands in
+ * for. Every other provider's real transactionRef (or lack of one) is
+ * completely unaffected — this is only ever consulted when parsedProvider
+ * is exactly "Hormuud" and the caller has no real transactionRef already.
+ */
+function buildHormuudEvcPlusFallbackRef(
+  parsedProvider: string | null | undefined,
+  parsedPhone: string,
+  parsedAmount: number,
+  body: string | null | undefined
+): string | null {
+  if (parsedProvider !== "Hormuud" || !body) return null;
+  // parsedAmount is typed as a real number, and always genuinely is one on
+  // the live upload path -- but resweepUnmatchedSmsLogs reads it back from
+  // sms_logs.parsed_amount (a NUMERIC column), which node-postgres returns
+  // as a string, not a number, unless a custom type parser is registered.
+  // Coerce defensively rather than trust the caller's declared type.
+  const amount = Number(parsedAmount);
+  if (!Number.isFinite(amount)) return null;
+  const match = HORMUUD_TAR_DATETIME_PATTERN.exec(body);
+  if (!match) return null;
+  const [, date, time] = match;
+  const phone = normalizePhone(parsedPhone);
+  if (!phone) return null;
+  return `SYN-HORMUUD-${phone}-${amount.toFixed(2)}-${date}-${time}`;
+}
+
 // Mirrors orders.routes.ts's own MACAASH_POINTS_PER_DOLLAR — kept as a
 // separate local constant rather than exported/imported, same as this
 // codebase's existing convention for small shared literals (see e.g.
@@ -139,29 +188,27 @@ async function verifyOfflinePaymentMethod(
 }
 
 /**
- * Note on a narrow theoretical race: this function creates the order itself
- * (rather than only reading one, like findMatchingOrder) because sms_logs.
- * matched_order_id is a foreign key — the order must already exist before
- * the SMS row that references it can be inserted. If the exact same
- * transactionRef were somehow uploaded via two truly concurrent requests
- * (not a redelivery — ingestPaymentSms already rejects that before this is
- * ever called), both could theoretically pass this function before either
- * has inserted its sms_logs row, creating two orders where only one gets
- * linked. This is not a double-fulfillment risk (only the linked order ever
- * gets a payment_transactions row, so only it can be verified/dialed) — at
- * worst it leaves a second, harmless 'pending' order visible for an admin
- * to notice and cancel. Given how narrow the window is (two requests for
- * the literal same SMS, not two different payments), this is the same
- * order of risk the rest of this codebase already accepts elsewhere (see
- * findMatchingOrder's own comment on its candidate lock only protecting the
- * SELECT itself, not the full pending → in_progress transition).
+ * This function creates the order itself (rather than only reading one,
+ * like findMatchingOrder) because sms_logs.matched_order_id is a foreign
+ * key — the order must already exist before the SMS row that references it
+ * can be inserted. Two truly concurrent calls carrying the identical
+ * effective reference (a live upload racing a resweep pass, or two resweep
+ * passes landing on the same still-unmatched row — see
+ * resweepUnmatchedSmsLogs in smsLogs.routes.ts) are resolved atomically at
+ * the database level via the orders.offline_auto_dedup_key partial unique
+ * index (069_offline_auto_order_dedup.sql): the INSERT below uses
+ * ON CONFLICT ... DO NOTHING, and the caller that loses the race reads back
+ * and returns the order the winner just created, rather than either
+ * reporting "unmatched" or creating a second order.
  */
 export async function matchOrCreateOfflineAutoOrder(
   parsedAmount: number | undefined,
   parsedPhone: string | undefined,
+  parsedProvider: string | null | undefined,
   transactionRef: string | null | undefined,
   uploadingAgentId: string,
-  uploadingSimSlot: number | null | undefined
+  uploadingSimSlot: number | null | undefined,
+  body?: string | null
 ): Promise<OfflineAutoOrderMatchResult> {
   if (parsedAmount == null || !parsedPhone) return { order: null, reason: null };
 
@@ -170,8 +217,12 @@ export async function matchOrCreateOfflineAutoOrder(
   // tolerates a null transactionRef because a human agent still taps Verify
   // Payment before anything is dialed — there is no such human check on
   // this fully-automatic path, so a real reference is a hard requirement
-  // here specifically.
-  if (!transactionRef) {
+  // here specifically. Every provider with a real reference keeps requiring
+  // one, completely unchanged; Hormuud EVC Plus (which never has one) gets
+  // one shot at a safe, deterministic fallback before this rejects it — see
+  // buildHormuudEvcPlusFallbackRef above.
+  const effectiveTransactionRef = transactionRef || buildHormuudEvcPlusFallbackRef(parsedProvider, parsedPhone, parsedAmount, body);
+  if (!effectiveTransactionRef) {
     return { order: null, reason: "requires a transaction reference to safely dedupe — SMS had none" };
   }
 
@@ -238,9 +289,11 @@ export async function matchOrCreateOfflineAutoOrder(
 
   const id = orderRef();
   const price = Number(pkg.price);
-  await query(
-    `INSERT INTO orders (id, customer_id, company_id, package_id, amount, provider_amount, status, sender_phone, receiver_phone, payment_method, channel, macaash_earned, payment_number_used, payment_ussd_template_used, payment_method_id)
-     VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,'offline_auto',$10,$11,$12,$13)`,
+  const inserted = await query<{ id: string }>(
+    `INSERT INTO orders (id, customer_id, company_id, package_id, amount, provider_amount, status, sender_phone, receiver_phone, payment_method, channel, macaash_earned, payment_number_used, payment_ussd_template_used, payment_method_id, offline_auto_dedup_key)
+     VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,'offline_auto',$10,$11,$12,$13,$14)
+     ON CONFLICT (offline_auto_dedup_key) WHERE offline_auto_dedup_key IS NOT NULL DO NOTHING
+     RETURNING id`,
     [
       id,
       profile.id,
@@ -261,8 +314,41 @@ export async function matchOrCreateOfflineAutoOrder(
       method?.payment_number || company.payment_number,
       method?.ussd_template || company.payment_ussd_template,
       profile.offline_payment_method_id,
+      effectiveTransactionRef,
     ]
   );
+
+  if (inserted.length === 0) {
+    // Lost the atomic race — a concurrent call already created the order
+    // for this exact reference. Return THAT order rather than reporting
+    // "unmatched" and losing the payment, or creating a second one.
+    const existing = await queryOne<{
+      id: string;
+      company_id: string;
+      sender_phone: string | null;
+      receiver_phone: string | null;
+      amount: string;
+      payment_method_id: string | null;
+    }>(`SELECT id, company_id, sender_phone, receiver_phone, amount, payment_method_id FROM orders WHERE offline_auto_dedup_key=$1`, [effectiveTransactionRef]);
+    if (!existing) {
+      // Unreachable in practice — DO NOTHING only fires when a conflicting
+      // row already exists — but fail safe rather than silently drop the
+      // payment if it somehow ever is.
+      return { order: null, reason: "concurrent Offline Auto-Order creation could not be resolved" };
+    }
+    return {
+      order: {
+        id: existing.id,
+        sender_phone: existing.sender_phone,
+        receiver_phone: existing.receiver_phone,
+        amount: Number(existing.amount),
+        company_id: existing.company_id,
+        payment_method_id: existing.payment_method_id,
+      },
+      reason: null,
+    };
+  }
+
   broadcast({ type: "order.created", orderId: id });
 
   return {

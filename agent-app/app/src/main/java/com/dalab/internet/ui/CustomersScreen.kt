@@ -5,6 +5,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -16,11 +17,12 @@ import androidx.compose.ui.window.Dialog
 import com.dalab.internet.data.CustomerSummary
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.CreateCustomerRequest
+import com.dalab.internet.util.validateMobileNumber
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CustomersScreen() {
+fun CustomersScreen(onBack: () -> Unit) {
     var customers by remember { mutableStateOf<List<CustomerSummary>>(emptyList()) }
     var query by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(true) }
@@ -45,7 +47,16 @@ fun CustomersScreen() {
     LaunchedEffect(Unit) { refresh() }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("Customers") }) },
+        topBar = {
+            TopAppBar(
+                title = { Text("Customers") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+            )
+        },
         floatingActionButton = {
             FloatingActionButton(onClick = { showAddDialog = true }) {
                 Icon(Icons.Filled.Add, contentDescription = "Add customer")
@@ -127,11 +138,14 @@ private fun AddCustomerDialog(onDismiss: () -> Unit, onSaved: () -> Unit) {
             Column(modifier = Modifier.padding(20.dp)) {
                 Text("New customer", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(16.dp))
+                val phoneError = if (phone.isNotBlank()) validateMobileNumber(phone.trim()).error else null
                 OutlinedTextField(
                     value = phone,
                     onValueChange = { phone = it },
                     label = { Text("Phone number") },
                     singleLine = true,
+                    isError = phoneError != null,
+                    supportingText = phoneError?.let { { Text(it) } },
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(8.dp))
@@ -167,7 +181,7 @@ private fun AddCustomerDialog(onDismiss: () -> Unit, onSaved: () -> Unit) {
                                 saving = false
                             }
                         },
-                        enabled = phone.isNotBlank() && !saving,
+                        enabled = phone.isNotBlank() && phoneError == null && !saving,
                     ) {
                         Text(if (saving) "Saving..." else "Save")
                     }

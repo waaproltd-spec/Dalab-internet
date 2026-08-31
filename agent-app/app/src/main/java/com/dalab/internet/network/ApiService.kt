@@ -8,13 +8,17 @@ import com.dalab.internet.data.CustomerSummary
 import com.dalab.internet.data.ExchangeOrder
 import com.dalab.internet.data.Order
 import com.dalab.internet.data.PackageItem
+import com.dalab.internet.data.ResellerWithdrawalPendingPayout
+import com.dalab.internet.data.ResellerWithdrawalSimRoutingEntry
 import com.dalab.internet.data.SmsLogEntry
+import com.dalab.internet.data.SupportConversation
 import com.dalab.internet.data.Transaction
 import com.dalab.internet.data.AgentNotification
 import com.dalab.internet.data.AgentPaymentTransaction
 import com.dalab.internet.data.WalletBalanceEntry
 import com.dalab.internet.sms.SmsSenderIdEntry
 import com.dalab.internet.ussd.SimRoutingEntry
+import okhttp3.ResponseBody
 import retrofit2.Response
 import retrofit2.http.*
 
@@ -37,6 +41,7 @@ data class HeartbeatRequest(
     val recentDiagnostics: List<DiagnosticsEntryDto>? = null,
 )
 data class LoginResponse(val accessToken: String, val refreshToken: String, val agent: AgentProfile)
+data class RegisterDeviceTokenRequest(val fcmToken: String)
 data class RefreshRequest(val refreshToken: String)
 data class RefreshResponse(val accessToken: String, val refreshToken: String)
 data class VerifyPaymentRequest(val smsLogId: String? = null)
@@ -56,6 +61,41 @@ data class VoucherConfirmationRequest(val receiverPhone: String, val amount: Dou
 data class VoucherConfirmationResponse(val matched: Boolean, val orderId: String? = null, val alreadyCompleted: Boolean = false)
 data class ExchangePayoutConfirmationRequest(val receiverPhone: String, val amount: Double, val rawText: String)
 data class ExchangePayoutConfirmationResponse(val matched: Boolean, val orderId: String? = null, val alreadyCompleted: Boolean = false)
+
+// ---------------- Notification broadcast ----------------
+// Same POST /notifications/broadcast + GET /notifications/campaigns the
+// Admin dashboard's Notifications tab uses (App.jsx's DalabAdminApi.
+// broadcastNotification/getNotificationCampaigns) — an agent hitting these
+// exact routes gets the identical targeting options and history the Admin
+// dashboard shows, with no capability gap between the two apps.
+data class BroadcastRequest(
+    val targetType: String, // "single" | "multiple" | "all" | "recent"
+    val customerIds: List<String> = emptyList(),
+    val serviceFilter: String, // "all" | "internet" | "ebadal" | "reseller"
+    val title: String,
+    val body: String,
+)
+data class BroadcastResponse(
+    val id: String,
+    val recipientCount: Int,
+    val sentCount: Int,
+    val deliveredCount: Int,
+    val failedCount: Int,
+)
+data class NotificationCampaign(
+    val id: String,
+    val title: String,
+    val body: String,
+    val targetType: String,
+    val serviceFilter: String,
+    val recipientCount: Int,
+    val sentCount: Int,
+    val deliveredCount: Int,
+    val failedCount: Int,
+    val createdByName: String?,
+    val createdByRole: String,
+    val createdAt: String,
+)
 data class DialAttemptStartRequest(val simSlot: Int?, val ussdString: String, val attemptNumber: Int)
 data class DialAttemptStartResponse(val id: String)
 // isFinalAttempt: true when this is the last outcome this order will get
@@ -65,6 +105,21 @@ data class DialAttemptStartResponse(val id: String)
 // "Failed" moments before a later retry might still succeed.
 data class DialAttemptResultRequest(val status: String, val responseMessage: String?, val isFinalAttempt: Boolean = true)
 data class DialAttemptResultResponse(val id: String, val status: String)
+// ---------------- Agent Support ----------------
+
+data class SupportStatusResponse(val online: Boolean, val activeConversationId: String? = null)
+data class SupportStatusUpdateRequest(val online: Boolean)
+data class SupportClaimNextResponse(val claimed: SupportConversation? = null)
+// messageType is "text" (default -- message required), "image", or "voice"
+// (mediaBase64 required for the latter two -- a data:<mime>;base64,<data>
+// string, see support.routes.ts's composeMessage).
+data class SupportSendMessageRequest(
+    val message: String? = null,
+    val messageType: String = "text",
+    val mediaBase64: String? = null,
+)
+data class SupportEndConversationResponse(val ended: Boolean, val next: SupportConversation? = null)
+
 data class CreateCustomerRequest(val phone: String, val name: String? = null)
 data class CreateSaleRequest(
     val customerPhone: String,
@@ -158,6 +213,61 @@ interface ApiService {
     @GET("agent/notifications")
     suspend fun getNotifications(): Response<List<AgentNotification>>
 
+    @POST("notifications/broadcast")
+    suspend fun broadcastNotification(@Body body: BroadcastRequest): Response<BroadcastResponse>
+
+    @GET("notifications/campaigns")
+    suspend fun getNotificationCampaigns(): Response<List<NotificationCampaign>>
+
+    // Registers/clears this device's FCM token so a newly-assigned support
+    // conversation can push straight to it -- see notifications/
+    // AgentFcmService.kt and PushTokenRegistrar.kt.
+    @POST("agent/notifications/register-device")
+    suspend fun registerAgentDeviceToken(@Body body: RegisterDeviceTokenRequest): Response<Unit>
+
+    @POST("agent/notifications/unregister-device")
+    suspend fun unregisterAgentDeviceToken(@Body body: RegisterDeviceTokenRequest): Response<Unit>
+
+    // ---------------- Agent Support ----------------
+    // Same routes the Admin Dashboard's "Agent Support" panel uses (registered
+    // at both /admin/support/... and /agent/support/... by support.routes.ts's
+    // dual() helper) — any online field agent may claim/handle a conversation,
+    // same as any staff member with the support.manage permission.
+
+    @GET("agent/support/status")
+    suspend fun getSupportStatus(): Response<SupportStatusResponse>
+
+    @PUT("agent/support/status")
+    suspend fun setSupportStatus(@Body body: SupportStatusUpdateRequest): Response<SupportStatusResponse>
+
+    @GET("agent/support/queue")
+    suspend fun getSupportQueue(): Response<List<SupportConversation>>
+
+    @GET("agent/support/conversations/{id}")
+    suspend fun getSupportConversation(@Path("id") id: String): Response<SupportConversation>
+
+    @POST("agent/support/claim-next")
+    suspend fun claimNextSupportConversation(): Response<SupportClaimNextResponse>
+
+    @POST("agent/support/conversations/{id}/claim")
+    suspend fun claimSupportConversation(@Path("id") id: String): Response<SupportConversation>
+
+    @POST("agent/support/conversations/{id}/messages")
+    suspend fun sendSupportMessage(@Path("id") id: String, @Body body: SupportSendMessageRequest): Response<SupportConversation>
+
+    // Note: registered at /support/messages/{id}/media (no /agent prefix) --
+    // shared by the customer and any authorized staff/agent, see
+    // support.routes.ts's combined auth check on that one route.
+    @Streaming
+    @GET("support/messages/{id}/media")
+    suspend fun getSupportMessageMedia(@Path("id") id: String): Response<ResponseBody>
+
+    @POST("agent/support/conversations/{id}/resolve")
+    suspend fun resolveSupportConversation(@Path("id") id: String): Response<SupportEndConversationResponse>
+
+    @POST("agent/support/conversations/{id}/close")
+    suspend fun closeSupportConversation(@Path("id") id: String): Response<SupportEndConversationResponse>
+
     @GET("agent/sim-routing")
     suspend fun getSimRouting(@Query("deviceId") deviceId: String? = null): Response<List<SimRoutingEntry>>
 
@@ -229,4 +339,37 @@ interface ApiService {
         @Path("attemptId") attemptId: String,
         @Body body: ExchangeStepRequest,
     ): Response<ExchangeDialAttemptDto>
+
+    // ---------------- Reseller Withdraw (automatic payout — see ussd/ResellerWithdrawalUssdOrchestrator.kt) ----------------
+    // Same one-shot combined-string USSD dial as Internet Store above (not
+    // Money Exchange's two-step interactive PIN flow) — reuses UssdDialer,
+    // not ExchangeUssdDialer. Deliberately separate endpoints/models from
+    // both existing pipelines: the automation is analogous to Internet
+    // Store's, but a dial result here never completes the withdrawal itself
+    // (only the real outgoing SMS does — see this file's/backend's own doc
+    // comments), which is why this isn't just reusing startDialAttempt/
+    // reportDialResult above.
+
+    @GET("agent/reseller-withdrawals/pending-payout")
+    suspend fun getResellerWithdrawalsPendingPayout(): Response<List<ResellerWithdrawalPendingPayout>>
+
+    @POST("agent/reseller-withdrawals/{id}/dial-attempts")
+    suspend fun startResellerWithdrawalDialAttempt(
+        @Path("id") withdrawalId: String,
+        @Body body: DialAttemptStartRequest,
+    ): Response<DialAttemptStartResponse>
+
+    @PUT("agent/reseller-withdrawal-dial-attempts/{attemptId}")
+    suspend fun reportResellerWithdrawalDialResult(
+        @Path("attemptId") attemptId: String,
+        @Body body: DialAttemptResultRequest,
+    ): Response<DialAttemptResultResponse>
+
+    // Reseller Withdraw's OWN SIM routing (company -> device + physical
+    // slot) — deliberately separate from getSimRouting above (which is
+    // Internet Store/eBadal recharge's own routing table), so a Reseller
+    // Withdraw payout SIM can be managed independently. Mirrors
+    // getSimRouting's shape/scoping exactly (see SimRoutingRepository.kt).
+    @GET("agent/reseller-withdrawal-sim-routing")
+    suspend fun getResellerWithdrawalSimRouting(@Query("deviceId") deviceId: String? = null): Response<List<ResellerWithdrawalSimRoutingEntry>>
 }

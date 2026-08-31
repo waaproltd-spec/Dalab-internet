@@ -16,6 +16,12 @@ import { broadcast } from "../realtime/orderEvents.js";
 import { verifyOrderAndGenerateUssd } from "./orders.routes.js";
 import { autoAdvanceExchangeOrderToInProgress } from "./exchange.routes.js";
 import { matchOrCreateOfflineAutoOrder } from "./offlineAutoOrder.js";
+import {
+  findMatchingResellerDeposit,
+  confirmResellerDepositViaSms,
+  findMatchingResellerWithdrawal,
+  confirmResellerWithdrawalViaSms,
+} from "./resellerSmsMatching.js";
 
 export const smsLogsRouter = Router();
 
@@ -364,6 +370,8 @@ type IngestSmsResult = {
     id: string;
     matchedOrderId: string | null;
     matchedExchangeOrderId?: string | null;
+    matchedResellerDepositId?: string | null;
+    matchedResellerWithdrawalId?: string | null;
     requiresManualApproval: boolean;
     duplicate: boolean;
     orderAlreadyCompleted?: boolean;
@@ -485,7 +493,7 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
   let offlineAutoMatch: OrderMatch | null = null;
   let offlineAutoMatchFailureReason: string | null = null;
   if (!storeMatch) {
-    const offlineResult = await matchOrCreateOfflineAutoOrder(parsedAmount, parsedPhone, transactionRef, agentId, simSlot);
+    const offlineResult = await matchOrCreateOfflineAutoOrder(parsedAmount, parsedPhone, parsedProvider, transactionRef, agentId, simSlot, body);
     offlineAutoMatch = offlineResult.order;
     offlineAutoMatchFailureReason = offlineResult.reason;
   }
@@ -500,13 +508,38 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
     exchangeMatch = exchangeResult.order;
     exchangeMatchFailureReason = exchangeResult.reason;
   }
+
+  // Reseller Deposit matching only runs when BOTH Store and Exchange found
+  // nothing — same "always last, never steals a payment meant for the
+  // others" guarantee. See resellerSmsMatching.ts's header comment.
+  let resellerDepositMatch: Awaited<ReturnType<typeof findMatchingResellerDeposit>>["deposit"] = null;
+  let resellerMatchFailureReason: string | null = null;
+  if (!match && !exchangeMatch) {
+    const resellerResult = await findMatchingResellerDeposit(parsedAmount, parsedPhone, agentId, simSlot);
+    resellerDepositMatch = resellerResult.deposit;
+    resellerMatchFailureReason = resellerResult.reason;
+  }
+
+  // Reseller Withdraw matching (the OUTGOING payout-sent confirmation) only
+  // runs when Store, Exchange, AND Reseller Deposit have all found nothing
+  // — same "always last" guarantee, one level further out.
+  let resellerWithdrawalMatch: Awaited<ReturnType<typeof findMatchingResellerWithdrawal>>["withdrawal"] = null;
+  let resellerWithdrawalMatchFailureReason: string | null = null;
+  if (!match && !exchangeMatch && !resellerDepositMatch) {
+    const resellerWithdrawalResult = await findMatchingResellerWithdrawal(parsedAmount, parsedPhone, parsedProvider);
+    resellerWithdrawalMatch = resellerWithdrawalResult.withdrawal;
+    resellerWithdrawalMatchFailureReason = resellerWithdrawalResult.reason;
+  }
+
   const combinedFailureReason =
-    match || exchangeMatch
+    match || exchangeMatch || resellerDepositMatch || resellerWithdrawalMatch
       ? null
       : [
           matchFailureReason,
           offlineAutoMatchFailureReason ? `Offline Auto-Order: ${offlineAutoMatchFailureReason}` : null,
           exchangeMatchFailureReason ? `Exchange: ${exchangeMatchFailureReason}` : null,
+          resellerMatchFailureReason ? `Reseller Deposit: ${resellerMatchFailureReason}` : null,
+          resellerWithdrawalMatchFailureReason ? `Reseller Withdraw: ${resellerWithdrawalMatchFailureReason}` : null,
         ]
           .filter(Boolean)
           .join(" | ");
@@ -518,11 +551,12 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
   // different truncated minute than the row that actually won.
   try {
     await query(
-      `INSERT INTO sms_logs (id, agent_id, sender, body, parsed_provider, parsed_amount, parsed_phone, matched_order_id, matched_exchange_order_id, received_at, transaction_ref, sim_slot, match_failure_reason)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+      `INSERT INTO sms_logs (id, agent_id, sender, body, parsed_provider, parsed_amount, parsed_phone, matched_order_id, matched_exchange_order_id, matched_reseller_deposit_id, matched_reseller_withdrawal_id, received_at, transaction_ref, sim_slot, match_failure_reason)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
       [
         id, agentId, sender, body, parsedProvider ?? null, parsedAmount ?? null, parsedPhone ?? null,
-        match?.id ?? null, exchangeMatch?.id ?? null, effectiveReceivedAt, transactionRef ?? null, simSlot ?? null,
+        match?.id ?? null, exchangeMatch?.id ?? null, resellerDepositMatch?.id ?? null, resellerWithdrawalMatch?.id ?? null,
+        effectiveReceivedAt, transactionRef ?? null, simSlot ?? null,
         combinedFailureReason || null,
       ]
     );
@@ -658,6 +692,23 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
     await autoAdvanceExchangeOrderToInProgress(exchangeMatch.id, { source: "sms_match" });
   }
 
+  // Reseller Deposit: "Once the payment is confirmed, the exact amount is
+  // added to the Reseller Wallet" (product instruction) — fully automatic,
+  // no admin tap required. confirmResellerDepositViaSms does its own atomic
+  // claim (status='pending' CAS) before crediting, so this is safe even if
+  // called more than once for the same deposit.
+  if (resellerDepositMatch) {
+    await confirmResellerDepositViaSms(resellerDepositMatch, id);
+  }
+
+  // Reseller Withdraw: "the Wallet amount is deducted only after the
+  // outgoing payment is successfully confirmed" (product instruction) —
+  // fully automatic, no admin tap required. Same atomic claim-before-
+  // deduct safety as confirmResellerDepositViaSms.
+  if (resellerWithdrawalMatch) {
+    await confirmResellerWithdrawalViaSms(resellerWithdrawalMatch, id);
+  }
+
   // The ledger row for this genuinely-new payment attempt — 'pending' until
   // the Agent App's verify-payment/dial-attempt calls advance it. A null
   // return means idx_payment_tx_order_active's atomic backstop (migration
@@ -686,6 +737,8 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
       id,
       matchedOrderId: match?.id ?? null,
       matchedExchangeOrderId: exchangeMatch?.id ?? null,
+      matchedResellerDepositId: resellerDepositMatch?.id ?? null,
+      matchedResellerWithdrawalId: resellerWithdrawalMatch?.id ?? null,
       requiresManualApproval,
       duplicate: false,
       status: "new",
@@ -703,6 +756,7 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
 type OrphanedSmsRow = {
   id: string;
   agent_id: string;
+  body: string | null;
   parsed_amount: number | null;
   parsed_phone: string | null;
   parsed_provider: string | null;
@@ -739,8 +793,10 @@ type OrphanedSmsRow = {
  */
 export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; stillUnmatched: number }> {
   const orphans = await query<OrphanedSmsRow>(
-    `SELECT id, agent_id, parsed_amount, parsed_phone, parsed_provider, sim_slot, transaction_ref, received_at FROM sms_logs
-     WHERE matched_order_id IS NULL AND matched_exchange_order_id IS NULL AND received_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
+    `SELECT id, agent_id, body, parsed_amount, parsed_phone, parsed_provider, sim_slot, transaction_ref, received_at FROM sms_logs
+     WHERE matched_order_id IS NULL AND matched_exchange_order_id IS NULL AND matched_reseller_deposit_id IS NULL
+       AND matched_reseller_withdrawal_id IS NULL
+       AND received_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
      ORDER BY received_at ASC`
   );
   let relinked = 0;
@@ -795,59 +851,146 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
         continue;
       }
 
-      // No Store order match — try Offline Auto-Order next, same priority
-      // the live upload path uses. Unlike findMatchingOrder above, this
-      // CREATES a new order on a match rather than linking an existing one
-      // (see offlineAutoOrder.ts's own comment on why) — the atomic claim
-      // below still guards against a concurrent sweep pass or live upload
-      // processing the exact same sms_log row twice.
-      const offlineResult = await matchOrCreateOfflineAutoOrder(
+      // No Store order match — try Offline Auto-Order next, same position
+      // the live upload path (ingestPaymentSms) gives it. Unlike every
+      // other matcher in this sweep, findMatchingOrder et al. only ever
+      // LINK a pre-existing order; matchOrCreateOfflineAutoOrder also
+      // CREATES one (see offlineAutoOrder.ts) — but until this branch
+      // existed, this sweep never called it at all, so a customer whose
+      // Offline Profile was saved even a few seconds after their payment
+      // SMS arrived had that SMS orphaned forever: the one-shot live match
+      // found no profile yet, and nothing ever retried it (every other
+      // matcher already gets this same resweep; this one didn't).
+      const { order: offlineAutoMatch, reason: offlineAutoReason } = await matchOrCreateOfflineAutoOrder(
         sms.parsed_amount ?? undefined,
         sms.parsed_phone ?? undefined,
+        sms.parsed_provider,
         sms.transaction_ref,
         sms.agent_id,
-        sms.sim_slot
+        sms.sim_slot,
+        sms.body
       );
-      if (offlineResult.order) {
+      if (offlineAutoMatch) {
+        // Same atomic claim as the Store branch above — guards this SMS
+        // row's own downstream side effects (payment_transactions, verify,
+        // dial) from running twice if two passes reach here for the same
+        // row. offlineAutoMatch.id itself can never be a duplicate order
+        // even under a true race: matchOrCreateOfflineAutoOrder's own
+        // orders.offline_auto_dedup_key uniqueness (069_offline_auto_order_
+        // dedup.sql) already resolved that at the database level.
         const claimedOffline = await query<{ id: string }>(
           `UPDATE sms_logs SET matched_order_id=$1, match_failure_reason=NULL WHERE id=$2 AND matched_order_id IS NULL RETURNING id`,
-          [offlineResult.order.id, sms.id]
+          [offlineAutoMatch.id, sms.id]
         );
-        if (claimedOffline.length === 0) continue; // lost the race — the order this just created is now a harmless duplicate for an admin to notice, same accepted risk offlineAutoOrder.ts's own doc comment describes
-        const requiresManualApprovalOffline = await requiresManualApprovalFor(offlineResult.order.id);
-        await linkPaymentTransactionToOrder(sms.id, offlineResult.order.id);
+        if (claimedOffline.length === 0) continue;
+
+        const requiresManualApproval = await requiresManualApprovalFor(offlineAutoMatch.id);
+        if (await hasActivePaymentTransaction(offlineAutoMatch.id)) {
+          await markPaymentTransactionDuplicateForSms(sms.id, offlineAutoMatch.id);
+          await logPaymentActivity({
+            action: "duplicate_delivery_prevented",
+            smsLogId: sms.id,
+            order: offlineAutoMatch,
+            transactionRef: sms.transaction_ref,
+            paymentTimestamp: sms.received_at,
+            status: "duplicate_blocked",
+            requiresManualApproval,
+          });
+          broadcast({ type: "sms_log.created", smsLogId: sms.id, orderId: offlineAutoMatch.id });
+          continue;
+        }
+
+        await linkPaymentTransactionToOrder(sms.id, offlineAutoMatch.id);
         await logPaymentActivity({
           action: "payment_verified",
           smsLogId: sms.id,
-          order: offlineResult.order,
+          order: offlineAutoMatch,
           transactionRef: sms.transaction_ref,
           paymentTimestamp: sms.received_at,
           status: "verified",
-          requiresManualApproval: requiresManualApprovalOffline,
+          requiresManualApproval,
         });
-        if (!requiresManualApprovalOffline) {
-          const orderRow = await queryOne<any>(`SELECT * FROM orders WHERE id=$1`, [offlineResult.order.id]);
+        if (!requiresManualApproval) {
+          const orderRow = await queryOne<any>(`SELECT * FROM orders WHERE id=$1`, [offlineAutoMatch.id]);
           if (orderRow) await verifyOrderAndGenerateUssd(orderRow, sms.agent_id);
         }
-        broadcast({ type: "sms_log.created", smsLogId: sms.id, orderId: offlineResult.order.id });
+        broadcast({ type: "sms_log.created", smsLogId: sms.id, orderId: offlineAutoMatch.id });
         relinked++;
         continue;
       }
 
-      // No Store or Offline Auto-Order match — try Money Exchange next, same as the live
-      // upload path does. Never auto-verifies/pays out; only links + logs.
+      // No Store or Offline Auto-Order match — try Money Exchange next,
+      // same as the live upload path does. Never auto-verifies/pays out;
+      // only links + logs.
       const { order: exchangeMatch, reason: exchangeReason } = await findMatchingExchangeOrder(
         sms.parsed_amount ?? undefined,
         sms.parsed_phone ?? undefined,
         sms.agent_id,
         sms.sim_slot
       );
-      if (!exchangeMatch) {
+      if (exchangeMatch) {
+        const alreadyLinked = await queryOne<{ id: string }>(`SELECT id FROM sms_logs WHERE matched_exchange_order_id=$1 LIMIT 1`, [exchangeMatch.id]);
+        if (alreadyLinked) {
+          await query(`UPDATE sms_logs SET match_failure_reason=$1 WHERE id=$2`, [
+            `Exchange order ${exchangeMatch.id} already has a matched payment SMS`,
+            sms.id,
+          ]);
+          continue;
+        }
+        const claimedExchange = await query<{ id: string }>(
+          `UPDATE sms_logs SET matched_exchange_order_id=$1, match_failure_reason=NULL WHERE id=$2 AND matched_order_id IS NULL AND matched_exchange_order_id IS NULL RETURNING id`,
+          [exchangeMatch.id, sms.id]
+        );
+        if (claimedExchange.length === 0) continue;
+        await recordActivity({
+          adminId: undefined,
+          action: "match_exchange_order_sms",
+          entityType: "exchange_order",
+          entityId: exchangeMatch.id,
+          oldValue: null,
+          newValue: { smsLogId: sms.id, amountSent: exchangeMatch.amount_sent, transactionRef: sms.transaction_ref, summary: `SMS -> Exchange Order ${exchangeMatch.id} -> matched` },
+        });
+        // Same automatic pending -> in_progress advance the live upload path
+        // makes — a delayed match (the SMS beat the order's creation) still
+        // ends up fully automatic, not stuck waiting for a manual verify.
+        await autoAdvanceExchangeOrderToInProgress(exchangeMatch.id, { source: "sms_match" });
+        relinked++;
+        continue;
+      }
+
+      // No Store or Exchange match — try Reseller Deposit next, same order
+      // as the live upload path. A delayed match here (the SMS beat the
+      // deposit-request creation, or the payment method's device wasn't
+      // linked yet) still ends up fully credited automatically.
+      const { deposit: resellerMatch, reason: resellerReason } = await findMatchingResellerDeposit(
+        sms.parsed_amount ?? undefined,
+        sms.parsed_phone ?? undefined,
+        sms.agent_id,
+        sms.sim_slot
+      );
+      if (resellerMatch) {
+        const result = await confirmResellerDepositViaSms(resellerMatch, sms.id);
+        if (result.credited) relinked++;
+        continue;
+      }
+
+      // Still nothing — try Reseller Withdraw last (the outgoing
+      // payout-sent confirmation). A delayed match here (the SMS beat the
+      // withdrawal-request creation) still ends up fully completed
+      // automatically, with the wallet deducted at that exact moment.
+      const { withdrawal: resellerWithdrawalMatch, reason: resellerWithdrawalReason } = await findMatchingResellerWithdrawal(
+        sms.parsed_amount ?? undefined,
+        sms.parsed_phone ?? undefined,
+        sms.parsed_provider ?? undefined
+      );
+      if (!resellerWithdrawalMatch) {
         await query(`UPDATE sms_logs SET match_failure_reason=$1 WHERE id=$2`, [
           [
             reason,
-            offlineResult.reason ? `Offline Auto-Order: ${offlineResult.reason}` : null,
+            offlineAutoReason ? `Offline Auto-Order: ${offlineAutoReason}` : null,
             exchangeReason ? `Exchange: ${exchangeReason}` : null,
+            resellerReason ? `Reseller Deposit: ${resellerReason}` : null,
+            resellerWithdrawalReason ? `Reseller Withdraw: ${resellerWithdrawalReason}` : null,
           ]
             .filter(Boolean)
             .join(" | "),
@@ -855,32 +998,8 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
         ]);
         continue;
       }
-      const alreadyLinked = await queryOne<{ id: string }>(`SELECT id FROM sms_logs WHERE matched_exchange_order_id=$1 LIMIT 1`, [exchangeMatch.id]);
-      if (alreadyLinked) {
-        await query(`UPDATE sms_logs SET match_failure_reason=$1 WHERE id=$2`, [
-          `Exchange order ${exchangeMatch.id} already has a matched payment SMS`,
-          sms.id,
-        ]);
-        continue;
-      }
-      const claimedExchange = await query<{ id: string }>(
-        `UPDATE sms_logs SET matched_exchange_order_id=$1, match_failure_reason=NULL WHERE id=$2 AND matched_order_id IS NULL AND matched_exchange_order_id IS NULL RETURNING id`,
-        [exchangeMatch.id, sms.id]
-      );
-      if (claimedExchange.length === 0) continue;
-      await recordActivity({
-        adminId: undefined,
-        action: "match_exchange_order_sms",
-        entityType: "exchange_order",
-        entityId: exchangeMatch.id,
-        oldValue: null,
-        newValue: { smsLogId: sms.id, amountSent: exchangeMatch.amount_sent, transactionRef: sms.transaction_ref, summary: `SMS -> Exchange Order ${exchangeMatch.id} -> matched` },
-      });
-      // Same automatic pending -> in_progress advance the live upload path
-      // makes — a delayed match (the SMS beat the order's creation) still
-      // ends up fully automatic, not stuck waiting for a manual verify.
-      await autoAdvanceExchangeOrderToInProgress(exchangeMatch.id, { source: "sms_match" });
-      relinked++;
+      const withdrawalResult = await confirmResellerWithdrawalViaSms(resellerWithdrawalMatch, sms.id);
+      if (withdrawalResult.completed) relinked++;
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error(`resweepUnmatchedSmsLogs failed for sms_log ${sms.id}:`, (err as Error).message);

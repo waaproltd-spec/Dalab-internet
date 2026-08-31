@@ -30,9 +30,21 @@ test("letters are rejected", () => {
   assert.equal(isValidMobileNumber("abcdefghi"), false);
 });
 
-test("a +252 country code prefix is tolerated and normalized away", () => {
+test("a +252 country code prefix is tolerated and normalized away -- this is the standard E.164 wire format every client sends", () => {
   assert.equal(isValidMobileNumber("+252617080008"), true);
   assert.equal(isValidMobileNumber("252617080008"), true);
+  assert.equal(isValidMobileNumber("252777080008"), true);
+  assert.equal(isValidMobileNumber("252687080008"), true);
+  assert.equal(isValidMobileNumber("252627080008"), true);
+  assert.equal(isValidMobileNumber("252717080008"), true);
+});
+
+test("all four provider prefixes are valid as plain 9-digit local numbers", () => {
+  assert.equal(isValidMobileNumber("617080008"), true); // Hormuud
+  assert.equal(isValidMobileNumber("777080008"), true); // Hormuud
+  assert.equal(isValidMobileNumber("687080008"), true); // Somnet
+  assert.equal(isValidMobileNumber("627080008"), true); // Somtel
+  assert.equal(isValidMobileNumber("717080008"), true); // Amtel
 });
 
 test("empty/null/undefined is rejected, not thrown", () => {
@@ -73,6 +85,62 @@ test("Somtel (edahab) only accepts the 62 prefix", () => {
 test("Amtel (amtel_pay) only accepts the 71 prefix", () => {
   assert.equal(validateMobileNumber("717080008", "amtel_pay").valid, true);
   assert.equal(validateMobileNumber("627080008", "amtel_pay").valid, false);
+});
+
+test("Somlink (somlink) only accepts the 64 prefix, rejecting 61 and 68", () => {
+  assert.equal(validateMobileNumber("647080008", "somlink").valid, true);
+  const rejected61 = validateMobileNumber("617080008", "somlink");
+  assert.equal(rejected61.valid, false);
+  assert.equal(rejected61.error, "Invalid number. Somlink numbers must start with 64.");
+  const rejected68 = validateMobileNumber("687080008", "somlink");
+  assert.equal(rejected68.valid, false);
+  assert.equal(rejected68.error, "Invalid number. Somlink numbers must start with 64.");
+});
+
+test("companyForPrefix identifies Somlink for the 64 prefix", () => {
+  assert.equal(companyForPrefix("647080008")?.key, "somlink");
+});
+
+// Exact scenarios reported against a real device: "647177774" (Somlink,
+// prefix 64) was being rejected as "not recognized for any supported
+// carrier". These pin the reported number itself (both bare and with the
+// +252 country code, which this backend module -- unlike the client-side
+// Dart/Kotlin validators -- normalizes away, see normalizeMobileDigits'
+// own doc comment) alongside the three prefixes that must NOT resolve to
+// Somlink, since each already belongs to a different carrier.
+test("the reported Somlink number (647177774) is valid, bare and with +252, with no company selected", () => {
+  assert.equal(isValidMobileNumber("647177774"), true);
+  assert.equal(isValidMobileNumber("+252647177774"), true);
+  assert.equal(companyForPrefix("647177774")?.key, "somlink");
+});
+
+test("the reported Somlink number (647177774) is valid specifically as the somlink company, bare and with +252", () => {
+  assert.equal(validateMobileNumber("647177774", "somlink").valid, true);
+  assert.equal(validateMobileNumber("+252647177774", "somlink").valid, true);
+});
+
+test("619991299 (EVC Plus), 629991299 (eDahab), and 719991299 (Amtel) must NOT be classified as Somlink", () => {
+  assert.notEqual(companyForPrefix("619991299")?.key, "somlink");
+  assert.notEqual(companyForPrefix("629991299")?.key, "somlink");
+  assert.notEqual(companyForPrefix("719991299")?.key, "somlink");
+
+  const rejected61 = validateMobileNumber("619991299", "somlink");
+  assert.equal(rejected61.valid, false);
+  assert.equal(rejected61.error, "Invalid number. Somlink numbers must start with 64.");
+
+  const rejected62 = validateMobileNumber("629991299", "somlink");
+  assert.equal(rejected62.valid, false);
+  assert.equal(rejected62.error, "Invalid number. Somlink numbers must start with 64.");
+
+  const rejected71 = validateMobileNumber("719991299", "somlink");
+  assert.equal(rejected71.valid, false);
+  assert.equal(rejected71.error, "Invalid number. Somlink numbers must start with 64.");
+});
+
+test("companyKeyFromLabel recognizes SOMLIMK and Somlink spellings", () => {
+  assert.equal(companyKeyFromLabel("SOMLIMK"), "somlink");
+  assert.equal(companyKeyFromLabel("Somlink"), "somlink");
+  assert.equal(companyKeyFromLabel("somlink"), "somlink");
 });
 
 test("a number with a prefix belonging to no known carrier at all is rejected even with no company selected", () => {

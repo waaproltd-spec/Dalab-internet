@@ -16,14 +16,7 @@ export const packagesRouter = Router();
 // routes — logo_data is only ever read by the dedicated .../logo route below
 // (raw bytes, not through sendJson); has_logo is a cheap boolean so the
 // dashboard/apps know whether to point an <img> at that route at all.
-const COMPANY_COLUMNS = `id, name, group_number, color_hex, logo_url, status, gateway, payment_number, payment_ussd_template, provider_number, ussd_code, visible_customer_app, visible_agent_app, auto_process_enabled, slug, description, sort_order, (logo_data IS NOT NULL) AS has_logo, created_at, updated_at`;
-
-// provider_amount is the internal cost actually requested from the telecom
-// via USSD — it can differ from the customer-facing price (e.g. a
-// discounted sale), so it's excluded here the same way pin_encrypted is
-// excluded from COMPANY_COLUMNS: an implementation detail of the fulfilment
-// pipeline, not something the public Customer/Agent App package list needs.
-const PUBLIC_PACKAGE_COLUMNS = `id, company_id, category_id, name, old_price, price, mb, minutes, sms, validity, active, code, created_at`;
+const COMPANY_COLUMNS = `id, name, group_number, color_hex, logo_url, status, gateway, payment_number, payment_ussd_template, payout_ussd_template, provider_number, ussd_code, visible_customer_app, visible_agent_app, auto_process_enabled, slug, description, sort_order, fulfillment_method, (logo_data IS NOT NULL) AS has_logo, created_at, updated_at`;
 
 // Also called by the Agent App (NewSaleScreen/PackagesScreen) for its own
 // unrelated "create a sale" flow, so the default (no ?audience=) stays
@@ -56,8 +49,29 @@ companiesRouter.get("/companies/:id/logo", async (req, res) => {
 companiesRouter.get("/companies/:id/packages", async (req, res) => {
   const company = await queryOne(`SELECT id FROM companies WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
   if (!company) return sendJson(res, 200, []);
+  // provider_amount is excluded here (same as pin_encrypted from
+  // COMPANY_COLUMNS): an implementation detail of the fulfilment pipeline,
+  // not something the public Customer/Agent App package list needs.
+  //
+  // categoryId (packages.category_id) is the category's slug, not its
+  // display name (see the "free text with no DB-level FK" comment on the
+  // package-editing routes below) -- it's meant to be a stable grouping
+  // key, safe for an admin to rename the category's real name without
+  // touching every package. The Customer App previously had no way to
+  // reach that real name at all, so it fell back to title-casing the slug
+  // itself (e.g. "adsl-plu" -> "Adsl Plu", including a stale slug typo
+  // that already dropped a trailing "s"), out of step with whatever the
+  // Admin Dashboard's own Category name field says. LEFT JOIN (not INNER)
+  // so a package whose category_id doesn't match any current category slug
+  // still returns, with category_name simply null -- never dropped from
+  // the list over this.
   const rows = await query(
-    `SELECT ${PUBLIC_PACKAGE_COLUMNS} FROM packages WHERE company_id=$1 AND active=true ORDER BY category_id, price`,
+    `SELECT p.id, p.company_id, p.category_id, p.name, p.old_price, p.price, p.mb, p.minutes, p.sms, p.validity, p.active, p.code, p.created_at,
+            sc.name AS category_name
+     FROM packages p
+     LEFT JOIN service_categories sc ON sc.company_id = p.company_id AND sc.slug = p.category_id
+     WHERE p.company_id=$1 AND p.active=true
+     ORDER BY p.category_id, p.price`,
     [req.params.id]
   );
   sendJson(res, 200, rows);
@@ -197,6 +211,31 @@ companiesRouter.put("/admin/companies/:id/status", requireAuth("super_admin"), a
   sendJson(res, 200, await queryOne(`SELECT ${COMPANY_COLUMNS} FROM companies WHERE id=$1`, [req.params.id]));
 });
 
+// Super-Admin-only, same reasoning as payment-number/provider-number: this
+// switches a whole provider from the USSD-dial flow to real-money SOMLINK
+// API calls on every future order, so it gets the strictest permission in
+// this file rather than the more delegable companies.manage used by the
+// general PUT above.
+companiesRouter.put("/admin/companies/:id/fulfillment-method", requireAuth("super_admin"), async (req, res) => {
+  const { fulfillmentMethod } = req.body;
+  if (!["ussd", "somlink"].includes(fulfillmentMethod)) {
+    return sendJson(res, 400, { error: "fulfillmentMethod must be ussd|somlink" });
+  }
+  const existing = await queryOne(`SELECT fulfillment_method FROM companies WHERE id=$1`, [req.params.id]);
+  if (!existing) return sendJson(res, 404, { error: "Company not found" });
+  await query(`UPDATE companies SET fulfillment_method=$1, updated_at=now() WHERE id=$2`, [fulfillmentMethod, req.params.id]);
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "update_fulfillment_method",
+    entityType: "company",
+    entityId: req.params.id,
+    oldValue: { fulfillmentMethod: existing.fulfillment_method },
+    newValue: { fulfillmentMethod },
+  });
+  broadcast({ type: "catalog.updated" });
+  sendJson(res, 200, await queryOne(`SELECT ${COMPANY_COLUMNS} FROM companies WHERE id=$1`, [req.params.id]));
+});
+
 companiesRouter.put("/admin/companies/:id/visibility", requirePermission("companies.manage"), async (req, res) => {
   const existing = await queryOne(`SELECT visible_customer_app, visible_agent_app FROM companies WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Company not found" });
@@ -276,10 +315,62 @@ packagesRouter.get("/admin/packages", requireStaff(), async (req, res) => {
 // non-blocking warning string for the caller to surface, rather than
 // failing the save: the Super Admin may be linking the template separately,
 // or genuinely wants to save a draft package before USSD Services is set up.
+//
+// Applies to every future package the same way, regardless of provider --
+// this is the one place that decides "can this package actually dial
+// today," so a brand-new company/template/package added tomorrow is
+// checked by the exact same logic as an existing one, with no
+// provider-specific branching. SOMLINK-fulfilled companies are skipped
+// entirely: they never use a USSD template at all (somlinkBundleId is
+// their equivalent link), so warning about a missing one would be a false
+// positive on every single one of their packages.
 async function templateWarningFor(companyId: string, packageName: string, ussdTemplateId: string | null): Promise<string | undefined> {
-  if (ussdTemplateId) return undefined;
-  const match = await matchTemplateByName(companyId, packageName);
-  return match ? undefined : "No USSD template matches this package yet — link one in USSD Services, or a customer paying for it will get stuck.";
+  const company = await queryOne<{ fulfillment_method: string; pin_encrypted: string | null }>(
+    `SELECT fulfillment_method, pin_encrypted FROM companies WHERE id=$1`,
+    [companyId]
+  );
+  if (company?.fulfillment_method === "somlink") return undefined;
+
+  let template: { status: string; device_id: string | null } | null = null;
+  if (ussdTemplateId) {
+    template = await queryOne<{ status: string; device_id: string | null }>(
+      `SELECT status, device_id FROM ussd_templates WHERE id=$1`,
+      [ussdTemplateId]
+    );
+  } else {
+    // Explicit linking is the primary method going forward -- name-matching
+    // is a legacy fallback, not something a new package should silently
+    // depend on. Even when the fallback DOES currently resolve a match,
+    // that's flagged too (distinctly from "no match at all"), since it's
+    // only ever one similarly-named future template away from breaking —
+    // exactly the ambiguity class matchTemplateByName's own tie-breaking
+    // now fails closed on instead of guessing.
+    const match = await matchTemplateByName(companyId, packageName);
+    if (!match) {
+      return "No USSD template matches this package yet — link one in USSD Services, or a customer paying for it will get stuck.";
+    }
+    return "This package has no USSD template explicitly linked — it currently resolves one only by matching its name, which can silently break if a similarly-named template is ever added. Link a template explicitly in USSD Services.";
+  }
+
+  if (!template) {
+    // ussdTemplateId was set but doesn't resolve to a real row -- shouldn't
+    // happen for a save that went through validateUssdTemplateId, but a
+    // template can be deleted out from under an existing package afterward.
+    return "This package's linked USSD template no longer exists — link a new one in USSD Services.";
+  }
+  if (template.status !== "enabled") {
+    return "This package's linked USSD template is currently disabled — it cannot dial until the template is re-enabled in USSD Services.";
+  }
+  if (!company?.pin_encrypted) {
+    return "This provider has no PIN configured yet — set one in USSD Services before a customer can pay for this package.";
+  }
+  if (!template.device_id) {
+    const routing = await queryOne(`SELECT 1 FROM sim_routing WHERE company_id=$1`, [companyId]);
+    if (!routing) {
+      return "This provider has no device/SIM routing configured, and this template isn't pinned to a specific device either — set one in SIM Routing before a customer can pay for this package.";
+    }
+  }
+  return undefined;
 }
 
 async function validateUssdTemplateId(companyId: string, ussdTemplateId: unknown): Promise<string | undefined> {
@@ -303,7 +394,7 @@ function numOrDefault(value: unknown, fallback: number | null): number | null {
 }
 
 packagesRouter.post("/admin/packages", requirePermission("packages.manage"), async (req, res) => {
-  const { companyId, categoryId, name, oldPrice, price, providerAmount, mb, minutes, sms, validity, code, ussdTemplateId } = req.body;
+  const { companyId, categoryId, name, oldPrice, price, providerAmount, mb, minutes, sms, validity, code, ussdTemplateId, somlinkBundleId } = req.body;
   if (!companyId || !categoryId || !name || price == null) {
     return sendJson(res, 400, { error: "companyId, categoryId, name, price are required" });
   }
@@ -324,10 +415,11 @@ packagesRouter.post("/admin/packages", requirePermission("packages.manage"), asy
   // column — unlike price, this field is optional so "" is a valid input.
   const providerAmountValue = providerAmount === "" || providerAmount == null ? null : providerAmount;
   const ussdTemplateIdValue = ussdTemplateId || null;
+  const somlinkBundleIdValue = numOrDefault(somlinkBundleId, null);
   await query(
-    `INSERT INTO packages (id, company_id, category_id, name, old_price, price, provider_amount, mb, minutes, sms, validity, code, ussd_template_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-    [id, companyId, categoryId, name, numOrDefault(oldPrice, price), price, providerAmountValue, numOrDefault(mb, 0), numOrDefault(minutes, 0), numOrDefault(sms, 0), validity ?? "", code ?? null, ussdTemplateIdValue]
+    `INSERT INTO packages (id, company_id, category_id, name, old_price, price, provider_amount, mb, minutes, sms, validity, code, ussd_template_id, somlink_bundle_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+    [id, companyId, categoryId, name, numOrDefault(oldPrice, price), price, providerAmountValue, numOrDefault(mb, 0), numOrDefault(minutes, 0), numOrDefault(sms, 0), validity ?? "", code ?? null, ussdTemplateIdValue, somlinkBundleIdValue]
   );
   const created = await queryOne(`SELECT * FROM packages WHERE id=$1`, [id]);
   await recordActivity({
@@ -367,6 +459,8 @@ packagesRouter.put("/admin/packages/:id", requirePermission("packages.manage"), 
   const rawProviderAmount = req.body.providerAmount !== undefined ? req.body.providerAmount : existing.provider_amount;
   const providerAmount = rawProviderAmount === "" || rawProviderAmount == null ? null : rawProviderAmount;
   const ussdTemplateId = req.body.ussdTemplateId !== undefined ? (req.body.ussdTemplateId || null) : existing.ussd_template_id;
+  const rawSomlinkBundleId = req.body.somlinkBundleId !== undefined ? req.body.somlinkBundleId : existing.somlink_bundle_id;
+  const somlinkBundleId = numOrDefault(rawSomlinkBundleId, null);
   if (
     req.body.categoryId !== undefined &&
     !(await queryOne(`SELECT id FROM service_categories WHERE company_id=$1 AND slug=$2`, [existing.company_id, categoryId]))
@@ -378,8 +472,8 @@ packagesRouter.put("/admin/packages/:id", requirePermission("packages.manage"), 
     if (templateError) return sendJson(res, 400, { error: templateError });
   }
   await query(
-    `UPDATE packages SET name=$1, category_id=$2, old_price=$3, price=$4, provider_amount=$5, mb=$6, minutes=$7, sms=$8, validity=$9, active=$10, code=$11, ussd_template_id=$12 WHERE id=$13`,
-    [name, categoryId, oldPrice, price, providerAmount, mb, minutes, sms, validity, Boolean(active), code ?? null, ussdTemplateId, req.params.id]
+    `UPDATE packages SET name=$1, category_id=$2, old_price=$3, price=$4, provider_amount=$5, mb=$6, minutes=$7, sms=$8, validity=$9, active=$10, code=$11, ussd_template_id=$12, somlink_bundle_id=$13 WHERE id=$14`,
+    [name, categoryId, oldPrice, price, providerAmount, mb, minutes, sms, validity, Boolean(active), code ?? null, ussdTemplateId, somlinkBundleId, req.params.id]
   );
   const updated = await queryOne(`SELECT * FROM packages WHERE id=$1`, [req.params.id]);
   await recordActivity({
@@ -416,19 +510,29 @@ packagesRouter.delete("/admin/packages/:id", requirePermission("packages.manage"
   sendJson(res, 200, { deactivated: true });
 });
 
-// Proactive: every active package that will fail generateUssdForOrder's
-// matching today — neither linked by id nor resolvable by the legacy
-// name-fallback — so a Super Admin can find and fix these BEFORE a real
+// Proactive: every active package that generateUssdForOrder cannot
+// successfully dial today, for ANY reason a Super Admin can actually fix —
+// no template match, a disabled linked template, a provider with no PIN
+// set, or a template with no device and no company-level SIM routing to
+// fall back on — so a Super Admin can find and fix these BEFORE a real
 // customer payment hits one, instead of after a stuck order is reported.
+// Delegates entirely to templateWarningFor (the same check surfaced inline
+// the moment a package is created/edited) rather than a separately
+// maintained predicate, so this listing can never drift out of sync with
+// what saving a package already warns about, and a brand-new provider or
+// package added tomorrow is covered automatically with no separate code
+// path to remember to update.
 packagesRouter.get("/admin/packages/missing-template", requireStaff(), async (_req, res) => {
-  sendJson(res, 200, await query(
+  const candidates = await query<any>(
     `SELECT p.*, c.name AS company_name FROM packages p
      JOIN companies c ON c.id = p.company_id AND c.deleted_at IS NULL
-     WHERE p.active = true AND p.ussd_template_id IS NULL
-       AND NOT EXISTS (
-         SELECT 1 FROM ussd_templates t WHERE t.company_id = p.company_id AND t.status='enabled'
-           AND (LOWER(t.service_name) = LOWER(p.name) OR POSITION(LOWER(t.service_name) IN LOWER(p.name)) > 0)
-       )
+     WHERE p.active = true
      ORDER BY c.name, p.name`
-  ));
+  );
+  const flagged: any[] = [];
+  for (const pkg of candidates) {
+    const templateWarning = await templateWarningFor(pkg.company_id, pkg.name, pkg.ussd_template_id);
+    if (templateWarning) flagged.push({ ...pkg, templateWarning });
+  }
+  sendJson(res, 200, flagged);
 });

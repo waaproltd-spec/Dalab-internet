@@ -12,6 +12,7 @@ import { creditCommissionIfNeeded } from "../utils/commissions.js";
 import { creditReferralBonusIfNeeded } from "../utils/referrals.js";
 import { refundRedeemedPointsIfNeeded } from "../utils/loyaltyPoints.js";
 import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
+import { normalizePhoneForUssd, formatUssdAmount } from "../utils/ussdFormatting.js";
 
 export const ussdRouter = Router();
 
@@ -80,6 +81,37 @@ function isValidSimSlot(value: unknown): value is number | null {
   return value === null || value === undefined || value === 1 || value === 2;
 }
 
+// deviceId/simSlot are only ever consumed as a pair (UssdOrchestrator.kt's
+// resolveSlot requires both non-null before it will use a template-level
+// override at all) -- setting just one is never an error today, it's
+// silently ignored in favor of the company-level SIM routing fallback, but
+// that's exactly the kind of "looks configured, isn't actually doing
+// anything" state a Super Admin has no way to notice from the dashboard
+// alone. Catching it at save time turns a silent no-op into a clear error
+// instead.
+function hasMismatchedDeviceSimPair(deviceId: unknown, simSlot: unknown): boolean {
+  const hasDevice = deviceId != null && deviceId !== "";
+  const hasSlot = simSlot != null;
+  return hasDevice !== hasSlot;
+}
+
+/** Whether an enabled template genuinely has *something* to dial through --
+ * either its own device+slot pin, or a company-level SIM routing entry to
+ * fall back on. Neither existing means every order this template ever
+ * generates a USSD string for is guaranteed to hit NO_SIM_CONFIGURED at
+ * dial time (SimRoutingRepository.simSlotFor returns NotConfigured) --
+ * worth telling the Super Admin the moment the template is saved, not
+ * after a customer's payment gets stuck on it. Never blocks the save (the
+ * device/SIM might legitimately be set up in a separate next step), same
+ * non-blocking-warning spirit as templateWarningFor in companies.routes.ts. */
+async function routingWarningFor(companyId: string, status: string, deviceId: string | null, simSlot: number | null): Promise<string | undefined> {
+  if (status !== "enabled") return undefined;
+  if (deviceId != null && simSlot != null) return undefined;
+  const routing = await queryOne(`SELECT 1 FROM sim_routing WHERE company_id=$1`, [companyId]);
+  if (routing) return undefined;
+  return "This provider has no device/SIM routing configured, and this template isn't pinned to a specific device either — set one in SIM Routing (or pin this template to a device) before a customer can pay for a package using it.";
+}
+
 // USSD Template management is Super-Admin-exclusive, not delegable via
 // devices.manage — these directly control what gets dialed on a customer's
 // behalf, same reasoning as the payment-gateway routes above.
@@ -92,6 +124,9 @@ ussdRouter.post("/admin/ussd-templates", requireAuth("super_admin"), async (req,
     return sendJson(res, 400, { error: "ussdCode must contain {number}, {amount}, and {pin} placeholders" });
   }
   if (!isValidSimSlot(simSlot)) return sendJson(res, 400, { error: "simSlot must be 1 or 2" });
+  if (hasMismatchedDeviceSimPair(deviceId, simSlot)) {
+    return sendJson(res, 400, { error: "deviceId and simSlot must be set together, or both left blank to use the provider's default SIM routing" });
+  }
   const company = await queryOne(`SELECT id FROM companies WHERE id=$1`, [companyId]);
   if (!company) return sendJson(res, 404, { error: "Company not found" });
   if (deviceId) {
@@ -116,7 +151,8 @@ ussdRouter.post("/admin/ussd-templates", requireAuth("super_admin"), async (req,
   // Always enabled on create (see the INSERT above) — a brand-new template
   // could be exactly what unblocks a currently-stuck order.
   await selfHealStuckOrders(companyId);
-  sendJson(res, 201, created);
+  const routingWarning = await routingWarningFor(companyId, "enabled", deviceId ?? null, simSlot ?? null);
+  sendJson(res, 201, { ...created, routingWarning });
 });
 
 ussdRouter.put("/admin/ussd-templates/:id", requireAuth("super_admin"), async (req, res) => {
@@ -132,6 +168,11 @@ ussdRouter.put("/admin/ussd-templates/:id", requireAuth("super_admin"), async (r
   if (req.body.simSlot !== undefined && !isValidSimSlot(req.body.simSlot)) {
     return sendJson(res, 400, { error: "simSlot must be 1 or 2" });
   }
+  const effectiveDeviceId = req.body.deviceId !== undefined ? (req.body.deviceId || null) : merged.device_id;
+  const effectiveSimSlot = req.body.simSlot !== undefined ? req.body.simSlot : merged.sim_slot;
+  if (hasMismatchedDeviceSimPair(effectiveDeviceId, effectiveSimSlot)) {
+    return sendJson(res, 400, { error: "deviceId and simSlot must be set together, or both left blank to use the provider's default SIM routing" });
+  }
   if (req.body.deviceId) {
     const device = await queryOne(`SELECT id FROM agent_devices WHERE id=$1`, [req.body.deviceId]);
     if (!device) return sendJson(res, 404, { error: "Device not found" });
@@ -143,8 +184,8 @@ ussdRouter.put("/admin/ussd-templates/:id", requireAuth("super_admin"), async (r
       req.body.ussdCode ?? merged.ussd_code,
       req.body.notes ?? merged.notes,
       req.body.status ?? merged.status,
-      req.body.deviceId !== undefined ? (req.body.deviceId || null) : merged.device_id,
-      req.body.simSlot !== undefined ? req.body.simSlot : merged.sim_slot,
+      effectiveDeviceId,
+      effectiveSimSlot,
       req.params.id,
     ]
   );
@@ -158,7 +199,8 @@ ussdRouter.put("/admin/ussd-templates/:id", requireAuth("super_admin"), async (r
     newValue: updated,
   });
   if (updated?.status === "enabled") await selfHealStuckOrders(updated.company_id);
-  sendJson(res, 200, updated);
+  const routingWarning = await routingWarningFor(updated!.company_id, updated!.status, updated!.device_id, updated!.sim_slot);
+  sendJson(res, 200, { ...updated, routingWarning });
 });
 
 ussdRouter.put("/admin/ussd-templates/:id/status", requireAuth("super_admin"), async (req, res) => {
@@ -215,6 +257,19 @@ ussdRouter.get("/admin/ussd-logs", requireStaff(), async (req, res) => {
  * (a) any package never migrated to an ID link, and (b) the missing-template
  * validation/listing in companies.routes.ts, so both stay provably in sync
  * with what generateUssdForOrder will actually do at dial time.
+ *
+ * The substring fallback below previously used Array.find() over a query
+ * with no ORDER BY — Postgres gives no ordering guarantee without one, so
+ * whenever a package's name matched more than one template as a substring
+ * (e.g. a company with both "Anfac" and "Anfac Plus" templates and a
+ * package literally named "Anfac Plus 5GB", which contains both names),
+ * the "first" match was effectively random and could silently generate the
+ * wrong provider's USSD code. Now the most specific (longest) matching
+ * template name wins; a genuine tie between two differently-named templates
+ * of equal length is treated as no match at all rather than guessed, same
+ * as a package with zero matches — both surface identically via
+ * templateWarningFor/GET /admin/packages/missing-template for a Super Admin
+ * to resolve with an explicit ussdTemplateId link.
  */
 export async function matchTemplateByName(companyId: string, packageName: string): Promise<{ id: string } | null> {
   const exact = await queryOne<{ id: string }>(
@@ -226,7 +281,13 @@ export async function matchTemplateByName(companyId: string, packageName: string
     `SELECT id, service_name FROM ussd_templates WHERE company_id=$1 AND status='enabled'`,
     [companyId]
   );
-  return candidates.find((t) => packageName.toLowerCase().includes(t.service_name.toLowerCase())) ?? null;
+  const lowerPackageName = packageName.toLowerCase();
+  const matches = candidates.filter((t) => lowerPackageName.includes(t.service_name.toLowerCase()));
+  if (matches.length === 0) return null;
+  const longestLength = Math.max(...matches.map((t) => t.service_name.length));
+  const longestMatches = matches.filter((t) => t.service_name.length === longestLength);
+  if (longestMatches.length > 1) return null;
+  return longestMatches[0];
 }
 
 /**
@@ -281,7 +342,12 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
   // and CheckoutScreen already collects sender/receiver as independent
   // fields. Falls back to sender_phone only for the (pre-existing) rare
   // order that somehow has no receiver_phone recorded.
-  const deliverTo = order.receiver_phone ?? order.sender_phone ?? "";
+  //
+  // normalizePhoneForUssd strips the 252 country code (and any leading 0) to
+  // the bare 9-digit local number every provider's USSD menu actually
+  // expects — previously the full "252XXXXXXXXX" number was dialed verbatim
+  // for every provider, since nothing in this function ever normalized it.
+  const deliverTo = normalizePhoneForUssd(order.receiver_phone ?? order.sender_phone ?? "");
   // order.amount is what the CUSTOMER paid (matched against incoming
   // payment SMS in smsLogs.routes.ts — it must stay the discounted price,
   // or a real payment SMS for the discounted amount would stop matching).
@@ -290,7 +356,13 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
   // packages.provider_amount at order-creation time. Falls back to
   // order.amount for a package that was never given a separate provider
   // amount (provider_amount is nullable — "no discount configured").
-  const providerAmount = order.provider_amount ?? order.amount;
+  //
+  // formatUssdAmount converts the decimal amount into the dollars[*cents]
+  // segments every provider's USSD menu expects — previously the raw
+  // decimal string (e.g. "0.10") was embedded directly, and "." isn't a
+  // valid USSD/MMI dial character, so every dial for every provider carried
+  // a malformed amount.
+  const providerAmountFormatted = formatUssdAmount(order.provider_amount ?? order.amount);
   // {packageCode}/{packageName} are optional — a template that doesn't
   // reference them is unaffected, .replace() is a no-op if the placeholder
   // isn't present in the string.
@@ -298,7 +370,7 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
     .replace("{number}", deliverTo)
     .replace("{customerNumber}", deliverTo)
     .replace("{receiverNumber}", deliverTo)
-    .replace("{amount}", String(providerAmount))
+    .replace("{amount}", providerAmountFormatted)
     .replace("{pin}", pin)
     .replace("{packageCode}", orderWithPackage?.package_code ?? "")
     .replace("{packageName}", orderWithPackage?.package_name ?? "")
@@ -310,7 +382,7 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
     .replace("{number}", deliverTo)
     .replace("{customerNumber}", deliverTo)
     .replace("{receiverNumber}", deliverTo)
-    .replace("{amount}", String(providerAmount))
+    .replace("{amount}", providerAmountFormatted)
     .replace("{pin}", "•".repeat(pin.length))
     .replace("{packageCode}", orderWithPackage?.package_code ?? "")
     .replace("{packageName}", orderWithPackage?.package_name ?? "")

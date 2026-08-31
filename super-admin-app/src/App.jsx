@@ -13,8 +13,13 @@ import {
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 
 // ---- DALAB INTERNET / Admin design tokens ----
+// INDIGO is the shared brand color, kept under its old name (avoids a
+// ~49-usage rename across this file) but now Dark Azure #003152 — same
+// value as the Customer App's kDarkAzure and the Agent App's colors.xml.
+// GREEN/amber/red/blue below stay separate: functional status colors, not
+// brand.
 const INK = "#0B1240";
-const INDIGO = "#1D2E8C";
+const INDIGO = "#003152";
 const INDIGO_SOFT = "#EEF0FB";
 const GREEN = "#16A34A";
 const SLATE = "#5B6389";
@@ -146,6 +151,9 @@ const DalabAdminApi = {
   companyLogoUrl: (id) => `${DALAB_API_BASE_URL}/companies/${id}/logo`,
   updateCompanyStatus: (id, status) => dalabAdminApiRequest(`/admin/companies/${id}/status`, { method: "PUT", body: { status } }),
   updateCompanyVisibility: (id, visibleCustomerApp, visibleAgentApp) => dalabAdminApiRequest(`/admin/companies/${id}/visibility`, { method: "PUT", body: { visibleCustomerApp, visibleAgentApp } }),
+  // 'ussd' (default) or 'somlink' — switches a company's whole fulfillment
+  // pipeline; super_admin only on the backend.
+  updateCompanyFulfillmentMethod: (id, fulfillmentMethod) => dalabAdminApiRequest(`/admin/companies/${id}/fulfillment-method`, { method: "PUT", body: { fulfillmentMethod } }),
   updatePaymentNumber: (id, paymentNumber, paymentUssdTemplate) => dalabAdminApiRequest(`/admin/companies/${id}/payment-number`, { method: "PUT", body: { paymentNumber, paymentUssdTemplate } }),
   updateProviderNumber: (id, providerNumber) => dalabAdminApiRequest(`/admin/companies/${id}/provider-number`, { method: "PUT", body: { providerNumber } }),
   getCompanyPaymentMethods: (companyId) => dalabAdminApiRequest(`/admin/companies/${companyId}/payment-methods`),
@@ -176,6 +184,8 @@ const DalabAdminApi = {
   },
   getOrderCounts: (companyId) => dalabAdminApiRequest(`/admin/orders/counts${companyId ? `?companyId=${companyId}` : ""}`),
   updateOrderStatus: (id, status) => dalabAdminApiRequest(`/admin/orders/${id}/status`, { method: "PUT", body: { status } }),
+  getOrderSomlinkStatus: (id) => dalabAdminApiRequest(`/admin/orders/${id}/somlink-status`),
+  retrySomlinkOrder: (id) => dalabAdminApiRequest(`/admin/orders/${id}/retry-somlink`, { method: "POST" }),
   getCustomers: (search) => dalabAdminApiRequest(`/admin/customers${search ? `?search=${search}` : ""}`),
   updateCustomer: (id, body) => dalabAdminApiRequest(`/admin/customers/${id}`, { method: "PUT", body }),
   deleteCustomer: (id) => dalabAdminApiRequest(`/admin/customers/${id}`, { method: "DELETE" }),
@@ -186,6 +196,10 @@ const DalabAdminApi = {
   getCustomerPinStatus: (id) => dalabAdminApiRequest(`/admin/customers/${id}/pin-status`),
   setCustomerPin: (id, pin) => dalabAdminApiRequest(`/admin/customers/${id}/pin`, { method: "PUT", body: { pin } }),
   resetCustomerPin: (id) => dalabAdminApiRequest(`/admin/customers/${id}/pin`, { method: "DELETE" }),
+  // Password Recovery: the server picks the new 4-digit Recovery PIN itself
+  // (never admin-typed) and returns it exactly once for the Super Admin to
+  // relay to the customer out-of-band — see customers.routes.ts.
+  generateCustomerPin: (id) => dalabAdminApiRequest(`/admin/customers/${id}/pin/generate`, { method: "POST" }),
   resetCustomerPassword: (id) => dalabAdminApiRequest(`/admin/customers/${id}/reset-password`, { method: "PUT" }),
   // eBadal wallet info override/unlock and exchange-limit overrides — both
   // customers.manage (delegable), unlike the PIN/password routes above.
@@ -200,8 +214,12 @@ const DalabAdminApi = {
   updatePromoImage: (id, body) => dalabAdminApiRequest(`/admin/promo-images/${id}`, { method: "PUT", body }),
   deletePromoImage: (id) => dalabAdminApiRequest(`/admin/promo-images/${id}`, { method: "DELETE" }),
   promoImageUrl: (id) => `${DALAB_API_BASE_URL}/promo-images/${id}/image`,
-  sendNotification: (type, title, body) => dalabAdminApiRequest("/admin/notifications/send", { method: "POST", body: { type, title, body } }),
-  getAdminNotifications: () => dalabAdminApiRequest("/admin/notifications"),
+  // Push-notification broadcast — one shared route the Agent App hits with
+  // the exact same body shape, so there is no capability difference between
+  // the two apps. targetType: 'single'|'multiple'|'all'|'recent';
+  // serviceFilter: 'all'|'internet'|'ebadal'|'reseller'.
+  broadcastNotification: (body) => dalabAdminApiRequest("/notifications/broadcast", { method: "POST", body }),
+  getNotificationCampaigns: () => dalabAdminApiRequest("/notifications/campaigns"),
   getReports: (range) => dalabAdminApiRequest(`/admin/reports?range=${range}`),
   // USSD Services
   getUssdTemplates: (companyId) => dalabAdminApiRequest(`/admin/ussd-templates${companyId ? `?companyId=${companyId}` : ""}`),
@@ -217,6 +235,18 @@ const DalabAdminApi = {
     dalabAdminApiRequest(`/admin/sim-routing/${companyId}/${deviceId}`, { method: "PUT", body: { simSlot, priority } }),
   deleteSimRouting: (companyId, deviceId) =>
     dalabAdminApiRequest(`/admin/sim-routing/${companyId}/${deviceId}`, { method: "DELETE" }),
+  // Reseller Withdraw's OWN SIM routing — deliberately separate from
+  // getSimRouting/setSimRouting/deleteSimRouting above (Internet Store/
+  // eBadal recharge's routing), so a company's withdrawal payout SIM can be
+  // managed independently of its recharge SIM.
+  getResellerWithdrawalSimRouting: () => dalabAdminApiRequest("/admin/reseller-withdrawal-sim-routing"),
+  setResellerWithdrawalSimRouting: (companyId, deviceId, simSlot, mobileNumber, active, priority) =>
+    dalabAdminApiRequest(`/admin/reseller-withdrawal-sim-routing/${companyId}/${deviceId}`, {
+      method: "PUT",
+      body: { simSlot, mobileNumber, active, priority },
+    }),
+  deleteResellerWithdrawalSimRouting: (companyId, deviceId) =>
+    dalabAdminApiRequest(`/admin/reseller-withdrawal-sim-routing/${companyId}/${deviceId}`, { method: "DELETE" }),
   getUssdLogs: (orderId) => dalabAdminApiRequest(`/admin/ussd-logs${orderId ? `?orderId=${orderId}` : ""}`),
   getSmsLogs: (filters = {}) => {
     const qs = new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([, v]) => v))).toString();
@@ -248,6 +278,21 @@ const DalabAdminApi = {
     return dalabAdminApiRequest(`/admin/execution-logs${qs ? `?${qs}` : ""}`);
   },
   getOrderDeliveryStatus: (orderId) => dalabAdminApiRequest(`/admin/orders/${orderId}/delivery-status`),
+  // Admin > Offline (Rukumo) — read-only projections over the exact same
+  // orders/payment_transactions/ussd_dial_attempts/sim_routing/agent_devices
+  // rows Online already uses, scoped to channel='offline_auto'. See
+  // offlineAdmin.routes.ts.
+  getOfflineCustomers: (search) => dalabAdminApiRequest(`/admin/offline/customers${search ? `?search=${encodeURIComponent(search)}` : ""}`),
+  getOfflineOrders: (filters = {}) => {
+    const qs = new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([, v]) => v))).toString();
+    return dalabAdminApiRequest(`/admin/offline/orders${qs ? `?${qs}` : ""}`);
+  },
+  getOfflineOrderDetail: (id) => dalabAdminApiRequest(`/admin/offline/orders/${id}`),
+  getOfflinePaymentTransactions: (filters = {}) => {
+    const qs = new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([, v]) => v))).toString();
+    return dalabAdminApiRequest(`/admin/offline/payment-transactions${qs ? `?${qs}` : ""}`);
+  },
+  getOfflineStats: (companyId) => dalabAdminApiRequest(`/admin/offline/stats${companyId ? `?companyId=${companyId}` : ""}`),
   // Roles & Permissions (Super Admin only, enforced server-side too)
   getAdminUsers: () => dalabAdminApiRequest("/admin/users"),
   createAdminUser: (body) => dalabAdminApiRequest("/admin/users", { method: "POST", body }),
@@ -310,6 +355,19 @@ const DalabAdminApi = {
   getFeedbackCategories: () => dalabAdminApiRequest("/admin/feedback/categories"),
   getFeedbackPendingCount: () => dalabAdminApiRequest("/admin/feedback/pending-count"),
   updateFeedback: (id, body) => dalabAdminApiRequest(`/admin/feedback/${id}`, { method: "PUT", body }),
+  // Agent Support — real-time FIFO queue (see admin-backend-ts's
+  // support.routes.ts). getSupportStatus/setSupportStatus are this admin's
+  // own online/offline toggle; everything else operates on the shared queue.
+  getSupportStatus: () => dalabAdminApiRequest("/admin/support/status"),
+  setSupportStatus: (online) => dalabAdminApiRequest("/admin/support/status", { method: "PUT", body: { online } }),
+  getSupportQueue: () => dalabAdminApiRequest("/admin/support/queue"),
+  getSupportConversation: (id) => dalabAdminApiRequest(`/admin/support/conversations/${id}`),
+  claimNextSupportConversation: () => dalabAdminApiRequest("/admin/support/claim-next", { method: "POST" }),
+  claimSupportConversation: (id) => dalabAdminApiRequest(`/admin/support/conversations/${id}/claim`, { method: "POST" }),
+  sendSupportMessage: (id, message) =>
+    dalabAdminApiRequest(`/admin/support/conversations/${id}/messages`, { method: "POST", body: { message } }),
+  resolveSupportConversation: (id) => dalabAdminApiRequest(`/admin/support/conversations/${id}/resolve`, { method: "POST" }),
+  closeSupportConversation: (id) => dalabAdminApiRequest(`/admin/support/conversations/${id}/close`, { method: "POST" }),
   // Referral / Loyalty Points — reuses the existing Macaash balance/ledger;
   // this dashboard only manages the reward rule and views referral activity.
   getReferralRules: () => dalabAdminApiRequest("/admin/referral-rules"),
@@ -375,8 +433,6 @@ const DalabAdminApi = {
   updateResellerPaymentNumber: (numberId, body) => dalabAdminApiRequest(`/admin/payment-numbers/${numberId}`, { method: "PUT", body }),
   setResellerPaymentNumberStatus: (numberId) => dalabAdminApiRequest(`/admin/payment-numbers/${numberId}/status`, { method: "PUT" }),
   deleteResellerPaymentNumber: (numberId) => dalabAdminApiRequest(`/admin/payment-numbers/${numberId}`, { method: "DELETE" }),
-  getResellerCompanyRates: () => dalabAdminApiRequest("/admin/reseller-company-rates"),
-  setResellerCompanyRate: (companyId, rate) => dalabAdminApiRequest(`/admin/reseller-company-rates/${companyId}`, { method: "PUT", body: { rate } }),
   getResellerOrders: (status) => dalabAdminApiRequest(`/admin/reseller-orders${status ? `?status=${status}` : ""}`),
   confirmResellerOrder: (id) => dalabAdminApiRequest(`/admin/reseller-orders/${id}/confirm`, { method: "PUT" }),
   completeResellerOrder: (id) => dalabAdminApiRequest(`/admin/reseller-orders/${id}/complete`, { method: "PUT" }),
@@ -387,8 +443,20 @@ const DalabAdminApi = {
   failResellerDeposit: (id) => dalabAdminApiRequest(`/admin/reseller-deposits/${id}/fail`, { method: "PUT" }),
   getResellerWithdrawals: (status) => dalabAdminApiRequest(`/admin/reseller-withdrawals${status ? `?status=${status}` : ""}`),
   markResellerWithdrawalSent: (id) => dalabAdminApiRequest(`/admin/reseller-withdrawals/${id}/mark-sent`, { method: "PUT" }),
-  completeResellerWithdrawal: (id) => dalabAdminApiRequest(`/admin/reseller-withdrawals/${id}/complete`, { method: "PUT" }),
+  completeResellerWithdrawal: (id, smsLogId) => dalabAdminApiRequest(`/admin/reseller-withdrawals/${id}/complete`, { method: "PUT", body: smsLogId ? { smsLogId } : {} }),
   failResellerWithdrawal: (id) => dalabAdminApiRequest(`/admin/reseller-withdrawals/${id}/fail`, { method: "PUT" }),
+  getResellerDepositMethods: () => dalabAdminApiRequest("/admin/reseller-deposit-methods"),
+  setResellerDepositMethod: (method, body) => dalabAdminApiRequest(`/admin/reseller-deposit-methods/${method}`, { method: "PUT", body }),
+  setCompanyPayoutUssdTemplate: (companyId, payoutUssdTemplate) =>
+    dalabAdminApiRequest(`/admin/companies/${companyId}/payout-ussd-template`, { method: "PUT", body: { payoutUssdTemplate } }),
+  getResellerWithdrawalInteractivePayout: () => dalabAdminApiRequest("/admin/reseller-withdrawal-interactive-payout"),
+  setCompanyPayoutInteractiveSteps: (companyId, body) =>
+    dalabAdminApiRequest(`/admin/companies/${companyId}/payout-interactive-steps`, { method: "PUT", body }),
+  setCompanyPayoutInteractivePin: (companyId, pin) =>
+    dalabAdminApiRequest(`/admin/companies/${companyId}/payout-interactive-pin`, { method: "PUT", body: { pin } }),
+  getResellerWithdrawalCommissions: () => dalabAdminApiRequest("/admin/reseller-withdrawal-commissions"),
+  setResellerWithdrawalCommission: (companyId, commissionPercentage) =>
+    dalabAdminApiRequest(`/admin/reseller-withdrawal-commissions/${companyId}`, { method: "PUT", body: { commissionPercentage } }),
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -410,6 +478,7 @@ const PERMISSION_OPTIONS = [
   { key: "finance.manage", label: "Manage financial expenses" },
   { key: "exchange.manage", label: "Manage money exchange" },
   { key: "resellers.manage", label: "Manage resellers" },
+  { key: "support.manage", label: "Handle Agent Support conversations" },
 ];
 
 // Normalizes a GET /admin/companies row into the shape every section of this
@@ -421,7 +490,7 @@ function normalizeCompany(c) {
     id: c.id,
     name: c.name,
     group: c.groupNumber,
-    color: c.colorHex || "#1D2E8C",
+    color: c.colorHex || "#003152",
     status: c.status === "online" ? "enabled" : "disabled",
     payNumber: c.paymentNumber || "Not set",
     providerNumber: c.providerNumber || "Not set",
@@ -694,10 +763,12 @@ const NAV = [
   { id: "packages", label: "Packages & Pricing", icon: Package },
   { id: "categories", label: "Categories", icon: Tags },
   { id: "orders", label: "Orders", icon: ShoppingCart },
+  { id: "offline", label: "Offline (Rukumo)", icon: WifiOff },
   { id: "customers", label: "Customers", icon: Users },
   { id: "agents", label: "Agents", icon: UserCog },
   { id: "notifications", label: "Notifications", icon: Bell },
   { id: "feedback", label: "Feedback & Suggestions", icon: Lightbulb },
+  { id: "support", label: "Agent Support", icon: MessageCircle },
   { id: "promo-images", label: "Promo Images", icon: ImageIcon },
   { id: "devices", label: "Device & USSD", icon: SmartphoneNfc },
   { id: "sms-logs", label: "SMS Monitor", icon: MessageSquare },
@@ -1497,7 +1568,7 @@ function FinancialOverview({ admin }) {
   );
 }
 
-const NEW_COMPANY_FORM = { name: "", group: 1, color: "#1D2E8C", slug: "", description: "", sortOrder: 0, status: "enabled", logoBase64: null };
+const NEW_COMPANY_FORM = { name: "", group: 1, color: "#003152", slug: "", description: "", sortOrder: 0, status: "enabled", logoBase64: null };
 
 function Companies({ companies, setCompanies, refreshCompanies, admin }) {
   const [editing, setEditing] = useState(null);
@@ -1587,6 +1658,21 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
     }
   };
 
+  // Switches a whole provider between the USSD-dial flow and the SOMLINK
+  // API — a real-money fulfillment change, so this is wired directly (not
+  // bundled into the general Save button) and only ever shown to a
+  // super_admin, matching the backend's own restriction on this route.
+  const setFulfillmentMethod = async (c, fulfillmentMethod) => {
+    setForm((prev) => ({ ...prev, fulfillmentMethod }));
+    setCompanies((prev) => prev.map((x) => (x.id === c.id ? { ...x, fulfillmentMethod } : x))); // optimistic
+    try {
+      await DalabAdminApi.updateCompanyFulfillmentMethod(c.id, fulfillmentMethod);
+    } catch (err) {
+      setError(err.message || "Could not update fulfillment method.");
+      refreshCompanies();
+    }
+  };
+
   const remove = async (c) => {
     if (!window.confirm(`Delete ${c.name}? This can't be undone.`)) return;
     if (DALAB_API_ENABLED) {
@@ -1632,6 +1718,7 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
                   <div style={{ fontWeight: 700, fontSize: 14, color: INK }}>{c?.name || "Unnamed company"}</div>
                   <div style={{ fontSize: 11.5, color: MUTE }}>{c.gateway}{c.description ? ` · ${c.description}` : ""}</div>
                 </div>
+                {c.fulfillmentMethod === "somlink" && <Badge tone="blue">SOMLINK</Badge>}
                 <Badge tone={c.status === "enabled" ? "green" : "red"}>{c.status === "enabled" ? "Enabled" : "Disabled"}</Badge>
                 {canManageStatus && (
                   <button onClick={() => toggle(c)} title="Enable / disable" style={{ background: "none", border: "none", cursor: "pointer" }}>
@@ -1670,7 +1757,7 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
 
           <Field label="Provider logo (image)">
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{ width: 44, height: 44, borderRadius: 10, background: form.color || "#1D2E8C", display: "flex", alignItems: "center", justifyContent: "center", padding: 6, overflow: "hidden", flexShrink: 0 }}>
+              <div style={{ width: 44, height: 44, borderRadius: 10, background: form.color || "#003152", display: "flex", alignItems: "center", justifyContent: "center", padding: 6, overflow: "hidden", flexShrink: 0 }}>
                 {form.logoBase64 ? (
                   <img src={form.logoBase64} alt="Logo preview" style={{ maxHeight: "100%", maxWidth: "100%", objectFit: "contain" }} />
                 ) : editing !== "new" && form.hasLogo ? (
@@ -1712,6 +1799,25 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
           <Field label="Brand color">
             <input type="color" style={{ ...inputStyle, padding: 4, height: 40 }} value={form.color} onChange={(e) => setForm({ ...form, color: e.target.value })} />
           </Field>
+
+          {DALAB_API_ENABLED && editing !== "new" && admin?.role === "super_admin" && (
+            <Field label="Fulfillment method">
+              <select
+                style={inputStyle}
+                value={form.fulfillmentMethod || "ussd"}
+                onChange={(e) => setFulfillmentMethod({ id: editing }, e.target.value)}
+              >
+                <option value="ussd">USSD (dial via agent SIM — default)</option>
+                <option value="somlink">SOMLINK (automatic data API)</option>
+              </select>
+              <div style={{ fontSize: 11, color: MUTE, marginTop: 4 }}>
+                SOMLINK delivers data automatically through an API instead of dialing a USSD code — every package under
+                this provider needs its own SOMLINK Bundle ID set in Packages, or orders will have nothing to deliver.
+                This takes effect immediately, not on Save.
+              </div>
+            </Field>
+          )}
+
           <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
             <Button onClick={save} icon={Check} disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
             <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
@@ -1859,6 +1965,7 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
   const [categories, setCategories] = useState([]);
   const [templates, setTemplates] = useState([]);
   const [companyFilter, setCompanyFilter] = useState("all");
+  const [search, setSearch] = useState("");
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({});
   const [error, setError] = useState("");
@@ -1890,11 +1997,33 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
     DalabAdminApi.getUssdTemplates(form.companyId).then(setTemplates).catch(() => setTemplates([]));
   }, [editing, form.companyId]);
 
-  const shown = DALAB_API_ENABLED
+  const companyFiltered = DALAB_API_ENABLED
     ? livePackages
     : companyFilter === "all"
       ? packages
       : packages.filter((p) => p.company === companies.find((c) => c.id === companyFilter)?.name);
+
+  // Client-side only -- companyFiltered is already fully loaded in memory
+  // (live-fetched or mock), so this filters instantly as the Admin types
+  // with zero extra API calls, and stacks on top of the company pills
+  // above rather than replacing them. Matches package name, the company/
+  // operator name (resolved the same way the table's own Company column
+  // already does, so a mock-mode package's companyId-only shape still
+  // matches), and price (both current and old/struck-through price, as
+  // plain text so "22.85" or "0.09" match without needing an exact
+  // $-prefixed or 2-decimal string).
+  const searchTerm = search.trim().toLowerCase();
+  const shown = searchTerm
+    ? companyFiltered.filter((p) => {
+        const companyName = (p.company || companies.find((c) => c.id === p.companyId)?.name || "").toLowerCase();
+        const priceText = `${p.price ?? ""} ${p.oldPrice ?? p.old ?? ""}`.toLowerCase();
+        return (
+          (p.name || "").toLowerCase().includes(searchTerm) ||
+          companyName.includes(searchTerm) ||
+          priceText.includes(searchTerm)
+        );
+      })
+    : companyFiltered;
 
   const openNew = () => {
     const companyId = companyFilter !== "all" ? companyFilter : companies[0]?.id || "";
@@ -1990,6 +2119,16 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
             border: `1px solid ${companyFilter === c.id ? INDIGO : BORDER}`, background: companyFilter === c.id ? INDIGO : "#fff", color: companyFilter === c.id ? "#fff" : SLATE,
           }}>{c.name}</button>
         ))}
+      </div>
+
+      <div style={{ position: "relative", maxWidth: 320, marginBottom: 12 }}>
+        <Search size={14} color={MUTE} style={{ position: "absolute", left: 10, top: 10 }} />
+        <input
+          style={{ ...inputStyle, paddingLeft: 30, width: "100%" }}
+          placeholder="Search by package name, company, or price"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
       </div>
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
@@ -2096,6 +2235,22 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
               <div style={{ fontSize: 11, color: MUTE, marginTop: 4 }}>
                 Links this package directly to the template that fulfills it — the recommended way. Leave as "Auto-match by name" only for
                 legacy packages that already work without one; a customer paying for a package with no matching template ends up stuck.
+              </div>
+            </Field>
+          )}
+          {companies.find((c) => c.id === form.companyId)?.fulfillmentMethod === "somlink" && (
+            <Field label="SOMLINK Bundle ID">
+              <input
+                type="number"
+                step="1"
+                min="0"
+                style={inputStyle}
+                value={form.somlinkBundleId ?? ""}
+                onChange={(e) => setForm({ ...form, somlinkBundleId: e.target.value })}
+                placeholder="e.g. 20061"
+              />
+              <div style={{ fontSize: 11, color: MUTE, marginTop: 4 }}>
+                This provider is set to SOMLINK — required for this package to be deliverable. Must match SOMLINK's own bundle catalog ID exactly (from your SOMLINK account documentation), or orders for this package cannot be fulfilled.
               </div>
             </Field>
           )}
@@ -2266,6 +2421,11 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
   const [localOrder, setLocalOrder] = useState(order);
   const [visible, setVisible] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [somlinkStatus, setSomlinkStatus] = useState(null);
+  const [somlinkStatusError, setSomlinkStatusError] = useState("");
+  const [retryingSomlink, setRetryingSomlink] = useState(false);
+  const [retrySomlinkError, setRetrySomlinkError] = useState("");
+  const isSomlink = order?.companyFulfillmentMethod === "somlink";
 
   // Mount closed, then flip to open on the next frame so the browser
   // actually animates the transform/opacity transition instead of snapping
@@ -2311,6 +2471,39 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
     if (attempts.length > 0 || !order.ussdGenerated || order.ussdGenerationFailedReason) return;
     DalabAdminApi.getOrderDeliveryStatus(order.id).then(setDeliveryStatus).catch(() => {});
   }, [order?.id, attempts.length, order?.ussdGenerated, order?.ussdGenerationFailedReason]);
+
+  // SOMLINK-fulfilled orders have no USSD dial history — this is their
+  // equivalent panel, sourced from somlink_transactions instead.
+  useEffect(() => {
+    setSomlinkStatus(null);
+    setSomlinkStatusError("");
+    if (!order || !DALAB_API_ENABLED || !isSomlink) return;
+    DalabAdminApi.getOrderSomlinkStatus(order.id)
+      .then(setSomlinkStatus)
+      .catch((err) => setSomlinkStatusError(err.message || "Could not load SOMLINK delivery status."));
+  }, [order?.id, isSomlink]);
+
+  // Deliberately does NOT go through the onStatus/updateOrderStatus prop —
+  // that's the generic manual status-override route. The real outcome here
+  // is decided entirely server-side by POST retry-somlink itself (which
+  // only completes the order on a confirmed SOMLINK success, via the same
+  // completeOrderById every other completion path uses); this just reloads
+  // what the server actually did, in place, so the drawer reflects it
+  // without a second, separate status-changing call.
+  const retrySomlinkFromDrawer = async () => {
+    setRetryingSomlink(true);
+    setRetrySomlinkError("");
+    try {
+      const result = await DalabAdminApi.retrySomlinkOrder(order.id);
+      setLocalOrder(result.order);
+      const refreshed = await DalabAdminApi.getOrderSomlinkStatus(order.id);
+      setSomlinkStatus(refreshed);
+    } catch (err) {
+      setRetrySomlinkError(err.message || "Could not retry SOMLINK delivery for this order.");
+    } finally {
+      setRetryingSomlink(false);
+    }
+  };
 
   if (!order) return null;
   const row = (label, value, mono) => (
@@ -2442,50 +2635,101 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
           </div>
         )}
 
-        <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>USSD DIALER</div>
-        {order.ussdGenerated ? (
-          <div style={{ background: "#0B1240", borderRadius: 10, padding: 12, marginTop: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-            <span style={{ color: "#22B24C", fontFamily: "monospace", fontSize: 13.5, fontWeight: 700, wordBreak: "break-all" }}>{order.ussdGenerated}</span>
-            <button
-              onClick={() => navigator.clipboard?.writeText(order.ussdGenerated)}
-              title="Copy"
-              style={{ background: "none", border: "none", cursor: "pointer", flexShrink: 0 }}
-            >
-              <Copy size={15} color="#9AA1D4" />
-            </button>
-          </div>
-        ) : order.ussdGenerationFailedReason ? (
-          <div style={{ marginTop: 8, fontSize: 12.5, color: "#C81E2C", fontWeight: 600 }}>
-            USSD generation failed: {order.ussdGenerationFailedReason}
-          </div>
+        {isSomlink ? (
+          <>
+            <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>SOMLINK ORDER STATUS</div>
+            {somlinkStatusError ? (
+              <div style={{ marginTop: 8, fontSize: 12, color: "#C81E2C" }}>{somlinkStatusError}</div>
+            ) : !somlinkStatus?.transaction ? (
+              <div style={{ marginTop: 8, fontSize: 12, color: MUTE }}>No SOMLINK delivery attempt recorded for this order yet.</div>
+            ) : (
+              <div style={{ marginTop: 8, padding: "10px 12px", borderRadius: 8, border: `1px solid ${BORDER}` }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11.5 }}>
+                  <Badge tone={somlinkStatus.transaction.status === "success" ? "green" : somlinkStatus.transaction.status === "failed" ? "red" : "amber"}>
+                    {somlinkStatus.transaction.status}
+                  </Badge>
+                  <span style={{ color: MUTE }}>bundle {somlinkStatus.transaction.bundleId}</span>
+                  <span style={{ color: MUTE, marginLeft: "auto" }}>{formatDateTime(somlinkStatus.transaction.requestedAt)}</span>
+                </div>
+                {(somlinkStatus.transaction.responseMessage || somlinkStatus.transaction.errorDetail) && (
+                  <div style={{ fontSize: 11.5, color: INK, marginTop: 6 }}>
+                    {somlinkStatus.transaction.responseCode != null ? `Code ${somlinkStatus.transaction.responseCode}: ` : ""}
+                    {somlinkStatus.transaction.responseMessage || somlinkStatus.transaction.errorDetail}
+                  </div>
+                )}
+                {somlinkStatus.transaction.status === "success" && (
+                  <div style={{ fontSize: 11, color: MUTE, marginTop: 4 }}>
+                    Paid ${Number(somlinkStatus.transaction.paidAmount ?? 0).toFixed(2)} · wallet balance after: ${Number(somlinkStatus.transaction.balanceAfter ?? 0).toFixed(2)}
+                  </div>
+                )}
+              </div>
+            )}
+            {retrySomlinkError && <div style={{ color: "#C81E2C", fontSize: 12, marginTop: 8 }}>{retrySomlinkError}</div>}
+            {localOrder.status === "in_progress" && ["failed", "ambiguous"].includes(somlinkStatus?.transaction?.status) && (
+              <div style={{ marginTop: 10 }}>
+                {somlinkStatus.transaction.status === "ambiguous" && (
+                  <div style={{ fontSize: 11, color: "#A9720A", marginBottom: 6 }}>
+                    The outcome of the last attempt is unknown — confirm via SOMLINK's own dashboard that it did NOT go through before retrying, to avoid a duplicate charge.
+                  </div>
+                )}
+                <Button variant="primary" icon={RefreshCw} onClick={retrySomlinkFromDrawer} disabled={retryingSomlink}>
+                  {retryingSomlink ? "Retrying..." : "Retry SOMLINK"}
+                </Button>
+              </div>
+            )}
+          </>
         ) : (
-          <div style={{ marginTop: 8, fontSize: 12, color: MUTE }}>
-            Not generated yet — this happens automatically once the order is approved (moved to In Progress), provided a matching template and a provider PIN are set up in Device & USSD.
-          </div>
+          <>
+            <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>USSD DIALER</div>
+            {order.ussdGenerated ? (
+              <div style={{ background: "#0B1240", borderRadius: 10, padding: 12, marginTop: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                <span style={{ color: "#22B24C", fontFamily: "monospace", fontSize: 13.5, fontWeight: 700, wordBreak: "break-all" }}>{order.ussdGenerated}</span>
+                <button
+                  onClick={() => navigator.clipboard?.writeText(order.ussdGenerated)}
+                  title="Copy"
+                  style={{ background: "none", border: "none", cursor: "pointer", flexShrink: 0 }}
+                >
+                  <Copy size={15} color="#9AA1D4" />
+                </button>
+              </div>
+            ) : order.ussdGenerationFailedReason ? (
+              <div style={{ marginTop: 8, fontSize: 12.5, color: "#C81E2C", fontWeight: 600 }}>
+                USSD generation failed: {order.ussdGenerationFailedReason}
+              </div>
+            ) : (
+              <div style={{ marginTop: 8, fontSize: 12, color: MUTE }}>
+                Not generated yet — this happens automatically once the order is approved (moved to In Progress), provided a matching template and a provider PIN are set up in Device & USSD.
+              </div>
+            )}
+          </>
         )}
 
         <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>DATE & TIME</div>
         {row("Created", formatDateTime(order.createdAt), true)}
         {order.completedAt && row("Completed", formatDateTime(order.completedAt), true)}
 
-        <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>USSD EXECUTION HISTORY</div>
-        {attemptsError ? (
-          <div style={{ marginTop: 8, fontSize: 12, color: "#C81E2C" }}>{attemptsError}</div>
-        ) : attempts.length === 0 ? (
-          <div style={{ marginTop: 8, fontSize: 12, color: MUTE }}>
-            {waitingForDeviceMessage(deliveryStatus) || "No dial attempts recorded for this order yet."}
-          </div>
-        ) : (
-          <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
-            {attempts.map((a) => (
-              <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: `1px solid ${BORDER}`, fontSize: 11.5 }}>
-                <Badge tone={a.status === "success" ? "green" : a.status === "failed" ? "red" : "amber"}>{a.status}</Badge>
-                <span style={{ color: MUTE }}>SIM {a.simSlot ?? "—"}</span>
-                <span style={{ color: MUTE }}>attempt #{a.attemptNumber}</span>
-                <span style={{ color: MUTE, marginLeft: "auto" }}>{formatDateTime(a.createdAt)}</span>
+        {!isSomlink && (
+          <>
+            <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>USSD EXECUTION HISTORY</div>
+            {attemptsError ? (
+              <div style={{ marginTop: 8, fontSize: 12, color: "#C81E2C" }}>{attemptsError}</div>
+            ) : attempts.length === 0 ? (
+              <div style={{ marginTop: 8, fontSize: 12, color: MUTE }}>
+                {waitingForDeviceMessage(deliveryStatus) || "No dial attempts recorded for this order yet."}
               </div>
-            ))}
-          </div>
+            ) : (
+              <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                {attempts.map((a) => (
+                  <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: `1px solid ${BORDER}`, fontSize: 11.5 }}>
+                    <Badge tone={a.status === "success" ? "green" : a.status === "failed" ? "red" : "amber"}>{a.status}</Badge>
+                    <span style={{ color: MUTE }}>SIM {a.simSlot ?? "—"}</span>
+                    <span style={{ color: MUTE }}>attempt #{a.attemptNumber}</span>
+                    <span style={{ color: MUTE, marginLeft: "auto" }}>{formatDateTime(a.createdAt)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
         )}
 
         {reverseError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginTop: 14 }}>{reverseError}</div>}
@@ -2874,6 +3118,7 @@ function Orders({ orders, setOrders, companies, admin }) {
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <div style={{ width: 8, height: 8, borderRadius: 4, background: o.companyColor || INDIGO, flexShrink: 0 }} />
                     <span style={{ fontWeight: 700, fontSize: 13.5, color: INK }}>{o.companyName}</span>
+                    {o.companyFulfillmentMethod === "somlink" && <Badge tone="blue">SOMLINK</Badge>}
                   </div>
                   <Badge tone={displayOrderTone(o)}>{displayOrderStatus(o)}</Badge>
                 </div>
@@ -2956,6 +3201,11 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
   const [pinDraft, setPinDraft] = useState("");
   const [pinError, setPinError] = useState("");
   const [pinSaving, setPinSaving] = useState(false);
+  // Password Recovery's "Generate New PIN" result — holds the one-time
+  // plaintext 4-digit Recovery PIN the server just generated, exactly like
+  // passwordResetResult below does for temp passwords, so it can be shown to
+  // the Super Admin to relay to the customer out-of-band.
+  const [generatedPin, setGeneratedPin] = useState(null); // { customer, pin } | null
   // No self-service "forgot password" (no email/SMS gateway to deliver a
   // reset link/code) — this is the only way a locked-out customer gets back
   // in. passwordResetResult holds the one-time plaintext temp password so
@@ -3048,6 +3298,27 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
       setPinTarget(null);
     } catch (err) {
       setPinError(err.message || "Could not save PIN.");
+    } finally {
+      setPinSaving(false);
+    }
+  };
+
+  // Password Recovery: "Generate New PIN" — the server picks the value, not
+  // the admin (unlike savePin above, which sets a specific typed-in value).
+  // A generated PIN immediately supersedes whatever the customer had before,
+  // so no separate confirm dialog — the Super Admin only reaches this by
+  // already having decided to reset it (matching the Contact Admin flow the
+  // Customer App sends a locked-out customer through).
+  const generatePin = async () => {
+    setPinSaving(true);
+    setPinError("");
+    try {
+      const result = await DalabAdminApi.generateCustomerPin(pinTarget.id);
+      setCustomers((prev) => prev.map((x) => (x.id === pinTarget.id ? { ...x, pinSet: true } : x)));
+      setGeneratedPin({ customer: pinTarget, pin: result.pin });
+      setPinTarget(null);
+    } catch (err) {
+      setPinError(err.message || "Could not generate a new PIN.");
     } finally {
       setPinSaving(false);
     }
@@ -3323,15 +3594,24 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
       )}
 
       {pinTarget && (
-        <Modal title={`PIN — ${pinTarget.name || pinTarget.phone}`} onClose={() => setPinTarget(null)}>
+        <Modal title={`Password Recovery — ${pinTarget.name || pinTarget.phone}`} onClose={() => setPinTarget(null)}>
           <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>
-            Optional. If this customer forgets their PIN, direct them to Support — there is no self-service reset.
-            The PIN is stored as a secure hash; it can never be viewed once set, only replaced.
+            The Customer App's Forgot Password screen sends a customer who's forgotten their Recovery PIN here.
+            The PIN is stored as a secure hash and can never be viewed once set — only replaced.
           </div>
-          <Field label="PIN status">
+          <Field label="Recovery PIN status">
             <Badge tone={pinTarget.pinSet ? "green" : "amber"}>{pinTarget.pinSet ? "Set" : "Not set"}</Badge>
           </Field>
-          <Field label={pinTarget.pinSet ? "New PIN (replaces the current one)" : "Create PIN"}>
+          <div style={{ marginBottom: 16, padding: 12, borderRadius: 10, background: "#FAFBFF", border: "1px solid #E5E8F4" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: INK, marginBottom: 4 }}>Reset Recovery PIN</div>
+            <div style={{ fontSize: 12, color: MUTE, marginBottom: 10 }}>
+              Generates a brand-new 4-digit Recovery PIN and immediately invalidates the old one. Shown once, here, for you to relay to the customer yourself (call, WhatsApp, etc.).
+            </div>
+            <Button onClick={generatePin} icon={pinSaving ? Loader2 : RefreshCw} spin={pinSaving} disabled={pinSaving}>
+              Generate New PIN
+            </Button>
+          </div>
+          <Field label={pinTarget.pinSet ? "Or set a specific PIN (replaces the current one)" : "Or create a specific PIN"}>
             <input
               type="password" inputMode="numeric" maxLength={8} placeholder="3-8 digits"
               style={inputStyle}
@@ -3341,14 +3621,36 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
           </Field>
           {pinError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{pinError}</div>}
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <Button onClick={savePin} icon={pinSaving ? Loader2 : Check} spin={pinSaving} disabled={pinSaving || !pinDraft}>
+            <Button variant="ghost" onClick={savePin} icon={pinSaving ? Loader2 : Check} spin={pinSaving} disabled={pinSaving || !pinDraft}>
               {pinTarget.pinSet ? "Change PIN" : "Create PIN"}
             </Button>
             {pinTarget.pinSet && (
-              <Button variant="danger" onClick={resetPin} disabled={pinSaving}>Reset PIN</Button>
+              <Button variant="danger" onClick={resetPin} disabled={pinSaving}>Clear PIN</Button>
             )}
             <Button variant="ghost" onClick={() => setPinTarget(null)} disabled={pinSaving}>Cancel</Button>
           </div>
+        </Modal>
+      )}
+
+      {generatedPin && (
+        <Modal title={`New Recovery PIN — ${generatedPin.customer.name || generatedPin.customer.phone}`} onClose={() => setGeneratedPin(null)}>
+          <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>
+            Relay this PIN to the customer yourself (call, WhatsApp, etc.) — there's no automatic delivery.
+            It's shown here once and can't be retrieved again after you close this dialog. Their previous Recovery PIN no longer works.
+          </div>
+          <Field label="New Recovery PIN">
+            <div style={{ display: "flex", gap: 8 }}>
+              <input readOnly style={{ ...inputStyle, fontFamily: "monospace", fontWeight: 700, fontSize: 18, letterSpacing: 4, textAlign: "center" }} value={generatedPin.pin} onFocus={(e) => e.target.select()} />
+              <Button
+                variant="ghost"
+                icon={Copy}
+                onClick={() => navigator.clipboard?.writeText(generatedPin.pin)}
+              >
+                Copy
+              </Button>
+            </div>
+          </Field>
+          <Button onClick={() => setGeneratedPin(null)}>Done</Button>
         </Modal>
       )}
 
@@ -5599,6 +5901,609 @@ function explainFailure(message) {
   return hit ? hit.text : null;
 }
 
+// ==================== Admin > Offline (Rukumo) ====================
+// One place to see everything about Offline Auto-Order customers, orders,
+// payments, and USSD execution — reusing the exact same orders/
+// payment_transactions/ussd_dial_attempts/sim_routing/agent_devices data
+// Online already uses (offlineAdmin.routes.ts), scoped to
+// channel === "offline_auto" (confirmed by reading offlineAutoOrder.ts
+// before writing any of this).
+const OFFLINE_STATUS_META = {
+  PENDING_PAYMENT: { label: "Pending Payment", tone: "gray" },
+  PAYMENT_VERIFIED: { label: "Payment Verified", tone: "blue" },
+  WAITING_FOR_AGENT: { label: "Waiting for Agent", tone: "amber" },
+  WAITING_FOR_USSD: { label: "Waiting for USSD", tone: "amber" },
+  USSD_PROCESSING: { label: "USSD Processing", tone: "blue" },
+  SUCCESS: { label: "Success", tone: "green" },
+  FAILED: { label: "Failed", tone: "red" },
+  RETRY: { label: "Retry", tone: "amber" },
+  CANCELLED: { label: "Cancelled", tone: "gray" },
+  DUPLICATE: { label: "Duplicate", tone: "red" },
+  SYNC_PENDING: { label: "Sync Pending", tone: "gray" },
+  SYNCED: { label: "Synced", tone: "green" },
+};
+const OFFLINE_STATUS_FILTERS = [
+  "PENDING_PAYMENT", "PAYMENT_VERIFIED", "WAITING_FOR_AGENT", "WAITING_FOR_USSD", "USSD_PROCESSING",
+  "SUCCESS", "FAILED", "RETRY", "DUPLICATE", "SYNC_PENDING", "SYNCED",
+];
+// HH:MM only, Somalia-pinned — for the compact timeline column (the full
+// date is already shown right above it in the ORDER section's "Created" row).
+function offlineTimelineClock(value) {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", timeZone: SOMALIA_TIME_ZONE });
+}
+function OfflineStatusBadge({ status }) {
+  const meta = OFFLINE_STATUS_META[status] || { label: status || "—", tone: "neutral" };
+  return <Badge tone={meta.tone}>{meta.label}</Badge>;
+}
+
+function OfflinePanel({ companies }) {
+  const [tab, setTab] = useState("orders");
+  const [openOrderId, setOpenOrderId] = useState(null);
+  // Set by the Customers/Payment Transactions tabs to jump into Orders
+  // pre-filtered by a specific phone/order id — one panel, genuinely
+  // cross-linked, rather than three unrelated screens.
+  const [ordersSearchHandoff, setOrdersSearchHandoff] = useState(null);
+
+  const goToOrders = (search) => {
+    setOrdersSearchHandoff(search);
+    setTab("orders");
+  };
+
+  return (
+    <div>
+      <div style={{ marginBottom: 4 }}>
+        <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Offline (Rukumo)</div>
+        <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>
+          Customers who pay directly by USSD with no app/internet interaction — one place to see the customer, payment, order, agent, SIM, USSD execution, and result.
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 6, marginTop: 16, marginBottom: 16, borderBottom: `1px solid ${BORDER}` }}>
+        {[
+          { id: "orders", label: "Offline Orders" },
+          { id: "customers", label: "Offline Customers" },
+          { id: "transactions", label: "Payment Transactions" },
+        ].map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            style={{
+              padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", background: "none", border: "none",
+              color: tab === t.id ? INDIGO : MUTE,
+              borderBottom: tab === t.id ? `2px solid ${INDIGO}` : "2px solid transparent",
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "orders" && (
+        <OfflineOrdersTab
+          companies={companies}
+          initialSearch={ordersSearchHandoff}
+          onOpenOrder={setOpenOrderId}
+        />
+      )}
+      {tab === "customers" && <OfflineCustomersTab onViewOrders={goToOrders} />}
+      {tab === "transactions" && <OfflinePaymentTransactionsTab companies={companies} onViewOrder={setOpenOrderId} />}
+
+      {openOrderId && <OfflineOrderDetailDrawer orderId={openOrderId} onClose={() => setOpenOrderId(null)} />}
+    </div>
+  );
+}
+
+function OfflineOrdersTab({ companies, initialSearch, onOpenOrder }) {
+  const [rows, setRows] = useState([]);
+  const [stats, setStats] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [companyFilter, setCompanyFilter] = useState("all");
+  const [deviceFilter, setDeviceFilter] = useState("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [search, setSearch] = useState(initialSearch || "");
+  const [devices, setDevices] = useState([]);
+
+  // A handoff from another tab (e.g. "View Orders" for a specific
+  // customer) should immediately take effect even if this tab was already
+  // mounted with a different search in place.
+  useEffect(() => {
+    if (initialSearch) setSearch(initialSearch);
+  }, [initialSearch]);
+
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    DalabAdminApi.getAgentDevices().then(setDevices).catch(() => {});
+  }, []);
+
+  const fetchRows = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setLoading(true);
+    setError("");
+    try {
+      const [data, statsData] = await Promise.all([
+        DalabAdminApi.getOfflineOrders({
+          status: statusFilter === "all" ? undefined : statusFilter,
+          companyId: companyFilter === "all" ? undefined : companyFilter,
+          deviceId: deviceFilter === "all" ? undefined : deviceFilter,
+          dateFrom: dateFrom || undefined,
+          dateTo: dateTo || undefined,
+          search: search.trim() || undefined,
+        }),
+        DalabAdminApi.getOfflineStats(companyFilter === "all" ? undefined : companyFilter),
+      ]);
+      setRows(data);
+      setStats(statsData);
+    } catch (err) {
+      setError(err.message || "Could not load Offline orders.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { fetchRows(); }, [statusFilter, companyFilter, deviceFilter, dateFrom, dateTo]);
+  useEffect(() => {
+    const timer = setTimeout(fetchRows, 350);
+    return () => clearTimeout(timer);
+  }, [search]);
+  useEffect(() => {
+    const timer = setInterval(fetchRows, 10000);
+    return () => clearInterval(timer);
+  }, [statusFilter, companyFilter, deviceFilter, dateFrom, dateTo, search]);
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to view Offline orders.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        <StatusCountTile label="All" count={stats?.all ?? "—"} tone="neutral" active={statusFilter === "all"} onClick={() => setStatusFilter("all")} />
+        {["SUCCESS", "FAILED", "RETRY", "USSD_PROCESSING", "WAITING_FOR_AGENT", "DUPLICATE"].map((s) => (
+          <StatusCountTile
+            key={s}
+            label={OFFLINE_STATUS_META[s].label}
+            count={s === "DUPLICATE" ? (stats?.duplicate ?? "—") : (stats?.[s] ?? 0)}
+            tone={OFFLINE_STATUS_META[s].tone}
+            active={statusFilter === s}
+            onClick={() => setStatusFilter(s)}
+          />
+        ))}
+      </div>
+
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ position: "relative", flex: "1 1 240px", maxWidth: 300 }}>
+          <Search size={14} color={MUTE} style={{ position: "absolute", left: 10, top: 10 }} />
+          <input
+            style={{ ...inputStyle, paddingLeft: 30, width: "100%" }}
+            placeholder="Search order ID, customer name, or phone"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={{ ...inputStyle, width: 190 }}>
+          <option value="all">All statuses</option>
+          {OFFLINE_STATUS_FILTERS.map((s) => <option key={s} value={s}>{OFFLINE_STATUS_META[s].label}</option>)}
+        </select>
+        <select value={companyFilter} onChange={(e) => setCompanyFilter(e.target.value)} style={{ ...inputStyle, width: 170 }}>
+          <option value="all">All operators</option>
+          {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        <select value={deviceFilter} onChange={(e) => setDeviceFilter(e.target.value)} style={{ ...inputStyle, width: 160 }}>
+          <option value="all">All devices</option>
+          {devices.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+        </select>
+        <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} style={{ ...inputStyle, width: 150 }} title="From date" />
+        <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ ...inputStyle, width: 150 }} title="To date" />
+        <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={fetchRows} disabled={loading}>Refresh</Button>
+      </div>
+
+      {statusFilter === "SYNC_PENDING" && (
+        <div style={{ fontSize: 12, color: MUTE, marginBottom: 12, background: "#FAFBFF", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "8px 12px" }}>
+          Sync Pending describes a result still sitting on an Agent device's own local queue, not yet uploaded — the backend has no visibility into that by design, so this is always empty here. Check the device's own Diagnostics screen for anything queued locally.
+        </div>
+      )}
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              {["Order ID", "Customer", "Operator", "Package", "Amount", "Status", "Agent / Device", "SIM", "Dial Attempts", "Created", ""].map((h) => (
+                <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((o) => (
+              <tr key={o.id} style={{ borderTop: `1px solid ${BORDER}`, cursor: "pointer" }} onClick={() => onOpenOrder(o.id)}>
+                <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, color: INK }}>{o.id}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>
+                  {o.customerName || "—"}
+                  <div style={{ fontSize: 11, color: MUTE, fontFamily: "monospace" }}>{o.customerPhone}</div>
+                </td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{o.companyName}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE }}>{o.packageName}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>${Number(o.amount).toFixed(2)}</td>
+                <td style={{ padding: "10px 14px" }}>
+                  <OfflineStatusBadge status={o.offlineStatus} />
+                  {o.hasDuplicateAttempt && <span style={{ marginLeft: 6 }}><Badge tone="red">Duplicate seen</Badge></span>}
+                </td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE }}>
+                  {o.latestAttemptAgentName || o.orderAgentName || "—"}
+                  <div>{o.assignedDeviceName || "—"}</div>
+                </td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{o.simSlot ?? "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{o.dialAttemptCount}</td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(o.createdAt)}</td>
+                <td style={{ padding: "10px 14px" }}><ChevronRight size={15} color={MUTE} /></td>
+              </tr>
+            ))}
+            {rows.length === 0 && !loading && (
+              <tr><td colSpan={11} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No Offline orders match these filters.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
+function OfflineCustomersTab({ onViewOrders }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [search, setSearch] = useState("");
+
+  const fetchRows = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setLoading(true);
+    setError("");
+    try {
+      setRows(await DalabAdminApi.getOfflineCustomers(search.trim() || undefined));
+    } catch (err) {
+      setError(err.message || "Could not load Offline Profile customers.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
+    const timer = setTimeout(fetchRows, 350);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to view Offline Profile customers.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "center" }}>
+        <div style={{ position: "relative", flex: "1 1 280px", maxWidth: 340 }}>
+          <Search size={14} color={MUTE} style={{ position: "absolute", left: 10, top: 10 }} />
+          <input
+            style={{ ...inputStyle, paddingLeft: 30, width: "100%" }}
+            placeholder="Search customer number, name, or order ID"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={fetchRows} disabled={loading}>Refresh</Button>
+      </div>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              {["Customer", "Number", "Sender / Payment #", "Operator", "Package", "Payment Method", "Profile Since", "Orders", "Last Payment", "Status", ""].map((h) => (
+                <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((c) => (
+              <tr key={c.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontWeight: 600 }}>{c.name || "Not provided"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontFamily: "monospace" }}>{c.phone}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE, fontFamily: "monospace" }}>{c.offlineSenderNumber}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{c.companyName || "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE }}>{c.packageName || "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE }}>{c.paymentMethodLabel || "Any"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{c.offlineProfileUpdatedAt ? formatDateTime(c.offlineProfileUpdatedAt) : "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{c.orderCount ?? 0}</td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{c.lastPaymentAt ? formatDateTime(c.lastPaymentAt) : "Never"}</td>
+                <td style={{ padding: "10px 14px" }}>{c.lastStatus ? <OfflineStatusBadge status={{ completed: "SUCCESS", failed: "FAILED", in_progress: "USSD_PROCESSING", pending: "PAYMENT_VERIFIED", cancelled: "CANCELLED" }[c.lastStatus] || c.lastStatus} /> : <span style={{ fontSize: 12, color: MUTE }}>No orders yet</span>}</td>
+                <td style={{ padding: "10px 14px" }}>
+                  <button
+                    onClick={() => onViewOrders(c.phone)}
+                    style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "5px 10px", fontSize: 11.5, fontWeight: 700, color: INDIGO, cursor: "pointer" }}
+                  >
+                    View Orders
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {rows.length === 0 && !loading && (
+              <tr><td colSpan={11} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No Offline Profile customers match this search.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
+function OfflinePaymentTransactionsTab({ companies, onViewOrder }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [companyFilter, setCompanyFilter] = useState("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [search, setSearch] = useState("");
+
+  const fetchRows = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setLoading(true);
+    setError("");
+    try {
+      setRows(await DalabAdminApi.getOfflinePaymentTransactions({
+        companyId: companyFilter === "all" ? undefined : companyFilter,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
+        search: search.trim() || undefined,
+      }));
+    } catch (err) {
+      setError(err.message || "Could not load Offline payment transactions.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { fetchRows(); }, [companyFilter, dateFrom, dateTo]);
+  useEffect(() => {
+    const timer = setTimeout(fetchRows, 350);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to view Offline payment transactions.</div>;
+  }
+
+  const PT_STATUS_TONE = { pending: "amber", processing: "blue", completed: "green", failed: "red", duplicate_blocked: "red" };
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ position: "relative", flex: "1 1 240px", maxWidth: 300 }}>
+          <Search size={14} color={MUTE} style={{ position: "absolute", left: 10, top: 10 }} />
+          <input
+            style={{ ...inputStyle, paddingLeft: 30, width: "100%" }}
+            placeholder="Search transaction ref, phone, or order ID"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <select value={companyFilter} onChange={(e) => setCompanyFilter(e.target.value)} style={{ ...inputStyle, width: 170 }}>
+          <option value="all">All operators</option>
+          {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} style={{ ...inputStyle, width: 150 }} title="From date" />
+        <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ ...inputStyle, width: 150 }} title="To date" />
+        <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={fetchRows} disabled={loading}>Refresh</Button>
+      </div>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              {["Transaction Ref", "Customer #", "Amount", "Operator", "Payment Method", "SMS Received", "Status", "Matched Order", ""].map((h) => (
+                <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((t) => (
+              <tr key={t.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontSize: 12, color: INK, fontFamily: "monospace" }}>{t.transactionRef || "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontFamily: "monospace" }}>{t.customerPhone}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>${Number(t.amount ?? 0).toFixed(2)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{t.companyName}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE }}>{t.paymentMethod || "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{t.smsReceivedAt ? formatDateTime(t.smsReceivedAt) : "—"}</td>
+                <td style={{ padding: "10px 14px" }}><Badge tone={PT_STATUS_TONE[t.status] || "neutral"}>{t.status}</Badge></td>
+                <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, color: INK }}>{t.orderId || "—"}</td>
+                <td style={{ padding: "10px 14px" }}>
+                  {t.orderId && (
+                    <button
+                      onClick={() => onViewOrder(t.orderId)}
+                      style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "5px 10px", fontSize: 11.5, fontWeight: 700, color: INDIGO, cursor: "pointer" }}
+                    >
+                      View Order
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+            {rows.length === 0 && !loading && (
+              <tr><td colSpan={9} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No Offline payment transactions match these filters.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
+// One complete view: Customer, Payment, Order, Agent, SIM Routing, USSD,
+// Transaction, and a real timeline assembled from the actual timestamps
+// each piece already carries — never a separately-invented "timeline"
+// data source.
+function OfflineOrderDetailDrawer({ orderId, onClose }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setData(null);
+    setError("");
+    setLoading(true);
+    DalabAdminApi.getOfflineOrderDetail(orderId)
+      .then((d) => { if (!cancelled) setData(d); })
+      .catch((err) => { if (!cancelled) setError(err.message || "Could not load this Offline order."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [orderId]);
+
+  const row = (label, value, mono) => (
+    <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderTop: `1px solid ${BORDER}`, gap: 12 }}>
+      <span style={{ fontSize: 12.5, color: MUTE, flexShrink: 0 }}>{label}</span>
+      <span style={{ fontSize: 12.5, color: INK, fontWeight: 600, fontFamily: mono ? "monospace" : "inherit", textAlign: "right" }}>{value ?? "—"}</span>
+    </div>
+  );
+  const section = (label) => <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>{label}</div>;
+
+  // Assembled from real timestamps already returned above -- never a
+  // separate, invented "timeline" table. Only entries whose timestamp
+  // actually exists are shown, in order.
+  const timeline = useMemo(() => {
+    if (!data) return [];
+    const { order, paymentTransactions, dialAttempts } = data;
+    const sms = paymentTransactions.find((t) => t.smsReceivedAt);
+    const entries = [
+      sms?.smsReceivedAt && { at: sms.smsReceivedAt, label: "Payment SMS received" },
+      paymentTransactions[0]?.createdAt && { at: paymentTransactions[0].createdAt, label: "Payment verified" },
+      order.createdAt && { at: order.createdAt, label: "Offline order created" },
+      order.status !== "pending" && order.updatedAt && { at: order.updatedAt, label: "Agent verified — USSD generated" },
+      ...dialAttempts.map((a) => ({ at: a.createdAt, label: `USSD dial attempt #${a.attemptNumber} (${a.deviceName || "unknown device"}, SIM ${a.simSlot ?? "?"})` })),
+      ...dialAttempts.filter((a) => a.completedAt).map((a) => ({
+        at: a.completedAt,
+        label: `Response received — ${a.status.toUpperCase()}${a.responseMessage ? `: ${a.responseMessage}` : ""}`,
+      })),
+      order.completedAt && { at: order.completedAt, label: order.status === "completed" ? "SUCCESS" : "Final result" },
+    ].filter(Boolean);
+    return entries.sort((a, b) => new Date(a.at) - new Date(b.at));
+  }, [data]);
+
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: "fixed", inset: 0, background: "rgba(11,18,64,0.45)", display: "flex", justifyContent: "flex-end", zIndex: 60 }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{ width: 460, maxWidth: "100%", background: "#fff", height: "100%", overflowY: "auto", padding: 24 }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>OFFLINE ORDER (RUKUMO)</div>
+            <div style={{ fontSize: 17, fontWeight: 800, color: INK, marginTop: 2, fontFamily: "monospace" }}>{orderId}</div>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer" }}>
+            <X size={20} color={MUTE} />
+          </button>
+        </div>
+
+        {loading && <div style={{ padding: 20, fontSize: 12.5, color: MUTE }}>Loading…</div>}
+        {error && <div style={{ padding: 20, fontSize: 12.5, color: "#C81E2C" }}>{error}</div>}
+
+        {data && (
+          <>
+            {section("CUSTOMER")}
+            {row("Name", data.order.customerName || "Not provided")}
+            {row("Number", data.order.customerPhone, true)}
+            {row("Sender / payment #", data.order.senderPhone, true)}
+            {row("Receiver #", data.order.receiverPhone, true)}
+
+            {section("ORDER")}
+            {row("Operator", data.order.companyName)}
+            {row("Package", data.order.packageName)}
+            {row("Amount", `$${Number(data.order.amount).toFixed(2)}`)}
+            {row("Channel", "Offline Auto-Order (Rukumo)")}
+            {row("Order status", <OfflineStatusBadge status={
+              { completed: "SUCCESS", failed: "FAILED", cancelled: "CANCELLED", in_progress: "USSD_PROCESSING", pending: "PAYMENT_VERIFIED" }[data.order.status]
+            } />)}
+            {row("Created", formatDateTime(data.order.createdAt), true)}
+            {data.order.completedAt && row("Completed", formatDateTime(data.order.completedAt), true)}
+            {data.order.ussdGenerationFailedReason && (
+              <div style={{ fontSize: 12.5, color: "#C81E2C", fontWeight: 600, marginTop: 6 }}>
+                USSD generation failed: {data.order.ussdGenerationFailedReason}
+              </div>
+            )}
+
+            {section("PAYMENT TRANSACTIONS")}
+            {data.paymentTransactions.length === 0 && <div style={{ fontSize: 12, color: MUTE, marginTop: 6 }}>No payment transaction linked yet.</div>}
+            {data.paymentTransactions.map((t) => (
+              <div key={t.id} style={{ padding: "8px 10px", marginTop: 6, borderRadius: 8, border: `1px solid ${t.status === "duplicate_blocked" ? "#F4E3B0" : BORDER}`, background: t.status === "duplicate_blocked" ? "#FFFBEF" : "transparent" }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 11.5 }}>
+                  <Badge tone={{ pending: "amber", processing: "blue", completed: "green", failed: "red", duplicate_blocked: "red" }[t.status] || "neutral"}>{t.status}</Badge>
+                  <span style={{ color: MUTE, fontFamily: "monospace" }}>{t.transactionRef || "no ref"}</span>
+                  <span style={{ color: MUTE, marginLeft: "auto" }}>{formatDateTime(t.createdAt)}</span>
+                </div>
+                {t.smsSender && <div style={{ fontSize: 11, color: MUTE, marginTop: 3 }}>SMS from {t.smsSender} at {formatDateTime(t.smsReceivedAt)}</div>}
+              </div>
+            ))}
+
+            {section("SIM ROUTING (this operator)")}
+            {data.simRouting.length === 0 && <div style={{ fontSize: 12, color: MUTE, marginTop: 6 }}>No SIM routing configured for this operator.</div>}
+            {data.simRouting.map((r) => (
+              <div key={r.deviceId} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, color: INK, marginTop: 4 }}>
+                <Badge tone={r.deviceOnline ? "green" : "red"}>{r.deviceOnline ? "Online" : "Offline"}</Badge>
+                <span>{r.deviceName}</span>
+                <span style={{ color: MUTE }}>SIM {r.simSlot}</span>
+                <span style={{ color: MUTE, marginLeft: "auto" }}>priority {r.priority}</span>
+              </div>
+            ))}
+
+            {section("USSD TEMPLATE")}
+            {data.ussdLog?.templateServiceName ? (
+              <>
+                {row("Service", data.ussdLog.templateServiceName)}
+                <div style={{ padding: "6px 0", fontSize: 12, color: SLATE, fontFamily: "monospace", wordBreak: "break-all" }}>{data.ussdLog.templateUssdCode}</div>
+              </>
+            ) : (
+              <div style={{ fontSize: 12, color: MUTE, marginTop: 6 }}>{data.order.ussdGenerated ? "Template config not available (deleted since generation)." : "Not generated yet."}</div>
+            )}
+            {row("Exact generated request", data.order.ussdGenerated || "—", true)}
+
+            {section(`USSD DIAL ATTEMPTS (${data.dialAttempts.length})`)}
+            {data.dialAttempts.length === 0 && <div style={{ fontSize: 12, color: MUTE, marginTop: 6 }}>No dial attempts recorded yet.</div>}
+            {data.dialAttempts.map((a) => (
+              <div key={a.id} style={{ padding: "8px 10px", marginTop: 6, borderRadius: 8, border: `1px solid ${BORDER}`, fontSize: 11.5 }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <Badge tone={a.status === "success" ? "green" : a.status === "failed" ? "red" : "amber"}>{a.status}</Badge>
+                  <span style={{ color: MUTE }}>attempt #{a.attemptNumber}</span>
+                  <span style={{ color: MUTE, marginLeft: "auto" }}>{formatDateTime(a.createdAt)}</span>
+                </div>
+                <div style={{ color: MUTE, marginTop: 3 }}>Agent: {a.agentName || "—"} · Device: {a.deviceName || "—"} · SIM {a.simSlot ?? "—"}</div>
+                {a.ussdString && <div style={{ color: SLATE, fontFamily: "monospace", marginTop: 3, wordBreak: "break-all" }}>{a.ussdString}</div>}
+                {a.responseMessage && <div style={{ color: MUTE, marginTop: 3 }}>Network response: {a.responseMessage}</div>}
+                {explainFailure(a.responseMessage) && <div style={{ color: "#C81E2C", fontWeight: 600, marginTop: 3 }}>{explainFailure(a.responseMessage)}</div>}
+              </div>
+            ))}
+
+            {section("TIMELINE")}
+            <div style={{ marginTop: 8 }}>
+              {timeline.map((e, i) => (
+                <div key={i} style={{ display: "flex", gap: 10, fontSize: 12, marginBottom: 6 }}>
+                  <span style={{ color: MUTE, fontFamily: "monospace", flexShrink: 0, width: 46 }}>{offlineTimelineClock(e.at)}</span>
+                  <span style={{ color: INK }}>{e.label}</span>
+                </div>
+              ))}
+              {timeline.length === 0 && <div style={{ fontSize: 12, color: MUTE }}>No timeline events yet.</div>}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const NEW_COMMISSION_RULE_FORM = { name: "", scopeType: "global", companyId: "", packageId: "", ruleType: "percentage", value: "" };
 
 // Commission = the money the company/Super Admin earns from a completed
@@ -6701,10 +7606,11 @@ function statusBadge(meta, status) {
 const RESELLER_TABS = [
   { id: "resellers", label: "Resellers" },
   { id: "numbers", label: "Payment Numbers" },
-  { id: "rates", label: "Rates" },
+  { id: "payment", label: "Payment" },
   { id: "orders", label: "Orders" },
   { id: "deposits", label: "Deposits" },
   { id: "withdrawals", label: "Withdrawals" },
+  { id: "sim-routing", label: "Withdraw SIMs" },
 ];
 
 function ResellerManagement({ admin, companies }) {
@@ -6736,10 +7642,11 @@ function ResellerManagement({ admin, companies }) {
       </div>
       {tab === "resellers" && <ResellersTab canManage={canManage} isSuperAdmin={isSuperAdmin} />}
       {tab === "numbers" && <ResellerNumbersTab canManage={canManage} companies={companies} />}
-      {tab === "rates" && <ResellerRatesTab canManage={canManage} companies={companies} />}
+      {tab === "payment" && <ResellerPaymentTab canManage={canManage} isSuperAdmin={isSuperAdmin} companies={companies} />}
       {tab === "orders" && <ResellerOrdersTab canManage={canManage} />}
       {tab === "deposits" && <ResellerDepositsTab canManage={canManage} />}
       {tab === "withdrawals" && <ResellerWithdrawalsTab canManage={canManage} />}
+      {tab === "sim-routing" && <ResellerWithdrawSimRoutingTab companies={companies} canManage={isSuperAdmin} />}
     </div>
   );
 }
@@ -7022,67 +7929,375 @@ function ResellerNumbersTab({ canManage, companies }) {
   );
 }
 
-function ResellerRatesTab({ canManage, companies }) {
-  const [rates, setRates] = useState([]);
-  const [editValues, setEditValues] = useState({});
-  const [savingId, setSavingId] = useState(null);
-  const [error, setError] = useState({});
+// Deposit ("Lacag Ku Shub") collection methods, EVC Plus / eDahab —
+// company-agnostic (the reseller wallet has no per-company split, see
+// resellerWallet.ts), plus each company's Withdrawal ("Lacag Bixi") payout
+// USSD template. See migration 053_reseller_payment_config.sql.
+function ResellerPaymentTab({ canManage, isSuperAdmin, companies }) {
+  const [methods, setMethods] = useState([]);
+  const [methodEdits, setMethodEdits] = useState({});
+  const [savingMethod, setSavingMethod] = useState(null);
+  const [methodError, setMethodError] = useState({});
 
-  const fetchRates = async () => {
-    try { setRates(await DalabAdminApi.getResellerCompanyRates()); }
-    catch (err) { console.error("getResellerCompanyRates failed:", err.message); }
+  const [payoutEdits, setPayoutEdits] = useState({});
+  const [savingPayout, setSavingPayout] = useState(null);
+  const [payoutError, setPayoutError] = useState({});
+
+  const [commissionRows, setCommissionRows] = useState([]);
+  const [commissionEdits, setCommissionEdits] = useState({});
+  const [savingCommission, setSavingCommission] = useState(null);
+  const [commissionError, setCommissionError] = useState({});
+
+  // Multi-step (eDahab-style) payout config — keyed by companyId, only
+  // present for companies an admin has already configured (the backend
+  // table has no row at all until the first save, unlike the one-shot
+  // payoutUssdTemplate column on `companies` which always exists as null).
+  const [interactiveConfig, setInteractiveConfig] = useState({});
+  const [stepsEdits, setStepsEdits] = useState({});
+  const [savingSteps, setSavingSteps] = useState(null);
+  const [stepsError, setStepsError] = useState({});
+  const [pinEdits, setPinEdits] = useState({});
+  const [savingPin, setSavingPin] = useState(null);
+  const [pinError, setPinError] = useState({});
+
+  const fetchMethods = async () => {
+    try { setMethods(await DalabAdminApi.getResellerDepositMethods()); }
+    catch (err) { console.error("getResellerDepositMethods failed:", err.message); }
   };
-  useEffect(() => { fetchRates(); }, []);
+  useEffect(() => { fetchMethods(); }, []);
 
-  const saveRate = async (companyId) => {
-    const rate = Number(editValues[companyId]);
-    if (!rate || rate <= 0) return setError((m) => ({ ...m, [companyId]: "Enter a valid positive rate." }));
-    setSavingId(companyId);
-    setError((m) => ({ ...m, [companyId]: "" }));
+  const fetchCommissions = async () => {
+    try { setCommissionRows(await DalabAdminApi.getResellerWithdrawalCommissions()); }
+    catch (err) { console.error("getResellerWithdrawalCommissions failed:", err.message); }
+  };
+  useEffect(() => { fetchCommissions(); }, []);
+
+  const fetchInteractive = async () => {
     try {
-      await DalabAdminApi.setResellerCompanyRate(companyId, rate);
-      fetchRates();
+      const rows = await DalabAdminApi.getResellerWithdrawalInteractivePayout();
+      const map = {};
+      rows.forEach((r) => { map[r.companyId] = r; });
+      setInteractiveConfig(map);
+    } catch (err) { console.error("getResellerWithdrawalInteractivePayout failed:", err.message); }
+  };
+  useEffect(() => { fetchInteractive(); }, []);
+
+  const saveSteps = async (company) => {
+    const existing = interactiveConfig[company.id];
+    const draft = stepsEdits[company.id] || {};
+    const initialDial = (draft.initialDial ?? existing?.initialDial ?? "").trim();
+    const stepsText = draft.replyStepsText ?? (existing?.replySteps || []).join(", ");
+    const replySteps = stepsText.split(",").map((s) => s.trim()).filter(Boolean);
+    if (!initialDial) return setStepsError((m) => ({ ...m, [company.id]: "Initial dial code is required." }));
+    if (replySteps.length === 0) return setStepsError((m) => ({ ...m, [company.id]: "Enter at least one reply step (comma-separated)." }));
+    setSavingSteps(company.id);
+    setStepsError((m) => ({ ...m, [company.id]: "" }));
+    try {
+      await DalabAdminApi.setCompanyPayoutInteractiveSteps(company.id, { initialDial, replySteps });
+      setStepsEdits((m) => ({ ...m, [company.id]: undefined }));
+      fetchInteractive();
     } catch (err) {
-      setError((m) => ({ ...m, [companyId]: err.message || "Couldn't save this rate." }));
+      setStepsError((m) => ({ ...m, [company.id]: err.message || "Couldn't save these steps." }));
     } finally {
-      setSavingId(null);
+      setSavingSteps(null);
+    }
+  };
+
+  const savePin = async (company) => {
+    const pin = pinEdits[company.id] || "";
+    if (!/^\d{4,8}$/.test(pin)) return setPinError((m) => ({ ...m, [company.id]: "PIN must be 4-8 digits." }));
+    setSavingPin(company.id);
+    setPinError((m) => ({ ...m, [company.id]: "" }));
+    try {
+      await DalabAdminApi.setCompanyPayoutInteractivePin(company.id, pin);
+      setPinEdits((m) => ({ ...m, [company.id]: "" }));
+      fetchInteractive();
+    } catch (err) {
+      setPinError((m) => ({ ...m, [company.id]: err.message || "Couldn't save this PIN." }));
+    } finally {
+      setSavingPin(null);
+    }
+  };
+
+  const saveCommission = async (row) => {
+    const raw = commissionEdits[row.companyId] ?? row.commissionPercentage;
+    const commissionPercentage = Number(raw);
+    if (!Number.isFinite(commissionPercentage) || commissionPercentage < 0) {
+      return setCommissionError((m) => ({ ...m, [row.companyId]: "Enter a non-negative number." }));
+    }
+    setSavingCommission(row.companyId);
+    setCommissionError((m) => ({ ...m, [row.companyId]: "" }));
+    try {
+      await DalabAdminApi.setResellerWithdrawalCommission(row.companyId, commissionPercentage);
+      setCommissionEdits((m) => ({ ...m, [row.companyId]: undefined }));
+      fetchCommissions();
+    } catch (err) {
+      setCommissionError((m) => ({ ...m, [row.companyId]: err.message || "Couldn't save this commission." }));
+    } finally {
+      setSavingCommission(null);
+    }
+  };
+
+  const edit = (method, field, value) =>
+    setMethodEdits((m) => ({ ...m, [method]: { ...m[method], [field]: value } }));
+
+  const saveMethod = async (row) => {
+    const draft = methodEdits[row.method] || {};
+    const label = draft.label ?? row.label;
+    const paymentNumber = draft.paymentNumber ?? row.paymentNumber;
+    const ussdTemplate = draft.ussdTemplate ?? row.ussdTemplate;
+    if (!paymentNumber || !/^\d{6,15}$/.test(paymentNumber)) {
+      return setMethodError((m) => ({ ...m, [row.method]: "Payment number must be 6-15 digits." }));
+    }
+    if (!ussdTemplate.includes("{amount}")) {
+      return setMethodError((m) => ({ ...m, [row.method]: "USSD template must include {amount}." }));
+    }
+    setSavingMethod(row.method);
+    setMethodError((m) => ({ ...m, [row.method]: "" }));
+    try {
+      await DalabAdminApi.setResellerDepositMethod(row.method, { label, paymentNumber, ussdTemplate });
+      setMethodEdits((m) => ({ ...m, [row.method]: {} }));
+      fetchMethods();
+    } catch (err) {
+      setMethodError((m) => ({ ...m, [row.method]: err.message || "Couldn't save this method." }));
+    } finally {
+      setSavingMethod(null);
+    }
+  };
+
+  const savePayout = async (company) => {
+    const template = payoutEdits[company.id] ?? company.payoutUssdTemplate ?? "";
+    if (!template.includes("{number}") || !template.includes("{amount}")) {
+      return setPayoutError((m) => ({ ...m, [company.id]: "Template must include both {number} and {amount}." }));
+    }
+    setSavingPayout(company.id);
+    setPayoutError((m) => ({ ...m, [company.id]: "" }));
+    try {
+      await DalabAdminApi.setCompanyPayoutUssdTemplate(company.id, template);
+      setPayoutEdits((m) => ({ ...m, [company.id]: undefined }));
+    } catch (err) {
+      setPayoutError((m) => ({ ...m, [company.id]: err.message || "Couldn't save this template." }));
+    } finally {
+      setSavingPayout(null);
     }
   };
 
   return (
     <div>
-      <div style={{ fontWeight: 800, fontSize: 15, color: INK, marginBottom: 4 }}>Company Order Rates</div>
+      <div style={{ fontWeight: 800, fontSize: 15, color: INK, marginBottom: 4 }}>Deposit Collection Methods</div>
       <div style={{ fontSize: 12, color: MUTE, marginBottom: 12 }}>
-        The current rate applied to new reseller Orders. Changing a rate never affects an order already created — each order freezes the rate it saw at creation time.
+        EVC Plus / eDahab — the numbers a Reseller dials to send a Deposit. Shared across every Reseller regardless of which company they later spend the wallet balance with.
+      </div>
+      <Card style={{ padding: 0, overflow: "hidden", marginBottom: 24 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Method</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Label</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payment Number</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>USSD Template</th>
+              {canManage && <th style={{ padding: "10px 14px" }} />}
+            </tr>
+          </thead>
+          <tbody>
+            {methods.map((row) => (
+              <tr key={row.method} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK }}>{row.method}</td>
+                {canManage ? (
+                  <>
+                    <td style={{ padding: "10px 14px" }}>
+                      <input style={{ ...inputStyle, width: 110 }} value={methodEdits[row.method]?.label ?? row.label}
+                        onChange={(e) => edit(row.method, "label", e.target.value)} />
+                    </td>
+                    <td style={{ padding: "10px 14px" }}>
+                      <input style={{ ...inputStyle, width: 130 }} value={methodEdits[row.method]?.paymentNumber ?? row.paymentNumber}
+                        onChange={(e) => edit(row.method, "paymentNumber", e.target.value)} />
+                    </td>
+                    <td style={{ padding: "10px 14px" }}>
+                      <input style={{ ...inputStyle, width: 220 }} value={methodEdits[row.method]?.ussdTemplate ?? row.ussdTemplate}
+                        onChange={(e) => edit(row.method, "ussdTemplate", e.target.value)} />
+                    </td>
+                    <td style={{ padding: "10px 14px" }}>
+                      <Button variant="subtle" disabled={savingMethod === row.method} onClick={() => saveMethod(row)}>
+                        {savingMethod === row.method ? "Saving…" : "Save"}
+                      </Button>
+                      {methodError[row.method] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{methodError[row.method]}</div>}
+                    </td>
+                  </>
+                ) : (
+                  <>
+                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{row.label}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{row.paymentNumber}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontFamily: "monospace" }}>{row.ussdTemplate}</td>
+                  </>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+
+      <div style={{ fontWeight: 800, fontSize: 15, color: INK, marginBottom: 4 }}>Withdrawal Payout Templates</div>
+      <div style={{ fontSize: 12, color: MUTE, marginBottom: 12 }}>
+        Per company — the USSD code a Reseller dials to send a Withdrawal out to a customer. Must include both <code>{"{number}"}</code> and <code>{"{amount}"}</code>, e.g. <code>*726*{"{number}"}*{"{amount}"}*8233#</code>.
       </div>
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: "#FAFBFF" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
-              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Current Rate</th>
-              {canManage && <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Set New Rate</th>}
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payout USSD Template</th>
+              {canManage && <th style={{ padding: "10px 14px" }} />}
             </tr>
           </thead>
           <tbody>
-            {rates.map((r) => (
-              <tr key={r.companyId} style={{ borderTop: `1px solid ${BORDER}` }}>
-                <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK }}>{r.companyName}</td>
-                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{r.rate != null ? Number(r.rate).toFixed(6) : "Not set"}</td>
+            {companies.map((c) => (
+              <tr key={c.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK }}>{c.name}</td>
+                {canManage ? (
+                  <td style={{ padding: "10px 14px" }}>
+                    <input
+                      style={{ ...inputStyle, width: 260 }}
+                      placeholder="*726*{number}*{amount}*8233#"
+                      value={payoutEdits[c.id] ?? c.payoutUssdTemplate ?? ""}
+                      onChange={(e) => setPayoutEdits((m) => ({ ...m, [c.id]: e.target.value }))}
+                    />
+                  </td>
+                ) : (
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontFamily: "monospace" }}>{c.payoutUssdTemplate || "Not set"}</td>
+                )}
                 {canManage && (
                   <td style={{ padding: "10px 14px" }}>
-                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                      <input
-                        type="number" step="0.000001" placeholder={r.rate != null ? String(r.rate) : "e.g. 18"}
-                        style={{ ...inputStyle, width: 120 }}
-                        value={editValues[r.companyId] ?? ""}
-                        onChange={(e) => setEditValues({ ...editValues, [r.companyId]: e.target.value })}
-                      />
-                      <Button variant="subtle" disabled={savingId === r.companyId} onClick={() => saveRate(r.companyId)}>
-                        {savingId === r.companyId ? "Saving…" : "Save"}
-                      </Button>
-                    </div>
-                    {error[r.companyId] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{error[r.companyId]}</div>}
+                    <Button variant="subtle" disabled={savingPayout === c.id} onClick={() => savePayout(c)}>
+                      {savingPayout === c.id ? "Saving…" : "Save"}
+                    </Button>
+                    {payoutError[c.id] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{payoutError[c.id]}</div>}
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+
+      <div style={{ fontWeight: 800, fontSize: 15, color: INK, marginTop: 24, marginBottom: 4 }}>Withdrawal Interactive Payout (multi-step)</div>
+      <div style={{ fontSize: 12, color: MUTE, marginBottom: 12 }}>
+        For a carrier menu that isn't one dial string — e.g. eDahab's Reseller Service: dial, then reply to each prompt in turn. List the initial dial code and every reply as comma-separated steps — a literal like <code>3</code> or a template containing <code>{"{number}"}</code>/<code>{"{amount}"}</code>. By default the PIN is sent last, once the carrier's own PIN prompt appears — omit it from the steps below. If the carrier instead prompts for the PIN somewhere else (e.g. Somnet: dial, then PIN first, then a menu choice, the number twice, the amount, then a Yes/No confirmation), add an explicit <code>{"{pin}"}</code> step at that exact position instead. Only needed for a company whose payout can't use the single-string template above.
+      </div>
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Initial Dial</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Reply Steps (PIN sent last unless a {"{pin}"} step is included)</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>PIN</th>
+              {canManage && <th style={{ padding: "10px 14px" }} />}
+            </tr>
+          </thead>
+          <tbody>
+            {companies.map((c) => {
+              const existing = interactiveConfig[c.id];
+              return (
+                <tr key={c.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK }}>{c.name}</td>
+                  {canManage ? (
+                    <>
+                      <td style={{ padding: "10px 14px" }}>
+                        <input
+                          style={{ ...inputStyle, width: 90 }}
+                          placeholder="*300#"
+                          value={stepsEdits[c.id]?.initialDial ?? existing?.initialDial ?? ""}
+                          onChange={(e) => setStepsEdits((m) => ({ ...m, [c.id]: { ...m[c.id], initialDial: e.target.value } }))}
+                        />
+                      </td>
+                      <td style={{ padding: "10px 14px" }}>
+                        <input
+                          style={{ ...inputStyle, width: 220 }}
+                          placeholder="e.g. 3, {number}, {amount}  or  {pin}, 2, {number}, {number}, {amount}, 1"
+                          value={stepsEdits[c.id]?.replyStepsText ?? (existing?.replySteps || []).join(", ")}
+                          onChange={(e) => setStepsEdits((m) => ({ ...m, [c.id]: { ...m[c.id], replyStepsText: e.target.value } }))}
+                        />
+                        <div>
+                          <Button variant="subtle" disabled={savingSteps === c.id} onClick={() => saveSteps(c)} style={{ marginTop: 4 }}>
+                            {savingSteps === c.id ? "Saving…" : "Save Steps"}
+                          </Button>
+                        </div>
+                        {stepsError[c.id] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{stepsError[c.id]}</div>}
+                      </td>
+                    </>
+                  ) : (
+                    <>
+                      <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontFamily: "monospace" }}>{existing?.initialDial || "Not set"}</td>
+                      <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontFamily: "monospace" }}>{(existing?.replySteps || []).join(", ") || "Not set"}</td>
+                    </>
+                  )}
+                  <td style={{ padding: "10px 14px" }}>
+                    {isSuperAdmin ? (
+                      <div>
+                        <input
+                          type="password" inputMode="numeric" placeholder={existing?.pinIsSet ? "PIN set — enter to replace" : "Set PIN"}
+                          style={{ ...inputStyle, width: 110 }}
+                          value={pinEdits[c.id] ?? ""}
+                          onChange={(e) => setPinEdits((m) => ({ ...m, [c.id]: e.target.value }))}
+                        />
+                        <div>
+                          <Button variant="subtle" disabled={savingPin === c.id} onClick={() => savePin(c)} style={{ marginTop: 4 }}>
+                            {savingPin === c.id ? "Saving…" : "Save PIN"}
+                          </Button>
+                        </div>
+                        {pinError[c.id] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{pinError[c.id]}</div>}
+                      </div>
+                    ) : (
+                      <span style={{ fontSize: 12, color: MUTE }}>
+                        {existing?.pinIsSet ? "Set" : "Not set"} — Super Admin only
+                      </span>
+                    )}
+                  </td>
+                  {canManage && <td />}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </Card>
+
+      <div style={{ fontWeight: 800, fontSize: 15, color: INK, marginTop: 24, marginBottom: 4 }}>Withdraw Commission by Company</div>
+      <div style={{ fontSize: 12, color: MUTE, marginBottom: 12 }}>
+        Based on the payout company the customer selects at Withdraw time — never on the Deposit payment method. The Wallet is still deducted by the requested amount, but the customer receives Amount + (Amount &times; Commission %) (e.g. 15% on $50 deducts $50 from the Wallet and sends the customer $57.50). A Withdraw already requested keeps the commission that applied at the time — changing this here only affects Withdraws requested from now on. Deposit never uses a commission. Separate from Internet Store rates.
+      </div>
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Commission %</th>
+              {canManage && <th style={{ padding: "10px 14px" }} />}
+            </tr>
+          </thead>
+          <tbody>
+            {commissionRows.map((row) => (
+              <tr key={row.companyId} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK }}>{row.companyName}</td>
+                {canManage ? (
+                  <td style={{ padding: "10px 14px" }}>
+                    <input
+                      type="number" min="0" step="0.01"
+                      style={{ ...inputStyle, width: 90 }}
+                      value={commissionEdits[row.companyId] ?? row.commissionPercentage}
+                      onChange={(e) => setCommissionEdits((m) => ({ ...m, [row.companyId]: e.target.value }))}
+                    />
+                    <span style={{ marginLeft: 4, fontSize: 12.5, color: MUTE }}>%</span>
+                  </td>
+                ) : (
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{row.commissionPercentage}%</td>
+                )}
+                {canManage && (
+                  <td style={{ padding: "10px 14px" }}>
+                    <Button variant="subtle" disabled={savingCommission === row.companyId} onClick={() => saveCommission(row)}>
+                      {savingCommission === row.companyId ? "Saving…" : "Save"}
+                    </Button>
+                    {commissionError[row.companyId] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{commissionError[row.companyId]}</div>}
                   </td>
                 )}
               </tr>
@@ -7211,9 +8426,10 @@ function ResellerDepositsTab({ canManage }) {
             <tr style={{ background: "#FAFBFF" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Ref #</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Reseller</th>
-              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
-              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>From → To</th>
-              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Amount</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payment Method</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Customer Phone</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Deposit Amount</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Wallet Balance</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Status</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Date</th>
               {canManage && <th style={{ padding: "10px 14px" }} />}
@@ -7224,10 +8440,16 @@ function ResellerDepositsTab({ canManage }) {
               <tr key={d.id} style={{ borderTop: `1px solid ${BORDER}` }}>
                 <td style={{ padding: "10px 14px", fontSize: 12, fontFamily: "monospace", color: INK }}>{d.id}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{d.resellerLoginId} — {d.resellerName}</td>
-                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{d.companyName}</td>
-                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, fontFamily: "monospace" }}>{d.fromNumber} → {d.toNumber}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{d.methodLabel}</td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, fontFamily: "monospace" }}>{d.fromNumber}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>${Number(d.amount).toFixed(2)}</td>
-                <td style={{ padding: "10px 14px" }}>{statusBadge(RESELLER_DEPOSIT_STATUS_META, d.status)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK }}>${Number(d.resellerWalletBalance ?? 0).toFixed(2)}</td>
+                <td style={{ padding: "10px 14px" }}>
+                  {statusBadge(RESELLER_DEPOSIT_STATUS_META, d.status)}
+                  {d.matchedSmsLogId && !d.verifiedByAdminId && (
+                    <div style={{ fontSize: 10.5, color: MUTE, marginTop: 2 }}>Auto-verified via SMS</div>
+                  )}
+                </td>
                 <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE }}>{formatDateTime(d.createdAt)}</td>
                 {canManage && (
                   <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
@@ -7246,7 +8468,7 @@ function ResellerDepositsTab({ canManage }) {
               </tr>
             ))}
             {deposits.length === 0 && (
-              <tr><td colSpan={8} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No deposits yet.</td></tr>
+              <tr><td colSpan={9} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No deposits yet.</td></tr>
             )}
           </tbody>
         </table>
@@ -7280,7 +8502,10 @@ function ResellerWithdrawalsTab({ canManage }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
         <div>
           <div style={{ fontWeight: 800, fontSize: 15, color: INK }}>Withdrawals (Lacag Bixi)</div>
-          <div style={{ fontSize: 12, color: MUTE, marginTop: 2 }}>The amount was already reserved from the reseller's wallet the moment they requested it.</div>
+          <div style={{ fontSize: 12, color: MUTE, marginTop: 2 }}>
+            Fully automatic: once the payout SMS confirms, the matching withdrawal completes and the Wallet is deducted with no admin action needed.
+            "Complete" below is a manual fallback for the rare case the SMS never arrives.
+          </div>
         </div>
         <select style={{ ...inputStyle, width: 180 }} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
           <option value="all">All statuses</option>
@@ -7293,9 +8518,18 @@ function ResellerWithdrawalsTab({ canManage }) {
             <tr style={{ background: "#FAFBFF" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Ref #</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Reseller</th>
-              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
-              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>To</th>
-              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Amount</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payout Company</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Customer Phone</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Wallet Amount</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Wallet Balance</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Commission %</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Commission Amt</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Sent to Customer</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payout Agent</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>SIM Used</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>SMS Confirmation</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>SMS Timestamp</th>
+              <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>SMS Ref</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Status</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Date</th>
               {canManage && <th style={{ padding: "10px 14px" }} />}
@@ -7309,6 +8543,21 @@ function ResellerWithdrawalsTab({ canManage }) {
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{w.companyName}</td>
                 <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, fontFamily: "monospace" }}>{w.destinationNumber}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>${Number(w.amount).toFixed(2)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK }}>${Number(w.resellerWalletBalance ?? 0).toFixed(2)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{Number(w.commissionPercentage ?? 0).toFixed(0)}%</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>${Number(w.bonusAmount ?? 0).toFixed(2)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK }}>${Number(w.customerReceivesAmount ?? w.amount).toFixed(2)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE }}>{w.confirmedByAdminEmail || "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE }}>
+                  {w.simMobileNumber || w.simDeviceName
+                    ? <span title={w.simDeviceName ? `Device: ${w.simDeviceName}` : ""}>{w.simMobileNumber || w.simDeviceName}</span>
+                    : "—"}
+                </td>
+                <td style={{ padding: "10px 14px", fontSize: 11, color: MUTE, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={w.smsConfirmationText || ""}>
+                  {w.smsConfirmationText || "—"}
+                </td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE }}>{w.smsConfirmedAt ? formatDateTime(w.smsConfirmedAt) : "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 10.5, color: MUTE, fontFamily: "monospace" }}>{w.matchedSmsLogId ? w.matchedSmsLogId.slice(0, 8) : "—"}</td>
                 <td style={{ padding: "10px 14px" }}>{statusBadge(RESELLER_WITHDRAWAL_STATUS_META, w.status)}</td>
                 <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE }}>{formatDateTime(w.createdAt)}</td>
                 {canManage && (
@@ -7331,11 +8580,205 @@ function ResellerWithdrawalsTab({ canManage }) {
               </tr>
             ))}
             {withdrawals.length === 0 && (
-              <tr><td colSpan={8} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No withdrawals yet.</td></tr>
+              <tr><td colSpan={17} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No withdrawals yet.</td></tr>
             )}
           </tbody>
         </table>
       </Card>
+    </div>
+  );
+}
+
+// Reseller Withdraw's OWN SIM routing — deliberately its own table/UI
+// (reseller_withdrawal_sim_routing) separate from SimRoutingPanel above
+// (Internet Store/eBadal recharge's routing), per product decision: a
+// company's withdrawal payout SIM can be pointed at a different device than
+// that same company's recharge SIM. Structurally mirrors SimRoutingPanel
+// (same priority-ranked multi-device pattern) plus two additions: a
+// mobileNumber label (display/audit only — see migration 058's header
+// comment for why it can't be enforced against the physically inserted
+// SIM) and an active toggle (a per-route kill switch finer-grained than a
+// whole device's enabled flag).
+function ResellerWithdrawSimRoutingTab({ companies, canManage }) {
+  const [routes, setRoutes] = useState([]);
+  const [devices, setDevices] = useState([]);
+  const [savingKey, setSavingKey] = useState(null);
+  const [error, setError] = useState("");
+  const [addForm, setAddForm] = useState({}); // companyId -> { deviceId, simSlot, mobileNumber }
+
+  const fetchAll = async () => {
+    try {
+      const [routeRows, deviceRows] = await Promise.all([DalabAdminApi.getResellerWithdrawalSimRouting(), DalabAdminApi.getAgentDevices()]);
+      setRoutes(routeRows);
+      setDevices(deviceRows);
+    } catch (err) {
+      setError(err.message || "Could not load Reseller Withdraw SIM routing.");
+    }
+  };
+  useEffect(() => { fetchAll(); }, []);
+
+  const routesFor = (companyId) => routes.filter((r) => r.companyId === companyId).sort((a, b) => a.priority - b.priority);
+  const unassigned = companies.filter((c) => routesFor(c.id).length === 0);
+
+  const upsert = async (companyId, deviceId, simSlot, mobileNumber, active, priority) => {
+    const key = `${companyId}:${deviceId}`;
+    setSavingKey(key);
+    setError("");
+    try {
+      await DalabAdminApi.setResellerWithdrawalSimRouting(companyId, deviceId, simSlot, mobileNumber, active, priority);
+      await fetchAll();
+    } catch (err) {
+      setError(err.message || "Could not save the withdrawal SIM route.");
+    } finally {
+      setSavingKey(null);
+    }
+  };
+
+  const remove = async (companyId, deviceId) => {
+    const key = `${companyId}:${deviceId}`;
+    setSavingKey(key);
+    setError("");
+    try {
+      await DalabAdminApi.deleteResellerWithdrawalSimRouting(companyId, deviceId);
+      await fetchAll();
+    } catch (err) {
+      setError(err.message || "Could not remove the withdrawal SIM route.");
+    } finally {
+      setSavingKey(null);
+    }
+  };
+
+  const addDevice = async (companyId) => {
+    const form = addForm[companyId];
+    if (!form?.deviceId) return;
+    const existingCount = routesFor(companyId).length;
+    await upsert(companyId, form.deviceId, form.simSlot || 1, form.mobileNumber || null, true, existingCount + 1);
+    setAddForm((prev) => ({ ...prev, [companyId]: { deviceId: "", simSlot: 1, mobileNumber: "" } }));
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage Withdraw SIMs.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>
+        Which Agent device + physical SIM slot sends each company's Reseller Withdraw payouts — independent of that same company's Internet Store recharge routing (see the SIM Routing tab).
+        A withdrawal auto-dials whichever active route is priority 1 for its company; disabling a route (or setting no route at all) stops that company's withdrawals from auto-dialing until fixed.
+        The mobile number is a label you enter for your own records — it isn't read from the SIM itself, so keep it matched to whatever card is actually inserted in that slot.
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      {unassigned.length > 0 && (
+        <Card style={{ padding: 16, marginBottom: 16, background: "#FFF8E8", border: "1px solid #F4E3B0" }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#A9720A", marginBottom: 8 }}>No withdrawal payout SIM routed yet — that company's Reseller Withdraw requests will stay unpaid until assigned:</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {unassigned.map((c) => (
+              <Badge key={c.id} tone="amber">{c.name}</Badge>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {companies.map((c) => {
+          const companyRoutes = routesFor(c.id);
+          const usedDeviceIds = new Set(companyRoutes.map((r) => r.deviceId));
+          const availableDevices = devices.filter((d) => !usedDeviceIds.has(d.id));
+          const form = addForm[c.id] || { deviceId: "", simSlot: 1, mobileNumber: "" };
+
+          return (
+            <Card key={c.id} style={{ padding: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                <div style={{ width: 8, height: 8, borderRadius: 4, background: c.color }} />
+                <span style={{ fontWeight: 800, fontSize: 14, color: INK }}>{c.name}</span>
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+                {companyRoutes.map((r, idx) => {
+                  const device = devices.find((d) => d.id === r.deviceId);
+                  const key = `${r.companyId}:${r.deviceId}`;
+                  return (
+                    <div key={r.deviceId} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, border: `1px solid ${BORDER}` }}>
+                      <Badge tone={idx === 0 ? "blue" : "gray"}>{idx === 0 ? "Primary" : `Backup ${idx}`}</Badge>
+                      <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: INK }}>{r.deviceName || "Unknown device"}</span>
+                      {device && (device.enabled === false || isHeartbeatStale(device.lastHeartbeatAt)) && (
+                        <Badge tone="amber"><AlertTriangle size={11} style={{ marginRight: 4, verticalAlign: -1 }} />{device.enabled === false ? "Disabled" : "No recent heartbeat"}</Badge>
+                      )}
+                      {canManage ? (
+                        <>
+                          <select
+                            value={r.simSlot}
+                            onChange={(e) => upsert(r.companyId, r.deviceId, Number(e.target.value), r.mobileNumber, r.active, r.priority)}
+                            style={{ ...inputStyle, width: 90, padding: "5px 8px" }}
+                          >
+                            <option value={1}>SIM 1</option>
+                            <option value={2}>SIM 2</option>
+                          </select>
+                          <input
+                            defaultValue={r.mobileNumber || ""}
+                            placeholder="Mobile number"
+                            onBlur={(e) => e.target.value !== (r.mobileNumber || "") && upsert(r.companyId, r.deviceId, r.simSlot, e.target.value || null, r.active, r.priority)}
+                            style={{ ...inputStyle, width: 140, padding: "5px 8px" }}
+                          />
+                          <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11.5, color: MUTE, cursor: "pointer" }}>
+                            <input type="checkbox" checked={r.active} onChange={(e) => upsert(r.companyId, r.deviceId, r.simSlot, r.mobileNumber, e.target.checked, r.priority)} />
+                            Active
+                          </label>
+                        </>
+                      ) : (
+                        <>
+                          <span style={{ fontSize: 12, color: MUTE }}>SIM {r.simSlot}</span>
+                          <span style={{ fontSize: 12, color: MUTE, fontFamily: "monospace" }}>{r.mobileNumber || "—"}</span>
+                          <Badge tone={r.active ? "green" : "gray"}>{r.active ? "Active" : "Inactive"}</Badge>
+                        </>
+                      )}
+                      {savingKey === key && <Loader2 size={13} className="animate-spin" color={MUTE} />}
+                      {canManage && (
+                        <button onClick={() => remove(r.companyId, r.deviceId)} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                          <Trash2 size={14} color="#C81E2C" />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+                {companyRoutes.length === 0 && (
+                  <div style={{ fontSize: 12, color: MUTE, padding: "8px 10px" }}>No withdrawal payout SIM routed for {c.name} yet.</div>
+                )}
+              </div>
+
+              {canManage && availableDevices.length > 0 && (
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <select
+                    value={form.deviceId}
+                    onChange={(e) => setAddForm((prev) => ({ ...prev, [c.id]: { ...form, deviceId: e.target.value } }))}
+                    style={{ ...inputStyle, flex: 1, padding: "6px 10px" }}
+                  >
+                    <option value="">Add device...</option>
+                    {availableDevices.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  </select>
+                  <select
+                    value={form.simSlot}
+                    onChange={(e) => setAddForm((prev) => ({ ...prev, [c.id]: { ...form, simSlot: Number(e.target.value) } }))}
+                    style={{ ...inputStyle, width: 90, padding: "6px 10px" }}
+                  >
+                    <option value={1}>SIM 1</option>
+                    <option value={2}>SIM 2</option>
+                  </select>
+                  <input
+                    value={form.mobileNumber}
+                    onChange={(e) => setAddForm((prev) => ({ ...prev, [c.id]: { ...form, mobileNumber: e.target.value } }))}
+                    placeholder="Mobile number"
+                    style={{ ...inputStyle, width: 140, padding: "6px 10px" }}
+                  />
+                  <Button variant="ghost" onClick={() => addDevice(c.id)} disabled={!form.deviceId}>Add</Button>
+                </div>
+              )}
+            </Card>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -7584,6 +9027,321 @@ function FeedbackPanel({ admin }) {
   );
 }
 
+const SUPPORT_TOPIC_LABELS = {
+  dalab_internet: "Dalab Internet",
+  payment_services: "Payment & Services",
+  agent_support: "Agent Support",
+};
+
+function timeAgoLabel(iso) {
+  if (!iso) return "";
+  const ms = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(ms / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ${mins % 60}m ago`;
+  return formatDateTime(iso);
+}
+
+// Real-time Agent Support queue — this admin's own online/offline toggle,
+// the shared FIFO waiting list (queued + pending across every agent), and
+// whichever single conversation is currently assigned to THIS admin (the
+// backend enforces one active conversation per agent at a time). Refetches
+// on the same shared order-events stream every other live panel already
+// subscribes to (support_conversation.updated is one of its event types),
+// so two admins with this panel open both see claims/messages/resolutions
+// land in real time without polling.
+function SupportQueuePanel({ admin }) {
+  const canManage = hasPermission(admin, "support.manage");
+
+  const [online, setOnline] = useState(false);
+  const [statusLoading, setStatusLoading] = useState(true);
+  const [togglingOnline, setTogglingOnline] = useState(false);
+
+  const [queue, setQueue] = useState([]);
+  const [queueLoading, setQueueLoading] = useState(false);
+
+  const [activeConversation, setActiveConversation] = useState(null);
+  const [reply, setReply] = useState("");
+  const [sending, setSending] = useState(false);
+  const [claimingNext, setClaimingNext] = useState(false);
+  const [claimingId, setClaimingId] = useState(null);
+  const [ending, setEnding] = useState(false);
+  const [actionError, setActionError] = useState("");
+
+  const fetchStatus = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setStatusLoading(true);
+    try {
+      const s = await DalabAdminApi.getSupportStatus();
+      setOnline(s.online);
+      if (s.activeConversationId) {
+        setActiveConversation(await DalabAdminApi.getSupportConversation(s.activeConversationId));
+      } else {
+        setActiveConversation(null);
+      }
+    } catch (err) {
+      console.error("getSupportStatus failed:", err.message);
+    } finally {
+      setStatusLoading(false);
+    }
+  };
+
+  const fetchQueue = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setQueueLoading(true);
+    try {
+      setQueue(await DalabAdminApi.getSupportQueue());
+    } catch (err) {
+      console.error("getSupportQueue failed:", err.message);
+    } finally {
+      setQueueLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchStatus();
+    fetchQueue();
+  }, []);
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    const unsubscribe = subscribeOrderEvents("/admin/orders/stream", {
+      onEvent: () => {
+        fetchQueue();
+        fetchStatus();
+      },
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const toggleOnline = async () => {
+    setTogglingOnline(true);
+    setActionError("");
+    try {
+      const result = await DalabAdminApi.setSupportStatus(!online);
+      setOnline(result.online);
+      await fetchStatus();
+      await fetchQueue();
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setTogglingOnline(false);
+    }
+  };
+
+  const claimNext = async () => {
+    setClaimingNext(true);
+    setActionError("");
+    try {
+      const result = await DalabAdminApi.claimNextSupportConversation();
+      if (result.claimed) setActiveConversation(result.claimed);
+      else setActionError("No one is waiting right now.");
+      await fetchQueue();
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setClaimingNext(false);
+    }
+  };
+
+  const claimSpecific = async (id) => {
+    setClaimingId(id);
+    setActionError("");
+    try {
+      setActiveConversation(await DalabAdminApi.claimSupportConversation(id));
+      await fetchQueue();
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setClaimingId(null);
+    }
+  };
+
+  const sendReply = async () => {
+    if (!reply.trim() || !activeConversation) return;
+    setSending(true);
+    setActionError("");
+    try {
+      setActiveConversation(await DalabAdminApi.sendSupportMessage(activeConversation.id, reply.trim()));
+      setReply("");
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const endConversation = async (kind) => {
+    if (!activeConversation) return;
+    setEnding(true);
+    setActionError("");
+    try {
+      const fn = kind === "resolve" ? DalabAdminApi.resolveSupportConversation : DalabAdminApi.closeSupportConversation;
+      const result = await fn(activeConversation.id);
+      setActiveConversation(result.next || null);
+      await fetchQueue();
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setEnding(false);
+    }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to view Agent Support.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+        <div style={{ fontWeight: 800, fontSize: 15, color: INK }}>Agent Support</div>
+        {canManage ? (
+          <Button
+            variant={online ? "primary" : "ghost"}
+            icon={online ? CheckCircle2 : XCircle}
+            onClick={toggleOnline}
+            disabled={togglingOnline || statusLoading}
+            spin={togglingOnline}
+          >
+            {online ? "You're online" : "You're offline"}
+          </Button>
+        ) : (
+          <Badge tone={online ? "green" : "gray"}>{online ? "Online" : "Offline"}</Badge>
+        )}
+      </div>
+
+      {actionError && (
+        <div style={{ background: "#FEF2F2", border: "1px solid #FCA5A5", color: "#C81E2C", borderRadius: 10, padding: "10px 14px", fontSize: 12.5, marginBottom: 14 }}>
+          {actionError}
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1fr", gap: 16, alignItems: "start" }}>
+        {/* Current conversation */}
+        <Card style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ padding: "14px 16px", borderBottom: `1px solid ${BORDER}`, fontWeight: 700, fontSize: 13, color: INK }}>
+            Current Conversation
+          </div>
+          {!activeConversation ? (
+            <div style={{ padding: 24, textAlign: "center" }}>
+              <div style={{ fontSize: 12.5, color: MUTE, marginBottom: canManage ? 14 : 0 }}>
+                {online ? "No customer assigned right now." : "Go online to be offered waiting customers."}
+              </div>
+              {canManage && (
+                <Button onClick={claimNext} disabled={!online || claimingNext || queue.length === 0} spin={claimingNext}>
+                  Claim next customer
+                </Button>
+              )}
+            </div>
+          ) : (
+            <div>
+              <div style={{ padding: "12px 16px", borderBottom: `1px solid ${BORDER}` }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: INK }}>
+                  {activeConversation.customerName || "Customer"} — {activeConversation.customerPhone}
+                </div>
+                <div style={{ display: "flex", gap: 6, marginTop: 4, alignItems: "center" }}>
+                  <Badge tone="blue">{SUPPORT_TOPIC_LABELS[activeConversation.topic] || activeConversation.topic}</Badge>
+                  {activeConversation.agentOfflineAtStart && <Badge tone="amber">Left while offline</Badge>}
+                </div>
+              </div>
+              <div style={{ maxHeight: 360, overflowY: "auto", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
+                {(activeConversation.messages || []).map((m) => (
+                  <div
+                    key={m.id}
+                    style={{
+                      alignSelf: m.senderType === "agent" ? "flex-end" : "flex-start",
+                      maxWidth: "80%",
+                      background: m.senderType === "system" ? "transparent" : m.senderType === "agent" ? INDIGO : INDIGO_SOFT,
+                      color: m.senderType === "agent" ? "#fff" : m.senderType === "system" ? MUTE : INK,
+                      borderRadius: 12,
+                      padding: m.senderType === "system" ? "2px 0" : "8px 12px",
+                      fontSize: m.senderType === "system" ? 11 : 13,
+                      fontStyle: m.senderType === "system" ? "italic" : "normal",
+                      textAlign: m.senderType === "system" ? "center" : "left",
+                      width: m.senderType === "system" ? "100%" : "auto",
+                    }}
+                  >
+                    {m.body}
+                  </div>
+                ))}
+              </div>
+              {canManage && (
+                <div style={{ padding: "12px 16px", borderTop: `1px solid ${BORDER}` }}>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                    <input
+                      style={{ ...inputStyle, flex: 1 }}
+                      placeholder="Type a reply…"
+                      value={reply}
+                      onChange={(e) => setReply(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && sendReply()}
+                    />
+                    <Button onClick={sendReply} disabled={sending || !reply.trim()} spin={sending}>Send</Button>
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <Button variant="subtle" onClick={() => endConversation("resolve")} disabled={ending} spin={ending}>
+                      Resolve
+                    </Button>
+                    <Button variant="ghost" onClick={() => endConversation("close")} disabled={ending}>
+                      Close
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </Card>
+
+        {/* Waiting customers */}
+        <Card style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ padding: "14px 16px", borderBottom: `1px solid ${BORDER}`, fontWeight: 700, fontSize: 13, color: INK, display: "flex", justifyContent: "space-between" }}>
+            <span>Waiting Customers</span>
+            <Badge tone={queue.length > 0 ? "amber" : "gray"}>{queue.length}</Badge>
+          </div>
+          {queueLoading && queue.length === 0 ? (
+            <div style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>Loading…</div>
+          ) : queue.length === 0 ? (
+            <div style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No one is waiting.</div>
+          ) : (
+            <div>
+              {queue.map((c, index) => (
+                <div key={c.id} style={{ padding: "12px 16px", borderTop: index === 0 ? "none" : `1px solid ${BORDER}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                    <div>
+                      <div style={{ fontSize: 12.5, fontWeight: 700, color: INK }}>
+                        #{index + 1} {c.customerName || "Customer"} — {c.customerPhone}
+                      </div>
+                      <div style={{ fontSize: 11, color: MUTE, marginTop: 2 }}>
+                        {SUPPORT_TOPIC_LABELS[c.topic] || c.topic} · waiting {timeAgoLabel(c.createdAt)}
+                        {c.status === "pending" && " · pending"}
+                      </div>
+                      {c.firstMessage && (
+                        <div style={{ fontSize: 12, color: SLATE, marginTop: 4, maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          “{c.firstMessage}”
+                        </div>
+                      )}
+                    </div>
+                    {canManage && (
+                      <Button
+                        variant="ghost"
+                        onClick={() => claimSpecific(c.id)}
+                        disabled={!online || !!activeConversation || claimingId === c.id}
+                        spin={claimingId === c.id}
+                      >
+                        Claim
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      </div>
+    </div>
+  );
+}
+
 // Referral / Loyalty Points: reuses the existing Macaash balance/ledger as the
 // one points currency (per explicit product decision) — this panel only
 // configures the reward rule (points per successful referral purchase,
@@ -7741,6 +9499,15 @@ const STUCK_REASON_META = {
   // looksLikeFailureResponse. Red: needs a human to check the raw response
   // text (Payment History) and decide, same severity as a config gap.
   delivery_response_ambiguous: { label: "Delivery Response Ambiguous", tone: "red" },
+  // SOMLINK-fulfilled orders (see classifySomlinkStuckReason, somlink.routes.ts)
+  // — a real-money API call rather than a USSD dial, so these get their own
+  // "Retry SOMLINK" action below instead of "Send to Agent".
+  somlink_not_attempted: { label: "SOMLINK Not Attempted", tone: "red" },
+  somlink_declined: { label: "SOMLINK Declined", tone: "red" },
+  // A network error/timeout — SOMLINK's actual outcome is unknown, so this
+  // is never auto-retried; a human must confirm via SOMLINK's own dashboard
+  // that the prior attempt did NOT go through before retrying.
+  somlink_response_ambiguous: { label: "SOMLINK Response Ambiguous — verify before retrying", tone: "amber" },
 };
 
 function PendingRecoveryPanel() {
@@ -7782,6 +9549,24 @@ function PendingRecoveryPanel() {
       fetchRows();
     } catch (err) {
       setActionError((m) => ({ ...m, [order.id]: err.message || "Could not send this order back to the agent." }));
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  // SOMLINK orders never go through "Send to Agent" — that path regenerates
+  // a USSD dial string, which is meaningless for an API-fulfilled order and
+  // would leave it stuck the same way. This calls the real SOMLINK retry
+  // route instead, which places one fresh real-money attempt and only
+  // completes the order on a confirmed success.
+  const retrySomlink = async (order) => {
+    setActingId(order.id);
+    setActionError((m) => ({ ...m, [order.id]: "" }));
+    try {
+      await DalabAdminApi.retrySomlinkOrder(order.id);
+      fetchRows();
+    } catch (err) {
+      setActionError((m) => ({ ...m, [order.id]: err.message || "Could not retry SOMLINK delivery for this order." }));
     } finally {
       setActingId(null);
     }
@@ -7835,9 +9620,15 @@ function PendingRecoveryPanel() {
                     <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(o.createdAt)}</td>
                     <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
                       {actionError[o.id] && <div style={{ color: "#C81E2C", fontSize: 11, marginBottom: 4 }}>{actionError[o.id]}</div>}
-                      <Button variant="primary" disabled={actingId === o.id} onClick={() => sendToAgent(o)}>
-                        {actingId === o.id ? "Sending..." : "Send to Agent"}
-                      </Button>
+                      {o.companyFulfillmentMethod === "somlink" ? (
+                        <Button variant="primary" disabled={actingId === o.id} onClick={() => retrySomlink(o)}>
+                          {actingId === o.id ? "Retrying..." : "Retry SOMLINK"}
+                        </Button>
+                      ) : (
+                        <Button variant="primary" disabled={actingId === o.id} onClick={() => sendToAgent(o)}>
+                          {actingId === o.id ? "Sending..." : "Send to Agent"}
+                        </Button>
+                      )}
                     </td>
                   </tr>
                 );
@@ -8329,38 +10120,91 @@ function SmsLogs({ companies }) {
   );
 }
 
-const NOTIFICATION_TYPE_LABEL = { push: "Push Notification", promotion: "Promotion", maintenance: "Maintenance Message" };
+const TARGET_TYPE_LABEL = { single: "1 customer", multiple: "Selected customers", all: "All customers", recent: "Joined in last 7 days" };
+const SERVICE_FILTER_LABEL = { all: "All Services", internet: "Internet", ebadal: "eBadal", reseller: "Reseller" };
 
+// Same composer + history reachable from the Agent app via the identical
+// POST /notifications/broadcast / GET /notifications/campaigns routes — see
+// DalabAdminApi.broadcastNotification's comment. Nothing here is
+// Admin-only; an Agent hitting these same two routes gets the exact same
+// targeting options and the exact same history.
 function Notifications() {
-  const [sent, setSent] = useState([]);
-  const [loadingHistory, setLoadingHistory] = useState(true);
-  const [historyError, setHistoryError] = useState("");
-  const [form, setForm] = useState({ type: "push", title: "", body: "" });
+  const [targetType, setTargetType] = useState("all");
+  const [serviceFilter, setServiceFilter] = useState("all");
+  const [selectedCustomers, setSelectedCustomers] = useState([]);
+  const [customerSearch, setCustomerSearch] = useState("");
+  const [customerResults, setCustomerResults] = useState([]);
+  const [searchingCustomers, setSearchingCustomers] = useState(false);
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState("");
+  const [sendResult, setSendResult] = useState(null);
+
+  const [campaigns, setCampaigns] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(true);
+  const [historyError, setHistoryError] = useState("");
 
   const fetchHistory = () => {
     if (!DALAB_API_ENABLED) { setLoadingHistory(false); return; }
     setLoadingHistory(true);
     setHistoryError("");
-    DalabAdminApi.getAdminNotifications()
-      .then((rows) => setSent(rows))
+    DalabAdminApi.getNotificationCampaigns()
+      .then((rows) => setCampaigns(rows))
       .catch((err) => setHistoryError(err.message || "Could not load sent history."))
       .finally(() => setLoadingHistory(false));
   };
   useEffect(fetchHistory, []);
 
+  // Debounced customer search — only active while picking a single/multiple
+  // target, mirrors the picker every other "search customers" field in this
+  // dashboard already uses (getCustomers(search)).
+  useEffect(() => {
+    if (targetType !== "single" && targetType !== "multiple") return;
+    if (!customerSearch.trim() || !DALAB_API_ENABLED) { setCustomerResults([]); return; }
+    setSearchingCustomers(true);
+    const handle = setTimeout(() => {
+      DalabAdminApi.getCustomers(customerSearch.trim())
+        .then((rows) => setCustomerResults(rows))
+        .catch(() => setCustomerResults([]))
+        .finally(() => setSearchingCustomers(false));
+    }, 300);
+    return () => clearTimeout(handle);
+  }, [customerSearch, targetType]);
+
+  const toggleCustomer = (customer) => {
+    setSelectedCustomers((prev) => {
+      const already = prev.some((c) => c.id === customer.id);
+      if (already) return prev.filter((c) => c.id !== customer.id);
+      if (targetType === "single") return [customer];
+      return [...prev, customer];
+    });
+  };
+
+  const canSend =
+    title.trim() &&
+    body.trim() &&
+    !sending &&
+    ((targetType !== "single" && targetType !== "multiple") || selectedCustomers.length > 0);
+
   const send = async () => {
-    if (!form.title || sending) return;
+    if (!canSend) return;
     setSending(true);
     setSendError("");
+    setSendResult(null);
     try {
-      // Delivery is DB-record-only for now — no FCM/APNs push infrastructure
-      // is wired up yet, so this reaches the notifications table (and
-      // whatever in-app "Notifications" screen polls it) but not an actual
-      // phone push until that infra exists.
-      await DalabAdminApi.sendNotification(form.type, form.title, form.body);
-      setForm({ type: "push", title: "", body: "" });
+      const result = await DalabAdminApi.broadcastNotification({
+        targetType,
+        customerIds: selectedCustomers.map((c) => c.id),
+        serviceFilter,
+        title: title.trim(),
+        body: body.trim(),
+      });
+      setSendResult(result);
+      setTitle("");
+      setBody("");
+      setSelectedCustomers([]);
+      setCustomerSearch("");
       fetchHistory();
     } catch (err) {
       setSendError(err.message || "Could not send notification.");
@@ -8372,30 +10216,101 @@ function Notifications() {
   return (
     <div>
       <div style={{ fontWeight: 800, fontSize: 17, color: INK, marginBottom: 14 }}>Notifications</div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.2fr", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.3fr", gap: 14, alignItems: "start" }}>
         <Card style={{ padding: 18 }}>
           <div style={{ fontWeight: 700, fontSize: 13, color: INK, marginBottom: 10 }}>Compose</div>
-          <div style={{ fontSize: 11.5, color: MUTE, marginBottom: 12 }}>
-            Stored and shown in-app to customers/agents. No push (FCM/APNs) infrastructure is connected yet, so this doesn't reach a phone that has the app closed.
-          </div>
           {sendError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{sendError}</div>}
-          <Field label="Type">
-            <select style={inputStyle} value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
-              <option value="push">Push Notification</option>
-              <option value="promotion">Promotion</option>
-              <option value="maintenance">Maintenance Message</option>
+          {sendResult && (
+            <div style={{ background: "#E4F7EA", color: "#137A3B", fontSize: 12.5, fontWeight: 600, padding: "10px 12px", borderRadius: 10, marginBottom: 12 }}>
+              Sent to {sendResult.recipientCount} customer{sendResult.recipientCount === 1 ? "" : "s"} — {sendResult.deliveredCount} delivered, {sendResult.failedCount} failed (no registered device or push disabled).
+            </div>
+          )}
+
+          <Field label="Send to">
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {[
+                ["single", "One customer"],
+                ["multiple", "Selected customers"],
+                ["all", "All customers"],
+                ["recent", "Joined in last 7 days"],
+              ].map(([value, label]) => (
+                <button
+                  key={value}
+                  onClick={() => { setTargetType(value); setSelectedCustomers([]); }}
+                  style={{
+                    padding: "7px 12px", borderRadius: 20, fontSize: 12, fontWeight: 700, cursor: "pointer",
+                    border: `1px solid ${targetType === value ? INDIGO : BORDER}`,
+                    background: targetType === value ? INDIGO : "#fff", color: targetType === value ? "#fff" : SLATE,
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </Field>
+
+          {(targetType === "single" || targetType === "multiple") && (
+            <Field label={targetType === "single" ? "Customer" : "Customers"}>
+              {selectedCustomers.length > 0 && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                  {selectedCustomers.map((c) => (
+                    <span key={c.id} style={{ display: "inline-flex", alignItems: "center", gap: 4, background: INDIGO_SOFT, color: INDIGO, fontSize: 11.5, fontWeight: 700, padding: "4px 6px 4px 10px", borderRadius: 20 }}>
+                      {c.name || c.phone}
+                      <X size={12} style={{ cursor: "pointer" }} onClick={() => toggleCustomer(c)} />
+                    </span>
+                  ))}
+                </div>
+              )}
+              <input
+                style={inputStyle}
+                value={customerSearch}
+                onChange={(e) => setCustomerSearch(e.target.value)}
+                placeholder="Search by name or phone…"
+              />
+              {customerSearch.trim() && (
+                <div style={{ border: `1px solid ${BORDER}`, borderRadius: 10, marginTop: 6, maxHeight: 180, overflowY: "auto" }}>
+                  {searchingCustomers ? (
+                    <div style={{ padding: 10, fontSize: 12, color: MUTE }}>Searching…</div>
+                  ) : customerResults.length === 0 ? (
+                    <div style={{ padding: 10, fontSize: 12, color: MUTE }}>No matching customers.</div>
+                  ) : (
+                    customerResults.map((c) => {
+                      const checked = selectedCustomers.some((s) => s.id === c.id);
+                      return (
+                        <div
+                          key={c.id}
+                          onClick={() => toggleCustomer(c)}
+                          style={{ padding: "8px 10px", fontSize: 12.5, cursor: "pointer", display: "flex", justifyContent: "space-between", background: checked ? INDIGO_SOFT : "#fff", borderBottom: `1px solid ${BORDER}` }}
+                        >
+                          <span style={{ color: INK, fontWeight: 600 }}>{c.name || "—"} <span style={{ color: MUTE, fontWeight: 400 }}>{c.phone}</span></span>
+                          {checked && <Check size={14} color={INDIGO} />}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+            </Field>
+          )}
+
+          <Field label="Service">
+            <select style={inputStyle} value={serviceFilter} onChange={(e) => setServiceFilter(e.target.value)}>
+              {Object.entries(SERVICE_FILTER_LABEL).map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
             </select>
           </Field>
           <Field label="Title">
-            <input style={inputStyle} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Weekend data bonus" />
+            <input style={inputStyle} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Weekend data bonus" />
           </Field>
           <Field label="Message">
-            <textarea style={{ ...inputStyle, minHeight: 80, resize: "vertical" }} value={form.body} onChange={(e) => setForm({ ...form, body: e.target.value })} />
+            <textarea style={{ ...inputStyle, minHeight: 80, resize: "vertical" }} value={body} onChange={(e) => setBody(e.target.value)} />
           </Field>
-          <Button icon={sending ? Loader2 : Bell} spin={sending} disabled={sending || !form.title} onClick={send}>
-            {sending ? "Sending..." : "Send to all customers"}
+          <Button icon={sending ? Loader2 : Bell} spin={sending} disabled={!canSend} onClick={send}>
+            {sending ? "Sending..." : "Send notification"}
           </Button>
         </Card>
+
         <Card style={{ padding: 0, overflow: "hidden" }}>
           <div style={{ padding: "14px 16px", fontWeight: 700, fontSize: 13, color: INK, borderBottom: `1px solid ${BORDER}` }}>Sent history</div>
           {!DALAB_API_ENABLED ? (
@@ -8404,16 +10319,30 @@ function Notifications() {
             <div style={{ padding: 16, color: "#C81E2C", fontSize: 12.5 }}>{historyError}</div>
           ) : loadingHistory ? (
             <div style={{ padding: 16, fontSize: 12.5, color: MUTE }}>Loading…</div>
-          ) : sent.length === 0 ? (
+          ) : campaigns.length === 0 ? (
             <div style={{ padding: 16, fontSize: 12.5, color: MUTE }}>Nothing sent yet.</div>
           ) : (
-            sent.map((s) => (
-              <div key={s.id} style={{ padding: "12px 16px", borderBottom: `1px solid ${BORDER}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div>
-                  <div style={{ fontWeight: 700, fontSize: 13, color: INK }}>{s.title}</div>
-                  <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>{formatDateTime(s.sentAt)}</div>
+            campaigns.map((c) => (
+              <div key={c.id} style={{ padding: "12px 16px", borderBottom: `1px solid ${BORDER}` }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: INK }}>{c.title}</div>
+                    <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>{c.body}</div>
+                  </div>
+                  <Badge>{TARGET_TYPE_LABEL[c.targetType] ?? c.targetType}</Badge>
                 </div>
-                <Badge>{NOTIFICATION_TYPE_LABEL[s.type] ?? s.type}</Badge>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 8, fontSize: 11.5, color: SLATE }}>
+                  <span>{formatDateTime(c.createdAt)}</span>
+                  <span>·</span>
+                  <span>By {c.createdByName || "—"} ({c.createdByRole === "agent" ? "Agent" : "Admin"})</span>
+                  <span>·</span>
+                  <span>{SERVICE_FILTER_LABEL[c.serviceFilter] ?? c.serviceFilter}</span>
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                  <Badge tone="neutral">{c.recipientCount} sent</Badge>
+                  <Badge tone="green">{c.deliveredCount} delivered</Badge>
+                  <Badge tone={c.failedCount > 0 ? "red" : "gray"}>{c.failedCount} failed</Badge>
+                </div>
               </div>
             ))
           )}
@@ -9788,6 +11717,7 @@ function AdminDashboardShell({ admin, onLogout }) {
   const [pendingRecoveryCount, setPendingRecoveryCount] = useState(0);
   const [missingTemplateCount, setMissingTemplateCount] = useState(0);
   const [pendingFeedbackCount, setPendingFeedbackCount] = useState(0);
+  const [pendingSupportCount, setPendingSupportCount] = useState(0);
 
   // Companies used to be mock-only everywhere (Companies/PaymentNumbers never
   // called GET /admin/companies) — this is now the single source of truth,
@@ -9934,6 +11864,25 @@ function AdminDashboardShell({ admin, onLogout }) {
     return () => unsubscribe();
   }, []);
 
+  // Agent Support: waiting (queued + pending) conversations across every
+  // agent — same live-badge pattern as Feedback above, refreshed on the
+  // same shared order-events stream (support_conversation.updated is one of
+  // the event types it broadcasts).
+  const refreshSupportCount = async () => {
+    if (!DALAB_API_ENABLED) return;
+    try {
+      setPendingSupportCount((await DalabAdminApi.getSupportQueue()).length);
+    } catch (err) {
+      console.error("Failed to load support queue count:", err.message);
+    }
+  };
+  useEffect(() => { refreshSupportCount(); }, []);
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) return;
+    const unsubscribe = subscribeOrderEvents("/admin/orders/stream", { onEvent: refreshSupportCount });
+    return () => unsubscribe();
+  }, []);
+
   const activeLabel = NAV.find((n) => n.id === active)?.label;
 
   return (
@@ -9997,6 +11946,11 @@ function AdminDashboardShell({ admin, onLogout }) {
                     <Badge tone="amber">{pendingFeedbackCount}</Badge>
                   </span>
                 )}
+                {!collapsed && n.id === "support" && pendingSupportCount > 0 && (
+                  <span style={{ marginLeft: "auto" }} title="Customers waiting for an agent">
+                    <Badge tone="red">{pendingSupportCount}</Badge>
+                  </span>
+                )}
               </button>
             );
           })}
@@ -10042,6 +11996,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "packages" && <Packages packages={packages} setPackages={setPackages} companies={companies} admin={admin} onPackagesChanged={refreshMissingTemplateCount} />}
           {active === "categories" && <Categories companies={companies} admin={admin} />}
           {active === "orders" && <Orders orders={orders} setOrders={setOrders} companies={companies} admin={admin} />}
+          {active === "offline" && <OfflinePanel companies={companies} />}
           {active === "customers" && <Customers customers={customers} setCustomers={setCustomers} refreshCustomers={refreshCustomers} admin={admin} />}
           {active === "agents" && <AgentsSection companies={companies} admin={admin} />}
           {active === "notifications" && <Notifications />}
@@ -10054,6 +12009,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "resellers" && <ResellerManagement admin={admin} companies={companies} />}
           {active === "sms-sender-ids" && <SmsSenderIdsPanel />}
           {active === "feedback" && <FeedbackPanel admin={admin} />}
+          {active === "support" && <SupportQueuePanel admin={admin} />}
           {active === "referrals" && <ReferralRewardsPanel admin={admin} />}
           {active === "pending-recovery" && <PendingRecoveryPanel />}
           {active === "execution-logs" && <ExecutionLogs companies={companies} />}

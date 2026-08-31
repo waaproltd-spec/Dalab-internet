@@ -3,6 +3,18 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// google-services.json (Firebase Cloud Messaging config for this app's own
+// applicationId, com.dalab.agent -- a separate Firebase Android app
+// registration from the Customer App's com.dalab.internet, even though both
+// live under the same "dalab-internet" Firebase project) must be added here
+// manually via the Firebase Console before push notifications work. The
+// plugin is applied only when the file is actually present so CI keeps
+// building (with push registration silently inert, see PushTokenRegistrar)
+// in the meantime rather than failing outright on a missing config file.
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
 android {
     // Kotlin source package/namespace stays com.dalab.internet — unrelated to
     // the applicationId below, and renaming it would mean touching every
@@ -127,6 +139,16 @@ dependencies {
 
     // Recommended upgrade over plain SharedPreferences for SessionManager's tokens:
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // Push notifications for a newly-assigned support conversation (see
+    // notifications/AgentFcmService.kt) -- works even without
+    // google-services.json present (compiles fine either way; only actually
+    // initializes once that file exists, see PushTokenRegistrar).
+    implementation(platform("com.google.firebase:firebase-bom:33.5.1"))
+    implementation("com.google.firebase:firebase-messaging-ktx")
+    // For Task<T>.await() on FirebaseMessaging.getInstance().token, matching
+    // the coroutines version already used elsewhere in this module.
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.0")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")

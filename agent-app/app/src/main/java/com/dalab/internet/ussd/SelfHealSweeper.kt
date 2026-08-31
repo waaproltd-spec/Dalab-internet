@@ -30,6 +30,17 @@ object SelfHealSweeper {
     private val mutex = Mutex()
     private val inFlight = mutableSetOf<String>()
 
+    // A stuck order with genuinely no SIM routing configured re-appears in
+    // every sweep (this runs every ~60s) until an admin fixes it — logging
+    // the identical "not configured"/"cache failed to load" line every
+    // single pass floods Diagnostics (and the batch this uploads to the
+    // backend's heartbeat, capped at 50 entries) with thousands of
+    // duplicate rows for one real problem, burying anything else. Logged
+    // once per (order, reason) until either the reason changes or the order
+    // drops out of the candidate list (fixed, or otherwise resolved) --
+    // never suppressed forever, just not repeated every tick for no reason.
+    private val lastSkipReasonLogged = mutableMapOf<String, String>()
+
     suspend fun sweep(context: Context) {
         val candidates = try {
             RetryClassifier.requireSuccessful(ApiClient.service.getSelfHealCandidates()).body().orEmpty()
@@ -42,6 +53,13 @@ object SelfHealSweeper {
             DiagnosticsLog.record("self_heal_sweep", "Could not fetch candidates: ${e.message}", isError = false)
             return
         }
+        // Mark-and-sweep: forget any order no longer stuck, so if it gets
+        // routed, fails for a NEW reason later, or reappears after being
+        // fixed, that's logged fresh rather than staying silenced forever.
+        // Guarded by the same mutex as inFlight below -- the SSE-triggered
+        // and periodic sweeps can run this concurrently on different
+        // threads, and a plain HashMap isn't safe under that.
+        mutex.withLock { lastSkipReasonLogged.keys.retainAll(candidates.map { it.id }.toSet()) }
         if (candidates.isEmpty()) return
 
         val orchestrator = UssdOrchestrator(context)
@@ -61,14 +79,25 @@ object SelfHealSweeper {
                 val slot = when (val result = resolveSlot(order)) {
                     is SimSlotResult.Slot -> result.slot
                     SimSlotResult.NotConfigured -> {
-                        DiagnosticsLog.record("self_heal_sweep", "No SIM routing configured for order ${order.id}'s company — skipping.", isError = false)
+                        // Names the company (and its id) directly in the
+                        // message — the whole point is that whoever reads
+                        // this shouldn't need to separately look up which
+                        // provider order.id belongs to before they know what
+                        // to configure in Admin > Device & USSD > SIM Routing.
+                        logSkipOnce(
+                            order.id,
+                            "not_configured",
+                            "No SIM routing configured for ${order.companyName} (${order.companyId}) — order ${order.id} — skipping. " +
+                                "Add a SIM Routing entry for this company/device in Admin; this order retries automatically once one exists.",
+                        )
                         continue
                     }
                     SimSlotResult.LoadFailed -> {
-                        DiagnosticsLog.record("self_heal_sweep", "SIM routing cache failed to load for order ${order.id} — will retry next sweep.", isError = false)
+                        logSkipOnce(order.id, "load_failed", "SIM routing cache failed to load for order ${order.id} — will retry next sweep.")
                         continue
                     }
                 }
+                mutex.withLock { lastSkipReasonLogged.remove(order.id) }
                 DiagnosticsLog.record("self_heal_sweep", "Auto-dialing order ${order.id} (SIM $slot) after a config fix.", isError = false)
                 val result = orchestrator.executeManually(order.id, slot)
                 DiagnosticsLog.record(
@@ -80,6 +109,15 @@ object SelfHealSweeper {
                 mutex.withLock { inFlight.remove(order.id) }
             }
         }
+    }
+
+    private suspend fun logSkipOnce(orderId: String, reasonKey: String, message: String) {
+        val alreadyLogged = mutex.withLock {
+            val unchanged = lastSkipReasonLogged[orderId] == reasonKey
+            lastSkipReasonLogged[orderId] = reasonKey
+            unchanged
+        }
+        if (!alreadyLogged) DiagnosticsLog.record("self_heal_sweep", message, isError = false)
     }
 
     private suspend fun resolveSlot(order: Order): SimSlotResult {

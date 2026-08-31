@@ -37,7 +37,22 @@ object SimRoutingRepository {
                 Result.failure(error)
             }
         } catch (e: Exception) {
-            DiagnosticsLog.record("sim_routing_refresh", e.message ?: "unknown error")
+            // Previously only e.message was recorded, which is null for a
+            // real (if rare) class of exception -- a bare NullPointerException,
+            // EOFException, or similar constructed with no message argument --
+            // collapsing every such failure into the single unhelpful string
+            // "unknown error" with no way to tell them apart or find the actual
+            // failing line. This is exactly what happened in production:
+            // repeated "unknown error" entries with the underlying cause never
+            // recorded anywhere, on a device (network stack, auth, heartbeat)
+            // that was otherwise online and reachable. The exception's own
+            // class name plus a short stack trace is captured now instead, so
+            // the next occurrence is actually diagnosable from Diagnostics
+            // (More > Diagnostics) without needing a connected debugger.
+            DiagnosticsLog.record(
+                "sim_routing_refresh",
+                "${e.javaClass.name}: ${e.message ?: "no message"}\n${e.stackTraceToString().take(1500)}",
+            )
             Result.failure(e)
         }
     }

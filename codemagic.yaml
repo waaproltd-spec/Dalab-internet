@@ -1,0 +1,36 @@
+workflows:
+  agent-app-android:
+    name: Agent App (Android)
+    max_build_duration: 60
+    # This account's Codemagic plan only includes free macOS build minutes
+    # (confirmed via Billing: "Free macOS minutes personal use", no Linux
+    # allowance) -- linux and linux_x2 both failed with "instance type not
+    # available" for that reason, not because of the specific value chosen.
+    # A Mac instance builds Android just fine (Gradle/JDK, no Xcode
+    # involved) and draws from the minutes this account actually has.
+    instance_type: mac_mini_m2
+    working_directory: agent-app
+    environment:
+      java: 17
+      vars:
+        PACKAGE_NAME: "com.dalab.agent"
+    scripts:
+      - name: Run unit tests
+        script: |
+          ./gradlew testDebugUnitTest --no-daemon
+      - name: Build debug APK
+        script: |
+          ./gradlew assembleDebug --no-daemon
+      # Release build is signed automatically once Codemagic's Android code
+      # signing is configured for this workflow (Codemagic UI -> this app ->
+      # workflow settings -> Code signing identities -> Android). Without
+      # it, agent-app/app/build.gradle.kts's own AGENT_KEYSTORE_* env-var
+      # check falls back to the committed app/release.keystore, same
+      # fallback the GitHub Actions workflow (agent-app-build-apk.yml)
+      # already relies on -- either way this step never fails the build.
+      - name: Build release APK
+        script: |
+          ./gradlew assembleRelease --no-daemon
+    artifacts:
+      - app/build/outputs/apk/**/*.apk
+      - app/build/reports/tests/testDebugUnitTest

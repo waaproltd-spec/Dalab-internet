@@ -5,6 +5,7 @@ import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { hashPassword, verifyPassword, isValidPin } from "../auth/crypto.js";
+import { parseDataUri } from "../utils/dataUri.js";
 import { validateMobileNumber, companyKeyFromLabel } from "../lib/phoneValidation.js";
 
 export const customersRouter = Router();
@@ -36,7 +37,6 @@ const ADMIN_CUSTOMER_COLUMNS = `id, phone, name, email, status, macaash_points, 
 // Admin override PUT /admin/customers/:id/wallet-numbers below — a wallet
 // (EVC Plus, eDahab) is always a name+number pair, saved and cleared
 // together (047_exchange_wallet_lock_and_limits.sql).
-const WALLET_PHONE_RE = /^\+?\d{6,15}$/;
 const WALLET_LOCK_WINDOW_MS = 2 * 60 * 60 * 1000;
 function walletPairError(label: string) {
   return { error: `Provide both a name and a number for ${label}, or clear both` };
@@ -55,6 +55,10 @@ customersRouter.put("/admin/customers/:id", requirePermission("customers.manage"
   if (!existing) return sendJson(res, 404, { error: "Customer not found" });
   const name = req.body.name ?? existing.name;
   const phone = req.body.phone ?? existing.phone;
+  if (phone !== existing.phone) {
+    const phoneCheck = validateMobileNumber(String(phone));
+    if (!phoneCheck.valid) return sendJson(res, 400, { error: phoneCheck.error });
+  }
   if (phone !== existing.phone && (await queryOne(`SELECT id FROM customers WHERE phone=$1`, [phone]))) {
     return sendJson(res, 409, { error: "A customer with this phone already exists" });
   }
@@ -92,8 +96,9 @@ customersRouter.put("/admin/customers/:id/wallet-numbers", requirePermission("cu
   const body = req.body ?? {};
 
   for (const field of ["evcPlusNumber", "edahabNumber"] as const) {
-    if (field in body && body[field] != null && !WALLET_PHONE_RE.test(String(body[field]))) {
-      return sendJson(res, 400, { error: `Provide a valid ${field === "evcPlusNumber" ? "EVC Plus" : "eDahab"} number` });
+    if (field in body && body[field] != null) {
+      const check = validateMobileNumber(String(body[field]), field === "evcPlusNumber" ? "evc_plus" : "edahab");
+      if (!check.valid) return sendJson(res, 400, { error: check.error });
     }
   }
 
@@ -187,6 +192,25 @@ customersRouter.put("/admin/customers/:id/pin", requireAuth("super_admin"), asyn
   sendJson(res, 200, { message: "PIN saved", isSet: true });
 });
 
+// ---------------- Password Recovery: Reset Recovery PIN (Super Admin only) ----------------
+// The Customer App's Forgot Password flow directs a customer who's forgotten
+// their Recovery PIN to Contact Admin; this is that admin-side action. Unlike
+// PUT /pin above (where the Super Admin types a specific value), this one
+// always generates the new PIN itself — the Super Admin never chooses or
+// types it, only relays it out-of-band once generated. A fresh call always
+// overwrites pin_hash, so the customer's previous Recovery PIN stops working
+// the instant a new one is generated, with no separate "invalidate" step
+// needed. The plaintext PIN is returned exactly once, in this response only —
+// never logged, never stored anywhere but this bcrypt hash.
+customersRouter.post("/admin/customers/:id/pin/generate", requireAuth("super_admin"), async (req, res) => {
+  const existing = await queryOne(`SELECT id FROM customers WHERE id=$1`, [req.params.id]);
+  if (!existing) return sendJson(res, 404, { error: "Customer not found" });
+  const pin = String(Math.floor(1000 + Math.random() * 9000));
+  const pinHash = await hashPassword(pin);
+  await query(`UPDATE customers SET pin_hash=$1 WHERE id=$2`, [pinHash, req.params.id]);
+  sendJson(res, 200, { message: "New Recovery PIN generated", pin, isSet: true });
+});
+
 // "Reset" clears the PIN back to unset (optional) rather than assigning a
 // new one itself — the customer/Support flow that lets them "create a new
 // PIN" afterward is a separate, later concern; this just guarantees the old
@@ -260,7 +284,8 @@ customersRouter.get("/agent/customers", requireAuth("agent"), async (req, res) =
 
 customersRouter.post("/agent/customers", requireAuth("agent"), async (req, res) => {
   const phone = String(req.body.phone ?? "").trim();
-  if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid phone number" });
+  const phoneCheck = validateMobileNumber(phone);
+  if (!phoneCheck.valid) return sendJson(res, 400, { error: phoneCheck.error });
   const name = req.body.name ? String(req.body.name).trim() : null;
 
   const existing = await queryOne(`SELECT ${AGENT_CUSTOMER_COLUMNS} FROM customers WHERE phone=$1`, [phone]);
@@ -273,7 +298,7 @@ customersRouter.post("/agent/customers", requireAuth("agent"), async (req, res) 
 
 // ---------------- Customer: own profile ----------------
 const CUSTOMER_PROFILE_COLUMNS =
-  "id, phone, name, email, macaash_points, evc_plus_name, evc_plus_number, evc_plus_saved_at, edahab_name, edahab_number, edahab_saved_at, created_at";
+  "id, phone, name, email, macaash_points, evc_plus_name, evc_plus_number, evc_plus_saved_at, edahab_name, edahab_number, edahab_saved_at, photo_base64, created_at";
 
 customersRouter.get("/customer/profile", requireAuth("customer"), async (req, res) => {
   const customer = await queryOne(`SELECT ${CUSTOMER_PROFILE_COLUMNS} FROM customers WHERE id=$1`, [req.auth!.sub]);
@@ -285,6 +310,31 @@ customersRouter.put("/customer/profile", requireAuth("customer"), async (req, re
   const name = String(req.body.name ?? "").trim();
   if (!name) return sendJson(res, 400, { error: "name is required" });
   await query(`UPDATE customers SET name=$1 WHERE id=$2`, [name, req.auth!.sub]);
+  sendJson(res, 200, await queryOne(`SELECT ${CUSTOMER_PROFILE_COLUMNS} FROM customers WHERE id=$1`, [req.auth!.sub]));
+});
+
+// Stored inline as the full "data:<mime>;base64,<data>" string (rather than
+// bytes + a separate served-by-id route like promo_images) because a
+// customer's photo is private and always fetched as part of their own
+// profile response — there's no public <img src> case to optimize for here.
+const PROFILE_PHOTO_MAX_BYTES = 4 * 1024 * 1024;
+const PROFILE_PHOTO_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+
+customersRouter.put("/customer/profile/photo", requireAuth("customer"), async (req, res) => {
+  const parsed = parseDataUri(req.body.photoBase64);
+  if (!parsed) return sendJson(res, 400, { error: "photoBase64 must be a data:<mime>;base64,<data> string" });
+  if (!PROFILE_PHOTO_MIME_TYPES.has(parsed.mimeType)) {
+    return sendJson(res, 400, { error: "Photo must be a JPEG, PNG, or WEBP image" });
+  }
+  if (parsed.data.length > PROFILE_PHOTO_MAX_BYTES) {
+    return sendJson(res, 400, { error: "Photo must be 4MB or smaller" });
+  }
+  await query(`UPDATE customers SET photo_base64=$1 WHERE id=$2`, [String(req.body.photoBase64), req.auth!.sub]);
+  sendJson(res, 200, await queryOne(`SELECT ${CUSTOMER_PROFILE_COLUMNS} FROM customers WHERE id=$1`, [req.auth!.sub]));
+});
+
+customersRouter.delete("/customer/profile/photo", requireAuth("customer"), async (req, res) => {
+  await query(`UPDATE customers SET photo_base64=NULL WHERE id=$1`, [req.auth!.sub]);
   sendJson(res, 200, await queryOne(`SELECT ${CUSTOMER_PROFILE_COLUMNS} FROM customers WHERE id=$1`, [req.auth!.sub]));
 });
 
@@ -302,8 +352,9 @@ customersRouter.put("/customer/profile", requireAuth("customer"), async (req, re
 customersRouter.put("/customer/wallet-numbers", requireAuth("customer"), async (req, res) => {
   const body = req.body ?? {};
   for (const field of ["evcPlusNumber", "edahabNumber"] as const) {
-    if (field in body && body[field] != null && !WALLET_PHONE_RE.test(String(body[field]))) {
-      return sendJson(res, 400, { error: `Provide a valid ${field === "evcPlusNumber" ? "EVC Plus" : "eDahab"} number` });
+    if (field in body && body[field] != null) {
+      const check = validateMobileNumber(String(body[field]), field === "evcPlusNumber" ? "evc_plus" : "edahab");
+      if (!check.valid) return sendJson(res, 400, { error: check.error });
     }
   }
   const existing = await queryOne<{

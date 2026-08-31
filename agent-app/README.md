@@ -92,3 +92,30 @@ base64 -w0 agent-release.jks   # paste the output into AGENT_KEYSTORE_BASE64
 Without those secrets set, the release build step is skipped automatically —
 the debug APK still builds either way, so CI never fails for a fork/PR that
 doesn't have signing configured.
+
+## Push notifications (Agent Support)
+
+The Agent App receives a real push notification (via Firebase Cloud
+Messaging) whenever a customer sends it a new Agent Support message. This
+needs one manual, one-time step that only someone with access to the
+Firebase Console can do — it is **not** something CI or this repo's code
+can set up on its own:
+
+1. Open the Firebase Console for the existing `dalab-internet` project (the
+   same project the Customer App already uses for its own push).
+2. Add a new Android app under that project with package name
+   `com.dalab.agent` (not `com.dalab.internet` — that's the Customer App's
+   own, already-registered package).
+3. Download the `google-services.json` Firebase generates for that new app.
+4. For a local/manual build: place the file at `agent-app/app/google-services.json`.
+   For CI: base64-encode it and set it as the `AGENT_GOOGLE_SERVICES_JSON_BASE64`
+   repository secret (Settings → Secrets and variables → Actions):
+
+```bash
+base64 -w0 google-services.json   # paste the output into AGENT_GOOGLE_SERVICES_JSON_BASE64
+```
+
+Without this file, the app still builds and installs normally — the
+`google-services` Gradle plugin only applies when the file is present — but
+push notifications stay silently inert: Firebase never initializes, so no
+device token is ever registered and the backend has nothing to send to.

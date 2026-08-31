@@ -32,6 +32,11 @@ export const PHONE_COMPANIES: readonly PhoneCompany[] = [
   { key: "edahab", label: "Somtel", prefixes: ["62"] },
   { key: "jeeb", label: "Somnet", prefixes: ["68"] },
   { key: "amtel_pay", label: "Amtel", prefixes: ["71"] },
+  // Somlink is topped up over its own network (prefix 64) but paid for
+  // through the existing EVC Plus wallet -- unlike the four above, this key
+  // has no corresponding payment_wallets row, since it's a destination
+  // carrier only, never itself a payment method.
+  { key: "somlink", label: "Somlink", prefixes: ["64"] },
 ];
 
 const NINE_DIGITS = /^\d{9}$/;
@@ -39,9 +44,25 @@ const NINE_DIGITS = /^\d{9}$/;
 /**
  * Strips everything but digits, then strips one leading "252" country code
  * if present — so "+252617080008", "252617080008" and "617080008" all
- * normalize to the same 9-digit local form before validation. Deliberately
- * does NOT strip a leading '0' — "0617080008" is a real format error
- * (10 digits) the caller must still see, not something to silently fix.
+ * normalize to the same 9-digit local form before validation.
+ *
+ * This MUST stay permissive here: every legitimate client (customer-app,
+ * agent-app, reseller flows) formats phone numbers as full E.164
+ * ("+252...") before ever sending them to this API — that's the correct,
+ * expected wire format, not a customer's typo. The "reject a customer who
+ * literally typed 252 into the field" product rule belongs in the
+ * client-side validators only (customer-app's phone_validator.dart,
+ * agent-app's PhoneValidator.kt), which run on the raw keystrokes BEFORE
+ * E.164 conversion — see e.g. login_screen.dart's
+ * phoneFieldValidator(_phoneController.text) call, which validates the
+ * unprefixed controller text directly. Rejecting "252..." here too was a
+ * real incident: it silently broke every registration/login/order/
+ * exchange/reseller request, since 100% of legitimate traffic arrives
+ * with the country code attached.
+ *
+ * Deliberately does NOT strip a leading '0' — "0617080008" is a real
+ * format error (10 digits) the caller must still see, not something to
+ * silently fix.
  */
 export function normalizeMobileDigits(raw: string | null | undefined): string {
   const digits = String(raw ?? "").replace(/\D/g, "");
@@ -71,6 +92,7 @@ export function companyKeyFromLabel(nameOrId: string | null | undefined): string
   if (s.includes("somtel") || s.includes("edahab")) return "edahab";
   if (s.includes("somnet") || s.includes("jeeb")) return "jeeb";
   if (s.includes("amtel")) return "amtel_pay";
+  if (s.includes("somlimk") || s.includes("somlink")) return "somlink";
   return null;
 }
 

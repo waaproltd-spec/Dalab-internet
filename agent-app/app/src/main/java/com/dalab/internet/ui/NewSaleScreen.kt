@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -22,6 +23,8 @@ import com.dalab.internet.queue.PendingActionQueue
 import com.dalab.internet.queue.PendingSalesSyncStatus
 import com.dalab.internet.queue.RetryClassifier
 import com.dalab.internet.queue.SaleCreateAction
+import com.dalab.internet.util.companyKeyFromLabel
+import com.dalab.internet.util.validateMobileNumber
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -37,7 +40,7 @@ import java.util.UUID
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun NewSaleScreen() {
+fun NewSaleScreen(onBack: () -> Unit) {
     var companies by remember { mutableStateOf<List<Company>>(emptyList()) }
     var selectedCompany by remember { mutableStateOf<Company?>(null) }
     var packages by remember { mutableStateOf<List<PackageItem>>(emptyList()) }
@@ -90,7 +93,18 @@ fun NewSaleScreen() {
     val selectedPackages = packages.filter { selectedPackageIds.contains(it.id) }
     val totalAmount = selectedPackages.sumOf { it.price }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("New Sale") }) }) { padding ->
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("New Sale") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+            )
+        },
+    ) { padding ->
         val orders = successOrders
         if (orders != null) {
             SaleConfirmation(orders = orders, queuedPackages = queuedPackages, onNewSale = { reset() })
@@ -157,11 +171,22 @@ fun NewSaleScreen() {
                         Spacer(Modifier.height(20.dp))
                         Text("3. Customer & payment", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(8.dp))
+                        // No company context for the customer's own number
+                        // (any known carrier is accepted, same as
+                        // registration) -- receiverPhone below is the SIM
+                        // actually getting topped up, so it must belong to
+                        // the selected provider's own carrier.
+                        val customerPhoneError = if (customerPhone.isNotBlank()) validateMobileNumber(customerPhone.trim()).error else null
+                        val receiverPhoneError = if (receiverPhone.isNotBlank()) {
+                            validateMobileNumber(receiverPhone.trim(), selectedCompany?.let { companyKeyFromLabel(it.name) }).error
+                        } else null
                         OutlinedTextField(
                             value = customerPhone,
                             onValueChange = { customerPhone = it },
                             label = { Text("Customer phone number") },
                             singleLine = true,
+                            isError = customerPhoneError != null,
+                            supportingText = customerPhoneError?.let { { Text(it) } },
                             modifier = Modifier.fillMaxWidth(),
                         )
                         Spacer(Modifier.height(8.dp))
@@ -170,6 +195,8 @@ fun NewSaleScreen() {
                             onValueChange = { receiverPhone = it },
                             label = { Text("Receiver number (if different)") },
                             singleLine = true,
+                            isError = receiverPhoneError != null,
+                            supportingText = receiverPhoneError?.let { { Text(it) } },
                             modifier = Modifier.fillMaxWidth(),
                         )
                         Spacer(Modifier.height(8.dp))
@@ -256,7 +283,7 @@ fun NewSaleScreen() {
                                     submitting = false
                                 }
                             },
-                            enabled = customerPhone.isNotBlank() && !submitting,
+                            enabled = customerPhone.isNotBlank() && customerPhoneError == null && receiverPhoneError == null && !submitting,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Text(
@@ -368,8 +395,12 @@ private fun SyncStatusBanner(state: PendingSalesSyncStatus.State, pendingCount: 
             Color(0xFFFFF3CD), Color(0xFF7A5B00),
             "Offline — $pendingCount sale${if (pendingCount == 1) "" else "s"} waiting to send",
         )
+        // Functional "in progress" status color, not brand — was the old
+        // Dalab Indigo hex coincidentally, now the same info-blue the
+        // Customer App/Admin Dashboard use for status (not Dark Azure,
+        // which is reserved for actual brand elements).
         PendingSalesSyncStatus.State.SYNCING -> Triple(
-            Color(0xFFD6E4FF), Color(0xFF1D2E8C),
+            Color(0xFFD6E4FF), Color(0xFF1D4ED8),
             "Syncing $pendingCount pending sale${if (pendingCount == 1) "" else "s"}…",
         )
         PendingSalesSyncStatus.State.COMPLETED -> Triple(

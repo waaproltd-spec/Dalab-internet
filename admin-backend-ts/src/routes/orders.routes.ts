@@ -5,14 +5,17 @@ import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { generateUssdForOrder } from "./ussd.routes.js";
+import { deliverViaSomlink, classifySomlinkStuckReason } from "./somlink.routes.js";
 import { subscribe, broadcast } from "../realtime/orderEvents.js";
 import { recordActivity } from "../utils/activityLog.js";
 import { creditCommissionIfNeeded, reverseCommissionIfNeeded } from "../utils/commissions.js";
 import { creditReferralBonusIfNeeded, reverseReferralBonusIfNeeded } from "../utils/referrals.js";
 import { refundRedeemedPointsIfNeeded } from "../utils/loyaltyPoints.js";
-import { isAlreadyCompleted } from "../utils/paymentTransactions.js";
+import { isAlreadyCompleted, createPaymentTransaction } from "../utils/paymentTransactions.js";
 import { rateLimit } from "../auth/rateLimit.js";
 import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
+import { notifyCustomer } from "../services/customerNotify.js";
+import { validateMobileNumber, companyKeyFromLabel } from "../lib/phoneValidation.js";
 
 export const ordersRouter = Router();
 
@@ -34,6 +37,15 @@ const ORDER_LIST_SELECT = `
 async function loadOrder(id: string) {
   return queryOne(`${ORDER_LIST_SELECT} WHERE o.id=$1`, [id]);
 }
+
+// Admin/staff-only variant of ORDER_LIST_SELECT, adding the company's
+// fulfillment_method — needed so the dashboard can show a "SOMLINK" badge
+// and pick the right recovery action per order, but deliberately kept out
+// of ORDER_LIST_SELECT/loadOrder above since those also serve the
+// customer-facing /orders/:id route, and the provider a company uses under
+// the hood must stay invisible to the customer app.
+const ADMIN_ORDER_LIST_SELECT = `${ORDER_LIST_SELECT.slice(0, ORDER_LIST_SELECT.indexOf("FROM"))}, co.fulfillment_method AS company_fulfillment_method
+  ${ORDER_LIST_SELECT.slice(ORDER_LIST_SELECT.indexOf("FROM"))}`;
 
 // ussd_generated carries the provider's plaintext PIN inlined (the Agent
 // App needs the real string to dial) — every customer- and admin/staff-
@@ -72,6 +84,21 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
       [paymentMethodId, companyId]
     );
     if (!selectedMethod) return sendJson(res, 404, { error: "Payment method not found for this company" });
+  }
+
+  // receiverPhone is the SIM actually getting topped up, so it must belong
+  // to the selected company's own carrier; senderPhone is whichever wallet
+  // is paying, so it's checked against the selected payment method instead
+  // when one was picked. Both fields stay optional here (falls back to the
+  // customer's own already-validated phone below) -- only format-check
+  // whatever was actually provided, never require presence.
+  if (receiverPhone) {
+    const check = validateMobileNumber(String(receiverPhone), companyKeyFromLabel(company.name));
+    if (!check.valid) return sendJson(res, 400, { error: check.error });
+  }
+  if (senderPhone) {
+    const check = validateMobileNumber(String(senderPhone), companyKeyFromLabel(selectedMethod?.label));
+    if (!check.valid) return sendJson(res, 400, { error: check.error });
   }
 
   const customer = await queryOne(`SELECT * FROM customers WHERE id=$1`, [req.auth!.sub]);
@@ -182,11 +209,16 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
   sendJson(res, 201, maskOrder(await loadOrder(id)));
 });
 
+// Capped at 100 -- previously unbounded, so a long-tenured customer's order
+// history grew as a full, ever-larger payload on every single Orders tab
+// open. 100 is already this codebase's own convention for a self-service
+// history list (see e.g. reseller_orders/withdrawals below); a customer
+// essentially never needs more than that in a mobile list.
 ordersRouter.get("/orders", requireAuth("customer"), async (req, res) => {
   const rows = await query(
     `SELECT o.*, co.name AS company_name, p.name AS package_name
      FROM orders o JOIN companies co ON co.id=o.company_id JOIN packages p ON p.id=o.package_id
-     WHERE o.customer_id=$1 ORDER BY o.created_at DESC`,
+     WHERE o.customer_id=$1 ORDER BY o.created_at DESC LIMIT 100`,
     [req.auth!.sub]
   );
   sendJson(res, 200, maskOrders(rows));
@@ -220,7 +252,8 @@ ordersRouter.get("/orders/:id", requireAuth("customer"), async (req, res) => {
 ordersRouter.post("/guest/orders", rateLimit("guest-order-create", 20, 15 * 60 * 1000), async (req, res) => {
   const { companyId, packageId, customerPhone, senderPhone, receiverPhone, paymentMethod, paymentMethodId, clientRequestId } = req.body;
   const phone = String(customerPhone ?? receiverPhone ?? "").trim();
-  if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid phone number" });
+  const phoneCheck = validateMobileNumber(phone);
+  if (!phoneCheck.valid) return sendJson(res, 400, { error: phoneCheck.error });
 
   const company = await queryOne(`SELECT * FROM companies WHERE id=$1 AND deleted_at IS NULL`, [companyId]);
   if (!company) return sendJson(res, 404, { error: "Company not found" });
@@ -239,6 +272,20 @@ ordersRouter.post("/guest/orders", rateLimit("guest-order-create", 20, 15 * 60 *
       [paymentMethodId, companyId]
     );
     if (!selectedMethod) return sendJson(res, 404, { error: "Payment method not found for this company" });
+  }
+
+  // Same reasoning as the customer-authenticated /orders above: receiverPhone
+  // must belong to the selected company's carrier, senderPhone to the
+  // selected payment method's — only checked when explicitly distinct from
+  // `phone` above (already validated), so a guest that only ever provided
+  // one number isn't double-validated against two different rules.
+  if (receiverPhone && String(receiverPhone) !== phone) {
+    const check = validateMobileNumber(String(receiverPhone), companyKeyFromLabel(company.name));
+    if (!check.valid) return sendJson(res, 400, { error: check.error });
+  }
+  if (senderPhone && String(senderPhone) !== phone) {
+    const check = validateMobileNumber(String(senderPhone), companyKeyFromLabel(selectedMethod?.label));
+    if (!check.valid) return sendJson(res, 400, { error: check.error });
   }
 
   let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
@@ -349,7 +396,8 @@ ordersRouter.get("/guest/orders/:id", async (req, res) => {
 ordersRouter.post("/agent/orders", requireAuth("agent"), async (req, res) => {
   const { customerPhone, companyId, packageId, receiverPhone, paymentMethod, clientRequestId } = req.body;
   const phone = String(customerPhone ?? "").trim();
-  if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid customer phone number" });
+  const phoneCheck = validateMobileNumber(phone);
+  if (!phoneCheck.valid) return sendJson(res, 400, { error: phoneCheck.error });
 
   const company = await queryOne(`SELECT * FROM companies WHERE id=$1 AND deleted_at IS NULL`, [companyId]);
   if (!company) return sendJson(res, 404, { error: "Company not found" });
@@ -359,6 +407,13 @@ ordersRouter.post("/agent/orders", requireAuth("agent"), async (req, res) => {
   if (!pkg) return sendJson(res, 404, { error: "Package not found" });
   if (pkg.company_id !== companyId) {
     return sendJson(res, 400, { error: "Package does not belong to the selected company" });
+  }
+
+  // receiverPhone (who actually gets the package, if different from the
+  // customer's own phone above) must belong to the selected company's carrier.
+  if (receiverPhone && String(receiverPhone) !== phone) {
+    const check = validateMobileNumber(String(receiverPhone), companyKeyFromLabel(company.name));
+    if (!check.valid) return sendJson(res, 400, { error: check.error });
   }
 
   let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
@@ -469,6 +524,23 @@ export async function verifyOrderAndGenerateUssd(
     return { ok: false, alreadyProcessed: order.status !== "pending" };
   }
 
+  // A SOMLINK-fulfilled company skips USSD entirely — deliverViaSomlink
+  // calls the real API directly; on a confirmed DATA_PAID_SUCCESSFULLY
+  // response this immediately completes the order via the same
+  // completeOrderById every other completion path uses (see
+  // somlink.routes.ts). Every other company keeps today's exact
+  // USSD-generation behavior, untouched.
+  const company = await queryOne<{ fulfillment_method: string }>(
+    `SELECT fulfillment_method FROM companies WHERE id=$1`,
+    [order.company_id]
+  );
+  if (company?.fulfillment_method === "somlink") {
+    const result = await deliverViaSomlink(order);
+    if (result.ok) await completeOrderById(order.id);
+    broadcast({ type: "order.updated", orderId: order.id });
+    return { ok: true };
+  }
+
   // Order approved — auto-generate the USSD dialer string. A missing PIN or
   // template isn't fatal to the approval itself; ussd_generated just stays
   // null until an admin sets one up, visible on the order detail either way.
@@ -495,11 +567,42 @@ export async function verifyOrderAndGenerateUssd(
 }
 
 ordersRouter.post("/agent/orders/:id/verify-payment", requireAuth("agent"), async (req, res) => {
-  const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
+  const order = await queryOne<any>(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
   if (!order) return sendJson(res, 404, { error: "Order not found" });
 
   if (req.body.smsLogId) {
     await query(`UPDATE sms_logs SET matched_order_id=$1 WHERE id=$2`, [order.id, req.body.smsLogId]);
+  }
+
+  // Ensure this order has a payment_transactions ledger row BEFORE ever
+  // flipping it to in_progress. The automatic SMS-matched path
+  // (UssdOrchestrator.processMatchedOrder) always already has one by this
+  // point (created at SMS-ingest time — see smsLogs.routes.ts), so this is
+  // a no-op there. But the manual "Execute SIM" dial path
+  // (UssdOrchestrator.executeManually, used by OrdersListScreen/
+  // OrderDetailScreen) calls this same endpoint with no SMS match at all —
+  // without a ledger row, a network drop between this request succeeding
+  // here and its response reaching the app leaves the order verified and
+  // USSD-generated but permanently invisible to both the Agent App's own
+  // self-heal sweep (self-heal-candidates below requires an existing
+  // payment_transactions row) and the "Send to Agent" manual recovery
+  // endpoint (/admin/orders/:id/recover, same requirement) — a real stuck
+  // order with zero recovery path, confirmed in production. Guarded by an
+  // existence check (not unconditional) so this never creates a second row
+  // for an order that already has one; createPaymentTransaction's own
+  // idx_payment_tx_order_active conflict handling is still the final
+  // backstop against a concurrent double-insert race.
+  const hasPayment = await queryOne(`SELECT id FROM payment_transactions WHERE order_id=$1 LIMIT 1`, [order.id]);
+  if (!hasPayment) {
+    await createPaymentTransaction({
+      smsLogId: req.body.smsLogId ?? null,
+      orderId: order.id,
+      transactionRef: null,
+      customerPhone: order.sender_phone ?? null,
+      amount: order.amount ?? null,
+      paymentTimestamp: new Date().toISOString(),
+      status: "pending",
+    });
   }
 
   const result = await verifyOrderAndGenerateUssd(order, req.auth!.sub);
@@ -527,13 +630,18 @@ async function creditMacaashIfNeeded(order: any) {
 
 /**
  * Atomic in_progress -> completed transition, shared by the agent's own
- * "mark complete" tap (after a successful USSD dial response) and the
+ * "mark complete" tap (after a successful USSD dial response), the
  * voucher-confirmation endpoint below (a second, independent signal: the
- * carrier's own SMS confirming the agent's SIM sent the top-up). Either
- * signal can complete the order first; whichever loses the race just gets
- * 0 rows back from the guarded UPDATE and is treated as a no-op, not an error.
+ * carrier's own SMS confirming the agent's SIM sent the top-up), and
+ * somlink.routes.ts's deliverViaSomlink (a confirmed SOMLINK
+ * DATA_PAID_SUCCESSFULLY response). Any of these signals can complete the
+ * order first; whichever loses the race just gets 0 rows back from the
+ * guarded UPDATE and is treated as a no-op, not an error. Exported so
+ * somlink.routes.ts reuses the exact same macaash/commission/referral
+ * crediting + activity log + broadcast path every other completion route
+ * already goes through, rather than a parallel copy of it.
  */
-async function completeOrderById(orderId: string): Promise<{ order: any; success: boolean; alreadyCompleted: boolean } | null> {
+export async function completeOrderById(orderId: string): Promise<{ order: any; success: boolean; alreadyCompleted: boolean } | null> {
   const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [orderId]);
   if (!order) return null;
 
@@ -550,6 +658,19 @@ async function completeOrderById(orderId: string): Promise<{ order: any; success
   await creditCommissionIfNeeded(order);
   await creditReferralBonusIfNeeded(order);
   broadcast({ type: "order.updated", orderId });
+  // Covers every path an order reaches 'completed' through — the agent's
+  // manual "mark complete" tap, an SMS-matched payment auto-advancing an
+  // in_progress order, and a successful SOMLINK API delivery (see
+  // somlink.routes.ts's call into this same function) — one hook instead
+  // of three.
+  const pkg = await queryOne<{ name: string }>(`SELECT name FROM packages WHERE id=$1`, [order.package_id]);
+  await notifyCustomer(
+    order.customer_id,
+    "order_update",
+    "Dalabkaaga waa la dhammeeyay",
+    pkg ? `Xirmadaada ${pkg.name} waa la hawlgeliyay, waana diyaar in la isticmaalo.` : "Dalabkaaga waa la hawlgeliyay, waana diyaar in la isticmaalo.",
+    { screen: "notifications", orderId: order.id }
+  );
   await recordActivity({
     adminId: undefined,
     action: "payment_completed",
@@ -646,7 +767,7 @@ ordersRouter.get("/agent/transactions", requireAuth("agent"), async (req, res) =
 // ---------------- Admin/Staff: Orders Management ----------------
 ordersRouter.get("/admin/orders", requireStaff(), async (req, res) => {
   const { status, companyId, search, dateFrom, dateTo } = req.query as Record<string, string | undefined>;
-  let sql = `${ORDER_LIST_SELECT} WHERE 1=1`;
+  let sql = `${ADMIN_ORDER_LIST_SELECT} WHERE 1=1`;
   const args: unknown[] = [];
   if (status) { args.push(status); sql += ` AND o.status=$${args.length}`; }
   if (companyId) { args.push(companyId); sql += ` AND o.company_id=$${args.length}`; }
@@ -703,6 +824,12 @@ async function classifyStuckReason(order: any): Promise<string | null> {
   }
   if (order.status !== "in_progress") return null;
 
+  const company = await queryOne<{ fulfillment_method: string }>(
+    `SELECT fulfillment_method FROM companies WHERE id=$1`,
+    [order.company_id]
+  );
+  if (company?.fulfillment_method === "somlink") return classifySomlinkStuckReason(order);
+
   if (!order.ussd_generated) return "ussd_generation_failed";
 
   const lastAttempt = await queryOne<{ status: string; response_message: string | null }>(
@@ -739,7 +866,7 @@ async function classifyStuckReason(order: any): Promise<string | null> {
 // reason every other literal-path route above already is.
 ordersRouter.get("/admin/orders/pending-recovery", requireStaff(), async (_req, res) => {
   const candidates = await query<any>(
-    `${ORDER_LIST_SELECT}
+    `${ADMIN_ORDER_LIST_SELECT}
      WHERE o.status IN ('pending','in_progress')
        AND o.created_at < now() - interval '5 minutes'
      ORDER BY o.created_at ASC
@@ -752,9 +879,32 @@ ordersRouter.get("/admin/orders/pending-recovery", requireStaff(), async (_req, 
 });
 
 ordersRouter.get("/admin/orders/:id", requireStaff(), async (req, res) => {
-  const order = await loadOrder(req.params.id);
+  const order = await queryOne(`${ADMIN_ORDER_LIST_SELECT} WHERE o.id=$1`, [req.params.id]);
   if (!order) return sendJson(res, 404, { error: "Order not found" });
   sendJson(res, 200, maskOrder(order));
+});
+
+// Admin-only: the latest SOMLINK delivery attempt for this order, for the
+// order-detail drawer's "SOMLINK order status" panel. Returns
+// fulfillmentMethod so the dashboard knows whether to show this panel at
+// all, and null transaction fields for a somlink order that hasn't been
+// attempted yet (e.g. still 'pending', not yet verified).
+ordersRouter.get("/admin/orders/:id/somlink-status", requireStaff(), async (req, res) => {
+  const order = await queryOne<{ company_id: string }>(`SELECT company_id FROM orders WHERE id=$1`, [req.params.id]);
+  if (!order) return sendJson(res, 404, { error: "Order not found" });
+  const company = await queryOne<{ fulfillment_method: string }>(
+    `SELECT fulfillment_method FROM companies WHERE id=$1`,
+    [order.company_id]
+  );
+  if (company?.fulfillment_method !== "somlink") {
+    return sendJson(res, 200, { fulfillmentMethod: company?.fulfillment_method ?? "ussd", transaction: null });
+  }
+  const transaction = await queryOne(
+    `SELECT status, bundle_id, response_code, response_message, paid_amount, balance_after, error_detail, requested_at, responded_at
+     FROM somlink_transactions WHERE order_id=$1 ORDER BY created_at DESC LIMIT 1`,
+    [req.params.id]
+  );
+  sendJson(res, 200, { fulfillmentMethod: "somlink", transaction });
 });
 
 // For an order that's verified + USSD-generated but has zero dial attempts
@@ -804,6 +954,14 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
       await creditMacaashIfNeeded(order);
       await creditCommissionIfNeeded(order);
       await creditReferralBonusIfNeeded(order);
+      const pkg = await queryOne<{ name: string }>(`SELECT name FROM packages WHERE id=$1`, [order.package_id]);
+      await notifyCustomer(
+        order.customer_id,
+        "order_update",
+        "Dalabkaaga waa la dhammeeyay",
+        pkg ? `Xirmadaada ${pkg.name} waa la hawlgeliyay, waana diyaar in la isticmaalo.` : "Dalabkaaga waa la hawlgeliyay, waana diyaar in la isticmaalo.",
+        { screen: "notifications", orderId: order.id }
+      );
     }
   } else if (status === "in_progress") {
     const result = await query(
@@ -811,6 +969,26 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
       [req.params.id]
     );
     if (result.length > 0) {
+      // Same ledger-row requirement as /agent/orders/:id/verify-payment
+      // (see that route's own comment for the full production incident this
+      // guards against): this admin "Start Processing" action is a second,
+      // independent way an order reaches in_progress+USSD-generated with no
+      // prior SMS match -- without a payment_transactions row here too, the
+      // order would be just as invisible to the Agent App's self-heal sweep
+      // and to "Send to Agent" manual recovery as the bug this mirrors.
+      const hasPayment = await queryOne(`SELECT id FROM payment_transactions WHERE order_id=$1 LIMIT 1`, [order.id]);
+      if (!hasPayment) {
+        await createPaymentTransaction({
+          smsLogId: null,
+          orderId: order.id,
+          transactionRef: null,
+          customerPhone: order.sender_phone ?? null,
+          amount: order.amount ?? null,
+          paymentTimestamp: new Date().toISOString(),
+          status: "pending",
+        });
+      }
+
       const genResult = await generateUssdForOrder(order, req.auth!.sub);
       await query(`UPDATE orders SET ussd_generation_failed_reason=$1 WHERE id=$2`, [genResult.error ?? null, req.params.id]);
       if (genResult.error) {
@@ -826,7 +1004,18 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
     }
   } else {
     await query(`UPDATE orders SET status=$1, updated_at=now() WHERE id=$2`, [status, req.params.id]);
-    if (status === "failed" || status === "cancelled") await refundRedeemedPointsIfNeeded(req.params.id);
+    if (status === "failed" || status === "cancelled") {
+      await refundRedeemedPointsIfNeeded(req.params.id);
+      await notifyCustomer(
+        order.customer_id,
+        "order_update",
+        status === "failed" ? "Dalabkaaga lama dhamaystiri karin" : "Dalabkaaga waa la joojiyay",
+        status === "failed"
+          ? "Dalabkaaga lama dhammaystirin karin. Fadlan la xiriir taageerada si aad caawimaad u hesho."
+          : "Dalabkaagii waa la joojiyay. Fadlan la xiriir taageerada haddii aad su'aalo qabto.",
+        { screen: "notifications", orderId: order.id }
+      );
+    }
   }
   broadcast({ type: "order.updated", orderId: req.params.id });
   sendJson(res, 200, maskOrder(await loadOrder(req.params.id)));
