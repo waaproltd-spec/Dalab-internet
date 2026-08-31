@@ -10786,6 +10786,93 @@ function OtpSettingsPanel() {
   );
 }
 
+// Customer App home screen's three top-level service cards (Internet,
+// eBadal, Reseller) -- a pure customer-facing visibility toggle, same
+// system_settings store as everything else on this page (service_internet_
+// enabled/service_ebadal_enabled/service_reseller_enabled). Turning one off
+// only hides its card in GET /settings/public's `services` object; nothing
+// about that service's own backend routes, orders, or data is touched, and
+// each of the three is completely independent of the other two.
+function ServiceVisibilityPanel() {
+  const [drafts, setDrafts] = useState({ service_internet_enabled: true, service_ebadal_enabled: true, service_reseller_enabled: true });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) { setLoading(false); return; }
+    (async () => {
+      try {
+        const data = await DalabAdminApi.getSettings();
+        setDrafts({
+          service_internet_enabled: data[settingsToCamel("service_internet_enabled")] !== "false",
+          service_ebadal_enabled: data[settingsToCamel("service_ebadal_enabled")] !== "false",
+          service_reseller_enabled: data[settingsToCamel("service_reseller_enabled")] !== "false",
+        });
+      } catch (err) {
+        setError(err.message || "Could not load settings.");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      await DalabAdminApi.updateSetting("service_internet_enabled", drafts.service_internet_enabled ? "true" : "false");
+      await DalabAdminApi.updateSetting("service_ebadal_enabled", drafts.service_ebadal_enabled ? "true" : "false");
+      await DalabAdminApi.updateSetting("service_reseller_enabled", drafts.service_reseller_enabled ? "true" : "false");
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      setError(err.message || "Could not save settings.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage settings.</div>;
+  }
+  if (loading) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Loading…</div>;
+  }
+
+  const rows = [
+    { key: "service_internet_enabled", label: "Internet" },
+    { key: "service_ebadal_enabled", label: "eBadal" },
+    { key: "service_reseller_enabled", label: "Reseller" },
+  ];
+
+  return (
+    <Card style={{ padding: 18, maxWidth: 480 }}>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 16 }}>
+        Controls which service cards the Customer App shows on its home screen. Turning a service off only hides it from customers -- it never deletes or disables anything in the backend, and every other service keeps working normally.
+      </div>
+      {rows.map((row) => (
+        <div key={row.key} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+          <input
+            type="checkbox"
+            id={row.key}
+            checked={drafts[row.key]}
+            onChange={(e) => setDrafts((d) => ({ ...d, [row.key]: e.target.checked }))}
+          />
+          <label htmlFor={row.key} style={{ fontSize: 13, color: SLATE }}>
+            Show {row.label} on the Customer App
+          </label>
+        </div>
+      ))}
+      <Button icon={saving ? Loader2 : Check} spin={saving} disabled={saving} onClick={save}>
+        {saving ? "Saving..." : saved ? "Saved" : "Save changes"}
+      </Button>
+    </Card>
+  );
+}
+
 function SettingsPanel() {
   const [tab, setTab] = useState("general");
   return (
@@ -10796,6 +10883,7 @@ function SettingsPanel() {
           { id: "general", label: "General" },
           { id: "otp", label: "SMS OTP" },
           { id: "social", label: "Support & Social Media" },
+          { id: "services", label: "Services" },
           { id: "security", label: "Security" },
         ].map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)} style={{
@@ -10808,6 +10896,7 @@ function SettingsPanel() {
       {tab === "general" && <GeneralSettingsPanel />}
       {tab === "otp" && <OtpSettingsPanel />}
       {tab === "social" && <SocialMediaLinksPanel />}
+      {tab === "services" && <ServiceVisibilityPanel />}
       {tab === "security" && <ChangePasswordCard />}
     </div>
   );
