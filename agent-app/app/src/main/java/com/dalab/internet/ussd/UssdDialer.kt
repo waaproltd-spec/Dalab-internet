@@ -84,13 +84,21 @@ class UssdDialer(private val context: Context) {
         subscriptionId: Int,
         ussdCode: String,
         timeoutMs: Long = 30_000,
-        // Defaults to the exact classification every existing caller
-        // (Internet Store's UssdOrchestrator) has always used — a caller
-        // that doesn't pass this is byte-for-byte unaffected. Reseller
-        // Withdraw passes its own stricter three-way classifier (see
-        // classifyResellerWithdrawalUssdResponse below) instead of forking
-        // this whole function.
-        classify: (String) -> DialOutcome = { text -> if (looksLikeFailureResponse(text)) DialOutcome.AMBIGUOUS else DialOutcome.SUCCESS },
+        // Defaults to classifyRechargeUssdResponse (see below) — Internet
+        // Store's UssdOrchestrator relies on this default; Reseller Withdraw
+        // passes its own classifyResellerWithdrawalUssdResponse instead of
+        // forking this whole function. Both are now the same fail-closed
+        // shape: SUCCESS requires a positive match against real confirmed
+        // wording, never a default. A production audit (2026-08-31) found
+        // this default previously fell back to SUCCESS for ANY response that
+        // didn't match a failure keyword — real carrier errors ("PIN Code
+        // length is not valid", "Unrecognized mobile number.", "ShortCode is
+        // not allowed for this number", the Somali insufficient-balance
+        // phrasing, and Somtel's own negated "kumaad guulaysan" = "you did
+        // NOT succeed") were captured in production with status='success'.
+        // See classifyRechargeUssdResponse's own doc comment for the real
+        // captured SUCCESS text this was fixed against.
+        classify: (String) -> DialOutcome = ::classifyRechargeUssdResponse,
     ): DialResult {
         if (!hasRequiredPermissions()) return DialResult(DialOutcome.PERMISSION_DENIED)
 
@@ -169,16 +177,15 @@ class UssdDialer(private val context: Context) {
 /**
  * Cheap, deliberately conservative check: does this USSD response text read
  * like a failure/error/timeout rather than a genuine top-up confirmation?
- * NOT exhaustive (no confirmed real "success" vs "failure" sample text was
- * available when this was written — same caveat as
- * SmsReceiver.PAYMENT_LOOKING_KEYWORDS) — this is a negative filter, not a
- * positive-match allowlist, so it only ever downgrades a response that
- * contains one of these red flags; it can never misclassify a genuine
- * confirmation it hasn't seen the wording of. Expand this list as real
- * ambiguous/failure responses are observed in production (see the Payment
- * History dial-attempt log, which now records every AMBIGUOUS response's raw
- * text for exactly this purpose). Blank/empty text is also treated as
- * ambiguous — a real confirmation always has some content.
+ * NOT exhaustive — expand this list as real ambiguous/failure responses are
+ * observed in production (see the Payment History dial-attempt log, which
+ * records every AMBIGUOUS response's raw text for exactly this purpose).
+ * Blank/empty text is also treated as a failure signal — a real confirmation
+ * always has some content. Shared by both classifiers below; used as the
+ * FAILED branch, never as the sole basis for SUCCESS (see
+ * classifyRechargeUssdResponse/classifyResellerWithdrawalUssdResponse — a
+ * response matching none of these AND none of a classifier's own positive
+ * SUCCESS list is AMBIGUOUS, never SUCCESS by default).
  */
 private val FAILURE_RESPONSE_KEYWORDS = listOf(
     "error", "fail", "timeout", "timed out", "invalid", "incorrect",
@@ -201,6 +208,22 @@ private val FAILURE_RESPONSE_KEYWORDS = listOf(
     // not "not available". Same false-SUCCESS/stranded-withdrawal failure
     // mode as the Somali phrasing above.
     "not found",
+    // The following were all captured live from real production
+    // ussd_dial_attempts rows recorded with status='success' during the
+    // 2026-08-31 audit — every one of these is a genuine carrier failure
+    // that the old default-to-SUCCESS classify() lambda in dial() had
+    // waved through, meaning real customers were told a top-up succeeded
+    // when the carrier had just refused it:
+    //   - "Unrecognized mobile number." (Somnet)
+    //   - "PIN Code length is not valid" (Hormuud)
+    //   - "ShortCode is not allowed for this number" (Hormuud)
+    //   - Somtel's own negated confirmation template, "Yaasiin, kumaad
+    //     guulaysan inaad wareejiso Dhammays, fadlan mar kale isku day."
+    //     ("you did NOT succeed in transferring Dhammays, please try
+    //     again") — note this is NOT a substring of the real success
+    //     template's "guulaysatay" (see SUCCESS_RESPONSE_KEYWORDS_RECHARGE
+    //     below); the two verb forms never collide.
+    "unrecognized", "not valid", "not allowed", "kumaad guulaysan",
 )
 
 fun looksLikeFailureResponse(text: String): Boolean {
@@ -211,14 +234,55 @@ fun looksLikeFailureResponse(text: String): Boolean {
 }
 
 /**
+ * Internet Store recharge's on-screen response classifier — three-way
+ * (SUCCESS/FAILED/AMBIGUOUS), fail-closed: SUCCESS requires a positive match
+ * against real confirmed top-up-confirmation wording, never a default. This
+ * replaces a prior default-to-SUCCESS-unless-recognized-as-failure design
+ * that a 2026-08-31 production audit found had already caused real false
+ * SUCCESS classifications (see FAILURE_RESPONSE_KEYWORDS's doc comment for
+ * the exact captured examples). Mirrors classifyResellerWithdrawalUssdResponse
+ * below, which was hardened the same way earlier for the same reason on a
+ * different operation.
+ *
+ * SUCCESS_RESPONSE_KEYWORDS_RECHARGE is real captured production text, not
+ * invented wording — pulled directly from ussd_dial_attempts rows recorded
+ * live during the same audit:
+ *   - Hormuud EVC Plus / Somnet JEEB: "<-E-Voucher-/-Jeeb-> Waxaad $X ugu
+ *     shubtay <number>, Haraagaagu waa $Y." ("you topped up $X to <number>,
+ *     your balance is $Y") — "ugu shubtay" ("topped up to"), a DIFFERENT verb
+ *     from Reseller Withdrawal's "wareejisay" ("transferred") even though
+ *     both operations dial through the same *712*-family EVC Plus code —
+ *     confirms recharge and payout confirmations use distinct wording and
+ *     must not share a keyword list.
+ *   - Somtel eDahab: "Yaasiin, waxaad ku guulaysatay inaad lambarkan <number>
+ *     u wareejiso $X oo <package> ah. Haraagaagu waa: $Y. Mahadsanid!" ("you
+ *     succeeded in transferring $X <package> to this number") —
+ *     "guulaysatay" ("succeeded").
+ *
+ * Amtel is out of scope for this classifier entirely: companies.gateway is
+ * 'Manual' for Amtel (payment_ussd_template is NULL), so no USSD is ever
+ * dialed for it — see admin-backend-ts/src/db/seed.ts.
+ */
+private val SUCCESS_RESPONSE_KEYWORDS_RECHARGE = listOf("guulaysatay", "ugu shubtay")
+
+fun classifyRechargeUssdResponse(text: String): DialOutcome {
+    val trimmed = text.trim()
+    if (trimmed.isEmpty()) return DialOutcome.AMBIGUOUS
+    val lower = trimmed.lowercase()
+    if (FAILURE_RESPONSE_KEYWORDS.any { lower.contains(it) }) return DialOutcome.FAILED
+    if (SUCCESS_RESPONSE_KEYWORDS_RECHARGE.any { lower.contains(it) }) return DialOutcome.SUCCESS
+    return DialOutcome.AMBIGUOUS
+}
+
+/**
  * Reseller Withdraw's OWN response classifier — three-way (SUCCESS/FAILED/
- * AMBIGUOUS), deliberately stricter than [looksLikeFailureResponse]'s
- * default-to-SUCCESS design above (which stays exactly as-is for Internet
- * Store recharge — this is a new function, not a change to that one).
- * Explicit product requirement: a withdrawal must never be marked SUCCESS
- * just because the on-screen response wasn't recognized as a failure. Only
- * a response that positively matches a confirmed transfer-confirmation
- * pattern is SUCCESS; a recognized failure phrase (the same
+ * AMBIGUOUS), same fail-closed shape as classifyRechargeUssdResponse above
+ * (each operation gets its own positive-match SUCCESS list since the two
+ * operations' real confirmation wording differs — see that function's doc
+ * comment). Explicit product requirement: a withdrawal must never be marked
+ * SUCCESS just because the on-screen response wasn't recognized as a
+ * failure. Only a response that positively matches a confirmed transfer-
+ * confirmation pattern is SUCCESS; a recognized failure phrase (the same
  * FAILURE_RESPONSE_KEYWORDS above, including the two real captured
  * Reseller Withdraw failures this session — Somali insufficient-balance and
  * English "Receiver Account Not Found") is FAILED outright, not merely

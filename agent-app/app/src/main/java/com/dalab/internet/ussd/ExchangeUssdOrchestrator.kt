@@ -183,7 +183,7 @@ class ExchangeUssdOrchestrator(private val context: Context) {
                 reportStep2(body.id, "ambiguous", "No final confirmation received after entering the PIN.", isFinalAttempt = true)
                 return ExchangeDialResult(ExchangeDialOutcome.TIMEOUT, "No final confirmation from the carrier — check the phone before retrying.")
             }
-            val success = !looksLikeFailureResponse(finalEvent.text)
+            val success = looksLikeConfirmedExchangePayout(finalEvent.text)
             reportStep2(body.id, if (success) "success" else "failed", finalEvent.text, isFinalAttempt = true)
             return if (success) {
                 ExchangeDialResult(ExchangeDialOutcome.SUCCESS, finalEvent.text)
@@ -306,4 +306,45 @@ class ExchangeUssdOrchestrator(private val context: Context) {
             }
         }
     }
+}
+
+/**
+ * Real, positively-confirmed Somali wording for a genuine Money Exchange
+ * payout confirmation — the verb root "transferred", pulled directly from
+ * 28 real production exchange_dial_attempts.step2_response rows recorded
+ * with status='success' (2026-08-31 production-safety audit, queried
+ * directly from this app's own live database): EVC Plus's "[-EVCPLUS-] $X
+ * ayaad uwareejisay <name>(<number>), Tar: ..." and eDahab's "X Dollar ayad
+ * u warejisay <name>. No: ...[-eDahab-Service-]" — two spellings of the
+ * same verb this codebase's own Reseller Withdrawal classifier already uses
+ * (see classifyResellerWithdrawalUssdResponse's SUCCESS_RESPONSE_KEYWORDS
+ * above), listed explicitly rather than merged into a shorter shared
+ * substring that could false-match unrelated text.
+ */
+private val SUCCESS_RESPONSE_KEYWORDS_EXCHANGE = listOf("wareejisay", "warejisay")
+
+/**
+ * Fail-closed classification of a Money Exchange payout's final USSD
+ * confirmation text. Replaces a prior design
+ * (`!looksLikeFailureResponse(text)`) that treated ANY response not
+ * matching a failure keyword as a completed payout of real money.
+ *
+ * That bug was not hypothetical: of the 30 most recent production rows
+ * (this app's own live database) recorded with status='success', 2 were
+ * not transfer confirmations at all — "Laakiin Samsung/Android ayaa
+ * Accessibility Service-ka ka joojiyay inuu arko USSD window-ka..." (a
+ * diagnostic string describing Android's accessibility service losing the
+ * USSD window) and "Rate and fee for converting from one wallet to
+ * another..." (static help text) — yet both were reported SUCCESS purely
+ * because neither matched FAILURE_RESPONSE_KEYWORDS. SUCCESS now requires a
+ * positive match against real confirmed transfer wording; everything else,
+ * including both of those real misclassified rows, resolves to
+ * STEP2_FAILED (this flow's own existing "surface a manual fallback, never
+ * silently complete" outcome).
+ */
+fun looksLikeConfirmedExchangePayout(text: String): Boolean {
+    val trimmed = text.trim()
+    if (trimmed.isEmpty()) return false
+    val lower = trimmed.lowercase()
+    return SUCCESS_RESPONSE_KEYWORDS_EXCHANGE.any { lower.contains(it) }
 }
