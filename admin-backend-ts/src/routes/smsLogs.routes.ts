@@ -777,6 +777,16 @@ type OrphanedSmsRow = {
  * automatically (the existing self-heal-candidates poll then dials it,
  * same as any other in_progress+ussd_generated order).
  *
+ * Also re-attempts matchOrCreateOfflineAutoOrder (same priority as the live
+ * ingestPaymentSms path: after Store, before Exchange) — offlineAutoOrder.ts
+ * has the exact same "only ever runs once, at upload time" limitation as
+ * findMatchingOrder above, but until this fix nothing ever retried it: a
+ * payment SMS that arrived moments before the customer's Offline Profile was
+ * saved (or any other transient reason matchOrCreateOfflineAutoOrder
+ * returned null for) stayed permanently orphaned even after the profile
+ * became valid, unlike the Store/Exchange paths this function already
+ * covers.
+ *
  * Best-effort per-row: one bad row's exception is logged and skipped
  * rather than aborting the whole sweep (mirrors selfHealStuckOrders'
  * try/catch convention in ussd.routes.ts).

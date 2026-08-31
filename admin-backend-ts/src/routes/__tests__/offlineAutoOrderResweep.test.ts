@@ -89,8 +89,8 @@ test("a payment SMS that beats the Offline Profile save is orphaned by the live 
   );
   assert.ok(smsLog, "the SMS must still be logged even though nothing matched");
   assert.ok(
-    !smsLog!.match_failure_reason?.includes("Offline Auto-Order:"),
-    "no Offline Profile existed yet, so there's nothing offline-specific to report — matches matchOrCreateOfflineAutoOrder's own convention"
+    smsLog!.match_failure_reason?.includes("Offline Auto-Order: No Offline Profile registered"),
+    "no Offline Profile existed yet -- matchOrCreateOfflineAutoOrder always logs this explicitly (never silent) so an admin reviewing Payment History can tell 'not set up yet' apart from every other failure reason"
   );
 
   // The customer now saves their Offline Profile — moments too late for the

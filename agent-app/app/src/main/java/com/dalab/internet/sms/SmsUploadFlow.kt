@@ -14,6 +14,7 @@ import com.dalab.internet.queue.PendingActionQueue
 import com.dalab.internet.queue.RetryClassifier
 import com.dalab.internet.ussd.DialOutcome
 import com.dalab.internet.ussd.UssdOrchestrator
+import retrofit2.HttpException
 
 /** Gson-serialized payloads for the action types this flow can enqueue. */
 data class SmsUploadAction(val entry: SmsLogEntry)
@@ -45,7 +46,22 @@ object SmsUploadFlow {
         val uploadResponse = try {
             RetryClassifier.requireSuccessful(ApiClient.service.uploadSmsLog(parsed))
         } catch (e: Exception) {
-            val retryable = RetryClassifier.isRetryable(e)
+            // A 401 reaching here means ApiClient's own Authenticator already
+            // tried a refresh-and-retry once (see refreshAuthenticator) and
+            // that attempt also failed — but AgentBackgroundService's
+            // session-expired listener kicks off an async silent device
+            // re-login right after this exact failure (AgentEventBus.
+            // emitSessionExpired), which frequently succeeds moments later.
+            // A token that was stale at this instant says nothing about
+            // whether this SMS is a genuinely bad request, unlike every
+            // other 4xx RetryClassifier treats as terminal — so this is the
+            // one exception carved out from "retrying unchanged would never
+            // succeed": queue it (same SMS_UPLOAD retry path every other
+            // retryable failure already uses) instead of permanently
+            // dropping a real customer payment because the token happened
+            // to expire at the wrong moment.
+            val isRefreshableAuthFailure = e is HttpException && e.code() == 401
+            val retryable = isRefreshableAuthFailure || RetryClassifier.isRetryable(e)
             DiagnosticsLog.record("sms_upload", "${if (retryable) "Queued for retry" else "Rejected"}: ${e.message}")
             return if (retryable) UploadOutcome.RetryableUpload(e.message ?: "network error")
             else UploadOutcome.Terminal(e.message ?: "upload failed")
