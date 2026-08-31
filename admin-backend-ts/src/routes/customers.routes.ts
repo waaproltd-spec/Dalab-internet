@@ -288,7 +288,18 @@ customersRouter.post("/agent/customers", requireAuth("agent"), async (req, res) 
   if (!phoneCheck.valid) return sendJson(res, 400, { error: phoneCheck.error });
   const name = req.body.name ? String(req.body.name).trim() : null;
 
-  const existing = await queryOne(`SELECT ${AGENT_CUSTOMER_COLUMNS} FROM customers WHERE phone=$1`, [phone]);
+  // Matches on last-9-digits, not the exact stored string — see
+  // utils/customerLookup.ts's findCustomerByPhone doc comment for why an
+  // exact-string match here let the same real phone (typed in a different
+  // format on a different occasion) silently create a second `customers`
+  // row instead of surfacing this same "already exists" response.
+  const existingDigits = phone.replace(/\D/g, "").slice(-9);
+  const existing = existingDigits.length >= 6
+    ? await queryOne(
+        `SELECT ${AGENT_CUSTOMER_COLUMNS} FROM customers WHERE RIGHT(regexp_replace(phone, '\\D', '', 'g'), 9) = $1 ORDER BY created_at ASC LIMIT 1`,
+        [existingDigits]
+      )
+    : null;
   if (existing) return sendJson(res, 409, { error: "A customer with this phone already exists", customer: existing });
 
   const id = randomUUID();

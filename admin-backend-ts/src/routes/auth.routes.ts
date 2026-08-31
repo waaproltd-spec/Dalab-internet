@@ -10,6 +10,7 @@ import { sendJson } from "../utils/camelCase.js";
 import { Role } from "../types/index.js";
 import { rateLimit } from "../auth/rateLimit.js";
 import { validateMobileNumber } from "../lib/phoneValidation.js";
+import { findCustomerByPhone } from "../utils/customerLookup.js";
 
 export const authRouter = Router();
 
@@ -57,7 +58,7 @@ authRouter.post("/auth/register", rateLimit("customer-register", 10, 15 * 60 * 1
 
   const passwordHash = await hashPassword(password);
   const pinHash = pin != null ? await hashPassword(pin) : null;
-  let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
+  let customer = await findCustomerByPhone(phone);
 
   if (customer) {
     // A row for this phone already exists — either a genuine "already
@@ -121,10 +122,9 @@ authRouter.post("/auth/login", rateLimit("customer-login", 10, 15 * 60 * 1000), 
   if (!identifier || !password) return sendJson(res, 400, { error: "phone/email and password are required" });
 
   const isEmail = identifier.includes("@");
-  const customer = await queryOne(
-    isEmail ? `SELECT * FROM customers WHERE email=$1` : `SELECT * FROM customers WHERE phone=$1`,
-    [isEmail ? identifier.toLowerCase() : identifier]
-  );
+  const customer = isEmail
+    ? await queryOne(`SELECT * FROM customers WHERE email=$1`, [identifier.toLowerCase()])
+    : await findCustomerByPhone(identifier);
   // Same generic message whether the account doesn't exist, has no password
   // yet, or the password is simply wrong — never reveal which case it is.
   const genericError = () => sendJson(res, 401, { error: "Invalid phone/email or password" });
@@ -169,10 +169,7 @@ authRouter.post("/auth/customer/forgot-password/verify-pin", rateLimit("customer
   const pin = String(req.body.pin ?? "");
   if (!phone || !pin) return sendJson(res, 400, { error: "phone and pin are required" });
 
-  const customer = await queryOne<{ pin_hash: string | null; status: string }>(
-    `SELECT pin_hash, status FROM customers WHERE phone=$1`,
-    [phone]
-  );
+  const customer = await findCustomerByPhone(phone);
   // Same generic message whether the phone isn't registered, has no PIN
   // set yet, or the PIN is simply wrong — never reveal which case it is.
   const genericError = () => sendJson(res, 401, { error: "Invalid phone number or PIN" });
@@ -192,10 +189,7 @@ authRouter.post("/auth/customer/forgot-password/reset", rateLimit("customer-forg
     return sendJson(res, 400, { error: "Password must be at least 6 characters." });
   }
 
-  const customer = await queryOne<{ id: string; pin_hash: string | null; status: string }>(
-    `SELECT id, pin_hash, status FROM customers WHERE phone=$1`,
-    [phone]
-  );
+  const customer = await findCustomerByPhone(phone);
   const genericError = () => sendJson(res, 401, { error: "Invalid phone number or PIN" });
   if (!customer || !customer.pin_hash) return genericError();
   if (!(await verifyPassword(pin, customer.pin_hash))) return genericError();
@@ -224,7 +218,7 @@ authRouter.post("/auth/identify", rateLimit("customer-identify", 20, 15 * 60 * 1
   if (!phoneCheck.valid) return sendJson(res, 400, { error: phoneCheck.error });
   if (!name) return sendJson(res, 400, { error: "Full name is required" });
 
-  let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
+  let customer = await findCustomerByPhone(phone);
   if (customer) {
     if (customer.status === "blocked") return sendJson(res, 403, { error: "This account has been blocked" });
     // Only fills in a missing name — never overwrites a name the customer
@@ -271,10 +265,7 @@ function isFourDigitPin(pin: string): boolean {
 authRouter.post("/auth/customer/check-phone", rateLimit("customer-check-phone", 30, 15 * 60 * 1000), async (req, res) => {
   const phone = normalizeCustomerPhone(req.body.phone);
   if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid phone number" });
-  const customer = await queryOne<{ name: string | null; pin_hash: string | null }>(
-    `SELECT name, pin_hash FROM customers WHERE phone=$1`,
-    [phone]
-  );
+  const customer = await findCustomerByPhone(phone);
   sendJson(res, 200, {
     exists: Boolean(customer),
     pinSet: Boolean(customer?.pin_hash),
@@ -291,7 +282,7 @@ authRouter.post("/auth/customer/signup", rateLimit("customer-pin-signup", 10, 15
   if (!name) return sendJson(res, 400, { error: "Full name is required" });
   if (!isFourDigitPin(pin)) return sendJson(res, 400, { error: "PIN must be exactly 4 digits" });
 
-  let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
+  let customer = await findCustomerByPhone(phone);
   if (customer?.pin_hash) {
     return sendJson(res, 409, { error: "An account with this phone number already exists. Please sign in instead." });
   }
@@ -348,7 +339,7 @@ authRouter.post("/auth/customer/login", rateLimit("customer-pin-login", 10, 15 *
   const pin = String(req.body.pin ?? "");
   if (!phone || !pin) return sendJson(res, 400, { error: "phone and pin are required" });
 
-  const customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
+  const customer = await findCustomerByPhone(phone);
   // Same generic message whether the phone isn't registered, has no PIN
   // yet, or the PIN is simply wrong — never reveal which case it is.
   const genericError = () => sendJson(res, 401, { error: "Invalid phone number or PIN" });

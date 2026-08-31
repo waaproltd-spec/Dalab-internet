@@ -16,6 +16,7 @@ import { rateLimit } from "../auth/rateLimit.js";
 import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
 import { notifyCustomer } from "../services/customerNotify.js";
 import { validateMobileNumber, companyKeyFromLabel } from "../lib/phoneValidation.js";
+import { findCustomerByPhone } from "../utils/customerLookup.js";
 
 export const ordersRouter = Router();
 
@@ -288,7 +289,7 @@ ordersRouter.post("/guest/orders", rateLimit("guest-order-create", 20, 15 * 60 *
     if (!check.valid) return sendJson(res, 400, { error: check.error });
   }
 
-  let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
+  let customer = await findCustomerByPhone(phone);
   if (!customer) {
     customer = await queryOne(`INSERT INTO customers (id, phone) VALUES ($1,$2) RETURNING *`, [randomUUID(), phone]);
   }
@@ -372,7 +373,7 @@ ordersRouter.get("/guest/orders/stream", (req, res) => {
 ordersRouter.get("/guest/orders/by-phone/:phone", rateLimit("guest-order-lookup", 20, 15 * 60 * 1000), async (req, res) => {
   const phone = String(req.params.phone ?? "").trim();
   if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid phone number" });
-  const customer = await queryOne<{ id: string }>(`SELECT id FROM customers WHERE phone=$1`, [phone]);
+  const customer = await findCustomerByPhone(phone);
   if (!customer) return sendJson(res, 200, []);
   const rows = await query(
     `${ORDER_LIST_SELECT} WHERE o.customer_id=$1 ORDER BY o.created_at DESC LIMIT 20`,
@@ -416,7 +417,7 @@ ordersRouter.post("/agent/orders", requireAuth("agent"), async (req, res) => {
     if (!check.valid) return sendJson(res, 400, { error: check.error });
   }
 
-  let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
+  let customer = await findCustomerByPhone(phone);
   if (!customer) {
     customer = await queryOne(`INSERT INTO customers (id, phone) VALUES ($1,$2) RETURNING *`, [randomUUID(), phone]);
   }
