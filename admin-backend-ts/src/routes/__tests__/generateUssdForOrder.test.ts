@@ -76,15 +76,40 @@ async function makeOrder(packageId: string, receiverPhone: string, providerAmoun
   return await queryOne<any>(`SELECT * FROM orders WHERE id=$1`, [id]);
 }
 
-test("ID-linked package: 252-prefixed number is stripped and a round-tens cents amount drops its trailing zero (0.10 -> 0*1)", async () => {
+test("ID-linked package: 252-prefixed number is stripped and a round-tens cents amount collapses to one token (0.10 -> 01, never 0*1 — confirmed against real production order DLB957571658's carrier rejection of the split form)", async () => {
   const templateId = await makeTemplate("Anfac", "*737*{number}*{amount}*{pin}#");
   const packageId = await makePackage("Anfac Kuhadal", 0.10, templateId);
   const order = await makeOrder(packageId, "252619991299", 0.10);
 
   const result = await generateUssdForOrder(order);
   assert.equal(result.error, undefined);
-  assert.equal(result.ussd, "*737*619991299*0*1*8233#");
-  assert.equal(result.maskedUssd, "*737*619991299*0*1*••••#");
+  assert.equal(result.ussd, "*737*619991299*01*8233#");
+  assert.equal(result.maskedUssd, "*737*619991299*01*••••#");
+});
+
+test("regression: Offline (Rukumo) order for Hormuud Anfac Kuhadal ($0.09 discounted / $0.10 provider) generates the exact same single-token USSD string as an Online order — reproduces production order DLB957571658, which failed on the carrier when the amount was split as \"0*1\"", async () => {
+  const templateId = await makeTemplate("Anfac", "*737*{number}*{amount}*{pin}#");
+  const packageId = randomUUID();
+  await query(
+    `INSERT INTO packages (id, company_id, category_id, name, price, provider_amount, ussd_template_id) VALUES ($1,$2,$3,$4,0.09,0.10,$5)`,
+    [packageId, COMPANY_ID, CATEGORY_ID, "Anfac Kuhadal", templateId]
+  );
+  const orderId = "DLBTEST" + Math.floor(Math.random() * 1_000_000_000);
+  await query(
+    `INSERT INTO orders (id, customer_id, company_id, package_id, amount, provider_amount, status, receiver_phone, channel)
+     VALUES ($1,$2,$3,$4,0.09,0.10,'in_progress','610808086','offline_auto')`,
+    [orderId, CUSTOMER_ID, COMPANY_ID, packageId]
+  );
+  const order = await queryOne<any>(`SELECT * FROM orders WHERE id=$1`, [orderId]);
+
+  const result = await generateUssdForOrder(order);
+  assert.equal(result.error, undefined);
+  // The discounted customer-facing price ($0.09) must never leak into the
+  // dial string — the provider is charged the undiscounted $0.10, and that
+  // amount must be a single token ("01"), exactly like an Online order for
+  // the same package would generate (see the ID-linked-package test above).
+  assert.equal(result.ussd, "*737*610808086*01*8233#");
+  assert.equal(result.maskedUssd, "*737*610808086*01*••••#");
 });
 
 test("ID-linked package: a whole-dollar amount omits the cents segment entirely (25.00 -> 25, never 25*0)", async () => {
@@ -97,13 +122,13 @@ test("ID-linked package: a whole-dollar amount omits the cents segment entirely 
   assert.ok(!result.ussd!.includes("*0*"), `unexpected trailing zero segment: ${result.ussd}`);
 });
 
-test("ID-linked package: a non-round cents value keeps both digits (4.25 -> 4*25)", async () => {
+test("ID-linked package: a non-round cents value keeps both digits, still one token (4.25 -> 425)", async () => {
   const templateId = await makeTemplate("Qanciye Plus", "*830*{number}*{amount}*{pin}#");
   const packageId = await makePackage("Qanciye Plus 1.2GB", 4.25, templateId);
   const order = await makeOrder(packageId, "685115555", 4.25);
 
   const result = await generateUssdForOrder(order);
-  assert.equal(result.ussd, "*830*685115555*4*25*8233#");
+  assert.equal(result.ussd, "*830*685115555*425*8233#");
 });
 
 test("name-fallback package (no ussd_template_id): the same normalization still applies", async () => {
@@ -113,7 +138,7 @@ test("name-fallback package (no ussd_template_id): the same normalization still 
 
   const result = await generateUssdForOrder(order);
   assert.equal(templateId != null, true);
-  assert.equal(result.ussd, "*918*685115555*17*5*8233#");
+  assert.equal(result.ussd, "*918*685115555*175*8233#");
 });
 
 test("the PIN stays the final parameter before '#' regardless of amount segment count", async () => {

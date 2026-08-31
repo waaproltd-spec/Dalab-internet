@@ -2,27 +2,30 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { formatUssdAmount, normalizePhoneForUssd } from "../ussdFormatting.js";
 
-// Every example from the spec, verbatim.
+// "0.10" -> "01" and "0.50" -> "05" are real confirmed production values
+// (ussd_logs.generated_string for completed Hormuud Anfac orders, Aug 2026 —
+// see ussdFormatting.ts's header comment for the incident this was fixed
+// from). Every other case follows the same single-token rule.
 const AMOUNT_CASES: Array<[string, string]> = [
-  ["0.10", "0*1"],
-  ["0.20", "0*2"],
-  ["0.25", "0*25"],
-  ["0.35", "0*35"],
-  ["0.40", "0*4"],
-  ["0.45", "0*45"],
-  ["0.50", "0*5"],
-  ["0.70", "0*7"],
-  ["0.80", "0*8"],
-  ["0.89", "0*89"],
+  ["0.10", "01"],
+  ["0.20", "02"],
+  ["0.25", "025"],
+  ["0.35", "035"],
+  ["0.40", "04"],
+  ["0.45", "045"],
+  ["0.50", "05"],
+  ["0.70", "07"],
+  ["0.80", "08"],
+  ["0.89", "089"],
   ["1.00", "1"],
-  ["1.50", "1*5"],
+  ["1.50", "15"],
   ["2.00", "2"],
-  ["2.50", "2*5"],
-  ["4.25", "4*25"],
+  ["2.50", "25"],
+  ["4.25", "425"],
   ["5.00", "5"],
-  ["5.50", "5*5"],
-  ["17.50", "17*5"],
-  ["22.50", "22*5"],
+  ["5.50", "55"],
+  ["17.50", "175"],
+  ["22.50", "225"],
   ["25.00", "25"],
 ];
 
@@ -35,10 +38,17 @@ for (const [input, expected] of AMOUNT_CASES) {
   });
 }
 
-test("never produces a trailing '*0' for a whole-dollar amount", () => {
-  for (const whole of ["1.00", "5.00", "25.00", "100.00"]) {
-    assert.ok(!formatUssdAmount(whole).includes("*0"), `${whole} -> ${formatUssdAmount(whole)}`);
+test("never inserts a '*' into the amount token — Internet Store templates have only one {amount} field", () => {
+  for (const amount of ["0.10", "0.50", "1.00", "4.25", "17.50", "25.00", "100.00"]) {
+    assert.ok(!formatUssdAmount(amount).includes("*"), `${amount} -> ${formatUssdAmount(amount)}`);
   }
+});
+
+test("a whole-dollar amount is just the dollar figure, no appended cents zero", () => {
+  assert.equal(formatUssdAmount("1.00"), "1");
+  assert.equal(formatUssdAmount("5.00"), "5");
+  assert.equal(formatUssdAmount("25.00"), "25");
+  assert.equal(formatUssdAmount("100.00"), "100");
 });
 
 test("normalizePhoneForUssd strips the 252 country code down to the bare 9-digit local number", () => {
