@@ -502,6 +502,22 @@ shopRouter.get("/shop/orders/:id", requireAuth("customer"), async (req, res) => 
   sendJson(res, 200, { ...order, items });
 });
 
+// Agent-facing — reached by tapping the "💰 Payment Received" push
+// (shopSmsMatching.ts's confirmShopOrderPaymentViaSms) to see exactly the
+// order that push is about. Not scoped to "orders this agent's device
+// collects" the way the push itself is targeted -- any logged-in agent can
+// look up any Shop order by id, same trust level GET /agent/orders/:id
+// already gives Internet Store agents.
+shopRouter.get("/agent/shop-orders/:id", requireAuth("agent"), async (req, res) => {
+  const order = await queryOne(`${ORDER_SELECT} WHERE o.id=$1`, [req.params.id]);
+  if (!order) return sendJson(res, 404, { error: "Order not found" });
+  const items = await query(
+    `SELECT id, product_id, product_name, unit_price, quantity, subtotal, size, color FROM shop_order_items WHERE order_id=$1`,
+    [req.params.id]
+  );
+  sendJson(res, 200, { ...order, items });
+});
+
 // ---------------- Favorites ----------------
 
 shopRouter.get("/shop/favorites", requireAuth("customer"), async (req, res) => {

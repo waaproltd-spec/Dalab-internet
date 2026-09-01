@@ -80,6 +80,11 @@ class DalabAgentApp : Application() {
         // so the channel already exists even if a support-request push
         // arrives before the agent has ever opened a screen this cold start.
         initSafely("support_notification_channel_init") { createSupportNotificationChannel() }
+        // Same "must exist before AgentFcmService can possibly receive a push"
+        // reasoning as the support channel above -- a real-time payment-
+        // confirmed push (shopSmsMatching.ts) can arrive at any time, including
+        // before the agent has ever opened a screen this cold start.
+        initSafely("shop_payments_notification_channel_init") { createShopPaymentsNotificationChannel() }
     }
 
     private fun createSupportNotificationChannel() {
@@ -90,6 +95,21 @@ class DalabAgentApp : Application() {
                 NotificationManager.IMPORTANCE_HIGH,
             ).apply {
                 description = "A customer is waiting for a live agent"
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 300, 150, 300)
+            }
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        }
+    }
+
+    private fun createShopPaymentsNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                AgentFcmService.SHOP_PAYMENTS_CHANNEL_ID,
+                "Shop payments",
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                description = "A customer's Shop order payment has been confirmed"
                 enableVibration(true)
                 vibrationPattern = longArrayOf(0, 300, 150, 300)
             }

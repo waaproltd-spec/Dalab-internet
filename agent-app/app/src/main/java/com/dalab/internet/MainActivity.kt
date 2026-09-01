@@ -43,11 +43,13 @@ import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.auth.SessionManager
 import com.dalab.internet.data.ExchangeOrder
 import com.dalab.internet.data.Order
+import com.dalab.internet.data.ShopOrder
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.diagnostics.HeartbeatStats
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.notifications.AgentAlertsState
 import com.dalab.internet.notifications.PushTokenRegistrar
+import com.dalab.internet.notifications.ShopOrderDeepLink
 import com.dalab.internet.notifications.SupportDeepLink
 import com.dalab.internet.notifications.SupportUnreadState
 import com.dalab.internet.queue.PendingActionQueue
@@ -72,6 +74,7 @@ import com.dalab.internet.ui.PermissionsStatusScreen
 import com.dalab.internet.ui.ReliabilityDashboardScreen
 import com.dalab.internet.ui.ReliabilitySetupScreen
 import com.dalab.internet.ui.ReportsScreen
+import com.dalab.internet.ui.ShopOrderDetailScreen
 import com.dalab.internet.ui.SmsPermissionScreen
 import com.dalab.internet.ui.SupportScreen
 import com.dalab.internet.ui.TransactionHistoryScreen
@@ -138,10 +141,14 @@ class MainActivity : ComponentActivity() {
         if (intent?.getBooleanExtra(EXTRA_OPEN_SUPPORT, false) == true) {
             SupportDeepLink.pending = true
         }
+        intent?.getStringExtra(EXTRA_OPEN_SHOP_ORDER_ID)?.let { orderId ->
+            ShopOrderDeepLink.pendingOrderId = orderId
+        }
     }
 
     companion object {
         const val EXTRA_OPEN_SUPPORT = "open_support"
+        const val EXTRA_OPEN_SHOP_ORDER_ID = "open_shop_order_id"
     }
 
     private fun createNotificationChannel() {
@@ -161,7 +168,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP, SALES, CUSTOMERS, REPORTS }
+private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP, SALES, CUSTOMERS, REPORTS, SHOP_ORDER_DETAIL }
 // Bottom nav is exactly 4 tabs: Home, Support Agent, Broadcast, More --
 // Sales/Customers/Reports (formerly their own tabs) moved under More as
 // ordinary Screen.X destinations instead (see MoreScreen's "My Work"
@@ -209,6 +216,7 @@ private fun AgentApp() {
     }
     var selectedOrder by remember { mutableStateOf<Order?>(null) }
     var selectedExchangeOrder by remember { mutableStateOf<ExchangeOrder?>(null) }
+    var selectedShopOrder by remember { mutableStateOf<ShopOrder?>(null) }
     val scope = rememberCoroutineScope()
 
     // A support-request push (support.routes.ts's notifyAssignedAgent()/
@@ -221,6 +229,16 @@ private fun AgentApp() {
     // this effect re-runs, same as before.
     LaunchedEffect(SupportDeepLink.pending) {
         if (SupportDeepLink.pending && screen != Screen.HOME) {
+            screen = Screen.HOME
+        }
+    }
+
+    // A "💰 Payment Received" push was tapped -- same two-stage shape as
+    // Support's deep link above: this only gets the agent as far as Home;
+    // AgentHome's own effect (below, only composed once actually on Home,
+    // i.e. logged in and past setup) does the real fetch-and-navigate.
+    LaunchedEffect(ShopOrderDeepLink.pendingOrderId) {
+        if (ShopOrderDeepLink.pendingOrderId != null && screen != Screen.HOME) {
             screen = Screen.HOME
         }
     }
@@ -311,6 +329,7 @@ private fun AgentApp() {
             onOpenSales = { screen = Screen.SALES },
             onOpenCustomers = { screen = Screen.CUSTOMERS },
             onOpenReports = { screen = Screen.REPORTS },
+            onOpenShopOrder = { order -> selectedShopOrder = order; screen = Screen.SHOP_ORDER_DETAIL },
         )
 
         Screen.ORDER_DETAIL -> selectedOrder?.let { order ->
@@ -318,6 +337,13 @@ private fun AgentApp() {
                 order = order,
                 onBack = { screen = Screen.HOME },
                 onOrderUpdated = { selectedOrder = it },
+            )
+        }
+
+        Screen.SHOP_ORDER_DETAIL -> selectedShopOrder?.let { order ->
+            ShopOrderDetailScreen(
+                order = order,
+                onBack = { screen = Screen.HOME },
             )
         }
 
@@ -385,6 +411,7 @@ private fun AgentHome(
     onOpenSales: () -> Unit,
     onOpenCustomers: () -> Unit,
     onOpenReports: () -> Unit,
+    onOpenShopOrder: (ShopOrder) -> Unit,
 ) {
     var tab by remember { mutableStateOf(HomeTab.HOME) }
 
@@ -398,6 +425,28 @@ private fun AgentHome(
             SupportDeepLink.pending = false
             tab = HomeTab.SUPPORT
             SupportUnreadState.clear()
+        }
+    }
+
+    // A "💰 Payment Received" push tapped while this composable already
+    // exists (warm start, or the agent was mid-session on some other tab) --
+    // AgentApp's own effect only gets the agent as far as Screen.HOME; this
+    // is what actually fetches the order and navigates to its detail
+    // screen. Cleared immediately so a config change / recomposition never
+    // re-fetches or re-navigates for the same tap.
+    LaunchedEffect(ShopOrderDeepLink.pendingOrderId) {
+        val orderId = ShopOrderDeepLink.pendingOrderId ?: return@LaunchedEffect
+        ShopOrderDeepLink.pendingOrderId = null
+        try {
+            val response = ApiClient.service.getShopOrder(orderId)
+            val order = response.body()
+            if (response.isSuccessful && order != null) {
+                onOpenShopOrder(order)
+            } else {
+                DiagnosticsLog.record("shop_order_deep_link", "GET /agent/shop-orders/$orderId returned ${response.code()}")
+            }
+        } catch (e: Exception) {
+            DiagnosticsLog.record("shop_order_deep_link", "Failed to fetch shop order $orderId: ${e.message}")
         }
     }
 

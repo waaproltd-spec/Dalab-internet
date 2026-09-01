@@ -513,25 +513,41 @@ shopAdminRouter.post("/admin/shop/payment-methods", requireAuth("super_admin"), 
   const method = String(b.method ?? "").trim().toLowerCase();
   const label = String(b.label ?? "").trim();
   if (!method || !label) return sendJson(res, 400, { error: "method and label are required" });
+  if (b.deviceId && !(await queryOne(`SELECT id FROM agent_devices WHERE id=$1`, [b.deviceId]))) {
+    return sendJson(res, 404, { error: "Device not found" });
+  }
   const id = randomUUID();
   await query(
-    `INSERT INTO shop_payment_methods (id, method, label, payment_number, ussd_template, sort_order) VALUES ($1,$2,$3,$4,$5,$6)`,
-    [id, method, label, b.paymentNumber ?? null, b.ussdTemplate ?? null, Number(b.sortOrder) || 0]
+    `INSERT INTO shop_payment_methods (id, method, label, payment_number, ussd_template, sort_order, device_id, sim_slot) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [id, method, label, b.paymentNumber ?? null, b.ussdTemplate ?? null, Number(b.sortOrder) || 0, b.deviceId || null, Number.isInteger(b.simSlot) ? b.simSlot : null]
   );
   sendJson(res, 201, await queryOne(`SELECT * FROM shop_payment_methods WHERE id=$1`, [id]));
 });
 
+// deviceId/simSlot: which Agent App device collects this method's payments
+// -- resolves "the assigned Shop Agent" for the real-time payment-received
+// push (shopSmsMatching.ts). Admin can set this up front, or leave it blank
+// and let the first successful SMS match auto-link it (same bootstrap
+// company_payment_methods/reseller_deposit_methods already have).
 shopAdminRouter.put("/admin/shop/payment-methods/:id", requireAuth("super_admin"), async (req, res) => {
   const existing = await queryOne(`SELECT id FROM shop_payment_methods WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Payment method not found" });
   const b = req.body ?? {};
+  if (b.deviceId && !(await queryOne(`SELECT id FROM agent_devices WHERE id=$1`, [b.deviceId]))) {
+    return sendJson(res, 404, { error: "Device not found" });
+  }
   await query(
     `UPDATE shop_payment_methods SET
        label = COALESCE($1, label), payment_number = COALESCE($2, payment_number),
        ussd_template = COALESCE($3, ussd_template), enabled = COALESCE($4, enabled),
-       sort_order = COALESCE($5, sort_order), updated_at = now()
-     WHERE id=$6`,
-    [b.label ?? null, b.paymentNumber ?? null, b.ussdTemplate ?? null, typeof b.enabled === "boolean" ? b.enabled : null, Number.isInteger(b.sortOrder) ? b.sortOrder : null, req.params.id]
+       sort_order = COALESCE($5, sort_order), device_id = COALESCE($6, device_id),
+       sim_slot = COALESCE($7, sim_slot), updated_at = now()
+     WHERE id=$8`,
+    [
+      b.label ?? null, b.paymentNumber ?? null, b.ussdTemplate ?? null, typeof b.enabled === "boolean" ? b.enabled : null,
+      Number.isInteger(b.sortOrder) ? b.sortOrder : null, b.deviceId ?? null, Number.isInteger(b.simSlot) ? b.simSlot : null,
+      req.params.id,
+    ]
   );
   sendJson(res, 200, await queryOne(`SELECT * FROM shop_payment_methods WHERE id=$1`, [req.params.id]));
 });

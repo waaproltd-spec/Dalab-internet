@@ -50,7 +50,9 @@ class AgentFcmService : FirebaseMessagingService() {
     override fun onMessageReceived(message: RemoteMessage) {
         val title = message.notification?.title ?: message.data["title"] ?: return
         val body = message.notification?.body ?: message.data["body"] ?: ""
+        val screen = message.data["screen"]
         val conversationId = message.data["conversationId"]
+        val shopOrderId = message.data["orderId"]
 
         // Every support push (a fresh assignment or a customer's follow-up
         // message -- see support.routes.ts's notifyAssignedAgent()/
@@ -58,33 +60,57 @@ class AgentFcmService : FirebaseMessagingService() {
         // waiting in the Support tab. Set unconditionally, before the
         // POST_NOTIFICATIONS check below -- the in-app badge must still work
         // even if the system-tray notification itself couldn't be shown.
-        if (message.data["screen"] == "support_conversation") {
+        if (screen == "support_conversation") {
             SupportUnreadState.markUnread()
         }
 
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra(MainActivity.EXTRA_OPEN_SUPPORT, true)
+            if (screen == "shop_order_detail" && shopOrderId != null) {
+                putExtra(MainActivity.EXTRA_OPEN_SHOP_ORDER_ID, shopOrderId)
+            } else {
+                putExtra(MainActivity.EXTRA_OPEN_SUPPORT, true)
+            }
         }
+        // requestCode: distinct per conversation/order so two different
+        // pending payment pushes (e.g. two orders confirmed back to back,
+        // both still unopened) each keep their own tap target instead of one
+        // PendingIntent silently overwriting the other's extras.
         val pendingIntent = PendingIntent.getActivity(
             this,
-            conversationId?.hashCode() ?: 0,
+            (shopOrderId ?: conversationId)?.hashCode() ?: 0,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        val notification = NotificationCompat.Builder(this, SUPPORT_CHANNEL_ID)
+        val channelId = if (screen == "shop_order_detail") SHOP_PAYMENTS_CHANNEL_ID else SUPPORT_CHANNEL_ID
+        val notification = NotificationCompat.Builder(this, channelId)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(body)
+            // BigTextStyle: harmless for a single-line body (Support's), and
+            // required for the Shop payment push's multi-line body (Order/
+            // Amount/Payment/Status on their own lines) to expand instead of
+            // being collapsed onto one truncated line.
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
             .build()
 
+        // Distinct notification id per shop order (so concurrent payment
+        // pushes stack instead of overwriting each other in the tray) --
+        // Support intentionally keeps one fixed id, since there's only ever
+        // one assignment active for this agent at a time.
+        val notificationId = if (screen == "shop_order_detail" && shopOrderId != null) {
+            shopOrderId.hashCode()
+        } else {
+            SUPPORT_NOTIFICATION_ID
+        }
+
         try {
-            NotificationManagerCompat.from(this).notify(SUPPORT_NOTIFICATION_ID, notification)
+            NotificationManagerCompat.from(this).notify(notificationId, notification)
         } catch (e: SecurityException) {
             // POST_NOTIFICATIONS not granted (Android 13+) -- the push still
             // arrived and the app can still be opened normally, it just
@@ -95,6 +121,7 @@ class AgentFcmService : FirebaseMessagingService() {
 
     companion object {
         const val SUPPORT_CHANNEL_ID = "support_requests"
+        const val SHOP_PAYMENTS_CHANNEL_ID = "shop_payments"
         private const val SUPPORT_NOTIFICATION_ID = 4821
     }
 }

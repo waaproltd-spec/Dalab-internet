@@ -10,6 +10,7 @@ import com.dalab.internet.data.Order
 import com.dalab.internet.data.PackageItem
 import com.dalab.internet.data.ResellerWithdrawalPendingPayout
 import com.dalab.internet.data.ResellerWithdrawalSimRoutingEntry
+import com.dalab.internet.data.ShopOrder
 import com.dalab.internet.data.SmsLogEntry
 import com.dalab.internet.data.SupportConversation
 import com.dalab.internet.data.Transaction
@@ -180,6 +181,11 @@ interface ApiService {
 
     @GET("agent/orders/{id}")
     suspend fun getOrder(@Path("id") id: String): Response<Order>
+
+    // Reached only via the "💰 Payment Received" push's deep link -- see
+    // AgentFcmService.kt and MainActivity.EXTRA_OPEN_SHOP_ORDER_ID.
+    @GET("agent/shop-orders/{id}")
+    suspend fun getShopOrder(@Path("id") id: String): Response<ShopOrder>
 
     @POST("agent/orders/{id}/verify-payment")
     suspend fun verifyPayment(

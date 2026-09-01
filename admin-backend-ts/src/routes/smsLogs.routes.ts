@@ -22,6 +22,7 @@ import {
   findMatchingResellerWithdrawal,
   confirmResellerWithdrawalViaSms,
 } from "./resellerSmsMatching.js";
+import { findMatchingShopOrder, confirmShopOrderPaymentViaSms } from "./shopSmsMatching.js";
 
 export const smsLogsRouter = Router();
 
@@ -372,6 +373,7 @@ type IngestSmsResult = {
     matchedExchangeOrderId?: string | null;
     matchedResellerDepositId?: string | null;
     matchedResellerWithdrawalId?: string | null;
+    matchedShopOrderId?: string | null;
     requiresManualApproval: boolean;
     duplicate: boolean;
     orderAlreadyCompleted?: boolean;
@@ -531,8 +533,20 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
     resellerWithdrawalMatchFailureReason = resellerWithdrawalResult.reason;
   }
 
+  // Shop matching only runs when Store, Exchange, Reseller Deposit, AND
+  // Reseller Withdraw have all found nothing — same "always last, never
+  // steals a payment meant for the others" guarantee as every matcher
+  // above. See shopSmsMatching.ts's header comment.
+  let shopMatch: Awaited<ReturnType<typeof findMatchingShopOrder>>["order"] = null;
+  let shopMatchFailureReason: string | null = null;
+  if (!match && !exchangeMatch && !resellerDepositMatch && !resellerWithdrawalMatch) {
+    const shopResult = await findMatchingShopOrder(parsedAmount, parsedPhone, agentId, simSlot);
+    shopMatch = shopResult.order;
+    shopMatchFailureReason = shopResult.reason;
+  }
+
   const combinedFailureReason =
-    match || exchangeMatch || resellerDepositMatch || resellerWithdrawalMatch
+    match || exchangeMatch || resellerDepositMatch || resellerWithdrawalMatch || shopMatch
       ? null
       : [
           matchFailureReason,
@@ -540,6 +554,7 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
           exchangeMatchFailureReason ? `Exchange: ${exchangeMatchFailureReason}` : null,
           resellerMatchFailureReason ? `Reseller Deposit: ${resellerMatchFailureReason}` : null,
           resellerWithdrawalMatchFailureReason ? `Reseller Withdraw: ${resellerWithdrawalMatchFailureReason}` : null,
+          shopMatchFailureReason ? `Shop: ${shopMatchFailureReason}` : null,
         ]
           .filter(Boolean)
           .join(" | ");
@@ -551,11 +566,12 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
   // different truncated minute than the row that actually won.
   try {
     await query(
-      `INSERT INTO sms_logs (id, agent_id, sender, body, parsed_provider, parsed_amount, parsed_phone, matched_order_id, matched_exchange_order_id, matched_reseller_deposit_id, matched_reseller_withdrawal_id, received_at, transaction_ref, sim_slot, match_failure_reason)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+      `INSERT INTO sms_logs (id, agent_id, sender, body, parsed_provider, parsed_amount, parsed_phone, matched_order_id, matched_exchange_order_id, matched_reseller_deposit_id, matched_reseller_withdrawal_id, matched_shop_order_id, received_at, transaction_ref, sim_slot, match_failure_reason)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
       [
         id, agentId, sender, body, parsedProvider ?? null, parsedAmount ?? null, parsedPhone ?? null,
         match?.id ?? null, exchangeMatch?.id ?? null, resellerDepositMatch?.id ?? null, resellerWithdrawalMatch?.id ?? null,
+        shopMatch?.id ?? null,
         effectiveReceivedAt, transactionRef ?? null, simSlot ?? null,
         combinedFailureReason || null,
       ]
@@ -709,6 +725,14 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
     await confirmResellerWithdrawalViaSms(resellerWithdrawalMatch, id);
   }
 
+  // Shop: flips payment_status to 'paid', notifies the customer, and pushes
+  // the assigned Agent App device in real time — fully automatic, no admin/
+  // agent tap required, same atomic claim-before-side-effects safety as
+  // confirmResellerDepositViaSms. See shopSmsMatching.ts's header comment.
+  if (shopMatch) {
+    await confirmShopOrderPaymentViaSms(shopMatch, id);
+  }
+
   // The ledger row for this genuinely-new payment attempt — 'pending' until
   // the Agent App's verify-payment/dial-attempt calls advance it. A null
   // return means idx_payment_tx_order_active's atomic backstop (migration
@@ -739,6 +763,7 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
       matchedExchangeOrderId: exchangeMatch?.id ?? null,
       matchedResellerDepositId: resellerDepositMatch?.id ?? null,
       matchedResellerWithdrawalId: resellerWithdrawalMatch?.id ?? null,
+      matchedShopOrderId: shopMatch?.id ?? null,
       requiresManualApproval,
       duplicate: false,
       status: "new",

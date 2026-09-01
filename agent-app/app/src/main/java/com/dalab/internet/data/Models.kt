@@ -250,3 +250,44 @@ data class AgentDevice(
     val name: String,
     val description: String? = null,
 )
+
+/**
+ * Mirrors GET /agent/shop-orders/{id} (admin-backend-ts, shop.routes.ts) —
+ * reached only via the "💰 Payment Received" push's deep link
+ * (AgentFcmService.kt / MainActivity's EXTRA_OPEN_SHOP_ORDER_ID), never
+ * listed anywhere in this app today. status is the delivery pipeline
+ * (pending/processing/shipped/delivered/cancelled/failed/returned/
+ * refunded); paymentStatus is independent of it (unpaid/paid) -- by the
+ * time this push fires, paymentStatus is always already "paid".
+ */
+data class ShopOrder(
+    val id: String,
+    val customerName: String?,
+    val customerPhone: String?,
+    val status: String,
+    val paymentStatus: String,
+    val paymentMethod: String?,
+    val senderPhone: String?,
+    val deliveryName: String?,
+    val deliveryPhone: String?,
+    val deliveryAddress: String?,
+    val deliveryNotes: String?,
+    val totalAmount: Double,
+    val discountAmount: Double = 0.0,
+    val deliveryFee: Double = 0.0,
+    val isGift: Boolean = false,
+    val courierName: String? = null,
+    val trackingReference: String? = null,
+    val trackingNote: String? = null,
+    val createdAt: String,
+    val items: List<ShopOrderItem> = emptyList(),
+)
+
+data class ShopOrderItem(
+    val id: String,
+    val productId: String?,
+    val productName: String,
+    val unitPrice: Double,
+    val quantity: Int,
+    val subtotal: Double,
+)
