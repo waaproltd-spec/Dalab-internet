@@ -87,6 +87,20 @@ shopRouter.get("/shop/products", async (req, res) => {
   sendJson(res, 200, await query(sql, args));
 });
 
+// Registered before the generic /shop/products/:id below -- Express
+// matches route patterns in registration order, and :id would otherwise
+// swallow this literal path, treating "recently-viewed" as a product id.
+shopRouter.get("/shop/products/recently-viewed", requireAuth("customer"), async (req, res) => {
+  const rows = await query(
+    `SELECT ${PRODUCT_COLUMNS} FROM shop_products
+     WHERE active=true AND id IN (SELECT product_id FROM shop_product_views WHERE customer_id=$1)
+     ORDER BY (SELECT viewed_at FROM shop_product_views WHERE customer_id=$1 AND product_id=shop_products.id) DESC
+     LIMIT 20`,
+    [req.auth!.sub]
+  );
+  sendJson(res, 200, rows);
+});
+
 shopRouter.get("/shop/products/:id", async (req, res) => {
   const product = await queryOne(`SELECT ${PRODUCT_COLUMNS} FROM shop_products WHERE id=$1 AND active=true`, [req.params.id]);
   if (!product) return sendJson(res, 404, { error: "Product not found" });
@@ -106,6 +120,75 @@ shopRouter.get("/shop/products/:productId/images/:imageId", async (req, res) => 
   res.setHeader("Content-Type", row.mime_type);
   res.setHeader("Cache-Control", "public, max-age=3600");
   res.send(row.image_data);
+});
+
+// Upserted (viewed_at bumped), not appended -- only "did they view this,
+// and when most recently" matters for Recently Viewed / Recommended.
+// Fire-and-forget from the Customer App on opening Product Detail.
+shopRouter.post("/shop/products/:id/view", requireAuth("customer"), async (req, res) => {
+  if (!(await queryOne(`SELECT id FROM shop_products WHERE id=$1`, [req.params.id]))) {
+    return sendJson(res, 404, { error: "Product not found" });
+  }
+  await query(
+    `INSERT INTO shop_product_views (customer_id, product_id, viewed_at) VALUES ($1,$2,now())
+     ON CONFLICT (customer_id, product_id) DO UPDATE SET viewed_at = now()`,
+    [req.auth!.sub, req.params.id]
+  );
+  sendJson(res, 200, { recorded: true });
+});
+
+// Same-category products, excluding the product itself -- the standard
+// "you might also like" shelf on a product's own detail page. Public
+// (matches every other catalog read): a signed-out browser can still see
+// related items.
+shopRouter.get("/shop/products/:id/recommended", async (req, res) => {
+  const product = await queryOne<{ category_id: string }>(`SELECT category_id FROM shop_products WHERE id=$1`, [req.params.id]);
+  if (!product) return sendJson(res, 404, { error: "Product not found" });
+  const rows = await query(
+    `SELECT ${PRODUCT_COLUMNS} FROM shop_products
+     WHERE active=true AND category_id=$1 AND id != $2
+     ORDER BY best_seller DESC, sold_count DESC, created_at DESC LIMIT 8`,
+    [product.category_id, req.params.id]
+  );
+  sendJson(res, 200, rows);
+});
+
+// Personalized per spec ("based on products viewed or purchased"): pools
+// the categories of everything this customer has recently viewed or ever
+// bought, then surfaces other active products from those categories they
+// don't already own. Falls back to a plain featured/best-seller shelf for
+// a customer with no view/purchase history yet, rather than an empty
+// screen.
+shopRouter.get("/shop/recommendations", requireAuth("customer"), async (req, res) => {
+  const rows = await query(
+    `WITH interest_categories AS (
+       SELECT DISTINCT p.category_id FROM shop_products p WHERE p.id IN (
+         SELECT product_id FROM shop_product_views WHERE customer_id=$1
+         UNION
+         SELECT oi.product_id FROM shop_order_items oi JOIN shop_orders o ON o.id = oi.order_id
+         WHERE o.customer_id=$1 AND oi.product_id IS NOT NULL
+       )
+     ),
+     owned_or_viewed AS (
+       SELECT product_id FROM shop_product_views WHERE customer_id=$1
+       UNION
+       SELECT oi.product_id FROM shop_order_items oi JOIN shop_orders o ON o.id = oi.order_id
+       WHERE o.customer_id=$1 AND oi.product_id IS NOT NULL
+     )
+     SELECT ${PRODUCT_COLUMNS} FROM shop_products
+     WHERE active=true
+       AND id NOT IN (SELECT product_id FROM owned_or_viewed)
+       AND (
+         category_id IN (SELECT category_id FROM interest_categories)
+         OR NOT EXISTS (SELECT 1 FROM interest_categories)
+       )
+     ORDER BY
+       (category_id IN (SELECT category_id FROM interest_categories)) DESC,
+       featured DESC, best_seller DESC, sold_count DESC
+     LIMIT 12`,
+    [req.auth!.sub]
+  );
+  sendJson(res, 200, rows);
 });
 
 // Public like /exchange/wallets — the Customer App needs this to build the
@@ -216,6 +299,10 @@ const SHOP_ORDER_COLUMNS = "id, customer_id, payment_method, sender_phone, deliv
 
 async function loadOrderItems(orderId: string) {
   return query(`SELECT id, product_id, product_name, unit_price, quantity, subtotal FROM shop_order_items WHERE order_id=$1`, [orderId]);
+}
+
+async function loadOrderStatusHistory(orderId: string) {
+  return query(`SELECT status, note, changed_at FROM shop_order_status_history WHERE order_id=$1 ORDER BY changed_at ASC`, [orderId]);
 }
 
 // A deterministic signature of "what's being ordered" -- order-independent
@@ -379,6 +466,7 @@ shopRouter.post(
             [randomUUID(), orderId, item.productId, item.productName, item.unitPrice, item.quantity, item.subtotal]
           );
         }
+        await client.query(`INSERT INTO shop_order_status_history (order_id, status) VALUES ($1,'pending')`, [orderId]);
         return { orderId, duplicate: false };
       });
 
@@ -408,7 +496,38 @@ shopRouter.get("/shop/orders", requireAuth("customer"), async (req, res) => {
 shopRouter.get("/shop/orders/:id", requireAuth("customer"), async (req, res) => {
   const order = await queryOne(`SELECT ${SHOP_ORDER_COLUMNS} FROM shop_orders WHERE id=$1 AND customer_id=$2`, [req.params.id, req.auth!.sub]);
   if (!order) return sendJson(res, 404, { error: "Order not found" });
-  sendJson(res, 200, { ...order, items: await loadOrderItems(order.id) });
+  sendJson(res, 200, { ...order, items: await loadOrderItems(order.id), statusHistory: await loadOrderStatusHistory(order.id) });
+});
+
+// Customer-initiated -- only while an order hasn't been shipped yet, per
+// spec. Reuses the exact same "give the reserved stock back" step the
+// admin status route already applies for cancelled/failed/returned; the
+// dedup partial unique index (WHERE status='pending') is naturally freed
+// up too, so the same cart could be re-ordered afterward without hitting
+// a stale duplicate match.
+shopRouter.post("/shop/orders/:id/cancel", requireAuth("customer"), async (req, res) => {
+  const order = await queryOne<{ status: string }>(`SELECT status FROM shop_orders WHERE id=$1 AND customer_id=$2`, [req.params.id, req.auth!.sub]);
+  if (!order) return sendJson(res, 404, { error: "Order not found" });
+  if (!["pending", "processing"].includes(order.status)) {
+    return sendJson(res, 409, { error: "This order can no longer be cancelled — it has already been shipped or resolved" });
+  }
+  const items = await query<{ product_id: string | null; quantity: number }>(`SELECT product_id, quantity FROM shop_order_items WHERE order_id=$1`, [req.params.id]);
+  for (const item of items) {
+    if (item.product_id) {
+      await query(`UPDATE shop_products SET stock = stock + $1, updated_at = now() WHERE id=$2`, [item.quantity, item.product_id]);
+    }
+  }
+  await query(`UPDATE shop_orders SET status='cancelled', cancelled_at=now(), updated_at=now() WHERE id=$1`, [req.params.id]);
+  await query(`INSERT INTO shop_order_status_history (order_id, status, note) VALUES ($1,'cancelled','Cancelled by customer')`, [req.params.id]);
+  await recordActivity({
+    adminId: undefined,
+    action: "shop_order_cancelled_by_customer",
+    entityType: "shop_order",
+    entityId: req.params.id,
+    oldValue: { status: order.status },
+    newValue: { status: "cancelled" },
+  });
+  sendJson(res, 200, await queryOne(`SELECT ${SHOP_ORDER_COLUMNS} FROM shop_orders WHERE id=$1`, [req.params.id]));
 });
 
 // ==================== Favorites / Wishlist ====================
@@ -562,6 +681,79 @@ shopRouter.get("/shop/returns/:id", requireAuth("customer"), async (req, res) =>
   const row = await queryOne(`SELECT * FROM shop_return_requests WHERE id=$1 AND customer_id=$2`, [req.params.id, req.auth!.sub]);
   if (!row) return sendJson(res, 404, { error: "Request not found" });
   sendJson(res, 200, row);
+});
+
+// ==================== Delivery Addresses ====================
+//
+// Checkout picks one of these and copies its fields into the same
+// deliveryName/Phone/Address POST /shop/orders already accepts -- that
+// route itself needs no change, an address book is purely a Customer App
+// convenience layered on top of it.
+
+shopRouter.get("/shop/addresses", requireAuth("customer"), async (req, res) => {
+  sendJson(res, 200, await query(`SELECT * FROM shop_delivery_addresses WHERE customer_id=$1 ORDER BY is_default DESC, created_at DESC`, [req.auth!.sub]));
+});
+
+async function clearOtherDefaultAddresses(customerId: string, exceptId?: string) {
+  await query(
+    `UPDATE shop_delivery_addresses SET is_default=false, updated_at=now() WHERE customer_id=$1 AND is_default=true AND id != COALESCE($2, '00000000-0000-0000-0000-000000000000'::uuid)`,
+    [customerId, exceptId ?? null]
+  );
+}
+
+shopRouter.post("/shop/addresses", requireAuth("customer"), async (req, res) => {
+  const label = typeof req.body?.label === "string" ? req.body.label.trim() : "";
+  const recipientName = String(req.body?.recipientName ?? "").trim();
+  const phone = String(req.body?.phone ?? "").trim();
+  const addressText = String(req.body?.addressText ?? "").trim();
+  const isDefault = Boolean(req.body?.isDefault);
+  if (!recipientName || !phone || !addressText) {
+    return sendJson(res, 400, { error: "recipientName, phone, and addressText are all required" });
+  }
+  const id = randomUUID();
+  await withTransaction(async (client) => {
+    // First saved address becomes the default automatically, same as
+    // ticking "make default" -- a customer with exactly one address
+    // should never have to think about this toggle.
+    const existingCount = await client.query(`SELECT COUNT(*) AS n FROM shop_delivery_addresses WHERE customer_id=$1`, [req.auth!.sub]);
+    const makeDefault = isDefault || Number(existingCount.rows[0]?.n ?? 0) === 0;
+    if (makeDefault) {
+      await client.query(`UPDATE shop_delivery_addresses SET is_default=false, updated_at=now() WHERE customer_id=$1 AND is_default=true`, [req.auth!.sub]);
+    }
+    await client.query(
+      `INSERT INTO shop_delivery_addresses (id, customer_id, label, recipient_name, phone, address_text, is_default) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [id, req.auth!.sub, label, recipientName, phone, addressText, makeDefault]
+    );
+  });
+  sendJson(res, 201, await queryOne(`SELECT * FROM shop_delivery_addresses WHERE id=$1`, [id]));
+});
+
+shopRouter.put("/shop/addresses/:id", requireAuth("customer"), async (req, res) => {
+  const existing = await queryOne<{ id: string }>(`SELECT id FROM shop_delivery_addresses WHERE id=$1 AND customer_id=$2`, [req.params.id, req.auth!.sub]);
+  if (!existing) return sendJson(res, 404, { error: "Address not found" });
+  const { label, recipientName, phone, addressText, isDefault } = req.body ?? {};
+  if (isDefault === true) await clearOtherDefaultAddresses(req.auth!.sub, req.params.id);
+  await query(
+    `UPDATE shop_delivery_addresses SET
+       label=COALESCE($1, label), recipient_name=COALESCE($2, recipient_name), phone=COALESCE($3, phone),
+       address_text=COALESCE($4, address_text), is_default=COALESCE($5, is_default), updated_at=now()
+     WHERE id=$6`,
+    [
+      typeof label === "string" ? label.trim() : null,
+      typeof recipientName === "string" ? recipientName.trim() || null : null,
+      typeof phone === "string" ? phone.trim() || null : null,
+      typeof addressText === "string" ? addressText.trim() || null : null,
+      typeof isDefault === "boolean" ? isDefault : null,
+      req.params.id,
+    ]
+  );
+  sendJson(res, 200, await queryOne(`SELECT * FROM shop_delivery_addresses WHERE id=$1`, [req.params.id]));
+});
+
+shopRouter.delete("/shop/addresses/:id", requireAuth("customer"), async (req, res) => {
+  const result = await query(`DELETE FROM shop_delivery_addresses WHERE id=$1 AND customer_id=$2 RETURNING id`, [req.params.id, req.auth!.sub]);
+  if (result.length === 0) return sendJson(res, 404, { error: "Address not found" });
+  sendJson(res, 200, { deleted: true });
 });
 
 // ==================== Admin: Categories ====================
@@ -910,6 +1102,9 @@ shopRouter.put("/admin/shop/orders/:id/payment-status", requirePermission("shop.
     oldValue: { paymentStatus: existing.payment_status },
     newValue: { paymentStatus: "paid" },
   });
+  if (existing.status === "pending") {
+    await query(`INSERT INTO shop_order_status_history (order_id, status, note) VALUES ($1,'processing','Payment confirmed')`, [req.params.id]);
+  }
   await notifyCustomer(existing.customer_id, "shop_order_update", "Order Confirmed", `Your payment for order ${req.params.id} has been confirmed. We're preparing it now.`);
   sendJson(res, 200, await queryOne(`${SHOP_ORDER_LIST_SELECT} WHERE so.id=$1`, [req.params.id]));
 });
@@ -971,6 +1166,10 @@ shopRouter.put("/admin/shop/orders/:id/status", requirePermission("shop.manage")
       typeof courierName === "string" ? courierName.trim() : null,
       req.params.id,
     ]
+  );
+  await query(
+    `INSERT INTO shop_order_status_history (order_id, status, note) VALUES ($1,$2,$3)`,
+    [req.params.id, status, typeof trackingNote === "string" ? trackingNote.trim() || null : null]
   );
   await recordActivity({
     adminId: req.auth!.sub,

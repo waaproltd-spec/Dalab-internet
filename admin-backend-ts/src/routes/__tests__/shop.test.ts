@@ -971,3 +971,133 @@ test("a regular Admin without shop.manage cannot manage return requests", async 
   const updateRes = await asPlainAdmin(`/admin/shop/returns/${reqRow.id}/status`, { method: "PUT", body: JSON.stringify({ status: "approved" }) });
   assert.equal(updateRes.status, 403);
 });
+
+// ==================== Order status timeline ====================
+
+test("GET /shop/orders/:id includes a status timeline, appended to as the order progresses", async () => {
+  await fabricateOrder("SHPTESTHIST1", "pending");
+  await query(`INSERT INTO shop_order_status_history (order_id, status) VALUES ('SHPTESTHIST1','pending')`);
+
+  const shipRes = await asSuperAdmin("/admin/shop/orders/SHPTESTHIST1/status", { method: "PUT", body: JSON.stringify({ status: "processing" }) });
+  assert.equal(shipRes.status, 200);
+  const shipRes2 = await asSuperAdmin("/admin/shop/orders/SHPTESTHIST1/status", { method: "PUT", body: JSON.stringify({ status: "shipped", trackingNote: "Left warehouse" }) });
+  assert.equal(shipRes2.status, 200);
+
+  const detail = (await (await asCustomer("/shop/orders/SHPTESTHIST1")).json()) as any;
+  const statuses = (detail.statusHistory as any[]).map((h) => h.status);
+  assert.deepEqual(statuses, ["pending", "processing", "shipped"]);
+  assert.equal(detail.statusHistory[2].note, "Left warehouse");
+});
+
+test("confirming payment on a pending order appends a 'processing' timeline entry", async () => {
+  await fabricateOrder("SHPTESTHIST2", "pending");
+  await query(`INSERT INTO shop_order_status_history (order_id, status) VALUES ('SHPTESTHIST2','pending')`);
+  const payRes = await asSuperAdmin("/admin/shop/orders/SHPTESTHIST2/payment-status", { method: "PUT", body: "{}" });
+  assert.equal(payRes.status, 200);
+  const detail = (await (await asCustomer("/shop/orders/SHPTESTHIST2")).json()) as any;
+  assert.deepEqual((detail.statusHistory as any[]).map((h) => h.status), ["pending", "processing"]);
+});
+
+// ==================== Cancel Order ====================
+
+test("a customer can cancel their own pending/processing order, restoring stock; a shipped order cannot be cancelled", async () => {
+  await fabricateOrder("SHPTESTCANCEL1", "pending");
+  await query(
+    `INSERT INTO shop_order_items (id, order_id, product_id, product_name, unit_price, quantity, subtotal) VALUES ($1,'SHPTESTCANCEL1',$2,'Test Sneakers',25,1,25)`,
+    [randomUUID(), productId]
+  );
+  await query(`UPDATE shop_products SET stock = stock - 1 WHERE id=$1`, [productId]);
+  const before = (await queryOne<{ stock: number }>(`SELECT stock FROM shop_products WHERE id=$1`, [productId]))!.stock;
+
+  const cancelRes = await asCustomer("/shop/orders/SHPTESTCANCEL1/cancel", { method: "POST" });
+  const cancelled = (await cancelRes.json()) as any;
+  assert.equal(cancelRes.status, 200, JSON.stringify(cancelled));
+  assert.equal(cancelled.status, "cancelled");
+
+  const after = (await queryOne<{ stock: number }>(`SELECT stock FROM shop_products WHERE id=$1`, [productId]))!.stock;
+  assert.equal(after, before + 1, "cancelling must give the reserved stock back");
+
+  await fabricateOrder("SHPTESTCANCEL2", "shipped");
+  const tooLateRes = await asCustomer("/shop/orders/SHPTESTCANCEL2/cancel", { method: "POST" });
+  assert.equal(tooLateRes.status, 409, "a shipped order can no longer be self-cancelled");
+});
+
+test("a customer cannot cancel someone else's order", async () => {
+  const otherCustomerId = randomUUID();
+  await query(`INSERT INTO customers (id, phone, name) VALUES ($1,'617777666','Someone Else')`, [otherCustomerId]);
+  await fabricateOrder("SHPTESTCANCEL3", "pending", otherCustomerId);
+  const res = await asCustomer("/shop/orders/SHPTESTCANCEL3/cancel", { method: "POST" });
+  assert.equal(res.status, 404);
+  await query(`DELETE FROM shop_orders WHERE id='SHPTESTCANCEL3'`);
+  await query(`DELETE FROM customers WHERE id=$1`, [otherCustomerId]);
+});
+
+// ==================== Delivery Addresses ====================
+
+test("a customer can save, list, update, and delete delivery addresses; the first one saved becomes the default automatically", async () => {
+  const listEmpty = (await (await asCustomer("/shop/addresses")).json()) as any[];
+  assert.equal(listEmpty.length, 0);
+
+  const firstRes = await asCustomer("/shop/addresses", {
+    method: "POST",
+    body: JSON.stringify({ label: "Home", recipientName: "Test Buyer", phone: "617000222", addressText: "Mogadishu" }),
+  });
+  const first = (await firstRes.json()) as any;
+  assert.equal(firstRes.status, 201);
+  assert.equal(first.isDefault, true, "the first saved address becomes the default automatically");
+
+  const secondRes = await asCustomer("/shop/addresses", {
+    method: "POST",
+    body: JSON.stringify({ label: "Work", recipientName: "Test Buyer", phone: "617000222", addressText: "Hodan, Mogadishu" }),
+  });
+  const second = (await secondRes.json()) as any;
+  assert.equal(second.isDefault, false, "a second address is not the default unless asked");
+
+  const makeDefaultRes = await asCustomer(`/shop/addresses/${second.id}`, { method: "PUT", body: JSON.stringify({ isDefault: true }) });
+  assert.equal(makeDefaultRes.status, 200);
+  assert.equal((await makeDefaultRes.json() as any).isDefault, true);
+
+  const list = (await (await asCustomer("/shop/addresses")).json()) as any[];
+  assert.equal(list.length, 2);
+  const firstNow = list.find((a) => a.id == first.id);
+  assert.equal(firstNow.isDefault, false, "setting a new default must clear the old one");
+
+  const deleteRes = await asCustomer(`/shop/addresses/${first.id}`, { method: "DELETE" });
+  assert.equal(deleteRes.status, 200);
+  const listAfterDelete = (await (await asCustomer("/shop/addresses")).json()) as any[];
+  assert.equal(listAfterDelete.length, 1);
+});
+
+test("POST /shop/addresses requires recipientName, phone, and addressText", async () => {
+  const res = await asCustomer("/shop/addresses", { method: "POST", body: JSON.stringify({ recipientName: "Only Name" }) });
+  assert.equal(res.status, 400);
+});
+
+// ==================== Recently Viewed / Recommended ====================
+
+test("viewing a product records it, GET recently-viewed lists it most-recent-first, and it's excluded from recommendations", async () => {
+  const secondProduct = await queryOne<{ id: string }>(
+    `INSERT INTO shop_products (id, category_id, name, price, stock, best_seller) VALUES ($1,$2,'Test Bestseller',15,10,true) RETURNING id`,
+    [randomUUID(), categoryId]
+  );
+
+  const viewRes = await asCustomer(`/shop/products/${productId}/view`, { method: "POST" });
+  assert.equal(viewRes.status, 200);
+
+  const recentRes = await asCustomer("/shop/products/recently-viewed");
+  const recent = (await recentRes.json()) as any[];
+  assert.equal(recentRes.status, 200);
+  assert.ok(recent.some((p) => p.id === productId));
+
+  const recommendedForProduct = (await (await fetch(`${baseUrl}/shop/products/${productId}/recommended`)).json()) as any[];
+  assert.ok(!recommendedForProduct.some((p) => p.id === productId), "a product never recommends itself");
+  assert.ok(recommendedForProduct.some((p) => p.id === secondProduct!.id), "same-category products are recommended, best-seller first");
+
+  const personalized = (await (await asCustomer("/shop/recommendations")).json()) as any[];
+  assert.equal((personalized as any[]).some((p) => p.id === productId), false, "an already-viewed product is not recommended back to the same customer");
+});
+
+test("POST /shop/products/:id/view for a nonexistent product returns 404", async () => {
+  const res = await asCustomer(`/shop/products/${randomUUID()}/view`, { method: "POST" });
+  assert.equal(res.status, 404);
+});
