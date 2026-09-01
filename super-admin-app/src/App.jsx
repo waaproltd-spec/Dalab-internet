@@ -752,38 +752,53 @@ const orderBreakdown = [
   { name: "Hormuud", value: 240 }, { name: "Somnet", value: 130 }, { name: "Somtel", value: 180 }, { name: "Amtel", value: 90 },
 ];
 
+// Every entry other than "overview" is hidden from a regular Admin unless
+// either superAdminOnly is absent AND `permission` is granted, or the admin
+// is Super Admin (who always sees everything -- see the NAV.filter below
+// and hasPermission's own super_admin short-circuit). `permission` is one
+// of PERMISSIONS (admin-backend-ts/src/auth/permissions.ts) -- picked to
+// match whichever key that section's own hasPermission(admin, ...) check
+// already uses internally (Companies -> companies.manage, etc.) where one
+// exists; a handful of sections with no per-action permission check of
+// their own (Payment/Provider Numbers, Offline, Notifications, Promo
+// Images, SMS Monitor, Payment Transactions, Pending Recovery, Execution
+// Logs) are grouped under the closest existing key for the same feature
+// area rather than inventing a new one (e.g. Payment/Provider Numbers are
+// company configuration -> companies.manage; SMS Monitor/Execution Logs
+// are device/SIM/USSD activity -> devices.manage; Offline/Payment
+// Transactions/Pending Recovery are all order lifecycle -> orders.manage).
 const NAV = [
   { id: "overview", label: "Overview", icon: LayoutGrid },
   { id: "financial-overview", label: "Financial Overview", icon: PiggyBank, superAdminOnly: true },
-  { id: "balance-dashboard", label: "Balance Dashboard", icon: DollarSign },
-  { id: "companies", label: "Companies", icon: Building2 },
-  { id: "payment-numbers", label: "Payment Numbers", icon: Wallet },
-  { id: "provider-numbers", label: "Provider Numbers", icon: Radio },
+  { id: "balance-dashboard", label: "Balance Dashboard", icon: DollarSign, permission: "devices.manage" },
+  { id: "companies", label: "Companies", icon: Building2, permission: "companies.manage" },
+  { id: "payment-numbers", label: "Payment Numbers", icon: Wallet, permission: "companies.manage" },
+  { id: "provider-numbers", label: "Provider Numbers", icon: Radio, permission: "companies.manage" },
   { id: "payment-wallets", label: "Payment Wallets", icon: CreditCard, superAdminOnly: true },
-  { id: "packages", label: "Packages & Pricing", icon: Package },
-  { id: "categories", label: "Categories", icon: Tags },
-  { id: "orders", label: "Orders", icon: ShoppingCart },
-  { id: "offline", label: "Offline (Rukumo)", icon: WifiOff },
-  { id: "customers", label: "Customers", icon: Users },
-  { id: "agents", label: "Agents", icon: UserCog },
-  { id: "notifications", label: "Notifications", icon: Bell },
-  { id: "feedback", label: "Feedback & Suggestions", icon: Lightbulb },
-  { id: "support", label: "Agent Support", icon: MessageCircle },
-  { id: "promo-images", label: "Promo Images", icon: ImageIcon },
-  { id: "devices", label: "Device & USSD", icon: SmartphoneNfc },
-  { id: "sms-logs", label: "SMS Monitor", icon: MessageSquare },
-  { id: "payment-transactions", label: "Payment Transactions", icon: Activity },
-  { id: "commissions", label: "Commissions", icon: Percent },
-  { id: "money-exchange", label: "Money Exchange", icon: ArrowLeftRight },
-  { id: "resellers", label: "Resellers", icon: Landmark },
+  { id: "packages", label: "Packages & Pricing", icon: Package, permission: "packages.manage" },
+  { id: "categories", label: "Categories", icon: Tags, permission: "categories.manage" },
+  { id: "orders", label: "Orders", icon: ShoppingCart, permission: "orders.manage" },
+  { id: "offline", label: "Offline (Rukumo)", icon: WifiOff, permission: "orders.manage" },
+  { id: "customers", label: "Customers", icon: Users, permission: "customers.manage" },
+  { id: "agents", label: "Agents", icon: UserCog, permission: "agents.manage" },
+  { id: "notifications", label: "Notifications", icon: Bell, permission: "settings.manage" },
+  { id: "feedback", label: "Feedback & Suggestions", icon: Lightbulb, permission: "feedback.manage" },
+  { id: "support", label: "Agent Support", icon: MessageCircle, permission: "support.manage" },
+  { id: "promo-images", label: "Promo Images", icon: ImageIcon, superAdminOnly: true },
+  { id: "devices", label: "Device & USSD", icon: SmartphoneNfc, superAdminOnly: true },
+  { id: "sms-logs", label: "SMS Monitor", icon: MessageSquare, permission: "devices.manage" },
+  { id: "payment-transactions", label: "Payment Transactions", icon: Activity, permission: "orders.manage" },
+  { id: "commissions", label: "Commissions", icon: Percent, permission: "commissions.manage" },
+  { id: "money-exchange", label: "Money Exchange", icon: ArrowLeftRight, permission: "exchange.manage" },
+  { id: "resellers", label: "Resellers", icon: Landmark, permission: "resellers.manage" },
   { id: "sms-sender-ids", label: "SMS Sender IDs", icon: MessageSquare, superAdminOnly: true },
-  { id: "referrals", label: "Referral Rewards", icon: Share2 },
-  { id: "pending-recovery", label: "Pending Recovery", icon: RotateCcw },
-  { id: "execution-logs", label: "Execution Logs", icon: Terminal },
-  { id: "reports", label: "Reports", icon: FileBarChart2 },
+  { id: "referrals", label: "Referral Rewards", icon: Share2, permission: "referrals.manage" },
+  { id: "pending-recovery", label: "Pending Recovery", icon: RotateCcw, permission: "orders.manage" },
+  { id: "execution-logs", label: "Execution Logs", icon: Terminal, permission: "devices.manage" },
+  { id: "reports", label: "Reports", icon: FileBarChart2, permission: "reports.export" },
   { id: "roles", label: "Roles & Permissions", icon: ShieldCheck, superAdminOnly: true },
   { id: "activity-log", label: "Activity Log", icon: History, superAdminOnly: true },
-  { id: "settings", label: "Settings", icon: Settings },
+  { id: "settings", label: "Settings", icon: Settings, permission: "settings.manage" },
 ];
 
 function Logo({ size = 34 }) {
@@ -11988,7 +12003,13 @@ function AdminDashboardShell({ admin, onLogout }) {
           )}
         </div>
         <div style={{ flex: 1, padding: "8px 10px", overflowY: "auto" }}>
-          {NAV.filter((n) => !n.superAdminOnly || admin?.role === "super_admin").map((n) => {
+          {NAV.filter((n) => {
+            // "overview" has neither flag -- always visible, the one
+            // section every Admin sees by default with zero permissions.
+            if (n.superAdminOnly) return admin?.role === "super_admin";
+            if (n.permission) return hasPermission(admin, n.permission);
+            return true;
+          }).map((n) => {
             const Icon = n.icon;
             const isActive = active === n.id;
             return (
@@ -12073,7 +12094,7 @@ function AdminDashboardShell({ admin, onLogout }) {
             </button>
           </div>
         </div>
-        <ConnectionStatusBar />
+        {admin?.role === "super_admin" && <ConnectionStatusBar />}
         <div style={{ padding: 22 }}>
           {active === "overview" && <Overview companies={companies} orders={orders} />}
           {active === "financial-overview" && <FinancialOverview admin={admin} />}
