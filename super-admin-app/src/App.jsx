@@ -489,6 +489,32 @@ const DalabAdminApi = {
   getShopOrder: (id) => dalabAdminApiRequest(`/admin/shop/orders/${id}`),
   confirmShopOrderPayment: (id) => dalabAdminApiRequest(`/admin/shop/orders/${id}/payment-status`, { method: "PUT", body: { paymentStatus: "paid" } }),
   updateShopOrderStatus: (id, body) => dalabAdminApiRequest(`/admin/shop/orders/${id}/status`, { method: "PUT", body }),
+  // Product Variants (size/color/model/storage/etc, per-variant price
+  // override + stock) -- migration 082.
+  getShopProductVariants: (productId) => dalabAdminApiRequest(`/admin/shop/products/${productId}/variants`),
+  createShopProductVariant: (productId, body) => dalabAdminApiRequest(`/admin/shop/products/${productId}/variants`, { method: "POST", body }),
+  updateShopProductVariant: (productId, id, body) => dalabAdminApiRequest(`/admin/shop/products/${productId}/variants/${id}`, { method: "PUT", body }),
+  deleteShopProductVariant: (productId, id) => dalabAdminApiRequest(`/admin/shop/products/${productId}/variants/${id}`, { method: "DELETE" }),
+  // Every active product at/under its own low_stock_threshold -- migration 085.
+  getShopLowStockProducts: () => dalabAdminApiRequest("/admin/shop/products/low-stock"),
+  // Flash Sales: time-boxed sale pricing on specific products -- migration 083.
+  getShopFlashSales: () => dalabAdminApiRequest("/admin/shop/flash-sales"),
+  createShopFlashSale: (body) => dalabAdminApiRequest("/admin/shop/flash-sales", { method: "POST", body }),
+  updateShopFlashSale: (id, body) => dalabAdminApiRequest(`/admin/shop/flash-sales/${id}`, { method: "PUT", body }),
+  deleteShopFlashSale: (id) => dalabAdminApiRequest(`/admin/shop/flash-sales/${id}`, { method: "DELETE" }),
+  // Bundle Deals: a fixed set of products sold together at one price -- migration 084.
+  getShopBundles: () => dalabAdminApiRequest("/admin/shop/bundles"),
+  createShopBundle: (body) => dalabAdminApiRequest("/admin/shop/bundles", { method: "POST", body }),
+  updateShopBundle: (id, body) => dalabAdminApiRequest(`/admin/shop/bundles/${id}`, { method: "PUT", body }),
+  deleteShopBundle: (id) => dalabAdminApiRequest(`/admin/shop/bundles/${id}`, { method: "DELETE" }),
+  // Delivery Zones: per-area delivery fees, additive to shop_settings' flat
+  // fee -- migration 086.
+  getShopDeliveryZones: () => dalabAdminApiRequest("/admin/shop/delivery-zones"),
+  createShopDeliveryZone: (body) => dalabAdminApiRequest("/admin/shop/delivery-zones", { method: "POST", body }),
+  updateShopDeliveryZone: (id, body) => dalabAdminApiRequest(`/admin/shop/delivery-zones/${id}`, { method: "PUT", body }),
+  deleteShopDeliveryZone: (id) => dalabAdminApiRequest(`/admin/shop/delivery-zones/${id}`, { method: "DELETE" }),
+  // Revenue/order/top-product snapshot.
+  getShopAnalytics: () => dalabAdminApiRequest("/admin/shop/analytics"),
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -4212,6 +4238,11 @@ function ShopManagement() {
     { id: "categories", label: "Categories" },
     { id: "products", label: "Products" },
     { id: "orders", label: "Orders" },
+    { id: "flashsales", label: "Flash Sales" },
+    { id: "bundles", label: "Bundles" },
+    { id: "zones", label: "Delivery Zones" },
+    { id: "lowstock", label: "Low Stock" },
+    { id: "analytics", label: "Analytics" },
     { id: "payment", label: "Payment Methods" },
   ];
   return (
@@ -4239,6 +4270,11 @@ function ShopManagement() {
       {tab === "categories" && <ShopCategoriesPanel />}
       {tab === "products" && <ShopProductsPanel />}
       {tab === "orders" && <ShopOrdersPanel />}
+      {tab === "flashsales" && <ShopFlashSalesPanel />}
+      {tab === "bundles" && <ShopBundlesPanel />}
+      {tab === "zones" && <ShopDeliveryZonesPanel />}
+      {tab === "lowstock" && <ShopLowStockPanel />}
+      {tab === "analytics" && <ShopAnalyticsPanel />}
       {tab === "payment" && <ShopPaymentMethodsPanel />}
     </div>
   );
@@ -4431,6 +4467,64 @@ function ShopProductModal({ product, categories, onClose, onSaved, onDelete }) {
   const [error, setError] = useState("");
   const fileInputRef = useRef(null);
 
+  const [variants, setVariants] = useState([]);
+  const [variantForm, setVariantForm] = useState({ label: "", size: "", color: "", price: "", stock: "0" });
+  const [savingVariant, setSavingVariant] = useState(false);
+  const [variantEdits, setVariantEdits] = useState({});
+
+  const fetchVariants = async () => {
+    if (!product.id) return;
+    try { setVariants(await DalabAdminApi.getShopProductVariants(product.id)); }
+    catch (err) { console.error("getShopProductVariants failed:", err.message); }
+  };
+  useEffect(() => { fetchVariants(); }, [product.id]);
+
+  const addVariant = async () => {
+    if (!variantForm.label.trim()) return;
+    setSavingVariant(true);
+    setError("");
+    try {
+      const attributes = {};
+      if (variantForm.size.trim()) attributes.size = variantForm.size.trim();
+      if (variantForm.color.trim()) attributes.color = variantForm.color.trim();
+      await DalabAdminApi.createShopProductVariant(product.id, {
+        label: variantForm.label.trim(),
+        attributes,
+        price: variantForm.price ? Number(variantForm.price) : undefined,
+        stock: Number(variantForm.stock) || 0,
+      });
+      setVariantForm({ label: "", size: "", color: "", price: "", stock: "0" });
+      fetchVariants();
+    } catch (err) {
+      setError(err.message || "Could not add variant.");
+    }
+    setSavingVariant(false);
+  };
+
+  const saveVariantEdit = async (variant) => {
+    const draft = variantEdits[variant.id] || {};
+    try {
+      await DalabAdminApi.updateShopProductVariant(product.id, variant.id, {
+        price: draft.price !== undefined ? (draft.price === "" ? null : Number(draft.price)) : undefined,
+        stock: draft.stock !== undefined ? Number(draft.stock) : undefined,
+      });
+      setVariantEdits((m) => ({ ...m, [variant.id]: undefined }));
+      fetchVariants();
+    } catch (err) {
+      alert(err.message || "Could not save variant.");
+    }
+  };
+
+  const removeVariant = async (variant) => {
+    if (!window.confirm(`Delete variant "${variant.label}"?`)) return;
+    try {
+      await DalabAdminApi.deleteShopProductVariant(product.id, variant.id);
+      fetchVariants();
+    } catch (err) {
+      alert(err.message || "Could not delete variant.");
+    }
+  };
+
   const save = async () => {
     const priceNum = Number(form.price);
     const stockNum = Number(form.stock);
@@ -4519,6 +4613,52 @@ function ShopProductModal({ product, categories, onClose, onSaved, onDelete }) {
         </Field>
       )}
       {isNew && <div style={{ fontSize: 11.5, color: MUTE, marginBottom: 14 }}>Save the product first, then add images.</div>}
+
+      {!isNew && (
+        <Field label={`Variants (size/color/model/storage — leave price blank to use the product's own price)`}>
+          {variants.length > 0 && (
+            <div style={{ border: `1px solid ${BORDER}`, borderRadius: 10, marginBottom: 10, overflow: "hidden" }}>
+              {variants.map((v) => {
+                const draft = variantEdits[v.id] || {};
+                const dirty = draft.price !== undefined || draft.stock !== undefined;
+                return (
+                  <div key={v.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderBottom: `1px solid ${BORDER}` }}>
+                    <div style={{ flex: 1, fontSize: 12.5, color: INK, fontWeight: 700 }}>{v.label}</div>
+                    <input
+                      type="number" min="0" step="0.01" placeholder="price"
+                      value={draft.price !== undefined ? draft.price : (v.price ?? "")}
+                      onChange={(e) => setVariantEdits((m) => ({ ...m, [v.id]: { ...draft, price: e.target.value } }))}
+                      style={{ ...inputStyle, width: 80, padding: "6px 8px" }}
+                    />
+                    <input
+                      type="number" min="0" step="1" placeholder="stock"
+                      value={draft.stock !== undefined ? draft.stock : v.stock}
+                      onChange={(e) => setVariantEdits((m) => ({ ...m, [v.id]: { ...draft, stock: e.target.value } }))}
+                      style={{ ...inputStyle, width: 70, padding: "6px 8px" }}
+                    />
+                    {dirty && (
+                      <button onClick={() => saveVariantEdit(v)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                        <Check size={13} color={GREEN} />
+                      </button>
+                    )}
+                    <button onClick={() => removeVariant(v)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                      <Trash2 size={13} color="#C81E2C" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <input placeholder="Label (e.g. Large / Red)" value={variantForm.label} onChange={(e) => setVariantForm((f) => ({ ...f, label: e.target.value }))} style={{ ...inputStyle, flex: 1, minWidth: 130, width: "auto", padding: "6px 8px" }} />
+            <input placeholder="Size" value={variantForm.size} onChange={(e) => setVariantForm((f) => ({ ...f, size: e.target.value }))} style={{ ...inputStyle, width: 70, padding: "6px 8px" }} />
+            <input placeholder="Color" value={variantForm.color} onChange={(e) => setVariantForm((f) => ({ ...f, color: e.target.value }))} style={{ ...inputStyle, width: 70, padding: "6px 8px" }} />
+            <input type="number" min="0" step="0.01" placeholder="price" value={variantForm.price} onChange={(e) => setVariantForm((f) => ({ ...f, price: e.target.value }))} style={{ ...inputStyle, width: 80, padding: "6px 8px" }} />
+            <input type="number" min="0" step="1" placeholder="stock" value={variantForm.stock} onChange={(e) => setVariantForm((f) => ({ ...f, stock: e.target.value }))} style={{ ...inputStyle, width: 70, padding: "6px 8px" }} />
+            <Button icon={Plus} onClick={addVariant} disabled={savingVariant || !variantForm.label.trim()} spin={savingVariant}>Add</Button>
+          </div>
+        </Field>
+      )}
 
       {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
 
@@ -4713,6 +4853,520 @@ function ShopOrderDetailModal({ orderId, onClose, onChanged }) {
 
       {error && <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div>}
     </Modal>
+  );
+}
+
+function ShopFlashSalesPanel() {
+  const [sales, setSales] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [error, setError] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [form, setForm] = useState({ name: "", startsAt: "", endsAt: "" });
+  const [items, setItems] = useState([{ productId: "", salePrice: "" }]);
+
+  const fetchAll = async () => {
+    try {
+      const [s, p] = await Promise.all([DalabAdminApi.getShopFlashSales(), DalabAdminApi.getShopProducts()]);
+      setSales(s);
+      setProducts(p);
+    } catch (err) {
+      setError(err.message || "Could not load flash sales.");
+    }
+  };
+  useEffect(() => { fetchAll(); }, []);
+
+  const addItemRow = () => setItems((prev) => [...prev, { productId: "", salePrice: "" }]);
+  const updateItemRow = (i, patch) => setItems((prev) => prev.map((it, idx) => (idx === i ? { ...it, ...patch } : it)));
+  const removeItemRow = (i) => setItems((prev) => prev.filter((_, idx) => idx !== i));
+
+  const create = async () => {
+    if (!form.name.trim() || !form.startsAt || !form.endsAt) return;
+    const validItems = items.filter((it) => it.productId && it.salePrice !== "");
+    if (validItems.length === 0) return setError("Add at least one product with a sale price.");
+    setCreating(true);
+    setError("");
+    try {
+      await DalabAdminApi.createShopFlashSale({
+        name: form.name.trim(),
+        startsAt: new Date(form.startsAt).toISOString(),
+        endsAt: new Date(form.endsAt).toISOString(),
+        items: validItems.map((it) => ({ productId: it.productId, salePrice: Number(it.salePrice) })),
+      });
+      setForm({ name: "", startsAt: "", endsAt: "" });
+      setItems([{ productId: "", salePrice: "" }]);
+      fetchAll();
+    } catch (err) {
+      setError(err.message || "Could not create flash sale.");
+    }
+    setCreating(false);
+  };
+
+  const toggleActive = async (sale) => {
+    try {
+      await DalabAdminApi.updateShopFlashSale(sale.id, { active: !sale.active });
+      fetchAll();
+    } catch (err) {
+      alert(err.message || "Could not update flash sale.");
+    }
+  };
+
+  const remove = async (sale) => {
+    if (!window.confirm(`Delete flash sale "${sale.name}"?`)) return;
+    try {
+      await DalabAdminApi.deleteShopFlashSale(sale.id);
+      fetchAll();
+    } catch (err) {
+      alert(err.message || "Could not delete flash sale.");
+    }
+  };
+
+  const now = new Date();
+
+  return (
+    <div>
+      <Card style={{ padding: 16, marginBottom: 16 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: INK, marginBottom: 10 }}>Schedule a flash sale</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+          <input placeholder="Name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} style={{ ...inputStyle, flex: 1, minWidth: 160, width: "auto" }} />
+          <input type="datetime-local" value={form.startsAt} onChange={(e) => setForm((f) => ({ ...f, startsAt: e.target.value }))} style={{ ...inputStyle, width: 200 }} />
+          <input type="datetime-local" value={form.endsAt} onChange={(e) => setForm((f) => ({ ...f, endsAt: e.target.value }))} style={{ ...inputStyle, width: 200 }} />
+        </div>
+        {items.map((it, i) => (
+          <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+            <select value={it.productId} onChange={(e) => updateItemRow(i, { productId: e.target.value })} style={{ ...inputStyle, flex: 1 }}>
+              <option value="">Choose a product…</option>
+              {products.map((p) => <option key={p.id} value={p.id}>{p.name} (${Number(p.price).toFixed(2)})</option>)}
+            </select>
+            <input type="number" min="0" step="0.01" placeholder="sale price" value={it.salePrice} onChange={(e) => updateItemRow(i, { salePrice: e.target.value })} style={{ ...inputStyle, width: 110 }} />
+            {items.length > 1 && (
+              <button onClick={() => removeItemRow(i)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "6px 10px", cursor: "pointer" }}>
+                <X size={13} color={MUTE} />
+              </button>
+            )}
+          </div>
+        ))}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
+          <button onClick={addItemRow} style={{ background: "none", border: "none", color: INDIGO, fontSize: 12.5, fontWeight: 700, cursor: "pointer", padding: 0 }}>+ Add another product</button>
+          <Button onClick={create} disabled={creating} spin={creating} icon={Plus}>Create flash sale</Button>
+        </div>
+      </Card>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {sales.map((sale) => {
+          const isLive = sale.active && new Date(sale.startsAt) <= now && now <= new Date(sale.endsAt);
+          return (
+            <Card key={sale.id} style={{ padding: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: 13.5, color: INK }}>{sale.name}</div>
+                  <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>{formatDateTime(sale.startsAt)} → {formatDateTime(sale.endsAt)}</div>
+                </div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <Badge tone={isLive ? "green" : sale.active ? "amber" : "gray"}>{isLive ? "Live now" : sale.active ? "Scheduled" : "Disabled"}</Badge>
+                  <button onClick={() => toggleActive(sale)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                    {sale.active ? <EyeOff size={13} color={SLATE} /> : <Eye size={13} color={GREEN} />}
+                  </button>
+                  <button onClick={() => remove(sale)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                    <Trash2 size={13} color="#C81E2C" />
+                  </button>
+                </div>
+              </div>
+              <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+                {(sale.items || []).map((it, idx) => (
+                  <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: SLATE }}>
+                    <span>{it.productName}</span>
+                    <span style={{ fontWeight: 700, color: INK }}>${Number(it.salePrice).toFixed(2)}</span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          );
+        })}
+        {sales.length === 0 && <div style={{ padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No flash sales yet.</div>}
+      </div>
+    </div>
+  );
+}
+
+function ShopBundlesPanel() {
+  const [bundles, setBundles] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [error, setError] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [form, setForm] = useState({ name: "", description: "", bundlePrice: "" });
+  const [items, setItems] = useState([{ productId: "", quantity: "1" }]);
+
+  const fetchAll = async () => {
+    try {
+      const [b, p] = await Promise.all([DalabAdminApi.getShopBundles(), DalabAdminApi.getShopProducts()]);
+      setBundles(b);
+      setProducts(p);
+    } catch (err) {
+      setError(err.message || "Could not load bundles.");
+    }
+  };
+  useEffect(() => { fetchAll(); }, []);
+
+  const addItemRow = () => setItems((prev) => [...prev, { productId: "", quantity: "1" }]);
+  const updateItemRow = (i, patch) => setItems((prev) => prev.map((it, idx) => (idx === i ? { ...it, ...patch } : it)));
+  const removeItemRow = (i) => setItems((prev) => prev.filter((_, idx) => idx !== i));
+
+  const create = async () => {
+    if (!form.name.trim() || form.bundlePrice === "") return;
+    const validItems = items.filter((it) => it.productId);
+    if (validItems.length === 0) return setError("Add at least one product to the bundle.");
+    setCreating(true);
+    setError("");
+    try {
+      await DalabAdminApi.createShopBundle({
+        name: form.name.trim(),
+        description: form.description.trim(),
+        bundlePrice: Number(form.bundlePrice),
+        items: validItems.map((it) => ({ productId: it.productId, quantity: Number(it.quantity) || 1 })),
+      });
+      setForm({ name: "", description: "", bundlePrice: "" });
+      setItems([{ productId: "", quantity: "1" }]);
+      fetchAll();
+    } catch (err) {
+      setError(err.message || "Could not create bundle.");
+    }
+    setCreating(false);
+  };
+
+  const toggleActive = async (bundle) => {
+    try {
+      await DalabAdminApi.updateShopBundle(bundle.id, { active: !bundle.active });
+      fetchAll();
+    } catch (err) {
+      alert(err.message || "Could not update bundle.");
+    }
+  };
+
+  const remove = async (bundle) => {
+    if (!window.confirm(`Delete bundle "${bundle.name}"?`)) return;
+    try {
+      await DalabAdminApi.deleteShopBundle(bundle.id);
+      fetchAll();
+    } catch (err) {
+      alert(err.message || "Could not delete bundle.");
+    }
+  };
+
+  return (
+    <div>
+      <Card style={{ padding: 16, marginBottom: 16 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: INK, marginBottom: 10 }}>Create a bundle deal</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+          <input placeholder="Name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} style={{ ...inputStyle, flex: 1, minWidth: 160, width: "auto" }} />
+          <input type="number" min="0" step="0.01" placeholder="Bundle price ($)" value={form.bundlePrice} onChange={(e) => setForm((f) => ({ ...f, bundlePrice: e.target.value }))} style={{ ...inputStyle, width: 160 }} />
+        </div>
+        <input placeholder="Description (optional)" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} style={{ ...inputStyle, marginBottom: 10 }} />
+        {items.map((it, i) => (
+          <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+            <select value={it.productId} onChange={(e) => updateItemRow(i, { productId: e.target.value })} style={{ ...inputStyle, flex: 1 }}>
+              <option value="">Choose a product…</option>
+              {products.map((p) => <option key={p.id} value={p.id}>{p.name} (${Number(p.price).toFixed(2)})</option>)}
+            </select>
+            <input type="number" min="1" step="1" placeholder="qty" value={it.quantity} onChange={(e) => updateItemRow(i, { quantity: e.target.value })} style={{ ...inputStyle, width: 80 }} />
+            {items.length > 1 && (
+              <button onClick={() => removeItemRow(i)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "6px 10px", cursor: "pointer" }}>
+                <X size={13} color={MUTE} />
+              </button>
+            )}
+          </div>
+        ))}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
+          <button onClick={addItemRow} style={{ background: "none", border: "none", color: INDIGO, fontSize: 12.5, fontWeight: 700, cursor: "pointer", padding: 0 }}>+ Add another product</button>
+          <Button onClick={create} disabled={creating} spin={creating} icon={Plus}>Create bundle</Button>
+        </div>
+      </Card>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 14 }}>
+        {bundles.map((bundle) => {
+          const regularTotal = (bundle.items || []).reduce((sum, it) => sum + Number(it.price) * it.quantity, 0);
+          return (
+            <Card key={bundle.id} style={{ padding: 14 }}>
+              <div style={{ fontWeight: 800, fontSize: 13.5, color: INK }}>{bundle.name}</div>
+              {bundle.description && <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>{bundle.description}</div>}
+              <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 3 }}>
+                {(bundle.items || []).map((it, idx) => (
+                  <div key={idx} style={{ fontSize: 12, color: SLATE }}>{it.name} × {it.quantity}</div>
+                ))}
+              </div>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 10 }}>
+                <span style={{ fontWeight: 800, fontSize: 16, color: INDIGO }}>${Number(bundle.bundlePrice).toFixed(2)}</span>
+                {regularTotal > Number(bundle.bundlePrice) && (
+                  <span style={{ fontSize: 12, color: MUTE, textDecoration: "line-through" }}>${regularTotal.toFixed(2)}</span>
+                )}
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
+                <Badge tone={bundle.active ? "green" : "neutral"}>{bundle.active ? "Active" : "Disabled"}</Badge>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button onClick={() => toggleActive(bundle)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                    {bundle.active ? <EyeOff size={13} color={SLATE} /> : <Eye size={13} color={GREEN} />}
+                  </button>
+                  <button onClick={() => remove(bundle)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                    <Trash2 size={13} color="#C81E2C" />
+                  </button>
+                </div>
+              </div>
+            </Card>
+          );
+        })}
+        {bundles.length === 0 && <div style={{ gridColumn: "1 / -1", padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No bundle deals yet.</div>}
+      </div>
+    </div>
+  );
+}
+
+function ShopDeliveryZonesPanel() {
+  const [zones, setZones] = useState([]);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({ name: "", fee: "" });
+  const [edits, setEdits] = useState({});
+
+  const fetchZones = async () => {
+    try { setZones(await DalabAdminApi.getShopDeliveryZones()); }
+    catch (err) { setError(err.message || "Could not load delivery zones."); }
+  };
+  useEffect(() => { fetchZones(); }, []);
+
+  const addZone = async () => {
+    if (!form.name.trim() || form.fee === "") return;
+    setSaving(true);
+    setError("");
+    try {
+      await DalabAdminApi.createShopDeliveryZone({ name: form.name.trim(), fee: Number(form.fee) });
+      setForm({ name: "", fee: "" });
+      fetchZones();
+    } catch (err) {
+      setError(err.message || "Could not create delivery zone.");
+    }
+    setSaving(false);
+  };
+
+  const saveFee = async (zone) => {
+    const draft = edits[zone.id];
+    if (draft === undefined) return;
+    try {
+      await DalabAdminApi.updateShopDeliveryZone(zone.id, { fee: Number(draft) });
+      setEdits((m) => ({ ...m, [zone.id]: undefined }));
+      fetchZones();
+    } catch (err) {
+      alert(err.message || "Could not save fee.");
+    }
+  };
+
+  const toggleActive = async (zone) => {
+    setZones((prev) => prev.map((z) => (z.id === zone.id ? { ...z, active: !z.active } : z)));
+    try {
+      await DalabAdminApi.updateShopDeliveryZone(zone.id, { active: !zone.active });
+    } catch (err) {
+      setError(err.message);
+      fetchZones();
+    }
+  };
+
+  const remove = async (zone) => {
+    if (!window.confirm(`Delete zone "${zone.name}"?`)) return;
+    try {
+      await DalabAdminApi.deleteShopDeliveryZone(zone.id);
+      fetchZones();
+    } catch (err) {
+      alert(err.message || "Could not delete zone.");
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 16 }}>
+        Per-area delivery fees, on top of the shop's flat delivery fee. A customer who doesn't pick a zone at checkout is still charged the flat fee.
+      </div>
+      <Card style={{ padding: 16, marginBottom: 16 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: INK, marginBottom: 10 }}>Add delivery zone</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <input placeholder="Zone name (e.g. Hodan)" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} style={{ ...inputStyle, flex: 1, minWidth: 160, width: "auto" }} />
+          <input type="number" min="0" step="0.01" placeholder="Fee ($)" value={form.fee} onChange={(e) => setForm((f) => ({ ...f, fee: e.target.value }))} style={{ ...inputStyle, width: 120 }} />
+          <Button onClick={addZone} disabled={saving || !form.name.trim() || form.fee === ""} icon={Plus} spin={saving}>Add</Button>
+        </div>
+      </Card>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {zones.map((zone) => (
+          <Card key={zone.id} style={{ padding: 14, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ fontWeight: 800, fontSize: 13.5, color: INK }}>{zone.name}</div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                type="number" min="0" step="0.01"
+                value={edits[zone.id] !== undefined ? edits[zone.id] : zone.fee}
+                onChange={(e) => setEdits((m) => ({ ...m, [zone.id]: e.target.value }))}
+                style={{ ...inputStyle, width: 90 }}
+              />
+              {edits[zone.id] !== undefined && (
+                <button onClick={() => saveFee(zone)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                  <Check size={13} color={GREEN} />
+                </button>
+              )}
+              <Badge tone={zone.active ? "green" : "neutral"}>{zone.active ? "Active" : "Disabled"}</Badge>
+              <button onClick={() => toggleActive(zone)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                {zone.active ? <EyeOff size={13} color={SLATE} /> : <Eye size={13} color={GREEN} />}
+              </button>
+              <button onClick={() => remove(zone)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                <Trash2 size={13} color="#C81E2C" />
+              </button>
+            </div>
+          </Card>
+        ))}
+        {zones.length === 0 && <div style={{ padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No delivery zones yet — orders use the flat delivery fee.</div>}
+      </div>
+    </div>
+  );
+}
+
+function ShopLowStockPanel() {
+  const [products, setProducts] = useState(null);
+  const [error, setError] = useState("");
+  const [edits, setEdits] = useState({});
+  const [saving, setSaving] = useState(null);
+
+  const fetchLowStock = async () => {
+    try { setProducts(await DalabAdminApi.getShopLowStockProducts()); }
+    catch (err) { setError(err.message || "Could not load low-stock products."); }
+  };
+  useEffect(() => { fetchLowStock(); }, []);
+
+  const restock = async (product) => {
+    const draft = edits[product.id];
+    if (draft === undefined || draft === "") return;
+    setSaving(product.id);
+    try {
+      await DalabAdminApi.updateShopProduct(product.id, { stock: Number(draft) });
+      setEdits((m) => ({ ...m, [product.id]: undefined }));
+      fetchLowStock();
+    } catch (err) {
+      alert(err.message || "Could not update stock.");
+    }
+    setSaving(null);
+  };
+
+  return (
+    <div>
+      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 16 }}>
+        Active products at or below their own low-stock threshold (set per-product when editing a product — defaults to 5).
+      </div>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {products === null ? (
+        <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {products.map((p) => (
+            <Card key={p.id} style={{ padding: 14, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontWeight: 800, fontSize: 13.5, color: INK }}>{p.name}</div>
+                <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>Threshold: {p.lowStockThreshold}</div>
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <Badge tone={p.stock === 0 ? "red" : "amber"}>{p.stock} in stock</Badge>
+                <input
+                  type="number" min="0" step="1" placeholder="new stock"
+                  value={edits[p.id] !== undefined ? edits[p.id] : ""}
+                  onChange={(e) => setEdits((m) => ({ ...m, [p.id]: e.target.value }))}
+                  style={{ ...inputStyle, width: 90 }}
+                />
+                <Button onClick={() => restock(p)} disabled={saving === p.id || edits[p.id] === undefined || edits[p.id] === ""} spin={saving === p.id}>Restock</Button>
+              </div>
+            </Card>
+          ))}
+          {products.length === 0 && <div style={{ padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>Nothing is low on stock right now.</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ShopAnalyticsPanel() {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    DalabAdminApi.getShopAnalytics().then(setData).catch((err) => setError(err.message || "Could not load analytics."));
+  }, []);
+
+  if (error) return <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div>;
+  if (!data) return <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>;
+
+  const revenueSeries = (data.dailyRevenue || []).map((d) => ({
+    day: new Date(d.day).toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+    revenue: Number(d.revenue),
+  }));
+
+  const cards = [
+    { label: "Paid orders", value: data.orderCount, icon: ShoppingCart },
+    { label: "Revenue", value: `$${Number(data.revenue).toFixed(2)}`, icon: DollarSign },
+    { label: "Avg order value", value: `$${Number(data.avgOrderValue).toFixed(2)}`, icon: TrendingUp },
+  ];
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 14 }}>
+        {cards.map((c) => (
+          <Card key={c.label} style={{ padding: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ fontSize: 11.5, fontWeight: 700, color: MUTE }}>{c.label.toUpperCase()}</div>
+              <c.icon size={15} color={MUTE} />
+            </div>
+            <div style={{ fontSize: 21, fontWeight: 800, color: INK, marginTop: 8 }}>{c.value}</div>
+          </Card>
+        ))}
+      </div>
+
+      <Card style={{ padding: 18, marginBottom: 14 }}>
+        <div style={{ fontWeight: 800, color: INK, fontSize: 14, marginBottom: 8 }}>Revenue, last 30 days (paid orders)</div>
+        <ResponsiveContainer width="100%" height={220}>
+          <LineChart data={revenueSeries}>
+            <CartesianGrid stroke="#EEF0FB" vertical={false} />
+            <XAxis dataKey="day" tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
+            <YAxis tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
+            <Tooltip />
+            <Line type="monotone" dataKey="revenue" stroke={INDIGO} strokeWidth={3} dot={{ r: 3, fill: INDIGO }} />
+          </LineChart>
+        </ResponsiveContainer>
+      </Card>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+        <Card style={{ padding: 18 }}>
+          <div style={{ fontWeight: 800, color: INK, fontSize: 14, marginBottom: 10 }}>Orders by status</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {(data.ordersByStatus || []).map((row) => (
+              <div key={row.status} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: INK }}>
+                <span>{SHOP_ORDER_STATUS_META[row.status]?.label || row.status}</span>
+                <span style={{ fontWeight: 700 }}>{row.count}</span>
+              </div>
+            ))}
+            {(data.ordersByStatus || []).length === 0 && <div style={{ fontSize: 12.5, color: MUTE }}>No orders yet.</div>}
+          </div>
+        </Card>
+        <Card style={{ padding: 18 }}>
+          <div style={{ fontWeight: 800, color: INK, fontSize: 14, marginBottom: 10 }}>Top products by units sold</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {(data.topProducts || []).map((p) => (
+              <div key={p.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: INK }}>
+                <span>{p.name}</span>
+                <span style={{ fontWeight: 700 }}>{p.soldCount}</span>
+              </div>
+            ))}
+            {(data.topProducts || []).length === 0 && <div style={{ fontSize: 12.5, color: MUTE }}>No sales yet.</div>}
+          </div>
+        </Card>
+      </div>
+    </div>
   );
 }
 
