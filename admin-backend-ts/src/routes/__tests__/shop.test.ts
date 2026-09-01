@@ -732,3 +732,134 @@ test("a gift order without recipient name/phone is rejected", async () => {
   });
   assert.equal(res.status, 400);
 });
+
+// ==================== Favorites / Wishlist ====================
+
+test("a customer can favorite, list, and unfavorite a product", async () => {
+  const listBefore = await (await asCustomer("/shop/favorites")).json() as any[];
+  assert.equal(listBefore.length, 0);
+
+  const addRes = await asCustomer("/shop/favorites", { method: "POST", body: JSON.stringify({ productId }) });
+  assert.equal(addRes.status, 201);
+
+  const addAgainRes = await asCustomer("/shop/favorites", { method: "POST", body: JSON.stringify({ productId }) });
+  assert.equal(addAgainRes.status, 201, "favoriting an already-favorited product is a no-op, not an error");
+
+  const listAfter = await (await asCustomer("/shop/favorites")).json() as any[];
+  assert.equal(listAfter.length, 1);
+  assert.equal(listAfter[0].id, productId);
+
+  const removeRes = await asCustomer(`/shop/favorites/${productId}`, { method: "DELETE" });
+  assert.equal(removeRes.status, 200);
+  const listFinal = await (await asCustomer("/shop/favorites")).json() as any[];
+  assert.equal(listFinal.length, 0);
+});
+
+test("POST /shop/favorites for a product that doesn't exist returns 404", async () => {
+  const res = await asCustomer("/shop/favorites", { method: "POST", body: JSON.stringify({ productId: randomUUID() }) });
+  assert.equal(res.status, 404);
+});
+
+// ==================== Reviews & Ratings ====================
+//
+// One order carries the whole flow (not-yet-delivered rejection -> mark
+// delivered -> successful review -> duplicate rejection) to stay within
+// the customer-shop-order-create rate limit (20 per 15 min) shared across
+// this whole test file's order-creation calls.
+test("reviews are purchase-gated to a delivered order, one per order item, and shown on the product", async () => {
+  // Fabricates the order directly via SQL rather than a real
+  // order-creation call -- this test is about review logic, not checkout,
+  // and this file's order-creation calls already share a tight
+  // customer-shop-order-create rate limit (20/15min) across many other
+  // tests. Starts 'pending' so the "not delivered yet" rejection below is
+  // real, not simulated.
+  const orderId = "SHPTESTREVIEW1";
+  await query(
+    `INSERT INTO shop_orders (id, customer_id, payment_method, sender_phone, delivery_name, delivery_phone, delivery_address, total_amount, status, dedup_key)
+     VALUES ($1,$2,'evc','617000111','Test Buyer','617000222','Mogadishu',25,'pending','test-review-dedup')
+     ON CONFLICT (id) DO NOTHING`,
+    [orderId, customerId]
+  );
+  const orderItemId = randomUUID();
+  await query(
+    `INSERT INTO shop_order_items (id, order_id, product_id, product_name, unit_price, quantity, subtotal) VALUES ($1,$2,$3,'Test Sneakers',25,1,25)`,
+    [orderItemId, orderId, productId]
+  );
+
+  const tooEarlyRes = await asCustomer("/shop/reviews", {
+    method: "POST",
+    body: JSON.stringify({ orderItemId, rating: 5, reviewText: "Great!" }),
+  });
+  assert.equal(tooEarlyRes.status, 403, "an order that isn't delivered yet cannot be reviewed");
+
+  const deliverRes = await asSuperAdmin(`/admin/shop/orders/${orderId}/status`, { method: "PUT", body: JSON.stringify({ status: "delivered" }) });
+  assert.equal(deliverRes.status, 200);
+
+  const reviewRes = await asCustomer("/shop/reviews", {
+    method: "POST",
+    body: JSON.stringify({ orderItemId, rating: 4, reviewText: "Good product, fast delivery." }),
+  });
+  const review = (await reviewRes.json()) as any;
+  assert.equal(reviewRes.status, 201, JSON.stringify(review));
+
+  const dupRes = await asCustomer("/shop/reviews", {
+    method: "POST",
+    body: JSON.stringify({ orderItemId, rating: 3, reviewText: "Trying to review the same purchase again" }),
+  });
+  assert.equal(dupRes.status, 409, "one review per purchased order item");
+
+  const listRes = await fetch(`${baseUrl}/shop/products/${productId}/reviews`);
+  const reviews = (await listRes.json()) as any[];
+  assert.equal(reviews.length, 1);
+  assert.equal(reviews[0].rating, 4);
+  assert.equal(reviews[0].reviewText, "Good product, fast delivery.");
+  assert.equal(reviews[0].hasPhoto, false);
+
+  const productRes = await fetch(`${baseUrl}/shop/products/${productId}`);
+  const product = (await productRes.json()) as any;
+  assert.equal(Number(product.avgRating), 4);
+  assert.equal(Number(product.reviewCount), 1);
+
+  const adminListRes = await asSuperAdmin(`/admin/shop/reviews?productId=${productId}`);
+  const adminReviews = (await adminListRes.json()) as any[];
+  assert.equal(adminReviews.length, 1);
+
+  const deleteRes = await asPlainAdmin(`/admin/shop/reviews/${review.id}`, { method: "DELETE" });
+  assert.equal(deleteRes.status, 403, "deleting a review still requires shop.manage");
+
+  const deleteAsSuper = await asSuperAdmin(`/admin/shop/reviews/${review.id}`, { method: "DELETE" });
+  assert.equal(deleteAsSuper.status, 200);
+  const listAfterDelete = (await (await fetch(`${baseUrl}/shop/products/${productId}/reviews`)).json()) as any[];
+  assert.equal(listAfterDelete.length, 0);
+});
+
+test("a rating outside 1-5, or reviewing someone else's order item, is rejected", async () => {
+  // Fabricates another customer's already-delivered order directly
+  // (rather than a real order-creation call) both to exercise
+  // ownership-checking and to stay within this file's shared
+  // customer-shop-order-create rate limit.
+  const otherCustomerId = randomUUID();
+  await query(`INSERT INTO customers (id, phone, name) VALUES ($1,'617999888','Other Customer')`, [otherCustomerId]);
+  const otherOrderId = "SHPTESTOTHER1";
+  await query(
+    `INSERT INTO shop_orders (id, customer_id, payment_method, sender_phone, delivery_name, delivery_phone, delivery_address, total_amount, status, dedup_key)
+     VALUES ($1,$2,'evc','617999888','Other','617999888','Mogadishu',25,'delivered','test-other-dedup')
+     ON CONFLICT (id) DO NOTHING`,
+    [otherOrderId, otherCustomerId]
+  );
+  const itemId = randomUUID();
+  await query(
+    `INSERT INTO shop_order_items (id, order_id, product_id, product_name, unit_price, quantity, subtotal) VALUES ($1,$2,$3,'Test Sneakers',25,1,25)`,
+    [itemId, otherOrderId, productId]
+  );
+
+  const wrongCustomerRes = await asCustomer("/shop/reviews", { method: "POST", body: JSON.stringify({ orderItemId: itemId, rating: 5 }) });
+  assert.equal(wrongCustomerRes.status, 404, "a customer cannot review an order item that isn't theirs");
+
+  const badRatingRes = await asCustomer("/shop/reviews", { method: "POST", body: JSON.stringify({ orderItemId: itemId, rating: 6 }) });
+  assert.equal(badRatingRes.status, 400);
+
+  await query(`DELETE FROM shop_order_items WHERE id=$1`, [itemId]);
+  await query(`DELETE FROM shop_orders WHERE id=$1`, [otherOrderId]);
+  await query(`DELETE FROM customers WHERE id=$1`, [otherCustomerId]);
+});

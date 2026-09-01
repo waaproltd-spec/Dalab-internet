@@ -33,8 +33,15 @@ function generateShopOrderId(): string {
 
 const CATEGORY_COLUMNS = "id, name, emoji, position, active";
 const SUBCATEGORY_COLUMNS = "id, category_id, name, position, active";
+// avg_rating/review_count are correlated subqueries rather than a JOIN +
+// GROUP BY -- this constant gets spliced into several differently-shaped
+// queries (dynamic WHERE clauses, LIMIT, etc.) below, and a subquery per
+// column composes into any of them without also having to thread a GROUP
+// BY/HAVING clause through every call site.
 const PRODUCT_COLUMNS =
-  "id, category_id, subcategory_id, name, description, price, old_price, stock, brand, featured, is_new_arrival, best_seller, sold_count, active, created_at";
+  "id, category_id, subcategory_id, name, description, price, old_price, stock, brand, featured, is_new_arrival, best_seller, sold_count, active, created_at, " +
+  "(SELECT ROUND(AVG(rating), 1) FROM shop_reviews WHERE product_id = shop_products.id) AS avg_rating, " +
+  "(SELECT COUNT(*) FROM shop_reviews WHERE product_id = shop_products.id) AS review_count";
 
 // sort key -> ORDER BY clause. Looked up through this map (never
 // interpolated directly from the query string) so an unrecognized/absent
@@ -402,6 +409,109 @@ shopRouter.get("/shop/orders/:id", requireAuth("customer"), async (req, res) => 
   const order = await queryOne(`SELECT ${SHOP_ORDER_COLUMNS} FROM shop_orders WHERE id=$1 AND customer_id=$2`, [req.params.id, req.auth!.sub]);
   if (!order) return sendJson(res, 404, { error: "Order not found" });
   sendJson(res, 200, { ...order, items: await loadOrderItems(order.id) });
+});
+
+// ==================== Favorites / Wishlist ====================
+
+// PRODUCT_COLUMNS' own (unqualified) created_at collides with
+// shop_favorites' once both tables are in scope, so the "when favorited"
+// ordering is a scalar subquery instead of a JOIN column -- same
+// no-ambiguity reasoning as the avg_rating/review_count subqueries above.
+shopRouter.get("/shop/favorites", requireAuth("customer"), async (req, res) => {
+  const rows = await query(
+    `SELECT ${PRODUCT_COLUMNS} FROM shop_products
+     WHERE id IN (SELECT product_id FROM shop_favorites WHERE customer_id=$1)
+     ORDER BY (SELECT created_at FROM shop_favorites WHERE customer_id=$1 AND product_id=shop_products.id) DESC`,
+    [req.auth!.sub]
+  );
+  sendJson(res, 200, rows);
+});
+
+shopRouter.post("/shop/favorites", requireAuth("customer"), async (req, res) => {
+  const productId = String(req.body?.productId ?? "");
+  if (!productId) return sendJson(res, 400, { error: "productId is required" });
+  if (!(await queryOne(`SELECT id FROM shop_products WHERE id=$1`, [productId]))) {
+    return sendJson(res, 404, { error: "Product not found" });
+  }
+  await query(
+    `INSERT INTO shop_favorites (customer_id, product_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+    [req.auth!.sub, productId]
+  );
+  sendJson(res, 201, { favorited: true });
+});
+
+shopRouter.delete("/shop/favorites/:productId", requireAuth("customer"), async (req, res) => {
+  await query(`DELETE FROM shop_favorites WHERE customer_id=$1 AND product_id=$2`, [req.auth!.sub, req.params.productId]);
+  sendJson(res, 200, { favorited: false });
+});
+
+// ==================== Reviews & Ratings ====================
+
+// Public -- Product Detail shows every review for a product, no auth
+// needed to read them (same as the catalog itself).
+shopRouter.get("/shop/products/:id/reviews", async (req, res) => {
+  const rows = await query(
+    `SELECT r.id, r.rating, r.review_text, (r.photo_data IS NOT NULL) AS has_photo, r.created_at, c.name AS customer_name
+     FROM shop_reviews r JOIN customers c ON c.id = r.customer_id
+     WHERE r.product_id=$1 ORDER BY r.created_at DESC LIMIT 200`,
+    [req.params.id]
+  );
+  sendJson(res, 200, rows);
+});
+
+shopRouter.get("/shop/reviews/:id/photo", async (req, res) => {
+  const row = await queryOne<{ photo_data: Buffer | null; photo_mime_type: string | null }>(
+    `SELECT photo_data, photo_mime_type FROM shop_reviews WHERE id=$1`,
+    [req.params.id]
+  );
+  if (!row || !row.photo_data) return sendJson(res, 404, { error: "Photo not found" });
+  res.setHeader("Content-Type", row.photo_mime_type ?? "application/octet-stream");
+  res.setHeader("Cache-Control", "public, max-age=3600");
+  res.send(row.photo_data);
+});
+
+// Purchase-gated per spec: orderItemId must belong to one of this
+// customer's own DELIVERED orders. Re-checked server-side regardless of
+// what the Customer App only shows a "Write a review" button for --
+// order_item_id's UNIQUE constraint below is the actual, race-safe
+// enforcement of "one review per purchase", not just this SELECT.
+shopRouter.post("/shop/reviews", requireAuth("customer"), async (req, res) => {
+  const orderItemId = String(req.body?.orderItemId ?? "");
+  const rating = Number(req.body?.rating);
+  const reviewText = typeof req.body?.reviewText === "string" ? req.body.reviewText.trim() : "";
+  if (!orderItemId) return sendJson(res, 400, { error: "orderItemId is required" });
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+    return sendJson(res, 400, { error: "rating must be a whole number from 1 to 5" });
+  }
+  const item = await queryOne<{ product_id: string | null; customer_id: string; status: string }>(
+    `SELECT oi.product_id, o.customer_id, o.status
+     FROM shop_order_items oi JOIN shop_orders o ON o.id = oi.order_id
+     WHERE oi.id=$1`,
+    [orderItemId]
+  );
+  if (!item || item.customer_id !== req.auth!.sub) return sendJson(res, 404, { error: "Order item not found" });
+  if (item.status !== "delivered") return sendJson(res, 403, { error: "You can only review products from a delivered order" });
+  if (!item.product_id) return sendJson(res, 409, { error: "This product no longer exists" });
+
+  let photo: { data: Buffer; mimeType: string } | null = null;
+  if (req.body?.photoBase64) {
+    const parsed = parseDataUri(req.body.photoBase64);
+    if (!parsed) return sendJson(res, 400, { error: "photoBase64 must be a data:<mime>;base64,<data> string" });
+    photo = parsed;
+  }
+
+  try {
+    const id = randomUUID();
+    await query(
+      `INSERT INTO shop_reviews (id, order_item_id, product_id, customer_id, rating, review_text, photo_data, photo_mime_type)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [id, orderItemId, item.product_id, req.auth!.sub, rating, reviewText, photo?.data ?? null, photo?.mimeType ?? null]
+    );
+    sendJson(res, 201, { id });
+  } catch (err: any) {
+    if (err?.code === "23505") return sendJson(res, 409, { error: "You've already reviewed this purchase" });
+    throw err;
+  }
 });
 
 // ==================== Admin: Categories ====================
@@ -823,4 +933,38 @@ shopRouter.put("/admin/shop/orders/:id/status", requirePermission("shop.manage")
   const notification = STATUS_NOTIFICATIONS[status];
   if (notification) await notifyCustomer(existing.customer_id, "shop_order_update", notification.title, notification.body(req.params.id));
   sendJson(res, 200, await queryOne(`${SHOP_ORDER_LIST_SELECT} WHERE so.id=$1`, [req.params.id]));
+});
+
+// ==================== Admin: Reviews ====================
+
+shopRouter.get("/admin/shop/reviews", requirePermission("shop.manage"), async (req, res) => {
+  const { productId } = req.query as Record<string, string | undefined>;
+  const args: unknown[] = [];
+  let sql = `
+    SELECT r.id, r.product_id, p.name AS product_name, r.customer_id, c.name AS customer_name,
+           r.rating, r.review_text, (r.photo_data IS NOT NULL) AS has_photo, r.created_at
+    FROM shop_reviews r
+    JOIN shop_products p ON p.id = r.product_id
+    JOIN customers c ON c.id = r.customer_id
+    WHERE 1=1`;
+  if (productId) { args.push(productId); sql += ` AND r.product_id=$${args.length}`; }
+  sql += ` ORDER BY r.created_at DESC LIMIT 200`;
+  sendJson(res, 200, await query(sql, args));
+});
+
+// Moderation only -- deleting an inappropriate review. No edit route: a
+// review is the customer's own record of their purchase experience, not
+// something Admin should be able to silently rewrite.
+shopRouter.delete("/admin/shop/reviews/:id", requirePermission("shop.manage"), async (req, res) => {
+  const result = await query(`DELETE FROM shop_reviews WHERE id=$1 RETURNING id`, [req.params.id]);
+  if (result.length === 0) return sendJson(res, 404, { error: "Review not found" });
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "shop_review_deleted",
+    entityType: "shop_review",
+    entityId: req.params.id,
+    oldValue: null,
+    newValue: { deleted: true },
+  });
+  sendJson(res, 200, { deleted: true });
 });
