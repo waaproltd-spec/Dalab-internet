@@ -92,15 +92,16 @@ beforeEach(async () => {
   productId = product!.id;
 });
 
-test("the 5 fixed categories were seeded by the migration, with no clothing category", async () => {
+test("the 5 fixed categories were seeded by the migration, with no clothing or shoes category", async () => {
   const res = await fetch(`${baseUrl}/shop/categories`);
   assert.equal(res.status, 200);
   const categories = (await res.json()) as any[];
   const names = categories.map((c) => c.name);
-  for (const expected of ["Shoes", "Eyewear", "Perfumes", "Watches", "Gifts"]) {
+  for (const expected of ["Electronics", "Eyewear", "Perfumes", "Watches", "Gifts"]) {
     assert.ok(names.includes(expected), `expected ${expected} to be seeded`);
   }
   assert.ok(!names.some((n) => /cloth/i.test(n)), "no clothing category should exist");
+  assert.ok(!names.includes("Shoes"), "Shoes was renamed to Electronics, not kept alongside it");
 });
 
 test("GET /shop/products lists an active product with no auth required", async () => {
@@ -321,4 +322,263 @@ test("a Super Admin can manage categories and products end-to-end", async () => 
 test("a category with products under it cannot be hard-deleted", async () => {
   const res = await asSuperAdmin(`/admin/shop/categories/${categoryId}`, { method: "DELETE" });
   assert.equal(res.status, 409);
+});
+
+// ==================== Phase 1: subcategories, catalog fields, dedup, statuses ====================
+
+test("subcategories are admin-managed, generic (not hardcoded to any category), and publicly listable once active", async () => {
+  const createRes = await asSuperAdmin("/admin/shop/subcategories", {
+    method: "POST",
+    body: JSON.stringify({ categoryId, name: "Test Phone Covers" }),
+  });
+  assert.equal(createRes.status, 201);
+  const sub = (await createRes.json()) as any;
+  assert.equal(sub.categoryId, categoryId);
+  assert.equal(sub.active, true);
+
+  const publicRes = await fetch(`${baseUrl}/shop/subcategories?categoryId=${categoryId}`);
+  const publicList = (await publicRes.json()) as any[];
+  assert.ok(publicList.some((s) => s.id === sub.id), "an active subcategory must be publicly visible");
+
+  const deactivateRes = await asSuperAdmin(`/admin/shop/subcategories/${sub.id}`, { method: "PUT", body: JSON.stringify({ active: false }) });
+  assert.equal(deactivateRes.status, 200);
+  const publicAfter = (await (await fetch(`${baseUrl}/shop/subcategories?categoryId=${categoryId}`)).json()) as any[];
+  assert.ok(!publicAfter.some((s) => s.id === sub.id), "a deactivated subcategory must disappear from the public list");
+
+  const deleteRes = await asSuperAdmin(`/admin/shop/subcategories/${sub.id}`, { method: "DELETE" });
+  assert.equal(deleteRes.status, 200);
+});
+
+test("a subcategory must belong to the product's own category, both on create and update", async () => {
+  const otherCategory = await queryOne<{ id: string }>(
+    `INSERT INTO shop_categories (id, name, emoji, position) VALUES ($1,'Test Other Category','🎁',98) RETURNING id`,
+    [randomUUID()]
+  );
+  const sub = await queryOne<{ id: string }>(
+    `INSERT INTO shop_subcategories (id, category_id, name) VALUES ($1,$2,'Test Sub Of Other') RETURNING id`,
+    [randomUUID(), otherCategory!.id]
+  );
+
+  const createRes = await asSuperAdmin("/admin/shop/products", {
+    method: "POST",
+    body: JSON.stringify({ categoryId, subcategoryId: sub!.id, name: "Test Mismatched Sub Product", price: 5 }),
+  });
+  assert.equal(createRes.status, 400);
+
+  const updateRes = await asSuperAdmin(`/admin/shop/products/${productId}`, {
+    method: "PUT",
+    body: JSON.stringify({ subcategoryId: sub!.id }),
+  });
+  assert.equal(updateRes.status, 400);
+
+  await query(`DELETE FROM shop_subcategories WHERE id=$1`, [sub!.id]);
+  await query(`DELETE FROM shop_categories WHERE id=$1`, [otherCategory!.id]);
+});
+
+test("brand, discount (oldPrice), and the featured/new-arrival/best-seller flags round-trip through create and update", async () => {
+  const createRes = await asSuperAdmin("/admin/shop/products", {
+    method: "POST",
+    body: JSON.stringify({
+      categoryId,
+      name: "Test Flagship Phone",
+      price: 400,
+      oldPrice: 500,
+      brand: "Test Brand",
+      featured: true,
+      isNewArrival: true,
+      bestSeller: false,
+    }),
+  });
+  assert.equal(createRes.status, 201);
+  const created = (await createRes.json()) as any;
+  assert.equal(created.brand, "Test Brand");
+  assert.equal(Number(created.oldPrice), 500);
+  assert.equal(created.featured, true);
+  assert.equal(created.isNewArrival, true);
+  assert.equal(created.bestSeller, false);
+
+  const updateRes = await asSuperAdmin(`/admin/shop/products/${created.id}`, {
+    method: "PUT",
+    body: JSON.stringify({ bestSeller: true, isNewArrival: false }),
+  });
+  const updated = (await updateRes.json()) as any;
+  assert.equal(updated.bestSeller, true);
+  assert.equal(updated.isNewArrival, false);
+  assert.equal(updated.featured, true, "a field not sent in this update must be left as-is");
+});
+
+test("public product filters: search, brand, price range, and the featured/new-arrival/best-seller/discounted flags", async () => {
+  await asSuperAdmin("/admin/shop/products", {
+    method: "POST",
+    body: JSON.stringify({ categoryId, name: "Test Special Widget", price: 30, oldPrice: 45, brand: "Acme", featured: true }),
+  });
+  await asSuperAdmin("/admin/shop/products", {
+    method: "POST",
+    body: JSON.stringify({ categoryId, name: "Test Plain Widget", price: 30, brand: "Other Co", isNewArrival: true }),
+  });
+
+  const bySearch = (await (await fetch(`${baseUrl}/shop/products?categoryId=${categoryId}&search=Special`)).json()) as any[];
+  assert.ok(bySearch.every((p) => /Special/.test(p.name)));
+  assert.ok(bySearch.some((p) => p.name === "Test Special Widget"));
+
+  const byBrand = (await (await fetch(`${baseUrl}/shop/products?categoryId=${categoryId}&brand=Acme`)).json()) as any[];
+  assert.ok(byBrand.every((p) => p.brand === "Acme"));
+
+  const byPriceRange = (await (await fetch(`${baseUrl}/shop/products?categoryId=${categoryId}&minPrice=29&maxPrice=31`)).json()) as any[];
+  assert.ok(byPriceRange.every((p) => Number(p.price) >= 29 && Number(p.price) <= 31));
+
+  const featured = (await (await fetch(`${baseUrl}/shop/products?categoryId=${categoryId}&featured=true`)).json()) as any[];
+  assert.ok(featured.every((p) => p.featured === true));
+  assert.ok(featured.some((p) => p.name === "Test Special Widget"));
+
+  const newArrivals = (await (await fetch(`${baseUrl}/shop/products?categoryId=${categoryId}&newArrivals=true`)).json()) as any[];
+  assert.ok(newArrivals.some((p) => p.name === "Test Plain Widget"));
+
+  const discounted = (await (await fetch(`${baseUrl}/shop/products?categoryId=${categoryId}&discounted=true`)).json()) as any[];
+  assert.ok(discounted.some((p) => p.name === "Test Special Widget"));
+  assert.ok(!discounted.some((p) => p.name === "Test Plain Widget"), "a product with no discount must not appear in discounted=true");
+});
+
+test("sort=price_asc, price_desc, and popularity order products correctly", async () => {
+  const cheap = await queryOne<{ id: string }>(
+    `INSERT INTO shop_products (id, category_id, name, price, stock) VALUES ($1,$2,'Test Cheap Item',5,50) RETURNING id`,
+    [randomUUID(), categoryId]
+  );
+  const pricey = await queryOne<{ id: string }>(
+    `INSERT INTO shop_products (id, category_id, name, price, stock) VALUES ($1,$2,'Test Pricey Item',500,50) RETURNING id`,
+    [randomUUID(), categoryId]
+  );
+
+  const asc = (await (await fetch(`${baseUrl}/shop/products?categoryId=${categoryId}&sort=price_asc`)).json()) as any[];
+  const ascPrices = asc.map((p) => Number(p.price));
+  assert.deepEqual(ascPrices, [...ascPrices].sort((a, b) => a - b));
+
+  const desc = (await (await fetch(`${baseUrl}/shop/products?categoryId=${categoryId}&sort=price_desc`)).json()) as any[];
+  assert.equal(desc[0].id, pricey!.id);
+
+  // Popularity is driven by sold_count, which only moves via a real order.
+  await asCustomer("/shop/orders", {
+    method: "POST",
+    body: JSON.stringify({
+      items: [{ productId: cheap!.id, quantity: 10 }],
+      paymentMethod: "evc",
+      senderPhone: "617000111",
+      deliveryName: "Test Buyer",
+      deliveryPhone: "617000222",
+      deliveryAddress: "Mogadishu, Somalia",
+    }),
+  });
+  const byPopularity = (await (await fetch(`${baseUrl}/shop/products?categoryId=${categoryId}&sort=popularity`)).json()) as any[];
+  assert.equal(byPopularity[0].id, cheap!.id, "the product with the higher sold_count must sort first");
+});
+
+test("submitting the exact same cart+payment method twice in a row returns the original order instead of a duplicate", async () => {
+  const body = JSON.stringify({
+    items: [{ productId, quantity: 1 }],
+    paymentMethod: "evc",
+    senderPhone: "617000111",
+    deliveryName: "Test Buyer",
+    deliveryPhone: "617000222",
+    deliveryAddress: "Mogadishu, Somalia",
+  });
+  const first = await asCustomer("/shop/orders", { method: "POST", body });
+  const firstOrder = (await first.json()) as any;
+  assert.equal(first.status, 201, JSON.stringify(firstOrder));
+
+  const second = await asCustomer("/shop/orders", { method: "POST", body });
+  const secondOrder = (await second.json()) as any;
+  assert.equal(second.status, 200, "a duplicate cart+payment method must not 201 a new order");
+  assert.equal(secondOrder.id, firstOrder.id, "must return the exact same order, not a sibling");
+
+  const product = await queryOne<{ stock: number }>(`SELECT stock FROM shop_products WHERE id=$1`, [productId]);
+  assert.equal(product!.stock, 2, "stock must be decremented exactly once (3 - 1), not twice");
+});
+
+test("a different cart from the same customer is never blocked by the dedup guard", async () => {
+  const secondProduct = await queryOne<{ id: string }>(
+    `INSERT INTO shop_products (id, category_id, name, price, stock) VALUES ($1,$2,'Test Second Item',10,10) RETURNING id`,
+    [randomUUID(), categoryId]
+  );
+  const mk = (pid: string) =>
+    asCustomer("/shop/orders", {
+      method: "POST",
+      body: JSON.stringify({
+        items: [{ productId: pid, quantity: 1 }],
+        paymentMethod: "evc",
+        senderPhone: "617000111",
+        deliveryName: "Test Buyer",
+        deliveryPhone: "617000222",
+        deliveryAddress: "Mogadishu, Somalia",
+      }),
+    });
+  const first = await mk(productId);
+  const second = await mk(secondProduct!.id);
+  const firstOrder = (await first.json()) as any;
+  const secondOrder = (await second.json()) as any;
+  assert.equal(first.status, 201);
+  assert.equal(second.status, 201, "a genuinely different cart must always create its own order");
+  assert.notEqual(firstOrder.id, secondOrder.id);
+});
+
+test("failed and returned statuses restore stock; refunded alone does not; and no status can change once an order is terminal", async () => {
+  const createRes = await asCustomer("/shop/orders", {
+    method: "POST",
+    body: JSON.stringify({
+      items: [{ productId, quantity: 2 }],
+      paymentMethod: "evc",
+      senderPhone: "617000111",
+      deliveryName: "Test Buyer",
+      deliveryPhone: "617000222",
+      deliveryAddress: "Mogadishu, Somalia",
+    }),
+  });
+  const order = (await createRes.json()) as any;
+
+  const failRes = await asSuperAdmin(`/admin/shop/orders/${order.id}/status`, { method: "PUT", body: JSON.stringify({ status: "failed" }) });
+  assert.equal(failRes.status, 200);
+  const afterFail = await queryOne<{ stock: number }>(`SELECT stock FROM shop_products WHERE id=$1`, [productId]);
+  assert.equal(afterFail!.stock, 3, "a failed order must give its reserved stock back");
+
+  const secondChange = await asSuperAdmin(`/admin/shop/orders/${order.id}/status`, { method: "PUT", body: JSON.stringify({ status: "processing" }) });
+  assert.equal(secondChange.status, 409, "a terminal order (failed) must reject any further status change");
+
+  const createRes2 = await asCustomer("/shop/orders", {
+    method: "POST",
+    body: JSON.stringify({
+      items: [{ productId, quantity: 1 }],
+      paymentMethod: "edahab",
+      senderPhone: "627000111",
+      deliveryName: "Test Buyer",
+      deliveryPhone: "617000222",
+      deliveryAddress: "Mogadishu, Somalia",
+    }),
+  });
+  const order2 = (await createRes2.json()) as any;
+  const returnRes = await asSuperAdmin(`/admin/shop/orders/${order2.id}/status`, {
+    method: "PUT",
+    body: JSON.stringify({ status: "returned", courierName: "Test Courier" }),
+  });
+  const returned = (await returnRes.json()) as any;
+  assert.equal(returnRes.status, 200);
+  assert.equal(returned.courierName, "Test Courier");
+  const afterReturn = await queryOne<{ stock: number }>(`SELECT stock FROM shop_products WHERE id=$1`, [productId]);
+  assert.equal(afterReturn!.stock, 3, "a returned order must give its reserved stock back too");
+
+  const createRes3 = await asCustomer("/shop/orders", {
+    method: "POST",
+    body: JSON.stringify({
+      items: [{ productId, quantity: 1 }],
+      paymentMethod: "evc",
+      senderPhone: "617000111",
+      deliveryName: "Test Buyer",
+      deliveryPhone: "617000222",
+      deliveryAddress: "Mogadishu, Somalia",
+    }),
+  });
+  const order3 = (await createRes3.json()) as any;
+  const stockBeforeRefund = (await queryOne<{ stock: number }>(`SELECT stock FROM shop_products WHERE id=$1`, [productId]))!.stock;
+  const refundRes = await asSuperAdmin(`/admin/shop/orders/${order3.id}/status`, { method: "PUT", body: JSON.stringify({ status: "refunded" }) });
+  assert.equal(refundRes.status, 200);
+  const afterRefund = await queryOne<{ stock: number }>(`SELECT stock FROM shop_products WHERE id=$1`, [productId]);
+  assert.equal(afterRefund!.stock, stockBeforeRefund, "refunded alone must not restore stock");
 });

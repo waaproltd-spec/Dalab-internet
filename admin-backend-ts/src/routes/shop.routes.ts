@@ -32,21 +32,52 @@ function generateShopOrderId(): string {
 // ==================== Public catalog (no auth — browsing before login) ====================
 
 const CATEGORY_COLUMNS = "id, name, emoji, position, active";
-const PRODUCT_COLUMNS = "id, category_id, name, description, price, stock, active, created_at";
+const SUBCATEGORY_COLUMNS = "id, category_id, name, position, active";
+const PRODUCT_COLUMNS =
+  "id, category_id, subcategory_id, name, description, price, old_price, stock, brand, featured, is_new_arrival, best_seller, sold_count, active, created_at";
+
+// sort key -> ORDER BY clause. Looked up through this map (never
+// interpolated directly from the query string) so an unrecognized/absent
+// `sort` value can only ever fall back to "newest", never reach raw SQL.
+const PRODUCT_SORTS: Record<string, string> = {
+  newest: "created_at DESC",
+  price_asc: "price ASC",
+  price_desc: "price DESC",
+  popularity: "sold_count DESC",
+};
 
 shopRouter.get("/shop/categories", async (_req, res) => {
   sendJson(res, 200, await query(`SELECT ${CATEGORY_COLUMNS} FROM shop_categories WHERE active=true ORDER BY position`));
 });
 
-shopRouter.get("/shop/products", async (req, res) => {
+// Generic subcategory support (migration 077) -- Electronics is the one
+// category the spec calls for unlimited admin-defined subcategories, but
+// nothing here is hardcoded to any one category's id.
+shopRouter.get("/shop/subcategories", async (req, res) => {
   const { categoryId } = req.query;
   const rows = categoryId
-    ? await query(
-        `SELECT ${PRODUCT_COLUMNS} FROM shop_products WHERE active=true AND category_id=$1 ORDER BY created_at DESC`,
-        [categoryId]
-      )
-    : await query(`SELECT ${PRODUCT_COLUMNS} FROM shop_products WHERE active=true ORDER BY created_at DESC`);
+    ? await query(`SELECT ${SUBCATEGORY_COLUMNS} FROM shop_subcategories WHERE active=true AND category_id=$1 ORDER BY position`, [categoryId])
+    : await query(`SELECT ${SUBCATEGORY_COLUMNS} FROM shop_subcategories WHERE active=true ORDER BY position`);
   sendJson(res, 200, rows);
+});
+
+shopRouter.get("/shop/products", async (req, res) => {
+  const { categoryId, subcategoryId, brand, minPrice, maxPrice, search, sort, featured, newArrivals, bestSellers, discounted } =
+    req.query as Record<string, string | undefined>;
+  const args: unknown[] = [];
+  let sql = `SELECT ${PRODUCT_COLUMNS} FROM shop_products WHERE active=true`;
+  if (categoryId) { args.push(categoryId); sql += ` AND category_id=$${args.length}`; }
+  if (subcategoryId) { args.push(subcategoryId); sql += ` AND subcategory_id=$${args.length}`; }
+  if (brand) { args.push(brand); sql += ` AND brand=$${args.length}`; }
+  if (minPrice !== undefined && Number.isFinite(Number(minPrice))) { args.push(Number(minPrice)); sql += ` AND price >= $${args.length}`; }
+  if (maxPrice !== undefined && Number.isFinite(Number(maxPrice))) { args.push(Number(maxPrice)); sql += ` AND price <= $${args.length}`; }
+  if (search) { args.push(`%${search}%`); sql += ` AND name ILIKE $${args.length}`; }
+  if (featured === "true") sql += ` AND featured=true`;
+  if (newArrivals === "true") sql += ` AND is_new_arrival=true`;
+  if (bestSellers === "true") sql += ` AND best_seller=true`;
+  if (discounted === "true") sql += ` AND old_price IS NOT NULL AND old_price > price`;
+  sql += ` ORDER BY ${PRODUCT_SORTS[sort ?? ""] ?? PRODUCT_SORTS.newest} LIMIT 200`;
+  sendJson(res, 200, await query(sql, args));
 });
 
 shopRouter.get("/shop/products/:id", async (req, res) => {
@@ -79,10 +110,23 @@ shopRouter.get("/shop/payment-methods", async (_req, res) => {
 
 // ==================== Customer App (self-service) ====================
 
-const SHOP_ORDER_COLUMNS = "id, customer_id, payment_method, sender_phone, delivery_name, delivery_phone, delivery_address, total_amount, payment_status, status, tracking_reference, tracking_note, paid_at, delivered_at, cancelled_at, created_at, updated_at";
+const SHOP_ORDER_COLUMNS = "id, customer_id, payment_method, sender_phone, delivery_name, delivery_phone, delivery_address, total_amount, payment_status, status, tracking_reference, tracking_note, courier_name, paid_at, delivered_at, cancelled_at, created_at, updated_at";
 
 async function loadOrderItems(orderId: string) {
   return query(`SELECT id, product_id, product_name, unit_price, quantity, subtotal FROM shop_order_items WHERE order_id=$1`, [orderId]);
+}
+
+// A deterministic signature of "what's being ordered" -- order-independent
+// (sorted) so the same cart submitted twice always produces the same key
+// regardless of item array order. Paired with the partial unique index on
+// (customer_id, dedup_key) WHERE status='pending' from migration 077: a
+// same-instant double-submit (the exact CheckoutScreen.kt-style incident
+// migration 032 already fixed for Internet Store) hits that constraint and
+// is treated as "return the order that already exists", never a second
+// stock deduction.
+function computeShopOrderDedupKey(items: { productId: string; quantity: number }[], paymentMethod: string): string {
+  const signature = items.map((i) => `${i.productId}:${i.quantity}`).sort().join(",");
+  return `${paymentMethod}|${signature}`;
 }
 
 shopRouter.post(
@@ -116,18 +160,40 @@ shopRouter.post(
     const deliveryCheck = validateMobileNumber(String(deliveryPhone));
     if (!deliveryCheck.valid) return sendJson(res, 400, { error: deliveryCheck.error });
 
+    // Normalized up front (not just inside the transaction) so a stable
+    // dedup signature can be computed before any stock is touched.
+    const normalizedItems: { productId: string; quantity: number }[] = [];
+    for (const raw of items) {
+      const productId = String((raw as any)?.productId ?? "");
+      const quantity = Number((raw as any)?.quantity);
+      if (!productId || !Number.isInteger(quantity) || quantity < 1) {
+        return sendJson(res, 400, { error: "Each cart item needs a valid productId and a quantity of at least 1" });
+      }
+      normalizedItems.push({ productId, quantity });
+    }
+    const dedupKey = computeShopOrderDedupKey(normalizedItems, method.method);
+
     try {
       const result = await withTransaction(async (client) => {
+        // Same cart + same payment method, still pending from a moment ago
+        // (a double-tap on Checkout) -- return that order rather than
+        // deducting stock a second time. Checked before any row lock/stock
+        // mutation below; the partial unique index still exists as the
+        // race-safe backstop if two requests somehow both reach here at once
+        // (the loser's whole transaction, stock deduction included, rolls
+        // back on the unique-violation and is retried by the client as a
+        // normal error, not silently double-counted).
+        const dup = await client.query(
+          `SELECT id FROM shop_orders WHERE customer_id=$1 AND dedup_key=$2 AND status='pending' LIMIT 1`,
+          [req.auth!.sub, dedupKey]
+        );
+        if (dup.rows[0]) return { orderId: dup.rows[0].id as string, duplicate: true };
+
         const orderId = generateShopOrderId();
         let total = 0;
         const orderItems: { productId: string; productName: string; unitPrice: number; quantity: number; subtotal: number }[] = [];
 
-        for (const raw of items) {
-          const productId = String(raw?.productId ?? "");
-          const quantity = Number(raw?.quantity);
-          if (!productId || !Number.isInteger(quantity) || quantity < 1) {
-            throw Object.assign(new Error("Each cart item needs a valid productId and a quantity of at least 1"), { status: 400 });
-          }
+        for (const { productId, quantity } of normalizedItems) {
           // FOR UPDATE: two customers checking out the same low-stock product
           // at once must never both succeed past the stock check below —
           // same "lock the candidate row before touching it" principle used
@@ -143,7 +209,10 @@ shopRouter.post(
           if (row.stock < quantity) {
             throw Object.assign(new Error(`Only ${row.stock} of "${row.name}" left in stock`), { status: 409 });
           }
-          await client.query(`UPDATE shop_products SET stock = stock - $1, updated_at = now() WHERE id=$2`, [quantity, productId]);
+          await client.query(
+            `UPDATE shop_products SET stock = stock - $1, sold_count = sold_count + $1, updated_at = now() WHERE id=$2`,
+            [quantity, productId]
+          );
           const unitPrice = Number(row.price);
           const subtotal = Math.round(unitPrice * quantity * 100) / 100;
           total = Math.round((total + subtotal) * 100) / 100;
@@ -151,9 +220,9 @@ shopRouter.post(
         }
 
         await client.query(
-          `INSERT INTO shop_orders (id, customer_id, payment_method, sender_phone, delivery_name, delivery_phone, delivery_address, total_amount)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-          [orderId, req.auth!.sub, method.method, senderPhone, deliveryName, deliveryPhone, deliveryAddress, total]
+          `INSERT INTO shop_orders (id, customer_id, payment_method, sender_phone, delivery_name, delivery_phone, delivery_address, total_amount, dedup_key)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+          [orderId, req.auth!.sub, method.method, senderPhone, deliveryName, deliveryPhone, deliveryAddress, total, dedupKey]
         );
         for (const item of orderItems) {
           await client.query(
@@ -162,18 +231,18 @@ shopRouter.post(
             [randomUUID(), orderId, item.productId, item.productName, item.unitPrice, item.quantity, item.subtotal]
           );
         }
-        return { orderId, total };
+        return { orderId, duplicate: false };
       });
 
+      const order = await queryOne<{ total_amount: string }>(`SELECT ${SHOP_ORDER_COLUMNS} FROM shop_orders WHERE id=$1`, [result.orderId]);
       // formatUssdAmount converts the decimal total into the dollars[*cents]
       // segments every provider's USSD menu actually expects -- "." isn't a
       // valid USSD/MMI dial character, so a raw "49.99" would silently
       // produce a malformed dial string (see ussdFormatting.ts's own header
       // comment for the real production incident this same bug caused for
       // Internet Store before it was fixed).
-      const dialUssd = method.ussd_template.replace("{amount}", formatUssdAmount(result.total));
-      const order = await queryOne(`SELECT ${SHOP_ORDER_COLUMNS} FROM shop_orders WHERE id=$1`, [result.orderId]);
-      sendJson(res, 201, { ...order, items: await loadOrderItems(result.orderId), dialUssd });
+      const dialUssd = method.ussd_template.replace("{amount}", formatUssdAmount(Number(order!.total_amount)));
+      sendJson(res, result.duplicate ? 200 : 201, { ...order, items: await loadOrderItems(result.orderId), dialUssd });
     } catch (err: any) {
       if (err?.status) return sendJson(res, err.status, { error: err.message });
       throw err;
@@ -248,14 +317,76 @@ shopRouter.delete("/admin/shop/categories/:id", requirePermission("shop.manage")
   }
 });
 
+// ==================== Admin: Subcategories ====================
+
+shopRouter.get("/admin/shop/subcategories", requirePermission("shop.manage"), async (req, res) => {
+  const { categoryId } = req.query;
+  const rows = categoryId
+    ? await query(`SELECT ${SUBCATEGORY_COLUMNS} FROM shop_subcategories WHERE category_id=$1 ORDER BY position`, [categoryId])
+    : await query(`SELECT ${SUBCATEGORY_COLUMNS} FROM shop_subcategories ORDER BY position`);
+  sendJson(res, 200, rows);
+});
+
+shopRouter.post("/admin/shop/subcategories", requirePermission("shop.manage"), async (req, res) => {
+  const categoryId = String(req.body?.categoryId ?? "");
+  const name = String(req.body?.name ?? "").trim();
+  if (!categoryId || !name) return sendJson(res, 400, { error: "categoryId and name are required" });
+  if (!(await queryOne(`SELECT id FROM shop_categories WHERE id=$1`, [categoryId]))) {
+    return sendJson(res, 404, { error: "Category not found" });
+  }
+  const maxPos = await queryOne<{ m: number }>(`SELECT COALESCE(MAX(position), 0) AS m FROM shop_subcategories WHERE category_id=$1`, [categoryId]);
+  try {
+    const id = randomUUID();
+    await query(`INSERT INTO shop_subcategories (id, category_id, name, position) VALUES ($1,$2,$3,$4)`, [id, categoryId, name, (maxPos?.m ?? 0) + 1]);
+    sendJson(res, 201, await queryOne(`SELECT ${SUBCATEGORY_COLUMNS} FROM shop_subcategories WHERE id=$1`, [id]));
+  } catch (err: any) {
+    if (err?.code === "23505") return sendJson(res, 409, { error: "A subcategory with this name already exists in this category" });
+    throw err;
+  }
+});
+
+shopRouter.put("/admin/shop/subcategories/:id", requirePermission("shop.manage"), async (req, res) => {
+  const existing = await queryOne(`SELECT id FROM shop_subcategories WHERE id=$1`, [req.params.id]);
+  if (!existing) return sendJson(res, 404, { error: "Subcategory not found" });
+  const { name, active, position } = req.body ?? {};
+  try {
+    await query(
+      `UPDATE shop_subcategories SET name=COALESCE($1, name), active=COALESCE($2, active), position=COALESCE($3, position), updated_at=now() WHERE id=$4`,
+      [name?.trim() || null, typeof active === "boolean" ? active : null, typeof position === "number" ? position : null, req.params.id]
+    );
+    sendJson(res, 200, await queryOne(`SELECT ${SUBCATEGORY_COLUMNS} FROM shop_subcategories WHERE id=$1`, [req.params.id]));
+  } catch (err: any) {
+    if (err?.code === "23505") return sendJson(res, 409, { error: "A subcategory with this name already exists in this category" });
+    throw err;
+  }
+});
+
+// A subcategory with products under it can't be deleted -- deactivate it
+// instead, same reasoning as categories (products.subcategory_id is ON
+// DELETE SET NULL, but silently orphaning a product's subcategory on a
+// Delete click would be a surprising side effect, so this blocks it
+// explicitly rather than relying on the FK action).
+shopRouter.delete("/admin/shop/subcategories/:id", requirePermission("shop.manage"), async (req, res) => {
+  const inUse = await queryOne<{ n: string }>(`SELECT COUNT(*) AS n FROM shop_products WHERE subcategory_id=$1`, [req.params.id]);
+  if (Number(inUse?.n ?? 0) > 0) {
+    return sendJson(res, 409, { error: "This subcategory still has products — deactivate it instead, or move/delete its products first" });
+  }
+  const result = await query(`DELETE FROM shop_subcategories WHERE id=$1 RETURNING id`, [req.params.id]);
+  if (result.length === 0) return sendJson(res, 404, { error: "Subcategory not found" });
+  sendJson(res, 200, { deleted: true });
+});
+
 // ==================== Admin: Products ====================
 
 shopRouter.get("/admin/shop/products", requirePermission("shop.manage"), async (req, res) => {
-  const { categoryId } = req.query;
-  const rows = categoryId
-    ? await query(`SELECT ${PRODUCT_COLUMNS} FROM shop_products WHERE category_id=$1 ORDER BY created_at DESC`, [categoryId])
-    : await query(`SELECT ${PRODUCT_COLUMNS} FROM shop_products ORDER BY created_at DESC`);
-  sendJson(res, 200, rows);
+  const { categoryId, subcategoryId, search } = req.query as Record<string, string | undefined>;
+  const args: unknown[] = [];
+  let sql = `SELECT ${PRODUCT_COLUMNS} FROM shop_products WHERE 1=1`;
+  if (categoryId) { args.push(categoryId); sql += ` AND category_id=$${args.length}`; }
+  if (subcategoryId) { args.push(subcategoryId); sql += ` AND subcategory_id=$${args.length}`; }
+  if (search) { args.push(`%${search}%`); sql += ` AND name ILIKE $${args.length}`; }
+  sql += ` ORDER BY created_at DESC`;
+  sendJson(res, 200, await query(sql, args));
 });
 
 shopRouter.get("/admin/shop/products/:id", requirePermission("shop.manage"), async (req, res) => {
@@ -266,19 +397,41 @@ shopRouter.get("/admin/shop/products/:id", requirePermission("shop.manage"), asy
 });
 
 shopRouter.post("/admin/shop/products", requirePermission("shop.manage"), async (req, res) => {
-  const { categoryId, name, description, price, stock } = req.body ?? {};
+  const { categoryId, subcategoryId, name, description, price, oldPrice, stock, brand, featured, isNewArrival, bestSeller } = req.body ?? {};
   if (!categoryId || !name) return sendJson(res, 400, { error: "categoryId and name are required" });
   const priceNum = Number(price);
   const stockNum = stock == null ? 0 : Number(stock);
   if (!Number.isFinite(priceNum) || priceNum < 0) return sendJson(res, 400, { error: "price must be a non-negative number" });
   if (!Number.isInteger(stockNum) || stockNum < 0) return sendJson(res, 400, { error: "stock must be a non-negative whole number" });
+  if (oldPrice !== undefined && oldPrice !== null && oldPrice !== "" && (!Number.isFinite(Number(oldPrice)) || Number(oldPrice) < 0)) {
+    return sendJson(res, 400, { error: "oldPrice must be a non-negative number" });
+  }
   if (!(await queryOne(`SELECT id FROM shop_categories WHERE id=$1`, [categoryId]))) {
     return sendJson(res, 404, { error: "Category not found" });
   }
+  if (subcategoryId) {
+    const sub = await queryOne<{ category_id: string }>(`SELECT category_id FROM shop_subcategories WHERE id=$1`, [subcategoryId]);
+    if (!sub) return sendJson(res, 404, { error: "Subcategory not found" });
+    if (sub.category_id !== categoryId) return sendJson(res, 400, { error: "Subcategory does not belong to the selected category" });
+  }
   const id = randomUUID();
   await query(
-    `INSERT INTO shop_products (id, category_id, name, description, price, stock) VALUES ($1,$2,$3,$4,$5,$6)`,
-    [id, categoryId, String(name).trim(), String(description ?? "").trim(), priceNum, stockNum]
+    `INSERT INTO shop_products (id, category_id, subcategory_id, name, description, price, old_price, stock, brand, featured, is_new_arrival, best_seller)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+    [
+      id,
+      categoryId,
+      subcategoryId || null,
+      String(name).trim(),
+      String(description ?? "").trim(),
+      priceNum,
+      oldPrice !== undefined && oldPrice !== null && oldPrice !== "" ? Number(oldPrice) : null,
+      stockNum,
+      String(brand ?? "").trim(),
+      Boolean(featured),
+      Boolean(isNewArrival),
+      Boolean(bestSeller),
+    ]
   );
   sendJson(res, 201, await queryOne(`SELECT ${PRODUCT_COLUMNS} FROM shop_products WHERE id=$1`, [id]));
 });
@@ -286,25 +439,40 @@ shopRouter.post("/admin/shop/products", requirePermission("shop.manage"), async 
 shopRouter.put("/admin/shop/products/:id", requirePermission("shop.manage"), async (req, res) => {
   const existing = await queryOne<any>(`SELECT * FROM shop_products WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Product not found" });
-  const { categoryId, name, description, price, stock, active } = req.body ?? {};
+  const { categoryId, subcategoryId, name, description, price, oldPrice, stock, active, brand, featured, isNewArrival, bestSeller } = req.body ?? {};
   if (price !== undefined && (!Number.isFinite(Number(price)) || Number(price) < 0)) {
     return sendJson(res, 400, { error: "price must be a non-negative number" });
   }
   if (stock !== undefined && (!Number.isInteger(Number(stock)) || Number(stock) < 0)) {
     return sendJson(res, 400, { error: "stock must be a non-negative whole number" });
   }
+  if (oldPrice !== undefined && oldPrice !== null && oldPrice !== "" && (!Number.isFinite(Number(oldPrice)) || Number(oldPrice) < 0)) {
+    return sendJson(res, 400, { error: "oldPrice must be a non-negative number" });
+  }
+  const effectiveCategoryId = categoryId ?? existing.category_id;
   if (categoryId && !(await queryOne(`SELECT id FROM shop_categories WHERE id=$1`, [categoryId]))) {
     return sendJson(res, 404, { error: "Category not found" });
   }
+  if (subcategoryId !== undefined && subcategoryId !== null && subcategoryId !== "") {
+    const sub = await queryOne<{ category_id: string }>(`SELECT category_id FROM shop_subcategories WHERE id=$1`, [subcategoryId]);
+    if (!sub) return sendJson(res, 404, { error: "Subcategory not found" });
+    if (sub.category_id !== effectiveCategoryId) return sendJson(res, 400, { error: "Subcategory does not belong to the selected category" });
+  }
   await query(
-    `UPDATE shop_products SET category_id=$1, name=$2, description=$3, price=$4, stock=$5, active=$6, updated_at=now() WHERE id=$7`,
+    `UPDATE shop_products SET category_id=$1, subcategory_id=$2, name=$3, description=$4, price=$5, old_price=$6, stock=$7, active=$8, brand=$9, featured=$10, is_new_arrival=$11, best_seller=$12, updated_at=now() WHERE id=$13`,
     [
-      categoryId ?? existing.category_id,
+      effectiveCategoryId,
+      subcategoryId === undefined ? existing.subcategory_id : subcategoryId || null,
       name?.trim() || existing.name,
       description !== undefined ? String(description).trim() : existing.description,
       price !== undefined ? Number(price) : existing.price,
+      oldPrice !== undefined ? (oldPrice === null || oldPrice === "" ? null : Number(oldPrice)) : existing.old_price,
       stock !== undefined ? Number(stock) : existing.stock,
       typeof active === "boolean" ? active : existing.active,
+      brand !== undefined ? String(brand).trim() : existing.brand,
+      typeof featured === "boolean" ? featured : existing.featured,
+      typeof isNewArrival === "boolean" ? isNewArrival : existing.is_new_arrival,
+      typeof bestSeller === "boolean" ? bestSeller : existing.best_seller,
       req.params.id,
     ]
   );
@@ -374,7 +542,20 @@ const SHOP_ORDER_LIST_SELECT = `
   FROM shop_orders so
   LEFT JOIN customers c ON c.id = so.customer_id
 `;
-const SHOP_ORDER_STATUSES = ["pending", "processing", "shipped", "delivered", "cancelled"];
+const SHOP_ORDER_STATUSES = ["pending", "processing", "shipped", "delivered", "cancelled", "failed", "returned", "refunded"];
+// No further status change is ever valid once an order reaches one of
+// these -- each is a true end state for this simplified status model
+// (a full Returns/Exchanges/Refunds *request* workflow with its own
+// approval stages is a separate, later feature; these three are just the
+// order's own resting states once that process, or a failed/cancelled
+// purchase, concludes).
+const TERMINAL_SHOP_STATUSES = ["delivered", "cancelled", "failed", "returned", "refunded"];
+// The physical product comes back into inventory for all three of these --
+// cancelled/failed because the order never completed, returned because the
+// customer sent it back. Refunded alone doesn't imply that (it's a payment
+// outcome, usually applied on top of an already-returned order), so it's
+// deliberately left out here.
+const STOCK_RESTORING_STATUSES = ["cancelled", "failed", "returned"];
 
 shopRouter.get("/admin/shop/orders", requirePermission("shop.manage"), async (req, res) => {
   const { status, search } = req.query as Record<string, string | undefined>;
@@ -410,7 +591,9 @@ shopRouter.put("/admin/shop/orders/:id/payment-status", requirePermission("shop.
   );
   if (!existing) return sendJson(res, 404, { error: "Order not found" });
   if (existing.payment_status === "paid") return sendJson(res, 409, { error: "This order is already marked paid" });
-  if (existing.status === "cancelled") return sendJson(res, 409, { error: "This order was cancelled" });
+  if (TERMINAL_SHOP_STATUSES.includes(existing.status)) {
+    return sendJson(res, 409, { error: `This order is already ${existing.status} and can no longer be marked paid` });
+  }
 
   await query(
     `UPDATE shop_orders SET payment_status='paid', paid_at=now(),
@@ -435,26 +618,34 @@ const STATUS_NOTIFICATIONS: Record<string, { title: string; body: (id: string) =
   shipped: { title: "Order Shipped", body: (id) => `Order ${id} is on its way.` },
   delivered: { title: "Order Delivered", body: (id) => `Order ${id} has been delivered. Thank you for shopping with DALAB!` },
   cancelled: { title: "Order Cancelled", body: (id) => `Order ${id} has been cancelled.` },
+  failed: { title: "Order Failed", body: (id) => `Order ${id} could not be completed.` },
+  returned: { title: "Order Returned", body: (id) => `Order ${id} has been marked as returned.` },
+  refunded: { title: "Order Refunded", body: (id) => `Order ${id} has been refunded.` },
 };
 
 // Staged delivery tracking: pending -> processing -> shipped -> delivered,
-// or cancelled from any non-delivered state. trackingReference/trackingNote
-// (e.g. courier name + tracking number) are optional free text an Admin can
-// attach at any stage for the customer to see — no courier/GPS integration,
-// same manual-staged-update simplicity as the rest of this admin dashboard.
+// or one of the terminal outcomes (cancelled/failed/returned/refunded) from
+// any non-terminal state. trackingReference/trackingNote/courierName are
+// optional free text an Admin can attach at any stage for the customer to
+// see — no courier/GPS integration, same manual-staged-update simplicity as
+// the rest of this admin dashboard.
 shopRouter.put("/admin/shop/orders/:id/status", requirePermission("shop.manage"), async (req, res) => {
-  const { status, trackingReference, trackingNote } = req.body ?? {};
+  const { status, trackingReference, trackingNote, courierName } = req.body ?? {};
   if (!SHOP_ORDER_STATUSES.includes(status)) return sendJson(res, 400, { error: `status must be one of ${SHOP_ORDER_STATUSES.join(", ")}` });
   const existing = await queryOne<{ status: string; customer_id: string }>(`SELECT status, customer_id FROM shop_orders WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Order not found" });
-  if (existing.status === "delivered") return sendJson(res, 409, { error: "This order was already delivered" });
-  if (existing.status === "cancelled") return sendJson(res, 409, { error: "This order was already cancelled" });
+  if (TERMINAL_SHOP_STATUSES.includes(existing.status)) {
+    return sendJson(res, 409, { error: `This order is already ${existing.status} and cannot be changed further` });
+  }
 
-  // Cancelling releases the stock this order reserved at creation time —
-  // same "reverse the reservation, never mutate history" principle
+  // Reverses the stock reservation made at order-creation time — same
+  // "reverse the reservation, never mutate history" principle
   // reseller_withdrawals uses, applied here by simply crediting the stock
   // back rather than a second ledger row (Shop has no wallet ledger).
-  if (status === "cancelled" && existing.status !== "cancelled") {
+  // Safe against double-restoration: existing.status is guaranteed
+  // non-terminal at this point (checked above), so this can only ever fire
+  // once per order.
+  if (STOCK_RESTORING_STATUSES.includes(status)) {
     const items = await query<{ product_id: string | null; quantity: number }>(`SELECT product_id, quantity FROM shop_order_items WHERE order_id=$1`, [req.params.id]);
     for (const item of items) {
       if (item.product_id) {
@@ -467,11 +658,18 @@ shopRouter.put("/admin/shop/orders/:id/status", requirePermission("shop.manage")
     `UPDATE shop_orders SET status=$1,
        tracking_reference=COALESCE($2, tracking_reference),
        tracking_note=COALESCE($3, tracking_note),
+       courier_name=COALESCE($4, courier_name),
        delivered_at = CASE WHEN $1='delivered' THEN now() ELSE delivered_at END,
        cancelled_at = CASE WHEN $1='cancelled' THEN now() ELSE cancelled_at END,
        updated_at=now()
-     WHERE id=$4`,
-    [status, typeof trackingReference === "string" ? trackingReference.trim() : null, typeof trackingNote === "string" ? trackingNote.trim() : null, req.params.id]
+     WHERE id=$5`,
+    [
+      status,
+      typeof trackingReference === "string" ? trackingReference.trim() : null,
+      typeof trackingNote === "string" ? trackingNote.trim() : null,
+      typeof courierName === "string" ? courierName.trim() : null,
+      req.params.id,
+    ]
   );
   await recordActivity({
     adminId: req.auth!.sub,
@@ -479,7 +677,7 @@ shopRouter.put("/admin/shop/orders/:id/status", requirePermission("shop.manage")
     entityType: "shop_order",
     entityId: req.params.id,
     oldValue: { status: existing.status },
-    newValue: { status, trackingReference: trackingReference ?? null, trackingNote: trackingNote ?? null },
+    newValue: { status, trackingReference: trackingReference ?? null, trackingNote: trackingNote ?? null, courierName: courierName ?? null },
   });
   const notification = STATUS_NOTIFICATIONS[status];
   if (notification) await notifyCustomer(existing.customer_id, "shop_order_update", notification.title, notification.body(req.params.id));
