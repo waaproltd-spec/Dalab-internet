@@ -8,6 +8,8 @@ import { sendJson } from "../utils/camelCase.js";
 import { parseDataUri } from "../utils/dataUri.js";
 import { notifyCustomer } from "../services/customerNotify.js";
 import { recordActivity } from "../utils/activityLog.js";
+import { formatUssdAmount } from "../utils/ussdFormatting.js";
+import { validateMobileNumber } from "../lib/phoneValidation.js";
 
 // Shop: DALAB's 4th independent customer-facing service (Internet | eBadal
 // | Reseller | Shop) — see migration 074's header comment for the full
@@ -102,6 +104,18 @@ shopRouter.post(
     );
     if (!method) return sendJson(res, 400, { error: "Choose a valid payment method" });
 
+    // Same carrier-prefix discipline every other purchase flow in this app
+    // already enforces -- a customer claiming to pay via EVC Plus must
+    // actually be dialing from an EVC Plus-prefixed number, since that's
+    // the number the incoming payment confirmation will need to match.
+    // shop_payment_methods.method ('evc'/'edahab') maps 1:1 onto
+    // phoneValidation's company keys except 'evc' -> 'evc_plus'.
+    const senderCompanyKey = method.method === "evc" ? "evc_plus" : method.method;
+    const senderCheck = validateMobileNumber(String(senderPhone), senderCompanyKey);
+    if (!senderCheck.valid) return sendJson(res, 400, { error: senderCheck.error });
+    const deliveryCheck = validateMobileNumber(String(deliveryPhone));
+    if (!deliveryCheck.valid) return sendJson(res, 400, { error: deliveryCheck.error });
+
     try {
       const result = await withTransaction(async (client) => {
         const orderId = generateShopOrderId();
@@ -151,7 +165,13 @@ shopRouter.post(
         return { orderId, total };
       });
 
-      const dialUssd = method.ussd_template.replace("{amount}", String(result.total));
+      // formatUssdAmount converts the decimal total into the dollars[*cents]
+      // segments every provider's USSD menu actually expects -- "." isn't a
+      // valid USSD/MMI dial character, so a raw "49.99" would silently
+      // produce a malformed dial string (see ussdFormatting.ts's own header
+      // comment for the real production incident this same bug caused for
+      // Internet Store before it was fixed).
+      const dialUssd = method.ussd_template.replace("{amount}", formatUssdAmount(result.total));
       const order = await queryOne(`SELECT ${SHOP_ORDER_COLUMNS} FROM shop_orders WHERE id=$1`, [result.orderId]);
       sendJson(res, 201, { ...order, items: await loadOrderItems(result.orderId), dialUssd });
     } catch (err: any) {

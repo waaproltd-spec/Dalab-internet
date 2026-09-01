@@ -144,6 +144,34 @@ test("a customer can place an order: stock is reserved, total is server-computed
   assert.equal(product!.stock, 1, "stock must be decremented at order-creation time");
 });
 
+// A whole-dollar total (like the $50 case above) can't tell "correctly
+// formatted" apart from "the raw decimal string" -- both happen to render
+// identically. This uses a fractional total specifically to catch the
+// exact bug ussdFormatting.ts's own header comment documents (a raw "."
+// is not a valid USSD/MMI dial character): $0.10 must dial as "01", not
+// "0.1".
+test("the USSD dial string uses formatUssdAmount, not a raw decimal string, for a fractional total", async () => {
+  const cheapProduct = await queryOne<{ id: string }>(
+    `INSERT INTO shop_products (id, category_id, name, price, stock) VALUES ($1,$2,'Test Keychain',0.10,5) RETURNING id`,
+    [randomUUID(), categoryId]
+  );
+  const res = await asCustomer("/shop/orders", {
+    method: "POST",
+    body: JSON.stringify({
+      items: [{ productId: cheapProduct!.id, quantity: 1 }],
+      paymentMethod: "evc",
+      senderPhone: "617000111",
+      deliveryName: "Test Buyer",
+      deliveryPhone: "617000222",
+      deliveryAddress: "Mogadishu, Somalia",
+    }),
+  });
+  const order = (await res.json()) as any;
+  assert.equal(res.status, 201, JSON.stringify(order));
+  assert.equal(Number(order.totalAmount), 0.1);
+  assert.equal(order.dialUssd, "*712*610338686*01#", "must be the dollars+cents dial format, not a literal decimal point");
+});
+
 test("ordering more than available stock is rejected and reserves nothing", async () => {
   const res = await asCustomer("/shop/orders", {
     method: "POST",
@@ -176,19 +204,37 @@ test("an unknown payment method is rejected before any stock is touched", async 
   assert.equal(res.status, 400);
 });
 
+test("paying via EVC Plus with an eDahab-prefixed sender number is rejected -- the sender number must match the chosen payment method", async () => {
+  const res = await asCustomer("/shop/orders", {
+    method: "POST",
+    body: JSON.stringify({
+      items: [{ productId, quantity: 1 }],
+      paymentMethod: "evc",
+      senderPhone: "627000111", // eDahab's 62 prefix, not evc's 61/77
+      deliveryName: "Test Buyer",
+      deliveryPhone: "617000222",
+      deliveryAddress: "Mogadishu, Somalia",
+    }),
+  });
+  assert.equal(res.status, 400);
+  const product = await queryOne<{ stock: number }>(`SELECT stock FROM shop_products WHERE id=$1`, [productId]);
+  assert.equal(product!.stock, 3, "a phone/method mismatch must not touch stock");
+});
+
 test("full lifecycle: Admin confirms payment, then advances delivery status to delivered", async () => {
   const createRes = await asCustomer("/shop/orders", {
     method: "POST",
     body: JSON.stringify({
       items: [{ productId, quantity: 1 }],
       paymentMethod: "edahab",
-      senderPhone: "617000111",
+      senderPhone: "627000111", // eDahab's own 62 prefix, not evc's 61
       deliveryName: "Test Buyer",
       deliveryPhone: "617000222",
       deliveryAddress: "Mogadishu, Somalia",
     }),
   });
   const order = (await createRes.json()) as any;
+  assert.equal(createRes.status, 201, JSON.stringify(order));
 
   const payRes = await asSuperAdmin(`/admin/shop/orders/${order.id}/payment-status`, { method: "PUT", body: "{}" });
   const paid = (await payRes.json()) as any;
