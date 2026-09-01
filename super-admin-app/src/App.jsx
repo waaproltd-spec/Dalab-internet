@@ -8,7 +8,8 @@ import {
   Smartphone, Radio, ChevronDown, ChevronRight, AlertTriangle, RotateCcw, UserCog, Tags,
   WifiOff, BatteryFull, BatteryMedium, BatteryLow, BatteryWarning,
   Image as ImageIcon, Upload, MessageSquare, Database, Activity, History, CreditCard, PlayCircle, Percent,
-  MessageCircle, Lightbulb, Share2, KeyRound, ExternalLink, PiggyBank, Landmark, Trash, ArrowLeftRight
+  MessageCircle, Lightbulb, Share2, KeyRound, ExternalLink, PiggyBank, Landmark, Trash, ArrowLeftRight,
+  ShoppingBag, Star, Tag, Zap
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 
@@ -457,6 +458,56 @@ const DalabAdminApi = {
   getResellerWithdrawalCommissions: () => dalabAdminApiRequest("/admin/reseller-withdrawal-commissions"),
   setResellerWithdrawalCommission: (companyId, commissionPercentage) =>
     dalabAdminApiRequest(`/admin/reseller-withdrawal-commissions/${companyId}`, { method: "PUT", body: { commissionPercentage } }),
+
+  // ---------------- Shop (admin-backend-ts's shop.routes.ts / shopAdmin.routes.ts) ----------------
+  getShopCategories: () => dalabAdminApiRequest("/admin/shop/categories"),
+  updateShopCategory: (id, body) => dalabAdminApiRequest(`/admin/shop/categories/${id}`, { method: "PUT", body }),
+  getShopElectronicsSubcategories: () => dalabAdminApiRequest("/admin/shop/electronics-subcategories"),
+  createShopElectronicsSubcategory: (body) => dalabAdminApiRequest("/admin/shop/electronics-subcategories", { method: "POST", body }),
+  updateShopElectronicsSubcategory: (id, body) => dalabAdminApiRequest(`/admin/shop/electronics-subcategories/${id}`, { method: "PUT", body }),
+  deleteShopElectronicsSubcategory: (id) => dalabAdminApiRequest(`/admin/shop/electronics-subcategories/${id}`, { method: "DELETE" }),
+  getShopBrands: () => dalabAdminApiRequest("/admin/shop/brands"),
+  createShopBrand: (body) => dalabAdminApiRequest("/admin/shop/brands", { method: "POST", body }),
+  updateShopBrand: (id, body) => dalabAdminApiRequest(`/admin/shop/brands/${id}`, { method: "PUT", body }),
+  deleteShopBrand: (id) => dalabAdminApiRequest(`/admin/shop/brands/${id}`, { method: "DELETE" }),
+  getShopProducts: (params = {}) => {
+    const qs = new URLSearchParams(
+      Object.fromEntries(Object.entries(params).filter(([, v]) => v != null && v !== ""))
+    ).toString();
+    return dalabAdminApiRequest(`/admin/shop/products${qs ? `?${qs}` : ""}`);
+  },
+  createShopProduct: (body) => dalabAdminApiRequest("/admin/shop/products", { method: "POST", body }),
+  updateShopProduct: (id, body) => dalabAdminApiRequest(`/admin/shop/products/${id}`, { method: "PUT", body }),
+  deleteShopProduct: (id) => dalabAdminApiRequest(`/admin/shop/products/${id}`, { method: "DELETE" }),
+  getShopProductImages: (productId) => dalabAdminApiRequest(`/admin/shop/products/${productId}/images`),
+  uploadShopProductImage: (productId, imageBase64) =>
+    dalabAdminApiRequest(`/admin/shop/products/${productId}/images`, { method: "POST", body: { imageBase64 } }),
+  deleteShopProductImage: (productId, imageId) =>
+    dalabAdminApiRequest(`/admin/shop/products/${productId}/images/${imageId}`, { method: "DELETE" }),
+  shopProductImageUrl: (productId, imageId) => `${DALAB_API_BASE_URL}/shop/products/${productId}/images/${imageId}`,
+  getShopOrders: (status) => dalabAdminApiRequest(`/admin/shop/orders${status ? `?status=${status}` : ""}`),
+  getShopOrder: (id) => dalabAdminApiRequest(`/admin/shop/orders/${id}`),
+  updateShopOrderStatus: (id, body) => dalabAdminApiRequest(`/admin/shop/orders/${id}/status`, { method: "PUT", body }),
+  getShopReturns: (status) => dalabAdminApiRequest(`/admin/shop/returns${status ? `?status=${status}` : ""}`),
+  updateShopReturn: (id, body) => dalabAdminApiRequest(`/admin/shop/returns/${id}`, { method: "PUT", body }),
+  getShopPromoCodes: () => dalabAdminApiRequest("/admin/shop/promo-codes"),
+  createShopPromoCode: (body) => dalabAdminApiRequest("/admin/shop/promo-codes", { method: "POST", body }),
+  updateShopPromoCode: (id, body) => dalabAdminApiRequest(`/admin/shop/promo-codes/${id}`, { method: "PUT", body }),
+  deleteShopPromoCode: (id) => dalabAdminApiRequest(`/admin/shop/promo-codes/${id}`, { method: "DELETE" }),
+  getShopFlashSales: () => dalabAdminApiRequest("/admin/shop/flash-sales"),
+  createShopFlashSale: (body) => dalabAdminApiRequest("/admin/shop/flash-sales", { method: "POST", body }),
+  updateShopFlashSale: (id, body) => dalabAdminApiRequest(`/admin/shop/flash-sales/${id}`, { method: "PUT", body }),
+  deleteShopFlashSale: (id) => dalabAdminApiRequest(`/admin/shop/flash-sales/${id}`, { method: "DELETE" }),
+  getShopPaymentMethods: () => dalabAdminApiRequest("/admin/shop/payment-methods"),
+  createShopPaymentMethod: (body) => dalabAdminApiRequest("/admin/shop/payment-methods", { method: "POST", body }),
+  updateShopPaymentMethod: (id, body) => dalabAdminApiRequest(`/admin/shop/payment-methods/${id}`, { method: "PUT", body }),
+  deleteShopPaymentMethod: (id) => dalabAdminApiRequest(`/admin/shop/payment-methods/${id}`, { method: "DELETE" }),
+  getShopSettings: () => dalabAdminApiRequest("/admin/shop/settings"),
+  updateShopSettings: (body) => dalabAdminApiRequest("/admin/shop/settings", { method: "PUT", body }),
+  getShopAnalytics: () => dalabAdminApiRequest("/admin/shop/analytics"),
+  getShopReviews: (productId) => dalabAdminApiRequest(`/admin/shop/reviews${productId ? `?productId=${productId}` : ""}`),
+  deleteShopReview: (id) => dalabAdminApiRequest(`/admin/shop/reviews/${id}`, { method: "DELETE" }),
+  shopReviewPhotoUrl: (id) => `${DALAB_API_BASE_URL}/shop/reviews/${id}/photo`,
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -479,6 +530,7 @@ const PERMISSION_OPTIONS = [
   { key: "exchange.manage", label: "Manage money exchange" },
   { key: "resellers.manage", label: "Manage resellers" },
   { key: "support.manage", label: "Handle Agent Support conversations" },
+  { key: "shop.manage", label: "Manage Shop (products, orders, promotions)" },
 ];
 
 // Normalizes a GET /admin/companies row into the shape every section of this
@@ -776,6 +828,7 @@ const NAV = [
   { id: "commissions", label: "Commissions", icon: Percent },
   { id: "money-exchange", label: "Money Exchange", icon: ArrowLeftRight },
   { id: "resellers", label: "Resellers", icon: Landmark },
+  { id: "shop", label: "Shop Management", icon: ShoppingBag },
   { id: "sms-sender-ids", label: "SMS Sender IDs", icon: MessageSquare, superAdminOnly: true },
   { id: "referrals", label: "Referral Rewards", icon: Share2 },
   { id: "pending-recovery", label: "Pending Recovery", icon: RotateCcw },
@@ -12007,6 +12060,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "commissions" && <CommissionsPanel companies={companies} packages={packages} admin={admin} />}
           {active === "money-exchange" && <MoneyExchangePanel admin={admin} />}
           {active === "resellers" && <ResellerManagement admin={admin} companies={companies} />}
+          {active === "shop" && <ShopManagement admin={admin} />}
           {active === "sms-sender-ids" && <SmsSenderIdsPanel />}
           {active === "feedback" && <FeedbackPanel admin={admin} />}
           {active === "support" && <SupportQueuePanel admin={admin} />}
@@ -12018,6 +12072,1320 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "activity-log" && <ActivityLogPanel />}
           {active === "settings" && <SettingsPanel />}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ==================== Shop Management ====================
+// DALAB's 4th independent customer-facing service (Internet | eBadal |
+// Reseller | Shop) -- backed entirely by admin-backend-ts's shop.routes.ts
+// / shopAdmin.routes.ts (added separately, already CI-validated). Every
+// write here goes through the real API; nothing in this section is mock
+// data. Read access matches every GET in this app (any admin/super_admin);
+// writes are gated by the "shop.manage" permission except Payment Methods
+// and Hours/Open-Closed, which are Super-Admin-only on the backend
+// (requireAuth("super_admin")), same restriction level as Provider Numbers
+// and Company Payment Numbers elsewhere in this dashboard.
+
+const SHOP_ORDER_STATUS_META = {
+  pending: { label: "Pending", tone: "amber" },
+  processing: { label: "Processing", tone: "blue" },
+  shipped: { label: "Shipped", tone: "blue" },
+  delivered: { label: "Delivered", tone: "green" },
+  cancelled: { label: "Cancelled", tone: "gray" },
+  failed: { label: "Failed", tone: "red" },
+  returned: { label: "Returned", tone: "gray" },
+  refunded: { label: "Refunded", tone: "gray" },
+};
+const SHOP_ORDER_STATUSES = Object.keys(SHOP_ORDER_STATUS_META);
+
+const SHOP_RETURN_STATUS_META = {
+  requested: { label: "Requested", tone: "amber" },
+  approved: { label: "Approved", tone: "blue" },
+  rejected: { label: "Rejected", tone: "red" },
+  processing: { label: "Processing", tone: "blue" },
+  completed: { label: "Completed", tone: "green" },
+};
+const SHOP_RETURN_STATUSES = Object.keys(SHOP_RETURN_STATUS_META);
+
+function ShopManagement({ admin }) {
+  const [tab, setTab] = useState("categories");
+  const canManage = hasPermission(admin, "shop.manage");
+  const isSuperAdmin = admin?.role === "super_admin";
+
+  const tabs = [
+    { id: "categories", label: "Categories" },
+    { id: "electronics", label: "Electronics Subcategories" },
+    { id: "brands", label: "Brands" },
+    { id: "products", label: "Products" },
+    { id: "flash-sales", label: "Flash Sales" },
+    { id: "promo-codes", label: "Promo Codes" },
+    { id: "orders", label: "Orders" },
+    { id: "returns", label: "Returns/Exchanges/Refunds" },
+    { id: "reviews", label: "Reviews" },
+    { id: "payment-methods", label: "Payment Methods" },
+    { id: "settings", label: "Hours & Open/Closed" },
+    { id: "analytics", label: "Analytics" },
+  ];
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage Shop.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 16, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Shop Management</div>
+          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Electronics, Eyewear, Perfumes, Watches, Gifts — one DALAB-owned store, no seller accounts.</div>
+        </div>
+        {!canManage && (
+          <Badge tone="amber">View only — ask a Super Admin for the "shop.manage" permission to make changes</Badge>
+        )}
+      </div>
+
+      <div style={{ display: "flex", gap: 4, marginBottom: 18, borderBottom: `1px solid ${BORDER}`, flexWrap: "wrap" }}>
+        {tabs.map((t) => (
+          <button key={t.id} onClick={() => setTab(t.id)} style={{
+            padding: "10px 14px", border: "none", background: "none", cursor: "pointer", fontSize: 12.5, fontWeight: 700,
+            color: tab === t.id ? INDIGO : MUTE, borderBottom: tab === t.id ? `2px solid ${INDIGO}` : "2px solid transparent", marginBottom: -1, whiteSpace: "nowrap",
+          }}>{t.label}</button>
+        ))}
+      </div>
+
+      {tab === "categories" && <ShopCategoriesPanel canManage={canManage} />}
+      {tab === "electronics" && <ShopElectronicsSubcategoriesPanel canManage={canManage} />}
+      {tab === "brands" && <ShopBrandsPanel canManage={canManage} />}
+      {tab === "products" && <ShopProductsPanel canManage={canManage} />}
+      {tab === "flash-sales" && <ShopFlashSalesPanel canManage={canManage} />}
+      {tab === "promo-codes" && <ShopPromoCodesPanel canManage={canManage} />}
+      {tab === "orders" && <ShopOrdersPanel canManage={canManage} />}
+      {tab === "returns" && <ShopReturnsPanel canManage={canManage} />}
+      {tab === "reviews" && <ShopReviewsPanel canManage={canManage} />}
+      {tab === "payment-methods" && <ShopPaymentMethodsPanel canManage={isSuperAdmin} />}
+      {tab === "settings" && <ShopSettingsPanel canManage={isSuperAdmin} />}
+      {tab === "analytics" && <ShopAnalyticsPanel />}
+    </div>
+  );
+}
+
+function ShopCategoriesPanel({ canManage }) {
+  const [categories, setCategories] = useState([]);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({});
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const fetchCategories = async () => {
+    try { setCategories(await DalabAdminApi.getShopCategories()); }
+    catch (err) { setError(err.message || "Could not load categories."); }
+  };
+  useEffect(() => { fetchCategories(); }, []);
+
+  const openEdit = (c) => { setForm({ ...c }); setEditing(c.id); setError(""); };
+
+  const save = async () => {
+    if (!form.name) return;
+    setSaving(true);
+    try {
+      await DalabAdminApi.updateShopCategory(editing, { name: form.name, emoji: form.emoji, position: Number(form.position) || 0 });
+      await fetchCategories();
+      setEditing(null);
+    } catch (err) { setError(err.message || "Could not save category."); }
+    setSaving(false);
+  };
+
+  const toggleActive = async (c) => {
+    setCategories((prev) => prev.map((x) => (x.id === c.id ? { ...x, active: !x.active } : x)));
+    try { await DalabAdminApi.updateShopCategory(c.id, { active: !c.active }); } catch (err) { setError(err.message); fetchCategories(); }
+  };
+
+  const ordered = [...categories].sort((a, b) => a.position - b.position);
+
+  return (
+    <div>
+      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>
+        The 5 main categories are fixed by design (no Clothing/Shoes) — rename, re-emoji, reorder, or activate/deactivate here; a 6th category can't be added from this screen.
+      </div>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead><tr style={{ background: "#FAFBFF" }}>{["", "Name", "Position", "Status", ""].map((h) => <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>)}</tr></thead>
+          <tbody>
+            {ordered.map((c) => (
+              <tr key={c.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontSize: 20 }}>{c.emoji}</td>
+                <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{c.name}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{c.position}</td>
+                <td style={{ padding: "10px 14px" }}><Badge tone={c.active ? "green" : "gray"}>{c.active ? "Active" : "Inactive"}</Badge></td>
+                <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
+                  {canManage && (
+                    <>
+                      <button onClick={() => toggleActive(c)} title={c.active ? "Deactivate" : "Activate"} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
+                        <Power size={14} color={c.active ? GREEN : "#C81E2C"} />
+                      </button>
+                      <button onClick={() => openEdit(c)} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                        <Pencil size={14} color={INDIGO} />
+                      </button>
+                    </>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+      {editing && (
+        <Modal title="Edit category" onClose={() => setEditing(null)} width={380}>
+          <Field label="Emoji"><input style={inputStyle} value={form.emoji || ""} onChange={(e) => setForm({ ...form, emoji: e.target.value })} /></Field>
+          <Field label="Name"><input style={inputStyle} value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
+          <Field label="Position"><input type="number" style={inputStyle} value={form.position ?? 0} onChange={(e) => setForm({ ...form, position: e.target.value })} /></Field>
+          {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            <Button onClick={save} icon={Check} disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
+            <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function ShopElectronicsSubcategoriesPanel({ canManage }) {
+  const [rows, setRows] = useState([]);
+  const [editing, setEditing] = useState(null); // 'new' | id | null
+  const [form, setForm] = useState({});
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const fetchRows = async () => {
+    try { setRows(await DalabAdminApi.getShopElectronicsSubcategories()); }
+    catch (err) { setError(err.message || "Could not load Electronics subcategories."); }
+  };
+  useEffect(() => { fetchRows(); }, []);
+
+  const openNew = () => { setForm({ name: "", position: 0 }); setEditing("new"); setError(""); };
+  const openEdit = (r) => { setForm({ ...r }); setEditing(r.id); setError(""); };
+
+  const save = async () => {
+    if (!form.name) return;
+    setSaving(true);
+    try {
+      const body = { name: form.name, position: Number(form.position) || 0 };
+      if (editing === "new") await DalabAdminApi.createShopElectronicsSubcategory(body);
+      else await DalabAdminApi.updateShopElectronicsSubcategory(editing, body);
+      await fetchRows();
+      setEditing(null);
+    } catch (err) { setError(err.message || "Could not save subcategory."); }
+    setSaving(false);
+  };
+
+  const toggleActive = async (r) => {
+    setRows((prev) => prev.map((x) => (x.id === r.id ? { ...x, active: !x.active } : x)));
+    try { await DalabAdminApi.updateShopElectronicsSubcategory(r.id, { active: !r.active }); } catch (err) { setError(err.message); fetchRows(); }
+  };
+
+  const remove = async (r) => {
+    if (!window.confirm(`Delete "${r.name}"? Products already using it keep the label but it stops being selectable.`)) return;
+    try { await DalabAdminApi.deleteShopElectronicsSubcategory(r.id); fetchRows(); }
+    catch (err) { alert(err.message || "Could not delete subcategory."); }
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 12 }}>
+        <div style={{ fontSize: 12.5, color: MUTE, maxWidth: 640 }}>Fully Admin-managed, dynamic — create as many as needed (Phone Covers, Chargers, Power Banks, ...) with no code change. Only applies within Electronics.</div>
+        {canManage && <Button icon={Plus} onClick={openNew}>Add subcategory</Button>}
+      </div>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead><tr style={{ background: "#FAFBFF" }}>{["Name", "Position", "Status", ""].map((h) => <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>)}</tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{r.name}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{r.position}</td>
+                <td style={{ padding: "10px 14px" }}><Badge tone={r.active ? "green" : "gray"}>{r.active ? "Active" : "Inactive"}</Badge></td>
+                <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
+                  {canManage && (
+                    <>
+                      <button onClick={() => toggleActive(r)} title={r.active ? "Deactivate" : "Activate"} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
+                        <Power size={14} color={r.active ? GREEN : "#C81E2C"} />
+                      </button>
+                      <button onClick={() => openEdit(r)} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
+                        <Pencil size={14} color={INDIGO} />
+                      </button>
+                      <button onClick={() => remove(r)} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                        <Trash2 size={14} color="#C81E2C" />
+                      </button>
+                    </>
+                  )}
+                </td>
+              </tr>
+            ))}
+            {rows.length === 0 && <tr><td colSpan={4} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No Electronics subcategories yet.</td></tr>}
+          </tbody>
+        </table>
+      </Card>
+      {editing && (
+        <Modal title={editing === "new" ? "Add subcategory" : "Edit subcategory"} onClose={() => setEditing(null)} width={380}>
+          <Field label="Name"><input style={inputStyle} value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Power Banks" /></Field>
+          <Field label="Position"><input type="number" style={inputStyle} value={form.position ?? 0} onChange={(e) => setForm({ ...form, position: e.target.value })} /></Field>
+          {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            <Button onClick={save} icon={Check} disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
+            <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function ShopBrandsPanel({ canManage }) {
+  const [rows, setRows] = useState([]);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({});
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const fetchRows = async () => {
+    try { setRows(await DalabAdminApi.getShopBrands()); }
+    catch (err) { setError(err.message || "Could not load brands."); }
+  };
+  useEffect(() => { fetchRows(); }, []);
+
+  const openNew = () => { setForm({ name: "" }); setEditing("new"); setError(""); };
+  const openEdit = (r) => { setForm({ ...r }); setEditing(r.id); setError(""); };
+
+  const save = async () => {
+    if (!form.name) return;
+    setSaving(true);
+    try {
+      if (editing === "new") await DalabAdminApi.createShopBrand({ name: form.name });
+      else await DalabAdminApi.updateShopBrand(editing, { name: form.name });
+      await fetchRows();
+      setEditing(null);
+    } catch (err) { setError(err.message || "Could not save brand."); }
+    setSaving(false);
+  };
+
+  const toggleActive = async (r) => {
+    setRows((prev) => prev.map((x) => (x.id === r.id ? { ...x, active: !x.active } : x)));
+    try { await DalabAdminApi.updateShopBrand(r.id, { active: !r.active }); } catch (err) { setError(err.message); fetchRows(); }
+  };
+
+  const remove = async (r) => {
+    if (!window.confirm(`Delete brand "${r.name}"?`)) return;
+    try { await DalabAdminApi.deleteShopBrand(r.id); fetchRows(); }
+    catch (err) { alert(err.message || "Could not delete brand."); }
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+        {canManage && <Button icon={Plus} onClick={openNew}>Add brand</Button>}
+      </div>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
+        {rows.map((r) => (
+          <Card key={r.id} style={{ padding: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <div style={{ fontWeight: 700, color: INK, fontSize: 13.5 }}>{r.name}</div>
+              <div style={{ marginTop: 4 }}><Badge tone={r.active ? "green" : "gray"}>{r.active ? "Active" : "Inactive"}</Badge></div>
+            </div>
+            {canManage && (
+              <div style={{ display: "flex", gap: 6 }}>
+                <button onClick={() => toggleActive(r)} title={r.active ? "Deactivate" : "Activate"} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                  <Power size={14} color={r.active ? GREEN : "#C81E2C"} />
+                </button>
+                <button onClick={() => openEdit(r)} style={{ background: "none", border: "none", cursor: "pointer" }}><Pencil size={14} color={INDIGO} /></button>
+                <button onClick={() => remove(r)} style={{ background: "none", border: "none", cursor: "pointer" }}><Trash2 size={14} color="#C81E2C" /></button>
+              </div>
+            )}
+          </Card>
+        ))}
+        {rows.length === 0 && <div style={{ gridColumn: "1 / -1", padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No brands yet.</div>}
+      </div>
+      {editing && (
+        <Modal title={editing === "new" ? "Add brand" : "Edit brand"} onClose={() => setEditing(null)} width={360}>
+          <Field label="Name"><input style={inputStyle} value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
+          {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            <Button onClick={save} icon={Check} disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
+            <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+const emptyProductForm = () => ({
+  name: "", description: "", categoryId: "electronics", subcategoryId: "", brandId: "",
+  price: "", discountPrice: "", stock: 0, lowStockThreshold: 5, sizes: "", colors: "",
+  isFeatured: false, isNewArrival: false, isBestSeller: false, active: true,
+});
+
+function ShopProductsPanel({ canManage }) {
+  const [products, setProducts] = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [subcategories, setSubcategories] = useState([]);
+  const [brands, setBrands] = useState([]);
+  const [categoryFilter, setCategoryFilter] = useState("");
+  const [editing, setEditing] = useState(null); // 'new' | product object | null
+  const [form, setForm] = useState(emptyProductForm());
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [images, setImages] = useState([]);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const fileInputRef = useRef(null);
+
+  const fetchLookups = async () => {
+    try {
+      const [cats, subs, brs] = await Promise.all([
+        DalabAdminApi.getShopCategories(), DalabAdminApi.getShopElectronicsSubcategories(), DalabAdminApi.getShopBrands(),
+      ]);
+      setCategories(cats); setSubcategories(subs); setBrands(brs);
+    } catch (err) { setError(err.message || "Could not load categories/brands."); }
+  };
+  useEffect(() => { fetchLookups(); }, []);
+
+  const fetchProducts = async () => {
+    try { setProducts(await DalabAdminApi.getShopProducts(categoryFilter ? { categoryId: categoryFilter } : {})); }
+    catch (err) { setError(err.message || "Could not load products."); }
+  };
+  useEffect(() => { fetchProducts(); }, [categoryFilter]);
+
+  const fetchImages = async (productId) => {
+    try { setImages(await DalabAdminApi.getShopProductImages(productId)); }
+    catch (err) { setError(err.message || "Could not load images."); }
+  };
+
+  const openNew = () => { setForm(emptyProductForm()); setImages([]); setEditing("new"); setError(""); };
+  const openEdit = (p) => {
+    setForm({
+      ...p,
+      price: String(p.price), discountPrice: p.discountPrice != null ? String(p.discountPrice) : "",
+      sizes: (p.sizes || []).join(", "), colors: (p.colors || []).join(", "),
+      subcategoryId: p.subcategoryId || "", brandId: p.brandId || "",
+    });
+    setEditing(p);
+    setError("");
+    fetchImages(p.id);
+  };
+
+  const save = async () => {
+    if (!form.name || !form.price) return;
+    setSaving(true);
+    try {
+      const body = {
+        name: form.name, description: form.description, categoryId: form.categoryId,
+        subcategoryId: form.categoryId === "electronics" && form.subcategoryId ? form.subcategoryId : null,
+        brandId: form.brandId || null, price: Number(form.price),
+        discountPrice: form.discountPrice !== "" ? Number(form.discountPrice) : null,
+        stock: Number(form.stock) || 0, lowStockThreshold: Number(form.lowStockThreshold) || 5,
+        sizes: form.sizes.split(",").map((s) => s.trim()).filter(Boolean),
+        colors: form.colors.split(",").map((s) => s.trim()).filter(Boolean),
+        isFeatured: !!form.isFeatured, isNewArrival: !!form.isNewArrival, isBestSeller: !!form.isBestSeller,
+        active: !!form.active,
+      };
+      let saved;
+      if (editing === "new") saved = await DalabAdminApi.createShopProduct(body);
+      else saved = await DalabAdminApi.updateShopProduct(editing.id, body);
+      await fetchProducts();
+      if (editing === "new") { setEditing(saved); fetchImages(saved.id); } // stay open so images can be added right away
+      else setEditing(null);
+    } catch (err) { setError(err.message || "Could not save product."); }
+    setSaving(false);
+  };
+
+  const toggleActive = async (p) => {
+    setProducts((prev) => prev.map((x) => (x.id === p.id ? { ...x, active: !x.active } : x)));
+    try { await DalabAdminApi.updateShopProduct(p.id, { active: !p.active }); } catch (err) { setError(err.message); fetchProducts(); }
+  };
+
+  const onFileSelected = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || editing === "new" || !editing) return;
+    setUploadingImage(true);
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try { await DalabAdminApi.uploadShopProductImage(editing.id, reader.result); await fetchImages(editing.id); }
+      catch (err) { setError(err.message || "Could not upload image."); }
+      setUploadingImage(false);
+    };
+    reader.onerror = () => { setError("Could not read that file."); setUploadingImage(false); };
+    reader.readAsDataURL(file);
+  };
+
+  const removeImage = async (imgId) => {
+    try { await DalabAdminApi.deleteShopProductImage(editing.id, imgId); fetchImages(editing.id); }
+    catch (err) { alert(err.message || "Could not remove image."); }
+  };
+
+  const subcategoryOptions = subcategories.filter((s) => s.active !== false);
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 12 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button onClick={() => setCategoryFilter("")} style={{ padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer", border: `1px solid ${!categoryFilter ? INDIGO : BORDER}`, background: !categoryFilter ? INDIGO : "#fff", color: !categoryFilter ? "#fff" : SLATE }}>All</button>
+          {categories.map((c) => (
+            <button key={c.id} onClick={() => setCategoryFilter(c.id)} style={{ padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer", border: `1px solid ${categoryFilter === c.id ? INDIGO : BORDER}`, background: categoryFilter === c.id ? INDIGO : "#fff", color: categoryFilter === c.id ? "#fff" : SLATE }}>{c.emoji} {c.name}</button>
+          ))}
+        </div>
+        {canManage && <Button icon={Plus} onClick={openNew}>Add product</Button>}
+      </div>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead><tr style={{ background: "#FAFBFF" }}>{["Name", "Category", "Price", "Stock", "Badges", "Status", ""].map((h) => <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>)}</tr></thead>
+          <tbody>
+            {products.map((p) => {
+              const cat = categories.find((c) => c.id === p.categoryId);
+              return (
+                <tr key={p.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{p.name}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{cat ? `${cat.emoji} ${cat.name}` : p.categoryId}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>
+                    {p.discountPrice != null ? (<><span style={{ textDecoration: "line-through", marginRight: 6 }}>${Number(p.price).toFixed(2)}</span><span style={{ color: GREEN, fontWeight: 700 }}>${Number(p.discountPrice).toFixed(2)}</span></>) : `$${Number(p.price).toFixed(2)}`}
+                  </td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5 }}>
+                    <span style={{ color: p.stock <= p.lowStockThreshold ? "#C81E2C" : SLATE, fontWeight: p.stock <= p.lowStockThreshold ? 700 : 400 }}>{p.stock}</span>
+                  </td>
+                  <td style={{ padding: "10px 14px" }}>
+                    <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                      {p.isFeatured && <Badge tone="blue">Featured</Badge>}
+                      {p.isNewArrival && <Badge tone="green">New</Badge>}
+                      {p.isBestSeller && <Badge tone="amber">Best Seller</Badge>}
+                    </div>
+                  </td>
+                  <td style={{ padding: "10px 14px" }}><Badge tone={p.active ? "green" : "gray"}>{p.active ? "Active" : "Inactive"}</Badge></td>
+                  <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
+                    {canManage && (
+                      <>
+                        <button onClick={() => toggleActive(p)} title={p.active ? "Deactivate" : "Activate"} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
+                          <Power size={14} color={p.active ? GREEN : "#C81E2C"} />
+                        </button>
+                        <button onClick={() => openEdit(p)} style={{ background: "none", border: "none", cursor: "pointer" }}><Pencil size={14} color={INDIGO} /></button>
+                      </>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+            {products.length === 0 && <tr><td colSpan={7} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No products yet.</td></tr>}
+          </tbody>
+        </table>
+      </Card>
+
+      {editing && (
+        <Modal title={editing === "new" ? "Add product" : `Edit: ${editing.name}`} onClose={() => setEditing(null)} width={560}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Name"><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
+            <Field label="Category">
+              <select style={inputStyle} value={form.categoryId} onChange={(e) => setForm({ ...form, categoryId: e.target.value, subcategoryId: "" })}>
+                {categories.map((c) => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
+              </select>
+            </Field>
+          </div>
+          <Field label="Description"><textarea style={{ ...inputStyle, minHeight: 60 }} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            {form.categoryId === "electronics" && (
+              <Field label="Electronics subcategory">
+                <select style={inputStyle} value={form.subcategoryId} onChange={(e) => setForm({ ...form, subcategoryId: e.target.value })}>
+                  <option value="">— None —</option>
+                  {subcategoryOptions.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </Field>
+            )}
+            <Field label="Brand">
+              <select style={inputStyle} value={form.brandId} onChange={(e) => setForm({ ...form, brandId: e.target.value })}>
+                <option value="">— None —</option>
+                {brands.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+            </Field>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Price ($)"><input type="number" step="0.01" style={inputStyle} value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} /></Field>
+            <Field label="Discount price ($, optional)"><input type="number" step="0.01" style={inputStyle} value={form.discountPrice} onChange={(e) => setForm({ ...form, discountPrice: e.target.value })} /></Field>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Stock"><input type="number" style={inputStyle} value={form.stock} onChange={(e) => setForm({ ...form, stock: e.target.value })} /></Field>
+            <Field label="Low-stock alert threshold"><input type="number" style={inputStyle} value={form.lowStockThreshold} onChange={(e) => setForm({ ...form, lowStockThreshold: e.target.value })} /></Field>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Sizes (comma-separated, optional)"><input style={inputStyle} value={form.sizes} onChange={(e) => setForm({ ...form, sizes: e.target.value })} placeholder="S, M, L" /></Field>
+            <Field label="Colors (comma-separated, optional)"><input style={inputStyle} value={form.colors} onChange={(e) => setForm({ ...form, colors: e.target.value })} placeholder="Black, White" /></Field>
+          </div>
+          <div style={{ display: "flex", gap: 16, marginBottom: 14, flexWrap: "wrap" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: SLATE, cursor: "pointer" }}>
+              <input type="checkbox" checked={!!form.isFeatured} onChange={(e) => setForm({ ...form, isFeatured: e.target.checked })} /> Featured
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: SLATE, cursor: "pointer" }}>
+              <input type="checkbox" checked={!!form.isNewArrival} onChange={(e) => setForm({ ...form, isNewArrival: e.target.checked })} /> New Arrival
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: SLATE, cursor: "pointer" }}>
+              <input type="checkbox" checked={!!form.isBestSeller} onChange={(e) => setForm({ ...form, isBestSeller: e.target.checked })} /> Best Seller
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: SLATE, cursor: "pointer" }}>
+              <input type="checkbox" checked={!!form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} /> Active
+            </label>
+          </div>
+
+          {editing !== "new" && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: SLATE, marginBottom: 8 }}>Product images</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+                {images.map((img) => (
+                  <div key={img.id} style={{ position: "relative", width: 64, height: 64, borderRadius: 8, overflow: "hidden", background: INDIGO_SOFT }}>
+                    <img src={DalabAdminApi.shopProductImageUrl(editing.id, img.id)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                    {canManage && (
+                      <button onClick={() => removeImage(img.id)} style={{ position: "absolute", top: 2, right: 2, background: "rgba(0,0,0,0.55)", border: "none", borderRadius: 6, padding: 2, cursor: "pointer" }}>
+                        <X size={11} color="#fff" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+              {canManage && (
+                <>
+                  <input ref={fileInputRef} type="file" accept="image/*" onChange={onFileSelected} style={{ display: "none" }} />
+                  <Button variant="ghost" icon={Upload} disabled={uploadingImage} spin={uploadingImage} onClick={() => fileInputRef.current?.click()}>
+                    {uploadingImage ? "Uploading..." : "Add image"}
+                  </Button>
+                </>
+              )}
+            </div>
+          )}
+          {editing === "new" && <div style={{ fontSize: 11.5, color: MUTE, marginBottom: 14 }}>Save the product first, then images can be added.</div>}
+
+          {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            {canManage && <Button onClick={save} icon={Check} disabled={saving}>{saving ? "Saving..." : "Save"}</Button>}
+            <Button variant="ghost" onClick={() => setEditing(null)}>Close</Button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function ShopFlashSalesPanel({ canManage }) {
+  const [rows, setRows] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({});
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const fetchAll = async () => {
+    try {
+      const [fs, prods] = await Promise.all([DalabAdminApi.getShopFlashSales(), DalabAdminApi.getShopProducts()]);
+      setRows(fs); setProducts(prods);
+    } catch (err) { setError(err.message || "Could not load flash sales."); }
+  };
+  useEffect(() => { fetchAll(); }, []);
+
+  const openNew = () => { setForm({ productId: products[0]?.id || "", discountPrice: "", startsAt: "", endsAt: "" }); setEditing("new"); setError(""); };
+
+  const save = async () => {
+    if (!form.productId || form.discountPrice === "" || !form.startsAt || !form.endsAt) return;
+    setSaving(true);
+    try {
+      await DalabAdminApi.createShopFlashSale({
+        productId: form.productId, discountPrice: Number(form.discountPrice),
+        startsAt: new Date(form.startsAt).toISOString(), endsAt: new Date(form.endsAt).toISOString(),
+      });
+      await fetchAll();
+      setEditing(null);
+    } catch (err) { setError(err.message || "Could not create flash sale."); }
+    setSaving(false);
+  };
+
+  const toggleActive = async (r) => {
+    setRows((prev) => prev.map((x) => (x.id === r.id ? { ...x, active: !x.active } : x)));
+    try { await DalabAdminApi.updateShopFlashSale(r.id, { active: !r.active }); } catch (err) { setError(err.message); fetchAll(); }
+  };
+
+  const remove = async (r) => {
+    if (!window.confirm("Remove this flash sale?")) return;
+    try { await DalabAdminApi.deleteShopFlashSale(r.id); fetchAll(); } catch (err) { alert(err.message || "Could not remove flash sale."); }
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+        {canManage && <Button icon={Zap} onClick={openNew} disabled={products.length === 0}>Add flash sale</Button>}
+      </div>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead><tr style={{ background: "#FAFBFF" }}>{["Product", "Sale price", "Starts", "Ends", "Status", ""].map((h) => <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>)}</tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{r.productName}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: GREEN, fontWeight: 700 }}>${Number(r.discountPrice).toFixed(2)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12, color: SLATE }}>{formatDateTime(r.startsAt)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12, color: SLATE }}>{formatDateTime(r.endsAt)}</td>
+                <td style={{ padding: "10px 14px" }}><Badge tone={r.active ? "green" : "gray"}>{r.active ? "Active" : "Inactive"}</Badge></td>
+                <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
+                  {canManage && (
+                    <>
+                      <button onClick={() => toggleActive(r)} title={r.active ? "Deactivate" : "Activate"} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
+                        <Power size={14} color={r.active ? GREEN : "#C81E2C"} />
+                      </button>
+                      <button onClick={() => remove(r)} style={{ background: "none", border: "none", cursor: "pointer" }}><Trash2 size={14} color="#C81E2C" /></button>
+                    </>
+                  )}
+                </td>
+              </tr>
+            ))}
+            {rows.length === 0 && <tr><td colSpan={6} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No flash sales yet.</td></tr>}
+          </tbody>
+        </table>
+      </Card>
+      {editing && (
+        <Modal title="Add flash sale" onClose={() => setEditing(null)} width={420}>
+          <Field label="Product">
+            <select style={inputStyle} value={form.productId} onChange={(e) => setForm({ ...form, productId: e.target.value })}>
+              {products.map((p) => <option key={p.id} value={p.id}>{p.name} (${Number(p.price).toFixed(2)})</option>)}
+            </select>
+          </Field>
+          <Field label="Sale price ($)"><input type="number" step="0.01" style={inputStyle} value={form.discountPrice} onChange={(e) => setForm({ ...form, discountPrice: e.target.value })} /></Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Starts"><input type="datetime-local" style={inputStyle} value={form.startsAt} onChange={(e) => setForm({ ...form, startsAt: e.target.value })} /></Field>
+            <Field label="Ends"><input type="datetime-local" style={inputStyle} value={form.endsAt} onChange={(e) => setForm({ ...form, endsAt: e.target.value })} /></Field>
+          </div>
+          {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            <Button onClick={save} icon={Check} disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
+            <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function ShopPromoCodesPanel({ canManage }) {
+  const [rows, setRows] = useState([]);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({});
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const fetchRows = async () => {
+    try { setRows(await DalabAdminApi.getShopPromoCodes()); }
+    catch (err) { setError(err.message || "Could not load promo codes."); }
+  };
+  useEffect(() => { fetchRows(); }, []);
+
+  const openNew = () => { setForm({ code: "", discountType: "percent", discountValue: "", minOrderAmount: "0", usageLimit: "" }); setEditing("new"); setError(""); };
+
+  const save = async () => {
+    if (!form.code || form.discountValue === "") return;
+    setSaving(true);
+    try {
+      await DalabAdminApi.createShopPromoCode({
+        code: form.code, discountType: form.discountType, discountValue: Number(form.discountValue),
+        minOrderAmount: Number(form.minOrderAmount) || 0,
+        usageLimit: form.usageLimit !== "" ? Number(form.usageLimit) : null,
+      });
+      await fetchRows();
+      setEditing(null);
+    } catch (err) { setError(err.message || "Could not create promo code."); }
+    setSaving(false);
+  };
+
+  const toggleActive = async (r) => {
+    setRows((prev) => prev.map((x) => (x.id === r.id ? { ...x, active: !x.active } : x)));
+    try { await DalabAdminApi.updateShopPromoCode(r.id, { active: !r.active }); } catch (err) { setError(err.message); fetchRows(); }
+  };
+
+  const remove = async (r) => {
+    if (!window.confirm(`Delete promo code "${r.code}"?`)) return;
+    try { await DalabAdminApi.deleteShopPromoCode(r.id); fetchRows(); } catch (err) { alert(err.message || "Could not delete promo code."); }
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+        {canManage && <Button icon={Tag} onClick={openNew}>Add promo code</Button>}
+      </div>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead><tr style={{ background: "#FAFBFF" }}>{["Code", "Discount", "Min order", "Used / Limit", "Status", ""].map((h) => <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>)}</tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13, fontFamily: "monospace" }}>{r.code}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{r.discountType === "percent" ? `${r.discountValue}%` : `$${Number(r.discountValue).toFixed(2)}`}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>${Number(r.minOrderAmount).toFixed(2)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{r.usedCount}{r.usageLimit != null ? ` / ${r.usageLimit}` : ""}</td>
+                <td style={{ padding: "10px 14px" }}><Badge tone={r.active ? "green" : "gray"}>{r.active ? "Active" : "Inactive"}</Badge></td>
+                <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
+                  {canManage && (
+                    <>
+                      <button onClick={() => toggleActive(r)} title={r.active ? "Deactivate" : "Activate"} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
+                        <Power size={14} color={r.active ? GREEN : "#C81E2C"} />
+                      </button>
+                      <button onClick={() => remove(r)} style={{ background: "none", border: "none", cursor: "pointer" }}><Trash2 size={14} color="#C81E2C" /></button>
+                    </>
+                  )}
+                </td>
+              </tr>
+            ))}
+            {rows.length === 0 && <tr><td colSpan={6} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No promo codes yet.</td></tr>}
+          </tbody>
+        </table>
+      </Card>
+      {editing && (
+        <Modal title="Add promo code" onClose={() => setEditing(null)} width={400}>
+          <Field label="Code"><input style={{ ...inputStyle, textTransform: "uppercase" }} value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value.toUpperCase() })} placeholder="e.g. SHOP10" /></Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Discount type">
+              <select style={inputStyle} value={form.discountType} onChange={(e) => setForm({ ...form, discountType: e.target.value })}>
+                <option value="percent">Percent</option>
+                <option value="fixed">Fixed amount</option>
+              </select>
+            </Field>
+            <Field label={form.discountType === "percent" ? "Discount (%)" : "Discount ($)"}>
+              <input type="number" step="0.01" style={inputStyle} value={form.discountValue} onChange={(e) => setForm({ ...form, discountValue: e.target.value })} />
+            </Field>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Minimum order ($)"><input type="number" step="0.01" style={inputStyle} value={form.minOrderAmount} onChange={(e) => setForm({ ...form, minOrderAmount: e.target.value })} /></Field>
+            <Field label="Usage limit (optional)"><input type="number" style={inputStyle} value={form.usageLimit} onChange={(e) => setForm({ ...form, usageLimit: e.target.value })} placeholder="Unlimited" /></Field>
+          </div>
+          {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            <Button onClick={save} icon={Check} disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
+            <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function ShopOrdersPanel({ canManage }) {
+  const [orders, setOrders] = useState([]);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [error, setError] = useState("");
+  const [selected, setSelected] = useState(null);
+  const [statusForm, setStatusForm] = useState({});
+  const [saving, setSaving] = useState(false);
+
+  const fetchOrders = async () => {
+    try { setOrders(await DalabAdminApi.getShopOrders(statusFilter)); }
+    catch (err) { setError(err.message || "Could not load orders."); }
+  };
+  useEffect(() => { fetchOrders(); }, [statusFilter]);
+
+  const openOrder = async (o) => {
+    setError("");
+    try {
+      const full = await DalabAdminApi.getShopOrder(o.id);
+      setSelected(full);
+      setStatusForm({ status: full.status, courierName: full.courierName || "", trackingReference: full.trackingReference || "", trackingNote: full.trackingNote || "" });
+    } catch (err) { setError(err.message || "Could not load order."); }
+  };
+
+  const saveStatus = async () => {
+    setSaving(true);
+    try {
+      const updated = await DalabAdminApi.updateShopOrderStatus(selected.id, statusForm);
+      setSelected({ ...selected, ...updated });
+      await fetchOrders();
+    } catch (err) { setError(err.message || "Could not update order."); }
+    setSaving(false);
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        <button onClick={() => setStatusFilter("")} style={{ padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer", border: `1px solid ${!statusFilter ? INDIGO : BORDER}`, background: !statusFilter ? INDIGO : "#fff", color: !statusFilter ? "#fff" : SLATE }}>All</button>
+        {SHOP_ORDER_STATUSES.map((s) => (
+          <button key={s} onClick={() => setStatusFilter(s)} style={{ padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer", border: `1px solid ${statusFilter === s ? INDIGO : BORDER}`, background: statusFilter === s ? INDIGO : "#fff", color: statusFilter === s ? "#fff" : SLATE }}>{SHOP_ORDER_STATUS_META[s].label}</button>
+        ))}
+      </div>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead><tr style={{ background: "#FAFBFF" }}>{["Order", "Customer", "Total", "Payment", "Status", "Placed"].map((h) => <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>)}</tr></thead>
+          <tbody>
+            {orders.map((o) => (
+              <tr key={o.id} onClick={() => openOrder(o)} style={{ borderTop: `1px solid ${BORDER}`, cursor: "pointer" }}>
+                <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, color: INK, fontWeight: 700 }}>{o.id}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{o.customerName || o.customerPhone}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: INK }}>${Number(o.totalAmount).toFixed(2)}</td>
+                <td style={{ padding: "10px 14px" }}><Badge tone={o.paymentStatus === "paid" ? "green" : "amber"}>{o.paymentStatus === "paid" ? "Paid" : "Unpaid"}</Badge></td>
+                <td style={{ padding: "10px 14px" }}><Badge tone={SHOP_ORDER_STATUS_META[o.status]?.tone || "neutral"}>{SHOP_ORDER_STATUS_META[o.status]?.label || o.status}</Badge></td>
+                <td style={{ padding: "10px 14px", fontSize: 12, color: SLATE }}>{formatDateTime(o.createdAt)}</td>
+              </tr>
+            ))}
+            {orders.length === 0 && <tr><td colSpan={6} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No orders.</td></tr>}
+          </tbody>
+        </table>
+      </Card>
+
+      {selected && (
+        <Modal title={`Order ${selected.id}`} onClose={() => setSelected(null)} width={520}>
+          <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+            <Badge tone={selected.paymentStatus === "paid" ? "green" : "amber"}>{selected.paymentStatus === "paid" ? "Paid" : "Unpaid"}</Badge>
+            <Badge tone={SHOP_ORDER_STATUS_META[selected.status]?.tone || "neutral"}>{SHOP_ORDER_STATUS_META[selected.status]?.label || selected.status}</Badge>
+            {selected.isGift && <Badge tone="blue">Gift</Badge>}
+          </div>
+
+          <div style={{ fontSize: 12, fontWeight: 700, color: SLATE, marginBottom: 6 }}>CUSTOMER</div>
+          <div style={{ fontSize: 13, color: INK, marginBottom: 4 }}>{selected.customerName || "—"} · {selected.customerPhone || selected.senderPhone}</div>
+
+          <div style={{ fontSize: 12, fontWeight: 700, color: SLATE, marginTop: 14, marginBottom: 6 }}>ITEMS</div>
+          {(selected.items || []).map((it) => (
+            <div key={it.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: INK, padding: "4px 0" }}>
+              <span>{it.productName} × {it.quantity}{it.size ? ` (${it.size})` : ""}{it.color ? ` ${it.color}` : ""}</span>
+              <span style={{ fontWeight: 700 }}>${Number(it.subtotal).toFixed(2)}</span>
+            </div>
+          ))}
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 800, color: INK, borderTop: `1px solid ${BORDER}`, marginTop: 8, paddingTop: 8 }}>
+            <span>Total</span><span>${Number(selected.totalAmount).toFixed(2)}</span>
+          </div>
+
+          <div style={{ fontSize: 12, fontWeight: 700, color: SLATE, marginTop: 14, marginBottom: 6 }}>DELIVERY</div>
+          <div style={{ fontSize: 12.5, color: INK }}>{selected.deliveryName} · {selected.deliveryPhone}</div>
+          <div style={{ fontSize: 12.5, color: SLATE, marginTop: 2 }}>{selected.deliveryAddress}</div>
+          {selected.isGift && (
+            <div style={{ fontSize: 12, color: SLATE, marginTop: 6 }}>
+              🎁 For {selected.giftRecipientName} ({selected.giftRecipientPhone}){selected.giftMessage ? ` — "${selected.giftMessage}"` : ""}{selected.giftWrap ? " — gift wrapped" : ""}
+            </div>
+          )}
+
+          <div style={{ fontSize: 12, fontWeight: 700, color: SLATE, marginTop: 16, marginBottom: 8 }}>UPDATE STATUS</div>
+          <Field label="Order status">
+            <select style={inputStyle} value={statusForm.status} onChange={(e) => setStatusForm({ ...statusForm, status: e.target.value })} disabled={!canManage}>
+              {SHOP_ORDER_STATUSES.map((s) => <option key={s} value={s}>{SHOP_ORDER_STATUS_META[s].label}</option>)}
+            </select>
+          </Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Courier"><input style={inputStyle} value={statusForm.courierName} onChange={(e) => setStatusForm({ ...statusForm, courierName: e.target.value })} disabled={!canManage} /></Field>
+            <Field label="Tracking reference"><input style={inputStyle} value={statusForm.trackingReference} onChange={(e) => setStatusForm({ ...statusForm, trackingReference: e.target.value })} disabled={!canManage} /></Field>
+          </div>
+          <Field label="Delivery note"><input style={inputStyle} value={statusForm.trackingNote} onChange={(e) => setStatusForm({ ...statusForm, trackingNote: e.target.value })} disabled={!canManage} /></Field>
+
+          {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            {canManage && <Button onClick={saveStatus} icon={Check} disabled={saving}>{saving ? "Saving..." : "Update"}</Button>}
+            <Button variant="ghost" onClick={() => setSelected(null)}>Close</Button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function ShopReturnsPanel({ canManage }) {
+  const [rows, setRows] = useState([]);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [error, setError] = useState("");
+  const [selected, setSelected] = useState(null);
+  const [form, setForm] = useState({});
+  const [saving, setSaving] = useState(false);
+
+  const fetchRows = async () => {
+    try { setRows(await DalabAdminApi.getShopReturns(statusFilter)); }
+    catch (err) { setError(err.message || "Could not load return requests."); }
+  };
+  useEffect(() => { fetchRows(); }, [statusFilter]);
+
+  const open = (r) => { setSelected(r); setForm({ status: r.status, adminNote: r.adminNote || "" }); };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await DalabAdminApi.updateShopReturn(selected.id, form);
+      await fetchRows();
+      setSelected(null);
+    } catch (err) { setError(err.message || "Could not update request."); }
+    setSaving(false);
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        <button onClick={() => setStatusFilter("")} style={{ padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer", border: `1px solid ${!statusFilter ? INDIGO : BORDER}`, background: !statusFilter ? INDIGO : "#fff", color: !statusFilter ? "#fff" : SLATE }}>All</button>
+        {SHOP_RETURN_STATUSES.map((s) => (
+          <button key={s} onClick={() => setStatusFilter(s)} style={{ padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer", border: `1px solid ${statusFilter === s ? INDIGO : BORDER}`, background: statusFilter === s ? INDIGO : "#fff", color: statusFilter === s ? "#fff" : SLATE }}>{SHOP_RETURN_STATUS_META[s].label}</button>
+        ))}
+      </div>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead><tr style={{ background: "#FAFBFF" }}>{["Order", "Customer", "Type", "Reason", "Status", "Requested"].map((h) => <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>)}</tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id} onClick={() => open(r)} style={{ borderTop: `1px solid ${BORDER}`, cursor: "pointer" }}>
+                <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, color: INK, fontWeight: 700 }}>{r.orderId}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{r.customerName || r.customerPhone}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE, textTransform: "capitalize" }}>{r.type}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE, maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.reason}</td>
+                <td style={{ padding: "10px 14px" }}><Badge tone={SHOP_RETURN_STATUS_META[r.status]?.tone || "neutral"}>{SHOP_RETURN_STATUS_META[r.status]?.label || r.status}</Badge></td>
+                <td style={{ padding: "10px 14px", fontSize: 12, color: SLATE }}>{formatDateTime(r.createdAt)}</td>
+              </tr>
+            ))}
+            {rows.length === 0 && <tr><td colSpan={6} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No return/exchange/refund requests.</td></tr>}
+          </tbody>
+        </table>
+      </Card>
+
+      {selected && (
+        <Modal title={`${selected.type[0].toUpperCase()}${selected.type.slice(1)} request`} onClose={() => setSelected(null)} width={440}>
+          <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 4 }}>Order <span style={{ fontFamily: "monospace", color: INK }}>{selected.orderId}</span></div>
+          <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 14 }}>{selected.customerName || selected.customerPhone}</div>
+          <Field label="Customer's reason"><div style={{ fontSize: 13, color: INK, background: INDIGO_SOFT, borderRadius: 10, padding: 10 }}>{selected.reason || "—"}</div></Field>
+          <Field label="Status">
+            <select style={inputStyle} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })} disabled={!canManage}>
+              {SHOP_RETURN_STATUSES.map((s) => <option key={s} value={s}>{SHOP_RETURN_STATUS_META[s].label}</option>)}
+            </select>
+          </Field>
+          <Field label="Admin note / refund details"><textarea style={{ ...inputStyle, minHeight: 70 }} value={form.adminNote} onChange={(e) => setForm({ ...form, adminNote: e.target.value })} disabled={!canManage} /></Field>
+          {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            {canManage && <Button onClick={save} icon={Check} disabled={saving}>{saving ? "Saving..." : "Update"}</Button>}
+            <Button variant="ghost" onClick={() => setSelected(null)}>Close</Button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function ShopReviewsPanel({ canManage }) {
+  const [rows, setRows] = useState([]);
+  const [error, setError] = useState("");
+
+  const fetchRows = async () => {
+    try { setRows(await DalabAdminApi.getShopReviews()); }
+    catch (err) { setError(err.message || "Could not load reviews."); }
+  };
+  useEffect(() => { fetchRows(); }, []);
+
+  const remove = async (r) => {
+    if (!window.confirm(`Remove this review of "${r.productName}"?`)) return;
+    try { await DalabAdminApi.deleteShopReview(r.id); fetchRows(); } catch (err) { alert(err.message || "Could not remove review."); }
+  };
+
+  return (
+    <div>
+      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>Only customers with a real delivered order for the product can leave a review — moderation here is limited to removal.</div>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {rows.map((r) => (
+          <Card key={r.id} style={{ padding: 14, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+            <div style={{ display: "flex", gap: 12 }}>
+              {r.hasPhoto && (
+                <img src={DalabAdminApi.shopReviewPhotoUrl(r.id)} alt="" style={{ width: 52, height: 52, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
+              )}
+              <div>
+                <div style={{ fontWeight: 700, color: INK, fontSize: 13 }}>{r.productName}</div>
+                <div style={{ fontSize: 11.5, color: MUTE, margin: "2px 0 6px" }}>{r.customerName || r.customerPhone} · {formatDateTime(r.createdAt)}</div>
+                <div style={{ display: "flex", gap: 2, marginBottom: 4 }}>
+                  {Array.from({ length: 5 }).map((_, i) => <Star key={i} size={13} color={i < r.rating ? "#F5A623" : BORDER} fill={i < r.rating ? "#F5A623" : "none"} />)}
+                </div>
+                {r.reviewText && <div style={{ fontSize: 12.5, color: SLATE }}>{r.reviewText}</div>}
+              </div>
+            </div>
+            {canManage && (
+              <button onClick={() => remove(r)} style={{ background: "none", border: "none", cursor: "pointer", flexShrink: 0 }}><Trash2 size={14} color="#C81E2C" /></button>
+            )}
+          </Card>
+        ))}
+        {rows.length === 0 && <div style={{ padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No reviews yet.</div>}
+      </div>
+    </div>
+  );
+}
+
+function ShopPaymentMethodsPanel({ canManage }) {
+  const [rows, setRows] = useState([]);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({});
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const fetchRows = async () => {
+    try { setRows(await DalabAdminApi.getShopPaymentMethods()); }
+    catch (err) { setError(err.message || "Could not load payment methods."); }
+  };
+  useEffect(() => { fetchRows(); }, []);
+
+  const openNew = () => { setForm({ method: "", label: "", paymentNumber: "", ussdTemplate: "", sortOrder: 0 }); setEditing("new"); setError(""); };
+  const openEdit = (r) => { setForm({ ...r }); setEditing(r.id); setError(""); };
+
+  const save = async () => {
+    if (!form.method || !form.label) return;
+    setSaving(true);
+    try {
+      const body = { label: form.label, paymentNumber: form.paymentNumber, ussdTemplate: form.ussdTemplate, sortOrder: Number(form.sortOrder) || 0 };
+      if (editing === "new") await DalabAdminApi.createShopPaymentMethod({ ...body, method: form.method });
+      else await DalabAdminApi.updateShopPaymentMethod(editing, body);
+      await fetchRows();
+      setEditing(null);
+    } catch (err) { setError(err.message || "Could not save payment method."); }
+    setSaving(false);
+  };
+
+  const toggleEnabled = async (r) => {
+    setRows((prev) => prev.map((x) => (x.id === r.id ? { ...x, enabled: !x.enabled } : x)));
+    try { await DalabAdminApi.updateShopPaymentMethod(r.id, { enabled: !r.enabled }); } catch (err) { setError(err.message); fetchRows(); }
+  };
+
+  const remove = async (r) => {
+    if (!window.confirm(`Remove payment method "${r.label}"?`)) return;
+    try { await DalabAdminApi.deleteShopPaymentMethod(r.id); fetchRows(); } catch (err) { alert(err.message || "Could not remove payment method."); }
+  };
+
+  if (!canManage) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Only the Super Admin can manage Shop payment methods — this directly controls what the Customer App dials to pay.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14, maxWidth: 640 }}>
+        The USSD template's <code>{"{amount}"}</code> placeholder is substituted server-side at checkout (e.g. <code>*712*61XXXXXXXX*{"{amount}"}#</code>). deviceId/simSlot (which Agent App device collects this method's payments) auto-link the first time a real payment is matched — see Device & USSD.
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+        <Button icon={Plus} onClick={openNew}>Add payment method</Button>
+      </div>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead><tr style={{ background: "#FAFBFF" }}>{["Method", "Label", "Payment number", "Device", "Status", ""].map((h) => <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>)}</tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, color: INK }}>{r.method}</td>
+                <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{r.label}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{r.paymentNumber || "—"}</td>
+                <td style={{ padding: "10px 14px", fontSize: 11.5, color: r.deviceId ? SLATE : "#C81E2C" }}>{r.deviceId || "Not linked yet"}</td>
+                <td style={{ padding: "10px 14px" }}><Badge tone={r.enabled ? "green" : "gray"}>{r.enabled ? "Enabled" : "Disabled"}</Badge></td>
+                <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
+                  <button onClick={() => toggleEnabled(r)} title={r.enabled ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
+                    <Power size={14} color={r.enabled ? GREEN : "#C81E2C"} />
+                  </button>
+                  <button onClick={() => openEdit(r)} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}><Pencil size={14} color={INDIGO} /></button>
+                  <button onClick={() => remove(r)} style={{ background: "none", border: "none", cursor: "pointer" }}><Trash2 size={14} color="#C81E2C" /></button>
+                </td>
+              </tr>
+            ))}
+            {rows.length === 0 && <tr><td colSpan={6} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No Shop payment methods configured yet.</td></tr>}
+          </tbody>
+        </table>
+      </Card>
+      {editing && (
+        <Modal title={editing === "new" ? "Add payment method" : "Edit payment method"} onClose={() => setEditing(null)} width={420}>
+          {editing === "new" && <Field label="Method key"><input style={inputStyle} value={form.method} onChange={(e) => setForm({ ...form, method: e.target.value.toLowerCase() })} placeholder="evc" /></Field>}
+          <Field label="Display label"><input style={inputStyle} value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder="EVC Plus" /></Field>
+          <Field label="Payment number"><input style={inputStyle} value={form.paymentNumber || ""} onChange={(e) => setForm({ ...form, paymentNumber: e.target.value })} /></Field>
+          <Field label="USSD template"><input style={inputStyle} value={form.ussdTemplate || ""} onChange={(e) => setForm({ ...form, ussdTemplate: e.target.value })} placeholder="*712*61XXXXXXXX*{amount}#" /></Field>
+          <Field label="Sort order"><input type="number" style={inputStyle} value={form.sortOrder ?? 0} onChange={(e) => setForm({ ...form, sortOrder: e.target.value })} /></Field>
+          {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            <Button onClick={save} icon={Check} disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
+            <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function ShopSettingsPanel({ canManage }) {
+  const [settings, setSettings] = useState(null);
+  const [liveStatus, setLiveStatus] = useState(null);
+  const [form, setForm] = useState(null);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const fetchAll = async () => {
+    try {
+      const [s, live] = await Promise.all([DalabAdminApi.getShopSettings(), dalabAdminApiRequest("/shop/settings")]);
+      setSettings(s);
+      setLiveStatus(live);
+      setForm({ workingDays: s.workingDays, openingTime: s.openingTime?.slice(0, 5) || "08:00", closingTime: s.closingTime?.slice(0, 5) || "20:00", manualOverride: s.manualOverride || "" });
+    } catch (err) { setError(err.message || "Could not load Shop settings."); }
+  };
+  useEffect(() => { fetchAll(); }, []);
+
+  if (!settings || !form) {
+    return error ? <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div> : <div style={{ fontSize: 12.5, color: MUTE }}>Loading...</div>;
+  }
+
+  const toggleDay = (d) => {
+    setForm((f) => ({ ...f, workingDays: f.workingDays.includes(d) ? f.workingDays.filter((x) => x !== d) : [...f.workingDays, d].sort() }));
+  };
+
+  const save = async () => {
+    setSaving(true); setSaved(false);
+    try {
+      await DalabAdminApi.updateShopSettings({
+        workingDays: form.workingDays, openingTime: form.openingTime, closingTime: form.closingTime,
+        manualOverride: form.manualOverride || null,
+      });
+      await fetchAll();
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) { setError(err.message || "Could not save Shop settings."); }
+    setSaving(false);
+  };
+
+  if (!canManage) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Only the Super Admin can change Shop hours and Open/Closed status.</div>;
+  }
+
+  return (
+    <div style={{ maxWidth: 520 }}>
+      <div style={{ marginBottom: 18 }}>
+        <Badge tone={liveStatus?.isOpen ? "green" : "red"}>{liveStatus?.isOpen ? "🟢 Shop is currently Open" : "🔴 Shop is currently Closed"}</Badge>
+      </div>
+
+      <Field label="Working days">
+        <div style={{ display: "flex", gap: 6 }}>
+          {WEEKDAY_LABELS.map((label, d) => (
+            <button key={d} onClick={() => toggleDay(d)} style={{
+              width: 40, height: 40, borderRadius: 10, cursor: "pointer", fontSize: 12, fontWeight: 700,
+              border: `1px solid ${form.workingDays.includes(d) ? INDIGO : BORDER}`,
+              background: form.workingDays.includes(d) ? INDIGO : "#fff", color: form.workingDays.includes(d) ? "#fff" : SLATE,
+            }}>{label}</button>
+          ))}
+        </div>
+      </Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Opening time"><input type="time" style={inputStyle} value={form.openingTime} onChange={(e) => setForm({ ...form, openingTime: e.target.value })} /></Field>
+        <Field label="Closing time"><input type="time" style={inputStyle} value={form.closingTime} onChange={(e) => setForm({ ...form, closingTime: e.target.value })} /></Field>
+      </div>
+      <Field label="Manual override">
+        <select style={inputStyle} value={form.manualOverride} onChange={(e) => setForm({ ...form, manualOverride: e.target.value })}>
+          <option value="">Follow the schedule automatically</option>
+          <option value="open">Force Open (ignore schedule)</option>
+          <option value="closed">Force Closed (ignore schedule)</option>
+        </select>
+      </Field>
+      <div style={{ fontSize: 11.5, color: MUTE, marginBottom: 14 }}>While Closed, customers can still browse and manage existing orders — new checkout/payment attempts are blocked server-side.</div>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <Button onClick={save} icon={Check} disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
+        {saved && <span style={{ fontSize: 12, color: GREEN, fontWeight: 700 }}>Saved</span>}
+      </div>
+    </div>
+  );
+}
+
+function ShopStatCard({ label, value, icon: Icon }) {
+  return (
+    <Card style={{ padding: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+        <div style={{ width: 32, height: 32, borderRadius: 9, background: INDIGO_SOFT, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <Icon size={16} color={INDIGO} />
+        </div>
+        <div style={{ fontSize: 11.5, color: MUTE, fontWeight: 700 }}>{label}</div>
+      </div>
+      <div style={{ fontSize: 22, fontWeight: 800, color: INK }}>{value}</div>
+    </Card>
+  );
+}
+
+function ShopAnalyticsPanel() {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    DalabAdminApi.getShopAnalytics().then(setData).catch((err) => setError(err.message || "Could not load analytics."));
+  }, []);
+
+  if (error) return <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div>;
+  if (!data) return <div style={{ fontSize: 12.5, color: MUTE }}>Loading...</div>;
+
+  const chartData = (data.revenueByDate || []).map((d) => ({
+    date: new Date(d.date).toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+    revenue: Number(d.revenue),
+  }));
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginBottom: 20 }}>
+        <ShopStatCard label="Total Orders" value={data.totalOrders} icon={ShoppingBag} />
+        <ShopStatCard label="Completed" value={data.completedOrders} icon={CheckCircle2} />
+        <ShopStatCard label="Cancelled" value={data.cancelledOrders} icon={XCircle} />
+        <ShopStatCard label="Total Sales" value={`$${Number(data.totalSales).toFixed(2)}`} icon={DollarSign} />
+      </div>
+
+      <Card style={{ padding: 18, marginBottom: 20 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: INK, marginBottom: 12 }}>Revenue — last 30 days</div>
+        <ResponsiveContainer width="100%" height={220}>
+          <LineChart data={chartData}>
+            <CartesianGrid strokeDasharray="3 3" stroke={BORDER} />
+            <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+            <YAxis tick={{ fontSize: 11 }} />
+            <Tooltip />
+            <Line type="monotone" dataKey="revenue" stroke={INDIGO} strokeWidth={2} dot={false} />
+          </LineChart>
+        </ResponsiveContainer>
+      </Card>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <Card style={{ padding: 18 }}>
+          <div style={{ fontWeight: 800, fontSize: 14, color: INK, marginBottom: 10 }}>Best-selling products</div>
+          {(data.bestProducts || []).map((p, i) => (
+            <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "6px 0", borderTop: i > 0 ? `1px solid ${BORDER}` : "none" }}>
+              <span style={{ color: INK }}>{p.productName}</span>
+              <span style={{ color: SLATE }}>{p.unitsSold} sold · ${Number(p.revenue).toFixed(2)}</span>
+            </div>
+          ))}
+          {(data.bestProducts || []).length === 0 && <div style={{ fontSize: 12, color: MUTE }}>No sales yet.</div>}
+        </Card>
+
+        <Card style={{ padding: 18 }}>
+          <div style={{ fontWeight: 800, fontSize: 14, color: INK, marginBottom: 10 }}>Best categories</div>
+          {(data.bestCategories || []).map((c, i) => (
+            <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "6px 0", borderTop: i > 0 ? `1px solid ${BORDER}` : "none" }}>
+              <span style={{ color: INK, textTransform: "capitalize" }}>{c.categoryId}</span>
+              <span style={{ color: SLATE }}>{c.unitsSold} sold · ${Number(c.revenue).toFixed(2)}</span>
+            </div>
+          ))}
+          {(data.bestCategories || []).length === 0 && <div style={{ fontSize: 12, color: MUTE }}>No sales yet.</div>}
+        </Card>
+
+        <Card style={{ padding: 18 }}>
+          <div style={{ fontWeight: 800, fontSize: 14, color: INK, marginBottom: 10 }}>Best Electronics subcategories</div>
+          {(data.bestElectronicsSubcategories || []).map((s, i) => (
+            <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "6px 0", borderTop: i > 0 ? `1px solid ${BORDER}` : "none" }}>
+              <span style={{ color: INK }}>{s.name}</span>
+              <span style={{ color: SLATE }}>{s.unitsSold} sold · ${Number(s.revenue).toFixed(2)}</span>
+            </div>
+          ))}
+          {(data.bestElectronicsSubcategories || []).length === 0 && <div style={{ fontSize: 12, color: MUTE }}>None yet.</div>}
+        </Card>
+
+        <Card style={{ padding: 18 }}>
+          <div style={{ fontWeight: 800, fontSize: 14, color: INK, marginBottom: 10 }}>Low-stock products</div>
+          {(data.lowStockProducts || []).map((p, i) => (
+            <div key={p.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "6px 0", borderTop: i > 0 ? `1px solid ${BORDER}` : "none" }}>
+              <span style={{ color: INK }}>{p.name}</span>
+              <span style={{ color: "#C81E2C", fontWeight: 700 }}>{p.stock} left</span>
+            </div>
+          ))}
+          {(data.lowStockProducts || []).length === 0 && <div style={{ fontSize: 12, color: MUTE }}>Nothing low on stock.</div>}
+        </Card>
       </div>
     </div>
   );
