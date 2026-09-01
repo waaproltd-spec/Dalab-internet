@@ -90,6 +90,13 @@ beforeEach(async () => {
     [randomUUID(), categoryId]
   );
   productId = product!.id;
+
+  // Reset to defaults before every test -- open (no manual override, every
+  // day, all-day hours) with no delivery fee, so a settings change one test
+  // makes never leaks into the next.
+  await query(
+    `UPDATE shop_settings SET delivery_fee=0, working_days='{0,1,2,3,4,5,6}', opening_time='00:00', closing_time='23:59', manual_override=NULL WHERE id=true`
+  );
 });
 
 test("the 5 fixed categories were seeded by the migration, with no clothing or shoes category", async () => {
@@ -140,6 +147,10 @@ test("a customer can place an order: stock is reserved, total is server-computed
   assert.equal(order.dialUssd, "*712*610338686*50#");
   assert.equal(order.items.length, 1);
   assert.equal(order.items[0].quantity, 2);
+  assert.equal(order.isGift, false, "isGift defaults to false when not a gift order");
+  assert.equal(order.giftRecipientName, null);
+  assert.equal(order.deliveryNotes, null);
+  assert.equal(Number(order.deliveryFee), 0);
 
   const product = await queryOne<{ stock: number }>(`SELECT stock FROM shop_products WHERE id=$1`, [productId]);
   assert.equal(product!.stock, 1, "stock must be decremented at order-creation time");
@@ -581,4 +592,143 @@ test("failed and returned statuses restore stock; refunded alone does not; and n
   assert.equal(refundRes.status, 200);
   const afterRefund = await queryOne<{ stock: number }>(`SELECT stock FROM shop_products WHERE id=$1`, [productId]);
   assert.equal(afterRefund!.stock, stockBeforeRefund, "refunded alone must not restore stock");
+});
+
+// ==================== Shop Settings: delivery fee + open/closed ====================
+
+test("GET /shop/settings is public and defaults to open with no delivery fee", async () => {
+  const res = await fetch(`${baseUrl}/shop/settings`);
+  assert.equal(res.status, 200);
+  const settings = (await res.json()) as any;
+  assert.equal(settings.isOpen, true);
+  assert.equal(Number(settings.deliveryFee), 0);
+  assert.deepEqual(settings.workingDays.slice().sort(), [0, 1, 2, 3, 4, 5, 6]);
+});
+
+test("PUT /admin/shop/settings requires the shop.manage permission", async () => {
+  const res = await asPlainAdmin("/admin/shop/settings", { method: "PUT", body: JSON.stringify({ deliveryFee: 5 }) });
+  assert.equal(res.status, 403);
+});
+
+test("Super Admin can set a delivery fee, and it is added on top of the item subtotal at checkout", async () => {
+  const put = await asSuperAdmin("/admin/shop/settings", { method: "PUT", body: JSON.stringify({ deliveryFee: 3.5 }) });
+  assert.equal(put.status, 200);
+
+  const res = await asCustomer("/shop/orders", {
+    method: "POST",
+    body: JSON.stringify({
+      items: [{ productId, quantity: 2 }],
+      paymentMethod: "evc",
+      senderPhone: "617000111",
+      deliveryName: "Test Buyer",
+      deliveryPhone: "617000222",
+      deliveryAddress: "Mogadishu, Somalia",
+    }),
+  });
+  const order = (await res.json()) as any;
+  assert.equal(res.status, 201, JSON.stringify(order));
+  assert.equal(Number(order.deliveryFee), 3.5);
+  assert.equal(Number(order.totalAmount), 53.5, "total must be items (25*2=50) + delivery fee (3.5)");
+});
+
+test("a manual 'closed' override blocks new orders even on a working day/hour, but browsing (GET) still works", async () => {
+  await asSuperAdmin("/admin/shop/settings", { method: "PUT", body: JSON.stringify({ manualOverride: "closed" }) });
+
+  const settingsRes = await fetch(`${baseUrl}/shop/settings`);
+  assert.equal(((await settingsRes.json()) as any).isOpen, false);
+
+  const browseRes = await fetch(`${baseUrl}/shop/products?categoryId=${categoryId}`);
+  assert.equal(browseRes.status, 200, "browsing must still work while closed");
+
+  const orderRes = await asCustomer("/shop/orders", {
+    method: "POST",
+    body: JSON.stringify({
+      items: [{ productId, quantity: 1 }],
+      paymentMethod: "evc",
+      senderPhone: "617000111",
+      deliveryName: "Test Buyer",
+      deliveryPhone: "617000222",
+      deliveryAddress: "Mogadishu, Somalia",
+    }),
+  });
+  assert.equal(orderRes.status, 409);
+  const product = await queryOne<{ stock: number }>(`SELECT stock FROM shop_products WHERE id=$1`, [productId]);
+  assert.equal(product!.stock, 3, "stock must not move for a rejected order");
+});
+
+test("workingDays must be a non-empty array of 0-6", async () => {
+  const res = await asSuperAdmin("/admin/shop/settings", { method: "PUT", body: JSON.stringify({ workingDays: [] }) });
+  assert.equal(res.status, 400);
+});
+
+test("a manual 'open' override allows orders even outside the configured schedule", async () => {
+  // Bypasses the admin route's own validation (which rejects an empty
+  // workingDays) to directly simulate "today isn't a working day" --
+  // the schedule alone would resolve to closed here.
+  await query(`UPDATE shop_settings SET working_days='{}' WHERE id=true`);
+  const closedRes = await fetch(`${baseUrl}/shop/settings`);
+  assert.equal(((await closedRes.json()) as any).isOpen, false, "no working days at all must resolve to closed");
+
+  const openRes = await asSuperAdmin("/admin/shop/settings", { method: "PUT", body: JSON.stringify({ manualOverride: "open" }) });
+  assert.equal(openRes.status, 200);
+  assert.equal((await openRes.json() as any).isOpen, true, "manual override must win over the schedule");
+
+  const res = await asCustomer("/shop/orders", {
+    method: "POST",
+    body: JSON.stringify({
+      items: [{ productId, quantity: 1 }],
+      paymentMethod: "evc",
+      senderPhone: "617000111",
+      deliveryName: "Test Buyer",
+      deliveryPhone: "617000222",
+      deliveryAddress: "Mogadishu, Somalia",
+    }),
+  });
+  assert.equal(res.status, 201, "order must succeed while manually overridden open, despite the empty schedule");
+});
+
+// ==================== Gift orders + delivery notes ====================
+
+test("a gift order stores recipient details and delivery notes", async () => {
+  const giftRes = await asCustomer("/shop/orders", {
+    method: "POST",
+    body: JSON.stringify({
+      items: [{ productId, quantity: 1 }],
+      paymentMethod: "evc",
+      senderPhone: "617000111",
+      deliveryName: "Test Buyer",
+      deliveryPhone: "617000222",
+      deliveryAddress: "Mogadishu, Somalia",
+      deliveryNotes: "Leave at the gate",
+      isGift: true,
+      giftRecipientName: "Test Recipient",
+      giftRecipientPhone: "617000333",
+      giftMessage: "Happy Birthday!",
+      giftWrap: true,
+    }),
+  });
+  const gift = (await giftRes.json()) as any;
+  assert.equal(giftRes.status, 201, JSON.stringify(gift));
+  assert.equal(gift.isGift, true);
+  assert.equal(gift.giftRecipientName, "Test Recipient");
+  assert.equal(gift.giftRecipientPhone, "617000333");
+  assert.equal(gift.giftMessage, "Happy Birthday!");
+  assert.equal(gift.giftWrap, true);
+  assert.equal(gift.deliveryNotes, "Leave at the gate");
+});
+
+test("a gift order without recipient name/phone is rejected", async () => {
+  const res = await asCustomer("/shop/orders", {
+    method: "POST",
+    body: JSON.stringify({
+      items: [{ productId, quantity: 1 }],
+      paymentMethod: "evc",
+      senderPhone: "617000111",
+      deliveryName: "Test Buyer",
+      deliveryPhone: "617000222",
+      deliveryAddress: "Mogadishu, Somalia",
+      isGift: true,
+    }),
+  });
+  assert.equal(res.status, 400);
 });

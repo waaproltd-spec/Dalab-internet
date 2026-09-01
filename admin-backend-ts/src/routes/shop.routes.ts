@@ -108,9 +108,104 @@ shopRouter.get("/shop/payment-methods", async (_req, res) => {
   sendJson(res, 200, await query(`SELECT method, label, payment_number, ussd_template FROM shop_payment_methods ORDER BY method`));
 });
 
+type ShopSettingsRow = {
+  delivery_fee: string;
+  working_days: number[];
+  opening_time: string;
+  closing_time: string;
+  manual_override: "open" | "closed" | null;
+};
+
+async function loadShopSettings(): Promise<ShopSettingsRow> {
+  return (await queryOne<ShopSettingsRow>(`SELECT * FROM shop_settings WHERE id=true`))!;
+}
+
+// `now()`/CURRENT_TIME are evaluated in the session's own time zone, which
+// pool.ts already pins to Africa/Mogadishu for every connection -- so this
+// needs no timezone math of its own, just the day-of-week/time-of-day the
+// database already hands back. EXTRACT(DOW ...) returns 0=Sunday..6=Saturday,
+// matching workingDays' own convention.
+async function resolveShopOpen(settings: ShopSettingsRow): Promise<boolean> {
+  if (settings.manual_override) return settings.manual_override === "open";
+  const now = await queryOne<{ dow: number; t: string }>(
+    `SELECT EXTRACT(DOW FROM now())::int AS dow, now()::time AS t`
+  );
+  if (!now) return true;
+  if (!settings.working_days.includes(now.dow)) return false;
+  return now.t >= settings.opening_time && now.t <= settings.closing_time;
+}
+
+// Public -- the Customer App needs this both to show the 🟢/🔴 badge and to
+// compute delivery fee at Checkout before placing an order.
+shopRouter.get("/shop/settings", async (_req, res) => {
+  const settings = await loadShopSettings();
+  sendJson(res, 200, {
+    isOpen: await resolveShopOpen(settings),
+    deliveryFee: settings.delivery_fee,
+    workingDays: settings.working_days,
+    openingTime: settings.opening_time,
+    closingTime: settings.closing_time,
+    manualOverride: settings.manual_override,
+  });
+});
+
+shopRouter.get("/admin/shop/settings", requirePermission("shop.manage"), async (_req, res) => {
+  const settings = await loadShopSettings();
+  sendJson(res, 200, { ...settings, isOpen: await resolveShopOpen(settings) });
+});
+
+const VALID_DOW = new Set([0, 1, 2, 3, 4, 5, 6]);
+const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+shopRouter.put("/admin/shop/settings", requirePermission("shop.manage"), async (req, res) => {
+  const { deliveryFee, workingDays, openingTime, closingTime, manualOverride } = req.body ?? {};
+  if (deliveryFee !== undefined && (!Number.isFinite(Number(deliveryFee)) || Number(deliveryFee) < 0)) {
+    return sendJson(res, 400, { error: "deliveryFee must be a non-negative number" });
+  }
+  if (workingDays !== undefined) {
+    if (!Array.isArray(workingDays) || workingDays.length === 0 || !workingDays.every((d) => VALID_DOW.has(Number(d)))) {
+      return sendJson(res, 400, { error: "workingDays must be a non-empty array of integers 0-6 (0=Sunday)" });
+    }
+  }
+  if (openingTime !== undefined && !TIME_RE.test(openingTime)) {
+    return sendJson(res, 400, { error: "openingTime must be in HH:MM (24-hour) form" });
+  }
+  if (closingTime !== undefined && !TIME_RE.test(closingTime)) {
+    return sendJson(res, 400, { error: "closingTime must be in HH:MM (24-hour) form" });
+  }
+  if (manualOverride !== undefined && manualOverride !== null && !["open", "closed"].includes(manualOverride)) {
+    return sendJson(res, 400, { error: "manualOverride must be 'open', 'closed', or null" });
+  }
+  const existing = await loadShopSettings();
+  await query(
+    `UPDATE shop_settings SET
+       delivery_fee=$1, working_days=$2, opening_time=$3, closing_time=$4, manual_override=$5,
+       updated_at=now(), updated_by=$6
+     WHERE id=true`,
+    [
+      deliveryFee !== undefined ? Number(deliveryFee) : existing.delivery_fee,
+      workingDays !== undefined ? workingDays.map(Number) : existing.working_days,
+      openingTime ?? existing.opening_time,
+      closingTime ?? existing.closing_time,
+      manualOverride !== undefined ? manualOverride : existing.manual_override,
+      req.auth!.sub,
+    ]
+  );
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "shop_settings_updated",
+    entityType: "shop_settings",
+    entityId: "shop_settings",
+    oldValue: existing,
+    newValue: { deliveryFee, workingDays, openingTime, closingTime, manualOverride },
+  });
+  const settings = await loadShopSettings();
+  sendJson(res, 200, { ...settings, isOpen: await resolveShopOpen(settings) });
+});
+
 // ==================== Customer App (self-service) ====================
 
-const SHOP_ORDER_COLUMNS = "id, customer_id, payment_method, sender_phone, delivery_name, delivery_phone, delivery_address, total_amount, payment_status, status, tracking_reference, tracking_note, courier_name, paid_at, delivered_at, cancelled_at, created_at, updated_at";
+const SHOP_ORDER_COLUMNS = "id, customer_id, payment_method, sender_phone, delivery_name, delivery_phone, delivery_address, delivery_notes, total_amount, delivery_fee, payment_status, status, tracking_reference, tracking_note, courier_name, is_gift, gift_recipient_name, gift_recipient_phone, gift_message, gift_wrap, paid_at, delivered_at, cancelled_at, created_at, updated_at";
 
 async function loadOrderItems(orderId: string) {
   return query(`SELECT id, product_id, product_name, unit_price, quantity, subtotal FROM shop_order_items WHERE order_id=$1`, [orderId]);
@@ -134,13 +229,36 @@ shopRouter.post(
   requireAuth("customer"),
   rateLimit("customer-shop-order-create", 20, 15 * 60 * 1000),
   async (req, res) => {
-    const { items, paymentMethod, senderPhone, deliveryName, deliveryPhone, deliveryAddress } = req.body ?? {};
+    const {
+      items,
+      paymentMethod,
+      senderPhone,
+      deliveryName,
+      deliveryPhone,
+      deliveryAddress,
+      deliveryNotes,
+      isGift,
+      giftRecipientName,
+      giftRecipientPhone,
+      giftMessage,
+      giftWrap,
+    } = req.body ?? {};
     if (!Array.isArray(items) || items.length === 0) {
       return sendJson(res, 400, { error: "Cart is empty — add at least one product" });
     }
     if (!senderPhone) return sendJson(res, 400, { error: "Provide the phone number you'll pay from" });
     if (!deliveryName || !deliveryPhone || !deliveryAddress) {
       return sendJson(res, 400, { error: "deliveryName, deliveryPhone, and deliveryAddress are all required" });
+    }
+    if (isGift && (!giftRecipientName || !giftRecipientPhone)) {
+      return sendJson(res, 400, { error: "giftRecipientName and giftRecipientPhone are required for a gift order" });
+    }
+    // Closed means "browse only" per spec -- ordering is blocked at the API
+    // layer too, not just hidden in the UI, matching how every other
+    // server-side gate in this file works.
+    const shopSettings = await loadShopSettings();
+    if (!(await resolveShopOpen(shopSettings))) {
+      return sendJson(res, 409, { error: "Shop is currently closed. Please check back during our working hours." });
     }
     const method = await queryOne<{ method: string; ussd_template: string }>(
       `SELECT method, ussd_template FROM shop_payment_methods WHERE method=$1`,
@@ -219,10 +337,33 @@ shopRouter.post(
           orderItems.push({ productId, productName: row.name, unitPrice, quantity, subtotal });
         }
 
+        const deliveryFee = Number(shopSettings.delivery_fee);
+        total = Math.round((total + deliveryFee) * 100) / 100;
+
         await client.query(
-          `INSERT INTO shop_orders (id, customer_id, payment_method, sender_phone, delivery_name, delivery_phone, delivery_address, total_amount, dedup_key)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-          [orderId, req.auth!.sub, method.method, senderPhone, deliveryName, deliveryPhone, deliveryAddress, total, dedupKey]
+          `INSERT INTO shop_orders (
+             id, customer_id, payment_method, sender_phone, delivery_name, delivery_phone, delivery_address, delivery_notes,
+             total_amount, delivery_fee, dedup_key, is_gift, gift_recipient_name, gift_recipient_phone, gift_message, gift_wrap
+           )
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+          [
+            orderId,
+            req.auth!.sub,
+            method.method,
+            senderPhone,
+            deliveryName,
+            deliveryPhone,
+            deliveryAddress,
+            typeof deliveryNotes === "string" ? deliveryNotes.trim() || null : null,
+            total,
+            deliveryFee,
+            dedupKey,
+            Boolean(isGift),
+            isGift ? String(giftRecipientName).trim() : null,
+            isGift ? String(giftRecipientPhone).trim() : null,
+            isGift && typeof giftMessage === "string" ? giftMessage.trim() || null : null,
+            Boolean(isGift && giftWrap),
+          ]
         );
         for (const item of orderItems) {
           await client.query(
