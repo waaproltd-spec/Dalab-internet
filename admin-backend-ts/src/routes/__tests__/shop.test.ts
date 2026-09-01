@@ -77,6 +77,9 @@ function asCustomer(path: string, init: RequestInit = {}) {
 beforeEach(async () => {
   await query(`DELETE FROM shop_order_items WHERE order_id IN (SELECT id FROM shop_orders WHERE customer_id=$1)`, [customerId]);
   await query(`DELETE FROM shop_orders WHERE customer_id=$1`, [customerId]);
+  await query(`DELETE FROM shop_flash_sales WHERE name LIKE 'Test %'`);
+  await query(`DELETE FROM shop_bundle_deals WHERE name LIKE 'Test %'`);
+  await query(`DELETE FROM shop_delivery_zones WHERE name LIKE 'Test %'`);
   await query(`DELETE FROM shop_products WHERE name LIKE 'Test %'`);
   await query(`DELETE FROM shop_categories WHERE name = 'Test Category'`);
 
@@ -505,30 +508,103 @@ test("submitting the exact same cart+payment method twice in a row returns the o
   assert.equal(product!.stock, 2, "stock must be decremented exactly once (3 - 1), not twice");
 });
 
-test("a different cart from the same customer is never blocked by the dedup guard", async () => {
-  const secondProduct = await queryOne<{ id: string }>(
-    `INSERT INTO shop_products (id, category_id, name, price, stock) VALUES ($1,$2,'Test Second Item',10,10) RETURNING id`,
+// The second cart here deliberately exercises Product Variants + Flash
+// Sales + Bundle Deals all at once (rather than a plain second product)
+// -- this file's shared customer-shop-order-create rate limit (20 per
+// 15 min) is already fully spent by the real order-creation calls above
+// and below, so this reuses the "prove two different carts don't
+// collide" call this test already needs, instead of spending a 21st slot
+// on a standalone test for the same real-order-creation integration
+// coverage.
+test("a different cart from the same customer is never blocked by the dedup guard, and correctly prices a Flash Sale item, a specific variant, and a bundle deal", async () => {
+  const flashProduct = await queryOne<{ id: string }>(
+    `INSERT INTO shop_products (id, category_id, name, description, price, stock) VALUES ($1,$2,'Test Flash Product','',50.00,5) RETURNING id`,
     [randomUUID(), categoryId]
   );
-  const mk = (pid: string) =>
-    asCustomer("/shop/orders", {
-      method: "POST",
-      body: JSON.stringify({
-        items: [{ productId: pid, quantity: 1 }],
-        paymentMethod: "evc",
-        senderPhone: "617000111",
-        deliveryName: "Test Buyer",
-        deliveryPhone: "617000222",
-        deliveryAddress: "Mogadishu, Somalia",
-      }),
-    });
-  const first = await mk(productId);
-  const second = await mk(secondProduct!.id);
+  const flashSale = await queryOne<{ id: string }>(
+    `INSERT INTO shop_flash_sales (id, name, starts_at, ends_at) VALUES ($1,'Test Flash Sale', now() - interval '1 hour', now() + interval '1 hour') RETURNING id`,
+    [randomUUID()]
+  );
+  await query(`INSERT INTO shop_flash_sale_items (flash_sale_id, product_id, sale_price) VALUES ($1,$2,30.00)`, [flashSale!.id, flashProduct!.id]);
+
+  const variantProduct = await queryOne<{ id: string }>(
+    `INSERT INTO shop_products (id, category_id, name, description, price, stock) VALUES ($1,$2,'Test Variant Product','',40.00,0) RETURNING id`,
+    [randomUUID(), categoryId]
+  );
+  const variant = await queryOne<{ id: string }>(
+    `INSERT INTO shop_product_variants (id, product_id, label, attributes, price, stock) VALUES ($1,$2,'Large / Red','{"size":"Large","color":"Red"}',35.00,2) RETURNING id`,
+    [randomUUID(), variantProduct!.id]
+  );
+
+  const bundleProductA = await queryOne<{ id: string }>(
+    `INSERT INTO shop_products (id, category_id, name, description, price, stock) VALUES ($1,$2,'Test Bundle Product A','',10.00,5) RETURNING id`,
+    [randomUUID(), categoryId]
+  );
+  const bundleProductB = await queryOne<{ id: string }>(
+    `INSERT INTO shop_products (id, category_id, name, description, price, stock) VALUES ($1,$2,'Test Bundle Product B','',15.00,5) RETURNING id`,
+    [randomUUID(), categoryId]
+  );
+  const bundle = await queryOne<{ id: string }>(
+    `INSERT INTO shop_bundle_deals (id, name, bundle_price) VALUES ($1,'Test Bundle Deal',20.00) RETURNING id`,
+    [randomUUID()]
+  );
+  await query(`INSERT INTO shop_bundle_deal_items (bundle_id, product_id, quantity) VALUES ($1,$2,1),($1,$3,1)`, [bundle!.id, bundleProductA!.id, bundleProductB!.id]);
+
+  const mk = (body: unknown) => asCustomer("/shop/orders", { method: "POST", body: JSON.stringify(body) });
+  const first = await mk({
+    items: [{ productId, quantity: 1 }],
+    paymentMethod: "evc",
+    senderPhone: "617000111",
+    deliveryName: "Test Buyer",
+    deliveryPhone: "617000222",
+    deliveryAddress: "Mogadishu, Somalia",
+  });
+  const second = await mk({
+    items: [
+      { productId: flashProduct!.id, quantity: 1 },
+      { productId: variantProduct!.id, variantId: variant!.id, quantity: 2 },
+      { bundleId: bundle!.id, quantity: 1 },
+    ],
+    paymentMethod: "evc",
+    senderPhone: "617000111",
+    deliveryName: "Test Buyer",
+    deliveryPhone: "617000222",
+    deliveryAddress: "Mogadishu, Somalia",
+  });
   const firstOrder = (await first.json()) as any;
   const secondOrder = (await second.json()) as any;
   assert.equal(first.status, 201);
   assert.equal(second.status, 201, "a genuinely different cart must always create its own order");
   assert.notEqual(firstOrder.id, secondOrder.id);
+
+  assert.equal(Number(secondOrder.totalAmount), 30 + 35 * 2 + 20, "flash-sale price + variant price x2 + bundle price");
+  const flashItem = secondOrder.items.find((i: any) => i.productId === flashProduct!.id);
+  assert.equal(Number(flashItem.unitPrice), 30, "the flash sale price is what was actually charged, not the base 50");
+  const variantItem = secondOrder.items.find((i: any) => i.variantId === variant!.id);
+  assert.equal(Number(variantItem.unitPrice), 35);
+  assert.equal(variantItem.variantLabel, "Large / Red");
+  assert.equal(variantItem.quantity, 2);
+  const bundleItem = secondOrder.items.find((i: any) => i.bundleId === bundle!.id);
+  assert.equal(Number(bundleItem.unitPrice), 20);
+  assert.equal(bundleItem.productId, null, "a bundle line has no single product id");
+  assert.equal(bundleItem.bundleName, "Test Bundle Deal");
+
+  assert.equal((await queryOne<{ stock: number }>(`SELECT stock FROM shop_products WHERE id=$1`, [flashProduct!.id]))!.stock, 4);
+  assert.equal((await queryOne<{ stock: number }>(`SELECT stock FROM shop_product_variants WHERE id=$1`, [variant!.id]))!.stock, 0, "2 of 2 reserved");
+  assert.equal((await queryOne<{ stock: number }>(`SELECT stock FROM shop_products WHERE id=$1`, [bundleProductA!.id]))!.stock, 4);
+  assert.equal((await queryOne<{ stock: number }>(`SELECT stock FROM shop_products WHERE id=$1`, [bundleProductB!.id]))!.stock, 4);
+
+  // Cancelling restores stock for a plain product, a specific variant, and
+  // every constituent product of a bundle line -- all through the same
+  // restoreShopOrderStock() path the plain-product cancel test elsewhere
+  // in this file already covers for the simple case. Not rate-limited (a
+  // different route), so this is free to exercise here.
+  const cancelRes = await asCustomer(`/shop/orders/${secondOrder.id}/cancel`, { method: "POST" });
+  assert.equal(cancelRes.status, 200);
+  assert.equal((await queryOne<{ stock: number }>(`SELECT stock FROM shop_products WHERE id=$1`, [flashProduct!.id]))!.stock, 5);
+  assert.equal((await queryOne<{ stock: number }>(`SELECT stock FROM shop_product_variants WHERE id=$1`, [variant!.id]))!.stock, 2);
+  assert.equal((await queryOne<{ stock: number }>(`SELECT stock FROM shop_products WHERE id=$1`, [bundleProductA!.id]))!.stock, 5);
+  assert.equal((await queryOne<{ stock: number }>(`SELECT stock FROM shop_products WHERE id=$1`, [bundleProductB!.id]))!.stock, 5);
 });
 
 test("failed and returned statuses restore stock; refunded alone does not; and no status can change once an order is terminal", async () => {
@@ -1179,4 +1255,284 @@ test("retry-payment is rejected once paid, once shipped, or for someone else's o
   assert.equal(wrongOwnerRes.status, 404);
   await query(`DELETE FROM shop_orders WHERE id='SHPTESTRETRY4'`);
   await query(`DELETE FROM customers WHERE id=$1`, [otherCustomerId]);
+});
+
+// ==================== Product Variants + Flash Sales + Bundle Deals ====================
+
+test("GET /shop/products/:id embeds active variants; an inactive variant is hidden from the customer-facing read", async () => {
+  const product = await queryOne<{ id: string }>(
+    `INSERT INTO shop_products (id, category_id, name, description, price, stock) VALUES ($1,$2,'Test Variant Read Product','',20.00,10) RETURNING id`,
+    [randomUUID(), categoryId]
+  );
+  await query(`INSERT INTO shop_product_variants (id, product_id, label, stock, position) VALUES ($1,$2,'Small',5,0)`, [randomUUID(), product!.id]);
+  const inactiveId = randomUUID();
+  await query(`INSERT INTO shop_product_variants (id, product_id, label, stock, active, position) VALUES ($1,$2,'Discontinued',0,false,1)`, [inactiveId, product!.id]);
+
+  const res = await fetch(`${baseUrl}/shop/products/${product!.id}`);
+  const body = (await res.json()) as any;
+  assert.equal(res.status, 200);
+  assert.equal(body.variants.length, 1);
+  assert.equal(body.variants[0].label, "Small");
+});
+
+test("admin can create, update, and delete a product's variants; a non-shop.manage admin is rejected", async () => {
+  const createRes = await asSuperAdmin(`/admin/shop/products/${productId}/variants`, {
+    method: "POST",
+    body: JSON.stringify({ label: "Medium / Blue", attributes: { size: "Medium", color: "Blue" }, price: 27.5, stock: 4 }),
+  });
+  const variant = (await createRes.json()) as any;
+  assert.equal(createRes.status, 201, JSON.stringify(variant));
+  assert.equal(variant.label, "Medium / Blue");
+  assert.equal(Number(variant.price), 27.5);
+
+  const plainRes = await asPlainAdmin(`/admin/shop/products/${productId}/variants`, {
+    method: "POST",
+    body: JSON.stringify({ label: "X", stock: 1 }),
+  });
+  assert.equal(plainRes.status, 403);
+
+  const updateRes = await asSuperAdmin(`/admin/shop/products/${productId}/variants/${variant.id}`, {
+    method: "PUT",
+    body: JSON.stringify({ stock: 9 }),
+  });
+  const updated = (await updateRes.json()) as any;
+  assert.equal(updateRes.status, 200);
+  assert.equal(updated.stock, 9);
+
+  const listRes = await asSuperAdmin(`/admin/shop/products/${productId}/variants`);
+  const list = (await listRes.json()) as any[];
+  assert.equal(list.length, 1);
+
+  const deleteRes = await asSuperAdmin(`/admin/shop/products/${productId}/variants/${variant.id}`, { method: "DELETE" });
+  assert.equal(deleteRes.status, 200);
+  const afterDelete = (await (await asSuperAdmin(`/admin/shop/products/${productId}/variants`)).json()) as any[];
+  assert.equal(afterDelete.length, 0);
+});
+
+test("admin can schedule a flash sale, and GET /shop/products?discounted=true includes a flash-sale product with no independent oldPrice", async () => {
+  const createRes = await asSuperAdmin("/admin/shop/flash-sales", {
+    method: "POST",
+    body: JSON.stringify({
+      name: "Test Weekend Flash Sale",
+      startsAt: new Date(Date.now() - 3600_000).toISOString(),
+      endsAt: new Date(Date.now() + 3600_000).toISOString(),
+      items: [{ productId, salePrice: 18 }],
+    }),
+  });
+  const created = (await createRes.json()) as any;
+  assert.equal(createRes.status, 201, JSON.stringify(created));
+
+  const productRes = await fetch(`${baseUrl}/shop/products/${productId}`);
+  const product = (await productRes.json()) as any;
+  assert.equal(Number(product.price), 18, "the flash sale price is shown as the product's price");
+  assert.equal(Number(product.oldPrice), 25, "the pre-sale price is shown struck through");
+
+  const discountedRes = await fetch(`${baseUrl}/shop/products?discounted=true`);
+  const discounted = (await discountedRes.json()) as any[];
+  assert.ok(discounted.some((p) => p.id === productId), "a flash-sale product is included in discounted=true even with no independent oldPrice");
+
+  const deactivateRes = await asSuperAdmin(`/admin/shop/flash-sales/${created.id}`, { method: "PUT", body: JSON.stringify({ active: false }) });
+  assert.equal(deactivateRes.status, 200);
+  const afterDeactivate = (await (await fetch(`${baseUrl}/shop/products/${productId}`)).json()) as any;
+  assert.equal(Number(afterDeactivate.price), 25, "price reverts once the flash sale is deactivated");
+
+  const deleteRes = await asSuperAdmin(`/admin/shop/flash-sales/${created.id}`, { method: "DELETE" });
+  assert.equal(deleteRes.status, 200);
+});
+
+test("admin can create a bundle deal, it's publicly listable, and a non-shop.manage admin is rejected", async () => {
+  const secondProduct = await queryOne<{ id: string }>(
+    `INSERT INTO shop_products (id, category_id, name, description, price, stock) VALUES ($1,$2,'Test Bundle Second Product','',12.00,5) RETURNING id`,
+    [randomUUID(), categoryId]
+  );
+  const createRes = await asSuperAdmin("/admin/shop/bundles", {
+    method: "POST",
+    body: JSON.stringify({
+      name: "Test Starter Bundle",
+      description: "Two great products together",
+      bundlePrice: 30,
+      items: [
+        { productId, quantity: 1 },
+        { productId: secondProduct!.id, quantity: 1 },
+      ],
+    }),
+  });
+  const created = (await createRes.json()) as any;
+  assert.equal(createRes.status, 201, JSON.stringify(created));
+
+  const plainRes = await asPlainAdmin("/admin/shop/bundles", { method: "POST", body: JSON.stringify({ name: "X", bundlePrice: 1, items: [{ productId }] }) });
+  assert.equal(plainRes.status, 403);
+
+  const publicListRes = await fetch(`${baseUrl}/shop/bundles`);
+  const publicList = (await publicListRes.json()) as any[];
+  const found = publicList.find((b) => b.id === created.id);
+  assert.ok(found, "the bundle is publicly listable");
+  assert.equal(found.items.length, 2);
+
+  const publicDetailRes = await fetch(`${baseUrl}/shop/bundles/${created.id}`);
+  const publicDetail = (await publicDetailRes.json()) as any;
+  assert.equal(publicDetail.name, "Test Starter Bundle");
+
+  const updateRes = await asSuperAdmin(`/admin/shop/bundles/${created.id}`, { method: "PUT", body: JSON.stringify({ active: false }) });
+  assert.equal(updateRes.status, 200);
+  const afterDeactivateRes = await fetch(`${baseUrl}/shop/bundles`);
+  const afterDeactivate = (await afterDeactivateRes.json()) as any[];
+  assert.ok(!afterDeactivate.some((b) => b.id === created.id), "a deactivated bundle is no longer publicly listed");
+
+  const deleteRes = await asSuperAdmin(`/admin/shop/bundles/${created.id}`, { method: "DELETE" });
+  assert.equal(deleteRes.status, 200);
+});
+
+test("cancelling a fabricated order with a variant line and a bundle line restores both correctly", async () => {
+  const variantProduct = await queryOne<{ id: string }>(
+    `INSERT INTO shop_products (id, category_id, name, description, price, stock) VALUES ($1,$2,'Test Cancel Variant Product','',20.00,0) RETURNING id`,
+    [randomUUID(), categoryId]
+  );
+  const variant = await queryOne<{ id: string }>(
+    `INSERT INTO shop_product_variants (id, product_id, label, stock) VALUES ($1,$2,'One Size',1) RETURNING id`,
+    [randomUUID(), variantProduct!.id]
+  );
+  const bundleProduct = await queryOne<{ id: string }>(
+    `INSERT INTO shop_products (id, category_id, name, description, price, stock) VALUES ($1,$2,'Test Cancel Bundle Product','',5.00,2) RETURNING id`,
+    [randomUUID(), categoryId]
+  );
+  const bundle = await queryOne<{ id: string }>(`INSERT INTO shop_bundle_deals (id, name, bundle_price) VALUES ($1,'Test Cancel Bundle',5) RETURNING id`, [randomUUID()]);
+  await query(`INSERT INTO shop_bundle_deal_items (bundle_id, product_id, quantity) VALUES ($1,$2,2)`, [bundle!.id, bundleProduct!.id]);
+
+  await fabricateOrder("SHPTESTVARBUNDLE1", "pending");
+  await query(
+    `INSERT INTO shop_order_items (id, order_id, product_id, product_name, unit_price, quantity, subtotal, variant_id, variant_label)
+     VALUES ($1,'SHPTESTVARBUNDLE1',$2,'Variant Product',20,1,20,$3,'One Size')`,
+    [randomUUID(), variantProduct!.id, variant!.id]
+  );
+  await query(
+    `INSERT INTO shop_order_items (id, order_id, product_id, product_name, unit_price, quantity, subtotal, bundle_id, bundle_name)
+     VALUES ($1,'SHPTESTVARBUNDLE1',NULL,'Cancel Bundle',5,1,5,$2,'Test Cancel Bundle')`,
+    [randomUUID(), bundle!.id]
+  );
+  // Simulate the stock already having been reserved at creation time.
+  await query(`UPDATE shop_product_variants SET stock=0 WHERE id=$1`, [variant!.id]);
+  await query(`UPDATE shop_products SET stock=0 WHERE id=$1`, [bundleProduct!.id]);
+
+  const cancelRes = await asCustomer("/shop/orders/SHPTESTVARBUNDLE1/cancel", { method: "POST" });
+  assert.equal(cancelRes.status, 200);
+  assert.equal((await queryOne<{ stock: number }>(`SELECT stock FROM shop_product_variants WHERE id=$1`, [variant!.id]))!.stock, 1);
+  assert.equal((await queryOne<{ stock: number }>(`SELECT stock FROM shop_products WHERE id=$1`, [bundleProduct!.id]))!.stock, 2, "bundle quantity 2 x order quantity 1 restored");
+});
+
+test("POST /shop/cart/validate reports a specific variant's live price and stock", async () => {
+  const product = await queryOne<{ id: string }>(
+    `INSERT INTO shop_products (id, category_id, name, description, price, stock) VALUES ($1,$2,'Test Cart Validate Variant Product','',20.00,10) RETURNING id`,
+    [randomUUID(), categoryId]
+  );
+  const variant = await queryOne<{ id: string }>(
+    `INSERT INTO shop_product_variants (id, product_id, label, price, stock) VALUES ($1,$2,'Rare Size',45,1) RETURNING id`,
+    [randomUUID(), product!.id]
+  );
+  const res = await fetch(`${baseUrl}/shop/cart/validate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items: [{ productId: product!.id, variantId: variant!.id, quantity: 2 }] }),
+  });
+  const body = (await res.json()) as any;
+  assert.equal(res.status, 200, JSON.stringify(body));
+  assert.equal(Number(body.items[0].currentPrice), 45);
+  assert.equal(body.items[0].inStock, false, "only 1 in stock, 2 requested");
+});
+
+// ==================== Low-Stock Alerts / Back-in-Stock Notifications ====================
+
+test("GET /admin/shop/products/low-stock lists only active products at or below their own threshold", async () => {
+  await query(`UPDATE shop_products SET stock=2, low_stock_threshold=5 WHERE id=$1`, [productId]);
+  const aboveThreshold = await queryOne<{ id: string }>(
+    `INSERT INTO shop_products (id, category_id, name, description, price, stock, low_stock_threshold) VALUES ($1,$2,'Test Well Stocked Product','',10,50,5) RETURNING id`,
+    [randomUUID(), categoryId]
+  );
+
+  const res = await asSuperAdmin("/admin/shop/products/low-stock");
+  const list = (await res.json()) as any[];
+  assert.equal(res.status, 200);
+  assert.ok(list.some((p) => p.id === productId), "a product at/under its threshold is listed");
+  assert.ok(!list.some((p) => p.id === aboveThreshold!.id), "a well-stocked product is not listed");
+
+  const plainRes = await asPlainAdmin("/admin/shop/products/low-stock");
+  assert.equal(plainRes.status, 403);
+});
+
+test("a customer subscribes to back-in-stock, and restocking the product notifies and marks it notified", async () => {
+  await query(`UPDATE shop_products SET stock=0 WHERE id=$1`, [productId]);
+
+  const subscribeRes = await asCustomer(`/shop/products/${productId}/notify-me`, { method: "POST" });
+  assert.equal(subscribeRes.status, 201);
+
+  const doubleTapRes = await asCustomer(`/shop/products/${productId}/notify-me`, { method: "POST" });
+  assert.equal(doubleTapRes.status, 201, "idempotent against a double-tap");
+
+  const before = await queryOne<{ notified: boolean }>(`SELECT notified FROM shop_stock_notify_requests WHERE customer_id=$1 AND product_id=$2`, [customerId, productId]);
+  assert.equal(before!.notified, false);
+
+  const restockRes = await asSuperAdmin(`/admin/shop/products/${productId}`, { method: "PUT", body: JSON.stringify({ stock: 20 }) });
+  assert.equal(restockRes.status, 200);
+
+  const after = await queryOne<{ notified: boolean }>(`SELECT notified FROM shop_stock_notify_requests WHERE customer_id=$1 AND product_id=$2`, [customerId, productId]);
+  assert.equal(after!.notified, true, "restocking marks the subscriber notified");
+
+  const notification = await queryOne(`SELECT type, title FROM notifications WHERE customer_id=$1 AND type='shop_back_in_stock' ORDER BY sent_at DESC LIMIT 1`, [customerId]);
+  assert.ok(notification, "a shop_back_in_stock notification row was written");
+});
+
+test("POST /shop/products/:id/notify-me is rejected while the product is still in stock", async () => {
+  const res = await asCustomer(`/shop/products/${productId}/notify-me`, { method: "POST" });
+  assert.equal(res.status, 409);
+});
+
+// ==================== Delivery Zones ====================
+
+test("admin can create, list, and update delivery zones; they're publicly readable", async () => {
+  const createRes = await asSuperAdmin("/admin/shop/delivery-zones", { method: "POST", body: JSON.stringify({ name: "Test Hodan Zone", fee: 3.5 }) });
+  const created = (await createRes.json()) as any;
+  assert.equal(createRes.status, 201, JSON.stringify(created));
+
+  const plainRes = await asPlainAdmin("/admin/shop/delivery-zones", { method: "POST", body: JSON.stringify({ name: "X", fee: 1 }) });
+  assert.equal(plainRes.status, 403);
+
+  const dupRes = await asSuperAdmin("/admin/shop/delivery-zones", { method: "POST", body: JSON.stringify({ name: "Test Hodan Zone", fee: 5 }) });
+  assert.equal(dupRes.status, 409);
+
+  const publicRes = await fetch(`${baseUrl}/shop/delivery-zones`);
+  const publicList = (await publicRes.json()) as any[];
+  assert.ok(publicList.some((z) => z.id === created.id));
+
+  const updateRes = await asSuperAdmin(`/admin/shop/delivery-zones/${created.id}`, { method: "PUT", body: JSON.stringify({ fee: 6 }) });
+  const updated = (await updateRes.json()) as any;
+  assert.equal(Number(updated.fee), 6);
+
+  const deactivateRes = await asSuperAdmin(`/admin/shop/delivery-zones/${created.id}`, { method: "PUT", body: JSON.stringify({ active: false }) });
+  assert.equal(deactivateRes.status, 200);
+  const afterDeactivateRes = await fetch(`${baseUrl}/shop/delivery-zones`);
+  const afterDeactivate = (await afterDeactivateRes.json()) as any[];
+  assert.ok(!afterDeactivate.some((z) => z.id === created.id));
+
+  const deleteRes = await asSuperAdmin(`/admin/shop/delivery-zones/${created.id}`, { method: "DELETE" });
+  assert.equal(deleteRes.status, 200);
+});
+
+// ==================== Analytics ====================
+
+test("GET /admin/shop/analytics summarizes paid revenue, order status counts, and top products; rejected without shop.manage", async () => {
+  await fabricateOrder("SHPTESTANALYTICS1", "delivered");
+  await query(`UPDATE shop_orders SET payment_status='paid', total_amount=99 WHERE id='SHPTESTANALYTICS1'`);
+  await fabricateOrder("SHPTESTANALYTICS2", "pending");
+
+  const res = await asSuperAdmin("/admin/shop/analytics");
+  const body = (await res.json()) as any;
+  assert.equal(res.status, 200, JSON.stringify(body));
+  assert.ok(body.orderCount >= 1);
+  assert.ok(body.revenue >= 99);
+  assert.ok(Array.isArray(body.ordersByStatus));
+  assert.ok(Array.isArray(body.dailyRevenue));
+  assert.ok(Array.isArray(body.topProducts));
+
+  const plainRes = await asPlainAdmin("/admin/shop/analytics");
+  assert.equal(plainRes.status, 403);
 });

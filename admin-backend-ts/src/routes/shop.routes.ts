@@ -38,10 +38,22 @@ const SUBCATEGORY_COLUMNS = "id, category_id, name, position, active";
 // queries (dynamic WHERE clauses, LIMIT, etc.) below, and a subquery per
 // column composes into any of them without also having to thread a GROUP
 // BY/HAVING clause through every call site.
+// price/old_price go through shop_effective_price()/shop_effective_old_price()
+// (migration 083) so an active Flash Sale is reflected everywhere a product
+// is read -- catalog list, detail, favorites, recently-viewed, recommended --
+// without every one of those call sites separately joining
+// shop_flash_sale_items. Order creation and cart validation below re-resolve
+// the same functions independently at the moment of purchase, so what a
+// customer is actually charged always matches what they were shown.
 const PRODUCT_COLUMNS =
-  "id, category_id, subcategory_id, name, description, price, old_price, stock, brand, featured, is_new_arrival, best_seller, sold_count, active, created_at, " +
+  "id, category_id, subcategory_id, name, description, " +
+  "shop_effective_price(shop_products.id, price) AS price, " +
+  "shop_effective_old_price(shop_products.id, price, old_price) AS old_price, " +
+  "stock, brand, featured, is_new_arrival, best_seller, sold_count, active, created_at, " +
   "(SELECT ROUND(AVG(rating), 1) FROM shop_reviews WHERE product_id = shop_products.id) AS avg_rating, " +
   "(SELECT COUNT(*) FROM shop_reviews WHERE product_id = shop_products.id) AS review_count";
+
+const VARIANT_COLUMNS = "id, product_id, label, attributes, price, stock, sku, position";
 
 // sort key -> ORDER BY clause. Looked up through this map (never
 // interpolated directly from the query string) so an unrecognized/absent
@@ -82,7 +94,12 @@ shopRouter.get("/shop/products", async (req, res) => {
   if (featured === "true") sql += ` AND featured=true`;
   if (newArrivals === "true") sql += ` AND is_new_arrival=true`;
   if (bestSellers === "true") sql += ` AND best_seller=true`;
-  if (discounted === "true") sql += ` AND old_price IS NOT NULL AND old_price > price`;
+  if (discounted === "true") {
+    sql += ` AND (old_price IS NOT NULL AND old_price > price OR EXISTS (
+      SELECT 1 FROM shop_flash_sale_items fsi JOIN shop_flash_sales fs ON fs.id = fsi.flash_sale_id
+      WHERE fsi.product_id = shop_products.id AND fs.active = true AND now() BETWEEN fs.starts_at AND fs.ends_at
+    ))`;
+  }
   sql += ` ORDER BY ${PRODUCT_SORTS[sort ?? ""] ?? PRODUCT_SORTS.newest} LIMIT 200`;
   sendJson(res, 200, await query(sql, args));
 });
@@ -105,7 +122,62 @@ shopRouter.get("/shop/products/:id", async (req, res) => {
   const product = await queryOne(`SELECT ${PRODUCT_COLUMNS} FROM shop_products WHERE id=$1 AND active=true`, [req.params.id]);
   if (!product) return sendJson(res, 404, { error: "Product not found" });
   const images = await query(`SELECT id, position FROM shop_product_images WHERE product_id=$1 ORDER BY position`, [req.params.id]);
-  sendJson(res, 200, { ...product, images });
+  const variants = await query(`SELECT ${VARIANT_COLUMNS} FROM shop_product_variants WHERE product_id=$1 AND active=true ORDER BY position`, [req.params.id]);
+  sendJson(res, 200, { ...product, images, variants });
+});
+
+// Public -- a signed-out browser can see a product's variants same as its
+// images; only placing an order requires auth. Kept as its own route (in
+// addition to being embedded in GET /shop/products/:id above) for a screen
+// that already has the product loaded and just needs a fresh stock read.
+shopRouter.get("/shop/products/:id/variants", async (req, res) => {
+  sendJson(res, 200, await query(`SELECT ${VARIANT_COLUMNS} FROM shop_product_variants WHERE product_id=$1 AND active=true ORDER BY position`, [req.params.id]));
+});
+
+// Back-in-stock notifications: a customer taps "Notify Me" on an
+// out-of-stock product. Idempotent against a double-tap via the partial
+// unique index from migration 085 (ON CONFLICT DO NOTHING); admin restocking
+// the product fires the actual notification (see PUT /admin/shop/products/:id).
+shopRouter.post("/shop/products/:id/notify-me", requireAuth("customer"), async (req, res) => {
+  const product = await queryOne<{ stock: number }>(`SELECT stock FROM shop_products WHERE id=$1`, [req.params.id]);
+  if (!product) return sendJson(res, 404, { error: "Product not found" });
+  if (product.stock > 0) return sendJson(res, 409, { error: "This product is already in stock" });
+  await query(
+    `INSERT INTO shop_stock_notify_requests (customer_id, product_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+    [req.auth!.sub, req.params.id]
+  );
+  sendJson(res, 201, { subscribed: true });
+});
+
+// ==================== Bundle Deals ====================
+
+const BUNDLE_COLUMNS = "id, name, description, bundle_price, active, created_at";
+
+async function loadBundleItems(bundleId: string) {
+  return query(
+    `SELECT bi.product_id, bi.quantity, p.name, p.price, p.stock
+     FROM shop_bundle_deal_items bi JOIN shop_products p ON p.id = bi.product_id
+     WHERE bi.bundle_id=$1`,
+    [bundleId]
+  );
+}
+
+shopRouter.get("/shop/bundles", async (_req, res) => {
+  const bundles = await query(`SELECT ${BUNDLE_COLUMNS} FROM shop_bundle_deals WHERE active=true ORDER BY created_at DESC`);
+  const withItems = await Promise.all((bundles as any[]).map(async (b) => ({ ...b, items: await loadBundleItems(b.id) })));
+  sendJson(res, 200, withItems);
+});
+
+shopRouter.get("/shop/bundles/:id", async (req, res) => {
+  const bundle = await queryOne(`SELECT ${BUNDLE_COLUMNS} FROM shop_bundle_deals WHERE id=$1 AND active=true`, [req.params.id]);
+  if (!bundle) return sendJson(res, 404, { error: "Bundle not found" });
+  sendJson(res, 200, { ...bundle, items: await loadBundleItems(req.params.id) });
+});
+
+// ==================== Delivery Zones ====================
+
+shopRouter.get("/shop/delivery-zones", async (_req, res) => {
+  sendJson(res, 200, await query(`SELECT id, name, fee, position FROM shop_delivery_zones WHERE active=true ORDER BY position`));
 });
 
 // Not gated by active/stock — same reasoning as promo-images' image route:
@@ -210,19 +282,35 @@ shopRouter.post("/shop/cart/validate", async (req, res) => {
   const results = [];
   for (const raw of items) {
     const productId = String((raw as any)?.productId ?? "");
+    const variantId = (raw as any)?.variantId ? String((raw as any).variantId) : null;
     const quantity = Number((raw as any)?.quantity);
     if (!productId || !Number.isInteger(quantity) || quantity < 1) {
       return sendJson(res, 400, { error: "Each item needs a valid productId and a quantity of at least 1" });
     }
     const product = await queryOne<{ price: string; stock: number; active: boolean; name: string }>(
-      `SELECT price, stock, active, name FROM shop_products WHERE id=$1`,
+      `SELECT shop_effective_price(id, price) AS price, stock, active, name FROM shop_products WHERE id=$1`,
       [productId]
     );
+    let variantStock: number | null = null;
+    let variantPrice: string | null = null;
+    if (variantId && product) {
+      const variant = await queryOne<{ price: string | null; stock: number }>(
+        `SELECT price, stock FROM shop_product_variants WHERE id=$1 AND product_id=$2 AND active=true`,
+        [variantId, productId]
+      );
+      if (!variant) {
+        results.push({ productId, variantId, quantity, currentPrice: null, inStock: false, available: false, productName: product.name });
+        continue;
+      }
+      variantStock = variant.stock;
+      variantPrice = variant.price ?? product.price;
+    }
     results.push({
       productId,
+      variantId,
       quantity,
-      currentPrice: product ? Number(product.price) : null,
-      inStock: product ? product.stock >= quantity : false,
+      currentPrice: product ? Number(variantPrice ?? product.price) : null,
+      inStock: product ? (variantId ? (variantStock ?? 0) >= quantity : product.stock >= quantity) : false,
       available: Boolean(product?.active),
       productName: product?.name ?? null,
     });
@@ -330,11 +418,41 @@ shopRouter.put("/admin/shop/settings", requirePermission("shop.manage"), async (
 const SHOP_ORDER_COLUMNS = "id, customer_id, payment_method, sender_phone, delivery_name, delivery_phone, delivery_address, delivery_notes, total_amount, delivery_fee, payment_status, status, tracking_reference, tracking_note, courier_name, is_gift, gift_recipient_name, gift_recipient_phone, gift_message, gift_wrap, paid_at, delivered_at, cancelled_at, created_at, updated_at";
 
 async function loadOrderItems(orderId: string) {
-  return query(`SELECT id, product_id, product_name, unit_price, quantity, subtotal FROM shop_order_items WHERE order_id=$1`, [orderId]);
+  return query(
+    `SELECT id, product_id, product_name, unit_price, quantity, subtotal, variant_id, variant_label, bundle_id, bundle_name
+     FROM shop_order_items WHERE order_id=$1`,
+    [orderId]
+  );
 }
 
 async function loadOrderStatusHistory(orderId: string) {
   return query(`SELECT status, note, changed_at FROM shop_order_status_history WHERE order_id=$1 ORDER BY changed_at ASC`, [orderId]);
+}
+
+// Reverses whatever stock this order's items reserved at creation time --
+// shared by the customer-initiated cancel route and the admin status route,
+// since both need the exact same restoration for a plain product line, a
+// specific variant, or every constituent product of a bundle line.
+async function restoreShopOrderStock(orderId: string) {
+  const items = await query<{ product_id: string | null; variant_id: string | null; bundle_id: string | null; quantity: number }>(
+    `SELECT product_id, variant_id, bundle_id, quantity FROM shop_order_items WHERE order_id=$1`,
+    [orderId]
+  );
+  for (const item of items) {
+    if (item.bundle_id) {
+      const bundleItems = await query<{ product_id: string; quantity: number }>(
+        `SELECT product_id, quantity FROM shop_bundle_deal_items WHERE bundle_id=$1`,
+        [item.bundle_id]
+      );
+      for (const bi of bundleItems) {
+        await query(`UPDATE shop_products SET stock = stock + $1, updated_at = now() WHERE id=$2`, [bi.quantity * item.quantity, bi.product_id]);
+      }
+    } else if (item.variant_id) {
+      await query(`UPDATE shop_product_variants SET stock = stock + $1, updated_at = now() WHERE id=$2`, [item.quantity, item.variant_id]);
+    } else if (item.product_id) {
+      await query(`UPDATE shop_products SET stock = stock + $1, updated_at = now() WHERE id=$2`, [item.quantity, item.product_id]);
+    }
+  }
 }
 
 // A deterministic signature of "what's being ordered" -- order-independent
@@ -345,8 +463,15 @@ async function loadOrderStatusHistory(orderId: string) {
 // migration 032 already fixed for Internet Store) hits that constraint and
 // is treated as "return the order that already exists", never a second
 // stock deduction.
-function computeShopOrderDedupKey(items: { productId: string; quantity: number }[], paymentMethod: string): string {
-  const signature = items.map((i) => `${i.productId}:${i.quantity}`).sort().join(",");
+type NormalizedShopItem =
+  | { kind: "product"; productId: string; variantId: string | null; quantity: number }
+  | { kind: "bundle"; bundleId: string; quantity: number };
+
+function computeShopOrderDedupKey(items: NormalizedShopItem[], paymentMethod: string): string {
+  const signature = items
+    .map((i) => (i.kind === "bundle" ? `bundle:${i.bundleId}:${i.quantity}` : `${i.productId}:${i.variantId ?? ""}:${i.quantity}`))
+    .sort()
+    .join(",");
   return `${paymentMethod}|${signature}`;
 }
 
@@ -405,15 +530,26 @@ shopRouter.post(
     if (!deliveryCheck.valid) return sendJson(res, 400, { error: deliveryCheck.error });
 
     // Normalized up front (not just inside the transaction) so a stable
-    // dedup signature can be computed before any stock is touched.
-    const normalizedItems: { productId: string; quantity: number }[] = [];
+    // dedup signature can be computed before any stock is touched. Each
+    // cart line is either a plain product (optionally a specific variant)
+    // or a bundle deal -- never both.
+    const normalizedItems: NormalizedShopItem[] = [];
     for (const raw of items) {
-      const productId = String((raw as any)?.productId ?? "");
       const quantity = Number((raw as any)?.quantity);
-      if (!productId || !Number.isInteger(quantity) || quantity < 1) {
-        return sendJson(res, 400, { error: "Each cart item needs a valid productId and a quantity of at least 1" });
+      if (!Number.isInteger(quantity) || quantity < 1) {
+        return sendJson(res, 400, { error: "Each cart item needs a quantity of at least 1" });
       }
-      normalizedItems.push({ productId, quantity });
+      const bundleId = (raw as any)?.bundleId ? String((raw as any).bundleId) : null;
+      if (bundleId) {
+        normalizedItems.push({ kind: "bundle", bundleId, quantity });
+        continue;
+      }
+      const productId = String((raw as any)?.productId ?? "");
+      if (!productId) {
+        return sendJson(res, 400, { error: "Each cart item needs a valid productId (or bundleId) and a quantity of at least 1" });
+      }
+      const variantId = (raw as any)?.variantId ? String((raw as any).variantId) : null;
+      normalizedItems.push({ kind: "product", productId, variantId, quantity });
     }
     const dedupKey = computeShopOrderDedupKey(normalizedItems, method.method);
 
@@ -435,32 +571,124 @@ shopRouter.post(
 
         const orderId = generateShopOrderId();
         let total = 0;
-        const orderItems: { productId: string; productName: string; unitPrice: number; quantity: number; subtotal: number }[] = [];
+        const orderItems: {
+          productId: string | null;
+          productName: string;
+          unitPrice: number;
+          quantity: number;
+          subtotal: number;
+          variantId: string | null;
+          variantLabel: string | null;
+          bundleId: string | null;
+          bundleName: string | null;
+        }[] = [];
 
-        for (const { productId, quantity } of normalizedItems) {
+        for (const item of normalizedItems) {
+          if (item.kind === "bundle") {
+            // FOR UPDATE on the bundle row itself guards against an Admin
+            // deactivating/deleting it mid-checkout; each constituent
+            // product is separately locked below, same as a plain product
+            // line, before its stock is touched.
+            const bundle = await client.query(`SELECT id, name, bundle_price, active FROM shop_bundle_deals WHERE id=$1 FOR UPDATE`, [item.bundleId]);
+            const bundleRow = bundle.rows[0];
+            if (!bundleRow || !bundleRow.active) {
+              throw Object.assign(new Error(`This bundle deal is no longer available`), { status: 404 });
+            }
+            const bundleItems = await client.query(`SELECT product_id, quantity FROM shop_bundle_deal_items WHERE bundle_id=$1`, [item.bundleId]);
+            if (bundleItems.rows.length === 0) {
+              throw Object.assign(new Error(`This bundle deal has no products configured`), { status: 409 });
+            }
+            for (const bi of bundleItems.rows) {
+              const needed = bi.quantity * item.quantity;
+              const product = await client.query(`SELECT id, name, stock, active FROM shop_products WHERE id=$1 FOR UPDATE`, [bi.product_id]);
+              const row = product.rows[0];
+              if (!row || !row.active) {
+                throw Object.assign(new Error(`A product in this bundle is no longer available`), { status: 404 });
+              }
+              if (row.stock < needed) {
+                throw Object.assign(new Error(`Only ${row.stock} of "${row.name}" left in stock for this bundle`), { status: 409 });
+              }
+              await client.query(
+                `UPDATE shop_products SET stock = stock - $1, sold_count = sold_count + $1, updated_at = now() WHERE id=$2`,
+                [needed, bi.product_id]
+              );
+            }
+            const unitPrice = Number(bundleRow.bundle_price);
+            const subtotal = Math.round(unitPrice * item.quantity * 100) / 100;
+            total = Math.round((total + subtotal) * 100) / 100;
+            orderItems.push({
+              productId: null,
+              productName: bundleRow.name,
+              unitPrice,
+              quantity: item.quantity,
+              subtotal,
+              variantId: null,
+              variantLabel: null,
+              bundleId: item.bundleId,
+              bundleName: bundleRow.name,
+            });
+            continue;
+          }
+
+          const { productId, variantId, quantity } = item;
           // FOR UPDATE: two customers checking out the same low-stock product
           // at once must never both succeed past the stock check below —
           // same "lock the candidate row before touching it" principle used
-          // throughout this codebase's other reservation flows.
+          // throughout this codebase's other reservation flows. price is
+          // resolved through shop_effective_price() here too, so a Flash
+          // Sale price is what's actually charged, matching what
+          // POST /shop/cart/validate and the catalog already showed.
           const product = await client.query(
-            `SELECT id, name, price, stock, active FROM shop_products WHERE id=$1 FOR UPDATE`,
+            `SELECT id, name, shop_effective_price(id, price) AS price, stock, active FROM shop_products WHERE id=$1 FOR UPDATE`,
             [productId]
           );
           const row = product.rows[0];
           if (!row || !row.active) {
             throw Object.assign(new Error(`Product ${productId} is no longer available`), { status: 404 });
           }
-          if (row.stock < quantity) {
-            throw Object.assign(new Error(`Only ${row.stock} of "${row.name}" left in stock`), { status: 409 });
+
+          let unitPrice: number;
+          let variantLabel: string | null = null;
+          if (variantId) {
+            const variant = await client.query(
+              `SELECT id, label, price, stock, active FROM shop_product_variants WHERE id=$1 AND product_id=$2 FOR UPDATE`,
+              [variantId, productId]
+            );
+            const vrow = variant.rows[0];
+            if (!vrow || !vrow.active) {
+              throw Object.assign(new Error(`Selected option for "${row.name}" is no longer available`), { status: 404 });
+            }
+            if (vrow.stock < quantity) {
+              throw Object.assign(new Error(`Only ${vrow.stock} of "${row.name}" (${vrow.label}) left in stock`), { status: 409 });
+            }
+            await client.query(`UPDATE shop_product_variants SET stock = stock - $1, updated_at = now() WHERE id=$2`, [quantity, variantId]);
+            await client.query(`UPDATE shop_products SET sold_count = sold_count + $1, updated_at = now() WHERE id=$2`, [quantity, productId]);
+            unitPrice = vrow.price != null ? Number(vrow.price) : Number(row.price);
+            variantLabel = vrow.label;
+          } else {
+            if (row.stock < quantity) {
+              throw Object.assign(new Error(`Only ${row.stock} of "${row.name}" left in stock`), { status: 409 });
+            }
+            await client.query(
+              `UPDATE shop_products SET stock = stock - $1, sold_count = sold_count + $1, updated_at = now() WHERE id=$2`,
+              [quantity, productId]
+            );
+            unitPrice = Number(row.price);
           }
-          await client.query(
-            `UPDATE shop_products SET stock = stock - $1, sold_count = sold_count + $1, updated_at = now() WHERE id=$2`,
-            [quantity, productId]
-          );
-          const unitPrice = Number(row.price);
+
           const subtotal = Math.round(unitPrice * quantity * 100) / 100;
           total = Math.round((total + subtotal) * 100) / 100;
-          orderItems.push({ productId, productName: row.name, unitPrice, quantity, subtotal });
+          orderItems.push({
+            productId,
+            productName: row.name,
+            unitPrice,
+            quantity,
+            subtotal,
+            variantId: variantId ?? null,
+            variantLabel,
+            bundleId: null,
+            bundleName: null,
+          });
         }
 
         const deliveryFee = Number(shopSettings.delivery_fee);
@@ -493,9 +721,21 @@ shopRouter.post(
         );
         for (const item of orderItems) {
           await client.query(
-            `INSERT INTO shop_order_items (id, order_id, product_id, product_name, unit_price, quantity, subtotal)
-             VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-            [randomUUID(), orderId, item.productId, item.productName, item.unitPrice, item.quantity, item.subtotal]
+            `INSERT INTO shop_order_items (id, order_id, product_id, product_name, unit_price, quantity, subtotal, variant_id, variant_label, bundle_id, bundle_name)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+            [
+              randomUUID(),
+              orderId,
+              item.productId,
+              item.productName,
+              item.unitPrice,
+              item.quantity,
+              item.subtotal,
+              item.variantId,
+              item.variantLabel,
+              item.bundleId,
+              item.bundleName,
+            ]
           );
         }
         await client.query(`INSERT INTO shop_order_status_history (order_id, status) VALUES ($1,'pending')`, [orderId]);
@@ -543,12 +783,7 @@ shopRouter.post("/shop/orders/:id/cancel", requireAuth("customer"), async (req, 
   if (!["pending", "processing"].includes(order.status)) {
     return sendJson(res, 409, { error: "This order can no longer be cancelled — it has already been shipped or resolved" });
   }
-  const items = await query<{ product_id: string | null; quantity: number }>(`SELECT product_id, quantity FROM shop_order_items WHERE order_id=$1`, [req.params.id]);
-  for (const item of items) {
-    if (item.product_id) {
-      await query(`UPDATE shop_products SET stock = stock + $1, updated_at = now() WHERE id=$2`, [item.quantity, item.product_id]);
-    }
-  }
+  await restoreShopOrderStock(req.params.id);
   await query(`UPDATE shop_orders SET status='cancelled', cancelled_at=now(), updated_at=now() WHERE id=$1`, [req.params.id]);
   await query(`INSERT INTO shop_order_status_history (order_id, status, note) VALUES ($1,'cancelled','Cancelled by customer')`, [req.params.id]);
   await recordActivity({
@@ -940,15 +1175,32 @@ shopRouter.get("/admin/shop/products", requirePermission("shop.manage"), async (
   sendJson(res, 200, await query(sql, args));
 });
 
+// Registered before the generic /admin/shop/products/:id below -- same
+// "literal path before dynamic" ordering fix as
+// GET /shop/products/recently-viewed above: every active product at or
+// below its own low_stock_threshold, the dashboard list an Admin checks
+// rather than a push notification pipeline this app has no admin-device
+// registration for (see migration 085).
+shopRouter.get("/admin/shop/products/low-stock", requirePermission("shop.manage"), async (_req, res) => {
+  sendJson(
+    res,
+    200,
+    await query(
+      `SELECT ${PRODUCT_COLUMNS}, low_stock_threshold FROM shop_products WHERE active=true AND stock <= low_stock_threshold ORDER BY stock ASC`
+    )
+  );
+});
+
 shopRouter.get("/admin/shop/products/:id", requirePermission("shop.manage"), async (req, res) => {
-  const product = await queryOne(`SELECT ${PRODUCT_COLUMNS} FROM shop_products WHERE id=$1`, [req.params.id]);
+  const product = await queryOne<any>(`SELECT ${PRODUCT_COLUMNS}, low_stock_threshold FROM shop_products WHERE id=$1`, [req.params.id]);
   if (!product) return sendJson(res, 404, { error: "Product not found" });
   const images = await query(`SELECT id, position FROM shop_product_images WHERE product_id=$1 ORDER BY position`, [req.params.id]);
-  sendJson(res, 200, { ...product, images });
+  const variants = await query(`SELECT ${VARIANT_COLUMNS} FROM shop_product_variants WHERE product_id=$1 ORDER BY position`, [req.params.id]);
+  sendJson(res, 200, { ...product, images, variants });
 });
 
 shopRouter.post("/admin/shop/products", requirePermission("shop.manage"), async (req, res) => {
-  const { categoryId, subcategoryId, name, description, price, oldPrice, stock, brand, featured, isNewArrival, bestSeller } = req.body ?? {};
+  const { categoryId, subcategoryId, name, description, price, oldPrice, stock, brand, featured, isNewArrival, bestSeller, lowStockThreshold } = req.body ?? {};
   if (!categoryId || !name) return sendJson(res, 400, { error: "categoryId and name are required" });
   const priceNum = Number(price);
   const stockNum = stock == null ? 0 : Number(stock);
@@ -967,8 +1219,8 @@ shopRouter.post("/admin/shop/products", requirePermission("shop.manage"), async 
   }
   const id = randomUUID();
   await query(
-    `INSERT INTO shop_products (id, category_id, subcategory_id, name, description, price, old_price, stock, brand, featured, is_new_arrival, best_seller)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+    `INSERT INTO shop_products (id, category_id, subcategory_id, name, description, price, old_price, stock, brand, featured, is_new_arrival, best_seller, low_stock_threshold)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
     [
       id,
       categoryId,
@@ -982,6 +1234,7 @@ shopRouter.post("/admin/shop/products", requirePermission("shop.manage"), async 
       Boolean(featured),
       Boolean(isNewArrival),
       Boolean(bestSeller),
+      lowStockThreshold != null && Number.isInteger(Number(lowStockThreshold)) && Number(lowStockThreshold) >= 0 ? Number(lowStockThreshold) : 5,
     ]
   );
   sendJson(res, 201, await queryOne(`SELECT ${PRODUCT_COLUMNS} FROM shop_products WHERE id=$1`, [id]));
@@ -990,7 +1243,7 @@ shopRouter.post("/admin/shop/products", requirePermission("shop.manage"), async 
 shopRouter.put("/admin/shop/products/:id", requirePermission("shop.manage"), async (req, res) => {
   const existing = await queryOne<any>(`SELECT * FROM shop_products WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Product not found" });
-  const { categoryId, subcategoryId, name, description, price, oldPrice, stock, active, brand, featured, isNewArrival, bestSeller } = req.body ?? {};
+  const { categoryId, subcategoryId, name, description, price, oldPrice, stock, active, brand, featured, isNewArrival, bestSeller, lowStockThreshold } = req.body ?? {};
   if (price !== undefined && (!Number.isFinite(Number(price)) || Number(price) < 0)) {
     return sendJson(res, 400, { error: "price must be a non-negative number" });
   }
@@ -1010,7 +1263,7 @@ shopRouter.put("/admin/shop/products/:id", requirePermission("shop.manage"), asy
     if (sub.category_id !== effectiveCategoryId) return sendJson(res, 400, { error: "Subcategory does not belong to the selected category" });
   }
   await query(
-    `UPDATE shop_products SET category_id=$1, subcategory_id=$2, name=$3, description=$4, price=$5, old_price=$6, stock=$7, active=$8, brand=$9, featured=$10, is_new_arrival=$11, best_seller=$12, updated_at=now() WHERE id=$13`,
+    `UPDATE shop_products SET category_id=$1, subcategory_id=$2, name=$3, description=$4, price=$5, old_price=$6, stock=$7, active=$8, brand=$9, featured=$10, is_new_arrival=$11, best_seller=$12, low_stock_threshold=$13, updated_at=now() WHERE id=$14`,
     [
       effectiveCategoryId,
       subcategoryId === undefined ? existing.subcategory_id : subcategoryId || null,
@@ -1024,9 +1277,33 @@ shopRouter.put("/admin/shop/products/:id", requirePermission("shop.manage"), asy
       typeof featured === "boolean" ? featured : existing.featured,
       typeof isNewArrival === "boolean" ? isNewArrival : existing.is_new_arrival,
       typeof bestSeller === "boolean" ? bestSeller : existing.best_seller,
+      lowStockThreshold !== undefined && Number.isInteger(Number(lowStockThreshold)) && Number(lowStockThreshold) >= 0
+        ? Number(lowStockThreshold)
+        : existing.low_stock_threshold,
       req.params.id,
     ]
   );
+
+  // Back-in-stock: this product just went from 0 (or negative -- can't
+  // happen, but Number(stock) is user input) to actually available. Every
+  // customer who tapped "Notify Me" while it was out gets notified once,
+  // then their request is marked notified so restocking again later can
+  // notify them again instead of silently no-op'ing on an already-used row.
+  const newStock = stock !== undefined ? Number(stock) : existing.stock;
+  if (Number(existing.stock) <= 0 && newStock > 0) {
+    const subscribers = await query<{ id: string; customer_id: string }>(
+      `SELECT id, customer_id FROM shop_stock_notify_requests WHERE product_id=$1 AND notified=false`,
+      [req.params.id]
+    );
+    if (subscribers.length > 0) {
+      await query(`UPDATE shop_stock_notify_requests SET notified=true, notified_at=now() WHERE product_id=$1 AND notified=false`, [req.params.id]);
+      const productName = name?.trim() || existing.name;
+      for (const sub of subscribers) {
+        await notifyCustomer(sub.customer_id, "shop_back_in_stock", "Back in Stock", `"${productName}" is back in stock!`);
+      }
+    }
+  }
+
   sendJson(res, 200, await queryOne(`SELECT ${PRODUCT_COLUMNS} FROM shop_products WHERE id=$1`, [req.params.id]));
 });
 
@@ -1058,6 +1335,268 @@ shopRouter.delete("/admin/shop/products/:productId/images/:imageId", requirePerm
   const result = await query(`DELETE FROM shop_product_images WHERE id=$1 AND product_id=$2 RETURNING id`, [req.params.imageId, req.params.productId]);
   if (result.length === 0) return sendJson(res, 404, { error: "Image not found" });
   sendJson(res, 200, { deleted: true });
+});
+
+// ==================== Admin: Product Variants ====================
+
+shopRouter.get("/admin/shop/products/:productId/variants", requirePermission("shop.manage"), async (req, res) => {
+  sendJson(res, 200, await query(`SELECT ${VARIANT_COLUMNS} FROM shop_product_variants WHERE product_id=$1 ORDER BY position`, [req.params.productId]));
+});
+
+shopRouter.post("/admin/shop/products/:productId/variants", requirePermission("shop.manage"), async (req, res) => {
+  const { label, attributes, price, stock, sku } = req.body ?? {};
+  if (!label || !String(label).trim()) return sendJson(res, 400, { error: "label is required" });
+  if (!(await queryOne(`SELECT id FROM shop_products WHERE id=$1`, [req.params.productId]))) {
+    return sendJson(res, 404, { error: "Product not found" });
+  }
+  const stockNum = stock == null ? 0 : Number(stock);
+  if (!Number.isInteger(stockNum) || stockNum < 0) return sendJson(res, 400, { error: "stock must be a non-negative whole number" });
+  if (price !== undefined && price !== null && price !== "" && (!Number.isFinite(Number(price)) || Number(price) < 0)) {
+    return sendJson(res, 400, { error: "price must be a non-negative number" });
+  }
+  const maxPos = await queryOne<{ m: number }>(`SELECT COALESCE(MAX(position), -1) AS m FROM shop_product_variants WHERE product_id=$1`, [req.params.productId]);
+  const id = randomUUID();
+  await query(
+    `INSERT INTO shop_product_variants (id, product_id, label, attributes, price, stock, sku, position)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [
+      id,
+      req.params.productId,
+      String(label).trim(),
+      JSON.stringify(attributes && typeof attributes === "object" ? attributes : {}),
+      price !== undefined && price !== null && price !== "" ? Number(price) : null,
+      stockNum,
+      typeof sku === "string" ? sku.trim() || null : null,
+      (maxPos?.m ?? -1) + 1,
+    ]
+  );
+  sendJson(res, 201, await queryOne(`SELECT ${VARIANT_COLUMNS} FROM shop_product_variants WHERE id=$1`, [id]));
+});
+
+shopRouter.put("/admin/shop/products/:productId/variants/:id", requirePermission("shop.manage"), async (req, res) => {
+  const existing = await queryOne<any>(`SELECT * FROM shop_product_variants WHERE id=$1 AND product_id=$2`, [req.params.id, req.params.productId]);
+  if (!existing) return sendJson(res, 404, { error: "Variant not found" });
+  const { label, attributes, price, stock, sku, active } = req.body ?? {};
+  if (stock !== undefined && (!Number.isInteger(Number(stock)) || Number(stock) < 0)) {
+    return sendJson(res, 400, { error: "stock must be a non-negative whole number" });
+  }
+  if (price !== undefined && price !== null && price !== "" && (!Number.isFinite(Number(price)) || Number(price) < 0)) {
+    return sendJson(res, 400, { error: "price must be a non-negative number" });
+  }
+  await query(
+    `UPDATE shop_product_variants SET label=$1, attributes=$2, price=$3, stock=$4, sku=$5, active=$6, updated_at=now() WHERE id=$7`,
+    [
+      label?.trim() || existing.label,
+      attributes && typeof attributes === "object" ? JSON.stringify(attributes) : existing.attributes,
+      price !== undefined ? (price === null || price === "" ? null : Number(price)) : existing.price,
+      stock !== undefined ? Number(stock) : existing.stock,
+      sku !== undefined ? (typeof sku === "string" ? sku.trim() || null : null) : existing.sku,
+      typeof active === "boolean" ? active : existing.active,
+      req.params.id,
+    ]
+  );
+  sendJson(res, 200, await queryOne(`SELECT ${VARIANT_COLUMNS} FROM shop_product_variants WHERE id=$1`, [req.params.id]));
+});
+
+shopRouter.delete("/admin/shop/products/:productId/variants/:id", requirePermission("shop.manage"), async (req, res) => {
+  const result = await query(`DELETE FROM shop_product_variants WHERE id=$1 AND product_id=$2 RETURNING id`, [req.params.id, req.params.productId]);
+  if (result.length === 0) return sendJson(res, 404, { error: "Variant not found" });
+  sendJson(res, 200, { deleted: true });
+});
+
+// ==================== Admin: Flash Sales ====================
+
+shopRouter.get("/admin/shop/flash-sales", requirePermission("shop.manage"), async (_req, res) => {
+  const sales = await query(`SELECT id, name, starts_at, ends_at, active, created_at FROM shop_flash_sales ORDER BY starts_at DESC`);
+  const withItems = await Promise.all(
+    (sales as any[]).map(async (s) => ({
+      ...s,
+      items: await query(
+        `SELECT fsi.product_id, fsi.sale_price, p.name AS product_name, p.price AS product_price
+         FROM shop_flash_sale_items fsi JOIN shop_products p ON p.id = fsi.product_id WHERE fsi.flash_sale_id=$1`,
+        [s.id]
+      ),
+    }))
+  );
+  sendJson(res, 200, withItems);
+});
+
+shopRouter.post("/admin/shop/flash-sales", requirePermission("shop.manage"), async (req, res) => {
+  const { name, startsAt, endsAt, items } = req.body ?? {};
+  if (!name || !String(name).trim()) return sendJson(res, 400, { error: "name is required" });
+  const starts = new Date(startsAt);
+  const ends = new Date(endsAt);
+  if (isNaN(starts.getTime()) || isNaN(ends.getTime()) || ends <= starts) {
+    return sendJson(res, 400, { error: "startsAt and endsAt must be valid dates, with endsAt after startsAt" });
+  }
+  if (!Array.isArray(items) || items.length === 0) {
+    return sendJson(res, 400, { error: "items (at least one {productId, salePrice}) is required" });
+  }
+  const id = randomUUID();
+  await withTransaction(async (client) => {
+    await client.query(`INSERT INTO shop_flash_sales (id, name, starts_at, ends_at) VALUES ($1,$2,$3,$4)`, [id, String(name).trim(), starts, ends]);
+    for (const raw of items) {
+      const productId = String((raw as any)?.productId ?? "");
+      const salePrice = Number((raw as any)?.salePrice);
+      if (!productId || !Number.isFinite(salePrice) || salePrice < 0) {
+        throw Object.assign(new Error("Each item needs a valid productId and a non-negative salePrice"), { status: 400 });
+      }
+      await client.query(`INSERT INTO shop_flash_sale_items (flash_sale_id, product_id, sale_price) VALUES ($1,$2,$3)`, [id, productId, salePrice]);
+    }
+  });
+  sendJson(res, 201, { id });
+});
+
+shopRouter.put("/admin/shop/flash-sales/:id", requirePermission("shop.manage"), async (req, res) => {
+  const existing = await queryOne(`SELECT id FROM shop_flash_sales WHERE id=$1`, [req.params.id]);
+  if (!existing) return sendJson(res, 404, { error: "Flash sale not found" });
+  const { active } = req.body ?? {};
+  if (typeof active === "boolean") {
+    await query(`UPDATE shop_flash_sales SET active=$1, updated_at=now() WHERE id=$2`, [active, req.params.id]);
+  }
+  sendJson(res, 200, await queryOne(`SELECT id, name, starts_at, ends_at, active FROM shop_flash_sales WHERE id=$1`, [req.params.id]));
+});
+
+shopRouter.delete("/admin/shop/flash-sales/:id", requirePermission("shop.manage"), async (req, res) => {
+  const result = await query(`DELETE FROM shop_flash_sales WHERE id=$1 RETURNING id`, [req.params.id]);
+  if (result.length === 0) return sendJson(res, 404, { error: "Flash sale not found" });
+  sendJson(res, 200, { deleted: true });
+});
+
+// ==================== Admin: Bundle Deals ====================
+
+shopRouter.get("/admin/shop/bundles", requirePermission("shop.manage"), async (_req, res) => {
+  const bundles = await query(`SELECT ${BUNDLE_COLUMNS} FROM shop_bundle_deals ORDER BY created_at DESC`);
+  const withItems = await Promise.all((bundles as any[]).map(async (b) => ({ ...b, items: await loadBundleItems(b.id) })));
+  sendJson(res, 200, withItems);
+});
+
+shopRouter.post("/admin/shop/bundles", requirePermission("shop.manage"), async (req, res) => {
+  const { name, description, bundlePrice, items } = req.body ?? {};
+  if (!name || !String(name).trim()) return sendJson(res, 400, { error: "name is required" });
+  const priceNum = Number(bundlePrice);
+  if (!Number.isFinite(priceNum) || priceNum < 0) return sendJson(res, 400, { error: "bundlePrice must be a non-negative number" });
+  if (!Array.isArray(items) || items.length === 0) {
+    return sendJson(res, 400, { error: "items (at least one {productId, quantity}) is required" });
+  }
+  const id = randomUUID();
+  await withTransaction(async (client) => {
+    await client.query(`INSERT INTO shop_bundle_deals (id, name, description, bundle_price) VALUES ($1,$2,$3,$4)`, [
+      id,
+      String(name).trim(),
+      String(description ?? "").trim(),
+      priceNum,
+    ]);
+    for (const raw of items) {
+      const productId = String((raw as any)?.productId ?? "");
+      const quantity = Number((raw as any)?.quantity ?? 1);
+      if (!productId || !Number.isInteger(quantity) || quantity < 1) {
+        throw Object.assign(new Error("Each item needs a valid productId and a quantity of at least 1"), { status: 400 });
+      }
+      await client.query(`INSERT INTO shop_bundle_deal_items (bundle_id, product_id, quantity) VALUES ($1,$2,$3)`, [id, productId, quantity]);
+    }
+  });
+  sendJson(res, 201, { id });
+});
+
+shopRouter.put("/admin/shop/bundles/:id", requirePermission("shop.manage"), async (req, res) => {
+  const existing = await queryOne<any>(`SELECT * FROM shop_bundle_deals WHERE id=$1`, [req.params.id]);
+  if (!existing) return sendJson(res, 404, { error: "Bundle not found" });
+  const { name, description, bundlePrice, active } = req.body ?? {};
+  if (bundlePrice !== undefined && (!Number.isFinite(Number(bundlePrice)) || Number(bundlePrice) < 0)) {
+    return sendJson(res, 400, { error: "bundlePrice must be a non-negative number" });
+  }
+  await query(
+    `UPDATE shop_bundle_deals SET name=$1, description=$2, bundle_price=$3, active=$4, updated_at=now() WHERE id=$5`,
+    [
+      name?.trim() || existing.name,
+      description !== undefined ? String(description).trim() : existing.description,
+      bundlePrice !== undefined ? Number(bundlePrice) : existing.bundle_price,
+      typeof active === "boolean" ? active : existing.active,
+      req.params.id,
+    ]
+  );
+  sendJson(res, 200, await queryOne(`SELECT ${BUNDLE_COLUMNS} FROM shop_bundle_deals WHERE id=$1`, [req.params.id]));
+});
+
+shopRouter.delete("/admin/shop/bundles/:id", requirePermission("shop.manage"), async (req, res) => {
+  const result = await query(`DELETE FROM shop_bundle_deals WHERE id=$1 RETURNING id`, [req.params.id]);
+  if (result.length === 0) return sendJson(res, 404, { error: "Bundle not found" });
+  sendJson(res, 200, { deleted: true });
+});
+
+// ==================== Admin: Delivery Zones ====================
+
+shopRouter.get("/admin/shop/delivery-zones", requirePermission("shop.manage"), async (_req, res) => {
+  sendJson(res, 200, await query(`SELECT id, name, fee, active, position FROM shop_delivery_zones ORDER BY position`));
+});
+
+shopRouter.post("/admin/shop/delivery-zones", requirePermission("shop.manage"), async (req, res) => {
+  const { name, fee } = req.body ?? {};
+  if (!name || !String(name).trim()) return sendJson(res, 400, { error: "name is required" });
+  const feeNum = Number(fee);
+  if (!Number.isFinite(feeNum) || feeNum < 0) return sendJson(res, 400, { error: "fee must be a non-negative number" });
+  const maxPos = await queryOne<{ m: number }>(`SELECT COALESCE(MAX(position), -1) AS m FROM shop_delivery_zones`);
+  const id = randomUUID();
+  try {
+    await query(`INSERT INTO shop_delivery_zones (id, name, fee, position) VALUES ($1,$2,$3,$4)`, [id, String(name).trim(), feeNum, (maxPos?.m ?? -1) + 1]);
+  } catch (err: any) {
+    if (err?.code === "23505") return sendJson(res, 409, { error: "A delivery zone with this name already exists" });
+    throw err;
+  }
+  sendJson(res, 201, await queryOne(`SELECT id, name, fee, active, position FROM shop_delivery_zones WHERE id=$1`, [id]));
+});
+
+shopRouter.put("/admin/shop/delivery-zones/:id", requirePermission("shop.manage"), async (req, res) => {
+  const existing = await queryOne<any>(`SELECT * FROM shop_delivery_zones WHERE id=$1`, [req.params.id]);
+  if (!existing) return sendJson(res, 404, { error: "Delivery zone not found" });
+  const { name, fee, active } = req.body ?? {};
+  if (fee !== undefined && (!Number.isFinite(Number(fee)) || Number(fee) < 0)) {
+    return sendJson(res, 400, { error: "fee must be a non-negative number" });
+  }
+  await query(`UPDATE shop_delivery_zones SET name=$1, fee=$2, active=$3, updated_at=now() WHERE id=$4`, [
+    name?.trim() || existing.name,
+    fee !== undefined ? Number(fee) : existing.fee,
+    typeof active === "boolean" ? active : existing.active,
+    req.params.id,
+  ]);
+  sendJson(res, 200, await queryOne(`SELECT id, name, fee, active, position FROM shop_delivery_zones WHERE id=$1`, [req.params.id]));
+});
+
+shopRouter.delete("/admin/shop/delivery-zones/:id", requirePermission("shop.manage"), async (req, res) => {
+  const result = await query(`DELETE FROM shop_delivery_zones WHERE id=$1 RETURNING id`, [req.params.id]);
+  if (result.length === 0) return sendJson(res, 404, { error: "Delivery zone not found" });
+  sendJson(res, 200, { deleted: true });
+});
+
+// ==================== Admin: Analytics ====================
+
+// A single summary snapshot -- totals, orders-by-status, a 30-day daily
+// revenue series, and the top 10 products by units sold -- rather than a
+// generic ad-hoc query endpoint, matching every other admin dashboard
+// surface in this codebase (a fixed, predictable response shape).
+shopRouter.get("/admin/shop/analytics", requirePermission("shop.manage"), async (_req, res) => {
+  const totals = await queryOne<{ order_count: string; revenue: string; avg_order_value: string }>(
+    `SELECT COUNT(*) AS order_count, COALESCE(SUM(total_amount), 0) AS revenue, COALESCE(AVG(total_amount), 0) AS avg_order_value
+     FROM shop_orders WHERE payment_status='paid'`
+  );
+  const byStatus = await query(`SELECT status, COUNT(*) AS count FROM shop_orders GROUP BY status`);
+  const dailyRevenue = await query(
+    `SELECT date_trunc('day', created_at)::date AS day, COALESCE(SUM(total_amount), 0) AS revenue, COUNT(*) AS order_count
+     FROM shop_orders WHERE payment_status='paid' AND created_at >= now() - interval '30 days'
+     GROUP BY day ORDER BY day ASC`
+  );
+  const topProducts = await query(
+    `SELECT id, name, sold_count, price FROM shop_products ORDER BY sold_count DESC LIMIT 10`
+  );
+  sendJson(res, 200, {
+    orderCount: Number(totals?.order_count ?? 0),
+    revenue: Number(totals?.revenue ?? 0),
+    avgOrderValue: Number(totals?.avg_order_value ?? 0),
+    ordersByStatus: byStatus,
+    dailyRevenue,
+    topProducts,
+  });
 });
 
 // ==================== Admin: Payment collection methods ====================
@@ -1200,12 +1739,7 @@ shopRouter.put("/admin/shop/orders/:id/status", requirePermission("shop.manage")
   // non-terminal at this point (checked above), so this can only ever fire
   // once per order.
   if (STOCK_RESTORING_STATUSES.includes(status)) {
-    const items = await query<{ product_id: string | null; quantity: number }>(`SELECT product_id, quantity FROM shop_order_items WHERE order_id=$1`, [req.params.id]);
-    for (const item of items) {
-      if (item.product_id) {
-        await query(`UPDATE shop_products SET stock = stock + $1, updated_at = now() WHERE id=$2`, [item.quantity, item.product_id]);
-      }
-    }
+    await restoreShopOrderStock(req.params.id);
   }
 
   await query(
