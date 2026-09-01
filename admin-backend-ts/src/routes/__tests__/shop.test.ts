@@ -1101,3 +1101,82 @@ test("POST /shop/products/:id/view for a nonexistent product returns 404", async
   const res = await asCustomer(`/shop/products/${randomUUID()}/view`, { method: "POST" });
   assert.equal(res.status, 404);
 });
+
+// ==================== Price Change Warning (cart validate) ====================
+
+test("POST /shop/cart/validate reflects a live price change, out-of-stock, and a deactivated product", async () => {
+  const outOfStockProduct = await queryOne<{ id: string }>(
+    `INSERT INTO shop_products (id, category_id, name, price, stock) VALUES ($1,$2,'Test Out Of Stock',5,0) RETURNING id`,
+    [randomUUID(), categoryId]
+  );
+  const inactiveProduct = await queryOne<{ id: string }>(
+    `INSERT INTO shop_products (id, category_id, name, price, stock, active) VALUES ($1,$2,'Test Inactive',5,10,false) RETURNING id`,
+    [randomUUID(), categoryId]
+  );
+
+  const before = await fetch(`${baseUrl}/shop/cart/validate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items: [{ productId, quantity: 1 }] }),
+  });
+  const beforeBody = (await before.json()) as any;
+  assert.equal(beforeBody.items[0].currentPrice, 25);
+
+  await asSuperAdmin(`/admin/shop/products/${productId}`, { method: "PUT", body: JSON.stringify({ price: 30 }) });
+
+  const res = await fetch(`${baseUrl}/shop/cart/validate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      items: [
+        { productId, quantity: 1 },
+        { productId: outOfStockProduct!.id, quantity: 1 },
+        { productId: inactiveProduct!.id, quantity: 1 },
+      ],
+    }),
+  });
+  const body = (await res.json()) as any;
+  assert.equal(res.status, 200);
+  assert.equal(body.items[0].currentPrice, 30, "price change since the cart was built must be reflected");
+  assert.equal(body.items[0].inStock, true);
+  assert.equal(body.items[1].inStock, false, "0 stock must report inStock=false");
+  assert.equal(body.items[2].available, false, "a deactivated product must report available=false");
+});
+
+test("POST /shop/cart/validate requires a non-empty items array with valid entries", async () => {
+  const emptyRes = await fetch(`${baseUrl}/shop/cart/validate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items: [] }) });
+  assert.equal(emptyRes.status, 400);
+  const badRes = await fetch(`${baseUrl}/shop/cart/validate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items: [{ quantity: 0 }] }) });
+  assert.equal(badRes.status, 400);
+});
+
+// ==================== Payment Retry ====================
+
+test("retry-payment re-issues a dial string for a still-unpaid order, using the payment method's current template", async () => {
+  await fabricateOrder("SHPTESTRETRY1", "pending");
+  await query(`UPDATE shop_orders SET total_amount=50 WHERE id='SHPTESTRETRY1'`);
+
+  const res = await asCustomer("/shop/orders/SHPTESTRETRY1/retry-payment", { method: "POST" });
+  const body = (await res.json()) as any;
+  assert.equal(res.status, 200, JSON.stringify(body));
+  assert.equal(body.dialUssd, "*712*610338686*50#");
+});
+
+test("retry-payment is rejected once paid, once shipped, or for someone else's order", async () => {
+  await fabricateOrder("SHPTESTRETRY2", "pending");
+  await query(`UPDATE shop_orders SET payment_status='paid' WHERE id='SHPTESTRETRY2'`);
+  const paidRes = await asCustomer("/shop/orders/SHPTESTRETRY2/retry-payment", { method: "POST" });
+  assert.equal(paidRes.status, 409);
+
+  await fabricateOrder("SHPTESTRETRY3", "shipped");
+  const shippedRes = await asCustomer("/shop/orders/SHPTESTRETRY3/retry-payment", { method: "POST" });
+  assert.equal(shippedRes.status, 409);
+
+  const otherCustomerId = randomUUID();
+  await query(`INSERT INTO customers (id, phone, name) VALUES ($1,'617555444','Someone Else')`, [otherCustomerId]);
+  await fabricateOrder("SHPTESTRETRY4", "pending", otherCustomerId);
+  const wrongOwnerRes = await asCustomer("/shop/orders/SHPTESTRETRY4/retry-payment", { method: "POST" });
+  assert.equal(wrongOwnerRes.status, 404);
+  await query(`DELETE FROM shop_orders WHERE id='SHPTESTRETRY4'`);
+  await query(`DELETE FROM customers WHERE id=$1`, [otherCustomerId]);
+});

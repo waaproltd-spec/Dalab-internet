@@ -198,6 +198,38 @@ shopRouter.get("/shop/payment-methods", async (_req, res) => {
   sendJson(res, 200, await query(`SELECT method, label, payment_number, ussd_template FROM shop_payment_methods ORDER BY method`));
 });
 
+// Public, read-only re-check of a cart against live prices/stock -- the
+// Customer App calls this right before Checkout submits, so it can warn
+// "this price changed" and ask the customer to confirm before dialing.
+// Purely informational: POST /shop/orders itself already re-reads live
+// prices and re-validates stock independently and always will, whether or
+// not the client bothered to call this first.
+shopRouter.post("/shop/cart/validate", async (req, res) => {
+  const items = Array.isArray(req.body?.items) ? req.body.items : [];
+  if (items.length === 0) return sendJson(res, 400, { error: "items is required" });
+  const results = [];
+  for (const raw of items) {
+    const productId = String((raw as any)?.productId ?? "");
+    const quantity = Number((raw as any)?.quantity);
+    if (!productId || !Number.isInteger(quantity) || quantity < 1) {
+      return sendJson(res, 400, { error: "Each item needs a valid productId and a quantity of at least 1" });
+    }
+    const product = await queryOne<{ price: string; stock: number; active: boolean; name: string }>(
+      `SELECT price, stock, active, name FROM shop_products WHERE id=$1`,
+      [productId]
+    );
+    results.push({
+      productId,
+      quantity,
+      currentPrice: product ? Number(product.price) : null,
+      inStock: product ? product.stock >= quantity : false,
+      available: Boolean(product?.active),
+      productName: product?.name ?? null,
+    });
+  }
+  sendJson(res, 200, { items: results });
+});
+
 type ShopSettingsRow = {
   delivery_fee: string;
   working_days: number[];
@@ -528,6 +560,32 @@ shopRouter.post("/shop/orders/:id/cancel", requireAuth("customer"), async (req, 
     newValue: { status: "cancelled" },
   });
   sendJson(res, 200, await queryOne(`SELECT ${SHOP_ORDER_COLUMNS} FROM shop_orders WHERE id=$1`, [req.params.id]));
+});
+
+// Re-issues the dial string for an existing order that failed/timed out
+// at the phone's own dialer -- never creates a second order or touches
+// stock (already reserved once, at creation time). Only while payment
+// hasn't been confirmed and the order hasn't moved past 'processing':
+// once stock has been given back (a terminal/failed/returned state) the
+// original reservation this dial string was for no longer holds, and once
+// paid there's nothing left to retry. Recomputes from the payment
+// method's current ussd_template rather than trusting anything cached,
+// in case Admin has repointed the collection number since the order was
+// placed.
+shopRouter.post("/shop/orders/:id/retry-payment", requireAuth("customer"), async (req, res) => {
+  const order = await queryOne<{ status: string; payment_status: string; payment_method: string; total_amount: string }>(
+    `SELECT status, payment_status, payment_method, total_amount FROM shop_orders WHERE id=$1 AND customer_id=$2`,
+    [req.params.id, req.auth!.sub]
+  );
+  if (!order) return sendJson(res, 404, { error: "Order not found" });
+  if (order.payment_status === "paid") return sendJson(res, 409, { error: "This order has already been paid" });
+  if (!["pending", "processing"].includes(order.status)) {
+    return sendJson(res, 409, { error: "This order can no longer be retried — please contact support" });
+  }
+  const method = await queryOne<{ ussd_template: string }>(`SELECT ussd_template FROM shop_payment_methods WHERE method=$1`, [order.payment_method]);
+  if (!method) return sendJson(res, 409, { error: "The payment method on this order is no longer available — please contact support" });
+  const dialUssd = method.ussd_template.replace("{amount}", formatUssdAmount(Number(order.total_amount)));
+  sendJson(res, 200, { dialUssd });
 });
 
 // ==================== Favorites / Wishlist ====================
