@@ -167,6 +167,11 @@ const DalabAdminApi = {
   updatePackage: (id, body) => dalabAdminApiRequest(`/admin/packages/${id}`, { method: "PUT", body }),
   deletePackage: (id) => dalabAdminApiRequest(`/admin/packages/${id}`, { method: "DELETE" }),
   getPackagesMissingTemplate: () => dalabAdminApiRequest("/admin/packages/missing-template"),
+  // One icon per package, shown in the Customer App's package list --
+  // uploaded as a data URI (base64), same as Promo Images/Shop products.
+  updatePackageImage: (id, imageBase64) => dalabAdminApiRequest(`/admin/packages/${id}/image`, { method: "PUT", body: { imageBase64 } }),
+  deletePackageImage: (id) => dalabAdminApiRequest(`/admin/packages/${id}/image`, { method: "DELETE" }),
+  packageImageUrl: (id) => `${DALAB_API_BASE_URL}/packages/${id}/image`,
   // Service categories
   getCategories: (companyId) => dalabAdminApiRequest(`/admin/categories${companyId ? `?companyId=${companyId}` : ""}`),
   createCategory: (body) => dalabAdminApiRequest("/admin/categories", { method: "POST", body }),
@@ -2016,6 +2021,8 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
   const [successMessage, setSuccessMessage] = useState("");
   const [saving, setSaving] = useState(false);
   const [templateWarning, setTemplateWarning] = useState("");
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const imageInputRef = useRef(null);
   const canManage = hasPermission(admin, "packages.manage");
 
   const fetchPackages = async () => {
@@ -2142,6 +2149,38 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
     }
   };
 
+  const onPackageImageSelected = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || editing === "new") return;
+    setUploadingImage(true);
+    setError("");
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        await DalabAdminApi.updatePackageImage(editing, reader.result);
+        setForm((f) => ({ ...f, hasImage: true }));
+        fetchPackages();
+      } catch (err) {
+        setError(err.message || "Could not upload image.");
+      }
+      setUploadingImage(false);
+    };
+    reader.onerror = () => { setError("Could not read that file."); setUploadingImage(false); };
+    reader.readAsDataURL(file);
+  };
+
+  const removePackageImage = async () => {
+    if (editing === "new") return;
+    try {
+      await DalabAdminApi.deletePackageImage(editing);
+      setForm((f) => ({ ...f, hasImage: false }));
+      fetchPackages();
+    } catch (err) {
+      alert(err.message || "Could not remove image.");
+    }
+  };
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
@@ -2193,7 +2232,14 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
           <tbody>
             {shown.map((p) => (
               <tr key={p.id} style={{ borderTop: `1px solid ${BORDER}` }}>
-                <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{p?.name || "Unnamed package"}</td>
+                <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    {p.hasImage && (
+                      <img src={DalabAdminApi.packageImageUrl(p.id)} alt="" style={{ width: 22, height: 22, borderRadius: 6, objectFit: "cover", flexShrink: 0 }} />
+                    )}
+                    <span>{p?.name || "Unnamed package"}</span>
+                  </div>
+                </td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{p.company || companies.find((c) => c.id === p.companyId)?.name}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE, textDecoration: "line-through" }}>${Number(p.old ?? p.oldPrice).toFixed(2)}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: GREEN, fontWeight: 700 }}>${Number(p.price).toFixed(2)}</td>
@@ -2247,6 +2293,35 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
           <Field label="Package name">
             <input style={inputStyle} value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </Field>
+          {DALAB_API_ENABLED && (
+            <Field label="Icon (shown in the Customer App package list)">
+              {editing === "new" ? (
+                <div style={{ fontSize: 11.5, color: MUTE }}>Save the package first, then add an icon.</div>
+              ) : (
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{
+                    width: 44, height: 44, borderRadius: 10, overflow: "hidden", background: INDIGO_SOFT,
+                    display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+                  }}>
+                    {form.hasImage ? (
+                      <img src={DalabAdminApi.packageImageUrl(editing)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                    ) : (
+                      <ImageIcon size={18} color={INDIGO} />
+                    )}
+                  </div>
+                  <input ref={imageInputRef} type="file" accept="image/*" onChange={onPackageImageSelected} style={{ display: "none" }} />
+                  <Button variant="secondary" icon={Upload} disabled={uploadingImage} spin={uploadingImage} onClick={() => imageInputRef.current?.click()}>
+                    {uploadingImage ? "Uploading..." : form.hasImage ? "Replace" : "Upload"}
+                  </Button>
+                  {form.hasImage && (
+                    <button onClick={removePackageImage} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 8, cursor: "pointer" }}>
+                      <Trash2 size={13} color="#C81E2C" />
+                    </button>
+                  )}
+                </div>
+              )}
+            </Field>
+          )}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <Field label="Old price ($)"><input style={inputStyle} value={form.oldPrice ?? ""} onChange={(e) => setForm({ ...form, oldPrice: e.target.value })} /></Field>
             <Field label="Discount price ($)"><input style={inputStyle} value={form.price ?? ""} onChange={(e) => setForm({ ...form, price: e.target.value })} /></Field>
