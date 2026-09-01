@@ -2,6 +2,7 @@ import { Router } from "express";
 import { randomUUID } from "node:crypto";
 import { query, queryOne, withTransaction } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
+import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { parseDataUri } from "../utils/dataUri.js";
 import { notifyCustomer } from "../services/customerNotify.js";
@@ -14,7 +15,7 @@ shopAdminRouter.get("/admin/shop/categories", requireStaff(), async (_req, res) 
   sendJson(res, 200, await query(`SELECT * FROM shop_categories ORDER BY position`));
 });
 
-shopAdminRouter.put("/admin/shop/categories/:id", requireStaff(), async (req, res) => {
+shopAdminRouter.put("/admin/shop/categories/:id", requirePermission("shop.manage"), async (req, res) => {
   const existing = await queryOne(`SELECT id FROM shop_categories WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Category not found" });
   const { name, emoji, position, active } = req.body ?? {};
@@ -34,7 +35,7 @@ shopAdminRouter.get("/admin/shop/electronics-subcategories", requireStaff(), asy
   sendJson(res, 200, await query(`SELECT * FROM shop_electronics_subcategories ORDER BY position, name`));
 });
 
-shopAdminRouter.post("/admin/shop/electronics-subcategories", requireStaff(), async (req, res) => {
+shopAdminRouter.post("/admin/shop/electronics-subcategories", requirePermission("shop.manage"), async (req, res) => {
   const name = String(req.body?.name ?? "").trim();
   if (!name) return sendJson(res, 400, { error: "name is required" });
   const id = randomUUID();
@@ -45,7 +46,7 @@ shopAdminRouter.post("/admin/shop/electronics-subcategories", requireStaff(), as
   sendJson(res, 201, await queryOne(`SELECT * FROM shop_electronics_subcategories WHERE id=$1`, [id]));
 });
 
-shopAdminRouter.put("/admin/shop/electronics-subcategories/:id", requireStaff(), async (req, res) => {
+shopAdminRouter.put("/admin/shop/electronics-subcategories/:id", requirePermission("shop.manage"), async (req, res) => {
   const existing = await queryOne(`SELECT id FROM shop_electronics_subcategories WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Subcategory not found" });
   const { name, position, active } = req.body ?? {};
@@ -58,7 +59,7 @@ shopAdminRouter.put("/admin/shop/electronics-subcategories/:id", requireStaff(),
   sendJson(res, 200, await queryOne(`SELECT * FROM shop_electronics_subcategories WHERE id=$1`, [req.params.id]));
 });
 
-shopAdminRouter.delete("/admin/shop/electronics-subcategories/:id", requireStaff(), async (req, res) => {
+shopAdminRouter.delete("/admin/shop/electronics-subcategories/:id", requirePermission("shop.manage"), async (req, res) => {
   const result = await query(`DELETE FROM shop_electronics_subcategories WHERE id=$1 RETURNING id`, [req.params.id]);
   if (result.length === 0) return sendJson(res, 404, { error: "Subcategory not found" });
   sendJson(res, 200, { deleted: true });
@@ -70,7 +71,7 @@ shopAdminRouter.get("/admin/shop/brands", requireStaff(), async (_req, res) => {
   sendJson(res, 200, await query(`SELECT * FROM shop_brands ORDER BY name`));
 });
 
-shopAdminRouter.post("/admin/shop/brands", requireStaff(), async (req, res) => {
+shopAdminRouter.post("/admin/shop/brands", requirePermission("shop.manage"), async (req, res) => {
   const name = String(req.body?.name ?? "").trim();
   if (!name) return sendJson(res, 400, { error: "name is required" });
   const id = randomUUID();
@@ -83,7 +84,7 @@ shopAdminRouter.post("/admin/shop/brands", requireStaff(), async (req, res) => {
   sendJson(res, 201, await queryOne(`SELECT * FROM shop_brands WHERE id=$1`, [id]));
 });
 
-shopAdminRouter.put("/admin/shop/brands/:id", requireStaff(), async (req, res) => {
+shopAdminRouter.put("/admin/shop/brands/:id", requirePermission("shop.manage"), async (req, res) => {
   const existing = await queryOne(`SELECT id FROM shop_brands WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Brand not found" });
   const { name, active } = req.body ?? {};
@@ -95,7 +96,7 @@ shopAdminRouter.put("/admin/shop/brands/:id", requireStaff(), async (req, res) =
   sendJson(res, 200, await queryOne(`SELECT * FROM shop_brands WHERE id=$1`, [req.params.id]));
 });
 
-shopAdminRouter.delete("/admin/shop/brands/:id", requireStaff(), async (req, res) => {
+shopAdminRouter.delete("/admin/shop/brands/:id", requirePermission("shop.manage"), async (req, res) => {
   const result = await query(`DELETE FROM shop_brands WHERE id=$1 RETURNING id`, [req.params.id]);
   if (result.length === 0) return sendJson(res, 404, { error: "Brand not found" });
   sendJson(res, 200, { deleted: true });
@@ -121,7 +122,7 @@ shopAdminRouter.get("/admin/shop/products", requireStaff(), async (req, res) => 
   sendJson(res, 200, await query(sql, params));
 });
 
-shopAdminRouter.post("/admin/shop/products", requireStaff(), async (req, res) => {
+shopAdminRouter.post("/admin/shop/products", requirePermission("shop.manage"), async (req, res) => {
   const b = req.body ?? {};
   const name = String(b.name ?? "").trim();
   const categoryId = String(b.categoryId ?? "");
@@ -163,7 +164,7 @@ shopAdminRouter.post("/admin/shop/products", requireStaff(), async (req, res) =>
   sendJson(res, 201, await queryOne(`SELECT ${ADMIN_PRODUCT_COLUMNS} FROM shop_products WHERE id=$1`, [id]));
 });
 
-shopAdminRouter.put("/admin/shop/products/:id", requireStaff(), async (req, res) => {
+shopAdminRouter.put("/admin/shop/products/:id", requirePermission("shop.manage"), async (req, res) => {
   const existing = await queryOne<{ id: string; stock: number }>(`SELECT id, stock FROM shop_products WHERE id=$1`, [
     req.params.id,
   ]);
@@ -221,7 +222,7 @@ shopAdminRouter.put("/admin/shop/products/:id", requireStaff(), async (req, res)
   sendJson(res, 200, await queryOne(`SELECT ${ADMIN_PRODUCT_COLUMNS} FROM shop_products WHERE id=$1`, [req.params.id]));
 });
 
-shopAdminRouter.delete("/admin/shop/products/:id", requireStaff(), async (req, res) => {
+shopAdminRouter.delete("/admin/shop/products/:id", requirePermission("shop.manage"), async (req, res) => {
   // Soft delete (active=false), not a real DELETE -- shop_order_items.product_id
   // references this row from every past order's receipt.
   const result = await query(`UPDATE shop_products SET active=false, updated_at=now() WHERE id=$1 RETURNING id`, [
@@ -241,7 +242,7 @@ shopAdminRouter.get("/admin/shop/products/:id/images", requireStaff(), async (re
   );
 });
 
-shopAdminRouter.post("/admin/shop/products/:id/images", requireStaff(), async (req, res) => {
+shopAdminRouter.post("/admin/shop/products/:id/images", requirePermission("shop.manage"), async (req, res) => {
   const product = await queryOne(`SELECT id FROM shop_products WHERE id=$1`, [req.params.id]);
   if (!product) return sendJson(res, 404, { error: "Product not found" });
   const parsed = parseDataUri(req.body?.imageBase64);
@@ -261,7 +262,7 @@ shopAdminRouter.post("/admin/shop/products/:id/images", requireStaff(), async (r
   sendJson(res, 201, { id, position: (maxPos?.m ?? -1) + 1 });
 });
 
-shopAdminRouter.delete("/admin/shop/products/:productId/images/:imageId", requireStaff(), async (req, res) => {
+shopAdminRouter.delete("/admin/shop/products/:productId/images/:imageId", requirePermission("shop.manage"), async (req, res) => {
   const result = await query(`DELETE FROM shop_product_images WHERE id=$1 AND product_id=$2 RETURNING id`, [
     req.params.imageId,
     req.params.productId,
@@ -306,7 +307,7 @@ const NOTIFY_COPY: Record<string, { type: string; title: string; body: (id: stri
 
 const RESTOCK_ON = new Set(["cancelled", "failed", "returned", "refunded"]);
 
-shopAdminRouter.put("/admin/shop/orders/:id/status", requireStaff(), async (req, res) => {
+shopAdminRouter.put("/admin/shop/orders/:id/status", requirePermission("shop.manage"), async (req, res) => {
   const status = String(req.body?.status ?? "");
   const validStatuses = ["pending", "processing", "shipped", "delivered", "cancelled", "failed", "returned", "refunded"];
   if (!validStatuses.includes(status)) return sendJson(res, 400, { error: `status must be one of ${validStatuses.join(", ")}` });
@@ -371,7 +372,7 @@ shopAdminRouter.get("/admin/shop/returns", requireStaff(), async (req, res) => {
   sendJson(res, 200, await query(sql, params));
 });
 
-shopAdminRouter.put("/admin/shop/returns/:id", requireStaff(), async (req, res) => {
+shopAdminRouter.put("/admin/shop/returns/:id", requirePermission("shop.manage"), async (req, res) => {
   const status = String(req.body?.status ?? "");
   const validStatuses = ["requested", "approved", "rejected", "processing", "completed"];
   if (!validStatuses.includes(status)) return sendJson(res, 400, { error: `status must be one of ${validStatuses.join(", ")}` });
@@ -400,7 +401,7 @@ shopAdminRouter.get("/admin/shop/promo-codes", requireStaff(), async (_req, res)
   sendJson(res, 200, await query(`SELECT * FROM shop_promo_codes ORDER BY created_at DESC`));
 });
 
-shopAdminRouter.post("/admin/shop/promo-codes", requireStaff(), async (req, res) => {
+shopAdminRouter.post("/admin/shop/promo-codes", requirePermission("shop.manage"), async (req, res) => {
   const b = req.body ?? {};
   const code = String(b.code ?? "").trim().toUpperCase();
   const discountType = String(b.discountType ?? "");
@@ -422,7 +423,7 @@ shopAdminRouter.post("/admin/shop/promo-codes", requireStaff(), async (req, res)
   sendJson(res, 201, await queryOne(`SELECT * FROM shop_promo_codes WHERE id=$1`, [id]));
 });
 
-shopAdminRouter.put("/admin/shop/promo-codes/:id", requireStaff(), async (req, res) => {
+shopAdminRouter.put("/admin/shop/promo-codes/:id", requirePermission("shop.manage"), async (req, res) => {
   const existing = await queryOne(`SELECT id FROM shop_promo_codes WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Promo code not found" });
   const b = req.body ?? {};
@@ -437,7 +438,7 @@ shopAdminRouter.put("/admin/shop/promo-codes/:id", requireStaff(), async (req, r
   sendJson(res, 200, await queryOne(`SELECT * FROM shop_promo_codes WHERE id=$1`, [req.params.id]));
 });
 
-shopAdminRouter.delete("/admin/shop/promo-codes/:id", requireStaff(), async (req, res) => {
+shopAdminRouter.delete("/admin/shop/promo-codes/:id", requirePermission("shop.manage"), async (req, res) => {
   const result = await query(`DELETE FROM shop_promo_codes WHERE id=$1 RETURNING id`, [req.params.id]);
   if (result.length === 0) return sendJson(res, 404, { error: "Promo code not found" });
   sendJson(res, 200, { deleted: true });
@@ -455,7 +456,7 @@ shopAdminRouter.get("/admin/shop/flash-sales", requireStaff(), async (_req, res)
   );
 });
 
-shopAdminRouter.post("/admin/shop/flash-sales", requireStaff(), async (req, res) => {
+shopAdminRouter.post("/admin/shop/flash-sales", requirePermission("shop.manage"), async (req, res) => {
   const b = req.body ?? {};
   const productId = String(b.productId ?? "");
   const discountPrice = Number(b.discountPrice);
@@ -482,7 +483,7 @@ shopAdminRouter.post("/admin/shop/flash-sales", requireStaff(), async (req, res)
   sendJson(res, 201, await queryOne(`SELECT * FROM shop_flash_sales WHERE id=$1`, [id]));
 });
 
-shopAdminRouter.put("/admin/shop/flash-sales/:id", requireStaff(), async (req, res) => {
+shopAdminRouter.put("/admin/shop/flash-sales/:id", requirePermission("shop.manage"), async (req, res) => {
   const existing = await queryOne(`SELECT id FROM shop_flash_sales WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Flash sale not found" });
   const b = req.body ?? {};
@@ -496,7 +497,7 @@ shopAdminRouter.put("/admin/shop/flash-sales/:id", requireStaff(), async (req, r
   sendJson(res, 200, await queryOne(`SELECT * FROM shop_flash_sales WHERE id=$1`, [req.params.id]));
 });
 
-shopAdminRouter.delete("/admin/shop/flash-sales/:id", requireStaff(), async (req, res) => {
+shopAdminRouter.delete("/admin/shop/flash-sales/:id", requirePermission("shop.manage"), async (req, res) => {
   const result = await query(`DELETE FROM shop_flash_sales WHERE id=$1 RETURNING id`, [req.params.id]);
   if (result.length === 0) return sendJson(res, 404, { error: "Flash sale not found" });
   sendJson(res, 200, { deleted: true });
@@ -637,4 +638,34 @@ shopAdminRouter.get("/admin/shop/analytics", requireStaff(), async (_req, res) =
     lowStockProducts: lowStock,
     revenueByDate,
   });
+});
+
+// ---------------- Reviews (moderation) ----------------
+// Customers can only create these (POST /shop/reviews, purchase-gated —
+// see shop.routes.ts); Admin's only lever here is removal, same
+// "moderate by deleting" shape feedback.routes.ts already uses for its
+// own customer-submitted content.
+
+shopAdminRouter.get("/admin/shop/reviews", requireStaff(), async (req, res) => {
+  const productId = req.query.productId ? String(req.query.productId) : null;
+  const params: unknown[] = [];
+  let sql = `
+    SELECT r.id, r.rating, r.review_text, (r.photo_data IS NOT NULL) AS has_photo, r.created_at,
+           r.product_id, p.name AS product_name, r.customer_id, c.name AS customer_name, c.phone AS customer_phone
+    FROM shop_reviews r
+    JOIN shop_products p ON p.id = r.product_id
+    JOIN customers c ON c.id = r.customer_id
+  `;
+  if (productId) {
+    params.push(productId);
+    sql += ` WHERE r.product_id=$1`;
+  }
+  sql += ` ORDER BY r.created_at DESC LIMIT 200`;
+  sendJson(res, 200, await query(sql, params));
+});
+
+shopAdminRouter.delete("/admin/shop/reviews/:id", requirePermission("shop.manage"), async (req, res) => {
+  const result = await query(`DELETE FROM shop_reviews WHERE id=$1 RETURNING id`, [req.params.id]);
+  if (result.length === 0) return sendJson(res, 404, { error: "Review not found" });
+  sendJson(res, 200, { deleted: true });
 });
