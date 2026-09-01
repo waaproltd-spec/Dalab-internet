@@ -863,3 +863,111 @@ test("a rating outside 1-5, or reviewing someone else's order item, is rejected"
   await query(`DELETE FROM shop_orders WHERE id=$1`, [otherOrderId]);
   await query(`DELETE FROM customers WHERE id=$1`, [otherCustomerId]);
 });
+
+// ==================== Returns / Exchange / Refund requests ====================
+//
+// Orders are fabricated directly via SQL (same technique as the review
+// tests above) rather than real order-creation calls, both to control
+// delivered/not-delivered state precisely and to stay within this file's
+// shared customer-shop-order-create rate limit.
+async function fabricateOrder(id: string, status: string, custId = customerId) {
+  await query(
+    `INSERT INTO shop_orders (id, customer_id, payment_method, sender_phone, delivery_name, delivery_phone, delivery_address, total_amount, status, dedup_key)
+     VALUES ($1,$2,'evc','617000111','Test Buyer','617000222','Mogadishu',25,$3,$4)
+     ON CONFLICT (id) DO NOTHING`,
+    [id, custId, status, `test-dedup-${id}`]
+  );
+}
+
+test("a return/exchange/refund can only be requested against the requester's own delivered order", async () => {
+  await fabricateOrder("SHPTESTRET1", "processing");
+  const notDeliveredRes = await asCustomer("/shop/returns", {
+    method: "POST",
+    body: JSON.stringify({ orderId: "SHPTESTRET1", type: "return", reason: "Wrong size" }),
+  });
+  assert.equal(notDeliveredRes.status, 403);
+
+  await fabricateOrder("SHPTESTRET2", "delivered");
+  const okRes = await asCustomer("/shop/returns", {
+    method: "POST",
+    body: JSON.stringify({ orderId: "SHPTESTRET2", type: "return", reason: "Wrong size" }),
+  });
+  const req1 = (await okRes.json()) as any;
+  assert.equal(okRes.status, 201, JSON.stringify(req1));
+  assert.equal(req1.status, "requested");
+  assert.equal(req1.type, "return");
+
+  const badTypeRes = await asCustomer("/shop/returns", {
+    method: "POST",
+    body: JSON.stringify({ orderId: "SHPTESTRET2", type: "warranty-claim" }),
+  });
+  assert.equal(badTypeRes.status, 400);
+
+  const otherCustomerId = randomUUID();
+  await query(`INSERT INTO customers (id, phone, name) VALUES ($1,'617888777','Someone Else')`, [otherCustomerId]);
+  await fabricateOrder("SHPTESTRET3", "delivered", otherCustomerId);
+  const notOwnerRes = await asCustomer("/shop/returns", {
+    method: "POST",
+    body: JSON.stringify({ orderId: "SHPTESTRET3", type: "refund" }),
+  });
+  assert.equal(notOwnerRes.status, 404, "a customer cannot open a request against someone else's order");
+  await query(`DELETE FROM shop_orders WHERE id='SHPTESTRET3'`);
+  await query(`DELETE FROM customers WHERE id=$1`, [otherCustomerId]);
+});
+
+test("only one active request per order at a time; a new one can be opened after the first is rejected", async () => {
+  await fabricateOrder("SHPTESTRET4", "delivered");
+  const first = await asCustomer("/shop/returns", { method: "POST", body: JSON.stringify({ orderId: "SHPTESTRET4", type: "exchange" }) });
+  const firstReq = (await first.json()) as any;
+  assert.equal(first.status, 201);
+
+  const dupRes = await asCustomer("/shop/returns", { method: "POST", body: JSON.stringify({ orderId: "SHPTESTRET4", type: "refund" }) });
+  assert.equal(dupRes.status, 409, "an order with an active request cannot have a second one opened");
+
+  const rejectRes = await asSuperAdmin(`/admin/shop/returns/${firstReq.id}/status`, { method: "PUT", body: JSON.stringify({ status: "rejected", adminNote: "Outside return window" }) });
+  assert.equal(rejectRes.status, 200);
+
+  const secondRes = await asCustomer("/shop/returns", { method: "POST", body: JSON.stringify({ orderId: "SHPTESTRET4", type: "refund" }) });
+  assert.equal(secondRes.status, 201, "a new request can be opened once the prior one is terminal");
+});
+
+test("admin drives a request through the full Requested -> Approved -> Processing -> Completed lifecycle; skipping a stage is rejected", async () => {
+  await fabricateOrder("SHPTESTRET5", "delivered");
+  const createRes = await asCustomer("/shop/returns", { method: "POST", body: JSON.stringify({ orderId: "SHPTESTRET5", type: "return", reason: "Changed my mind" }) });
+  const reqRow = (await createRes.json()) as any;
+
+  const skipRes = await asSuperAdmin(`/admin/shop/returns/${reqRow.id}/status`, { method: "PUT", body: JSON.stringify({ status: "completed" }) });
+  assert.equal(skipRes.status, 409, "cannot jump straight from requested to completed");
+
+  const approveRes = await asSuperAdmin(`/admin/shop/returns/${reqRow.id}/status`, { method: "PUT", body: JSON.stringify({ status: "approved" }) });
+  assert.equal(approveRes.status, 200);
+  assert.equal((await approveRes.json() as any).status, "approved");
+
+  const backwardsRes = await asSuperAdmin(`/admin/shop/returns/${reqRow.id}/status`, { method: "PUT", body: JSON.stringify({ status: "requested" }) });
+  assert.equal(backwardsRes.status, 409, "cannot move backwards");
+
+  const processingRes = await asSuperAdmin(`/admin/shop/returns/${reqRow.id}/status`, { method: "PUT", body: JSON.stringify({ status: "processing" }) });
+  assert.equal(processingRes.status, 200);
+
+  const completedRes = await asSuperAdmin(`/admin/shop/returns/${reqRow.id}/status`, { method: "PUT", body: JSON.stringify({ status: "completed" }) });
+  const completed = (await completedRes.json()) as any;
+  assert.equal(completedRes.status, 200);
+  assert.equal(completed.status, "completed");
+
+  const afterTerminalRes = await asSuperAdmin(`/admin/shop/returns/${reqRow.id}/status`, { method: "PUT", body: JSON.stringify({ status: "processing" }) });
+  assert.equal(afterTerminalRes.status, 409, "no further changes once completed");
+
+  const customerListRes = await asCustomer("/shop/returns");
+  const customerList = (await customerListRes.json()) as any[];
+  assert.ok(customerList.some((r) => r.id === reqRow.id && r.status === "completed"));
+});
+
+test("a regular Admin without shop.manage cannot manage return requests", async () => {
+  await fabricateOrder("SHPTESTRET6", "delivered");
+  const createRes = await asCustomer("/shop/returns", { method: "POST", body: JSON.stringify({ orderId: "SHPTESTRET6", type: "return" }) });
+  const reqRow = (await createRes.json()) as any;
+  const listRes = await asPlainAdmin("/admin/shop/returns");
+  assert.equal(listRes.status, 403);
+  const updateRes = await asPlainAdmin(`/admin/shop/returns/${reqRow.id}/status`, { method: "PUT", body: JSON.stringify({ status: "approved" }) });
+  assert.equal(updateRes.status, 403);
+});

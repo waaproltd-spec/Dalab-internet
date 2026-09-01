@@ -514,6 +514,56 @@ shopRouter.post("/shop/reviews", requireAuth("customer"), async (req, res) => {
   }
 });
 
+// ==================== Returns / Exchange / Refund requests ====================
+
+const RETURN_TYPES = ["return", "exchange", "refund"];
+const RETURN_STATUSES = ["requested", "approved", "rejected", "processing", "completed"];
+const RETURN_TERMINAL = ["rejected", "completed"];
+// Sequential per spec -- no skipping straight from 'requested' to
+// 'completed', matching the exact Requested -> Approved/Rejected ->
+// Processing -> Completed flow it describes.
+const RETURN_TRANSITIONS: Record<string, string[]> = {
+  requested: ["approved", "rejected"],
+  approved: ["processing"],
+  processing: ["completed"],
+};
+
+shopRouter.post("/shop/returns", requireAuth("customer"), async (req, res) => {
+  const orderId = String(req.body?.orderId ?? "");
+  const type = String(req.body?.type ?? "");
+  const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+  if (!RETURN_TYPES.includes(type)) return sendJson(res, 400, { error: `type must be one of ${RETURN_TYPES.join(", ")}` });
+  const order = await queryOne<{ status: string; customer_id: string }>(`SELECT status, customer_id FROM shop_orders WHERE id=$1`, [orderId]);
+  if (!order || order.customer_id !== req.auth!.sub) return sendJson(res, 404, { error: "Order not found" });
+  if (order.status !== "delivered") {
+    return sendJson(res, 403, { error: "Only a delivered order can have a return, exchange, or refund requested" });
+  }
+  try {
+    const id = randomUUID();
+    await query(`INSERT INTO shop_return_requests (id, order_id, customer_id, type, reason) VALUES ($1,$2,$3,$4,$5)`, [
+      id,
+      orderId,
+      req.auth!.sub,
+      type,
+      reason,
+    ]);
+    sendJson(res, 201, await queryOne(`SELECT * FROM shop_return_requests WHERE id=$1`, [id]));
+  } catch (err: any) {
+    if (err?.code === "23505") return sendJson(res, 409, { error: "This order already has an active return/exchange/refund request" });
+    throw err;
+  }
+});
+
+shopRouter.get("/shop/returns", requireAuth("customer"), async (req, res) => {
+  sendJson(res, 200, await query(`SELECT * FROM shop_return_requests WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 100`, [req.auth!.sub]));
+});
+
+shopRouter.get("/shop/returns/:id", requireAuth("customer"), async (req, res) => {
+  const row = await queryOne(`SELECT * FROM shop_return_requests WHERE id=$1 AND customer_id=$2`, [req.params.id, req.auth!.sub]);
+  if (!row) return sendJson(res, 404, { error: "Request not found" });
+  sendJson(res, 200, row);
+});
+
 // ==================== Admin: Categories ====================
 
 shopRouter.get("/admin/shop/categories", requirePermission("shop.manage"), async (_req, res) => {
@@ -967,4 +1017,68 @@ shopRouter.delete("/admin/shop/reviews/:id", requirePermission("shop.manage"), a
     newValue: { deleted: true },
   });
   sendJson(res, 200, { deleted: true });
+});
+
+// ==================== Admin: Returns / Exchange / Refund ====================
+
+shopRouter.get("/admin/shop/returns", requirePermission("shop.manage"), async (req, res) => {
+  const { status } = req.query as Record<string, string | undefined>;
+  const args: unknown[] = [];
+  let sql = `
+    SELECT r.*, c.name AS customer_name, c.phone AS customer_phone
+    FROM shop_return_requests r JOIN customers c ON c.id = r.customer_id
+    WHERE 1=1`;
+  if (status && RETURN_STATUSES.includes(status)) {
+    args.push(status);
+    sql += ` AND r.status=$${args.length}`;
+  }
+  sql += ` ORDER BY r.created_at DESC LIMIT 200`;
+  sendJson(res, 200, await query(sql, args));
+});
+
+shopRouter.get("/admin/shop/returns/:id", requirePermission("shop.manage"), async (req, res) => {
+  const row = await queryOne(
+    `SELECT r.*, c.name AS customer_name, c.phone AS customer_phone FROM shop_return_requests r JOIN customers c ON c.id = r.customer_id WHERE r.id=$1`,
+    [req.params.id]
+  );
+  if (!row) return sendJson(res, 404, { error: "Request not found" });
+  sendJson(res, 200, row);
+});
+
+const RETURN_STATUS_NOTIFICATIONS: Record<string, { title: string; body: (type: string) => string }> = {
+  approved: { title: "Request Approved", body: (t) => `Your ${t} request has been approved.` },
+  rejected: { title: "Request Rejected", body: (t) => `Your ${t} request was not approved.` },
+  processing: { title: "Request Processing", body: (t) => `Your ${t} request is being processed.` },
+  completed: { title: "Request Completed", body: (t) => `Your ${t} request has been completed.` },
+};
+
+shopRouter.put("/admin/shop/returns/:id/status", requirePermission("shop.manage"), async (req, res) => {
+  const { status, adminNote } = req.body ?? {};
+  if (!RETURN_STATUSES.includes(status)) return sendJson(res, 400, { error: `status must be one of ${RETURN_STATUSES.join(", ")}` });
+  const existing = await queryOne<{ status: string; customer_id: string; type: string }>(
+    `SELECT status, customer_id, type FROM shop_return_requests WHERE id=$1`,
+    [req.params.id]
+  );
+  if (!existing) return sendJson(res, 404, { error: "Request not found" });
+  if (RETURN_TERMINAL.includes(existing.status)) {
+    return sendJson(res, 409, { error: `This request is already ${existing.status} and cannot be changed further` });
+  }
+  if (!RETURN_TRANSITIONS[existing.status]?.includes(status)) {
+    return sendJson(res, 409, { error: `Cannot move from ${existing.status} to ${status}` });
+  }
+  await query(
+    `UPDATE shop_return_requests SET status=$1, admin_note=COALESCE($2, admin_note), updated_at=now() WHERE id=$3`,
+    [status, typeof adminNote === "string" ? adminNote.trim() : null, req.params.id]
+  );
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "shop_return_status_updated",
+    entityType: "shop_return_request",
+    entityId: req.params.id,
+    oldValue: { status: existing.status },
+    newValue: { status, adminNote: adminNote ?? null },
+  });
+  const notification = RETURN_STATUS_NOTIFICATIONS[status];
+  if (notification) await notifyCustomer(existing.customer_id, "shop_return_update", notification.title, notification.body(existing.type));
+  sendJson(res, 200, await queryOne(`SELECT * FROM shop_return_requests WHERE id=$1`, [req.params.id]));
 });
