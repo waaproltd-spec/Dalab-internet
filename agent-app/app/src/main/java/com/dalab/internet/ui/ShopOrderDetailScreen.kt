@@ -21,6 +21,7 @@ import com.dalab.internet.data.ShopOrder
  * was confirmed (normally "pending" — the Admin Dashboard, not this
  * screen, is where an Admin/Super Admin advances it further).
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ShopOrderDetailScreen(order: ShopOrder, onBack: () -> Unit) {
     Scaffold(
