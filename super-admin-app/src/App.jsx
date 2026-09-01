@@ -8,7 +8,8 @@ import {
   Smartphone, Radio, ChevronDown, ChevronRight, AlertTriangle, RotateCcw, UserCog, Tags,
   WifiOff, BatteryFull, BatteryMedium, BatteryLow, BatteryWarning,
   Image as ImageIcon, Upload, MessageSquare, Database, Activity, History, CreditCard, PlayCircle, Percent,
-  MessageCircle, Lightbulb, Share2, KeyRound, ExternalLink, PiggyBank, Landmark, Trash, ArrowLeftRight
+  MessageCircle, Lightbulb, Share2, KeyRound, ExternalLink, PiggyBank, Landmark, Trash, ArrowLeftRight,
+  ShoppingBag, Boxes
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 
@@ -457,6 +458,32 @@ const DalabAdminApi = {
   getResellerWithdrawalCommissions: () => dalabAdminApiRequest("/admin/reseller-withdrawal-commissions"),
   setResellerWithdrawalCommission: (companyId, commissionPercentage) =>
     dalabAdminApiRequest(`/admin/reseller-withdrawal-commissions/${companyId}`, { method: "PUT", body: { commissionPercentage } }),
+  // Shop: DALAB's 4th customer-facing service (Internet/eBadal/Reseller/Shop).
+  // Every /admin/shop/* route requires the "shop.manage" permission on the
+  // backend, including plain GETs -- see shop.routes.ts's own header comment.
+  getShopCategories: () => dalabAdminApiRequest("/admin/shop/categories"),
+  createShopCategory: (body) => dalabAdminApiRequest("/admin/shop/categories", { method: "POST", body }),
+  updateShopCategory: (id, body) => dalabAdminApiRequest(`/admin/shop/categories/${id}`, { method: "PUT", body }),
+  deleteShopCategory: (id) => dalabAdminApiRequest(`/admin/shop/categories/${id}`, { method: "DELETE" }),
+  getShopProducts: (categoryId) => dalabAdminApiRequest(`/admin/shop/products${categoryId ? `?categoryId=${categoryId}` : ""}`),
+  getShopProduct: (id) => dalabAdminApiRequest(`/admin/shop/products/${id}`),
+  createShopProduct: (body) => dalabAdminApiRequest("/admin/shop/products", { method: "POST", body }),
+  updateShopProduct: (id, body) => dalabAdminApiRequest(`/admin/shop/products/${id}`, { method: "PUT", body }),
+  deleteShopProduct: (id) => dalabAdminApiRequest(`/admin/shop/products/${id}`, { method: "DELETE" }),
+  // Product photos are uploaded as data URIs (base64), same as Promo Images
+  // -- dalabAdminApiRequest already sends everything as JSON.
+  addShopProductImage: (productId, imageBase64) => dalabAdminApiRequest(`/admin/shop/products/${productId}/images`, { method: "POST", body: { imageBase64 } }),
+  deleteShopProductImage: (productId, imageId) => dalabAdminApiRequest(`/admin/shop/products/${productId}/images/${imageId}`, { method: "DELETE" }),
+  shopProductImageUrl: (productId, imageId) => `${DALAB_API_BASE_URL}/shop/products/${productId}/images/${imageId}`,
+  getShopPaymentMethods: () => dalabAdminApiRequest("/admin/shop/payment-methods"),
+  updateShopPaymentMethod: (method, body) => dalabAdminApiRequest(`/admin/shop/payment-methods/${method}`, { method: "PUT", body }),
+  getShopOrders: (status, search) => {
+    const qs = new URLSearchParams({ ...(status ? { status } : {}), ...(search ? { search } : {}) }).toString();
+    return dalabAdminApiRequest(`/admin/shop/orders${qs ? `?${qs}` : ""}`);
+  },
+  getShopOrder: (id) => dalabAdminApiRequest(`/admin/shop/orders/${id}`),
+  confirmShopOrderPayment: (id) => dalabAdminApiRequest(`/admin/shop/orders/${id}/payment-status`, { method: "PUT", body: { paymentStatus: "paid" } }),
+  updateShopOrderStatus: (id, body) => dalabAdminApiRequest(`/admin/shop/orders/${id}/status`, { method: "PUT", body }),
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -479,6 +506,7 @@ const PERMISSION_OPTIONS = [
   { key: "exchange.manage", label: "Manage money exchange" },
   { key: "resellers.manage", label: "Manage resellers" },
   { key: "support.manage", label: "Handle Agent Support conversations" },
+  { key: "shop.manage", label: "Manage Shop (categories, products, orders)" },
 ];
 
 // Normalizes a GET /admin/companies row into the shape every section of this
@@ -791,6 +819,7 @@ const NAV = [
   { id: "commissions", label: "Commissions", icon: Percent, permission: "commissions.manage" },
   { id: "money-exchange", label: "Money Exchange", icon: ArrowLeftRight, permission: "exchange.manage" },
   { id: "resellers", label: "Resellers", icon: Landmark, permission: "resellers.manage" },
+  { id: "shop", label: "Shop", icon: ShoppingBag, permission: "shop.manage" },
   { id: "sms-sender-ids", label: "SMS Sender IDs", icon: MessageSquare, superAdminOnly: true },
   { id: "referrals", label: "Referral Rewards", icon: Share2, permission: "referrals.manage" },
   { id: "pending-recovery", label: "Pending Recovery", icon: RotateCcw, permission: "orders.manage" },
@@ -4083,6 +4112,595 @@ function PromoImages() {
         {ordered.length === 0 && (
           <div style={{ gridColumn: "1 / -1", padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No promo images yet — upload one to start the carousel.</div>
         )}
+      </div>
+    </div>
+  );
+}
+
+const SHOP_ORDER_STATUS_META = {
+  pending: { label: "Pending", tone: "amber" },
+  processing: { label: "Processing", tone: "blue" },
+  shipped: { label: "Shipped", tone: "blue" },
+  delivered: { label: "Delivered", tone: "green" },
+  cancelled: { label: "Cancelled", tone: "gray" },
+};
+const MAX_SHOP_PRODUCT_IMAGES = 6;
+
+// Shop: DALAB's 4th customer-facing service, alongside Internet/eBadal/
+// Reseller. Everything here (categories/products/images/prices/stock/
+// orders/delivery status) lives behind the "shop.manage" permission on the
+// backend too (shop.routes.ts), matching this NAV item being hidden from
+// the sidebar for anyone who doesn't hold it.
+function ShopManagement() {
+  const [tab, setTab] = useState("categories");
+  const tabs = [
+    { id: "categories", label: "Categories" },
+    { id: "products", label: "Products" },
+    { id: "orders", label: "Orders" },
+    { id: "payment", label: "Payment Methods" },
+  ];
+  return (
+    <div>
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Shop</div>
+        <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>
+          DALAB's marketplace for physical goods — Shoes, Eyewear, Perfumes, Watches, and Gifts (no clothing). Manage categories, products, images, prices, stock, orders, and delivery status. Independent from Internet, eBadal, and Reseller.
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 18, borderBottom: `1px solid ${BORDER}` }}>
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            style={{
+              padding: "10px 16px", border: "none", background: "none", cursor: "pointer", fontSize: 13, fontWeight: 700,
+              color: tab === t.id ? INDIGO : MUTE, borderBottom: tab === t.id ? `2px solid ${INDIGO}` : "2px solid transparent", marginBottom: -1,
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {tab === "categories" && <ShopCategoriesPanel />}
+      {tab === "products" && <ShopProductsPanel />}
+      {tab === "orders" && <ShopOrdersPanel />}
+      {tab === "payment" && <ShopPaymentMethodsPanel />}
+    </div>
+  );
+}
+
+function ShopCategoriesPanel() {
+  const [categories, setCategories] = useState([]);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({ name: "", emoji: "" });
+
+  const fetchCategories = async () => {
+    try { setCategories(await DalabAdminApi.getShopCategories()); }
+    catch (err) { setError(err.message || "Could not load categories."); }
+  };
+  useEffect(() => { fetchCategories(); }, []);
+
+  const ordered = [...categories].sort((a, b) => a.position - b.position);
+
+  const addCategory = async () => {
+    if (!form.name.trim()) return;
+    setSaving(true);
+    setError("");
+    try {
+      await DalabAdminApi.createShopCategory({ name: form.name.trim(), emoji: form.emoji.trim() });
+      setForm({ name: "", emoji: "" });
+      fetchCategories();
+    } catch (err) {
+      setError(err.message || "Could not create category.");
+    }
+    setSaving(false);
+  };
+
+  const toggleActive = async (cat) => {
+    setCategories((prev) => prev.map((c) => (c.id === cat.id ? { ...c, active: !c.active } : c))); // optimistic
+    try {
+      await DalabAdminApi.updateShopCategory(cat.id, { active: !cat.active });
+    } catch (err) {
+      setError(err.message);
+      fetchCategories();
+    }
+  };
+
+  const remove = async (cat) => {
+    if (!window.confirm(`Delete "${cat.name}"? This only works if it has no products under it.`)) return;
+    try {
+      await DalabAdminApi.deleteShopCategory(cat.id);
+      fetchCategories();
+    } catch (err) {
+      alert(err.message || "Could not delete category.");
+    }
+  };
+
+  return (
+    <div>
+      <Card style={{ padding: 16, marginBottom: 16 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: INK, marginBottom: 10 }}>Add category</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <input placeholder="Emoji (e.g. 👟)" value={form.emoji} onChange={(e) => setForm((f) => ({ ...f, emoji: e.target.value }))} style={{ ...inputStyle, width: 90 }} />
+          <input placeholder="Category name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} style={{ ...inputStyle, flex: 1, minWidth: 160, width: "auto" }} />
+          <Button onClick={addCategory} disabled={saving || !form.name.trim()} icon={Plus} spin={saving}>Add</Button>
+        </div>
+      </Card>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 14 }}>
+        {ordered.map((cat) => (
+          <Card key={cat.id} style={{ padding: 14 }}>
+            <div style={{ fontSize: 30 }}>{cat.emoji}</div>
+            <div style={{ fontWeight: 800, fontSize: 14, color: INK, marginTop: 6 }}>{cat.name}</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12 }}>
+              <Badge tone={cat.active ? "green" : "neutral"}>{cat.active ? "Visible" : "Hidden"}</Badge>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button onClick={() => toggleActive(cat)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                  {cat.active ? <EyeOff size={13} color={SLATE} /> : <Eye size={13} color={GREEN} />}
+                </button>
+                <button onClick={() => remove(cat)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                  <Trash2 size={13} color="#C81E2C" />
+                </button>
+              </div>
+            </div>
+          </Card>
+        ))}
+        {ordered.length === 0 && (
+          <div style={{ gridColumn: "1 / -1", padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No categories yet.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ShopProductsPanel() {
+  const [categories, setCategories] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [error, setError] = useState("");
+  const [editing, setEditing] = useState(null); // null = closed, {} = new, {...product} = edit
+
+  const fetchCategories = async () => {
+    try { setCategories(await DalabAdminApi.getShopCategories()); }
+    catch (err) { console.error("getShopCategories failed:", err.message); }
+  };
+  const fetchProducts = async () => {
+    try { setProducts(await DalabAdminApi.getShopProducts(categoryFilter === "all" ? undefined : categoryFilter)); }
+    catch (err) { setError(err.message || "Could not load products."); }
+  };
+  useEffect(() => { fetchCategories(); }, []);
+  useEffect(() => { fetchProducts(); }, [categoryFilter]);
+
+  const categoryName = (id) => categories.find((c) => c.id === id)?.name || "—";
+
+  const remove = async (product) => {
+    if (!window.confirm(`Delete "${product.name}"? This cannot be undone.`)) return;
+    try {
+      await DalabAdminApi.deleteShopProduct(product.id);
+      fetchProducts();
+    } catch (err) {
+      alert(err.message || "Could not delete product.");
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 12, flexWrap: "wrap" }}>
+        <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} style={{ ...inputStyle, width: 200 }}>
+          <option value="all">All categories</option>
+          {categories.map((c) => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
+        </select>
+        <Button icon={Plus} onClick={() => setEditing({})}>Add product</Button>
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 14 }}>
+        {products.map((p) => (
+          <Card key={p.id} style={{ padding: 14, cursor: "pointer" }} onClick={() => setEditing(p)}>
+            <div style={{
+              width: "100%", height: 120, borderRadius: 10, overflow: "hidden", background: INDIGO_SOFT,
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}>
+              {p.images?.[0] ? (
+                <img src={DalabAdminApi.shopProductImageUrl(p.id, p.images[0].id)} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              ) : (
+                <ShoppingBag size={28} color={INDIGO} />
+              )}
+            </div>
+            <div style={{ fontWeight: 800, fontSize: 13.5, color: INK, marginTop: 10 }}>{p.name}</div>
+            <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>{categoryName(p.categoryId)}</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
+              <span style={{ fontWeight: 800, fontSize: 14, color: INDIGO }}>${Number(p.price).toFixed(2)}</span>
+              <Badge tone={p.stock > 0 ? "neutral" : "red"}>{p.stock} in stock</Badge>
+            </div>
+            <div style={{ marginTop: 8 }}>
+              <Badge tone={p.active ? "green" : "neutral"}>{p.active ? "Visible" : "Hidden"}</Badge>
+            </div>
+          </Card>
+        ))}
+        {products.length === 0 && (
+          <div style={{ gridColumn: "1 / -1", padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No products {categoryFilter !== "all" ? "in this category" : "yet"} — add one to start selling.</div>
+        )}
+      </div>
+
+      {editing && (
+        <ShopProductModal
+          product={editing}
+          categories={categories}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); fetchProducts(); }}
+          onDelete={editing.id ? () => { setEditing(null); remove(editing); } : undefined}
+        />
+      )}
+    </div>
+  );
+}
+
+function ShopProductModal({ product, categories, onClose, onSaved, onDelete }) {
+  const isNew = !product.id;
+  const [form, setForm] = useState({
+    name: product.name || "",
+    description: product.description || "",
+    price: product.price != null ? String(product.price) : "",
+    stock: product.stock != null ? String(product.stock) : "0",
+    categoryId: product.categoryId || categories[0]?.id || "",
+    active: product.active !== false,
+  });
+  const [images, setImages] = useState(product.images || []);
+  const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState("");
+  const fileInputRef = useRef(null);
+
+  const save = async () => {
+    const priceNum = Number(form.price);
+    const stockNum = Number(form.stock);
+    if (!form.name.trim()) return setError("Name is required.");
+    if (!form.categoryId) return setError("Choose a category.");
+    if (!Number.isFinite(priceNum) || priceNum < 0) return setError("Price must be a non-negative number.");
+    if (!Number.isInteger(stockNum) || stockNum < 0) return setError("Stock must be a non-negative whole number.");
+    setSaving(true);
+    setError("");
+    try {
+      const body = { name: form.name.trim(), description: form.description.trim(), price: priceNum, stock: stockNum, categoryId: form.categoryId, active: form.active };
+      if (isNew) await DalabAdminApi.createShopProduct(body);
+      else await DalabAdminApi.updateShopProduct(product.id, body);
+      onSaved();
+    } catch (err) {
+      setError(err.message || "Could not save product.");
+    }
+    setSaving(false);
+  };
+
+  const onFileSelected = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !product.id) return;
+    setUploading(true);
+    setError("");
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const result = await DalabAdminApi.addShopProductImage(product.id, reader.result);
+        setImages((prev) => [...prev, result]);
+      } catch (err) {
+        setError(err.message || "Could not upload image.");
+      }
+      setUploading(false);
+    };
+    reader.onerror = () => { setError("Could not read that file."); setUploading(false); };
+    reader.readAsDataURL(file);
+  };
+
+  const removeImage = async (imageId) => {
+    try {
+      await DalabAdminApi.deleteShopProductImage(product.id, imageId);
+      setImages((prev) => prev.filter((img) => img.id !== imageId));
+    } catch (err) {
+      alert(err.message || "Could not remove image.");
+    }
+  };
+
+  return (
+    <Modal title={isNew ? "Add product" : "Edit product"} onClose={onClose} width={480}>
+      <Field label="Category">
+        <select value={form.categoryId} onChange={(e) => setForm((f) => ({ ...f, categoryId: e.target.value }))} style={inputStyle}>
+          {categories.map((c) => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
+        </select>
+      </Field>
+      <Field label="Name"><input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} style={inputStyle} /></Field>
+      <Field label="Description"><textarea value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} rows={3} style={{ ...inputStyle, resize: "vertical" }} /></Field>
+      <div style={{ display: "flex", gap: 12 }}>
+        <div style={{ flex: 1 }}><Field label="Price ($)"><input type="number" min="0" step="0.01" value={form.price} onChange={(e) => setForm((f) => ({ ...f, price: e.target.value }))} style={inputStyle} /></Field></div>
+        <div style={{ flex: 1 }}><Field label="Stock"><input type="number" min="0" step="1" value={form.stock} onChange={(e) => setForm((f) => ({ ...f, stock: e.target.value }))} style={inputStyle} /></Field></div>
+      </div>
+      <Field label="Visibility">
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: INK, cursor: "pointer" }}>
+          <input type="checkbox" checked={form.active} onChange={(e) => setForm((f) => ({ ...f, active: e.target.checked }))} />
+          Visible to customers
+        </label>
+      </Field>
+
+      {!isNew && (
+        <Field label={`Images (${images.length}/${MAX_SHOP_PRODUCT_IMAGES})`}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+            {images.map((img) => (
+              <div key={img.id} style={{ position: "relative", width: 64, height: 64 }}>
+                <img src={DalabAdminApi.shopProductImageUrl(product.id, img.id)} alt="" style={{ width: 64, height: 64, borderRadius: 8, objectFit: "cover", border: `1px solid ${BORDER}` }} />
+                <button onClick={() => removeImage(img.id)} style={{ position: "absolute", top: -6, right: -6, background: "#C81E2C", border: "none", borderRadius: "50%", width: 18, height: 18, color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <X size={11} />
+                </button>
+              </div>
+            ))}
+          </div>
+          <input ref={fileInputRef} type="file" accept="image/*" onChange={onFileSelected} style={{ display: "none" }} />
+          <Button variant="secondary" icon={Upload} disabled={uploading || images.length >= MAX_SHOP_PRODUCT_IMAGES} spin={uploading} onClick={() => fileInputRef.current?.click()}>
+            {uploading ? "Uploading..." : images.length >= MAX_SHOP_PRODUCT_IMAGES ? `Limit reached (${MAX_SHOP_PRODUCT_IMAGES})` : "Add image"}
+          </Button>
+        </Field>
+      )}
+      {isNew && <div style={{ fontSize: 11.5, color: MUTE, marginBottom: 14 }}>Save the product first, then add images.</div>}
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+        {onDelete ? (
+          <Button variant="secondary" icon={Trash2} onClick={onDelete} style={{ color: "#C81E2C" }}>Delete</Button>
+        ) : <div />}
+        <div style={{ display: "flex", gap: 10 }}>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button onClick={save} disabled={saving} spin={saving}>{isNew ? "Add product" : "Save changes"}</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function ShopOrdersPanel() {
+  const [orders, setOrders] = useState([]);
+  const [status, setStatus] = useState("all");
+  const [search, setSearch] = useState("");
+  const [error, setError] = useState("");
+  const [selected, setSelected] = useState(null);
+
+  const fetchOrders = async () => {
+    try { setOrders(await DalabAdminApi.getShopOrders(status === "all" ? undefined : status, search || undefined)); }
+    catch (err) { setError(err.message || "Could not load orders."); }
+  };
+  useEffect(() => { fetchOrders(); }, [status]);
+  useEffect(() => {
+    const t = setTimeout(fetchOrders, 300); // debounce search-as-you-type
+    return () => clearTimeout(t);
+  }, [search]);
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+        <select value={status} onChange={(e) => setStatus(e.target.value)} style={{ ...inputStyle, width: 160 }}>
+          <option value="all">All statuses</option>
+          {Object.entries(SHOP_ORDER_STATUS_META).map(([key, meta]) => <option key={key} value={key}>{meta.label}</option>)}
+        </select>
+        <input placeholder="Search order id, customer, phone..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 200, width: "auto" }} />
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {orders.map((o) => (
+          <Card key={o.id} style={{ padding: 14, cursor: "pointer" }} onClick={() => setSelected(o)}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+              <div>
+                <div style={{ fontWeight: 800, fontSize: 13.5, color: INK }}>{o.id}</div>
+                <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>{o.customerName || "Unknown"} · {o.customerPhone || o.deliveryPhone}</div>
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{ fontWeight: 800, fontSize: 14, color: INDIGO }}>${Number(o.totalAmount).toFixed(2)}</span>
+                <Badge tone={o.paymentStatus === "paid" ? "green" : "amber"}>{o.paymentStatus === "paid" ? "Paid" : "Awaiting payment"}</Badge>
+                <Badge tone={SHOP_ORDER_STATUS_META[o.status]?.tone || "neutral"}>{SHOP_ORDER_STATUS_META[o.status]?.label || o.status}</Badge>
+              </div>
+            </div>
+          </Card>
+        ))}
+        {orders.length === 0 && (
+          <div style={{ padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No Shop orders {status !== "all" ? `with status "${SHOP_ORDER_STATUS_META[status]?.label}"` : "yet"}.</div>
+        )}
+      </div>
+
+      {selected && (
+        <ShopOrderDetailModal
+          orderId={selected.id}
+          onClose={() => setSelected(null)}
+          onChanged={() => { fetchOrders(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ShopOrderDetailModal({ orderId, onClose, onChanged }) {
+  const [order, setOrder] = useState(null);
+  const [error, setError] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const [nextStatus, setNextStatus] = useState("");
+  const [trackingReference, setTrackingReference] = useState("");
+  const [trackingNote, setTrackingNote] = useState("");
+  const [savingStatus, setSavingStatus] = useState(false);
+
+  const fetchOrder = async () => {
+    try {
+      const o = await DalabAdminApi.getShopOrder(orderId);
+      setOrder(o);
+      setTrackingReference(o.trackingReference || "");
+      setTrackingNote(o.trackingNote || "");
+    } catch (err) {
+      setError(err.message || "Could not load order.");
+    }
+  };
+  useEffect(() => { fetchOrder(); }, [orderId]);
+
+  const confirmPayment = async () => {
+    setConfirming(true);
+    setError("");
+    try {
+      await DalabAdminApi.confirmShopOrderPayment(orderId);
+      await fetchOrder();
+      onChanged();
+    } catch (err) {
+      setError(err.message || "Could not confirm payment.");
+    }
+    setConfirming(false);
+  };
+
+  const saveStatus = async () => {
+    if (!nextStatus) return;
+    setSavingStatus(true);
+    setError("");
+    try {
+      await DalabAdminApi.updateShopOrderStatus(orderId, { status: nextStatus, trackingReference: trackingReference || undefined, trackingNote: trackingNote || undefined });
+      setNextStatus("");
+      await fetchOrder();
+      onChanged();
+    } catch (err) {
+      setError(err.message || "Could not update status.");
+    }
+    setSavingStatus(false);
+  };
+
+  if (!order) {
+    return (
+      <Modal title="Order" onClose={onClose}>
+        {error ? <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div> : <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>}
+      </Modal>
+    );
+  }
+
+  const finalState = order.status === "delivered" || order.status === "cancelled";
+
+  return (
+    <Modal title={order.id} onClose={onClose} width={480}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+        <Badge tone={order.paymentStatus === "paid" ? "green" : "amber"}>{order.paymentStatus === "paid" ? "Paid" : "Awaiting payment"}</Badge>
+        <Badge tone={SHOP_ORDER_STATUS_META[order.status]?.tone || "neutral"}>{SHOP_ORDER_STATUS_META[order.status]?.label || order.status}</Badge>
+      </div>
+
+      <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 4 }}>Customer</div>
+      <div style={{ fontSize: 13.5, color: INK, marginBottom: 12 }}>{order.customerName || "—"} · {order.customerPhone || "—"}</div>
+
+      <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 4 }}>Deliver to</div>
+      <div style={{ fontSize: 13.5, color: INK, marginBottom: 12 }}>{order.deliveryName} · {order.deliveryPhone}<br />{order.deliveryAddress}</div>
+
+      <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 6 }}>Items</div>
+      <div style={{ border: `1px solid ${BORDER}`, borderRadius: 10, marginBottom: 12, overflow: "hidden" }}>
+        {order.items.map((item) => (
+          <div key={item.id} style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", borderBottom: `1px solid ${BORDER}`, fontSize: 12.5 }}>
+            <span>{item.productName} × {item.quantity}</span>
+            <span style={{ fontWeight: 700 }}>${Number(item.subtotal).toFixed(2)}</span>
+          </div>
+        ))}
+        <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", fontSize: 13, fontWeight: 800, color: INK }}>
+          <span>Total</span>
+          <span>${Number(order.totalAmount).toFixed(2)}</span>
+        </div>
+      </div>
+
+      {order.paymentStatus !== "paid" && !finalState && (
+        <div style={{ marginBottom: 14 }}>
+          <Button onClick={confirmPayment} disabled={confirming} spin={confirming} icon={Check}>Confirm payment received</Button>
+        </div>
+      )}
+
+      {!finalState && (
+        <div style={{ borderTop: `1px solid ${BORDER}`, paddingTop: 14, marginBottom: 14 }}>
+          <Field label="Advance delivery status">
+            <select value={nextStatus} onChange={(e) => setNextStatus(e.target.value)} style={inputStyle}>
+              <option value="">Choose a status…</option>
+              {Object.entries(SHOP_ORDER_STATUS_META)
+                .filter(([key]) => key !== order.status)
+                .map(([key, meta]) => <option key={key} value={key}>{meta.label}</option>)}
+            </select>
+          </Field>
+          <Field label="Tracking reference (optional)"><input value={trackingReference} onChange={(e) => setTrackingReference(e.target.value)} placeholder="e.g. courier name + tracking number" style={inputStyle} /></Field>
+          <Field label="Note for customer (optional)"><input value={trackingNote} onChange={(e) => setTrackingNote(e.target.value)} style={inputStyle} /></Field>
+          <Button onClick={saveStatus} disabled={!nextStatus || savingStatus} spin={savingStatus}>Update status</Button>
+        </div>
+      )}
+
+      {(order.trackingReference || order.trackingNote) && (
+        <div style={{ fontSize: 12, color: MUTE, marginBottom: 10 }}>
+          {order.trackingReference && <div>Tracking: {order.trackingReference}</div>}
+          {order.trackingNote && <div>{order.trackingNote}</div>}
+        </div>
+      )}
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div>}
+    </Modal>
+  );
+}
+
+function ShopPaymentMethodsPanel() {
+  const [methods, setMethods] = useState([]);
+  const [edits, setEdits] = useState({});
+  const [saving, setSaving] = useState(null);
+  const [error, setError] = useState({});
+
+  const fetchMethods = async () => {
+    try { setMethods(await DalabAdminApi.getShopPaymentMethods()); }
+    catch (err) { console.error("getShopPaymentMethods failed:", err.message); }
+  };
+  useEffect(() => { fetchMethods(); }, []);
+
+  const save = async (row) => {
+    const draft = edits[row.method] || {};
+    const label = draft.label ?? row.label;
+    const paymentNumber = draft.paymentNumber ?? row.paymentNumber;
+    const ussdTemplate = draft.ussdTemplate ?? row.ussdTemplate;
+    setSaving(row.method);
+    setError((m) => ({ ...m, [row.method]: "" }));
+    try {
+      await DalabAdminApi.updateShopPaymentMethod(row.method, { label, paymentNumber, ussdTemplate });
+      setEdits((m) => ({ ...m, [row.method]: undefined }));
+      fetchMethods();
+    } catch (err) {
+      setError((m) => ({ ...m, [row.method]: err.message || "Could not save." }));
+    }
+    setSaving(null);
+  };
+
+  return (
+    <div>
+      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 16 }}>
+        DALAB's own collection numbers customers dial to pay for a Shop order — the same "dial this USSD code yourself" flow as the Internet Store, just paying DALAB directly instead of a provider.
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {methods.map((row) => {
+          const draft = edits[row.method] || {};
+          return (
+            <Card key={row.method} style={{ padding: 16 }}>
+              <div style={{ fontWeight: 800, fontSize: 14, color: INK, marginBottom: 10 }}>{row.label}</div>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 140 }}>
+                  <Field label="Label">
+                    <input value={draft.label ?? row.label} onChange={(e) => setEdits((m) => ({ ...m, [row.method]: { ...draft, label: e.target.value } }))} style={inputStyle} />
+                  </Field>
+                </div>
+                <div style={{ flex: 1, minWidth: 140 }}>
+                  <Field label="Payment number">
+                    <input value={draft.paymentNumber ?? row.paymentNumber} onChange={(e) => setEdits((m) => ({ ...m, [row.method]: { ...draft, paymentNumber: e.target.value } }))} style={inputStyle} />
+                  </Field>
+                </div>
+              </div>
+              <Field label="USSD template (must include {amount})">
+                <input value={draft.ussdTemplate ?? row.ussdTemplate} onChange={(e) => setEdits((m) => ({ ...m, [row.method]: { ...draft, ussdTemplate: e.target.value } }))} style={inputStyle} />
+              </Field>
+              {error[row.method] && <div style={{ color: "#C81E2C", fontSize: 12, marginBottom: 8 }}>{error[row.method]}</div>}
+              <Button onClick={() => save(row)} disabled={saving === row.method} spin={saving === row.method}>Save</Button>
+            </Card>
+          );
+        })}
       </div>
     </div>
   );
@@ -12117,6 +12735,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "commissions" && <CommissionsPanel companies={companies} packages={packages} admin={admin} />}
           {active === "money-exchange" && <MoneyExchangePanel admin={admin} />}
           {active === "resellers" && <ResellerManagement admin={admin} companies={companies} />}
+          {active === "shop" && <ShopManagement />}
           {active === "sms-sender-ids" && <SmsSenderIdsPanel />}
           {active === "feedback" && <FeedbackPanel admin={admin} />}
           {active === "support" && <SupportQueuePanel admin={admin} />}

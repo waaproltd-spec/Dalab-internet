@@ -59,6 +59,7 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   service_internet_enabled: "true",
   service_ebadal_enabled: "true",
   service_reseller_enabled: "true",
+  service_shop_enabled: "true",
 };
 
 const SOCIAL_LINK_FIELDS = [
@@ -179,6 +180,7 @@ settingsRouter.get("/settings/public", async (_req, res) => {
       internetEnabled: merged.service_internet_enabled !== "false",
       ebadalEnabled: merged.service_ebadal_enabled !== "false",
       resellerEnabled: merged.service_reseller_enabled !== "false",
+      shopEnabled: merged.service_shop_enabled !== "false",
     },
   });
 });
