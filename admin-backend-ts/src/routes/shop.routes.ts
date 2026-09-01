@@ -415,7 +415,7 @@ shopRouter.put("/admin/shop/settings", requirePermission("shop.manage"), async (
 
 // ==================== Customer App (self-service) ====================
 
-const SHOP_ORDER_COLUMNS = "id, customer_id, payment_method, sender_phone, delivery_name, delivery_phone, delivery_address, delivery_notes, total_amount, delivery_fee, payment_status, status, tracking_reference, tracking_note, courier_name, is_gift, gift_recipient_name, gift_recipient_phone, gift_message, gift_wrap, paid_at, delivered_at, cancelled_at, created_at, updated_at";
+const SHOP_ORDER_COLUMNS = "id, customer_id, payment_method, sender_phone, delivery_name, delivery_phone, delivery_address, delivery_notes, delivery_zone_id, total_amount, delivery_fee, payment_status, status, tracking_reference, tracking_note, courier_name, is_gift, gift_recipient_name, gift_recipient_phone, gift_message, gift_wrap, paid_at, delivered_at, cancelled_at, created_at, updated_at";
 
 async function loadOrderItems(orderId: string) {
   return query(
@@ -488,6 +488,7 @@ shopRouter.post(
       deliveryPhone,
       deliveryAddress,
       deliveryNotes,
+      deliveryZoneId,
       isGift,
       giftRecipientName,
       giftRecipientPhone,
@@ -516,6 +517,22 @@ shopRouter.post(
       [paymentMethod]
     );
     if (!method) return sendJson(res, 400, { error: "Choose a valid payment method" });
+
+    // An optional delivery zone overrides shop_settings' single flat fee
+    // with that zone's own -- additive, not a replacement: omitting
+    // deliveryZoneId falls straight back to the flat fee, so nothing about
+    // the existing flow changes for a customer who never picks a zone.
+    let resolvedDeliveryFee = Number(shopSettings.delivery_fee);
+    let resolvedZoneId: string | null = null;
+    if (deliveryZoneId) {
+      const zone = await queryOne<{ id: string; fee: string }>(
+        `SELECT id, fee FROM shop_delivery_zones WHERE id=$1 AND active=true`,
+        [deliveryZoneId]
+      );
+      if (!zone) return sendJson(res, 400, { error: "Selected delivery zone is no longer available" });
+      resolvedDeliveryFee = Number(zone.fee);
+      resolvedZoneId = zone.id;
+    }
 
     // Same carrier-prefix discipline every other purchase flow in this app
     // already enforces -- a customer claiming to pay via EVC Plus must
@@ -691,15 +708,14 @@ shopRouter.post(
           });
         }
 
-        const deliveryFee = Number(shopSettings.delivery_fee);
-        total = Math.round((total + deliveryFee) * 100) / 100;
+        total = Math.round((total + resolvedDeliveryFee) * 100) / 100;
 
         await client.query(
           `INSERT INTO shop_orders (
-             id, customer_id, payment_method, sender_phone, delivery_name, delivery_phone, delivery_address, delivery_notes,
+             id, customer_id, payment_method, sender_phone, delivery_name, delivery_phone, delivery_address, delivery_notes, delivery_zone_id,
              total_amount, delivery_fee, dedup_key, is_gift, gift_recipient_name, gift_recipient_phone, gift_message, gift_wrap
            )
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
           [
             orderId,
             req.auth!.sub,
@@ -709,8 +725,9 @@ shopRouter.post(
             deliveryPhone,
             deliveryAddress,
             typeof deliveryNotes === "string" ? deliveryNotes.trim() || null : null,
+            resolvedZoneId,
             total,
-            deliveryFee,
+            resolvedDeliveryFee,
             dedupKey,
             Boolean(isGift),
             isGift ? String(giftRecipientName).trim() : null,
