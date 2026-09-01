@@ -4,7 +4,6 @@ import { query, queryOne, withTransaction } from "../db/pool.js";
 import { requireAuth } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
 import { parseDataUri } from "../utils/dataUri.js";
-import { createPaymentTransaction } from "../utils/paymentTransactions.js";
 import { notifyCustomer } from "../services/customerNotify.js";
 import { formatUssdAmount } from "../utils/ussdFormatting.js";
 
@@ -441,16 +440,6 @@ shopRouter.post("/shop/orders", requireAuth("customer"), async (req, res) => {
         dialUssd = method.ussd_template.replace("{amount}", formatUssdAmount((order as any).total_amount));
       }
     }
-
-    await createPaymentTransaction({
-      smsLogId: null,
-      orderId,
-      transactionRef: null,
-      customerPhone: senderPhone,
-      amount: (order as any)?.total_amount ?? null,
-      paymentTimestamp: new Date().toISOString(),
-      status: "pending",
-    });
 
     await notifyCustomer(
       req.auth!.sub,

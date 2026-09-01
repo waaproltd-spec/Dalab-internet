@@ -1,6 +1,5 @@
 import { query, queryOne, withTransaction } from "../db/pool.js";
 import { recordActivity } from "../utils/activityLog.js";
-import { markPaymentFinal } from "../utils/paymentTransactions.js";
 import { notifyCustomer } from "../services/customerNotify.js";
 import { sendPushToAgent } from "../services/push.js";
 
@@ -143,7 +142,6 @@ export async function confirmShopOrderPaymentViaSms(
     return { confirmed: false };
   }
 
-  await markPaymentFinal(order.id, "completed");
   await query(`UPDATE sms_logs SET matched_shop_order_id=$1 WHERE id=$2`, [order.id, smsLogId]);
   await recordActivity({
     adminId: undefined,
