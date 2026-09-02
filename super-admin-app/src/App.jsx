@@ -470,6 +470,12 @@ const DalabAdminApi = {
   createShopCategory: (body) => dalabAdminApiRequest("/admin/shop/categories", { method: "POST", body }),
   updateShopCategory: (id, body) => dalabAdminApiRequest(`/admin/shop/categories/${id}`, { method: "PUT", body }),
   deleteShopCategory: (id) => dalabAdminApiRequest(`/admin/shop/categories/${id}`, { method: "DELETE" }),
+  // Subcategories are generic (any category could have them) but only
+  // Electronics's admin UI surfaces them for now, per the spec.
+  getShopSubcategories: (categoryId) => dalabAdminApiRequest(`/admin/shop/subcategories${categoryId ? `?categoryId=${categoryId}` : ""}`),
+  createShopSubcategory: (body) => dalabAdminApiRequest("/admin/shop/subcategories", { method: "POST", body }),
+  updateShopSubcategory: (id, body) => dalabAdminApiRequest(`/admin/shop/subcategories/${id}`, { method: "PUT", body }),
+  deleteShopSubcategory: (id) => dalabAdminApiRequest(`/admin/shop/subcategories/${id}`, { method: "DELETE" }),
   getShopProducts: (categoryId) => dalabAdminApiRequest(`/admin/shop/products${categoryId ? `?categoryId=${categoryId}` : ""}`),
   getShopProduct: (id) => dalabAdminApiRequest(`/admin/shop/products/${id}`),
   createShopProduct: (body) => dalabAdminApiRequest("/admin/shop/products", { method: "POST", body }),
@@ -4224,7 +4230,13 @@ const SHOP_ORDER_STATUS_META = {
   shipped: { label: "Shipped", tone: "blue" },
   delivered: { label: "Delivered", tone: "green" },
   cancelled: { label: "Cancelled", tone: "gray" },
+  failed: { label: "Failed", tone: "red" },
+  returned: { label: "Returned", tone: "gray" },
+  refunded: { label: "Refunded", tone: "gray" },
 };
+// No further status change is valid once an order reaches one of these --
+// mirrors shop.routes.ts's TERMINAL_SHOP_STATUSES exactly.
+const SHOP_TERMINAL_STATUSES = ["delivered", "cancelled", "failed", "returned", "refunded"];
 const MAX_SHOP_PRODUCT_IMAGES = 6;
 
 // Shop: DALAB's 4th customer-facing service, alongside Internet/eBadal/
@@ -4250,7 +4262,7 @@ function ShopManagement() {
       <div style={{ marginBottom: 14 }}>
         <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Shop</div>
         <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>
-          DALAB's marketplace for physical goods — Shoes, Eyewear, Perfumes, Watches, and Gifts (no clothing). Manage categories, products, images, prices, stock, orders, and delivery status. Independent from Internet, eBadal, and Reseller.
+          DALAB's marketplace for physical goods — Electronics, Eyewear, Perfumes, Watches, and Gifts (no clothing). Electronics supports unlimited admin-defined subcategories. Manage categories, products, images, prices, stock, orders, and delivery status. Independent from Internet, eBadal, and Reseller.
         </div>
       </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 18, borderBottom: `1px solid ${BORDER}` }}>
@@ -4285,6 +4297,7 @@ function ShopCategoriesPanel() {
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({ name: "", emoji: "" });
+  const [subcategoriesFor, setSubcategoriesFor] = useState(null); // category row, or null when closed
 
   const fetchCategories = async () => {
     try { setCategories(await DalabAdminApi.getShopCategories()); }
@@ -4357,13 +4370,96 @@ function ShopCategoriesPanel() {
                 </button>
               </div>
             </div>
+            <button
+              onClick={() => setSubcategoriesFor(cat)}
+              style={{ marginTop: 10, width: "100%", background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "6px 0", cursor: "pointer", fontSize: 11.5, fontWeight: 700, color: INDIGO }}
+            >
+              Manage subcategories
+            </button>
           </Card>
         ))}
         {ordered.length === 0 && (
           <div style={{ gridColumn: "1 / -1", padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No categories yet.</div>
         )}
       </div>
+
+      {subcategoriesFor && (
+        <ShopSubcategoriesModal category={subcategoriesFor} onClose={() => setSubcategoriesFor(null)} />
+      )}
     </div>
+  );
+}
+
+// Generic subcategory manager -- opened from any category's card, but in
+// practice only Electronics needs this today (unlimited admin-defined
+// subcategories like Phone Covers, Chargers, ... per the spec).
+function ShopSubcategoriesModal({ category, onClose }) {
+  const [subcategories, setSubcategories] = useState([]);
+  const [name, setName] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const fetchSubcategories = async () => {
+    try { setSubcategories(await DalabAdminApi.getShopSubcategories(category.id)); }
+    catch (err) { setError(err.message || "Could not load subcategories."); }
+  };
+  useEffect(() => { fetchSubcategories(); }, []);
+
+  const add = async () => {
+    if (!name.trim()) return;
+    setSaving(true);
+    setError("");
+    try {
+      await DalabAdminApi.createShopSubcategory({ categoryId: category.id, name: name.trim() });
+      setName("");
+      fetchSubcategories();
+    } catch (err) {
+      setError(err.message || "Could not create subcategory.");
+    }
+    setSaving(false);
+  };
+
+  const toggleActive = async (sub) => {
+    setSubcategories((prev) => prev.map((s) => (s.id === sub.id ? { ...s, active: !s.active } : s)));
+    try { await DalabAdminApi.updateShopSubcategory(sub.id, { active: !sub.active }); }
+    catch (err) { setError(err.message); fetchSubcategories(); }
+  };
+
+  const remove = async (sub) => {
+    if (!window.confirm(`Delete "${sub.name}"? This only works if it has no products under it.`)) return;
+    try {
+      await DalabAdminApi.deleteShopSubcategory(sub.id);
+      fetchSubcategories();
+    } catch (err) {
+      alert(err.message || "Could not delete subcategory.");
+    }
+  };
+
+  return (
+    <Modal title={`${category.emoji} ${category.name} — Subcategories`} onClose={onClose} width={420}>
+      <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+        <input placeholder="e.g. Phone Covers" value={name} onChange={(e) => setName(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+        <Button onClick={add} disabled={saving || !name.trim()} icon={Plus} spin={saving}>Add</Button>
+      </div>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {subcategories.map((sub) => (
+          <div key={sub.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "8px 12px" }}>
+            <span style={{ fontSize: 13, color: INK, fontWeight: 600 }}>{sub.name}</span>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <Badge tone={sub.active ? "green" : "neutral"}>{sub.active ? "Visible" : "Hidden"}</Badge>
+              <button onClick={() => toggleActive(sub)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 5, cursor: "pointer" }}>
+                {sub.active ? <EyeOff size={12} color={SLATE} /> : <Eye size={12} color={GREEN} />}
+              </button>
+              <button onClick={() => remove(sub)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 5, cursor: "pointer" }}>
+                <Trash2 size={12} color="#C81E2C" />
+              </button>
+            </div>
+          </div>
+        ))}
+        {subcategories.length === 0 && <div style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No subcategories yet.</div>}
+      </div>
+    </Modal>
   );
 }
 
@@ -4386,6 +4482,14 @@ function ShopProductsPanel() {
   useEffect(() => { fetchProducts(); }, [categoryFilter]);
 
   const categoryName = (id) => categories.find((c) => c.id === id)?.name || "—";
+  const merchandisingBadges = (p) => {
+    const badges = [];
+    if (p.featured) badges.push({ label: "Featured", tone: "neutral" });
+    if (p.isNewArrival) badges.push({ label: "New", tone: "blue" });
+    if (p.bestSeller) badges.push({ label: "Best Seller", tone: "amber" });
+    if (p.oldPrice != null && Number(p.oldPrice) > Number(p.price)) badges.push({ label: "Discount", tone: "red" });
+    return badges;
+  };
 
   const remove = async (product) => {
     if (!window.confirm(`Delete "${product.name}"? This cannot be undone.`)) return;
@@ -4423,13 +4527,19 @@ function ShopProductsPanel() {
               )}
             </div>
             <div style={{ fontWeight: 800, fontSize: 13.5, color: INK, marginTop: 10 }}>{p.name}</div>
-            <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>{categoryName(p.categoryId)}</div>
+            <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>{categoryName(p.categoryId)}{p.brand ? ` · ${p.brand}` : ""}</div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
-              <span style={{ fontWeight: 800, fontSize: 14, color: INDIGO }}>${Number(p.price).toFixed(2)}</span>
+              <span style={{ fontWeight: 800, fontSize: 14, color: INDIGO }}>
+                ${Number(p.price).toFixed(2)}
+                {p.oldPrice != null && Number(p.oldPrice) > Number(p.price) && (
+                  <span style={{ marginLeft: 6, fontSize: 11.5, fontWeight: 600, color: MUTE, textDecoration: "line-through" }}>${Number(p.oldPrice).toFixed(2)}</span>
+                )}
+              </span>
               <Badge tone={p.stock > 0 ? "neutral" : "red"}>{p.stock} in stock</Badge>
             </div>
-            <div style={{ marginTop: 8 }}>
+            <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
               <Badge tone={p.active ? "green" : "neutral"}>{p.active ? "Visible" : "Hidden"}</Badge>
+              {merchandisingBadges(p).map((b) => <Badge key={b.label} tone={b.tone}>{b.label}</Badge>)}
             </div>
           </Card>
         ))}
@@ -4457,10 +4567,17 @@ function ShopProductModal({ product, categories, onClose, onSaved, onDelete }) {
     name: product.name || "",
     description: product.description || "",
     price: product.price != null ? String(product.price) : "",
+    oldPrice: product.oldPrice != null ? String(product.oldPrice) : "",
     stock: product.stock != null ? String(product.stock) : "0",
     categoryId: product.categoryId || categories[0]?.id || "",
+    subcategoryId: product.subcategoryId || "",
+    brand: product.brand || "",
+    featured: product.featured || false,
+    isNewArrival: product.isNewArrival || false,
+    bestSeller: product.bestSeller || false,
     active: product.active !== false,
   });
+  const [subcategories, setSubcategories] = useState([]);
   const [images, setImages] = useState(product.images || []);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -4525,6 +4642,18 @@ function ShopProductModal({ product, categories, onClose, onSaved, onDelete }) {
     }
   };
 
+  useEffect(() => {
+    if (!form.categoryId) { setSubcategories([]); return; }
+    DalabAdminApi.getShopSubcategories(form.categoryId)
+      .then(setSubcategories)
+      .catch((err) => console.error("getShopSubcategories failed:", err.message));
+  }, [form.categoryId]);
+
+  // Switching category invalidates a subcategory that belonged to the old
+  // one -- the backend rejects that combination outright, so clear it here
+  // rather than let the admin hit a confusing save error.
+  const onCategoryChange = (categoryId) => setForm((f) => ({ ...f, categoryId, subcategoryId: "" }));
+
   const save = async () => {
     const priceNum = Number(form.price);
     const stockNum = Number(form.stock);
@@ -4532,10 +4661,26 @@ function ShopProductModal({ product, categories, onClose, onSaved, onDelete }) {
     if (!form.categoryId) return setError("Choose a category.");
     if (!Number.isFinite(priceNum) || priceNum < 0) return setError("Price must be a non-negative number.");
     if (!Number.isInteger(stockNum) || stockNum < 0) return setError("Stock must be a non-negative whole number.");
+    if (form.oldPrice && (!Number.isFinite(Number(form.oldPrice)) || Number(form.oldPrice) < 0)) {
+      return setError("Original price must be a non-negative number.");
+    }
     setSaving(true);
     setError("");
     try {
-      const body = { name: form.name.trim(), description: form.description.trim(), price: priceNum, stock: stockNum, categoryId: form.categoryId, active: form.active };
+      const body = {
+        name: form.name.trim(),
+        description: form.description.trim(),
+        price: priceNum,
+        oldPrice: form.oldPrice ? Number(form.oldPrice) : null,
+        stock: stockNum,
+        categoryId: form.categoryId,
+        subcategoryId: form.subcategoryId || null,
+        brand: form.brand.trim(),
+        featured: form.featured,
+        isNewArrival: form.isNewArrival,
+        bestSeller: form.bestSeller,
+        active: form.active,
+      };
       if (isNew) await DalabAdminApi.createShopProduct(body);
       else await DalabAdminApi.updateShopProduct(product.id, body);
       onSaved();
@@ -4577,16 +4722,42 @@ function ShopProductModal({ product, categories, onClose, onSaved, onDelete }) {
   return (
     <Modal title={isNew ? "Add product" : "Edit product"} onClose={onClose} width={480}>
       <Field label="Category">
-        <select value={form.categoryId} onChange={(e) => setForm((f) => ({ ...f, categoryId: e.target.value }))} style={inputStyle}>
+        <select value={form.categoryId} onChange={(e) => onCategoryChange(e.target.value)} style={inputStyle}>
           {categories.map((c) => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
         </select>
       </Field>
+      {subcategories.length > 0 && (
+        <Field label="Subcategory (optional)">
+          <select value={form.subcategoryId} onChange={(e) => setForm((f) => ({ ...f, subcategoryId: e.target.value }))} style={inputStyle}>
+            <option value="">No subcategory</option>
+            {subcategories.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        </Field>
+      )}
       <Field label="Name"><input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} style={inputStyle} /></Field>
+      <Field label="Brand (optional)"><input value={form.brand} onChange={(e) => setForm((f) => ({ ...f, brand: e.target.value }))} style={inputStyle} /></Field>
       <Field label="Description"><textarea value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} rows={3} style={{ ...inputStyle, resize: "vertical" }} /></Field>
       <div style={{ display: "flex", gap: 12 }}>
         <div style={{ flex: 1 }}><Field label="Price ($)"><input type="number" min="0" step="0.01" value={form.price} onChange={(e) => setForm((f) => ({ ...f, price: e.target.value }))} style={inputStyle} /></Field></div>
-        <div style={{ flex: 1 }}><Field label="Stock"><input type="number" min="0" step="1" value={form.stock} onChange={(e) => setForm((f) => ({ ...f, stock: e.target.value }))} style={inputStyle} /></Field></div>
+        <div style={{ flex: 1 }}><Field label="Original price (optional, for a discount)"><input type="number" min="0" step="0.01" value={form.oldPrice} onChange={(e) => setForm((f) => ({ ...f, oldPrice: e.target.value }))} style={inputStyle} /></Field></div>
       </div>
+      <Field label="Stock"><input type="number" min="0" step="1" value={form.stock} onChange={(e) => setForm((f) => ({ ...f, stock: e.target.value }))} style={inputStyle} /></Field>
+      <Field label="Merchandising">
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: INK, cursor: "pointer" }}>
+            <input type="checkbox" checked={form.featured} onChange={(e) => setForm((f) => ({ ...f, featured: e.target.checked }))} />
+            Featured
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: INK, cursor: "pointer" }}>
+            <input type="checkbox" checked={form.isNewArrival} onChange={(e) => setForm((f) => ({ ...f, isNewArrival: e.target.checked }))} />
+            New Arrival
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: INK, cursor: "pointer" }}>
+            <input type="checkbox" checked={form.bestSeller} onChange={(e) => setForm((f) => ({ ...f, bestSeller: e.target.checked }))} />
+            Best Seller
+          </label>
+        </div>
+      </Field>
       <Field label="Visibility">
         <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: INK, cursor: "pointer" }}>
           <input type="checkbox" checked={form.active} onChange={(e) => setForm((f) => ({ ...f, active: e.target.checked }))} />
@@ -4743,6 +4914,7 @@ function ShopOrderDetailModal({ orderId, onClose, onChanged }) {
   const [nextStatus, setNextStatus] = useState("");
   const [trackingReference, setTrackingReference] = useState("");
   const [trackingNote, setTrackingNote] = useState("");
+  const [courierName, setCourierName] = useState("");
   const [savingStatus, setSavingStatus] = useState(false);
 
   const fetchOrder = async () => {
@@ -4751,6 +4923,7 @@ function ShopOrderDetailModal({ orderId, onClose, onChanged }) {
       setOrder(o);
       setTrackingReference(o.trackingReference || "");
       setTrackingNote(o.trackingNote || "");
+      setCourierName(o.courierName || "");
     } catch (err) {
       setError(err.message || "Could not load order.");
     }
@@ -4775,7 +4948,12 @@ function ShopOrderDetailModal({ orderId, onClose, onChanged }) {
     setSavingStatus(true);
     setError("");
     try {
-      await DalabAdminApi.updateShopOrderStatus(orderId, { status: nextStatus, trackingReference: trackingReference || undefined, trackingNote: trackingNote || undefined });
+      await DalabAdminApi.updateShopOrderStatus(orderId, {
+        status: nextStatus,
+        trackingReference: trackingReference || undefined,
+        trackingNote: trackingNote || undefined,
+        courierName: courierName || undefined,
+      });
       setNextStatus("");
       await fetchOrder();
       onChanged();
@@ -4793,7 +4971,7 @@ function ShopOrderDetailModal({ orderId, onClose, onChanged }) {
     );
   }
 
-  const finalState = order.status === "delivered" || order.status === "cancelled";
+  const finalState = SHOP_TERMINAL_STATUSES.includes(order.status);
 
   return (
     <Modal title={order.id} onClose={onClose} width={480}>
@@ -4838,14 +5016,16 @@ function ShopOrderDetailModal({ orderId, onClose, onChanged }) {
                 .map(([key, meta]) => <option key={key} value={key}>{meta.label}</option>)}
             </select>
           </Field>
-          <Field label="Tracking reference (optional)"><input value={trackingReference} onChange={(e) => setTrackingReference(e.target.value)} placeholder="e.g. courier name + tracking number" style={inputStyle} /></Field>
+          <Field label="Courier name (optional)"><input value={courierName} onChange={(e) => setCourierName(e.target.value)} style={inputStyle} /></Field>
+          <Field label="Tracking / reference number (optional)"><input value={trackingReference} onChange={(e) => setTrackingReference(e.target.value)} style={inputStyle} /></Field>
           <Field label="Note for customer (optional)"><input value={trackingNote} onChange={(e) => setTrackingNote(e.target.value)} style={inputStyle} /></Field>
           <Button onClick={saveStatus} disabled={!nextStatus || savingStatus} spin={savingStatus}>Update status</Button>
         </div>
       )}
 
-      {(order.trackingReference || order.trackingNote) && (
+      {(order.courierName || order.trackingReference || order.trackingNote) && (
         <div style={{ fontSize: 12, color: MUTE, marginBottom: 10 }}>
+          {order.courierName && <div>Courier: {order.courierName}</div>}
           {order.trackingReference && <div>Tracking: {order.trackingReference}</div>}
           {order.trackingNote && <div>{order.trackingNote}</div>}
         </div>
