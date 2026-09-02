@@ -41,6 +41,7 @@ import { resellerPaymentConfigRouter } from "./routes/resellerPaymentConfig.rout
 import { resellerWithdrawalSimRoutingRouter } from "./routes/resellerWithdrawalSimRouting.routes.js";
 import { supportRouter } from "./routes/support.routes.js";
 import { shopRouter } from "./routes/shop.routes.js";
+import { vipNumbersRouter } from "./routes/vipNumbers.routes.js";
 import { pool, queryOne } from "./db/pool.js";
 import { seedAll } from "./db/seed.js";
 import { sendJson } from "./utils/camelCase.js";
@@ -291,6 +292,7 @@ app.use(resellerPaymentConfigRouter);
 app.use(resellerWithdrawalSimRoutingRouter);
 app.use(supportRouter);
 app.use(shopRouter);
+app.use(vipNumbersRouter);
 
 app.use((_req: Request, res: Response) => {
   res.status(404).json({ error: "Not found" });
