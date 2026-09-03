@@ -42,6 +42,7 @@ import { resellerWithdrawalSimRoutingRouter } from "./routes/resellerWithdrawalS
 import { supportRouter } from "./routes/support.routes.js";
 import { shopRouter } from "./routes/shop.routes.js";
 import { vipNumbersRouter } from "./routes/vipNumbers.routes.js";
+import { vipNumberPackagesRouter } from "./routes/vipNumberPackages.routes.js";
 import { pool, queryOne } from "./db/pool.js";
 import { seedAll } from "./db/seed.js";
 import { sendJson } from "./utils/camelCase.js";
@@ -293,6 +294,7 @@ app.use(resellerWithdrawalSimRoutingRouter);
 app.use(supportRouter);
 app.use(shopRouter);
 app.use(vipNumbersRouter);
+app.use(vipNumberPackagesRouter);
 
 app.use((_req: Request, res: Response) => {
   res.status(404).json({ error: "Not found" });

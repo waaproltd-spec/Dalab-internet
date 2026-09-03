@@ -547,6 +547,33 @@ const DalabAdminApi = {
   getVipNumberOrder: (id) => dalabAdminApiRequest(`/admin/vip-numbers/orders/${id}`),
   confirmVipNumberOrderPayment: (id) => dalabAdminApiRequest(`/admin/vip-numbers/orders/${id}/payment-status`, { method: "PUT" }),
   updateVipNumberOrderStatus: (id, body) => dalabAdminApiRequest(`/admin/vip-numbers/orders/${id}/status`, { method: "PUT", body }),
+
+  // VIP Number Packages: a 2/3/4-number bundle sold together as one order
+  // -- see vipNumberPackages.routes.ts's own header comment. Every
+  // /admin/vip-numbers/packages/* route lives behind the same
+  // "vipNumbers.manage" permission as the individual-number routes above.
+  getVipNumberPackages: (size, active) => {
+    const params = new URLSearchParams();
+    if (size) params.set("size", size);
+    if (active !== undefined) params.set("active", String(active));
+    const qs = params.toString();
+    return dalabAdminApiRequest(`/admin/vip-numbers/packages${qs ? `?${qs}` : ""}`);
+  },
+  createVipNumberPackage: (body) => dalabAdminApiRequest("/admin/vip-numbers/packages", { method: "POST", body }),
+  updateVipNumberPackage: (id, body) => dalabAdminApiRequest(`/admin/vip-numbers/packages/${id}`, { method: "PUT", body }),
+  deleteVipNumberPackage: (id) => dalabAdminApiRequest(`/admin/vip-numbers/packages/${id}`, { method: "DELETE" }),
+  getVipNumberPackageOrders: (status, search) => {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    if (search) params.set("search", search);
+    const qs = params.toString();
+    return dalabAdminApiRequest(`/admin/vip-numbers/packages/orders${qs ? `?${qs}` : ""}`);
+  },
+  getVipNumberPackageOrder: (id) => dalabAdminApiRequest(`/admin/vip-numbers/packages/orders/${id}`),
+  confirmVipNumberPackageOrderPayment: (id) =>
+    dalabAdminApiRequest(`/admin/vip-numbers/packages/orders/${id}/payment-status`, { method: "PUT" }),
+  updateVipNumberPackageOrderStatus: (id, body) =>
+    dalabAdminApiRequest(`/admin/vip-numbers/packages/orders/${id}/status`, { method: "PUT", body }),
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -4349,6 +4376,14 @@ const VIP_ORDER_STATUS_META = {
 // mirrors vipNumbers.routes.ts's TERMINAL_VIP_ORDER_STATUSES exactly.
 const VIP_ORDER_TERMINAL_STATUSES = ["completed", "cancelled", "failed"];
 
+// VIP Number Packages -- a 2/3/4-number bundle sold as one order. Same
+// status vocabulary/tones as individual VIP Number orders (both share
+// vipNumberPackages.routes.ts's PACKAGE_ORDER_STATUSES, which mirrors
+// vipNumbers.routes.ts's own VIP_ORDER_STATUSES exactly), so these reuse
+// VIP_ORDER_STATUS_META/VIP_ORDER_TERMINAL_STATUSES directly rather than
+// duplicating an identical map.
+const VIP_PACKAGE_SIZES = [2, 3, 4];
+
 // Every /admin/vip-numbers/* route (including plain GETs) lives behind the
 // "vipNumbers.manage" permission on the backend too, matching this NAV
 // item being hidden from the sidebar for anyone who doesn't hold it.
@@ -4356,7 +4391,9 @@ function VipNumbersManagement({ companies }) {
   const [tab, setTab] = useState("inventory");
   const tabs = [
     { id: "inventory", label: "Inventory" },
+    { id: "packages", label: "Packages" },
     { id: "orders", label: "Orders" },
+    { id: "package-orders", label: "Package Orders" },
   ];
   return (
     <div>
@@ -4381,7 +4418,9 @@ function VipNumbersManagement({ companies }) {
         ))}
       </div>
       {tab === "inventory" && <VipNumbersInventoryPanel companies={companies} />}
+      {tab === "packages" && <VipNumberPackagesPanel companies={companies} />}
       {tab === "orders" && <VipNumbersOrdersPanel />}
+      {tab === "package-orders" && <VipNumberPackageOrdersPanel />}
     </div>
   );
 }
@@ -4556,6 +4595,398 @@ function VipNumberModal({ number, companies, onClose, onSaved, onDelete }) {
           {isNew ? "Add number" : "Save changes"}
         </Button>
       </div>
+    </Modal>
+  );
+}
+
+// A 2/3/4-number bundle sold as one order -- see
+// vipNumberPackages.routes.ts's own header comment. Mirrors
+// VipNumbersInventoryPanel/VipNumberModal's structure closely.
+function VipNumberPackagesPanel({ companies }) {
+  const [packages, setPackages] = useState([]);
+  const [sizeFilter, setSizeFilter] = useState("all");
+  const [activeFilter, setActiveFilter] = useState("all");
+  const [error, setError] = useState("");
+  const [editing, setEditing] = useState(null); // null = closed, {} = new, {...package} = edit
+
+  const fetchPackages = async () => {
+    try {
+      setPackages(
+        await DalabAdminApi.getVipNumberPackages(
+          sizeFilter === "all" ? undefined : sizeFilter,
+          activeFilter === "all" ? undefined : activeFilter === "active"
+        )
+      );
+    } catch (err) {
+      setError(err.message || "Could not load packages.");
+    }
+  };
+  useEffect(() => { fetchPackages(); }, [sizeFilter, activeFilter]);
+
+  const remove = async (pkg) => {
+    if (!window.confirm(`Delete this ${pkg.size}-number package? This only works while it has no order in progress.`)) return;
+    try {
+      await DalabAdminApi.deleteVipNumberPackage(pkg.id);
+      fetchPackages();
+    } catch (err) {
+      alert(err.message || "Could not delete this package.");
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 10, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <select value={sizeFilter} onChange={(e) => setSizeFilter(e.target.value)} style={{ ...inputStyle, width: 160 }}>
+            <option value="all">All sizes</option>
+            {VIP_PACKAGE_SIZES.map((s) => <option key={s} value={s}>{s} Numbers</option>)}
+          </select>
+          <select value={activeFilter} onChange={(e) => setActiveFilter(e.target.value)} style={{ ...inputStyle, width: 160 }}>
+            <option value="all">All packages</option>
+            <option value="active">Active</option>
+            <option value="inactive">Inactive</option>
+          </select>
+        </div>
+        <Button icon={Plus} onClick={() => setEditing({})}>Add package</Button>
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14 }}>
+        {packages.map((p) => (
+          <Card key={p.id} style={{ padding: 14, cursor: "pointer" }} onClick={() => setEditing(p)}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ fontWeight: 800, fontSize: 15, color: INDIGO }}>{p.size} Numbers</div>
+              <Badge tone={p.active ? "green" : "neutral"}>{p.active ? "Active" : "Inactive"}</Badge>
+            </div>
+            <div style={{ fontWeight: 800, fontSize: 18, color: INK, marginTop: 6 }}>${Number(p.price).toFixed(2)}</div>
+            <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 3 }}>
+              {(p.numbers || []).map((n) => (
+                <div key={n.vipNumberId} style={{ fontSize: 12, color: SLATE }}>{n.companyName} — {n.phoneNumber}</div>
+              ))}
+            </div>
+          </Card>
+        ))}
+        {packages.length === 0 && (
+          <div style={{ gridColumn: "1 / -1", padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>
+            No packages {sizeFilter !== "all" || activeFilter !== "all" ? "match these filters" : "yet"} — add one to start selling bundles.
+          </div>
+        )}
+      </div>
+
+      {editing && (
+        <VipNumberPackageModal
+          pkg={editing}
+          companies={companies}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); fetchPackages(); }}
+          onDelete={editing.id ? () => { setEditing(null); remove(editing); } : undefined}
+        />
+      )}
+    </div>
+  );
+}
+
+function VipNumberPackageModal({ pkg, companies, onClose, onSaved, onDelete }) {
+  const isNew = !pkg.id;
+  const [size, setSize] = useState(pkg.size || 2);
+  const [price, setPrice] = useState(pkg.price != null ? String(pkg.price) : "");
+  const [active, setActive] = useState(pkg.active !== undefined ? pkg.active : true);
+  const [selected, setSelected] = useState(() => new Set((pkg.numbers || []).map((n) => n.vipNumberId)));
+  const [available, setAvailable] = useState([]);
+  const [loadingAvailable, setLoadingAvailable] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const companyName = (id) => companies.find((c) => c.id === id)?.name || id;
+
+  // Every currently-Available individual number is a package candidate --
+  // reuses the same admin inventory endpoint the Inventory tab itself
+  // uses (GET /admin/vip-numbers?status=available), not a new one.
+  useEffect(() => {
+    let cancelled = false;
+    setLoadingAvailable(true);
+    DalabAdminApi.getVipNumbers(undefined, "available")
+      .then((rows) => { if (!cancelled) setAvailable(rows); })
+      .catch((err) => { if (!cancelled) setError(err.message || "Could not load available numbers."); })
+      .finally(() => { if (!cancelled) setLoadingAvailable(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  // A number already claimed by a DIFFERENT package is excluded here --
+  // packageId comes from the same admin inventory endpoint above (see
+  // vipNumbers.routes.ts's own comment on that added column). This
+  // package's own current members (edit mode) stay selectable even though
+  // the backend reports their packageId as this package's own id.
+  const candidates = available.filter((n) => !n.packageId || n.packageId === pkg.id);
+
+  const toggle = (id) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        if (next.size >= size) return prev; // already at the size limit
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  // Changing size while numbers are already selected would silently
+  // orphan a selection that no longer matches the new size -- reset it
+  // instead of letting it drift out of sync.
+  const changeSize = (newSize) => {
+    setSize(newSize);
+    setSelected(new Set());
+  };
+
+  const save = async () => {
+    if (price === "" || Number(price) < 0) return;
+    if (selected.size !== size) return;
+    setSaving(true);
+    setError("");
+    try {
+      if (isNew) {
+        await DalabAdminApi.createVipNumberPackage({ size, price: Number(price), vipNumberIds: Array.from(selected) });
+      } else {
+        await DalabAdminApi.updateVipNumberPackage(pkg.id, { price: Number(price), active, vipNumberIds: Array.from(selected) });
+      }
+      onSaved();
+    } catch (err) {
+      setError(err.message || "Could not save this package.");
+    }
+    setSaving(false);
+  };
+
+  return (
+    <Modal title={isNew ? "Add package" : `${pkg.size}-Number Package`} onClose={onClose} width={480}>
+      {isNew && (
+        <Field label="Package size">
+          <select value={size} onChange={(e) => changeSize(Number(e.target.value))} style={inputStyle}>
+            {VIP_PACKAGE_SIZES.map((s) => <option key={s} value={s}>{s} Numbers</option>)}
+          </select>
+        </Field>
+      )}
+      <Field label="Package price ($)">
+        <input type="number" min="0" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} style={inputStyle} />
+      </Field>
+      {!isNew && (
+        <Field label="Status">
+          <select value={active ? "active" : "inactive"} onChange={(e) => setActive(e.target.value === "active")} style={inputStyle}>
+            <option value="active">Active</option>
+            <option value="inactive">Inactive</option>
+          </select>
+        </Field>
+      )}
+
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: SLATE, margin: "12px 0 6px" }}>
+        Select exactly {size} numbers ({selected.size}/{size} selected)
+      </div>
+      {loadingAvailable ? (
+        <div style={{ fontSize: 12.5, color: MUTE, padding: 12 }}>Loading available numbers…</div>
+      ) : (
+        <div style={{ maxHeight: 260, overflowY: "auto", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 8 }}>
+          {candidates.length === 0 && (
+            <div style={{ fontSize: 12.5, color: MUTE, padding: 8 }}>No available numbers to choose from — add some in the Inventory tab first.</div>
+          )}
+          {candidates.map((n) => {
+            const checked = selected.has(n.id);
+            const disabled = !checked && selected.size >= size;
+            return (
+              <label
+                key={n.id}
+                style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 4px", opacity: disabled ? 0.45 : 1, cursor: disabled ? "not-allowed" : "pointer" }}
+              >
+                <input type="checkbox" checked={checked} disabled={disabled} onChange={() => toggle(n.id)} />
+                <span style={{ fontSize: 13, fontWeight: 700, color: INK }}>{n.phoneNumber}</span>
+                <span style={{ fontSize: 11.5, color: MUTE }}>{n.companyName || companyName(n.companyId)}</span>
+                <Badge tone={VIP_NUMBER_CATEGORY_META[n.category]?.tone || "neutral"}>{VIP_NUMBER_CATEGORY_META[n.category]?.label || n.category}</Badge>
+              </label>
+            );
+          })}
+        </div>
+      )}
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, margin: "12px 0" }}>{error}</div>}
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 14 }}>
+        {onDelete ? <Button variant="danger" icon={Trash2} onClick={onDelete}>Delete</Button> : <div />}
+        <Button onClick={save} disabled={saving || price === "" || selected.size !== size} spin={saving}>
+          {isNew ? "Add package" : "Save changes"}
+        </Button>
+      </div>
+    </Modal>
+  );
+}
+
+function VipNumberPackageOrdersPanel() {
+  const [orders, setOrders] = useState([]);
+  const [status, setStatus] = useState("all");
+  const [search, setSearch] = useState("");
+  const [error, setError] = useState("");
+  const [selected, setSelected] = useState(null);
+
+  const fetchOrders = async () => {
+    try { setOrders(await DalabAdminApi.getVipNumberPackageOrders(status === "all" ? undefined : status, search || undefined)); }
+    catch (err) { setError(err.message || "Could not load orders."); }
+  };
+  useEffect(() => { fetchOrders(); }, [status]);
+  useEffect(() => {
+    const t = setTimeout(fetchOrders, 300); // debounce search-as-you-type
+    return () => clearTimeout(t);
+  }, [search]);
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+        <select value={status} onChange={(e) => setStatus(e.target.value)} style={{ ...inputStyle, width: 160 }}>
+          <option value="all">All statuses</option>
+          {Object.entries(VIP_ORDER_STATUS_META).map(([key, meta]) => <option key={key} value={key}>{meta.label}</option>)}
+        </select>
+        <input placeholder="Search order id, name, phone..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 200, width: "auto" }} />
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {orders.map((o) => (
+          <Card key={o.id} style={{ padding: 14, cursor: "pointer" }} onClick={() => setSelected(o)}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+              <div>
+                <div style={{ fontWeight: 800, fontSize: 13.5, color: INK }}>{o.id} · {o.size} Numbers</div>
+                <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>{o.customerName || o.customerFullName || "Unknown"} · {o.customerPhone || o.senderPhone}</div>
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{ fontWeight: 800, fontSize: 14, color: INDIGO }}>${Number(o.price).toFixed(2)}</span>
+                <Badge tone={o.paymentStatus === "paid" ? "green" : "amber"}>{o.paymentStatus === "paid" ? "Paid" : "Awaiting payment"}</Badge>
+                <Badge tone={VIP_ORDER_STATUS_META[o.status]?.tone || "neutral"}>{VIP_ORDER_STATUS_META[o.status]?.label || o.status}</Badge>
+              </div>
+            </div>
+          </Card>
+        ))}
+        {orders.length === 0 && (
+          <div style={{ padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No VIP Number Package orders {status !== "all" ? `with status "${VIP_ORDER_STATUS_META[status]?.label}"` : "yet"}.</div>
+        )}
+      </div>
+
+      {selected && (
+        <VipNumberPackageOrderDetailModal
+          orderId={selected.id}
+          onClose={() => setSelected(null)}
+          onChanged={() => { fetchOrders(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function VipNumberPackageOrderDetailModal({ orderId, onClose, onChanged }) {
+  const [order, setOrder] = useState(null);
+  const [error, setError] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const [nextStatus, setNextStatus] = useState("");
+  const [note, setNote] = useState("");
+  const [savingStatus, setSavingStatus] = useState(false);
+
+  const fetchOrder = async () => {
+    try {
+      setOrder(await DalabAdminApi.getVipNumberPackageOrder(orderId));
+    } catch (err) {
+      setError(err.message || "Could not load order.");
+    }
+  };
+  useEffect(() => { fetchOrder(); }, [orderId]);
+
+  // Mirrors VipNumberOrderDetailModal's confirmPayment exactly, against
+  // the matching package-order admin route.
+  const confirmPayment = async () => {
+    setConfirming(true);
+    setError("");
+    try {
+      await DalabAdminApi.confirmVipNumberPackageOrderPayment(orderId);
+      await fetchOrder();
+      onChanged();
+    } catch (err) {
+      setError(err.message || "Could not confirm payment.");
+    }
+    setConfirming(false);
+  };
+
+  const saveStatus = async () => {
+    if (!nextStatus) return;
+    setSavingStatus(true);
+    setError("");
+    try {
+      await DalabAdminApi.updateVipNumberPackageOrderStatus(orderId, { status: nextStatus, note: note || undefined });
+      setNextStatus("");
+      setNote("");
+      await fetchOrder();
+      onChanged();
+    } catch (err) {
+      setError(err.message || "Could not update status.");
+    }
+    setSavingStatus(false);
+  };
+
+  if (!order) {
+    return (
+      <Modal title="Order" onClose={onClose}>
+        {error ? <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div> : <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>}
+      </Modal>
+    );
+  }
+
+  const finalState = VIP_ORDER_TERMINAL_STATUSES.includes(order.status);
+  const availableNextStatuses = Object.entries(VIP_ORDER_STATUS_META).filter(
+    ([key]) => key !== order.status && (key !== "completed" || order.paymentStatus === "paid")
+  );
+
+  return (
+    <Modal title={order.id} onClose={onClose} width={480}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+        <Badge tone={order.paymentStatus === "paid" ? "green" : "amber"}>{order.paymentStatus === "paid" ? "Paid" : "Awaiting payment"}</Badge>
+        <Badge tone={VIP_ORDER_STATUS_META[order.status]?.tone || "neutral"}>{VIP_ORDER_STATUS_META[order.status]?.label || order.status}</Badge>
+        <Badge tone="neutral">{order.size} Numbers</Badge>
+      </div>
+
+      <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 4 }}>Numbers in this package</div>
+      <div style={{ marginBottom: 12 }}>
+        {(order.items || []).map((it) => (
+          <div key={it.vipNumberId} style={{ fontSize: 13.5, fontWeight: 800, color: INDIGO }}>{it.phoneNumber} — {it.companyName}</div>
+        ))}
+      </div>
+
+      <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 4 }}>Customer</div>
+      <div style={{ fontSize: 13.5, color: INK, marginBottom: 12 }}>{order.customerFullName || "—"} · {order.customerPhone || "—"}</div>
+
+      <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 4 }}>Payment</div>
+      <div style={{ fontSize: 13.5, color: INK, marginBottom: 12 }}>
+        {order.paymentMethod === "evc" ? "EVC Plus" : order.paymentMethod === "edahab" ? "eDahab" : order.paymentMethod} from {order.senderPhone}
+        <br />
+        <span style={{ fontWeight: 800 }}>${Number(order.price).toFixed(2)}</span>
+      </div>
+
+      {order.paymentStatus !== "paid" && !finalState && (
+        <div style={{ marginBottom: 14 }}>
+          <Button onClick={confirmPayment} disabled={confirming} spin={confirming} icon={Check}>Confirm payment received</Button>
+        </div>
+      )}
+
+      {!finalState && (
+        <div style={{ borderTop: `1px solid ${BORDER}`, paddingTop: 14, marginBottom: 14 }}>
+          <Field label="Advance status">
+            <select value={nextStatus} onChange={(e) => setNextStatus(e.target.value)} style={inputStyle}>
+              <option value="">Choose a status…</option>
+              {availableNextStatuses.map(([key, meta]) => <option key={key} value={key}>{meta.label}</option>)}
+            </select>
+          </Field>
+          <Field label="Note for customer (optional)"><input value={note} onChange={(e) => setNote(e.target.value)} style={inputStyle} /></Field>
+          <Button onClick={saveStatus} disabled={!nextStatus || savingStatus} spin={savingStatus}>Update status</Button>
+        </div>
+      )}
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div>}
     </Modal>
   );
 }

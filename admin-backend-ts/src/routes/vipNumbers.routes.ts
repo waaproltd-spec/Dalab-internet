@@ -61,11 +61,19 @@ const VIP_ORDER_COLUMNS =
 vipNumbersRouter.get("/vip-numbers", async (req, res) => {
   const { companyId, search } = req.query as { companyId?: string; search?: string };
   const args: unknown[] = [];
+  // NOT EXISTS(... vip_number_package_items ...): a number an admin has
+  // placed into a Package (see vipNumberPackages.routes.ts, migration 088)
+  // is sold only as part of that package, never individually too --
+  // otherwise the same physical number could be sold twice through both
+  // paths at once. This is the only change this file needed to support
+  // packages; everything else here (including this route's own remaining
+  // filters/ordering) is unchanged.
   let sql = `SELECT vn.id, vn.company_id, c.name AS company_name, c.color_hex AS company_color_hex,
                     vn.phone_number, vn.category, vn.price
              FROM vip_numbers vn
              JOIN companies c ON c.id = vn.company_id
-             WHERE vn.status='available'`;
+             WHERE vn.status='available'
+               AND NOT EXISTS (SELECT 1 FROM vip_number_package_items pi WHERE pi.vip_number_id = vn.id)`;
   if (companyId) {
     args.push(companyId);
     sql += ` AND vn.company_id=$${args.length}`;
@@ -228,8 +236,15 @@ vipNumbersRouter.post("/vip-numbers/orders/:id/retry-payment", requireAuth("cust
 vipNumbersRouter.get("/admin/vip-numbers", requirePermission("vipNumbers.manage"), async (req, res) => {
   const { companyId, status } = req.query as { companyId?: string; status?: string };
   const args: unknown[] = [];
-  let sql = `SELECT vn.id, vn.company_id, c.name AS company_name, vn.phone_number, vn.category, vn.price, vn.status, vn.created_at, vn.updated_at
-             FROM vip_numbers vn JOIN companies c ON c.id = vn.company_id WHERE 1=1`;
+  // packageId (via the LEFT JOIN below): null unless this number has been
+  // placed into a Package (vipNumberPackages.routes.ts, migration 088) --
+  // lets the Admin Dashboard's package-builder grey out/exclude a number
+  // that's already claimed by another package, without a second request.
+  let sql = `SELECT vn.id, vn.company_id, c.name AS company_name, vn.phone_number, vn.category, vn.price, vn.status, vn.created_at, vn.updated_at, pi.package_id
+             FROM vip_numbers vn
+             JOIN companies c ON c.id = vn.company_id
+             LEFT JOIN vip_number_package_items pi ON pi.vip_number_id = vn.id
+             WHERE 1=1`;
   if (companyId) {
     args.push(companyId);
     sql += ` AND vn.company_id=$${args.length}`;
