@@ -4602,7 +4602,17 @@ function VipNumbersInventoryPanel({ companies }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 14 }}>
         {numbers.map((n) => (
           <Card key={n.id} style={{ padding: 14, cursor: "pointer" }} onClick={() => setEditing(n)}>
-            <div style={{ fontWeight: 800, fontSize: 16, color: INDIGO }}>{n.phoneNumber}</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+              <div style={{ fontWeight: 800, fontSize: 16, color: INDIGO }}>{n.phoneNumber}</div>
+              <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                <button onClick={(e) => { e.stopPropagation(); setEditing(n); }} title="Edit" style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}>
+                  <Pencil size={15} color={INDIGO} />
+                </button>
+                <button onClick={(e) => { e.stopPropagation(); remove(n); }} title="Delete" style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}>
+                  <Trash2 size={15} color="#C81E2C" />
+                </button>
+              </div>
+            </div>
             <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>{n.companyName || companyName(n.companyId)}</div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
               <span style={{ fontWeight: 800, fontSize: 14, color: INK }}>${Number(n.price).toFixed(2)}</span>
@@ -4782,7 +4792,15 @@ function VipNumberPackagesPanel({ companies }) {
           <Card key={p.id} style={{ padding: 14, cursor: "pointer" }} onClick={() => setEditing(p)}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div style={{ fontWeight: 800, fontSize: 15, color: INDIGO }}>{p.size} Numbers</div>
-              <Badge tone={p.active ? "green" : "neutral"}>{p.active ? "Active" : "Inactive"}</Badge>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                <Badge tone={p.active ? "green" : "neutral"}>{p.active ? "Active" : "Inactive"}</Badge>
+                <button onClick={(e) => { e.stopPropagation(); setEditing(p); }} title="Edit" style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}>
+                  <Pencil size={15} color={INDIGO} />
+                </button>
+                <button onClick={(e) => { e.stopPropagation(); remove(p); }} title="Delete" style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}>
+                  <Trash2 size={15} color="#C81E2C" />
+                </button>
+              </div>
             </div>
             <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 6 }}>
               <div style={{ fontWeight: 800, fontSize: 18, color: INK }}>${Number(p.price).toFixed(2)}</div>
