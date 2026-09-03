@@ -9,7 +9,7 @@ import {
   WifiOff, BatteryFull, BatteryMedium, BatteryLow, BatteryWarning,
   Image as ImageIcon, Upload, MessageSquare, Database, Activity, History, CreditCard, PlayCircle, Percent,
   MessageCircle, Lightbulb, Share2, KeyRound, ExternalLink, PiggyBank, Landmark, Trash, ArrowLeftRight,
-  ShoppingBag, Boxes
+  ShoppingBag, Boxes, Award
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 
@@ -521,6 +521,32 @@ const DalabAdminApi = {
   deleteShopDeliveryZone: (id) => dalabAdminApiRequest(`/admin/shop/delivery-zones/${id}`, { method: "DELETE" }),
   // Revenue/order/top-product snapshot.
   getShopAnalytics: () => dalabAdminApiRequest("/admin/shop/analytics"),
+
+  // VIP Numbers: DALAB's 5th customer-facing service -- a small catalog of
+  // premium phone numbers (Gold/Silver) per company. Every /admin/vip-numbers/*
+  // route requires the "vipNumbers.manage" permission on the backend,
+  // including plain GETs -- see vipNumbers.routes.ts's own header comment,
+  // same policy Shop's admin routes already use.
+  getVipNumbers: (companyId, status) => {
+    const params = new URLSearchParams();
+    if (companyId) params.set("companyId", companyId);
+    if (status) params.set("status", status);
+    const qs = params.toString();
+    return dalabAdminApiRequest(`/admin/vip-numbers${qs ? `?${qs}` : ""}`);
+  },
+  createVipNumber: (body) => dalabAdminApiRequest("/admin/vip-numbers", { method: "POST", body }),
+  updateVipNumber: (id, body) => dalabAdminApiRequest(`/admin/vip-numbers/${id}`, { method: "PUT", body }),
+  deleteVipNumber: (id) => dalabAdminApiRequest(`/admin/vip-numbers/${id}`, { method: "DELETE" }),
+  getVipNumberOrders: (status, search) => {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    if (search) params.set("search", search);
+    const qs = params.toString();
+    return dalabAdminApiRequest(`/admin/vip-numbers/orders${qs ? `?${qs}` : ""}`);
+  },
+  getVipNumberOrder: (id) => dalabAdminApiRequest(`/admin/vip-numbers/orders/${id}`),
+  confirmVipNumberOrderPayment: (id) => dalabAdminApiRequest(`/admin/vip-numbers/orders/${id}/payment-status`, { method: "PUT" }),
+  updateVipNumberOrderStatus: (id, body) => dalabAdminApiRequest(`/admin/vip-numbers/orders/${id}/status`, { method: "PUT", body }),
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -544,6 +570,7 @@ const PERMISSION_OPTIONS = [
   { key: "resellers.manage", label: "Manage resellers" },
   { key: "support.manage", label: "Handle Agent Support conversations" },
   { key: "shop.manage", label: "Manage Shop (categories, products, orders)" },
+  { key: "vipNumbers.manage", label: "Manage VIP Numbers (inventory, orders)" },
 ];
 
 // Normalizes a GET /admin/companies row into the shape every section of this
@@ -857,6 +884,7 @@ const NAV = [
   { id: "money-exchange", label: "Money Exchange", icon: ArrowLeftRight, permission: "exchange.manage" },
   { id: "resellers", label: "Resellers", icon: Landmark, permission: "resellers.manage" },
   { id: "shop", label: "Shop", icon: ShoppingBag, permission: "shop.manage" },
+  { id: "vip-numbers", label: "VIP Numbers", icon: Award, permission: "vipNumbers.manage" },
   { id: "sms-sender-ids", label: "SMS Sender IDs", icon: MessageSquare, superAdminOnly: true },
   { id: "referrals", label: "Referral Rewards", icon: Share2, permission: "referrals.manage" },
   { id: "pending-recovery", label: "Pending Recovery", icon: RotateCcw, permission: "orders.manage" },
@@ -4289,6 +4317,420 @@ function ShopManagement() {
       {tab === "analytics" && <ShopAnalyticsPanel />}
       {tab === "payment" && <ShopPaymentMethodsPanel />}
     </div>
+  );
+}
+
+// ---------------- VIP Numbers ----------------
+// Mirrors Shop's own admin section architecture exactly (same tab shell,
+// Card/Modal/Field/Button/Badge/inputStyle patterns, optimistic-update
+// style, permission gating) -- DALAB's 5th customer-facing service, a
+// small catalog of premium phone numbers (Gold/Silver) per company.
+// Payment verification reuses Shop's own manual "Admin sees the money
+// arrive, taps Confirm" flow (vipNumbers.routes.ts), not a new payment
+// system.
+
+const VIP_NUMBER_STATUS_META = {
+  available: { label: "Available", tone: "green" },
+  reserved: { label: "Reserved", tone: "amber" },
+  sold: { label: "Sold", tone: "neutral" },
+};
+const VIP_NUMBER_CATEGORY_META = {
+  gold: { label: "Gold", tone: "amber" },
+  silver: { label: "Silver", tone: "neutral" },
+};
+const VIP_ORDER_STATUS_META = {
+  pending: { label: "Pending", tone: "amber" },
+  processing: { label: "Processing", tone: "blue" },
+  completed: { label: "Completed", tone: "green" },
+  cancelled: { label: "Cancelled", tone: "gray" },
+  failed: { label: "Failed", tone: "red" },
+};
+// No further status change is valid once an order reaches one of these --
+// mirrors vipNumbers.routes.ts's TERMINAL_VIP_ORDER_STATUSES exactly.
+const VIP_ORDER_TERMINAL_STATUSES = ["completed", "cancelled", "failed"];
+
+// Every /admin/vip-numbers/* route (including plain GETs) lives behind the
+// "vipNumbers.manage" permission on the backend too, matching this NAV
+// item being hidden from the sidebar for anyone who doesn't hold it.
+function VipNumbersManagement({ companies }) {
+  const [tab, setTab] = useState("inventory");
+  const tabs = [
+    { id: "inventory", label: "Inventory" },
+    { id: "orders", label: "Orders" },
+  ];
+  return (
+    <div>
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>VIP Numbers</div>
+        <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>
+          A catalog of premium phone numbers (Gold/Silver) per company. A number is reserved the instant a customer places an order — never sellable to a second customer — and stays sold only once you confirm payment received below. Independent from Internet, eBadal, Reseller, and Shop.
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 18, borderBottom: `1px solid ${BORDER}` }}>
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            style={{
+              padding: "10px 16px", border: "none", background: "none", cursor: "pointer", fontSize: 13, fontWeight: 700,
+              color: tab === t.id ? INDIGO : MUTE, borderBottom: tab === t.id ? `2px solid ${INDIGO}` : "2px solid transparent", marginBottom: -1,
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {tab === "inventory" && <VipNumbersInventoryPanel companies={companies} />}
+      {tab === "orders" && <VipNumbersOrdersPanel />}
+    </div>
+  );
+}
+
+function VipNumbersInventoryPanel({ companies }) {
+  const [numbers, setNumbers] = useState([]);
+  const [companyFilter, setCompanyFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [error, setError] = useState("");
+  const [editing, setEditing] = useState(null); // null = closed, {} = new, {...number} = edit
+
+  const fetchNumbers = async () => {
+    try {
+      setNumbers(await DalabAdminApi.getVipNumbers(
+        companyFilter === "all" ? undefined : companyFilter,
+        statusFilter === "all" ? undefined : statusFilter,
+      ));
+    } catch (err) {
+      setError(err.message || "Could not load VIP numbers.");
+    }
+  };
+  useEffect(() => { fetchNumbers(); }, [companyFilter, statusFilter]);
+
+  const companyName = (id) => companies.find((c) => c.id === id)?.name || id;
+
+  const remove = async (number) => {
+    if (!window.confirm(`Delete "${number.phoneNumber}"? This only works while it's still Available.`)) return;
+    try {
+      await DalabAdminApi.deleteVipNumber(number.id);
+      fetchNumbers();
+    } catch (err) {
+      alert(err.message || "Could not delete this number.");
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 10, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <select value={companyFilter} onChange={(e) => setCompanyFilter(e.target.value)} style={{ ...inputStyle, width: 180 }}>
+            <option value="all">All companies</option>
+            {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={{ ...inputStyle, width: 160 }}>
+            <option value="all">All statuses</option>
+            {Object.entries(VIP_NUMBER_STATUS_META).map(([key, meta]) => <option key={key} value={key}>{meta.label}</option>)}
+          </select>
+        </div>
+        <Button icon={Plus} onClick={() => setEditing({})}>Add VIP number</Button>
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 14 }}>
+        {numbers.map((n) => (
+          <Card key={n.id} style={{ padding: 14, cursor: "pointer" }} onClick={() => setEditing(n)}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: INDIGO }}>{n.phoneNumber}</div>
+            <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>{n.companyName || companyName(n.companyId)}</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
+              <span style={{ fontWeight: 800, fontSize: 14, color: INK }}>${Number(n.price).toFixed(2)}</span>
+              <Badge tone={VIP_NUMBER_CATEGORY_META[n.category]?.tone || "neutral"}>{VIP_NUMBER_CATEGORY_META[n.category]?.label || n.category}</Badge>
+            </div>
+            <div style={{ marginTop: 8 }}>
+              <Badge tone={VIP_NUMBER_STATUS_META[n.status]?.tone || "neutral"}>{VIP_NUMBER_STATUS_META[n.status]?.label || n.status}</Badge>
+            </div>
+          </Card>
+        ))}
+        {numbers.length === 0 && (
+          <div style={{ gridColumn: "1 / -1", padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No VIP numbers {companyFilter !== "all" || statusFilter !== "all" ? "match these filters" : "yet"} — add one to start selling.</div>
+        )}
+      </div>
+
+      {editing && (
+        <VipNumberModal
+          number={editing}
+          companies={companies}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); fetchNumbers(); }}
+          onDelete={editing.id ? () => { setEditing(null); remove(editing); } : undefined}
+        />
+      )}
+    </div>
+  );
+}
+
+function VipNumberModal({ number, companies, onClose, onSaved, onDelete }) {
+  const isNew = !number.id;
+  const [form, setForm] = useState({
+    companyId: number.companyId || companies[0]?.id || "",
+    phoneNumber: number.phoneNumber || "",
+    category: number.category || "gold",
+    price: number.price != null ? String(number.price) : "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  // Only company/number are locked once created -- editing them would
+  // silently detach this row from any order that already snapshotted the
+  // original phoneNumber/companyId (see migration 087's header comment on
+  // why those columns are snapshotted onto the order). Category/price stay
+  // editable any time; a sold number's price change only affects the
+  // catalog display, never an already-placed order (also snapshotted).
+  const locked = !isNew;
+
+  const save = async () => {
+    if (!form.phoneNumber.trim() || form.price === "") return;
+    setSaving(true);
+    setError("");
+    try {
+      if (isNew) {
+        await DalabAdminApi.createVipNumber({
+          companyId: form.companyId,
+          phoneNumber: form.phoneNumber.trim(),
+          category: form.category,
+          price: Number(form.price),
+        });
+      } else {
+        await DalabAdminApi.updateVipNumber(number.id, {
+          category: form.category,
+          price: Number(form.price),
+        });
+      }
+      onSaved();
+    } catch (err) {
+      setError(err.message || "Could not save this VIP number.");
+    }
+    setSaving(false);
+  };
+
+  return (
+    <Modal title={isNew ? "Add VIP number" : number.phoneNumber} onClose={onClose}>
+      {!isNew && (
+        <div style={{ marginBottom: 14 }}>
+          <Badge tone={VIP_NUMBER_STATUS_META[number.status]?.tone || "neutral"}>{VIP_NUMBER_STATUS_META[number.status]?.label || number.status}</Badge>
+        </div>
+      )}
+      <Field label="Company">
+        <select
+          value={form.companyId}
+          onChange={(e) => setForm((f) => ({ ...f, companyId: e.target.value }))}
+          disabled={locked}
+          style={{ ...inputStyle, opacity: locked ? 0.6 : 1 }}
+        >
+          {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+      </Field>
+      <Field label="Phone number">
+        <input
+          value={form.phoneNumber}
+          onChange={(e) => setForm((f) => ({ ...f, phoneNumber: e.target.value }))}
+          disabled={locked}
+          style={{ ...inputStyle, opacity: locked ? 0.6 : 1 }}
+        />
+      </Field>
+      <Field label="Category">
+        <select value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))} style={inputStyle}>
+          <option value="gold">Gold</option>
+          <option value="silver">Silver</option>
+        </select>
+      </Field>
+      <Field label="Price ($)">
+        <input type="number" min="0" step="0.01" value={form.price} onChange={(e) => setForm((f) => ({ ...f, price: e.target.value }))} style={inputStyle} />
+      </Field>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        {onDelete && number.status === "available" ? (
+          <Button variant="danger" icon={Trash2} onClick={onDelete}>Delete</Button>
+        ) : <div />}
+        <Button onClick={save} disabled={saving || !form.phoneNumber.trim() || form.price === ""} spin={saving}>
+          {isNew ? "Add number" : "Save changes"}
+        </Button>
+      </div>
+    </Modal>
+  );
+}
+
+function VipNumbersOrdersPanel() {
+  const [orders, setOrders] = useState([]);
+  const [status, setStatus] = useState("all");
+  const [search, setSearch] = useState("");
+  const [error, setError] = useState("");
+  const [selected, setSelected] = useState(null);
+
+  const fetchOrders = async () => {
+    try { setOrders(await DalabAdminApi.getVipNumberOrders(status === "all" ? undefined : status, search || undefined)); }
+    catch (err) { setError(err.message || "Could not load orders."); }
+  };
+  useEffect(() => { fetchOrders(); }, [status]);
+  useEffect(() => {
+    const t = setTimeout(fetchOrders, 300); // debounce search-as-you-type
+    return () => clearTimeout(t);
+  }, [search]);
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+        <select value={status} onChange={(e) => setStatus(e.target.value)} style={{ ...inputStyle, width: 160 }}>
+          <option value="all">All statuses</option>
+          {Object.entries(VIP_ORDER_STATUS_META).map(([key, meta]) => <option key={key} value={key}>{meta.label}</option>)}
+        </select>
+        <input placeholder="Search order id, name, phone..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 200, width: "auto" }} />
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {orders.map((o) => (
+          <Card key={o.id} style={{ padding: 14, cursor: "pointer" }} onClick={() => setSelected(o)}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+              <div>
+                <div style={{ fontWeight: 800, fontSize: 13.5, color: INK }}>{o.id} · {o.phoneNumber}</div>
+                <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>{o.customerName || o.customerFullName || "Unknown"} · {o.customerPhone || o.senderPhone}</div>
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{ fontWeight: 800, fontSize: 14, color: INDIGO }}>${Number(o.price).toFixed(2)}</span>
+                <Badge tone={o.paymentStatus === "paid" ? "green" : "amber"}>{o.paymentStatus === "paid" ? "Paid" : "Awaiting payment"}</Badge>
+                <Badge tone={VIP_ORDER_STATUS_META[o.status]?.tone || "neutral"}>{VIP_ORDER_STATUS_META[o.status]?.label || o.status}</Badge>
+              </div>
+            </div>
+          </Card>
+        ))}
+        {orders.length === 0 && (
+          <div style={{ padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No VIP Number orders {status !== "all" ? `with status "${VIP_ORDER_STATUS_META[status]?.label}"` : "yet"}.</div>
+        )}
+      </div>
+
+      {selected && (
+        <VipNumberOrderDetailModal
+          orderId={selected.id}
+          onClose={() => setSelected(null)}
+          onChanged={() => { fetchOrders(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function VipNumberOrderDetailModal({ orderId, onClose, onChanged }) {
+  const [order, setOrder] = useState(null);
+  const [error, setError] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const [nextStatus, setNextStatus] = useState("");
+  const [note, setNote] = useState("");
+  const [savingStatus, setSavingStatus] = useState(false);
+
+  const fetchOrder = async () => {
+    try {
+      setOrder(await DalabAdminApi.getVipNumberOrder(orderId));
+    } catch (err) {
+      setError(err.message || "Could not load order.");
+    }
+  };
+  useEffect(() => { fetchOrder(); }, [orderId]);
+
+  // Mirrors ShopOrderDetailModal's confirmPayment exactly, against the
+  // matching vip-numbers admin route -- same manual "Admin sees the money
+  // arrive, taps Confirm" flow, not a new payment system.
+  const confirmPayment = async () => {
+    setConfirming(true);
+    setError("");
+    try {
+      await DalabAdminApi.confirmVipNumberOrderPayment(orderId);
+      await fetchOrder();
+      onChanged();
+    } catch (err) {
+      setError(err.message || "Could not confirm payment.");
+    }
+    setConfirming(false);
+  };
+
+  const saveStatus = async () => {
+    if (!nextStatus) return;
+    setSavingStatus(true);
+    setError("");
+    try {
+      await DalabAdminApi.updateVipNumberOrderStatus(orderId, {
+        status: nextStatus,
+        note: note || undefined,
+      });
+      setNextStatus("");
+      setNote("");
+      await fetchOrder();
+      onChanged();
+    } catch (err) {
+      setError(err.message || "Could not update status.");
+    }
+    setSavingStatus(false);
+  };
+
+  if (!order) {
+    return (
+      <Modal title="Order" onClose={onClose}>
+        {error ? <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div> : <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>}
+      </Modal>
+    );
+  }
+
+  const finalState = VIP_ORDER_TERMINAL_STATUSES.includes(order.status);
+  // "completed" (the number has been handed over) only makes sense once
+  // payment is actually confirmed -- matches the backend's own guard on
+  // PUT /admin/vip-numbers/orders/:id/status.
+  const availableNextStatuses = Object.entries(VIP_ORDER_STATUS_META).filter(
+    ([key]) => key !== order.status && (key !== "completed" || order.paymentStatus === "paid")
+  );
+
+  return (
+    <Modal title={order.id} onClose={onClose} width={480}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+        <Badge tone={order.paymentStatus === "paid" ? "green" : "amber"}>{order.paymentStatus === "paid" ? "Paid" : "Awaiting payment"}</Badge>
+        <Badge tone={VIP_ORDER_STATUS_META[order.status]?.tone || "neutral"}>{VIP_ORDER_STATUS_META[order.status]?.label || order.status}</Badge>
+        <Badge tone={VIP_NUMBER_CATEGORY_META[order.category]?.tone || "neutral"}>{VIP_NUMBER_CATEGORY_META[order.category]?.label || order.category}</Badge>
+      </div>
+
+      <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 4 }}>VIP number</div>
+      <div style={{ fontSize: 15, fontWeight: 800, color: INDIGO, marginBottom: 12 }}>{order.phoneNumber} — {order.companyName || order.companyId}</div>
+
+      <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 4 }}>Customer</div>
+      <div style={{ fontSize: 13.5, color: INK, marginBottom: 12 }}>{order.customerFullName || "—"} · {order.customerPhone || "—"}</div>
+
+      <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 4 }}>Payment</div>
+      <div style={{ fontSize: 13.5, color: INK, marginBottom: 12 }}>
+        {order.paymentMethod === "evc" ? "EVC Plus" : order.paymentMethod === "edahab" ? "eDahab" : order.paymentMethod} from {order.senderPhone}
+        <br />
+        <span style={{ fontWeight: 800 }}>${Number(order.price).toFixed(2)}</span>
+      </div>
+
+      {order.paymentStatus !== "paid" && !finalState && (
+        <div style={{ marginBottom: 14 }}>
+          <Button onClick={confirmPayment} disabled={confirming} spin={confirming} icon={Check}>Confirm payment received</Button>
+        </div>
+      )}
+
+      {!finalState && (
+        <div style={{ borderTop: `1px solid ${BORDER}`, paddingTop: 14, marginBottom: 14 }}>
+          <Field label="Advance status">
+            <select value={nextStatus} onChange={(e) => setNextStatus(e.target.value)} style={inputStyle}>
+              <option value="">Choose a status…</option>
+              {availableNextStatuses.map(([key, meta]) => <option key={key} value={key}>{meta.label}</option>)}
+            </select>
+          </Field>
+          <Field label="Note for customer (optional)"><input value={note} onChange={(e) => setNote(e.target.value)} style={inputStyle} /></Field>
+          <Button onClick={saveStatus} disabled={!nextStatus || savingStatus} spin={savingStatus}>Update status</Button>
+        </div>
+      )}
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div>}
+    </Modal>
   );
 }
 
@@ -13645,6 +14087,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "money-exchange" && <MoneyExchangePanel admin={admin} />}
           {active === "resellers" && <ResellerManagement admin={admin} companies={companies} />}
           {active === "shop" && <ShopManagement />}
+          {active === "vip-numbers" && <VipNumbersManagement companies={companies} />}
           {active === "sms-sender-ids" && <SmsSenderIdsPanel />}
           {active === "feedback" && <FeedbackPanel admin={admin} />}
           {active === "support" && <SupportQueuePanel admin={admin} />}
