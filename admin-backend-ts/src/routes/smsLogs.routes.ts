@@ -22,6 +22,12 @@ import {
   findMatchingResellerWithdrawal,
   confirmResellerWithdrawalViaSms,
 } from "./resellerSmsMatching.js";
+import {
+  findMatchingVipNumberOrder,
+  confirmVipNumberOrderPaidViaSms,
+  findMatchingVipNumberPackageOrder,
+  confirmVipNumberPackageOrderPaidViaSms,
+} from "./vipNumberSmsMatching.js";
 
 export const smsLogsRouter = Router();
 
@@ -372,6 +378,8 @@ type IngestSmsResult = {
     matchedExchangeOrderId?: string | null;
     matchedResellerDepositId?: string | null;
     matchedResellerWithdrawalId?: string | null;
+    matchedVipNumberOrderId?: string | null;
+    matchedVipNumberPackageOrderId?: string | null;
     requiresManualApproval: boolean;
     duplicate: boolean;
     orderAlreadyCompleted?: boolean;
@@ -531,8 +539,31 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
     resellerWithdrawalMatchFailureReason = resellerWithdrawalResult.reason;
   }
 
+  // VIP Number order matching only runs when Store, Exchange, Reseller
+  // Deposit, AND Reseller Withdraw have all found nothing — same "always
+  // last" guarantee, one level further out. See vipNumberSmsMatching.ts's
+  // header for why this exists at all.
+  let vipNumberMatch: Awaited<ReturnType<typeof findMatchingVipNumberOrder>>["order"] = null;
+  let vipNumberMatchFailureReason: string | null = null;
+  if (!match && !exchangeMatch && !resellerDepositMatch && !resellerWithdrawalMatch) {
+    const vipNumberResult = await findMatchingVipNumberOrder(parsedAmount, parsedPhone);
+    vipNumberMatch = vipNumberResult.order;
+    vipNumberMatchFailureReason = vipNumberResult.reason;
+  }
+
+  // VIP Number Package order matching — the true last resort, only once
+  // every other matcher (including the individual VIP Number one above)
+  // has found nothing.
+  let vipPackageMatch: Awaited<ReturnType<typeof findMatchingVipNumberPackageOrder>>["order"] = null;
+  let vipPackageMatchFailureReason: string | null = null;
+  if (!match && !exchangeMatch && !resellerDepositMatch && !resellerWithdrawalMatch && !vipNumberMatch) {
+    const vipPackageResult = await findMatchingVipNumberPackageOrder(parsedAmount, parsedPhone);
+    vipPackageMatch = vipPackageResult.order;
+    vipPackageMatchFailureReason = vipPackageResult.reason;
+  }
+
   const combinedFailureReason =
-    match || exchangeMatch || resellerDepositMatch || resellerWithdrawalMatch
+    match || exchangeMatch || resellerDepositMatch || resellerWithdrawalMatch || vipNumberMatch || vipPackageMatch
       ? null
       : [
           matchFailureReason,
@@ -540,6 +571,8 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
           exchangeMatchFailureReason ? `Exchange: ${exchangeMatchFailureReason}` : null,
           resellerMatchFailureReason ? `Reseller Deposit: ${resellerMatchFailureReason}` : null,
           resellerWithdrawalMatchFailureReason ? `Reseller Withdraw: ${resellerWithdrawalMatchFailureReason}` : null,
+          vipNumberMatchFailureReason ? `VIP Number: ${vipNumberMatchFailureReason}` : null,
+          vipPackageMatchFailureReason ? `VIP Number Package: ${vipPackageMatchFailureReason}` : null,
         ]
           .filter(Boolean)
           .join(" | ");
@@ -551,11 +584,12 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
   // different truncated minute than the row that actually won.
   try {
     await query(
-      `INSERT INTO sms_logs (id, agent_id, sender, body, parsed_provider, parsed_amount, parsed_phone, matched_order_id, matched_exchange_order_id, matched_reseller_deposit_id, matched_reseller_withdrawal_id, received_at, transaction_ref, sim_slot, match_failure_reason)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+      `INSERT INTO sms_logs (id, agent_id, sender, body, parsed_provider, parsed_amount, parsed_phone, matched_order_id, matched_exchange_order_id, matched_reseller_deposit_id, matched_reseller_withdrawal_id, matched_vip_number_order_id, matched_vip_number_package_order_id, received_at, transaction_ref, sim_slot, match_failure_reason)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
       [
         id, agentId, sender, body, parsedProvider ?? null, parsedAmount ?? null, parsedPhone ?? null,
         match?.id ?? null, exchangeMatch?.id ?? null, resellerDepositMatch?.id ?? null, resellerWithdrawalMatch?.id ?? null,
+        vipNumberMatch?.id ?? null, vipPackageMatch?.id ?? null,
         effectiveReceivedAt, transactionRef ?? null, simSlot ?? null,
         combinedFailureReason || null,
       ]
@@ -709,6 +743,19 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
     await confirmResellerWithdrawalViaSms(resellerWithdrawalMatch, id);
   }
 
+  // VIP Number / VIP Number Package: fully automatic, no admin tap
+  // required — same "Once the payment is confirmed..." pattern as Reseller
+  // Deposit above. confirmVipNumberOrderPaidViaSms/
+  // confirmVipNumberPackageOrderPaidViaSms each do their own atomic claim
+  // (payment_status='pending' CAS) before marking paid, safe to call more
+  // than once for the same order.
+  if (vipNumberMatch) {
+    await confirmVipNumberOrderPaidViaSms(vipNumberMatch, id);
+  }
+  if (vipPackageMatch) {
+    await confirmVipNumberPackageOrderPaidViaSms(vipPackageMatch, id);
+  }
+
   // The ledger row for this genuinely-new payment attempt — 'pending' until
   // the Agent App's verify-payment/dial-attempt calls advance it. A null
   // return means idx_payment_tx_order_active's atomic backstop (migration
@@ -739,6 +786,8 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
       matchedExchangeOrderId: exchangeMatch?.id ?? null,
       matchedResellerDepositId: resellerDepositMatch?.id ?? null,
       matchedResellerWithdrawalId: resellerWithdrawalMatch?.id ?? null,
+      matchedVipNumberOrderId: vipNumberMatch?.id ?? null,
+      matchedVipNumberPackageOrderId: vipPackageMatch?.id ?? null,
       requiresManualApproval,
       duplicate: false,
       status: "new",
@@ -795,7 +844,7 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
   const orphans = await query<OrphanedSmsRow>(
     `SELECT id, agent_id, body, parsed_amount, parsed_phone, parsed_provider, sim_slot, transaction_ref, received_at FROM sms_logs
      WHERE matched_order_id IS NULL AND matched_exchange_order_id IS NULL AND matched_reseller_deposit_id IS NULL
-       AND matched_reseller_withdrawal_id IS NULL
+       AND matched_reseller_withdrawal_id IS NULL AND matched_vip_number_order_id IS NULL AND matched_vip_number_package_order_id IS NULL
        AND received_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
      ORDER BY received_at ASC`
   );
@@ -983,7 +1032,30 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
         sms.parsed_phone ?? undefined,
         sms.parsed_provider ?? undefined
       );
-      if (!resellerWithdrawalMatch) {
+      if (resellerWithdrawalMatch) {
+        const withdrawalResult = await confirmResellerWithdrawalViaSms(resellerWithdrawalMatch, sms.id);
+        if (withdrawalResult.completed) relinked++;
+        continue;
+      }
+
+      // No Store/Exchange/Reseller match — try VIP Number order next, same
+      // "always last" guarantee one level further out.
+      const { order: vipNumberMatch, reason: vipNumberReason } = await findMatchingVipNumberOrder(
+        sms.parsed_amount ?? undefined,
+        sms.parsed_phone ?? undefined
+      );
+      if (vipNumberMatch) {
+        const vipNumberResult = await confirmVipNumberOrderPaidViaSms(vipNumberMatch, sms.id);
+        if (vipNumberResult.confirmed) relinked++;
+        continue;
+      }
+
+      // Still nothing — try VIP Number Package order last.
+      const { order: vipPackageMatch, reason: vipPackageReason } = await findMatchingVipNumberPackageOrder(
+        sms.parsed_amount ?? undefined,
+        sms.parsed_phone ?? undefined
+      );
+      if (!vipPackageMatch) {
         await query(`UPDATE sms_logs SET match_failure_reason=$1 WHERE id=$2`, [
           [
             reason,
@@ -991,6 +1063,8 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
             exchangeReason ? `Exchange: ${exchangeReason}` : null,
             resellerReason ? `Reseller Deposit: ${resellerReason}` : null,
             resellerWithdrawalReason ? `Reseller Withdraw: ${resellerWithdrawalReason}` : null,
+            vipNumberReason ? `VIP Number: ${vipNumberReason}` : null,
+            vipPackageReason ? `VIP Number Package: ${vipPackageReason}` : null,
           ]
             .filter(Boolean)
             .join(" | "),
@@ -998,8 +1072,8 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
         ]);
         continue;
       }
-      const withdrawalResult = await confirmResellerWithdrawalViaSms(resellerWithdrawalMatch, sms.id);
-      if (withdrawalResult.completed) relinked++;
+      const vipPackageResult = await confirmVipNumberPackageOrderPaidViaSms(vipPackageMatch, sms.id);
+      if (vipPackageResult.confirmed) relinked++;
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error(`resweepUnmatchedSmsLogs failed for sms_log ${sms.id}:`, (err as Error).message);
