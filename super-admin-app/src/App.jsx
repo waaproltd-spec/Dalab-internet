@@ -5134,6 +5134,15 @@ function VipNumberOrderDetailModal({ orderId, onClose, onChanged }) {
       <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 4 }}>Customer</div>
       <div style={{ fontSize: 13.5, color: INK, marginBottom: 12 }}>{order.customerFullName || "—"} · {order.customerPhone || "—"}</div>
 
+      {/* Collected on the checkout flow's own Customer Information step
+          (screen 1 of 2) -- needed for DALAB's real-world number
+          registration/porting once payment clears. */}
+      <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 4 }}>Location / District</div>
+      <div style={{ fontSize: 13.5, color: INK, marginBottom: 12 }}>{order.location || "—"} · {order.district || "—"}</div>
+
+      <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 4 }}>Mother's name</div>
+      <div style={{ fontSize: 13.5, color: INK, marginBottom: 12 }}>{order.motherName || "—"}</div>
+
       <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 4 }}>Payment</div>
       <div style={{ fontSize: 13.5, color: INK, marginBottom: 12 }}>
         {order.paymentMethod === "evc" ? "EVC Plus" : order.paymentMethod === "edahab" ? "eDahab" : order.paymentMethod} from {order.senderPhone}
