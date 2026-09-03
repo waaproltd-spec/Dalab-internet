@@ -64,3 +64,29 @@ export function formatUssdAmount(amount: string | number): string {
   const centsSegment = cents % 10 === 0 ? String(cents / 10) : String(cents).padStart(2, "0");
   return `${dollars}${centsSegment}`;
 }
+
+/** EVC Plus / eDahab's own Dial-to-Pay USSD menu (dial prefixes "*712*" and
+ * "*110*", shop_payment_methods.ussd_template e.g. "*712*610338686*{amount}#")
+ * is a genuinely different carrier convention from formatUssdAmount() above
+ * and must never use it — that one is for Internet Store's single-token
+ * top-up templates only (see its own header comment). This one is the
+ * exact formula Money Exchange's agent payout flow already uses live
+ * against the same two menus (originally exchange.routes.ts's own
+ * ussdAmountSegments, moved here as the single shared implementation so
+ * every EVC Plus/eDahab dial string in the app — Money Exchange payouts,
+ * Shop, VIP Numbers — is built the exact same way): "." is not a valid
+ * GSM/USSD MMI dial character, so a decimal amount like "22.20" embedded
+ * directly in the dial string never reaches the carrier intact — confirmed
+ * live against the real *712*...# payout flow, which flattened "1.98" into
+ * "198" (misread as $198, a 100x error) every time. The carrier's own
+ * two-step Dial-to-Pay menu instead expects the amount as two separate
+ * *-delimited segments, whole dollars then cents — also confirmed live:
+ * dialing "*712*<number>*1*98#" correctly showed "$1.98" in the carrier's
+ * own confirmation text. amount is always a NUMERIC(10,2) column value as
+ * returned by pg, so it's always exactly "<dollars>.<2-digit cents>" as a
+ * string; the ?? "00" fallback only guards a value that somehow arrives
+ * without a decimal point. */
+export function formatEvcDahabUssdAmount(amount: string | number): string {
+  const [dollars, cents] = String(amount).split(".");
+  return `${dollars}*${(cents ?? "00").padEnd(2, "0")}`;
+}

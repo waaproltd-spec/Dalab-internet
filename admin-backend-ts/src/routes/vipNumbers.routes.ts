@@ -6,7 +6,7 @@ import { rateLimit } from "../auth/rateLimit.js";
 import { sendJson } from "../utils/camelCase.js";
 import { notifyCustomer } from "../services/customerNotify.js";
 import { recordActivity } from "../utils/activityLog.js";
-import { formatUssdAmount } from "../utils/ussdFormatting.js";
+import { formatEvcDahabUssdAmount } from "../utils/ussdFormatting.js";
 import { validateMobileNumber } from "../lib/phoneValidation.js";
 
 // VIP Numbers: DALAB's 5th independent customer-facing service (Internet |
@@ -24,9 +24,49 @@ import { validateMobileNumber } from "../lib/phoneValidation.js";
 // Shop's own admin section policy.
 export const vipNumbersRouter = Router();
 
-const VIP_ORDER_STATUSES = ["pending", "processing", "completed", "cancelled", "failed"];
-const TERMINAL_VIP_ORDER_STATUSES = ["completed", "cancelled", "failed"];
-const AVAILABILITY_RESTORING_STATUSES = ["cancelled", "failed"];
+// 'expired' (migration 090): a pending order whose customer never paid
+// within RESERVATION_WINDOW_MINUTES -- distinct from a customer's own
+// 'cancelled' and an admin's own 'failed', so Orders/order history can
+// tell the three apart. Reached only through expireVipNumberOrderIfStale()
+// below, never through the general PUT .../status route (not a status an
+// admin picks by hand).
+const VIP_ORDER_STATUSES = ["pending", "processing", "completed", "cancelled", "failed", "expired"];
+const TERMINAL_VIP_ORDER_STATUSES = ["completed", "cancelled", "failed", "expired"];
+const AVAILABILITY_RESTORING_STATUSES = ["cancelled", "failed", "expired"];
+
+// A 'pending' order reserves its VIP number indefinitely otherwise (see
+// restoreVipNumberAvailability's own call sites) -- 15 minutes matches the
+// spec's own example window and is generous next to EVC Plus/eDahab's own
+// Dial-to-Pay flow, which the customer is expected to complete within
+// seconds of tapping Pay.
+const RESERVATION_WINDOW_MINUTES = 15;
+
+type VipNumberSettingsRow = {
+  working_days: number[];
+  opening_time: string;
+  closing_time: string;
+  manual_override: "open" | "closed" | null;
+};
+
+export async function loadVipNumberSettings(): Promise<VipNumberSettingsRow> {
+  return (await queryOne<VipNumberSettingsRow>(`SELECT * FROM vip_number_settings WHERE id=true`))!;
+}
+
+// Identical shape/logic to shop.routes.ts's own resolveShopOpen (migration
+// 078) -- now()/CURRENT_TIME are evaluated in the session's own time zone,
+// which pool.ts already pins to Africa/Mogadishu for every connection, so
+// this needs no timezone math of its own. EXTRACT(DOW ...) returns
+// 0=Sunday..6=Saturday, matching workingDays' own convention. Governs both
+// the individual ("1 Number") and Package purchase flows -- there is only
+// one open/closed switch for VIP Numbers as a whole (see migration 090's
+// own comment on vip_number_settings).
+export async function resolveVipNumbersOpen(settings: VipNumberSettingsRow): Promise<boolean> {
+  if (settings.manual_override) return settings.manual_override === "open";
+  const now = await queryOne<{ dow: number; t: string }>(`SELECT EXTRACT(DOW FROM now())::int AS dow, now()::time AS t`);
+  if (!now) return true;
+  if (!settings.working_days.includes(now.dow)) return false;
+  return now.t >= settings.opening_time && now.t <= settings.closing_time;
+}
 
 function generateVipNumberOrderId(): string {
   return "VIP" + Math.floor(100000000 + Math.random() * 900000000);
@@ -55,6 +95,137 @@ async function restoreVipNumberAvailability(vipNumberId: string) {
 
 const VIP_ORDER_COLUMNS =
   "id, vip_number_id, customer_id, company_id, phone_number, category, price, customer_full_name, payment_method, sender_phone, location, district, mother_name, payment_status, status, paid_at, completed_at, cancelled_at, created_at, updated_at";
+
+// Expires exactly one order if it's still 'pending' and has aged past
+// RESERVATION_WINDOW_MINUTES -- locked (FOR UPDATE) so this can never race
+// an admin confirming payment on the same order at the same moment: only
+// one of "mark paid" (the payment-status route below, also FOR UPDATE) and
+// "expire" wins, whichever's transaction commits first, and the loser's
+// own terminal-status guard rejects cleanly rather than corrupting state.
+// Shared by the periodic sweep below and the inline check on a
+// just-found "you already have a pending order for this number" duplicate
+// in POST /vip-numbers/orders, so both paths use the exact same logic and
+// never disagree about what counts as stale.
+export async function expireVipNumberOrderIfStale(orderId: string): Promise<boolean> {
+  const expired = await withTransaction(async (client) => {
+    const row = await client.query(
+      `SELECT vip_number_id, status, created_at, customer_id FROM vip_number_orders WHERE id=$1 FOR UPDATE`,
+      [orderId]
+    );
+    const order = row.rows[0];
+    if (!order || order.status !== "pending") return null;
+    if (new Date(order.created_at).getTime() > Date.now() - RESERVATION_WINDOW_MINUTES * 60 * 1000) return null;
+    await client.query(`UPDATE vip_numbers SET status='available', updated_at=now() WHERE id=$1 AND status != 'sold'`, [order.vip_number_id]);
+    await client.query(`UPDATE vip_number_orders SET status='expired', cancelled_at=now(), updated_at=now() WHERE id=$1`, [orderId]);
+    await client.query(
+      `INSERT INTO vip_number_order_status_history (order_id, status, note) VALUES ($1,'expired','Payment was not received within 15 minutes — reservation released')`,
+      [orderId]
+    );
+    return { customerId: order.customer_id as string };
+  });
+  if (!expired) return false;
+  await recordActivity({
+    adminId: undefined,
+    action: "vip_number_order_expired",
+    entityType: "vip_number_order",
+    entityId: orderId,
+    oldValue: { status: "pending" },
+    newValue: { status: "expired" },
+  });
+  await notifyCustomer(
+    expired.customerId,
+    "vip_number_order_update",
+    "Reservation Expired",
+    `Your VIP number order ${orderId} expired because payment wasn't received in time. The number has been released.`
+  );
+  return true;
+}
+
+// Self-starting on module load, same module-level setInterval pattern as
+// support.routes.ts's own 1-hour queue-timeout sweep (ES module imports
+// are cached, so this only ever starts once even if this file is imported
+// more than once). Finds every pending order old enough to expire and
+// closes each one out through the exact same expireVipNumberOrderIfStale()
+// the inline dup-order check above also calls.
+const RESERVATION_EXPIRY_SWEEP_MS = 60_000;
+setInterval(async () => {
+  try {
+    const stale = await query<{ id: string }>(
+      `SELECT id FROM vip_number_orders WHERE status='pending' AND created_at < now() - make_interval(mins => $1)`,
+      [RESERVATION_WINDOW_MINUTES]
+    );
+    for (const row of stale) {
+      await expireVipNumberOrderIfStale(row.id);
+    }
+  } catch (err) {
+    console.error("VIP number reservation expiry sweep failed:", (err as Error).message);
+  }
+}, RESERVATION_EXPIRY_SWEEP_MS);
+
+// ==================== Working hours / open-close (mirrors shop.routes.ts) ====================
+
+// Public -- the Customer App needs this to show the 🟢/🔴 badge and to
+// block Purchase/Pay before even attempting an order while closed.
+vipNumbersRouter.get("/vip-numbers/settings", async (_req, res) => {
+  const settings = await loadVipNumberSettings();
+  sendJson(res, 200, {
+    isOpen: await resolveVipNumbersOpen(settings),
+    workingDays: settings.working_days,
+    openingTime: settings.opening_time,
+    closingTime: settings.closing_time,
+    manualOverride: settings.manual_override,
+  });
+});
+
+vipNumbersRouter.get("/admin/vip-numbers/settings", requirePermission("vipNumbers.manage"), async (_req, res) => {
+  const settings = await loadVipNumberSettings();
+  sendJson(res, 200, { ...settings, isOpen: await resolveVipNumbersOpen(settings) });
+});
+
+const VIP_VALID_DOW = new Set([0, 1, 2, 3, 4, 5, 6]);
+const VIP_TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+vipNumbersRouter.put("/admin/vip-numbers/settings", requirePermission("vipNumbers.manage"), async (req, res) => {
+  const { workingDays, openingTime, closingTime, manualOverride } = req.body ?? {};
+  if (workingDays !== undefined) {
+    if (!Array.isArray(workingDays) || workingDays.length === 0 || !workingDays.every((d: unknown) => VIP_VALID_DOW.has(Number(d)))) {
+      return sendJson(res, 400, { error: "workingDays must be a non-empty array of integers 0-6 (0=Sunday)" });
+    }
+  }
+  if (openingTime !== undefined && !VIP_TIME_RE.test(openingTime)) {
+    return sendJson(res, 400, { error: "openingTime must be in HH:MM (24-hour) form" });
+  }
+  if (closingTime !== undefined && !VIP_TIME_RE.test(closingTime)) {
+    return sendJson(res, 400, { error: "closingTime must be in HH:MM (24-hour) form" });
+  }
+  if (manualOverride !== undefined && manualOverride !== null && !["open", "closed"].includes(manualOverride)) {
+    return sendJson(res, 400, { error: "manualOverride must be 'open', 'closed', or null" });
+  }
+  const existing = await loadVipNumberSettings();
+  await query(
+    `UPDATE vip_number_settings SET
+       working_days=$1, opening_time=$2, closing_time=$3, manual_override=$4,
+       updated_at=now(), updated_by=$5
+     WHERE id=true`,
+    [
+      workingDays !== undefined ? workingDays.map(Number) : existing.working_days,
+      openingTime ?? existing.opening_time,
+      closingTime ?? existing.closing_time,
+      manualOverride !== undefined ? manualOverride : existing.manual_override,
+      req.auth!.sub,
+    ]
+  );
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "vip_number_settings_updated",
+    entityType: "vip_number_settings",
+    entityId: "vip_number_settings",
+    oldValue: existing,
+    newValue: { workingDays, openingTime, closingTime, manualOverride },
+  });
+  const settings = await loadVipNumberSettings();
+  sendJson(res, 200, { ...settings, isOpen: await resolveVipNumbersOpen(settings) });
+});
 
 // ==================== Public catalog (no auth — browsing before login) ====================
 
@@ -113,6 +284,13 @@ vipNumbersRouter.post(
       return sendJson(res, 400, { error: "Enter your mother's name" });
     }
 
+    // Enforced here too, not just hidden in the Customer App UI -- matches
+    // how shop.routes.ts's own closed-shop gate works at order creation.
+    const vipSettings = await loadVipNumberSettings();
+    if (!(await resolveVipNumbersOpen(vipSettings))) {
+      return sendJson(res, 409, { error: "VIP Number sales are currently closed. Please check back during our working hours." });
+    }
+
     const method = await queryOne<{ method: string; ussd_template: string }>(
       `SELECT method, ussd_template FROM shop_payment_methods WHERE method=$1`,
       [paymentMethod]
@@ -128,11 +306,18 @@ vipNumbersRouter.post(
 
     // A double-tap of "Purchase Number" on the same still-pending order
     // returns the existing order rather than attempting (and failing) a
-    // second reservation of an already-reserved number.
-    const dup = await queryOne<{ id: string }>(
+    // second reservation of an already-reserved number -- unless that
+    // order has actually aged past the reservation window, in which case
+    // it's expired in place first (releasing the number) so this request
+    // falls through to reserve it fresh instead of handing back a dead
+    // order the customer can no longer pay.
+    let dup = await queryOne<{ id: string }>(
       `SELECT id FROM vip_number_orders WHERE customer_id=$1 AND vip_number_id=$2 AND status='pending' LIMIT 1`,
       [req.auth!.sub, vipNumberId]
     );
+    if (dup && (await expireVipNumberOrderIfStale(dup.id))) {
+      dup = null;
+    }
 
     try {
       const result = dup
@@ -183,7 +368,7 @@ vipNumbersRouter.post(
           });
 
       const order = await queryOne<{ price: string }>(`SELECT ${VIP_ORDER_COLUMNS} FROM vip_number_orders WHERE id=$1`, [result.orderId]);
-      const dialUssd = method.ussd_template.replace("{amount}", formatUssdAmount(Number(order!.price)));
+      const dialUssd = method.ussd_template.replace("{amount}", formatEvcDahabUssdAmount(Number(order!.price)));
       sendJson(res, result.duplicate ? 200 : 201, { ...order, dialUssd });
     } catch (err: any) {
       if (err?.status) return sendJson(res, err.status, { error: err.message });
@@ -243,7 +428,7 @@ vipNumbersRouter.post("/vip-numbers/orders/:id/retry-payment", requireAuth("cust
   }
   const method = await queryOne<{ ussd_template: string }>(`SELECT ussd_template FROM shop_payment_methods WHERE method=$1`, [order.payment_method]);
   if (!method) return sendJson(res, 409, { error: "The payment method on this order is no longer available — please contact support" });
-  const dialUssd = method.ussd_template.replace("{amount}", formatUssdAmount(Number(order.price)));
+  const dialUssd = method.ussd_template.replace("{amount}", formatEvcDahabUssdAmount(Number(order.price)));
   sendJson(res, 200, { dialUssd });
 });
 
@@ -365,23 +550,35 @@ vipNumbersRouter.get("/admin/vip-numbers/orders/:id", requirePermission("vipNumb
 // to anyone else the instant the order was created, but 'sold' is the
 // permanent record that this number was actually paid for and delivered.
 vipNumbersRouter.put("/admin/vip-numbers/orders/:id/payment-status", requirePermission("vipNumbers.manage"), async (req, res) => {
-  const existing = await queryOne<{ status: string; payment_status: string; customer_id: string; vip_number_id: string }>(
-    `SELECT status, payment_status, customer_id, vip_number_id FROM vip_number_orders WHERE id=$1`,
-    [req.params.id]
-  );
-  if (!existing) return sendJson(res, 404, { error: "Order not found" });
-  if (existing.payment_status === "paid") return sendJson(res, 409, { error: "This order is already marked paid" });
-  if (TERMINAL_VIP_ORDER_STATUSES.includes(existing.status)) {
-    return sendJson(res, 409, { error: `This order is already ${existing.status} and can no longer be marked paid` });
+  // Locked (FOR UPDATE) and transactional so this can never race the
+  // expiry sweep confirming/expiring the same order at the same moment --
+  // see expireVipNumberOrderIfStale's own comment.
+  let existing: { status: string; payment_status: string; customer_id: string; vip_number_id: string };
+  try {
+    existing = await withTransaction(async (client) => {
+      const row = await client.query(
+        `SELECT status, payment_status, customer_id, vip_number_id FROM vip_number_orders WHERE id=$1 FOR UPDATE`,
+        [req.params.id]
+      );
+      const order = row.rows[0];
+      if (!order) throw Object.assign(new Error("Order not found"), { status: 404 });
+      if (order.payment_status === "paid") throw Object.assign(new Error("This order is already marked paid"), { status: 409 });
+      if (TERMINAL_VIP_ORDER_STATUSES.includes(order.status)) {
+        throw Object.assign(new Error(`This order is already ${order.status} and can no longer be marked paid`), { status: 409 });
+      }
+      await client.query(
+        `UPDATE vip_number_orders SET payment_status='paid', paid_at=now(),
+           status = CASE WHEN status='pending' THEN 'processing' ELSE status END,
+           verified_by_admin_id=$1, updated_at=now() WHERE id=$2`,
+        [req.auth!.sub, req.params.id]
+      );
+      await client.query(`UPDATE vip_numbers SET status='sold', updated_at=now() WHERE id=$1`, [order.vip_number_id]);
+      return order;
+    });
+  } catch (err: any) {
+    if (err?.status) return sendJson(res, err.status, { error: err.message });
+    throw err;
   }
-
-  await query(
-    `UPDATE vip_number_orders SET payment_status='paid', paid_at=now(),
-       status = CASE WHEN status='pending' THEN 'processing' ELSE status END,
-       verified_by_admin_id=$1, updated_at=now() WHERE id=$2`,
-    [req.auth!.sub, req.params.id]
-  );
-  await query(`UPDATE vip_numbers SET status='sold', updated_at=now() WHERE id=$1`, [existing.vip_number_id]);
   await recordActivity({
     adminId: req.auth!.sub,
     action: "vip_number_order_payment_confirmed",
@@ -408,31 +605,44 @@ vipNumbersRouter.put("/admin/vip-numbers/orders/:id/payment-status", requirePerm
 // identical route.
 vipNumbersRouter.put("/admin/vip-numbers/orders/:id/status", requirePermission("vipNumbers.manage"), async (req, res) => {
   const { status, note } = req.body ?? {};
-  if (!VIP_ORDER_STATUSES.includes(status)) return sendJson(res, 400, { error: `status must be one of ${VIP_ORDER_STATUSES.join(", ")}` });
-  const existing = await queryOne<{ status: string; payment_status: string; customer_id: string; vip_number_id: string }>(
-    `SELECT status, payment_status, customer_id, vip_number_id FROM vip_number_orders WHERE id=$1`,
-    [req.params.id]
-  );
-  if (!existing) return sendJson(res, 404, { error: "Order not found" });
-  if (TERMINAL_VIP_ORDER_STATUSES.includes(existing.status)) {
-    return sendJson(res, 409, { error: `This order is already ${existing.status} and cannot be changed further` });
+  if (!VIP_ORDER_STATUSES.includes(status) || status === "expired") {
+    return sendJson(res, 400, { error: `status must be one of pending, processing, completed, cancelled, failed` });
   }
-  if (status === "completed" && existing.payment_status !== "paid") {
-    return sendJson(res, 409, { error: "Mark payment as paid before completing this order" });
+  // Locked (FOR UPDATE) and transactional -- same TOCTOU protection as the
+  // payment-status route above, against the expiry sweep changing this
+  // exact order underneath an in-flight admin request.
+  let existing: { status: string; payment_status: string; customer_id: string; vip_number_id: string };
+  try {
+    existing = await withTransaction(async (client) => {
+      const row = await client.query(
+        `SELECT status, payment_status, customer_id, vip_number_id FROM vip_number_orders WHERE id=$1 FOR UPDATE`,
+        [req.params.id]
+      );
+      const order = row.rows[0];
+      if (!order) throw Object.assign(new Error("Order not found"), { status: 404 });
+      if (TERMINAL_VIP_ORDER_STATUSES.includes(order.status)) {
+        throw Object.assign(new Error(`This order is already ${order.status} and cannot be changed further`), { status: 409 });
+      }
+      if (status === "completed" && order.payment_status !== "paid") {
+        throw Object.assign(new Error("Mark payment as paid before completing this order"), { status: 409 });
+      }
+      if (AVAILABILITY_RESTORING_STATUSES.includes(status)) {
+        await client.query(`UPDATE vip_numbers SET status='available', updated_at=now() WHERE id=$1 AND status != 'sold'`, [order.vip_number_id]);
+      }
+      await client.query(
+        `UPDATE vip_number_orders SET status=$1,
+           completed_at = CASE WHEN $1='completed' THEN now() ELSE completed_at END,
+           cancelled_at = CASE WHEN $1 IN ('cancelled','failed') THEN now() ELSE cancelled_at END,
+           updated_at=now()
+         WHERE id=$2`,
+        [status, req.params.id]
+      );
+      return order;
+    });
+  } catch (err: any) {
+    if (err?.status) return sendJson(res, err.status, { error: err.message });
+    throw err;
   }
-
-  if (AVAILABILITY_RESTORING_STATUSES.includes(status)) {
-    await restoreVipNumberAvailability(existing.vip_number_id);
-  }
-
-  await query(
-    `UPDATE vip_number_orders SET status=$1,
-       completed_at = CASE WHEN $1='completed' THEN now() ELSE completed_at END,
-       cancelled_at = CASE WHEN $1 IN ('cancelled','failed') THEN now() ELSE cancelled_at END,
-       updated_at=now()
-     WHERE id=$2`,
-    [status, req.params.id]
-  );
   await query(`INSERT INTO vip_number_order_status_history (order_id, status, note) VALUES ($1,$2,$3)`, [
     req.params.id,
     status,

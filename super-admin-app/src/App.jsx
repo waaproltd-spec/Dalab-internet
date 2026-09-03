@@ -574,6 +574,13 @@ const DalabAdminApi = {
     dalabAdminApiRequest(`/admin/vip-numbers/packages/orders/${id}/payment-status`, { method: "PUT" }),
   updateVipNumberPackageOrderStatus: (id, body) =>
     dalabAdminApiRequest(`/admin/vip-numbers/packages/orders/${id}/status`, { method: "PUT", body }),
+
+  // VIP Numbers working hours -- one open/closed switch shared by both the
+  // individual and Package purchase flows, mirroring Shop's own
+  // shop_settings/resolveShopOpen pattern (see vipNumbers.routes.ts's
+  // header comment on vip_number_settings, migration 090).
+  getVipNumberSettings: () => dalabAdminApiRequest("/admin/vip-numbers/settings"),
+  updateVipNumberSettings: (body) => dalabAdminApiRequest("/admin/vip-numbers/settings", { method: "PUT", body }),
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -4394,6 +4401,7 @@ function VipNumbersManagement({ companies }) {
     { id: "packages", label: "Packages" },
     { id: "orders", label: "Orders" },
     { id: "package-orders", label: "Package Orders" },
+    { id: "hours", label: "Working Hours" },
   ];
   return (
     <div>
@@ -4421,6 +4429,123 @@ function VipNumbersManagement({ companies }) {
       {tab === "packages" && <VipNumberPackagesPanel companies={companies} />}
       {tab === "orders" && <VipNumbersOrdersPanel />}
       {tab === "package-orders" && <VipNumberPackageOrdersPanel />}
+      {tab === "hours" && <VipNumberSettingsPanel />}
+    </div>
+  );
+}
+
+const VIP_DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+// Mirrors ShopPaymentMethodsPanel's own "load one config object, edit
+// locally, PUT on Save" shape -- Shop itself has no admin UI for its own
+// working-hours settings yet (only the backend routes exist), so this is
+// the first admin panel of this shape in the app; built to match
+// shop_settings' exact contract (working_days/opening_time/closing_time/
+// manual_override) as closely as possible per the spec, just against
+// vip_number_settings instead (its own row -- VIP Numbers has no delivery
+// fee, and needs independently settable hours from Shop).
+function VipNumberSettingsPanel() {
+  const [settings, setSettings] = useState(null);
+  const [draft, setDraft] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const fetchSettings = async () => {
+    try {
+      const s = await DalabAdminApi.getVipNumberSettings();
+      setSettings(s);
+      setDraft({ workingDays: s.workingDays, openingTime: s.openingTime.slice(0, 5), closingTime: s.closingTime.slice(0, 5), manualOverride: s.manualOverride });
+    } catch (err) {
+      setError(err.message || "Could not load VIP Number working hours.");
+    }
+  };
+  useEffect(() => { fetchSettings(); }, []);
+
+  if (!settings || !draft) return <div style={{ color: MUTE, fontSize: 13 }}>{error || "Loading…"}</div>;
+
+  const toggleDay = (d) => {
+    setDraft((s) => ({
+      ...s,
+      workingDays: s.workingDays.includes(d) ? s.workingDays.filter((x) => x !== d) : [...s.workingDays, d].sort(),
+    }));
+  };
+
+  const save = async () => {
+    if (draft.workingDays.length === 0) return setError("Select at least one working day.");
+    setSaving(true);
+    setError("");
+    try {
+      const updated = await DalabAdminApi.updateVipNumberSettings(draft);
+      setSettings(updated);
+      setDraft({ workingDays: updated.workingDays, openingTime: updated.openingTime.slice(0, 5), closingTime: updated.closingTime.slice(0, 5), manualOverride: updated.manualOverride });
+    } catch (err) {
+      setError(err.message || "Could not save working hours.");
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div>
+      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 16 }}>
+        Controls both the individual ("1 Number") and Package purchase flows — there's one open/closed switch for VIP Numbers as a whole. The backend blocks new orders while closed, not just the Customer App UI.
+      </div>
+      <Card style={{ padding: 18, maxWidth: 520 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+          <span style={{ fontSize: 13, fontWeight: 800, color: INK }}>VIP Numbers</span>
+          <Badge tone={settings.isOpen ? "green" : "red"}>{settings.isOpen ? "Open" : "Closed"}</Badge>
+        </div>
+
+        <Field label="Manual override">
+          <select
+            value={draft.manualOverride ?? ""}
+            onChange={(e) => setDraft((s) => ({ ...s, manualOverride: e.target.value || null }))}
+            style={inputStyle}
+          >
+            <option value="">Follow schedule below</option>
+            <option value="open">Force Open (ignore schedule)</option>
+            <option value="closed">Force Closed (ignore schedule)</option>
+          </select>
+        </Field>
+
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: INK, marginBottom: 6 }}>Working days</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {VIP_DAY_NAMES.map((label, d) => (
+              <button
+                key={d}
+                type="button"
+                onClick={() => toggleDay(d)}
+                style={{
+                  padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer",
+                  border: `1px solid ${draft.workingDays.includes(d) ? INDIGO : BORDER}`,
+                  background: draft.workingDays.includes(d) ? INDIGO : "#fff",
+                  color: draft.workingDays.includes(d) ? "#fff" : MUTE,
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 10 }}>
+          <div style={{ flex: 1 }}>
+            <Field label="Opening time">
+              <input type="time" value={draft.openingTime} onChange={(e) => setDraft((s) => ({ ...s, openingTime: e.target.value }))} style={inputStyle} />
+            </Field>
+          </div>
+          <div style={{ flex: 1 }}>
+            <Field label="Closing time">
+              <input type="time" value={draft.closingTime} onChange={(e) => setDraft((s) => ({ ...s, closingTime: e.target.value }))} style={inputStyle} />
+            </Field>
+          </div>
+        </div>
+
+        {error && <div style={{ color: "#C81E2C", fontSize: 12, marginTop: 4, marginBottom: 8 }}>{error}</div>}
+        <div style={{ marginTop: 10 }}>
+          <Button onClick={save} disabled={saving} spin={saving}>Save</Button>
+        </div>
+      </Card>
     </div>
   );
 }
@@ -4659,7 +4784,15 @@ function VipNumberPackagesPanel({ companies }) {
               <div style={{ fontWeight: 800, fontSize: 15, color: INDIGO }}>{p.size} Numbers</div>
               <Badge tone={p.active ? "green" : "neutral"}>{p.active ? "Active" : "Inactive"}</Badge>
             </div>
-            <div style={{ fontWeight: 800, fontSize: 18, color: INK, marginTop: 6 }}>${Number(p.price).toFixed(2)}</div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 6 }}>
+              <div style={{ fontWeight: 800, fontSize: 18, color: INK }}>${Number(p.price).toFixed(2)}</div>
+              {p.oldPrice != null && Number(p.oldPrice) > Number(p.price) && (
+                <>
+                  <span style={{ fontSize: 12.5, fontWeight: 600, color: MUTE, textDecoration: "line-through" }}>${Number(p.oldPrice).toFixed(2)}</span>
+                  <Badge tone="red">{Math.round((1 - Number(p.price) / Number(p.oldPrice)) * 100)}% OFF</Badge>
+                </>
+              )}
+            </div>
             <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 3 }}>
               {(p.numbers || []).map((n) => (
                 <div key={n.vipNumberId} style={{ fontSize: 12, color: SLATE }}>{n.companyName} — {n.phoneNumber}</div>
@@ -4691,6 +4824,7 @@ function VipNumberPackageModal({ pkg, companies, onClose, onSaved, onDelete }) {
   const isNew = !pkg.id;
   const [size, setSize] = useState(pkg.size || 2);
   const [price, setPrice] = useState(pkg.price != null ? String(pkg.price) : "");
+  const [oldPrice, setOldPrice] = useState(pkg.oldPrice != null ? String(pkg.oldPrice) : "");
   const [active, setActive] = useState(pkg.active !== undefined ? pkg.active : true);
   const [selected, setSelected] = useState(() => new Set((pkg.numbers || []).map((n) => n.vipNumberId)));
   const [available, setAvailable] = useState([]);
@@ -4743,14 +4877,16 @@ function VipNumberPackageModal({ pkg, companies, onClose, onSaved, onDelete }) {
 
   const save = async () => {
     if (price === "" || Number(price) < 0) return;
+    if (oldPrice !== "" && (!Number.isFinite(Number(oldPrice)) || Number(oldPrice) < 0)) return;
     if (selected.size !== size) return;
     setSaving(true);
     setError("");
     try {
+      const oldPriceValue = oldPrice === "" ? null : Number(oldPrice);
       if (isNew) {
-        await DalabAdminApi.createVipNumberPackage({ size, price: Number(price), vipNumberIds: Array.from(selected) });
+        await DalabAdminApi.createVipNumberPackage({ size, price: Number(price), oldPrice: oldPriceValue, vipNumberIds: Array.from(selected) });
       } else {
-        await DalabAdminApi.updateVipNumberPackage(pkg.id, { price: Number(price), active, vipNumberIds: Array.from(selected) });
+        await DalabAdminApi.updateVipNumberPackage(pkg.id, { price: Number(price), oldPrice: oldPriceValue, active, vipNumberIds: Array.from(selected) });
       }
       onSaved();
     } catch (err) {
@@ -4768,9 +4904,25 @@ function VipNumberPackageModal({ pkg, companies, onClose, onSaved, onDelete }) {
           </select>
         </Field>
       )}
-      <Field label="Package price ($)">
-        <input type="number" min="0" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} style={inputStyle} />
-      </Field>
+      <div style={{ display: "flex", gap: 10 }}>
+        <div style={{ flex: 1 }}>
+          <Field label="Package price ($)">
+            <input type="number" min="0" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} style={inputStyle} />
+          </Field>
+        </div>
+        <div style={{ flex: 1 }}>
+          <Field label="Original price (optional, for a discount)">
+            <input type="number" min="0" step="0.01" value={oldPrice} onChange={(e) => setOldPrice(e.target.value)} style={inputStyle} />
+          </Field>
+        </div>
+      </div>
+      {oldPrice !== "" && Number(oldPrice) > Number(price || 0) && (
+        <div style={{ fontSize: 12, color: MUTE, marginBottom: 10 }}>
+          Customer sees: <span style={{ textDecoration: "line-through" }}>${Number(oldPrice).toFixed(2)}</span>{" "}
+          <span style={{ fontWeight: 800, color: INK }}>${Number(price || 0).toFixed(2)}</span>{" "}
+          ({Math.round((1 - Number(price || 0) / Number(oldPrice)) * 100)}% OFF)
+        </div>
+      )}
       {!isNew && (
         <Field label="Status">
           <select value={active ? "active" : "inactive"} onChange={(e) => setActive(e.target.value === "active")} style={inputStyle}>

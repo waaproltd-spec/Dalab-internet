@@ -10,6 +10,7 @@ import { recordActivity } from "../utils/activityLog.js";
 import { rateLimit } from "../auth/rateLimit.js";
 import { notifyCustomer as notifyCustomerShared } from "../services/customerNotify.js";
 import { validateMobileNumber } from "../lib/phoneValidation.js";
+import { formatEvcDahabUssdAmount } from "../utils/ussdFormatting.js";
 
 export const exchangeRouter = Router();
 
@@ -33,22 +34,12 @@ function normalizePhone(phone: string | null | undefined): string {
   return String(phone ?? "").replace(/\D/g, "").slice(-9);
 }
 
-/** "." is not a valid GSM/USSD MMI dial character (the protocol only
- * supports digits, *, and #), so a decimal amount like "1.98" embedded
- * directly in the dial string never reaches the carrier intact — confirmed
- * live against the real *712*...# payout flow, which flattened "1.98" into
- * "198" (misread as $198, a 100x error) every time. The carrier's own
- * two-step Dial-to-Pay menu instead expects the amount as two separate
- * *-delimited segments, whole dollars then cents — also confirmed live:
- * dialing "*712*<number>*1*98#" correctly showed "$1.98" in the carrier's
- * own confirmation text. amountReceived is always NUMERIC(10,2), so it's
- * always exactly "<dollars>.<2-digit cents>" as returned by pg; the ?? "00"
- * fallback only guards a value that somehow arrives without a decimal
- * point. */
-function ussdAmountSegments(amountReceived: string | number): string {
-  const [dollars, cents] = String(amountReceived).split(".");
-  return `${dollars}*${(cents ?? "00").padEnd(2, "0")}`;
-}
+// Amount formatting for the *712*/*110* dial string moved to
+// ussdFormatting.ts as formatEvcDahabUssdAmount() -- Shop and VIP Numbers
+// dial the exact same EVC Plus/eDahab menus this flow does, so it's now
+// the one shared implementation instead of a copy local to this file. See
+// that function's own header comment for the live-confirmed carrier
+// behavior this formula is based on.
 
 /** amountReceived = amountSent * rate - fee, matching the admin's spec
  * literally — fee_value is a flat amount when fee_type='fixed', a percentage
@@ -656,8 +647,8 @@ exchangeRouter.post("/agent/exchange/orders/:id/dial-attempts", requireAuth("age
   // the customer's saved number carries, since the carrier's menu rejects
   // anything but the 9-digit local form. The amount is dollars and cents as
   // separate *-delimited segments, not a "." decimal — see
-  // ussdAmountSegments() for why.
-  const step1UssdString = `*${dialPrefix}*${normalizePhone(order.receiver_phone)}*${ussdAmountSegments(order.amount_received)}#`;
+  // formatEvcDahabUssdAmount() for why.
+  const step1UssdString = `*${dialPrefix}*${normalizePhone(order.receiver_phone)}*${formatEvcDahabUssdAmount(order.amount_received)}#`;
 
   const id = randomUUID();
   try {

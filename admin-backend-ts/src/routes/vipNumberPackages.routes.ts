@@ -6,8 +6,9 @@ import { rateLimit } from "../auth/rateLimit.js";
 import { sendJson } from "../utils/camelCase.js";
 import { notifyCustomer } from "../services/customerNotify.js";
 import { recordActivity } from "../utils/activityLog.js";
-import { formatUssdAmount } from "../utils/ussdFormatting.js";
+import { formatEvcDahabUssdAmount } from "../utils/ussdFormatting.js";
 import { validateMobileNumber } from "../lib/phoneValidation.js";
+import { loadVipNumberSettings, resolveVipNumbersOpen } from "./vipNumbers.routes.js";
 
 // VIP Number Packages: a 2/3/4-number bundle of individual VIP numbers
 // (see vipNumbers.routes.ts / migration 087) an admin curates and prices
@@ -26,9 +27,13 @@ import { validateMobileNumber } from "../lib/phoneValidation.js";
 export const vipNumberPackagesRouter = Router();
 
 const PACKAGE_SIZES = [2, 3, 4];
-const PACKAGE_ORDER_STATUSES = ["pending", "processing", "completed", "cancelled", "failed"];
-const TERMINAL_PACKAGE_ORDER_STATUSES = ["completed", "cancelled", "failed"];
-const AVAILABILITY_RESTORING_STATUSES = ["cancelled", "failed"];
+// 'expired' (migration 090): same reservation-window expiry as
+// vipNumbers.routes.ts's own individual orders -- see
+// expirePackageOrderIfStale below.
+const PACKAGE_ORDER_STATUSES = ["pending", "processing", "completed", "cancelled", "failed", "expired"];
+const TERMINAL_PACKAGE_ORDER_STATUSES = ["completed", "cancelled", "failed", "expired"];
+const AVAILABILITY_RESTORING_STATUSES = ["cancelled", "failed", "expired"];
+const RESERVATION_WINDOW_MINUTES = 15;
 
 function generatePackageOrderId(): string {
   return "VPK" + Math.floor(100000000 + Math.random() * 900000000);
@@ -74,9 +79,72 @@ async function restorePackageNumbersAvailability(packageId: string) {
 const PACKAGE_ORDER_COLUMNS =
   "id, package_id, size, price, customer_id, customer_full_name, payment_method, sender_phone, payment_status, status, paid_at, completed_at, cancelled_at, created_at, updated_at";
 
+// Package-order equivalent of vipNumbers.routes.ts's own
+// expireVipNumberOrderIfStale — same FOR UPDATE-locked, race-safe shape,
+// just releasing every member number of the package at once via
+// restorePackageNumbersAvailability instead of a single number. Shared by
+// the sweep below and the inline dup-order check in POST
+// .../packages/orders.
+export async function expirePackageOrderIfStale(orderId: string): Promise<boolean> {
+  const expired = await withTransaction(async (client) => {
+    const row = await client.query(
+      `SELECT package_id, status, created_at, customer_id FROM vip_number_package_orders WHERE id=$1 FOR UPDATE`,
+      [orderId]
+    );
+    const order = row.rows[0];
+    if (!order || order.status !== "pending") return null;
+    if (new Date(order.created_at).getTime() > Date.now() - RESERVATION_WINDOW_MINUTES * 60 * 1000) return null;
+    await client.query(
+      `UPDATE vip_numbers SET status='available', updated_at=now()
+       WHERE id IN (SELECT vip_number_id FROM vip_number_package_items WHERE package_id=$1) AND status != 'sold'`,
+      [order.package_id]
+    );
+    await client.query(`UPDATE vip_number_package_orders SET status='expired', cancelled_at=now(), updated_at=now() WHERE id=$1`, [orderId]);
+    await client.query(
+      `INSERT INTO vip_number_package_order_status_history (package_order_id, status, note) VALUES ($1,'expired','Payment was not received within 15 minutes — reservation released')`,
+      [orderId]
+    );
+    return { customerId: order.customer_id as string };
+  });
+  if (!expired) return false;
+  await recordActivity({
+    adminId: undefined,
+    action: "vip_number_package_order_expired",
+    entityType: "vip_number_package_order",
+    entityId: orderId,
+    oldValue: { status: "pending" },
+    newValue: { status: "expired" },
+  });
+  await notifyCustomer(
+    expired.customerId,
+    "vip_number_package_order_update",
+    "Reservation Expired",
+    `Your VIP number package order ${orderId} expired because payment wasn't received in time. The numbers have been released.`
+  );
+  return true;
+}
+
+// Self-starting on module load, mirrors vipNumbers.routes.ts's own sweep
+// (and support.routes.ts's queue-timeout sweep before it) — ES module
+// imports are cached, so this only ever starts once.
+const PACKAGE_RESERVATION_EXPIRY_SWEEP_MS = 60_000;
+setInterval(async () => {
+  try {
+    const stale = await query<{ id: string }>(
+      `SELECT id FROM vip_number_package_orders WHERE status='pending' AND created_at < now() - make_interval(mins => $1)`,
+      [RESERVATION_WINDOW_MINUTES]
+    );
+    for (const row of stale) {
+      await expirePackageOrderIfStale(row.id);
+    }
+  } catch (err) {
+    console.error("VIP number package reservation expiry sweep failed:", (err as Error).message);
+  }
+}, PACKAGE_RESERVATION_EXPIRY_SWEEP_MS);
+
 async function loadPackageWithItems(packageId: string) {
   const pkg = await queryOne(
-    `SELECT id, size, price, active, created_at, updated_at FROM vip_number_packages WHERE id=$1`,
+    `SELECT id, size, price, old_price, active, created_at, updated_at FROM vip_number_packages WHERE id=$1`,
     [packageId]
   );
   if (!pkg) return null;
@@ -134,7 +202,14 @@ async function lockAndValidatePackageNumbers(
 vipNumberPackagesRouter.get("/vip-numbers/packages", async (req, res) => {
   const { size } = req.query as { size?: string };
   const args: unknown[] = [];
-  let sql = `SELECT id, size, price, created_at FROM vip_number_packages WHERE active = true`;
+  // old_price (nullable): the "was" price shown crossed-out alongside price
+  // (the actual/final amount charged and sent to payment) whenever
+  // old_price > price -- same discount pattern shop_products already uses
+  // (price/old_price, migration 077), no separate discount-type/percentage
+  // column. Never recomputed here: the Customer App derives the %-off
+  // badge itself from these two numbers, exactly like the Admin
+  // Dashboard's own Shop product list already does.
+  let sql = `SELECT id, size, price, old_price, created_at FROM vip_number_packages WHERE active = true`;
   if (size) {
     args.push(Number(size));
     sql += ` AND size=$${args.length}`;
@@ -180,6 +255,14 @@ vipNumberPackagesRouter.post(
       return sendJson(res, 400, { error: "Enter your full name (first, father's, and grandfather's name)" });
     }
 
+    // Enforced here too, not just hidden in the Customer App UI -- shares
+    // the individual flow's own single open/closed switch (see
+    // vipNumbers.routes.ts's own gate on POST /vip-numbers/orders).
+    const vipSettings = await loadVipNumberSettings();
+    if (!(await resolveVipNumbersOpen(vipSettings))) {
+      return sendJson(res, 409, { error: "VIP Number sales are currently closed. Please check back during our working hours." });
+    }
+
     const method = await queryOne<{ method: string; ussd_template: string }>(
       `SELECT method, ussd_template FROM shop_payment_methods WHERE method=$1`,
       [paymentMethod]
@@ -192,11 +275,17 @@ vipNumberPackagesRouter.post(
 
     // A double-tap of "Purchase Package" on the same still-pending order
     // returns the existing order rather than attempting (and failing) a
-    // second reservation of an already-reserved package.
-    const dup = await queryOne<{ id: string }>(
+    // second reservation of an already-reserved package -- unless that
+    // order has aged past the reservation window, in which case it's
+    // expired in place first (see vipNumbers.routes.ts's identical
+    // reasoning on its own dup-order check).
+    let dup = await queryOne<{ id: string }>(
       `SELECT id FROM vip_number_package_orders WHERE customer_id=$1 AND package_id=$2 AND status='pending' LIMIT 1`,
       [req.auth!.sub, packageId]
     );
+    if (dup && (await expirePackageOrderIfStale(dup.id))) {
+      dup = null;
+    }
 
     try {
       const result = dup
@@ -261,7 +350,7 @@ vipNumberPackagesRouter.post(
         `SELECT ${PACKAGE_ORDER_COLUMNS} FROM vip_number_package_orders WHERE id=$1`,
         [result.orderId]
       );
-      const dialUssd = method.ussd_template.replace("{amount}", formatUssdAmount(Number(order!.price)));
+      const dialUssd = method.ussd_template.replace("{amount}", formatEvcDahabUssdAmount(Number(order!.price)));
       const items = await loadPackageOrderItems(result.orderId);
       sendJson(res, result.duplicate ? 200 : 201, { ...order, items, dialUssd });
     } catch (err: any) {
@@ -335,7 +424,7 @@ vipNumberPackagesRouter.post("/vip-numbers/packages/orders/:id/retry-payment", r
     order.payment_method,
   ]);
   if (!method) return sendJson(res, 409, { error: "The payment method on this order is no longer available — please contact support" });
-  const dialUssd = method.ussd_template.replace("{amount}", formatUssdAmount(Number(order.price)));
+  const dialUssd = method.ussd_template.replace("{amount}", formatEvcDahabUssdAmount(Number(order.price)));
   sendJson(res, 200, { dialUssd });
 });
 
@@ -363,11 +452,19 @@ vipNumberPackagesRouter.get("/admin/vip-numbers/packages", requirePermission("vi
 });
 
 vipNumberPackagesRouter.post("/admin/vip-numbers/packages", requirePermission("vipNumbers.manage"), async (req, res) => {
-  const { size, price, vipNumberIds } = req.body ?? {};
+  const { size, price, oldPrice, vipNumberIds } = req.body ?? {};
   if (!PACKAGE_SIZES.includes(Number(size))) {
     return sendJson(res, 400, { error: `size must be one of ${PACKAGE_SIZES.join(", ")}` });
   }
   if (price == null || Number(price) < 0) return sendJson(res, 400, { error: "price is required" });
+  // Same validation shape as shop.routes.ts's own admin product create --
+  // oldPrice is optional (no discount at all is a perfectly valid
+  // package), but if given it must be a real non-negative number. Not
+  // required that oldPrice > price: an admin who enters a garbage "was"
+  // price just won't see a discount badge, exactly like Shop today.
+  if (oldPrice !== undefined && oldPrice !== null && oldPrice !== "" && (!Number.isFinite(Number(oldPrice)) || Number(oldPrice) < 0)) {
+    return sendJson(res, 400, { error: "oldPrice must be a non-negative number" });
+  }
   if (!Array.isArray(vipNumberIds) || vipNumberIds.length !== Number(size)) {
     return sendJson(res, 400, { error: `Select exactly ${size} VIP numbers for this package` });
   }
@@ -378,9 +475,10 @@ vipNumberPackagesRouter.post("/admin/vip-numbers/packages", requirePermission("v
   try {
     const packageId = await withTransaction(async (client) => {
       await lockAndValidatePackageNumbers(client, vipNumberIds);
-      const created = await client.query(`INSERT INTO vip_number_packages (size, price) VALUES ($1,$2) RETURNING id`, [
+      const created = await client.query(`INSERT INTO vip_number_packages (size, price, old_price) VALUES ($1,$2,$3) RETURNING id`, [
         Number(size),
         Number(price),
+        oldPrice !== undefined && oldPrice !== null && oldPrice !== "" ? Number(oldPrice) : null,
       ]);
       const newId = created.rows[0].id as string;
       for (let i = 0; i < vipNumberIds.length; i++) {
@@ -413,7 +511,10 @@ vipNumberPackagesRouter.put("/admin/vip-numbers/packages/:id", requirePermission
   const existing = await queryOne<{ size: number }>(`SELECT size FROM vip_number_packages WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Package not found" });
 
-  const { price, active, vipNumberIds } = req.body ?? {};
+  const { price, oldPrice, active, vipNumberIds } = req.body ?? {};
+  if (oldPrice !== undefined && oldPrice !== null && oldPrice !== "" && (!Number.isFinite(Number(oldPrice)) || Number(oldPrice) < 0)) {
+    return sendJson(res, 400, { error: "oldPrice must be a non-negative number" });
+  }
 
   try {
     if (Array.isArray(vipNumberIds)) {
@@ -448,6 +549,10 @@ vipNumberPackagesRouter.put("/admin/vip-numbers/packages/:id", requirePermission
     if (price != null) {
       args.push(Number(price));
       fields.push(`price=$${args.length}`);
+    }
+    if (oldPrice !== undefined) {
+      args.push(oldPrice === null || oldPrice === "" ? null : Number(oldPrice));
+      fields.push(`old_price=$${args.length}`);
     }
     if (typeof active === "boolean") {
       args.push(active);
@@ -523,27 +628,38 @@ vipNumberPackagesRouter.put(
   "/admin/vip-numbers/packages/orders/:id/payment-status",
   requirePermission("vipNumbers.manage"),
   async (req, res) => {
-    const existing = await queryOne<{ status: string; payment_status: string; customer_id: string; package_id: string }>(
-      `SELECT status, payment_status, customer_id, package_id FROM vip_number_package_orders WHERE id=$1`,
-      [req.params.id]
-    );
-    if (!existing) return sendJson(res, 404, { error: "Order not found" });
-    if (existing.payment_status === "paid") return sendJson(res, 409, { error: "This order is already marked paid" });
-    if (TERMINAL_PACKAGE_ORDER_STATUSES.includes(existing.status)) {
-      return sendJson(res, 409, { error: `This order is already ${existing.status} and can no longer be marked paid` });
+    // Locked (FOR UPDATE) and transactional -- same TOCTOU protection
+    // against the expiry sweep as vipNumbers.routes.ts's identical route.
+    let existing: { status: string; payment_status: string; customer_id: string; package_id: string };
+    try {
+      existing = await withTransaction(async (client) => {
+        const row = await client.query(
+          `SELECT status, payment_status, customer_id, package_id FROM vip_number_package_orders WHERE id=$1 FOR UPDATE`,
+          [req.params.id]
+        );
+        const order = row.rows[0];
+        if (!order) throw Object.assign(new Error("Order not found"), { status: 404 });
+        if (order.payment_status === "paid") throw Object.assign(new Error("This order is already marked paid"), { status: 409 });
+        if (TERMINAL_PACKAGE_ORDER_STATUSES.includes(order.status)) {
+          throw Object.assign(new Error(`This order is already ${order.status} and can no longer be marked paid`), { status: 409 });
+        }
+        await client.query(
+          `UPDATE vip_number_package_orders SET payment_status='paid', paid_at=now(),
+             status = CASE WHEN status='pending' THEN 'processing' ELSE status END,
+             verified_by_admin_id=$1, updated_at=now() WHERE id=$2`,
+          [req.auth!.sub, req.params.id]
+        );
+        await client.query(
+          `UPDATE vip_numbers SET status='sold', updated_at=now()
+           WHERE id IN (SELECT vip_number_id FROM vip_number_package_items WHERE package_id=$1)`,
+          [order.package_id]
+        );
+        return order;
+      });
+    } catch (err: any) {
+      if (err?.status) return sendJson(res, err.status, { error: err.message });
+      throw err;
     }
-
-    await query(
-      `UPDATE vip_number_package_orders SET payment_status='paid', paid_at=now(),
-         status = CASE WHEN status='pending' THEN 'processing' ELSE status END,
-         verified_by_admin_id=$1, updated_at=now() WHERE id=$2`,
-      [req.auth!.sub, req.params.id]
-    );
-    await query(
-      `UPDATE vip_numbers SET status='sold', updated_at=now()
-       WHERE id IN (SELECT vip_number_id FROM vip_number_package_items WHERE package_id=$1)`,
-      [existing.package_id]
-    );
     await recordActivity({
       adminId: req.auth!.sub,
       action: "vip_number_package_order_payment_confirmed",
@@ -579,33 +695,47 @@ vipNumberPackagesRouter.put(
   requirePermission("vipNumbers.manage"),
   async (req, res) => {
     const { status, note } = req.body ?? {};
-    if (!PACKAGE_ORDER_STATUSES.includes(status)) {
-      return sendJson(res, 400, { error: `status must be one of ${PACKAGE_ORDER_STATUSES.join(", ")}` });
+    if (!PACKAGE_ORDER_STATUSES.includes(status) || status === "expired") {
+      return sendJson(res, 400, { error: `status must be one of pending, processing, completed, cancelled, failed` });
     }
-    const existing = await queryOne<{ status: string; payment_status: string; customer_id: string; package_id: string }>(
-      `SELECT status, payment_status, customer_id, package_id FROM vip_number_package_orders WHERE id=$1`,
-      [req.params.id]
-    );
-    if (!existing) return sendJson(res, 404, { error: "Order not found" });
-    if (TERMINAL_PACKAGE_ORDER_STATUSES.includes(existing.status)) {
-      return sendJson(res, 409, { error: `This order is already ${existing.status} and cannot be changed further` });
+    // Locked (FOR UPDATE) and transactional -- same TOCTOU protection
+    // against the expiry sweep as vipNumbers.routes.ts's identical route.
+    let existing: { status: string; payment_status: string; customer_id: string; package_id: string };
+    try {
+      existing = await withTransaction(async (client) => {
+        const row = await client.query(
+          `SELECT status, payment_status, customer_id, package_id FROM vip_number_package_orders WHERE id=$1 FOR UPDATE`,
+          [req.params.id]
+        );
+        const order = row.rows[0];
+        if (!order) throw Object.assign(new Error("Order not found"), { status: 404 });
+        if (TERMINAL_PACKAGE_ORDER_STATUSES.includes(order.status)) {
+          throw Object.assign(new Error(`This order is already ${order.status} and cannot be changed further`), { status: 409 });
+        }
+        if (status === "completed" && order.payment_status !== "paid") {
+          throw Object.assign(new Error("Mark payment as paid before completing this order"), { status: 409 });
+        }
+        if (AVAILABILITY_RESTORING_STATUSES.includes(status)) {
+          await client.query(
+            `UPDATE vip_numbers SET status='available', updated_at=now()
+             WHERE id IN (SELECT vip_number_id FROM vip_number_package_items WHERE package_id=$1) AND status != 'sold'`,
+            [order.package_id]
+          );
+        }
+        await client.query(
+          `UPDATE vip_number_package_orders SET status=$1,
+             completed_at = CASE WHEN $1='completed' THEN now() ELSE completed_at END,
+             cancelled_at = CASE WHEN $1 IN ('cancelled','failed') THEN now() ELSE cancelled_at END,
+             updated_at=now()
+           WHERE id=$2`,
+          [status, req.params.id]
+        );
+        return order;
+      });
+    } catch (err: any) {
+      if (err?.status) return sendJson(res, err.status, { error: err.message });
+      throw err;
     }
-    if (status === "completed" && existing.payment_status !== "paid") {
-      return sendJson(res, 409, { error: "Mark payment as paid before completing this order" });
-    }
-
-    if (AVAILABILITY_RESTORING_STATUSES.includes(status)) {
-      await restorePackageNumbersAvailability(existing.package_id);
-    }
-
-    await query(
-      `UPDATE vip_number_package_orders SET status=$1,
-         completed_at = CASE WHEN $1='completed' THEN now() ELSE completed_at END,
-         cancelled_at = CASE WHEN $1 IN ('cancelled','failed') THEN now() ELSE cancelled_at END,
-         updated_at=now()
-       WHERE id=$2`,
-      [status, req.params.id]
-    );
     await query(`INSERT INTO vip_number_package_order_status_history (package_order_id, status, note) VALUES ($1,$2,$3)`, [
       req.params.id,
       status,
