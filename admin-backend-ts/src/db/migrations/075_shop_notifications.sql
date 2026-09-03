@@ -3,6 +3,10 @@
 -- Shop order milestone (payment confirmed, processing, shipped, delivered,
 -- cancelled) rather than one CHECK value per status -- same one-type-per-
 -- feature convention 'exchange_update'/'order_update' already established.
+--
+-- NOT VALID: see 073_notification_campaigns.sql's identical comment on
+-- its own version of this ALTER -- a full replay must never re-validate
+-- historical rows against an intermediate, now-narrower list.
 ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_type_check;
 ALTER TABLE notifications ADD CONSTRAINT notifications_type_check
-  CHECK (type IN ('push','promotion','maintenance','feedback_update','exchange_update','order_update','campaign','shop_order_update'));
+  CHECK (type IN ('push','promotion','maintenance','feedback_update','exchange_update','order_update','campaign','shop_order_update')) NOT VALID;

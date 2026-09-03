@@ -50,6 +50,18 @@ CREATE INDEX IF NOT EXISTS idx_notif_campaign_recipients_campaign ON notificatio
 -- 'campaign' (a targeted Admin/Agent broadcast's per-recipient in-app row,
 -- so anything a customer got as a push also shows up if they later open
 -- the app's own Notifications screen).
+--
+-- NOT VALID: migrate.ts replays every migration file on every deploy (no
+-- tracking table), so by the time production has real rows whose type was
+-- only added by a LATER migration (075/080/085/087/088), re-running this
+-- earlier, narrower CHECK against that already-live data would fail
+-- ADD CONSTRAINT's default full-table validation scan -- confirmed live
+-- (deploy failure: "check constraint notifications_type_check ... is
+-- violated by some row" once real vip_number_order_update rows existed).
+-- NOT VALID skips that historical re-validation while still enforcing the
+-- constraint on every new INSERT/UPDATE from this point forward, which is
+-- all that actually matters -- the table's true current shape is always
+-- whichever of these migrations runs last (088), not this one.
 ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_type_check;
 ALTER TABLE notifications ADD CONSTRAINT notifications_type_check
-  CHECK (type IN ('push','promotion','maintenance','feedback_update','exchange_update','order_update','campaign'));
+  CHECK (type IN ('push','promotion','maintenance','feedback_update','exchange_update','order_update','campaign')) NOT VALID;

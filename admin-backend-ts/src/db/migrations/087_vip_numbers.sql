@@ -80,6 +80,12 @@ CREATE TABLE IF NOT EXISTS vip_number_order_status_history (
 -- this feature's own order-update notification. Must carry forward every
 -- value 085 already allowed, not just add this one -- re-narrowing this
 -- constraint is exactly the bug migration replay commit bf3f15c fixed.
+--
+-- NOT VALID: see 073_notification_campaigns.sql's identical comment on
+-- the *other* replay hazard this constraint has -- a later production
+-- deploy can carry real rows using a type only THIS or a later migration
+-- allows, so any full replay of an earlier one must never re-validate
+-- historical data against its own (now-superseded) narrower list either.
 ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_type_check;
 ALTER TABLE notifications ADD CONSTRAINT notifications_type_check
-  CHECK (type IN ('push','promotion','maintenance','feedback_update','exchange_update','order_update','campaign','shop_order_update','shop_return_update','shop_back_in_stock','vip_number_order_update'));
+  CHECK (type IN ('push','promotion','maintenance','feedback_update','exchange_update','order_update','campaign','shop_order_update','shop_return_update','shop_back_in_stock','vip_number_order_update')) NOT VALID;

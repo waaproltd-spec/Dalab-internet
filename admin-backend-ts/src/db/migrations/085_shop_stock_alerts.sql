@@ -28,6 +28,8 @@ CREATE INDEX IF NOT EXISTS idx_shop_stock_notify_product ON shop_stock_notify_re
 
 -- Widened again (same pattern as 030/041/073/075/080 before it) for this
 -- feature's own back-in-stock push+in-app notification.
+--
+-- NOT VALID: see 073_notification_campaigns.sql's identical comment.
 ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_type_check;
 ALTER TABLE notifications ADD CONSTRAINT notifications_type_check
-  CHECK (type IN ('push','promotion','maintenance','feedback_update','exchange_update','order_update','campaign','shop_order_update','shop_return_update','shop_back_in_stock'));
+  CHECK (type IN ('push','promotion','maintenance','feedback_update','exchange_update','order_update','campaign','shop_order_update','shop_return_update','shop_back_in_stock')) NOT VALID;

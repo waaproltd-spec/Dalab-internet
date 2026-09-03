@@ -102,6 +102,12 @@ CREATE TABLE IF NOT EXISTS vip_number_package_order_status_history (
 -- Widened again (same pattern as 073/075/080/085/087 before it) for this
 -- feature's own order-update notification -- must carry forward every
 -- value 087 already allowed, not just add this one.
+--
+-- NOT VALID: see 073_notification_campaigns.sql's identical comment.
+-- This is currently the final, authoritative version of this constraint
+-- (no migration after 088 touches it) -- still NOT VALID for consistency
+-- and because a future migration may one day insert between 088 and
+-- whatever eventually widens it further.
 ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_type_check;
 ALTER TABLE notifications ADD CONSTRAINT notifications_type_check
-  CHECK (type IN ('push','promotion','maintenance','feedback_update','exchange_update','order_update','campaign','shop_order_update','shop_return_update','shop_back_in_stock','vip_number_order_update','vip_number_package_order_update'));
+  CHECK (type IN ('push','promotion','maintenance','feedback_update','exchange_update','order_update','campaign','shop_order_update','shop_return_update','shop_back_in_stock','vip_number_order_update','vip_number_package_order_update')) NOT VALID;

@@ -34,12 +34,21 @@ INSERT INTO vip_number_settings (id) VALUES (true) ON CONFLICT (id) DO NOTHING;
 -- vipNumberPackages.routes.ts's new expiry sweep) is neither
 -- customer-cancelled nor admin-marked-failed, so it gets its own status
 -- rather than overloading either of those. Widened the same
--- drop-then-recreate way 090's own notifications_type_check precedent
+-- drop-then-recreate way notifications_type_check's own precedent
 -- (073/075/080/085/087/088) does, carrying forward every existing value.
+--
+-- NOT VALID: migrate.ts replays every migration file on every deploy (no
+-- tracking table). This is the only widening of these two constraints
+-- today, but a future migration adding yet another status would widen
+-- them again the same way -- NOT VALID here means that future ALTER can
+-- never fail re-validating rows this migration already made valid (see
+-- notifications_type_check's own NOT VALID comments in 073/075/080/085/
+-- 087/088 for the live production failure this exact pattern caused once
+-- real data outran an earlier, narrower replayed constraint).
 ALTER TABLE vip_number_orders DROP CONSTRAINT IF EXISTS vip_number_orders_status_check;
 ALTER TABLE vip_number_orders ADD CONSTRAINT vip_number_orders_status_check
-  CHECK (status IN ('pending', 'processing', 'completed', 'cancelled', 'failed', 'expired'));
+  CHECK (status IN ('pending', 'processing', 'completed', 'cancelled', 'failed', 'expired')) NOT VALID;
 
 ALTER TABLE vip_number_package_orders DROP CONSTRAINT IF EXISTS vip_number_package_orders_status_check;
 ALTER TABLE vip_number_package_orders ADD CONSTRAINT vip_number_package_orders_status_check
-  CHECK (status IN ('pending', 'processing', 'completed', 'cancelled', 'failed', 'expired'));
+  CHECK (status IN ('pending', 'processing', 'completed', 'cancelled', 'failed', 'expired')) NOT VALID;

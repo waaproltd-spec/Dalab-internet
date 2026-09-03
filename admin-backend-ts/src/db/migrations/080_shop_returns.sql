@@ -35,6 +35,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_shop_return_requests_active_per_order
 
 -- Widened again (same pattern as 030/041/073/075 before it) for this
 -- request workflow's own status-change notifications.
+--
+-- NOT VALID: see 073_notification_campaigns.sql's identical comment.
 ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_type_check;
 ALTER TABLE notifications ADD CONSTRAINT notifications_type_check
-  CHECK (type IN ('push','promotion','maintenance','feedback_update','exchange_update','order_update','campaign','shop_order_update','shop_return_update'));
+  CHECK (type IN ('push','promotion','maintenance','feedback_update','exchange_update','order_update','campaign','shop_order_update','shop_return_update')) NOT VALID;
