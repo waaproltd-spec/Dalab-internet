@@ -10,11 +10,14 @@ import com.dalab.internet.data.Order
 import com.dalab.internet.data.PackageItem
 import com.dalab.internet.data.ResellerWithdrawalPendingPayout
 import com.dalab.internet.data.ResellerWithdrawalSimRoutingEntry
+import com.dalab.internet.data.ShopAgentOrder
 import com.dalab.internet.data.SmsLogEntry
 import com.dalab.internet.data.SupportConversation
 import com.dalab.internet.data.Transaction
 import com.dalab.internet.data.AgentNotification
 import com.dalab.internet.data.AgentPaymentTransaction
+import com.dalab.internet.data.VipNumberAgentOrder
+import com.dalab.internet.data.VipPackageAgentOrder
 import com.dalab.internet.data.WalletBalanceEntry
 import com.dalab.internet.sms.SmsSenderIdEntry
 import com.dalab.internet.ussd.SimRoutingEntry
@@ -189,6 +192,40 @@ interface ApiService {
 
     @POST("agent/orders/{id}/complete")
     suspend fun completeOrder(@Path("id") id: String): Response<Order>
+
+    // ---------------- Orders: Shop / VIP Numbers ----------------
+    // Deliberately separate from agent/orders above (the Internet Store
+    // recharge queue) -- same "own endpoints per business line" convention
+    // as Money Exchange/Reseller Withdrawal. Real backend data only, no
+    // agent-side order creation here: Shop/VIP orders are always
+    // customer-initiated checkouts, never agent-created.
+
+    @GET("agent/shop/orders")
+    suspend fun getAgentShopOrders(@Query("status") status: String? = null): Response<List<ShopAgentOrder>>
+
+    @GET("agent/shop/orders/{id}")
+    suspend fun getAgentShopOrder(@Path("id") id: String): Response<ShopAgentOrder>
+
+    @GET("agent/vip-numbers/orders")
+    suspend fun getAgentVipNumberOrders(@Query("status") status: String? = null): Response<List<VipNumberAgentOrder>>
+
+    @GET("agent/vip-numbers/orders/{id}")
+    suspend fun getAgentVipNumberOrder(@Path("id") id: String): Response<VipNumberAgentOrder>
+
+    // Real backend status change (pending/processing -> completed) --
+    // server refuses with 409 unless payment_status is already 'paid' and
+    // the order isn't already terminal. Never local-only.
+    @POST("agent/vip-numbers/orders/{id}/complete")
+    suspend fun completeAgentVipNumberOrder(@Path("id") id: String): Response<VipNumberAgentOrder>
+
+    @GET("agent/vip-numbers/packages/orders")
+    suspend fun getAgentVipPackageOrders(@Query("status") status: String? = null): Response<List<VipPackageAgentOrder>>
+
+    @GET("agent/vip-numbers/packages/orders/{id}")
+    suspend fun getAgentVipPackageOrder(@Path("id") id: String): Response<VipPackageAgentOrder>
+
+    @POST("agent/vip-numbers/packages/orders/{id}/complete")
+    suspend fun completeAgentVipPackageOrder(@Path("id") id: String): Response<VipPackageAgentOrder>
 
     @GET("agent/transactions")
     suspend fun getTransactions(@Query("range") range: String? = null): Response<List<Transaction>>

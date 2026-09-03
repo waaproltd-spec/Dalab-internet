@@ -80,6 +80,12 @@ class DalabAgentApp : Application() {
         // so the channel already exists even if a support-request push
         // arrives before the agent has ever opened a screen this cold start.
         initSafely("support_notification_channel_init") { createSupportNotificationChannel() }
+        // Same reasoning, for the payment-confirmed Shop/VIP order push
+        // (see AgentFcmService's ORDERS_CHANNEL_ID) -- without this channel
+        // registered up front, NotificationCompat.Builder(this, "dalab_updates")
+        // would silently drop the notification on Android 8+ (an unknown
+        // channel id is not an error, it's just never shown).
+        initSafely("orders_notification_channel_init") { createOrdersNotificationChannel() }
     }
 
     private fun createSupportNotificationChannel() {
@@ -90,6 +96,21 @@ class DalabAgentApp : Application() {
                 NotificationManager.IMPORTANCE_HIGH,
             ).apply {
                 description = "A customer is waiting for a live agent"
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 300, 150, 300)
+            }
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        }
+    }
+
+    private fun createOrdersNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                AgentFcmService.ORDERS_CHANNEL_ID,
+                "Order updates",
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                description = "A Shop or VIP Number order was just paid for"
                 enableVibration(true)
                 vibrationPattern = longArrayOf(0, 300, 150, 300)
             }

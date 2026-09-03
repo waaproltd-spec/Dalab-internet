@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Sell
+import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material3.*
@@ -43,10 +44,14 @@ import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.auth.SessionManager
 import com.dalab.internet.data.ExchangeOrder
 import com.dalab.internet.data.Order
+import com.dalab.internet.data.ShopAgentOrder
+import com.dalab.internet.data.VipNumberAgentOrder
+import com.dalab.internet.data.VipPackageAgentOrder
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.diagnostics.HeartbeatStats
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.notifications.AgentAlertsState
+import com.dalab.internet.notifications.OrdersDeepLink
 import com.dalab.internet.notifications.PushTokenRegistrar
 import com.dalab.internet.notifications.SupportDeepLink
 import com.dalab.internet.notifications.SupportUnreadState
@@ -54,6 +59,7 @@ import com.dalab.internet.queue.PendingActionQueue
 import com.dalab.internet.service.AgentBackgroundService
 import com.dalab.internet.sms.SmsInboxScanner
 import com.dalab.internet.sms.SmsListenerState
+import com.dalab.internet.ui.AgentOrdersScreen
 import com.dalab.internet.ui.AlertsScreen
 import com.dalab.internet.ui.AutoLoginScreen
 import com.dalab.internet.ui.CustomersScreen
@@ -72,9 +78,12 @@ import com.dalab.internet.ui.PermissionsStatusScreen
 import com.dalab.internet.ui.ReliabilityDashboardScreen
 import com.dalab.internet.ui.ReliabilitySetupScreen
 import com.dalab.internet.ui.ReportsScreen
+import com.dalab.internet.ui.ShopAgentOrderDetailScreen
 import com.dalab.internet.ui.SmsPermissionScreen
 import com.dalab.internet.ui.SupportScreen
 import com.dalab.internet.ui.TransactionHistoryScreen
+import com.dalab.internet.ui.VipNumberAgentOrderDetailScreen
+import com.dalab.internet.ui.VipPackageAgentOrderDetailScreen
 import com.dalab.internet.ui.WalletDashboardScreen
 import kotlinx.coroutines.launch
 
@@ -138,10 +147,14 @@ class MainActivity : ComponentActivity() {
         if (intent?.getBooleanExtra(EXTRA_OPEN_SUPPORT, false) == true) {
             SupportDeepLink.pending = true
         }
+        if (intent?.getBooleanExtra(EXTRA_OPEN_ORDERS, false) == true) {
+            OrdersDeepLink.pending = true
+        }
     }
 
     companion object {
         const val EXTRA_OPEN_SUPPORT = "open_support"
+        const val EXTRA_OPEN_ORDERS = "open_orders"
     }
 
     private fun createNotificationChannel() {
@@ -161,12 +174,16 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP, SALES, CUSTOMERS, REPORTS }
-// Bottom nav is exactly 4 tabs: Home, Support Agent, Broadcast, More --
+private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP, SALES, CUSTOMERS, REPORTS, AGENT_SHOP_ORDER_DETAIL, AGENT_VIP_ORDER_DETAIL, AGENT_VIP_PACKAGE_ORDER_DETAIL }
+// Bottom nav is exactly 5 tabs: Home, Orders, Support Agent, Broadcast, More --
 // Sales/Customers/Reports (formerly their own tabs) moved under More as
 // ordinary Screen.X destinations instead (see MoreScreen's "My Work"
 // section), and Support/Broadcast (formerly under More) became tabs here.
-private enum class HomeTab { HOME, SUPPORT, BROADCAST, MORE }
+// Orders is the real Shop/VIP Number order queue (see AgentOrdersScreen) --
+// distinct from Home's existing Internet Store recharge queue
+// (OrdersListScreen/Order), same "own tab per business line" pattern
+// Money Exchange/Reseller Withdrawal already follow.
+private enum class HomeTab { HOME, ORDERS, SUPPORT, BROADCAST, MORE }
 
 @Composable
 private fun AgentApp() {
@@ -209,6 +226,9 @@ private fun AgentApp() {
     }
     var selectedOrder by remember { mutableStateOf<Order?>(null) }
     var selectedExchangeOrder by remember { mutableStateOf<ExchangeOrder?>(null) }
+    var selectedAgentShopOrder by remember { mutableStateOf<ShopAgentOrder?>(null) }
+    var selectedAgentVipOrder by remember { mutableStateOf<VipNumberAgentOrder?>(null) }
+    var selectedAgentVipPackageOrder by remember { mutableStateOf<VipPackageAgentOrder?>(null) }
     val scope = rememberCoroutineScope()
 
     // A support-request push (support.routes.ts's notifyAssignedAgent()/
@@ -221,6 +241,15 @@ private fun AgentApp() {
     // this effect re-runs, same as before.
     LaunchedEffect(SupportDeepLink.pending) {
         if (SupportDeepLink.pending && screen != Screen.HOME) {
+            screen = Screen.HOME
+        }
+    }
+
+    // A payment-confirmed order push was tapped -- same "get to Screen.HOME
+    // first, AgentHome's own effect below picks the tab" pattern as the
+    // support deep link above.
+    LaunchedEffect(OrdersDeepLink.pending) {
+        if (OrdersDeepLink.pending && screen != Screen.HOME) {
             screen = Screen.HOME
         }
     }
@@ -298,6 +327,9 @@ private fun AgentApp() {
 
         Screen.HOME -> AgentHome(
             onOpenOrder = { order -> selectedOrder = order; screen = Screen.ORDER_DETAIL },
+            onOpenAgentShopOrder = { order -> selectedAgentShopOrder = order; screen = Screen.AGENT_SHOP_ORDER_DETAIL },
+            onOpenAgentVipOrder = { order -> selectedAgentVipOrder = order; screen = Screen.AGENT_VIP_ORDER_DETAIL },
+            onOpenAgentVipPackageOrder = { order -> selectedAgentVipPackageOrder = order; screen = Screen.AGENT_VIP_PACKAGE_ORDER_DETAIL },
             onOpenPackages = { screen = Screen.PACKAGES },
             onOpenTransactions = { screen = Screen.TRANSACTIONS },
             onOpenWallet = { screen = Screen.WALLET },
@@ -358,6 +390,29 @@ private fun AgentApp() {
         Screen.CUSTOMERS -> CustomersScreen(onBack = { screen = Screen.HOME })
 
         Screen.REPORTS -> ReportsScreen(onBack = { screen = Screen.HOME })
+
+        Screen.AGENT_SHOP_ORDER_DETAIL -> selectedAgentShopOrder?.let { order ->
+            ShopAgentOrderDetailScreen(
+                order = order,
+                onBack = { screen = Screen.HOME },
+            )
+        }
+
+        Screen.AGENT_VIP_ORDER_DETAIL -> selectedAgentVipOrder?.let { order ->
+            VipNumberAgentOrderDetailScreen(
+                order = order,
+                onBack = { screen = Screen.HOME },
+                onOrderUpdated = { selectedAgentVipOrder = it },
+            )
+        }
+
+        Screen.AGENT_VIP_PACKAGE_ORDER_DETAIL -> selectedAgentVipPackageOrder?.let { order ->
+            VipPackageAgentOrderDetailScreen(
+                order = order,
+                onBack = { screen = Screen.HOME },
+                onOrderUpdated = { selectedAgentVipPackageOrder = it },
+            )
+        }
     }
 }
 
@@ -372,6 +427,9 @@ private fun rememberLauncherForSmsPermissions(
 @Composable
 private fun AgentHome(
     onOpenOrder: (Order) -> Unit,
+    onOpenAgentShopOrder: (ShopAgentOrder) -> Unit,
+    onOpenAgentVipOrder: (VipNumberAgentOrder) -> Unit,
+    onOpenAgentVipPackageOrder: (VipPackageAgentOrder) -> Unit,
     onOpenPackages: () -> Unit,
     onOpenTransactions: () -> Unit,
     onOpenWallet: () -> Unit,
@@ -401,6 +459,16 @@ private fun AgentHome(
         }
     }
 
+    // Same warm/cold-start coverage as the support deep link above, for a
+    // payment-confirmed Shop/VIP order push -- `tab` only exists here, so
+    // AgentApp's own effect can only get the agent as far as Screen.HOME.
+    LaunchedEffect(OrdersDeepLink.pending) {
+        if (OrdersDeepLink.pending) {
+            OrdersDeepLink.pending = false
+            tab = HomeTab.ORDERS
+        }
+    }
+
     // Covers a support push that arrived while the app was backgrounded or
     // killed -- the OS shows the system-tray notification straight from the
     // FCM payload in that case, bypassing AgentFcmService.onMessageReceived
@@ -425,6 +493,12 @@ private fun AgentHome(
                     onClick = { tab = HomeTab.HOME },
                     icon = { Icon(Icons.Filled.Home, contentDescription = "Home") },
                     label = { Text("Home") },
+                )
+                NavigationBarItem(
+                    selected = tab == HomeTab.ORDERS,
+                    onClick = { tab = HomeTab.ORDERS },
+                    icon = { Icon(Icons.Filled.ShoppingCart, contentDescription = "Orders") },
+                    label = { Text("Orders") },
                 )
                 NavigationBarItem(
                     selected = tab == HomeTab.SUPPORT,
@@ -459,6 +533,11 @@ private fun AgentHome(
                     onOpenWallet = onOpenWallet,
                     onOpenMoneyExchange = onOpenMoneyExchange,
                     onOpenSupport = { tab = HomeTab.SUPPORT; SupportUnreadState.clear() },
+                )
+                HomeTab.ORDERS -> AgentOrdersScreen(
+                    onOpenShopOrder = onOpenAgentShopOrder,
+                    onOpenVipOrder = onOpenAgentVipOrder,
+                    onOpenVipPackageOrder = onOpenAgentVipPackageOrder,
                 )
                 HomeTab.SUPPORT -> SupportScreen(onBack = { tab = HomeTab.HOME })
                 HomeTab.BROADCAST -> NotificationsScreen(onBack = { tab = HomeTab.HOME })
