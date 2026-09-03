@@ -5,6 +5,7 @@ import { requirePermission } from "../auth/permissions.js";
 import { rateLimit } from "../auth/rateLimit.js";
 import { sendJson } from "../utils/camelCase.js";
 import { notifyCustomer } from "../services/customerNotify.js";
+import { sendPushToAllAgents } from "../services/push.js";
 import { recordActivity } from "../utils/activityLog.js";
 import { formatEvcDahabUssdAmount } from "../utils/ussdFormatting.js";
 import { validateMobileNumber } from "../lib/phoneValidation.js";
@@ -543,6 +544,94 @@ vipNumbersRouter.get("/admin/vip-numbers/orders/:id", requirePermission("vipNumb
   sendJson(res, 200, { ...order, statusHistory: await loadOrderStatusHistory(req.params.id) });
 });
 
+// ==================== Agent: orders (read + Complete Order) ====================
+
+// The Agent App's own Orders tab -- same VIP_ORDER_COLUMNS/filters/joins as
+// the Admin Dashboard's identical routes above, just under agent auth.
+vipNumbersRouter.get("/agent/vip-numbers/orders", requireAuth("agent"), async (req, res) => {
+  const { status, search } = req.query as { status?: string; search?: string };
+  const args: unknown[] = [];
+  let sql = `SELECT o.${VIP_ORDER_COLUMNS.replace(/, /g, ", o.")}, c.name AS customer_name, c.phone AS customer_phone, comp.name AS company_name
+             FROM vip_number_orders o
+             JOIN customers c ON c.id = o.customer_id
+             JOIN companies comp ON comp.id = o.company_id
+             WHERE 1=1`;
+  if (status && VIP_ORDER_STATUSES.includes(status)) {
+    args.push(status);
+    sql += ` AND o.status=$${args.length}`;
+  }
+  if (search) {
+    args.push(`%${search}%`);
+    sql += ` AND (o.id ILIKE $${args.length} OR o.customer_full_name ILIKE $${args.length} OR o.phone_number ILIKE $${args.length} OR c.phone ILIKE $${args.length})`;
+  }
+  sql += ` ORDER BY o.created_at DESC LIMIT 200`;
+  sendJson(res, 200, await query(sql, args));
+});
+
+vipNumbersRouter.get("/agent/vip-numbers/orders/:id", requireAuth("agent"), async (req, res) => {
+  const order = await queryOne(
+    `SELECT o.${VIP_ORDER_COLUMNS.replace(/, /g, ", o.")}, c.name AS customer_name, c.phone AS customer_phone, comp.name AS company_name
+     FROM vip_number_orders o
+     JOIN customers c ON c.id = o.customer_id
+     JOIN companies comp ON comp.id = o.company_id
+     WHERE o.id=$1`,
+    [req.params.id]
+  );
+  if (!order) return sendJson(res, 404, { error: "Order not found" });
+  sendJson(res, 200, { ...order, statusHistory: await loadOrderStatusHistory(req.params.id) });
+});
+
+// The Agent App's "Complete Order" action -- same locking/guards as the
+// admin PUT .../status route's own "completed" branch (payment must
+// already be confirmed, order must not already be terminal), hardcoded to
+// 'completed' rather than accepting an arbitrary status: an agent can only
+// ever complete a paid order here, never cancel/fail one (that stays an
+// admin-only action via the existing PUT .../status route above).
+// recordActivity's adminId is left undefined -- admin_activity_log.admin_id
+// is FK'd to admin_users, not agents, so an agent's own id would violate
+// that constraint (same reasoning orders.routes.ts's completeOrderById
+// already follows for its own agent-triggered completions).
+vipNumbersRouter.post("/agent/vip-numbers/orders/:id/complete", requireAuth("agent"), async (req, res) => {
+  let existing: { status: string; payment_status: string; customer_id: string; vip_number_id: string };
+  try {
+    existing = await withTransaction(async (client) => {
+      const row = await client.query(
+        `SELECT status, payment_status, customer_id, vip_number_id FROM vip_number_orders WHERE id=$1 FOR UPDATE`,
+        [req.params.id]
+      );
+      const order = row.rows[0];
+      if (!order) throw Object.assign(new Error("Order not found"), { status: 404 });
+      if (TERMINAL_VIP_ORDER_STATUSES.includes(order.status)) {
+        throw Object.assign(new Error(`This order is already ${order.status} and cannot be changed further`), { status: 409 });
+      }
+      if (order.payment_status !== "paid") {
+        throw Object.assign(new Error("This order cannot be completed until payment is confirmed"), { status: 409 });
+      }
+      await client.query(
+        `UPDATE vip_number_orders SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1`,
+        [req.params.id]
+      );
+      return order;
+    });
+  } catch (err: any) {
+    if (err?.status) return sendJson(res, err.status, { error: err.message });
+    throw err;
+  }
+  await query(`INSERT INTO vip_number_order_status_history (order_id, status, note) VALUES ($1,'completed','Completed by agent')`, [
+    req.params.id,
+  ]);
+  await recordActivity({
+    adminId: undefined,
+    action: "vip_number_order_completed_by_agent",
+    entityType: "vip_number_order",
+    entityId: req.params.id,
+    oldValue: { status: existing.status },
+    newValue: { status: "completed" },
+  });
+  await notifyCustomer(existing.customer_id, "vip_number_order_update", "VIP Number Ready", `Your VIP number order ${req.params.id} has been completed.`);
+  sendJson(res, 200, await queryOne(`SELECT ${VIP_ORDER_COLUMNS} FROM vip_number_orders WHERE id=$1`, [req.params.id]));
+});
+
 // Manual payment confirmation — mirrors Shop's identical
 // /admin/shop/orders/:id/payment-status route (Admin sees the collection
 // number receive the money and taps this once confirmed). Moves the VIP
@@ -596,6 +685,14 @@ vipNumbersRouter.put("/admin/vip-numbers/orders/:id/payment-status", requirePerm
     "Payment Confirmed",
     `Your payment for VIP number order ${req.params.id} has been confirmed. We're processing your number now.`
   );
+  // Real, push-only signal to every agent device -- see
+  // sendPushToAllAgents's own comment on why this is a broadcast rather
+  // than a targeted per-order recipient.
+  await sendPushToAllAgents({
+    title: "⭐ VIP Number Order Paid",
+    body: `Order ${req.params.id} payment confirmed.`,
+    data: { screen: "agent_orders", orderType: "vip_number", orderId: req.params.id },
+  });
   sendJson(res, 200, await queryOne(`SELECT ${VIP_ORDER_COLUMNS} FROM vip_number_orders WHERE id=$1`, [req.params.id]));
 });
 

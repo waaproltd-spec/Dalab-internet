@@ -7,6 +7,7 @@ import { rateLimit } from "../auth/rateLimit.js";
 import { sendJson } from "../utils/camelCase.js";
 import { parseDataUri } from "../utils/dataUri.js";
 import { notifyCustomer } from "../services/customerNotify.js";
+import { sendPushToAllAgents } from "../services/push.js";
 import { recordActivity } from "../utils/activityLog.js";
 import { formatUssdAmount } from "../utils/ussdFormatting.js";
 import { validateMobileNumber } from "../lib/phoneValidation.js";
@@ -1686,6 +1687,38 @@ shopRouter.get("/admin/shop/orders/:id", requirePermission("shop.manage"), async
   sendJson(res, 200, { ...order, items: await loadOrderItems(req.params.id) });
 });
 
+// ==================== Agent: Orders (read-only) ====================
+
+// The Agent App's own Orders tab -- shows real Shop order data straight
+// from this same shop_orders table, same SHOP_ORDER_LIST_SELECT/filters
+// as the Admin Dashboard's identical routes above, just under agent auth
+// instead of the "shop.manage" staff permission. Read-only: Shop's own
+// multi-stage courier/tracking lifecycle (processing/shipped/delivered/
+// returned/refunded) stays admin-managed exactly as it already is --
+// this feature only adds a "Complete Order" action for VIP Numbers (see
+// vipNumbers.routes.ts), not Shop.
+shopRouter.get("/agent/shop/orders", requireAuth("agent"), async (req, res) => {
+  const { status, search } = req.query as Record<string, string | undefined>;
+  const args: unknown[] = [];
+  let sql = `${SHOP_ORDER_LIST_SELECT} WHERE 1=1`;
+  if (status && SHOP_ORDER_STATUSES.includes(status)) {
+    args.push(status);
+    sql += ` AND so.status=$${args.length}`;
+  }
+  if (search) {
+    args.push(`%${search}%`);
+    sql += ` AND (so.id ILIKE $${args.length} OR c.name ILIKE $${args.length} OR c.phone ILIKE $${args.length} OR so.delivery_phone ILIKE $${args.length})`;
+  }
+  sql += ` ORDER BY so.created_at DESC LIMIT 200`;
+  sendJson(res, 200, await query(sql, args));
+});
+
+shopRouter.get("/agent/shop/orders/:id", requireAuth("agent"), async (req, res) => {
+  const order = await queryOne(`${SHOP_ORDER_LIST_SELECT} WHERE so.id=$1`, [req.params.id]);
+  if (!order) return sendJson(res, 404, { error: "Order not found" });
+  sendJson(res, 200, { ...order, items: await loadOrderItems(req.params.id) });
+});
+
 // Manual payment confirmation — mirrors Money Exchange's manual-verify path
 // rather than the automatic SMS-matching pipeline (see migration 074's
 // header comment for why). An Admin sees the collection number receive the
@@ -1720,6 +1753,15 @@ shopRouter.put("/admin/shop/orders/:id/payment-status", requirePermission("shop.
     await query(`INSERT INTO shop_order_status_history (order_id, status, note) VALUES ($1,'processing','Payment confirmed')`, [req.params.id]);
   }
   await notifyCustomer(existing.customer_id, "shop_order_update", "Order Confirmed", `Your payment for order ${req.params.id} has been confirmed. We're preparing it now.`);
+  // Broadcast to every agent device -- Shop orders carry no assigned-agent
+  // column (customer-initiated checkout, not agent-created), so any agent
+  // may need to know a new paid order exists. Real, push-only signal (see
+  // sendPushToAllAgents's own comment); never fabricated/local-only.
+  await sendPushToAllAgents({
+    title: "🛒 Shop Order Paid",
+    body: `Order ${req.params.id} payment confirmed.`,
+    data: { screen: "agent_orders", orderType: "shop", orderId: req.params.id },
+  });
   sendJson(res, 200, await queryOne(`${SHOP_ORDER_LIST_SELECT} WHERE so.id=$1`, [req.params.id]));
 });
 

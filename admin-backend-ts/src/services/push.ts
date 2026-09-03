@@ -219,3 +219,34 @@ export async function sendPushToAgent(
     return { attempted: true, delivered: false };
   }
 }
+
+/** Broadcasts to every currently-registered agent device at once, for an
+ * event with no single "assigned" agent to target (unlike
+ * notifyAssignedAgent's support-conversation case) -- e.g. a Shop/VIP
+ * Number order whose payment just got confirmed, which any agent may pick
+ * up. Shop/VIP orders carry no agent_id column (they're customer-initiated
+ * checkouts, not agent-created), so there is no per-order recipient to key
+ * a targeted push off of; every logged-in agent device gets it, same as
+ * how the Admin Dashboard's own campaign broadcaster resolves an "all"
+ * audience for customers. One query across every agent's tokens rather
+ * than looping sendPushToAgent per agent, to avoid one multicast call per
+ * agent when a single batched send (still capped at 500/call inside
+ * sendPushToTokens) does the same job. */
+export async function sendPushToAllAgents(payload: PushPayload): Promise<{ attempted: boolean; delivered: boolean }> {
+  try {
+    const rows = await query<{ fcm_token: string }>(`SELECT fcm_token FROM agent_device_tokens`);
+    if (rows.length === 0) return { attempted: false, delivered: false };
+
+    const tokens = rows.map((r) => r.fcm_token);
+    const result = await sendPushToTokens(tokens, payload);
+
+    if (result.invalidTokens.length > 0) {
+      await query(`DELETE FROM agent_device_tokens WHERE fcm_token = ANY($1)`, [result.invalidTokens]);
+    }
+    return { attempted: true, delivered: result.successCount > 0 };
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("sendPushToAllAgents failed:", (err as Error).message);
+    return { attempted: true, delivered: false };
+  }
+}

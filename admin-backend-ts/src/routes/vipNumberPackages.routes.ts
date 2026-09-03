@@ -5,6 +5,7 @@ import { requirePermission } from "../auth/permissions.js";
 import { rateLimit } from "../auth/rateLimit.js";
 import { sendJson } from "../utils/camelCase.js";
 import { notifyCustomer } from "../services/customerNotify.js";
+import { sendPushToAllAgents } from "../services/push.js";
 import { recordActivity } from "../utils/activityLog.js";
 import { formatEvcDahabUssdAmount } from "../utils/ussdFormatting.js";
 import { validateMobileNumber } from "../lib/phoneValidation.js";
@@ -644,6 +645,95 @@ vipNumberPackagesRouter.get("/admin/vip-numbers/packages/orders/:id", requirePer
   sendJson(res, 200, { ...order, items, statusHistory });
 });
 
+// ==================== Agent: package orders (read + Complete Order) ====================
+
+// Same PACKAGE_ORDER_COLUMNS/join shape as the admin routes above, just
+// under agent auth -- the Agent App's Orders tab's "Packages" list.
+vipNumberPackagesRouter.get("/agent/vip-numbers/packages/orders", requireAuth("agent"), async (req, res) => {
+  const { status, search } = req.query as { status?: string; search?: string };
+  const args: unknown[] = [];
+  let sql = `SELECT o.${PACKAGE_ORDER_COLUMNS.replace(/, /g, ", o.")}, c.name AS customer_name, c.phone AS customer_phone
+             FROM vip_number_package_orders o
+             JOIN customers c ON c.id = o.customer_id
+             WHERE 1=1`;
+  if (status && PACKAGE_ORDER_STATUSES.includes(status)) {
+    args.push(status);
+    sql += ` AND o.status=$${args.length}`;
+  }
+  if (search) {
+    args.push(`%${search}%`);
+    sql += ` AND (o.id ILIKE $${args.length} OR o.customer_full_name ILIKE $${args.length} OR c.phone ILIKE $${args.length})`;
+  }
+  sql += ` ORDER BY o.created_at DESC LIMIT 200`;
+  sendJson(res, 200, await query(sql, args));
+});
+
+vipNumberPackagesRouter.get("/agent/vip-numbers/packages/orders/:id", requireAuth("agent"), async (req, res) => {
+  const order = await queryOne(
+    `SELECT o.${PACKAGE_ORDER_COLUMNS.replace(/, /g, ", o.")}, c.name AS customer_name, c.phone AS customer_phone
+     FROM vip_number_package_orders o
+     JOIN customers c ON c.id = o.customer_id
+     WHERE o.id=$1`,
+    [req.params.id]
+  );
+  if (!order) return sendJson(res, 404, { error: "Order not found" });
+  const items = await loadPackageOrderItems(req.params.id);
+  const statusHistory = await loadPackageOrderStatusHistory(req.params.id);
+  sendJson(res, 200, { ...order, items, statusHistory });
+});
+
+// The Agent App's "Complete Order" action for a package -- same shape as
+// vipNumbers.routes.ts's identical single-number agent route: hardcoded to
+// 'completed', payment must already be confirmed, order must not already
+// be terminal. adminId left undefined in recordActivity for the same
+// admin_activity_log FK reason that route's own comment explains.
+vipNumberPackagesRouter.post("/agent/vip-numbers/packages/orders/:id/complete", requireAuth("agent"), async (req, res) => {
+  let existing: { status: string; payment_status: string; customer_id: string; package_id: string };
+  try {
+    existing = await withTransaction(async (client) => {
+      const row = await client.query(
+        `SELECT status, payment_status, customer_id, package_id FROM vip_number_package_orders WHERE id=$1 FOR UPDATE`,
+        [req.params.id]
+      );
+      const order = row.rows[0];
+      if (!order) throw Object.assign(new Error("Order not found"), { status: 404 });
+      if (TERMINAL_PACKAGE_ORDER_STATUSES.includes(order.status)) {
+        throw Object.assign(new Error(`This order is already ${order.status} and cannot be changed further`), { status: 409 });
+      }
+      if (order.payment_status !== "paid") {
+        throw Object.assign(new Error("This order cannot be completed until payment is confirmed"), { status: 409 });
+      }
+      await client.query(
+        `UPDATE vip_number_package_orders SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1`,
+        [req.params.id]
+      );
+      return order;
+    });
+  } catch (err: any) {
+    if (err?.status) return sendJson(res, err.status, { error: err.message });
+    throw err;
+  }
+  await query(
+    `INSERT INTO vip_number_package_order_status_history (package_order_id, status, note) VALUES ($1,'completed','Completed by agent')`,
+    [req.params.id]
+  );
+  await recordActivity({
+    adminId: undefined,
+    action: "vip_number_package_order_completed_by_agent",
+    entityType: "vip_number_package_order",
+    entityId: req.params.id,
+    oldValue: { status: existing.status },
+    newValue: { status: "completed" },
+  });
+  await notifyCustomer(
+    existing.customer_id,
+    "vip_number_package_order_update",
+    "VIP Number Package Ready",
+    `Your VIP number package order ${req.params.id} has been completed.`
+  );
+  sendJson(res, 200, await queryOne(`SELECT ${PACKAGE_ORDER_COLUMNS} FROM vip_number_package_orders WHERE id=$1`, [req.params.id]));
+});
+
 // Manual payment confirmation -- mirrors vipNumbers.routes.ts's identical
 // /admin/vip-numbers/orders/:id/payment-status route (Admin sees the
 // collection number receive the money and taps this once confirmed).
@@ -704,6 +794,13 @@ vipNumberPackagesRouter.put(
       "Payment Confirmed",
       `Your payment for VIP number package order ${req.params.id} has been confirmed. We're processing your numbers now.`
     );
+    // Real, push-only signal to every agent device -- see
+    // sendPushToAllAgents's own comment.
+    await sendPushToAllAgents({
+      title: "⭐ VIP Number Package Order Paid",
+      body: `Order ${req.params.id} payment confirmed.`,
+      data: { screen: "agent_orders", orderType: "vip_package", orderId: req.params.id },
+    });
     sendJson(
       res,
       200,
