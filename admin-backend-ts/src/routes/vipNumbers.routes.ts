@@ -54,7 +54,7 @@ async function restoreVipNumberAvailability(vipNumberId: string) {
 }
 
 const VIP_ORDER_COLUMNS =
-  "id, vip_number_id, customer_id, company_id, phone_number, category, price, customer_full_name, payment_method, sender_phone, payment_status, status, paid_at, completed_at, cancelled_at, created_at, updated_at";
+  "id, vip_number_id, customer_id, company_id, phone_number, category, price, customer_full_name, payment_method, sender_phone, location, district, mother_name, payment_status, status, paid_at, completed_at, cancelled_at, created_at, updated_at";
 
 // ==================== Public catalog (no auth — browsing before login) ====================
 
@@ -85,11 +85,24 @@ vipNumbersRouter.post(
   requireAuth("customer"),
   rateLimit("customer-vip-number-order-create", 20, 15 * 60 * 1000),
   async (req, res) => {
-    const { vipNumberId, paymentMethod, senderPhone, customerFullName } = req.body ?? {};
+    const { vipNumberId, paymentMethod, senderPhone, customerFullName, location, district, motherName } = req.body ?? {};
     if (!vipNumberId) return sendJson(res, 400, { error: "vipNumberId is required" });
     if (!senderPhone) return sendJson(res, 400, { error: "Provide the phone number you'll pay from" });
     if (typeof customerFullName !== "string" || !hasThreeNames(customerFullName)) {
       return sendJson(res, 400, { error: "Enter your full name (first, father's, and grandfather's name)" });
+    }
+    // Collected on the checkout flow's own Customer Information step
+    // (screen 1 of 2), required for DALAB's real-world number
+    // registration/porting after payment -- same requiredness rule as
+    // customerFullName above, just three more fields.
+    if (typeof location !== "string" || !location.trim()) {
+      return sendJson(res, 400, { error: "Enter where you live" });
+    }
+    if (typeof district !== "string" || !district.trim()) {
+      return sendJson(res, 400, { error: "Enter your district" });
+    }
+    if (typeof motherName !== "string" || !motherName.trim()) {
+      return sendJson(res, 400, { error: "Enter your mother's name" });
     }
 
     const method = await queryOne<{ method: string; ussd_template: string }>(
@@ -139,8 +152,8 @@ vipNumbersRouter.post(
             await client.query(
               `INSERT INTO vip_number_orders (
                  id, vip_number_id, customer_id, company_id, phone_number, category, price,
-                 customer_full_name, payment_method, sender_phone
-               ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+                 customer_full_name, payment_method, sender_phone, location, district, mother_name
+               ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
               [
                 orderId,
                 vipNumberId,
@@ -152,6 +165,9 @@ vipNumbersRouter.post(
                 String(customerFullName).trim(),
                 method.method,
                 senderPhone,
+                String(location).trim(),
+                String(district).trim(),
+                String(motherName).trim(),
               ]
             );
             await client.query(`INSERT INTO vip_number_order_status_history (order_id, status) VALUES ($1,'pending')`, [orderId]);
