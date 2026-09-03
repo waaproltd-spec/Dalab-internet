@@ -18,6 +18,14 @@ export const packagesRouter = Router();
 // dashboard/apps know whether to point an <img> at that route at all.
 const COMPANY_COLUMNS = `id, name, group_number, color_hex, logo_url, status, gateway, payment_number, payment_ussd_template, payout_ussd_template, provider_number, ussd_code, visible_customer_app, visible_agent_app, auto_process_enabled, slug, description, sort_order, fulfillment_method, (logo_data IS NOT NULL) AS has_logo, created_at, updated_at`;
 
+// image_data must never reach any client on the list/detail routes below —
+// same "has_X boolean, raw bytes only through their own dedicated route"
+// pattern as COMPANY_COLUMNS/has_logo just above. One image (icon) per
+// package, not a gallery — mirrors companies.logo_data/logo_mime_type
+// exactly rather than shop_product_images' multi-image shape.
+const PACKAGE_COLUMNS = `id, company_id, category_id, name, old_price, price, mb, minutes, sms, validity, active, created_at, code, provider_amount, ussd_template_id, somlink_bundle_id, (image_data IS NOT NULL) AS has_image`;
+const PACKAGE_COLUMNS_P = `p.id, p.company_id, p.category_id, p.name, p.old_price, p.price, p.mb, p.minutes, p.sms, p.validity, p.active, p.created_at, p.code, p.provider_amount, p.ussd_template_id, p.somlink_bundle_id, (p.image_data IS NOT NULL) AS has_image`;
+
 // Also called by the Agent App (NewSaleScreen/PackagesScreen) for its own
 // unrelated "create a sale" flow, so the default (no ?audience=) stays
 // unfiltered beyond soft-delete — only an explicit ?audience=customer
@@ -67,6 +75,7 @@ companiesRouter.get("/companies/:id/packages", async (req, res) => {
   // the list over this.
   const rows = await query(
     `SELECT p.id, p.company_id, p.category_id, p.name, p.old_price, p.price, p.mb, p.minutes, p.sms, p.validity, p.active, p.code, p.created_at,
+            (p.image_data IS NOT NULL) AS has_image,
             sc.name AS category_name
      FROM packages p
      LEFT JOIN service_categories sc ON sc.company_id = p.company_id AND sc.slug = p.category_id
@@ -300,9 +309,9 @@ packagesRouter.get("/admin/packages", requireStaff(), async (req, res) => {
   // company (same as every other listing) — an explicit ?companyId= lookup
   // is left unfiltered, matching every other by-id route in this file.
   const rows = companyId
-    ? await query(`SELECT * FROM packages WHERE company_id=$1 ORDER BY category_id, price`, [companyId])
+    ? await query(`SELECT ${PACKAGE_COLUMNS} FROM packages WHERE company_id=$1 ORDER BY category_id, price`, [companyId])
     : await query(
-        `SELECT p.* FROM packages p JOIN companies c ON c.id = p.company_id
+        `SELECT ${PACKAGE_COLUMNS_P} FROM packages p JOIN companies c ON c.id = p.company_id
          WHERE c.deleted_at IS NULL ORDER BY p.company_id, p.category_id, p.price`
       );
   sendJson(res, 200, rows);
@@ -421,7 +430,7 @@ packagesRouter.post("/admin/packages", requirePermission("packages.manage"), asy
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
     [id, companyId, categoryId, name, numOrDefault(oldPrice, price), price, providerAmountValue, numOrDefault(mb, 0), numOrDefault(minutes, 0), numOrDefault(sms, 0), validity ?? "", code ?? null, ussdTemplateIdValue, somlinkBundleIdValue]
   );
-  const created = await queryOne(`SELECT * FROM packages WHERE id=$1`, [id]);
+  const created = await queryOne(`SELECT ${PACKAGE_COLUMNS} FROM packages WHERE id=$1`, [id]);
   await recordActivity({
     adminId: req.auth!.sub,
     action: "create_package",
@@ -437,7 +446,7 @@ packagesRouter.post("/admin/packages", requirePermission("packages.manage"), asy
 });
 
 packagesRouter.put("/admin/packages/:id", requirePermission("packages.manage"), async (req, res) => {
-  const existing = await queryOne(`SELECT * FROM packages WHERE id=$1`, [req.params.id]);
+  const existing = await queryOne(`SELECT ${PACKAGE_COLUMNS} FROM packages WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Package not found" });
   // Every field the client can actually send (oldPrice, categoryId,
   // providerAmount, ...) is camelCase, while `existing`'s keys are the DB's
@@ -475,7 +484,7 @@ packagesRouter.put("/admin/packages/:id", requirePermission("packages.manage"), 
     `UPDATE packages SET name=$1, category_id=$2, old_price=$3, price=$4, provider_amount=$5, mb=$6, minutes=$7, sms=$8, validity=$9, active=$10, code=$11, ussd_template_id=$12, somlink_bundle_id=$13 WHERE id=$14`,
     [name, categoryId, oldPrice, price, providerAmount, mb, minutes, sms, validity, Boolean(active), code ?? null, ussdTemplateId, somlinkBundleId, req.params.id]
   );
-  const updated = await queryOne(`SELECT * FROM packages WHERE id=$1`, [req.params.id]);
+  const updated = await queryOne(`SELECT ${PACKAGE_COLUMNS} FROM packages WHERE id=$1`, [req.params.id]);
   await recordActivity({
     adminId: req.auth!.sub,
     action: "update_package",
@@ -492,6 +501,40 @@ packagesRouter.put("/admin/packages/:id", requirePermission("packages.manage"), 
   if (req.body.ussdTemplateId !== undefined && ussdTemplateId) await selfHealStuckOrders(existing.company_id);
   broadcast({ type: "catalog.updated" });
   sendJson(res, 200, { ...updated, templateWarning });
+});
+
+// Public — served by package id (not a secret), same reasoning as
+// companies/:id/logo and promo-images: an <img src> tag can't send an
+// Authorization header anyway. A dedicated sub-resource rather than a field
+// on POST/PUT /admin/packages, matching how the company logo is managed
+// separately from the rest of a company's fields.
+packagesRouter.get("/packages/:id/image", async (req, res) => {
+  const row = await queryOne<{ image_data: Buffer | null; image_mime_type: string | null }>(
+    `SELECT image_data, image_mime_type FROM packages WHERE id=$1`,
+    [req.params.id]
+  );
+  if (!row || !row.image_data) return sendJson(res, 404, { error: "Image not found" });
+  res.setHeader("Content-Type", row.image_mime_type || "image/png");
+  res.setHeader("Cache-Control", "public, max-age=3600");
+  res.send(row.image_data);
+});
+
+packagesRouter.put("/admin/packages/:id/image", requirePermission("packages.manage"), async (req, res) => {
+  const parsed = parseDataUri(req.body.imageBase64);
+  if (!parsed) return sendJson(res, 400, { error: "imageBase64 must be a data:<mime>;base64,<data> string" });
+  const result = await query(`UPDATE packages SET image_data=$1, image_mime_type=$2 WHERE id=$3 RETURNING id`, [
+    parsed.data,
+    parsed.mimeType,
+    req.params.id,
+  ]);
+  if (result.length === 0) return sendJson(res, 404, { error: "Package not found" });
+  sendJson(res, 200, { id: req.params.id, hasImage: true });
+});
+
+packagesRouter.delete("/admin/packages/:id/image", requirePermission("packages.manage"), async (req, res) => {
+  const result = await query(`UPDATE packages SET image_data=NULL, image_mime_type=NULL WHERE id=$1 RETURNING id`, [req.params.id]);
+  if (result.length === 0) return sendJson(res, 404, { error: "Package not found" });
+  sendJson(res, 200, { id: req.params.id, hasImage: false });
 });
 
 // Soft delete — a package already ordered must stay in history for receipts/reports.
@@ -524,7 +567,7 @@ packagesRouter.delete("/admin/packages/:id", requirePermission("packages.manage"
 // path to remember to update.
 packagesRouter.get("/admin/packages/missing-template", requireStaff(), async (_req, res) => {
   const candidates = await query<any>(
-    `SELECT p.*, c.name AS company_name FROM packages p
+    `SELECT ${PACKAGE_COLUMNS_P}, c.name AS company_name FROM packages p
      JOIN companies c ON c.id = p.company_id AND c.deleted_at IS NULL
      WHERE p.active = true
      ORDER BY c.name, p.name`

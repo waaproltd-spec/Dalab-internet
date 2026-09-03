@@ -8,7 +8,8 @@ import {
   Smartphone, Radio, ChevronDown, ChevronRight, AlertTriangle, RotateCcw, UserCog, Tags,
   WifiOff, BatteryFull, BatteryMedium, BatteryLow, BatteryWarning,
   Image as ImageIcon, Upload, MessageSquare, Database, Activity, History, CreditCard, PlayCircle, Percent,
-  MessageCircle, Lightbulb, Share2, KeyRound, ExternalLink, PiggyBank, Landmark, Trash, ArrowLeftRight
+  MessageCircle, Lightbulb, Share2, KeyRound, ExternalLink, PiggyBank, Landmark, Trash, ArrowLeftRight,
+  ShoppingBag, Boxes, Award
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 
@@ -166,6 +167,11 @@ const DalabAdminApi = {
   updatePackage: (id, body) => dalabAdminApiRequest(`/admin/packages/${id}`, { method: "PUT", body }),
   deletePackage: (id) => dalabAdminApiRequest(`/admin/packages/${id}`, { method: "DELETE" }),
   getPackagesMissingTemplate: () => dalabAdminApiRequest("/admin/packages/missing-template"),
+  // One icon per package, shown in the Customer App's package list --
+  // uploaded as a data URI (base64), same as Promo Images/Shop products.
+  updatePackageImage: (id, imageBase64) => dalabAdminApiRequest(`/admin/packages/${id}/image`, { method: "PUT", body: { imageBase64 } }),
+  deletePackageImage: (id) => dalabAdminApiRequest(`/admin/packages/${id}/image`, { method: "DELETE" }),
+  packageImageUrl: (id) => `${DALAB_API_BASE_URL}/packages/${id}/image`,
   // Service categories
   getCategories: (companyId) => dalabAdminApiRequest(`/admin/categories${companyId ? `?companyId=${companyId}` : ""}`),
   createCategory: (body) => dalabAdminApiRequest("/admin/categories", { method: "POST", body }),
@@ -457,6 +463,90 @@ const DalabAdminApi = {
   getResellerWithdrawalCommissions: () => dalabAdminApiRequest("/admin/reseller-withdrawal-commissions"),
   setResellerWithdrawalCommission: (companyId, commissionPercentage) =>
     dalabAdminApiRequest(`/admin/reseller-withdrawal-commissions/${companyId}`, { method: "PUT", body: { commissionPercentage } }),
+  // Shop: DALAB's 4th customer-facing service (Internet/eBadal/Reseller/Shop).
+  // Every /admin/shop/* route requires the "shop.manage" permission on the
+  // backend, including plain GETs -- see shop.routes.ts's own header comment.
+  getShopCategories: () => dalabAdminApiRequest("/admin/shop/categories"),
+  createShopCategory: (body) => dalabAdminApiRequest("/admin/shop/categories", { method: "POST", body }),
+  updateShopCategory: (id, body) => dalabAdminApiRequest(`/admin/shop/categories/${id}`, { method: "PUT", body }),
+  deleteShopCategory: (id) => dalabAdminApiRequest(`/admin/shop/categories/${id}`, { method: "DELETE" }),
+  // Subcategories are generic (any category could have them) but only
+  // Electronics's admin UI surfaces them for now, per the spec.
+  getShopSubcategories: (categoryId) => dalabAdminApiRequest(`/admin/shop/subcategories${categoryId ? `?categoryId=${categoryId}` : ""}`),
+  createShopSubcategory: (body) => dalabAdminApiRequest("/admin/shop/subcategories", { method: "POST", body }),
+  updateShopSubcategory: (id, body) => dalabAdminApiRequest(`/admin/shop/subcategories/${id}`, { method: "PUT", body }),
+  deleteShopSubcategory: (id) => dalabAdminApiRequest(`/admin/shop/subcategories/${id}`, { method: "DELETE" }),
+  getShopProducts: (categoryId) => dalabAdminApiRequest(`/admin/shop/products${categoryId ? `?categoryId=${categoryId}` : ""}`),
+  getShopProduct: (id) => dalabAdminApiRequest(`/admin/shop/products/${id}`),
+  createShopProduct: (body) => dalabAdminApiRequest("/admin/shop/products", { method: "POST", body }),
+  updateShopProduct: (id, body) => dalabAdminApiRequest(`/admin/shop/products/${id}`, { method: "PUT", body }),
+  deleteShopProduct: (id) => dalabAdminApiRequest(`/admin/shop/products/${id}`, { method: "DELETE" }),
+  // Product photos are uploaded as data URIs (base64), same as Promo Images
+  // -- dalabAdminApiRequest already sends everything as JSON.
+  addShopProductImage: (productId, imageBase64) => dalabAdminApiRequest(`/admin/shop/products/${productId}/images`, { method: "POST", body: { imageBase64 } }),
+  deleteShopProductImage: (productId, imageId) => dalabAdminApiRequest(`/admin/shop/products/${productId}/images/${imageId}`, { method: "DELETE" }),
+  shopProductImageUrl: (productId, imageId) => `${DALAB_API_BASE_URL}/shop/products/${productId}/images/${imageId}`,
+  getShopPaymentMethods: () => dalabAdminApiRequest("/admin/shop/payment-methods"),
+  updateShopPaymentMethod: (method, body) => dalabAdminApiRequest(`/admin/shop/payment-methods/${method}`, { method: "PUT", body }),
+  getShopOrders: (status, search) => {
+    const qs = new URLSearchParams({ ...(status ? { status } : {}), ...(search ? { search } : {}) }).toString();
+    return dalabAdminApiRequest(`/admin/shop/orders${qs ? `?${qs}` : ""}`);
+  },
+  getShopOrder: (id) => dalabAdminApiRequest(`/admin/shop/orders/${id}`),
+  confirmShopOrderPayment: (id) => dalabAdminApiRequest(`/admin/shop/orders/${id}/payment-status`, { method: "PUT", body: { paymentStatus: "paid" } }),
+  updateShopOrderStatus: (id, body) => dalabAdminApiRequest(`/admin/shop/orders/${id}/status`, { method: "PUT", body }),
+  // Product Variants (size/color/model/storage/etc, per-variant price
+  // override + stock) -- migration 082.
+  getShopProductVariants: (productId) => dalabAdminApiRequest(`/admin/shop/products/${productId}/variants`),
+  createShopProductVariant: (productId, body) => dalabAdminApiRequest(`/admin/shop/products/${productId}/variants`, { method: "POST", body }),
+  updateShopProductVariant: (productId, id, body) => dalabAdminApiRequest(`/admin/shop/products/${productId}/variants/${id}`, { method: "PUT", body }),
+  deleteShopProductVariant: (productId, id) => dalabAdminApiRequest(`/admin/shop/products/${productId}/variants/${id}`, { method: "DELETE" }),
+  // Every active product at/under its own low_stock_threshold -- migration 085.
+  getShopLowStockProducts: () => dalabAdminApiRequest("/admin/shop/products/low-stock"),
+  // Flash Sales: time-boxed sale pricing on specific products -- migration 083.
+  getShopFlashSales: () => dalabAdminApiRequest("/admin/shop/flash-sales"),
+  createShopFlashSale: (body) => dalabAdminApiRequest("/admin/shop/flash-sales", { method: "POST", body }),
+  updateShopFlashSale: (id, body) => dalabAdminApiRequest(`/admin/shop/flash-sales/${id}`, { method: "PUT", body }),
+  deleteShopFlashSale: (id) => dalabAdminApiRequest(`/admin/shop/flash-sales/${id}`, { method: "DELETE" }),
+  // Bundle Deals: a fixed set of products sold together at one price -- migration 084.
+  getShopBundles: () => dalabAdminApiRequest("/admin/shop/bundles"),
+  createShopBundle: (body) => dalabAdminApiRequest("/admin/shop/bundles", { method: "POST", body }),
+  updateShopBundle: (id, body) => dalabAdminApiRequest(`/admin/shop/bundles/${id}`, { method: "PUT", body }),
+  deleteShopBundle: (id) => dalabAdminApiRequest(`/admin/shop/bundles/${id}`, { method: "DELETE" }),
+  // Delivery Zones: per-area delivery fees, additive to shop_settings' flat
+  // fee -- migration 086.
+  getShopDeliveryZones: () => dalabAdminApiRequest("/admin/shop/delivery-zones"),
+  createShopDeliveryZone: (body) => dalabAdminApiRequest("/admin/shop/delivery-zones", { method: "POST", body }),
+  updateShopDeliveryZone: (id, body) => dalabAdminApiRequest(`/admin/shop/delivery-zones/${id}`, { method: "PUT", body }),
+  deleteShopDeliveryZone: (id) => dalabAdminApiRequest(`/admin/shop/delivery-zones/${id}`, { method: "DELETE" }),
+  // Revenue/order/top-product snapshot.
+  getShopAnalytics: () => dalabAdminApiRequest("/admin/shop/analytics"),
+
+  // VIP Numbers: DALAB's 5th customer-facing service -- a small catalog of
+  // premium phone numbers (Gold/Silver) per company. Every /admin/vip-numbers/*
+  // route requires the "vipNumbers.manage" permission on the backend,
+  // including plain GETs -- see vipNumbers.routes.ts's own header comment,
+  // same policy Shop's admin routes already use.
+  getVipNumbers: (companyId, status) => {
+    const params = new URLSearchParams();
+    if (companyId) params.set("companyId", companyId);
+    if (status) params.set("status", status);
+    const qs = params.toString();
+    return dalabAdminApiRequest(`/admin/vip-numbers${qs ? `?${qs}` : ""}`);
+  },
+  createVipNumber: (body) => dalabAdminApiRequest("/admin/vip-numbers", { method: "POST", body }),
+  updateVipNumber: (id, body) => dalabAdminApiRequest(`/admin/vip-numbers/${id}`, { method: "PUT", body }),
+  deleteVipNumber: (id) => dalabAdminApiRequest(`/admin/vip-numbers/${id}`, { method: "DELETE" }),
+  getVipNumberOrders: (status, search) => {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    if (search) params.set("search", search);
+    const qs = params.toString();
+    return dalabAdminApiRequest(`/admin/vip-numbers/orders${qs ? `?${qs}` : ""}`);
+  },
+  getVipNumberOrder: (id) => dalabAdminApiRequest(`/admin/vip-numbers/orders/${id}`),
+  confirmVipNumberOrderPayment: (id) => dalabAdminApiRequest(`/admin/vip-numbers/orders/${id}/payment-status`, { method: "PUT" }),
+  updateVipNumberOrderStatus: (id, body) => dalabAdminApiRequest(`/admin/vip-numbers/orders/${id}/status`, { method: "PUT", body }),
 };
 
 // Mirrors admin-backend-ts/src/auth/permissions.ts's PERMISSIONS list — keep
@@ -479,6 +569,8 @@ const PERMISSION_OPTIONS = [
   { key: "exchange.manage", label: "Manage money exchange" },
   { key: "resellers.manage", label: "Manage resellers" },
   { key: "support.manage", label: "Handle Agent Support conversations" },
+  { key: "shop.manage", label: "Manage Shop (categories, products, orders)" },
+  { key: "vipNumbers.manage", label: "Manage VIP Numbers (inventory, orders)" },
 ];
 
 // Normalizes a GET /admin/companies row into the shape every section of this
@@ -752,38 +844,55 @@ const orderBreakdown = [
   { name: "Hormuud", value: 240 }, { name: "Somnet", value: 130 }, { name: "Somtel", value: 180 }, { name: "Amtel", value: 90 },
 ];
 
+// Every entry other than "overview" is hidden from a regular Admin unless
+// either superAdminOnly is absent AND `permission` is granted, or the admin
+// is Super Admin (who always sees everything -- see the NAV.filter below
+// and hasPermission's own super_admin short-circuit). `permission` is one
+// of PERMISSIONS (admin-backend-ts/src/auth/permissions.ts) -- picked to
+// match whichever key that section's own hasPermission(admin, ...) check
+// already uses internally (Companies -> companies.manage, etc.) where one
+// exists; a handful of sections with no per-action permission check of
+// their own (Payment/Provider Numbers, Offline, Notifications, Promo
+// Images, SMS Monitor, Payment Transactions, Pending Recovery, Execution
+// Logs) are grouped under the closest existing key for the same feature
+// area rather than inventing a new one (e.g. Payment/Provider Numbers are
+// company configuration -> companies.manage; SMS Monitor/Execution Logs
+// are device/SIM/USSD activity -> devices.manage; Offline/Payment
+// Transactions/Pending Recovery are all order lifecycle -> orders.manage).
 const NAV = [
   { id: "overview", label: "Overview", icon: LayoutGrid },
   { id: "financial-overview", label: "Financial Overview", icon: PiggyBank, superAdminOnly: true },
-  { id: "balance-dashboard", label: "Balance Dashboard", icon: DollarSign },
-  { id: "companies", label: "Companies", icon: Building2 },
-  { id: "payment-numbers", label: "Payment Numbers", icon: Wallet },
-  { id: "provider-numbers", label: "Provider Numbers", icon: Radio },
+  { id: "balance-dashboard", label: "Balance Dashboard", icon: DollarSign, permission: "devices.manage" },
+  { id: "companies", label: "Companies", icon: Building2, permission: "companies.manage" },
+  { id: "payment-numbers", label: "Payment Numbers", icon: Wallet, permission: "companies.manage" },
+  { id: "provider-numbers", label: "Provider Numbers", icon: Radio, permission: "companies.manage" },
   { id: "payment-wallets", label: "Payment Wallets", icon: CreditCard, superAdminOnly: true },
-  { id: "packages", label: "Packages & Pricing", icon: Package },
-  { id: "categories", label: "Categories", icon: Tags },
-  { id: "orders", label: "Orders", icon: ShoppingCart },
-  { id: "offline", label: "Offline (Rukumo)", icon: WifiOff },
-  { id: "customers", label: "Customers", icon: Users },
-  { id: "agents", label: "Agents", icon: UserCog },
-  { id: "notifications", label: "Notifications", icon: Bell },
-  { id: "feedback", label: "Feedback & Suggestions", icon: Lightbulb },
-  { id: "support", label: "Agent Support", icon: MessageCircle },
-  { id: "promo-images", label: "Promo Images", icon: ImageIcon },
-  { id: "devices", label: "Device & USSD", icon: SmartphoneNfc },
-  { id: "sms-logs", label: "SMS Monitor", icon: MessageSquare },
-  { id: "payment-transactions", label: "Payment Transactions", icon: Activity },
-  { id: "commissions", label: "Commissions", icon: Percent },
-  { id: "money-exchange", label: "Money Exchange", icon: ArrowLeftRight },
-  { id: "resellers", label: "Resellers", icon: Landmark },
+  { id: "packages", label: "Packages & Pricing", icon: Package, permission: "packages.manage" },
+  { id: "categories", label: "Categories", icon: Tags, permission: "categories.manage" },
+  { id: "orders", label: "Orders", icon: ShoppingCart, permission: "orders.manage" },
+  { id: "offline", label: "Offline (Rukumo)", icon: WifiOff, permission: "orders.manage" },
+  { id: "customers", label: "Customers", icon: Users, permission: "customers.manage" },
+  { id: "agents", label: "Agents", icon: UserCog, permission: "agents.manage" },
+  { id: "notifications", label: "Notifications", icon: Bell, permission: "settings.manage" },
+  { id: "feedback", label: "Feedback & Suggestions", icon: Lightbulb, permission: "feedback.manage" },
+  { id: "support", label: "Agent Support", icon: MessageCircle, permission: "support.manage" },
+  { id: "promo-images", label: "Promo Images", icon: ImageIcon, superAdminOnly: true },
+  { id: "devices", label: "Device & USSD", icon: SmartphoneNfc, superAdminOnly: true },
+  { id: "sms-logs", label: "SMS Monitor", icon: MessageSquare, permission: "devices.manage" },
+  { id: "payment-transactions", label: "Payment Transactions", icon: Activity, permission: "orders.manage" },
+  { id: "commissions", label: "Commissions", icon: Percent, permission: "commissions.manage" },
+  { id: "money-exchange", label: "Money Exchange", icon: ArrowLeftRight, permission: "exchange.manage" },
+  { id: "resellers", label: "Resellers", icon: Landmark, permission: "resellers.manage" },
+  { id: "shop", label: "Shop", icon: ShoppingBag, permission: "shop.manage" },
+  { id: "vip-numbers", label: "VIP Numbers", icon: Award, permission: "vipNumbers.manage" },
   { id: "sms-sender-ids", label: "SMS Sender IDs", icon: MessageSquare, superAdminOnly: true },
-  { id: "referrals", label: "Referral Rewards", icon: Share2 },
-  { id: "pending-recovery", label: "Pending Recovery", icon: RotateCcw },
-  { id: "execution-logs", label: "Execution Logs", icon: Terminal },
-  { id: "reports", label: "Reports", icon: FileBarChart2 },
+  { id: "referrals", label: "Referral Rewards", icon: Share2, permission: "referrals.manage" },
+  { id: "pending-recovery", label: "Pending Recovery", icon: RotateCcw, permission: "orders.manage" },
+  { id: "execution-logs", label: "Execution Logs", icon: Terminal, permission: "devices.manage" },
+  { id: "reports", label: "Reports", icon: FileBarChart2, permission: "reports.export" },
   { id: "roles", label: "Roles & Permissions", icon: ShieldCheck, superAdminOnly: true },
   { id: "activity-log", label: "Activity Log", icon: History, superAdminOnly: true },
-  { id: "settings", label: "Settings", icon: Settings },
+  { id: "settings", label: "Settings", icon: Settings, permission: "settings.manage" },
 ];
 
 function Logo({ size = 34 }) {
@@ -1972,6 +2081,8 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
   const [successMessage, setSuccessMessage] = useState("");
   const [saving, setSaving] = useState(false);
   const [templateWarning, setTemplateWarning] = useState("");
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const imageInputRef = useRef(null);
   const canManage = hasPermission(admin, "packages.manage");
 
   const fetchPackages = async () => {
@@ -2098,6 +2209,38 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
     }
   };
 
+  const onPackageImageSelected = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || editing === "new") return;
+    setUploadingImage(true);
+    setError("");
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        await DalabAdminApi.updatePackageImage(editing, reader.result);
+        setForm((f) => ({ ...f, hasImage: true }));
+        fetchPackages();
+      } catch (err) {
+        setError(err.message || "Could not upload image.");
+      }
+      setUploadingImage(false);
+    };
+    reader.onerror = () => { setError("Could not read that file."); setUploadingImage(false); };
+    reader.readAsDataURL(file);
+  };
+
+  const removePackageImage = async () => {
+    if (editing === "new") return;
+    try {
+      await DalabAdminApi.deletePackageImage(editing);
+      setForm((f) => ({ ...f, hasImage: false }));
+      fetchPackages();
+    } catch (err) {
+      alert(err.message || "Could not remove image.");
+    }
+  };
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
@@ -2149,7 +2292,14 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
           <tbody>
             {shown.map((p) => (
               <tr key={p.id} style={{ borderTop: `1px solid ${BORDER}` }}>
-                <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{p?.name || "Unnamed package"}</td>
+                <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    {p.hasImage && (
+                      <img src={DalabAdminApi.packageImageUrl(p.id)} alt="" style={{ width: 22, height: 22, borderRadius: 6, objectFit: "cover", flexShrink: 0 }} />
+                    )}
+                    <span>{p?.name || "Unnamed package"}</span>
+                  </div>
+                </td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{p.company || companies.find((c) => c.id === p.companyId)?.name}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: MUTE, textDecoration: "line-through" }}>${Number(p.old ?? p.oldPrice).toFixed(2)}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: GREEN, fontWeight: 700 }}>${Number(p.price).toFixed(2)}</td>
@@ -2203,6 +2353,35 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
           <Field label="Package name">
             <input style={inputStyle} value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </Field>
+          {DALAB_API_ENABLED && (
+            <Field label="Icon (shown in the Customer App package list)">
+              {editing === "new" ? (
+                <div style={{ fontSize: 11.5, color: MUTE }}>Save the package first, then add an icon.</div>
+              ) : (
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{
+                    width: 44, height: 44, borderRadius: 10, overflow: "hidden", background: INDIGO_SOFT,
+                    display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+                  }}>
+                    {form.hasImage ? (
+                      <img src={DalabAdminApi.packageImageUrl(editing)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                    ) : (
+                      <ImageIcon size={18} color={INDIGO} />
+                    )}
+                  </div>
+                  <input ref={imageInputRef} type="file" accept="image/*" onChange={onPackageImageSelected} style={{ display: "none" }} />
+                  <Button variant="secondary" icon={Upload} disabled={uploadingImage} spin={uploadingImage} onClick={() => imageInputRef.current?.click()}>
+                    {uploadingImage ? "Uploading..." : form.hasImage ? "Replace" : "Upload"}
+                  </Button>
+                  {form.hasImage && (
+                    <button onClick={removePackageImage} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 8, cursor: "pointer" }}>
+                      <Trash2 size={13} color="#C81E2C" />
+                    </button>
+                  )}
+                </div>
+              )}
+            </Field>
+          )}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <Field label="Old price ($)"><input style={inputStyle} value={form.oldPrice ?? ""} onChange={(e) => setForm({ ...form, oldPrice: e.target.value })} /></Field>
             <Field label="Discount price ($)"><input style={inputStyle} value={form.price ?? ""} onChange={(e) => setForm({ ...form, price: e.target.value })} /></Field>
@@ -4068,6 +4247,1811 @@ function PromoImages() {
         {ordered.length === 0 && (
           <div style={{ gridColumn: "1 / -1", padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No promo images yet — upload one to start the carousel.</div>
         )}
+      </div>
+    </div>
+  );
+}
+
+const SHOP_ORDER_STATUS_META = {
+  pending: { label: "Pending", tone: "amber" },
+  processing: { label: "Processing", tone: "blue" },
+  shipped: { label: "Shipped", tone: "blue" },
+  delivered: { label: "Delivered", tone: "green" },
+  cancelled: { label: "Cancelled", tone: "gray" },
+  failed: { label: "Failed", tone: "red" },
+  returned: { label: "Returned", tone: "gray" },
+  refunded: { label: "Refunded", tone: "gray" },
+};
+// No further status change is valid once an order reaches one of these --
+// mirrors shop.routes.ts's TERMINAL_SHOP_STATUSES exactly.
+const SHOP_TERMINAL_STATUSES = ["delivered", "cancelled", "failed", "returned", "refunded"];
+const MAX_SHOP_PRODUCT_IMAGES = 6;
+
+// Shop: DALAB's 4th customer-facing service, alongside Internet/eBadal/
+// Reseller. Everything here (categories/products/images/prices/stock/
+// orders/delivery status) lives behind the "shop.manage" permission on the
+// backend too (shop.routes.ts), matching this NAV item being hidden from
+// the sidebar for anyone who doesn't hold it.
+function ShopManagement() {
+  const [tab, setTab] = useState("categories");
+  const tabs = [
+    { id: "categories", label: "Categories" },
+    { id: "products", label: "Products" },
+    { id: "orders", label: "Orders" },
+    { id: "flashsales", label: "Flash Sales" },
+    { id: "bundles", label: "Bundles" },
+    { id: "zones", label: "Delivery Zones" },
+    { id: "lowstock", label: "Low Stock" },
+    { id: "analytics", label: "Analytics" },
+    { id: "payment", label: "Payment Methods" },
+  ];
+  return (
+    <div>
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Shop</div>
+        <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>
+          DALAB's marketplace for physical goods — Electronics, Eyewear, Perfumes, Watches, and Gifts (no clothing). Electronics supports unlimited admin-defined subcategories. Manage categories, products, images, prices, stock, orders, and delivery status. Independent from Internet, eBadal, and Reseller.
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 18, borderBottom: `1px solid ${BORDER}` }}>
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            style={{
+              padding: "10px 16px", border: "none", background: "none", cursor: "pointer", fontSize: 13, fontWeight: 700,
+              color: tab === t.id ? INDIGO : MUTE, borderBottom: tab === t.id ? `2px solid ${INDIGO}` : "2px solid transparent", marginBottom: -1,
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {tab === "categories" && <ShopCategoriesPanel />}
+      {tab === "products" && <ShopProductsPanel />}
+      {tab === "orders" && <ShopOrdersPanel />}
+      {tab === "flashsales" && <ShopFlashSalesPanel />}
+      {tab === "bundles" && <ShopBundlesPanel />}
+      {tab === "zones" && <ShopDeliveryZonesPanel />}
+      {tab === "lowstock" && <ShopLowStockPanel />}
+      {tab === "analytics" && <ShopAnalyticsPanel />}
+      {tab === "payment" && <ShopPaymentMethodsPanel />}
+    </div>
+  );
+}
+
+// ---------------- VIP Numbers ----------------
+// Mirrors Shop's own admin section architecture exactly (same tab shell,
+// Card/Modal/Field/Button/Badge/inputStyle patterns, optimistic-update
+// style, permission gating) -- DALAB's 5th customer-facing service, a
+// small catalog of premium phone numbers (Gold/Silver) per company.
+// Payment verification reuses Shop's own manual "Admin sees the money
+// arrive, taps Confirm" flow (vipNumbers.routes.ts), not a new payment
+// system.
+
+const VIP_NUMBER_STATUS_META = {
+  available: { label: "Available", tone: "green" },
+  reserved: { label: "Reserved", tone: "amber" },
+  sold: { label: "Sold", tone: "neutral" },
+};
+const VIP_NUMBER_CATEGORY_META = {
+  gold: { label: "Gold", tone: "amber" },
+  silver: { label: "Silver", tone: "neutral" },
+};
+const VIP_ORDER_STATUS_META = {
+  pending: { label: "Pending", tone: "amber" },
+  processing: { label: "Processing", tone: "blue" },
+  completed: { label: "Completed", tone: "green" },
+  cancelled: { label: "Cancelled", tone: "gray" },
+  failed: { label: "Failed", tone: "red" },
+};
+// No further status change is valid once an order reaches one of these --
+// mirrors vipNumbers.routes.ts's TERMINAL_VIP_ORDER_STATUSES exactly.
+const VIP_ORDER_TERMINAL_STATUSES = ["completed", "cancelled", "failed"];
+
+// Every /admin/vip-numbers/* route (including plain GETs) lives behind the
+// "vipNumbers.manage" permission on the backend too, matching this NAV
+// item being hidden from the sidebar for anyone who doesn't hold it.
+function VipNumbersManagement({ companies }) {
+  const [tab, setTab] = useState("inventory");
+  const tabs = [
+    { id: "inventory", label: "Inventory" },
+    { id: "orders", label: "Orders" },
+  ];
+  return (
+    <div>
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>VIP Numbers</div>
+        <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>
+          A catalog of premium phone numbers (Gold/Silver) per company. A number is reserved the instant a customer places an order — never sellable to a second customer — and stays sold only once you confirm payment received below. Independent from Internet, eBadal, Reseller, and Shop.
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 18, borderBottom: `1px solid ${BORDER}` }}>
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            style={{
+              padding: "10px 16px", border: "none", background: "none", cursor: "pointer", fontSize: 13, fontWeight: 700,
+              color: tab === t.id ? INDIGO : MUTE, borderBottom: tab === t.id ? `2px solid ${INDIGO}` : "2px solid transparent", marginBottom: -1,
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {tab === "inventory" && <VipNumbersInventoryPanel companies={companies} />}
+      {tab === "orders" && <VipNumbersOrdersPanel />}
+    </div>
+  );
+}
+
+function VipNumbersInventoryPanel({ companies }) {
+  const [numbers, setNumbers] = useState([]);
+  const [companyFilter, setCompanyFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [error, setError] = useState("");
+  const [editing, setEditing] = useState(null); // null = closed, {} = new, {...number} = edit
+
+  const fetchNumbers = async () => {
+    try {
+      setNumbers(await DalabAdminApi.getVipNumbers(
+        companyFilter === "all" ? undefined : companyFilter,
+        statusFilter === "all" ? undefined : statusFilter,
+      ));
+    } catch (err) {
+      setError(err.message || "Could not load VIP numbers.");
+    }
+  };
+  useEffect(() => { fetchNumbers(); }, [companyFilter, statusFilter]);
+
+  const companyName = (id) => companies.find((c) => c.id === id)?.name || id;
+
+  const remove = async (number) => {
+    if (!window.confirm(`Delete "${number.phoneNumber}"? This only works while it's still Available.`)) return;
+    try {
+      await DalabAdminApi.deleteVipNumber(number.id);
+      fetchNumbers();
+    } catch (err) {
+      alert(err.message || "Could not delete this number.");
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 10, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <select value={companyFilter} onChange={(e) => setCompanyFilter(e.target.value)} style={{ ...inputStyle, width: 180 }}>
+            <option value="all">All companies</option>
+            {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={{ ...inputStyle, width: 160 }}>
+            <option value="all">All statuses</option>
+            {Object.entries(VIP_NUMBER_STATUS_META).map(([key, meta]) => <option key={key} value={key}>{meta.label}</option>)}
+          </select>
+        </div>
+        <Button icon={Plus} onClick={() => setEditing({})}>Add VIP number</Button>
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 14 }}>
+        {numbers.map((n) => (
+          <Card key={n.id} style={{ padding: 14, cursor: "pointer" }} onClick={() => setEditing(n)}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: INDIGO }}>{n.phoneNumber}</div>
+            <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>{n.companyName || companyName(n.companyId)}</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
+              <span style={{ fontWeight: 800, fontSize: 14, color: INK }}>${Number(n.price).toFixed(2)}</span>
+              <Badge tone={VIP_NUMBER_CATEGORY_META[n.category]?.tone || "neutral"}>{VIP_NUMBER_CATEGORY_META[n.category]?.label || n.category}</Badge>
+            </div>
+            <div style={{ marginTop: 8 }}>
+              <Badge tone={VIP_NUMBER_STATUS_META[n.status]?.tone || "neutral"}>{VIP_NUMBER_STATUS_META[n.status]?.label || n.status}</Badge>
+            </div>
+          </Card>
+        ))}
+        {numbers.length === 0 && (
+          <div style={{ gridColumn: "1 / -1", padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No VIP numbers {companyFilter !== "all" || statusFilter !== "all" ? "match these filters" : "yet"} — add one to start selling.</div>
+        )}
+      </div>
+
+      {editing && (
+        <VipNumberModal
+          number={editing}
+          companies={companies}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); fetchNumbers(); }}
+          onDelete={editing.id ? () => { setEditing(null); remove(editing); } : undefined}
+        />
+      )}
+    </div>
+  );
+}
+
+function VipNumberModal({ number, companies, onClose, onSaved, onDelete }) {
+  const isNew = !number.id;
+  const [form, setForm] = useState({
+    companyId: number.companyId || companies[0]?.id || "",
+    phoneNumber: number.phoneNumber || "",
+    category: number.category || "gold",
+    price: number.price != null ? String(number.price) : "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  // Only company/number are locked once created -- editing them would
+  // silently detach this row from any order that already snapshotted the
+  // original phoneNumber/companyId (see migration 087's header comment on
+  // why those columns are snapshotted onto the order). Category/price stay
+  // editable any time; a sold number's price change only affects the
+  // catalog display, never an already-placed order (also snapshotted).
+  const locked = !isNew;
+
+  const save = async () => {
+    if (!form.phoneNumber.trim() || form.price === "") return;
+    setSaving(true);
+    setError("");
+    try {
+      if (isNew) {
+        await DalabAdminApi.createVipNumber({
+          companyId: form.companyId,
+          phoneNumber: form.phoneNumber.trim(),
+          category: form.category,
+          price: Number(form.price),
+        });
+      } else {
+        await DalabAdminApi.updateVipNumber(number.id, {
+          category: form.category,
+          price: Number(form.price),
+        });
+      }
+      onSaved();
+    } catch (err) {
+      setError(err.message || "Could not save this VIP number.");
+    }
+    setSaving(false);
+  };
+
+  return (
+    <Modal title={isNew ? "Add VIP number" : number.phoneNumber} onClose={onClose}>
+      {!isNew && (
+        <div style={{ marginBottom: 14 }}>
+          <Badge tone={VIP_NUMBER_STATUS_META[number.status]?.tone || "neutral"}>{VIP_NUMBER_STATUS_META[number.status]?.label || number.status}</Badge>
+        </div>
+      )}
+      <Field label="Company">
+        <select
+          value={form.companyId}
+          onChange={(e) => setForm((f) => ({ ...f, companyId: e.target.value }))}
+          disabled={locked}
+          style={{ ...inputStyle, opacity: locked ? 0.6 : 1 }}
+        >
+          {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+      </Field>
+      <Field label="Phone number">
+        <input
+          value={form.phoneNumber}
+          onChange={(e) => setForm((f) => ({ ...f, phoneNumber: e.target.value }))}
+          disabled={locked}
+          style={{ ...inputStyle, opacity: locked ? 0.6 : 1 }}
+        />
+      </Field>
+      <Field label="Category">
+        <select value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))} style={inputStyle}>
+          <option value="gold">Gold</option>
+          <option value="silver">Silver</option>
+        </select>
+      </Field>
+      <Field label="Price ($)">
+        <input type="number" min="0" step="0.01" value={form.price} onChange={(e) => setForm((f) => ({ ...f, price: e.target.value }))} style={inputStyle} />
+      </Field>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        {onDelete && number.status === "available" ? (
+          <Button variant="danger" icon={Trash2} onClick={onDelete}>Delete</Button>
+        ) : <div />}
+        <Button onClick={save} disabled={saving || !form.phoneNumber.trim() || form.price === ""} spin={saving}>
+          {isNew ? "Add number" : "Save changes"}
+        </Button>
+      </div>
+    </Modal>
+  );
+}
+
+function VipNumbersOrdersPanel() {
+  const [orders, setOrders] = useState([]);
+  const [status, setStatus] = useState("all");
+  const [search, setSearch] = useState("");
+  const [error, setError] = useState("");
+  const [selected, setSelected] = useState(null);
+
+  const fetchOrders = async () => {
+    try { setOrders(await DalabAdminApi.getVipNumberOrders(status === "all" ? undefined : status, search || undefined)); }
+    catch (err) { setError(err.message || "Could not load orders."); }
+  };
+  useEffect(() => { fetchOrders(); }, [status]);
+  useEffect(() => {
+    const t = setTimeout(fetchOrders, 300); // debounce search-as-you-type
+    return () => clearTimeout(t);
+  }, [search]);
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+        <select value={status} onChange={(e) => setStatus(e.target.value)} style={{ ...inputStyle, width: 160 }}>
+          <option value="all">All statuses</option>
+          {Object.entries(VIP_ORDER_STATUS_META).map(([key, meta]) => <option key={key} value={key}>{meta.label}</option>)}
+        </select>
+        <input placeholder="Search order id, name, phone..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 200, width: "auto" }} />
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {orders.map((o) => (
+          <Card key={o.id} style={{ padding: 14, cursor: "pointer" }} onClick={() => setSelected(o)}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+              <div>
+                <div style={{ fontWeight: 800, fontSize: 13.5, color: INK }}>{o.id} · {o.phoneNumber}</div>
+                <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>{o.customerName || o.customerFullName || "Unknown"} · {o.customerPhone || o.senderPhone}</div>
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{ fontWeight: 800, fontSize: 14, color: INDIGO }}>${Number(o.price).toFixed(2)}</span>
+                <Badge tone={o.paymentStatus === "paid" ? "green" : "amber"}>{o.paymentStatus === "paid" ? "Paid" : "Awaiting payment"}</Badge>
+                <Badge tone={VIP_ORDER_STATUS_META[o.status]?.tone || "neutral"}>{VIP_ORDER_STATUS_META[o.status]?.label || o.status}</Badge>
+              </div>
+            </div>
+          </Card>
+        ))}
+        {orders.length === 0 && (
+          <div style={{ padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No VIP Number orders {status !== "all" ? `with status "${VIP_ORDER_STATUS_META[status]?.label}"` : "yet"}.</div>
+        )}
+      </div>
+
+      {selected && (
+        <VipNumberOrderDetailModal
+          orderId={selected.id}
+          onClose={() => setSelected(null)}
+          onChanged={() => { fetchOrders(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function VipNumberOrderDetailModal({ orderId, onClose, onChanged }) {
+  const [order, setOrder] = useState(null);
+  const [error, setError] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const [nextStatus, setNextStatus] = useState("");
+  const [note, setNote] = useState("");
+  const [savingStatus, setSavingStatus] = useState(false);
+
+  const fetchOrder = async () => {
+    try {
+      setOrder(await DalabAdminApi.getVipNumberOrder(orderId));
+    } catch (err) {
+      setError(err.message || "Could not load order.");
+    }
+  };
+  useEffect(() => { fetchOrder(); }, [orderId]);
+
+  // Mirrors ShopOrderDetailModal's confirmPayment exactly, against the
+  // matching vip-numbers admin route -- same manual "Admin sees the money
+  // arrive, taps Confirm" flow, not a new payment system.
+  const confirmPayment = async () => {
+    setConfirming(true);
+    setError("");
+    try {
+      await DalabAdminApi.confirmVipNumberOrderPayment(orderId);
+      await fetchOrder();
+      onChanged();
+    } catch (err) {
+      setError(err.message || "Could not confirm payment.");
+    }
+    setConfirming(false);
+  };
+
+  const saveStatus = async () => {
+    if (!nextStatus) return;
+    setSavingStatus(true);
+    setError("");
+    try {
+      await DalabAdminApi.updateVipNumberOrderStatus(orderId, {
+        status: nextStatus,
+        note: note || undefined,
+      });
+      setNextStatus("");
+      setNote("");
+      await fetchOrder();
+      onChanged();
+    } catch (err) {
+      setError(err.message || "Could not update status.");
+    }
+    setSavingStatus(false);
+  };
+
+  if (!order) {
+    return (
+      <Modal title="Order" onClose={onClose}>
+        {error ? <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div> : <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>}
+      </Modal>
+    );
+  }
+
+  const finalState = VIP_ORDER_TERMINAL_STATUSES.includes(order.status);
+  // "completed" (the number has been handed over) only makes sense once
+  // payment is actually confirmed -- matches the backend's own guard on
+  // PUT /admin/vip-numbers/orders/:id/status.
+  const availableNextStatuses = Object.entries(VIP_ORDER_STATUS_META).filter(
+    ([key]) => key !== order.status && (key !== "completed" || order.paymentStatus === "paid")
+  );
+
+  return (
+    <Modal title={order.id} onClose={onClose} width={480}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+        <Badge tone={order.paymentStatus === "paid" ? "green" : "amber"}>{order.paymentStatus === "paid" ? "Paid" : "Awaiting payment"}</Badge>
+        <Badge tone={VIP_ORDER_STATUS_META[order.status]?.tone || "neutral"}>{VIP_ORDER_STATUS_META[order.status]?.label || order.status}</Badge>
+        <Badge tone={VIP_NUMBER_CATEGORY_META[order.category]?.tone || "neutral"}>{VIP_NUMBER_CATEGORY_META[order.category]?.label || order.category}</Badge>
+      </div>
+
+      <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 4 }}>VIP number</div>
+      <div style={{ fontSize: 15, fontWeight: 800, color: INDIGO, marginBottom: 12 }}>{order.phoneNumber} — {order.companyName || order.companyId}</div>
+
+      <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 4 }}>Customer</div>
+      <div style={{ fontSize: 13.5, color: INK, marginBottom: 12 }}>{order.customerFullName || "—"} · {order.customerPhone || "—"}</div>
+
+      <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 4 }}>Payment</div>
+      <div style={{ fontSize: 13.5, color: INK, marginBottom: 12 }}>
+        {order.paymentMethod === "evc" ? "EVC Plus" : order.paymentMethod === "edahab" ? "eDahab" : order.paymentMethod} from {order.senderPhone}
+        <br />
+        <span style={{ fontWeight: 800 }}>${Number(order.price).toFixed(2)}</span>
+      </div>
+
+      {order.paymentStatus !== "paid" && !finalState && (
+        <div style={{ marginBottom: 14 }}>
+          <Button onClick={confirmPayment} disabled={confirming} spin={confirming} icon={Check}>Confirm payment received</Button>
+        </div>
+      )}
+
+      {!finalState && (
+        <div style={{ borderTop: `1px solid ${BORDER}`, paddingTop: 14, marginBottom: 14 }}>
+          <Field label="Advance status">
+            <select value={nextStatus} onChange={(e) => setNextStatus(e.target.value)} style={inputStyle}>
+              <option value="">Choose a status…</option>
+              {availableNextStatuses.map(([key, meta]) => <option key={key} value={key}>{meta.label}</option>)}
+            </select>
+          </Field>
+          <Field label="Note for customer (optional)"><input value={note} onChange={(e) => setNote(e.target.value)} style={inputStyle} /></Field>
+          <Button onClick={saveStatus} disabled={!nextStatus || savingStatus} spin={savingStatus}>Update status</Button>
+        </div>
+      )}
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div>}
+    </Modal>
+  );
+}
+
+function ShopCategoriesPanel() {
+  const [categories, setCategories] = useState([]);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({ name: "", emoji: "" });
+  const [subcategoriesFor, setSubcategoriesFor] = useState(null); // category row, or null when closed
+
+  const fetchCategories = async () => {
+    try { setCategories(await DalabAdminApi.getShopCategories()); }
+    catch (err) { setError(err.message || "Could not load categories."); }
+  };
+  useEffect(() => { fetchCategories(); }, []);
+
+  const ordered = [...categories].sort((a, b) => a.position - b.position);
+
+  const addCategory = async () => {
+    if (!form.name.trim()) return;
+    setSaving(true);
+    setError("");
+    try {
+      await DalabAdminApi.createShopCategory({ name: form.name.trim(), emoji: form.emoji.trim() });
+      setForm({ name: "", emoji: "" });
+      fetchCategories();
+    } catch (err) {
+      setError(err.message || "Could not create category.");
+    }
+    setSaving(false);
+  };
+
+  const toggleActive = async (cat) => {
+    setCategories((prev) => prev.map((c) => (c.id === cat.id ? { ...c, active: !c.active } : c))); // optimistic
+    try {
+      await DalabAdminApi.updateShopCategory(cat.id, { active: !cat.active });
+    } catch (err) {
+      setError(err.message);
+      fetchCategories();
+    }
+  };
+
+  const remove = async (cat) => {
+    if (!window.confirm(`Delete "${cat.name}"? This only works if it has no products under it.`)) return;
+    try {
+      await DalabAdminApi.deleteShopCategory(cat.id);
+      fetchCategories();
+    } catch (err) {
+      alert(err.message || "Could not delete category.");
+    }
+  };
+
+  return (
+    <div>
+      <Card style={{ padding: 16, marginBottom: 16 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: INK, marginBottom: 10 }}>Add category</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <input placeholder="Emoji (e.g. 👟)" value={form.emoji} onChange={(e) => setForm((f) => ({ ...f, emoji: e.target.value }))} style={{ ...inputStyle, width: 90 }} />
+          <input placeholder="Category name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} style={{ ...inputStyle, flex: 1, minWidth: 160, width: "auto" }} />
+          <Button onClick={addCategory} disabled={saving || !form.name.trim()} icon={Plus} spin={saving}>Add</Button>
+        </div>
+      </Card>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 14 }}>
+        {ordered.map((cat) => (
+          <Card key={cat.id} style={{ padding: 14 }}>
+            <div style={{ fontSize: 30 }}>{cat.emoji}</div>
+            <div style={{ fontWeight: 800, fontSize: 14, color: INK, marginTop: 6 }}>{cat.name}</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12 }}>
+              <Badge tone={cat.active ? "green" : "neutral"}>{cat.active ? "Visible" : "Hidden"}</Badge>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button onClick={() => toggleActive(cat)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                  {cat.active ? <EyeOff size={13} color={SLATE} /> : <Eye size={13} color={GREEN} />}
+                </button>
+                <button onClick={() => remove(cat)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                  <Trash2 size={13} color="#C81E2C" />
+                </button>
+              </div>
+            </div>
+            <button
+              onClick={() => setSubcategoriesFor(cat)}
+              style={{ marginTop: 10, width: "100%", background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "6px 0", cursor: "pointer", fontSize: 11.5, fontWeight: 700, color: INDIGO }}
+            >
+              Manage subcategories
+            </button>
+          </Card>
+        ))}
+        {ordered.length === 0 && (
+          <div style={{ gridColumn: "1 / -1", padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No categories yet.</div>
+        )}
+      </div>
+
+      {subcategoriesFor && (
+        <ShopSubcategoriesModal category={subcategoriesFor} onClose={() => setSubcategoriesFor(null)} />
+      )}
+    </div>
+  );
+}
+
+// Generic subcategory manager -- opened from any category's card, but in
+// practice only Electronics needs this today (unlimited admin-defined
+// subcategories like Phone Covers, Chargers, ... per the spec).
+function ShopSubcategoriesModal({ category, onClose }) {
+  const [subcategories, setSubcategories] = useState([]);
+  const [name, setName] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const fetchSubcategories = async () => {
+    try { setSubcategories(await DalabAdminApi.getShopSubcategories(category.id)); }
+    catch (err) { setError(err.message || "Could not load subcategories."); }
+  };
+  useEffect(() => { fetchSubcategories(); }, []);
+
+  const add = async () => {
+    if (!name.trim()) return;
+    setSaving(true);
+    setError("");
+    try {
+      await DalabAdminApi.createShopSubcategory({ categoryId: category.id, name: name.trim() });
+      setName("");
+      fetchSubcategories();
+    } catch (err) {
+      setError(err.message || "Could not create subcategory.");
+    }
+    setSaving(false);
+  };
+
+  const toggleActive = async (sub) => {
+    setSubcategories((prev) => prev.map((s) => (s.id === sub.id ? { ...s, active: !s.active } : s)));
+    try { await DalabAdminApi.updateShopSubcategory(sub.id, { active: !sub.active }); }
+    catch (err) { setError(err.message); fetchSubcategories(); }
+  };
+
+  const remove = async (sub) => {
+    if (!window.confirm(`Delete "${sub.name}"? This only works if it has no products under it.`)) return;
+    try {
+      await DalabAdminApi.deleteShopSubcategory(sub.id);
+      fetchSubcategories();
+    } catch (err) {
+      alert(err.message || "Could not delete subcategory.");
+    }
+  };
+
+  return (
+    <Modal title={`${category.emoji} ${category.name} — Subcategories`} onClose={onClose} width={420}>
+      <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+        <input placeholder="e.g. Phone Covers" value={name} onChange={(e) => setName(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+        <Button onClick={add} disabled={saving || !name.trim()} icon={Plus} spin={saving}>Add</Button>
+      </div>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {subcategories.map((sub) => (
+          <div key={sub.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "8px 12px" }}>
+            <span style={{ fontSize: 13, color: INK, fontWeight: 600 }}>{sub.name}</span>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <Badge tone={sub.active ? "green" : "neutral"}>{sub.active ? "Visible" : "Hidden"}</Badge>
+              <button onClick={() => toggleActive(sub)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 5, cursor: "pointer" }}>
+                {sub.active ? <EyeOff size={12} color={SLATE} /> : <Eye size={12} color={GREEN} />}
+              </button>
+              <button onClick={() => remove(sub)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 5, cursor: "pointer" }}>
+                <Trash2 size={12} color="#C81E2C" />
+              </button>
+            </div>
+          </div>
+        ))}
+        {subcategories.length === 0 && <div style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No subcategories yet.</div>}
+      </div>
+    </Modal>
+  );
+}
+
+function ShopProductsPanel() {
+  const [categories, setCategories] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [error, setError] = useState("");
+  const [editing, setEditing] = useState(null); // null = closed, {} = new, {...product} = edit
+
+  const fetchCategories = async () => {
+    try { setCategories(await DalabAdminApi.getShopCategories()); }
+    catch (err) { console.error("getShopCategories failed:", err.message); }
+  };
+  const fetchProducts = async () => {
+    try { setProducts(await DalabAdminApi.getShopProducts(categoryFilter === "all" ? undefined : categoryFilter)); }
+    catch (err) { setError(err.message || "Could not load products."); }
+  };
+  useEffect(() => { fetchCategories(); }, []);
+  useEffect(() => { fetchProducts(); }, [categoryFilter]);
+
+  const categoryName = (id) => categories.find((c) => c.id === id)?.name || "—";
+  const merchandisingBadges = (p) => {
+    const badges = [];
+    if (p.featured) badges.push({ label: "Featured", tone: "neutral" });
+    if (p.isNewArrival) badges.push({ label: "New", tone: "blue" });
+    if (p.bestSeller) badges.push({ label: "Best Seller", tone: "amber" });
+    if (p.oldPrice != null && Number(p.oldPrice) > Number(p.price)) badges.push({ label: "Discount", tone: "red" });
+    return badges;
+  };
+
+  const remove = async (product) => {
+    if (!window.confirm(`Delete "${product.name}"? This cannot be undone.`)) return;
+    try {
+      await DalabAdminApi.deleteShopProduct(product.id);
+      fetchProducts();
+    } catch (err) {
+      alert(err.message || "Could not delete product.");
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 12, flexWrap: "wrap" }}>
+        <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} style={{ ...inputStyle, width: 200 }}>
+          <option value="all">All categories</option>
+          {categories.map((c) => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
+        </select>
+        <Button icon={Plus} onClick={() => setEditing({})}>Add product</Button>
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 14 }}>
+        {products.map((p) => (
+          <Card key={p.id} style={{ padding: 14, cursor: "pointer" }} onClick={() => setEditing(p)}>
+            <div style={{
+              width: "100%", height: 120, borderRadius: 10, overflow: "hidden", background: INDIGO_SOFT,
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}>
+              {p.images?.[0] ? (
+                <img src={DalabAdminApi.shopProductImageUrl(p.id, p.images[0].id)} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              ) : (
+                <ShoppingBag size={28} color={INDIGO} />
+              )}
+            </div>
+            <div style={{ fontWeight: 800, fontSize: 13.5, color: INK, marginTop: 10 }}>{p.name}</div>
+            <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>{categoryName(p.categoryId)}{p.brand ? ` · ${p.brand}` : ""}</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
+              <span style={{ fontWeight: 800, fontSize: 14, color: INDIGO }}>
+                ${Number(p.price).toFixed(2)}
+                {p.oldPrice != null && Number(p.oldPrice) > Number(p.price) && (
+                  <span style={{ marginLeft: 6, fontSize: 11.5, fontWeight: 600, color: MUTE, textDecoration: "line-through" }}>${Number(p.oldPrice).toFixed(2)}</span>
+                )}
+              </span>
+              <Badge tone={p.stock > 0 ? "neutral" : "red"}>{p.stock} in stock</Badge>
+            </div>
+            <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <Badge tone={p.active ? "green" : "neutral"}>{p.active ? "Visible" : "Hidden"}</Badge>
+              {merchandisingBadges(p).map((b) => <Badge key={b.label} tone={b.tone}>{b.label}</Badge>)}
+            </div>
+          </Card>
+        ))}
+        {products.length === 0 && (
+          <div style={{ gridColumn: "1 / -1", padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No products {categoryFilter !== "all" ? "in this category" : "yet"} — add one to start selling.</div>
+        )}
+      </div>
+
+      {editing && (
+        <ShopProductModal
+          product={editing}
+          categories={categories}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); fetchProducts(); }}
+          onDelete={editing.id ? () => { setEditing(null); remove(editing); } : undefined}
+        />
+      )}
+    </div>
+  );
+}
+
+function ShopProductModal({ product, categories, onClose, onSaved, onDelete }) {
+  const isNew = !product.id;
+  const [form, setForm] = useState({
+    name: product.name || "",
+    description: product.description || "",
+    price: product.price != null ? String(product.price) : "",
+    oldPrice: product.oldPrice != null ? String(product.oldPrice) : "",
+    stock: product.stock != null ? String(product.stock) : "0",
+    categoryId: product.categoryId || categories[0]?.id || "",
+    subcategoryId: product.subcategoryId || "",
+    brand: product.brand || "",
+    featured: product.featured || false,
+    isNewArrival: product.isNewArrival || false,
+    bestSeller: product.bestSeller || false,
+    active: product.active !== false,
+  });
+  const [subcategories, setSubcategories] = useState([]);
+  const [images, setImages] = useState(product.images || []);
+  const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState("");
+  const fileInputRef = useRef(null);
+
+  const [variants, setVariants] = useState([]);
+  const [variantForm, setVariantForm] = useState({ label: "", size: "", color: "", price: "", stock: "0" });
+  const [savingVariant, setSavingVariant] = useState(false);
+  const [variantEdits, setVariantEdits] = useState({});
+
+  const fetchVariants = async () => {
+    if (!product.id) return;
+    try { setVariants(await DalabAdminApi.getShopProductVariants(product.id)); }
+    catch (err) { console.error("getShopProductVariants failed:", err.message); }
+  };
+  useEffect(() => { fetchVariants(); }, [product.id]);
+
+  const addVariant = async () => {
+    if (!variantForm.label.trim()) return;
+    setSavingVariant(true);
+    setError("");
+    try {
+      const attributes = {};
+      if (variantForm.size.trim()) attributes.size = variantForm.size.trim();
+      if (variantForm.color.trim()) attributes.color = variantForm.color.trim();
+      await DalabAdminApi.createShopProductVariant(product.id, {
+        label: variantForm.label.trim(),
+        attributes,
+        price: variantForm.price ? Number(variantForm.price) : undefined,
+        stock: Number(variantForm.stock) || 0,
+      });
+      setVariantForm({ label: "", size: "", color: "", price: "", stock: "0" });
+      fetchVariants();
+    } catch (err) {
+      setError(err.message || "Could not add variant.");
+    }
+    setSavingVariant(false);
+  };
+
+  const saveVariantEdit = async (variant) => {
+    const draft = variantEdits[variant.id] || {};
+    try {
+      await DalabAdminApi.updateShopProductVariant(product.id, variant.id, {
+        price: draft.price !== undefined ? (draft.price === "" ? null : Number(draft.price)) : undefined,
+        stock: draft.stock !== undefined ? Number(draft.stock) : undefined,
+      });
+      setVariantEdits((m) => ({ ...m, [variant.id]: undefined }));
+      fetchVariants();
+    } catch (err) {
+      alert(err.message || "Could not save variant.");
+    }
+  };
+
+  const removeVariant = async (variant) => {
+    if (!window.confirm(`Delete variant "${variant.label}"?`)) return;
+    try {
+      await DalabAdminApi.deleteShopProductVariant(product.id, variant.id);
+      fetchVariants();
+    } catch (err) {
+      alert(err.message || "Could not delete variant.");
+    }
+  };
+
+  useEffect(() => {
+    if (!form.categoryId) { setSubcategories([]); return; }
+    DalabAdminApi.getShopSubcategories(form.categoryId)
+      .then(setSubcategories)
+      .catch((err) => console.error("getShopSubcategories failed:", err.message));
+  }, [form.categoryId]);
+
+  // Switching category invalidates a subcategory that belonged to the old
+  // one -- the backend rejects that combination outright, so clear it here
+  // rather than let the admin hit a confusing save error.
+  const onCategoryChange = (categoryId) => setForm((f) => ({ ...f, categoryId, subcategoryId: "" }));
+
+  const save = async () => {
+    const priceNum = Number(form.price);
+    const stockNum = Number(form.stock);
+    if (!form.name.trim()) return setError("Name is required.");
+    if (!form.categoryId) return setError("Choose a category.");
+    if (!Number.isFinite(priceNum) || priceNum < 0) return setError("Price must be a non-negative number.");
+    if (!Number.isInteger(stockNum) || stockNum < 0) return setError("Stock must be a non-negative whole number.");
+    if (form.oldPrice && (!Number.isFinite(Number(form.oldPrice)) || Number(form.oldPrice) < 0)) {
+      return setError("Original price must be a non-negative number.");
+    }
+    setSaving(true);
+    setError("");
+    try {
+      const body = {
+        name: form.name.trim(),
+        description: form.description.trim(),
+        price: priceNum,
+        oldPrice: form.oldPrice ? Number(form.oldPrice) : null,
+        stock: stockNum,
+        categoryId: form.categoryId,
+        subcategoryId: form.subcategoryId || null,
+        brand: form.brand.trim(),
+        featured: form.featured,
+        isNewArrival: form.isNewArrival,
+        bestSeller: form.bestSeller,
+        active: form.active,
+      };
+      if (isNew) await DalabAdminApi.createShopProduct(body);
+      else await DalabAdminApi.updateShopProduct(product.id, body);
+      onSaved();
+    } catch (err) {
+      setError(err.message || "Could not save product.");
+    }
+    setSaving(false);
+  };
+
+  const onFileSelected = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !product.id) return;
+    setUploading(true);
+    setError("");
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const result = await DalabAdminApi.addShopProductImage(product.id, reader.result);
+        setImages((prev) => [...prev, result]);
+      } catch (err) {
+        setError(err.message || "Could not upload image.");
+      }
+      setUploading(false);
+    };
+    reader.onerror = () => { setError("Could not read that file."); setUploading(false); };
+    reader.readAsDataURL(file);
+  };
+
+  const removeImage = async (imageId) => {
+    try {
+      await DalabAdminApi.deleteShopProductImage(product.id, imageId);
+      setImages((prev) => prev.filter((img) => img.id !== imageId));
+    } catch (err) {
+      alert(err.message || "Could not remove image.");
+    }
+  };
+
+  return (
+    <Modal title={isNew ? "Add product" : "Edit product"} onClose={onClose} width={480}>
+      <Field label="Category">
+        <select value={form.categoryId} onChange={(e) => onCategoryChange(e.target.value)} style={inputStyle}>
+          {categories.map((c) => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
+        </select>
+      </Field>
+      {subcategories.length > 0 && (
+        <Field label="Subcategory (optional)">
+          <select value={form.subcategoryId} onChange={(e) => setForm((f) => ({ ...f, subcategoryId: e.target.value }))} style={inputStyle}>
+            <option value="">No subcategory</option>
+            {subcategories.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        </Field>
+      )}
+      <Field label="Name"><input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} style={inputStyle} /></Field>
+      <Field label="Brand (optional)"><input value={form.brand} onChange={(e) => setForm((f) => ({ ...f, brand: e.target.value }))} style={inputStyle} /></Field>
+      <Field label="Description"><textarea value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} rows={3} style={{ ...inputStyle, resize: "vertical" }} /></Field>
+      <div style={{ display: "flex", gap: 12 }}>
+        <div style={{ flex: 1 }}><Field label="Price ($)"><input type="number" min="0" step="0.01" value={form.price} onChange={(e) => setForm((f) => ({ ...f, price: e.target.value }))} style={inputStyle} /></Field></div>
+        <div style={{ flex: 1 }}><Field label="Original price (optional, for a discount)"><input type="number" min="0" step="0.01" value={form.oldPrice} onChange={(e) => setForm((f) => ({ ...f, oldPrice: e.target.value }))} style={inputStyle} /></Field></div>
+      </div>
+      <Field label="Stock"><input type="number" min="0" step="1" value={form.stock} onChange={(e) => setForm((f) => ({ ...f, stock: e.target.value }))} style={inputStyle} /></Field>
+      <Field label="Merchandising">
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: INK, cursor: "pointer" }}>
+            <input type="checkbox" checked={form.featured} onChange={(e) => setForm((f) => ({ ...f, featured: e.target.checked }))} />
+            Featured
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: INK, cursor: "pointer" }}>
+            <input type="checkbox" checked={form.isNewArrival} onChange={(e) => setForm((f) => ({ ...f, isNewArrival: e.target.checked }))} />
+            New Arrival
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: INK, cursor: "pointer" }}>
+            <input type="checkbox" checked={form.bestSeller} onChange={(e) => setForm((f) => ({ ...f, bestSeller: e.target.checked }))} />
+            Best Seller
+          </label>
+        </div>
+      </Field>
+      <Field label="Visibility">
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: INK, cursor: "pointer" }}>
+          <input type="checkbox" checked={form.active} onChange={(e) => setForm((f) => ({ ...f, active: e.target.checked }))} />
+          Visible to customers
+        </label>
+      </Field>
+
+      {!isNew && (
+        <Field label={`Images (${images.length}/${MAX_SHOP_PRODUCT_IMAGES})`}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+            {images.map((img) => (
+              <div key={img.id} style={{ position: "relative", width: 64, height: 64 }}>
+                <img src={DalabAdminApi.shopProductImageUrl(product.id, img.id)} alt="" style={{ width: 64, height: 64, borderRadius: 8, objectFit: "cover", border: `1px solid ${BORDER}` }} />
+                <button onClick={() => removeImage(img.id)} style={{ position: "absolute", top: -6, right: -6, background: "#C81E2C", border: "none", borderRadius: "50%", width: 18, height: 18, color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <X size={11} />
+                </button>
+              </div>
+            ))}
+          </div>
+          <input ref={fileInputRef} type="file" accept="image/*" onChange={onFileSelected} style={{ display: "none" }} />
+          <Button variant="secondary" icon={Upload} disabled={uploading || images.length >= MAX_SHOP_PRODUCT_IMAGES} spin={uploading} onClick={() => fileInputRef.current?.click()}>
+            {uploading ? "Uploading..." : images.length >= MAX_SHOP_PRODUCT_IMAGES ? `Limit reached (${MAX_SHOP_PRODUCT_IMAGES})` : "Add image"}
+          </Button>
+        </Field>
+      )}
+      {isNew && <div style={{ fontSize: 11.5, color: MUTE, marginBottom: 14 }}>Save the product first, then add images.</div>}
+
+      {!isNew && (
+        <Field label={`Variants (size/color/model/storage — leave price blank to use the product's own price)`}>
+          {variants.length > 0 && (
+            <div style={{ border: `1px solid ${BORDER}`, borderRadius: 10, marginBottom: 10, overflow: "hidden" }}>
+              {variants.map((v) => {
+                const draft = variantEdits[v.id] || {};
+                const dirty = draft.price !== undefined || draft.stock !== undefined;
+                return (
+                  <div key={v.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderBottom: `1px solid ${BORDER}` }}>
+                    <div style={{ flex: 1, fontSize: 12.5, color: INK, fontWeight: 700 }}>{v.label}</div>
+                    <input
+                      type="number" min="0" step="0.01" placeholder="price"
+                      value={draft.price !== undefined ? draft.price : (v.price ?? "")}
+                      onChange={(e) => setVariantEdits((m) => ({ ...m, [v.id]: { ...draft, price: e.target.value } }))}
+                      style={{ ...inputStyle, width: 80, padding: "6px 8px" }}
+                    />
+                    <input
+                      type="number" min="0" step="1" placeholder="stock"
+                      value={draft.stock !== undefined ? draft.stock : v.stock}
+                      onChange={(e) => setVariantEdits((m) => ({ ...m, [v.id]: { ...draft, stock: e.target.value } }))}
+                      style={{ ...inputStyle, width: 70, padding: "6px 8px" }}
+                    />
+                    {dirty && (
+                      <button onClick={() => saveVariantEdit(v)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                        <Check size={13} color={GREEN} />
+                      </button>
+                    )}
+                    <button onClick={() => removeVariant(v)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                      <Trash2 size={13} color="#C81E2C" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <input placeholder="Label (e.g. Large / Red)" value={variantForm.label} onChange={(e) => setVariantForm((f) => ({ ...f, label: e.target.value }))} style={{ ...inputStyle, flex: 1, minWidth: 130, width: "auto", padding: "6px 8px" }} />
+            <input placeholder="Size" value={variantForm.size} onChange={(e) => setVariantForm((f) => ({ ...f, size: e.target.value }))} style={{ ...inputStyle, width: 70, padding: "6px 8px" }} />
+            <input placeholder="Color" value={variantForm.color} onChange={(e) => setVariantForm((f) => ({ ...f, color: e.target.value }))} style={{ ...inputStyle, width: 70, padding: "6px 8px" }} />
+            <input type="number" min="0" step="0.01" placeholder="price" value={variantForm.price} onChange={(e) => setVariantForm((f) => ({ ...f, price: e.target.value }))} style={{ ...inputStyle, width: 80, padding: "6px 8px" }} />
+            <input type="number" min="0" step="1" placeholder="stock" value={variantForm.stock} onChange={(e) => setVariantForm((f) => ({ ...f, stock: e.target.value }))} style={{ ...inputStyle, width: 70, padding: "6px 8px" }} />
+            <Button icon={Plus} onClick={addVariant} disabled={savingVariant || !variantForm.label.trim()} spin={savingVariant}>Add</Button>
+          </div>
+        </Field>
+      )}
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+        {onDelete ? (
+          <Button variant="secondary" icon={Trash2} onClick={onDelete} style={{ color: "#C81E2C" }}>Delete</Button>
+        ) : <div />}
+        <div style={{ display: "flex", gap: 10 }}>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button onClick={save} disabled={saving} spin={saving}>{isNew ? "Add product" : "Save changes"}</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function ShopOrdersPanel() {
+  const [orders, setOrders] = useState([]);
+  const [status, setStatus] = useState("all");
+  const [search, setSearch] = useState("");
+  const [error, setError] = useState("");
+  const [selected, setSelected] = useState(null);
+
+  const fetchOrders = async () => {
+    try { setOrders(await DalabAdminApi.getShopOrders(status === "all" ? undefined : status, search || undefined)); }
+    catch (err) { setError(err.message || "Could not load orders."); }
+  };
+  useEffect(() => { fetchOrders(); }, [status]);
+  useEffect(() => {
+    const t = setTimeout(fetchOrders, 300); // debounce search-as-you-type
+    return () => clearTimeout(t);
+  }, [search]);
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+        <select value={status} onChange={(e) => setStatus(e.target.value)} style={{ ...inputStyle, width: 160 }}>
+          <option value="all">All statuses</option>
+          {Object.entries(SHOP_ORDER_STATUS_META).map(([key, meta]) => <option key={key} value={key}>{meta.label}</option>)}
+        </select>
+        <input placeholder="Search order id, customer, phone..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 200, width: "auto" }} />
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {orders.map((o) => (
+          <Card key={o.id} style={{ padding: 14, cursor: "pointer" }} onClick={() => setSelected(o)}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+              <div>
+                <div style={{ fontWeight: 800, fontSize: 13.5, color: INK }}>{o.id}</div>
+                <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>{o.customerName || "Unknown"} · {o.customerPhone || o.deliveryPhone}</div>
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{ fontWeight: 800, fontSize: 14, color: INDIGO }}>${Number(o.totalAmount).toFixed(2)}</span>
+                <Badge tone={o.paymentStatus === "paid" ? "green" : "amber"}>{o.paymentStatus === "paid" ? "Paid" : "Awaiting payment"}</Badge>
+                <Badge tone={SHOP_ORDER_STATUS_META[o.status]?.tone || "neutral"}>{SHOP_ORDER_STATUS_META[o.status]?.label || o.status}</Badge>
+              </div>
+            </div>
+          </Card>
+        ))}
+        {orders.length === 0 && (
+          <div style={{ padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No Shop orders {status !== "all" ? `with status "${SHOP_ORDER_STATUS_META[status]?.label}"` : "yet"}.</div>
+        )}
+      </div>
+
+      {selected && (
+        <ShopOrderDetailModal
+          orderId={selected.id}
+          onClose={() => setSelected(null)}
+          onChanged={() => { fetchOrders(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ShopOrderDetailModal({ orderId, onClose, onChanged }) {
+  const [order, setOrder] = useState(null);
+  const [error, setError] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const [nextStatus, setNextStatus] = useState("");
+  const [trackingReference, setTrackingReference] = useState("");
+  const [trackingNote, setTrackingNote] = useState("");
+  const [courierName, setCourierName] = useState("");
+  const [savingStatus, setSavingStatus] = useState(false);
+
+  const fetchOrder = async () => {
+    try {
+      const o = await DalabAdminApi.getShopOrder(orderId);
+      setOrder(o);
+      setTrackingReference(o.trackingReference || "");
+      setTrackingNote(o.trackingNote || "");
+      setCourierName(o.courierName || "");
+    } catch (err) {
+      setError(err.message || "Could not load order.");
+    }
+  };
+  useEffect(() => { fetchOrder(); }, [orderId]);
+
+  const confirmPayment = async () => {
+    setConfirming(true);
+    setError("");
+    try {
+      await DalabAdminApi.confirmShopOrderPayment(orderId);
+      await fetchOrder();
+      onChanged();
+    } catch (err) {
+      setError(err.message || "Could not confirm payment.");
+    }
+    setConfirming(false);
+  };
+
+  const saveStatus = async () => {
+    if (!nextStatus) return;
+    setSavingStatus(true);
+    setError("");
+    try {
+      await DalabAdminApi.updateShopOrderStatus(orderId, {
+        status: nextStatus,
+        trackingReference: trackingReference || undefined,
+        trackingNote: trackingNote || undefined,
+        courierName: courierName || undefined,
+      });
+      setNextStatus("");
+      await fetchOrder();
+      onChanged();
+    } catch (err) {
+      setError(err.message || "Could not update status.");
+    }
+    setSavingStatus(false);
+  };
+
+  if (!order) {
+    return (
+      <Modal title="Order" onClose={onClose}>
+        {error ? <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div> : <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>}
+      </Modal>
+    );
+  }
+
+  const finalState = SHOP_TERMINAL_STATUSES.includes(order.status);
+
+  return (
+    <Modal title={order.id} onClose={onClose} width={480}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+        <Badge tone={order.paymentStatus === "paid" ? "green" : "amber"}>{order.paymentStatus === "paid" ? "Paid" : "Awaiting payment"}</Badge>
+        <Badge tone={SHOP_ORDER_STATUS_META[order.status]?.tone || "neutral"}>{SHOP_ORDER_STATUS_META[order.status]?.label || order.status}</Badge>
+      </div>
+
+      <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 4 }}>Customer</div>
+      <div style={{ fontSize: 13.5, color: INK, marginBottom: 12 }}>{order.customerName || "—"} · {order.customerPhone || "—"}</div>
+
+      <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 4 }}>Deliver to</div>
+      <div style={{ fontSize: 13.5, color: INK, marginBottom: 12 }}>{order.deliveryName} · {order.deliveryPhone}<br />{order.deliveryAddress}</div>
+
+      <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 6 }}>Items</div>
+      <div style={{ border: `1px solid ${BORDER}`, borderRadius: 10, marginBottom: 12, overflow: "hidden" }}>
+        {order.items.map((item) => (
+          <div key={item.id} style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", borderBottom: `1px solid ${BORDER}`, fontSize: 12.5 }}>
+            <span>{item.productName} × {item.quantity}</span>
+            <span style={{ fontWeight: 700 }}>${Number(item.subtotal).toFixed(2)}</span>
+          </div>
+        ))}
+        <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", fontSize: 13, fontWeight: 800, color: INK }}>
+          <span>Total</span>
+          <span>${Number(order.totalAmount).toFixed(2)}</span>
+        </div>
+      </div>
+
+      {order.paymentStatus !== "paid" && !finalState && (
+        <div style={{ marginBottom: 14 }}>
+          <Button onClick={confirmPayment} disabled={confirming} spin={confirming} icon={Check}>Confirm payment received</Button>
+        </div>
+      )}
+
+      {!finalState && (
+        <div style={{ borderTop: `1px solid ${BORDER}`, paddingTop: 14, marginBottom: 14 }}>
+          <Field label="Advance delivery status">
+            <select value={nextStatus} onChange={(e) => setNextStatus(e.target.value)} style={inputStyle}>
+              <option value="">Choose a status…</option>
+              {Object.entries(SHOP_ORDER_STATUS_META)
+                .filter(([key]) => key !== order.status)
+                .map(([key, meta]) => <option key={key} value={key}>{meta.label}</option>)}
+            </select>
+          </Field>
+          <Field label="Courier name (optional)"><input value={courierName} onChange={(e) => setCourierName(e.target.value)} style={inputStyle} /></Field>
+          <Field label="Tracking / reference number (optional)"><input value={trackingReference} onChange={(e) => setTrackingReference(e.target.value)} style={inputStyle} /></Field>
+          <Field label="Note for customer (optional)"><input value={trackingNote} onChange={(e) => setTrackingNote(e.target.value)} style={inputStyle} /></Field>
+          <Button onClick={saveStatus} disabled={!nextStatus || savingStatus} spin={savingStatus}>Update status</Button>
+        </div>
+      )}
+
+      {(order.courierName || order.trackingReference || order.trackingNote) && (
+        <div style={{ fontSize: 12, color: MUTE, marginBottom: 10 }}>
+          {order.courierName && <div>Courier: {order.courierName}</div>}
+          {order.trackingReference && <div>Tracking: {order.trackingReference}</div>}
+          {order.trackingNote && <div>{order.trackingNote}</div>}
+        </div>
+      )}
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div>}
+    </Modal>
+  );
+}
+
+function ShopFlashSalesPanel() {
+  const [sales, setSales] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [error, setError] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [form, setForm] = useState({ name: "", startsAt: "", endsAt: "" });
+  const [items, setItems] = useState([{ productId: "", salePrice: "" }]);
+
+  const fetchAll = async () => {
+    try {
+      const [s, p] = await Promise.all([DalabAdminApi.getShopFlashSales(), DalabAdminApi.getShopProducts()]);
+      setSales(s);
+      setProducts(p);
+    } catch (err) {
+      setError(err.message || "Could not load flash sales.");
+    }
+  };
+  useEffect(() => { fetchAll(); }, []);
+
+  const addItemRow = () => setItems((prev) => [...prev, { productId: "", salePrice: "" }]);
+  const updateItemRow = (i, patch) => setItems((prev) => prev.map((it, idx) => (idx === i ? { ...it, ...patch } : it)));
+  const removeItemRow = (i) => setItems((prev) => prev.filter((_, idx) => idx !== i));
+
+  const create = async () => {
+    if (!form.name.trim() || !form.startsAt || !form.endsAt) return;
+    const validItems = items.filter((it) => it.productId && it.salePrice !== "");
+    if (validItems.length === 0) return setError("Add at least one product with a sale price.");
+    setCreating(true);
+    setError("");
+    try {
+      await DalabAdminApi.createShopFlashSale({
+        name: form.name.trim(),
+        startsAt: new Date(form.startsAt).toISOString(),
+        endsAt: new Date(form.endsAt).toISOString(),
+        items: validItems.map((it) => ({ productId: it.productId, salePrice: Number(it.salePrice) })),
+      });
+      setForm({ name: "", startsAt: "", endsAt: "" });
+      setItems([{ productId: "", salePrice: "" }]);
+      fetchAll();
+    } catch (err) {
+      setError(err.message || "Could not create flash sale.");
+    }
+    setCreating(false);
+  };
+
+  const toggleActive = async (sale) => {
+    try {
+      await DalabAdminApi.updateShopFlashSale(sale.id, { active: !sale.active });
+      fetchAll();
+    } catch (err) {
+      alert(err.message || "Could not update flash sale.");
+    }
+  };
+
+  const remove = async (sale) => {
+    if (!window.confirm(`Delete flash sale "${sale.name}"?`)) return;
+    try {
+      await DalabAdminApi.deleteShopFlashSale(sale.id);
+      fetchAll();
+    } catch (err) {
+      alert(err.message || "Could not delete flash sale.");
+    }
+  };
+
+  const now = new Date();
+
+  return (
+    <div>
+      <Card style={{ padding: 16, marginBottom: 16 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: INK, marginBottom: 10 }}>Schedule a flash sale</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+          <input placeholder="Name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} style={{ ...inputStyle, flex: 1, minWidth: 160, width: "auto" }} />
+          <input type="datetime-local" value={form.startsAt} onChange={(e) => setForm((f) => ({ ...f, startsAt: e.target.value }))} style={{ ...inputStyle, width: 200 }} />
+          <input type="datetime-local" value={form.endsAt} onChange={(e) => setForm((f) => ({ ...f, endsAt: e.target.value }))} style={{ ...inputStyle, width: 200 }} />
+        </div>
+        {items.map((it, i) => (
+          <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+            <select value={it.productId} onChange={(e) => updateItemRow(i, { productId: e.target.value })} style={{ ...inputStyle, flex: 1 }}>
+              <option value="">Choose a product…</option>
+              {products.map((p) => <option key={p.id} value={p.id}>{p.name} (${Number(p.price).toFixed(2)})</option>)}
+            </select>
+            <input type="number" min="0" step="0.01" placeholder="sale price" value={it.salePrice} onChange={(e) => updateItemRow(i, { salePrice: e.target.value })} style={{ ...inputStyle, width: 110 }} />
+            {items.length > 1 && (
+              <button onClick={() => removeItemRow(i)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "6px 10px", cursor: "pointer" }}>
+                <X size={13} color={MUTE} />
+              </button>
+            )}
+          </div>
+        ))}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
+          <button onClick={addItemRow} style={{ background: "none", border: "none", color: INDIGO, fontSize: 12.5, fontWeight: 700, cursor: "pointer", padding: 0 }}>+ Add another product</button>
+          <Button onClick={create} disabled={creating} spin={creating} icon={Plus}>Create flash sale</Button>
+        </div>
+      </Card>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {sales.map((sale) => {
+          const isLive = sale.active && new Date(sale.startsAt) <= now && now <= new Date(sale.endsAt);
+          return (
+            <Card key={sale.id} style={{ padding: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: 13.5, color: INK }}>{sale.name}</div>
+                  <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>{formatDateTime(sale.startsAt)} → {formatDateTime(sale.endsAt)}</div>
+                </div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <Badge tone={isLive ? "green" : sale.active ? "amber" : "gray"}>{isLive ? "Live now" : sale.active ? "Scheduled" : "Disabled"}</Badge>
+                  <button onClick={() => toggleActive(sale)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                    {sale.active ? <EyeOff size={13} color={SLATE} /> : <Eye size={13} color={GREEN} />}
+                  </button>
+                  <button onClick={() => remove(sale)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                    <Trash2 size={13} color="#C81E2C" />
+                  </button>
+                </div>
+              </div>
+              <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+                {(sale.items || []).map((it, idx) => (
+                  <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: SLATE }}>
+                    <span>{it.productName}</span>
+                    <span style={{ fontWeight: 700, color: INK }}>${Number(it.salePrice).toFixed(2)}</span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          );
+        })}
+        {sales.length === 0 && <div style={{ padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No flash sales yet.</div>}
+      </div>
+    </div>
+  );
+}
+
+function ShopBundlesPanel() {
+  const [bundles, setBundles] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [error, setError] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [form, setForm] = useState({ name: "", description: "", bundlePrice: "" });
+  const [items, setItems] = useState([{ productId: "", quantity: "1" }]);
+
+  const fetchAll = async () => {
+    try {
+      const [b, p] = await Promise.all([DalabAdminApi.getShopBundles(), DalabAdminApi.getShopProducts()]);
+      setBundles(b);
+      setProducts(p);
+    } catch (err) {
+      setError(err.message || "Could not load bundles.");
+    }
+  };
+  useEffect(() => { fetchAll(); }, []);
+
+  const addItemRow = () => setItems((prev) => [...prev, { productId: "", quantity: "1" }]);
+  const updateItemRow = (i, patch) => setItems((prev) => prev.map((it, idx) => (idx === i ? { ...it, ...patch } : it)));
+  const removeItemRow = (i) => setItems((prev) => prev.filter((_, idx) => idx !== i));
+
+  const create = async () => {
+    if (!form.name.trim() || form.bundlePrice === "") return;
+    const validItems = items.filter((it) => it.productId);
+    if (validItems.length === 0) return setError("Add at least one product to the bundle.");
+    setCreating(true);
+    setError("");
+    try {
+      await DalabAdminApi.createShopBundle({
+        name: form.name.trim(),
+        description: form.description.trim(),
+        bundlePrice: Number(form.bundlePrice),
+        items: validItems.map((it) => ({ productId: it.productId, quantity: Number(it.quantity) || 1 })),
+      });
+      setForm({ name: "", description: "", bundlePrice: "" });
+      setItems([{ productId: "", quantity: "1" }]);
+      fetchAll();
+    } catch (err) {
+      setError(err.message || "Could not create bundle.");
+    }
+    setCreating(false);
+  };
+
+  const toggleActive = async (bundle) => {
+    try {
+      await DalabAdminApi.updateShopBundle(bundle.id, { active: !bundle.active });
+      fetchAll();
+    } catch (err) {
+      alert(err.message || "Could not update bundle.");
+    }
+  };
+
+  const remove = async (bundle) => {
+    if (!window.confirm(`Delete bundle "${bundle.name}"?`)) return;
+    try {
+      await DalabAdminApi.deleteShopBundle(bundle.id);
+      fetchAll();
+    } catch (err) {
+      alert(err.message || "Could not delete bundle.");
+    }
+  };
+
+  return (
+    <div>
+      <Card style={{ padding: 16, marginBottom: 16 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: INK, marginBottom: 10 }}>Create a bundle deal</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+          <input placeholder="Name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} style={{ ...inputStyle, flex: 1, minWidth: 160, width: "auto" }} />
+          <input type="number" min="0" step="0.01" placeholder="Bundle price ($)" value={form.bundlePrice} onChange={(e) => setForm((f) => ({ ...f, bundlePrice: e.target.value }))} style={{ ...inputStyle, width: 160 }} />
+        </div>
+        <input placeholder="Description (optional)" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} style={{ ...inputStyle, marginBottom: 10 }} />
+        {items.map((it, i) => (
+          <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+            <select value={it.productId} onChange={(e) => updateItemRow(i, { productId: e.target.value })} style={{ ...inputStyle, flex: 1 }}>
+              <option value="">Choose a product…</option>
+              {products.map((p) => <option key={p.id} value={p.id}>{p.name} (${Number(p.price).toFixed(2)})</option>)}
+            </select>
+            <input type="number" min="1" step="1" placeholder="qty" value={it.quantity} onChange={(e) => updateItemRow(i, { quantity: e.target.value })} style={{ ...inputStyle, width: 80 }} />
+            {items.length > 1 && (
+              <button onClick={() => removeItemRow(i)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "6px 10px", cursor: "pointer" }}>
+                <X size={13} color={MUTE} />
+              </button>
+            )}
+          </div>
+        ))}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
+          <button onClick={addItemRow} style={{ background: "none", border: "none", color: INDIGO, fontSize: 12.5, fontWeight: 700, cursor: "pointer", padding: 0 }}>+ Add another product</button>
+          <Button onClick={create} disabled={creating} spin={creating} icon={Plus}>Create bundle</Button>
+        </div>
+      </Card>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 14 }}>
+        {bundles.map((bundle) => {
+          const regularTotal = (bundle.items || []).reduce((sum, it) => sum + Number(it.price) * it.quantity, 0);
+          return (
+            <Card key={bundle.id} style={{ padding: 14 }}>
+              <div style={{ fontWeight: 800, fontSize: 13.5, color: INK }}>{bundle.name}</div>
+              {bundle.description && <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>{bundle.description}</div>}
+              <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 3 }}>
+                {(bundle.items || []).map((it, idx) => (
+                  <div key={idx} style={{ fontSize: 12, color: SLATE }}>{it.name} × {it.quantity}</div>
+                ))}
+              </div>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 10 }}>
+                <span style={{ fontWeight: 800, fontSize: 16, color: INDIGO }}>${Number(bundle.bundlePrice).toFixed(2)}</span>
+                {regularTotal > Number(bundle.bundlePrice) && (
+                  <span style={{ fontSize: 12, color: MUTE, textDecoration: "line-through" }}>${regularTotal.toFixed(2)}</span>
+                )}
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
+                <Badge tone={bundle.active ? "green" : "neutral"}>{bundle.active ? "Active" : "Disabled"}</Badge>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button onClick={() => toggleActive(bundle)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                    {bundle.active ? <EyeOff size={13} color={SLATE} /> : <Eye size={13} color={GREEN} />}
+                  </button>
+                  <button onClick={() => remove(bundle)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                    <Trash2 size={13} color="#C81E2C" />
+                  </button>
+                </div>
+              </div>
+            </Card>
+          );
+        })}
+        {bundles.length === 0 && <div style={{ gridColumn: "1 / -1", padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No bundle deals yet.</div>}
+      </div>
+    </div>
+  );
+}
+
+function ShopDeliveryZonesPanel() {
+  const [zones, setZones] = useState([]);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({ name: "", fee: "" });
+  const [edits, setEdits] = useState({});
+
+  const fetchZones = async () => {
+    try { setZones(await DalabAdminApi.getShopDeliveryZones()); }
+    catch (err) { setError(err.message || "Could not load delivery zones."); }
+  };
+  useEffect(() => { fetchZones(); }, []);
+
+  const addZone = async () => {
+    if (!form.name.trim() || form.fee === "") return;
+    setSaving(true);
+    setError("");
+    try {
+      await DalabAdminApi.createShopDeliveryZone({ name: form.name.trim(), fee: Number(form.fee) });
+      setForm({ name: "", fee: "" });
+      fetchZones();
+    } catch (err) {
+      setError(err.message || "Could not create delivery zone.");
+    }
+    setSaving(false);
+  };
+
+  const saveFee = async (zone) => {
+    const draft = edits[zone.id];
+    if (draft === undefined) return;
+    try {
+      await DalabAdminApi.updateShopDeliveryZone(zone.id, { fee: Number(draft) });
+      setEdits((m) => ({ ...m, [zone.id]: undefined }));
+      fetchZones();
+    } catch (err) {
+      alert(err.message || "Could not save fee.");
+    }
+  };
+
+  const toggleActive = async (zone) => {
+    setZones((prev) => prev.map((z) => (z.id === zone.id ? { ...z, active: !z.active } : z)));
+    try {
+      await DalabAdminApi.updateShopDeliveryZone(zone.id, { active: !zone.active });
+    } catch (err) {
+      setError(err.message);
+      fetchZones();
+    }
+  };
+
+  const remove = async (zone) => {
+    if (!window.confirm(`Delete zone "${zone.name}"?`)) return;
+    try {
+      await DalabAdminApi.deleteShopDeliveryZone(zone.id);
+      fetchZones();
+    } catch (err) {
+      alert(err.message || "Could not delete zone.");
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 16 }}>
+        Per-area delivery fees, on top of the shop's flat delivery fee. A customer who doesn't pick a zone at checkout is still charged the flat fee.
+      </div>
+      <Card style={{ padding: 16, marginBottom: 16 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: INK, marginBottom: 10 }}>Add delivery zone</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <input placeholder="Zone name (e.g. Hodan)" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} style={{ ...inputStyle, flex: 1, minWidth: 160, width: "auto" }} />
+          <input type="number" min="0" step="0.01" placeholder="Fee ($)" value={form.fee} onChange={(e) => setForm((f) => ({ ...f, fee: e.target.value }))} style={{ ...inputStyle, width: 120 }} />
+          <Button onClick={addZone} disabled={saving || !form.name.trim() || form.fee === ""} icon={Plus} spin={saving}>Add</Button>
+        </div>
+      </Card>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {zones.map((zone) => (
+          <Card key={zone.id} style={{ padding: 14, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ fontWeight: 800, fontSize: 13.5, color: INK }}>{zone.name}</div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                type="number" min="0" step="0.01"
+                value={edits[zone.id] !== undefined ? edits[zone.id] : zone.fee}
+                onChange={(e) => setEdits((m) => ({ ...m, [zone.id]: e.target.value }))}
+                style={{ ...inputStyle, width: 90 }}
+              />
+              {edits[zone.id] !== undefined && (
+                <button onClick={() => saveFee(zone)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                  <Check size={13} color={GREEN} />
+                </button>
+              )}
+              <Badge tone={zone.active ? "green" : "neutral"}>{zone.active ? "Active" : "Disabled"}</Badge>
+              <button onClick={() => toggleActive(zone)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                {zone.active ? <EyeOff size={13} color={SLATE} /> : <Eye size={13} color={GREEN} />}
+              </button>
+              <button onClick={() => remove(zone)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                <Trash2 size={13} color="#C81E2C" />
+              </button>
+            </div>
+          </Card>
+        ))}
+        {zones.length === 0 && <div style={{ padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No delivery zones yet — orders use the flat delivery fee.</div>}
+      </div>
+    </div>
+  );
+}
+
+function ShopLowStockPanel() {
+  const [products, setProducts] = useState(null);
+  const [error, setError] = useState("");
+  const [edits, setEdits] = useState({});
+  const [saving, setSaving] = useState(null);
+
+  const fetchLowStock = async () => {
+    try { setProducts(await DalabAdminApi.getShopLowStockProducts()); }
+    catch (err) { setError(err.message || "Could not load low-stock products."); }
+  };
+  useEffect(() => { fetchLowStock(); }, []);
+
+  const restock = async (product) => {
+    const draft = edits[product.id];
+    if (draft === undefined || draft === "") return;
+    setSaving(product.id);
+    try {
+      await DalabAdminApi.updateShopProduct(product.id, { stock: Number(draft) });
+      setEdits((m) => ({ ...m, [product.id]: undefined }));
+      fetchLowStock();
+    } catch (err) {
+      alert(err.message || "Could not update stock.");
+    }
+    setSaving(null);
+  };
+
+  return (
+    <div>
+      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 16 }}>
+        Active products at or below their own low-stock threshold (set per-product when editing a product — defaults to 5).
+      </div>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {products === null ? (
+        <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {products.map((p) => (
+            <Card key={p.id} style={{ padding: 14, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontWeight: 800, fontSize: 13.5, color: INK }}>{p.name}</div>
+                <div style={{ fontSize: 11.5, color: MUTE, marginTop: 2 }}>Threshold: {p.lowStockThreshold}</div>
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <Badge tone={p.stock === 0 ? "red" : "amber"}>{p.stock} in stock</Badge>
+                <input
+                  type="number" min="0" step="1" placeholder="new stock"
+                  value={edits[p.id] !== undefined ? edits[p.id] : ""}
+                  onChange={(e) => setEdits((m) => ({ ...m, [p.id]: e.target.value }))}
+                  style={{ ...inputStyle, width: 90 }}
+                />
+                <Button onClick={() => restock(p)} disabled={saving === p.id || edits[p.id] === undefined || edits[p.id] === ""} spin={saving === p.id}>Restock</Button>
+              </div>
+            </Card>
+          ))}
+          {products.length === 0 && <div style={{ padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>Nothing is low on stock right now.</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ShopAnalyticsPanel() {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    DalabAdminApi.getShopAnalytics().then(setData).catch((err) => setError(err.message || "Could not load analytics."));
+  }, []);
+
+  if (error) return <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div>;
+  if (!data) return <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>;
+
+  const revenueSeries = (data.dailyRevenue || []).map((d) => ({
+    day: new Date(d.day).toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+    revenue: Number(d.revenue),
+  }));
+
+  const cards = [
+    { label: "Paid orders", value: data.orderCount, icon: ShoppingCart },
+    { label: "Revenue", value: `$${Number(data.revenue).toFixed(2)}`, icon: DollarSign },
+    { label: "Avg order value", value: `$${Number(data.avgOrderValue).toFixed(2)}`, icon: TrendingUp },
+  ];
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 14 }}>
+        {cards.map((c) => (
+          <Card key={c.label} style={{ padding: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ fontSize: 11.5, fontWeight: 700, color: MUTE }}>{c.label.toUpperCase()}</div>
+              <c.icon size={15} color={MUTE} />
+            </div>
+            <div style={{ fontSize: 21, fontWeight: 800, color: INK, marginTop: 8 }}>{c.value}</div>
+          </Card>
+        ))}
+      </div>
+
+      <Card style={{ padding: 18, marginBottom: 14 }}>
+        <div style={{ fontWeight: 800, color: INK, fontSize: 14, marginBottom: 8 }}>Revenue, last 30 days (paid orders)</div>
+        <ResponsiveContainer width="100%" height={220}>
+          <LineChart data={revenueSeries}>
+            <CartesianGrid stroke="#EEF0FB" vertical={false} />
+            <XAxis dataKey="day" tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
+            <YAxis tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
+            <Tooltip />
+            <Line type="monotone" dataKey="revenue" stroke={INDIGO} strokeWidth={3} dot={{ r: 3, fill: INDIGO }} />
+          </LineChart>
+        </ResponsiveContainer>
+      </Card>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+        <Card style={{ padding: 18 }}>
+          <div style={{ fontWeight: 800, color: INK, fontSize: 14, marginBottom: 10 }}>Orders by status</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {(data.ordersByStatus || []).map((row) => (
+              <div key={row.status} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: INK }}>
+                <span>{SHOP_ORDER_STATUS_META[row.status]?.label || row.status}</span>
+                <span style={{ fontWeight: 700 }}>{row.count}</span>
+              </div>
+            ))}
+            {(data.ordersByStatus || []).length === 0 && <div style={{ fontSize: 12.5, color: MUTE }}>No orders yet.</div>}
+          </div>
+        </Card>
+        <Card style={{ padding: 18 }}>
+          <div style={{ fontWeight: 800, color: INK, fontSize: 14, marginBottom: 10 }}>Top products by units sold</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {(data.topProducts || []).map((p) => (
+              <div key={p.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: INK }}>
+                <span>{p.name}</span>
+                <span style={{ fontWeight: 700 }}>{p.soldCount}</span>
+              </div>
+            ))}
+            {(data.topProducts || []).length === 0 && <div style={{ fontSize: 12.5, color: MUTE }}>No sales yet.</div>}
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+function ShopPaymentMethodsPanel() {
+  const [methods, setMethods] = useState([]);
+  const [edits, setEdits] = useState({});
+  const [saving, setSaving] = useState(null);
+  const [error, setError] = useState({});
+
+  const fetchMethods = async () => {
+    try { setMethods(await DalabAdminApi.getShopPaymentMethods()); }
+    catch (err) { console.error("getShopPaymentMethods failed:", err.message); }
+  };
+  useEffect(() => { fetchMethods(); }, []);
+
+  const save = async (row) => {
+    const draft = edits[row.method] || {};
+    const label = draft.label ?? row.label;
+    const paymentNumber = draft.paymentNumber ?? row.paymentNumber;
+    const ussdTemplate = draft.ussdTemplate ?? row.ussdTemplate;
+    setSaving(row.method);
+    setError((m) => ({ ...m, [row.method]: "" }));
+    try {
+      await DalabAdminApi.updateShopPaymentMethod(row.method, { label, paymentNumber, ussdTemplate });
+      setEdits((m) => ({ ...m, [row.method]: undefined }));
+      fetchMethods();
+    } catch (err) {
+      setError((m) => ({ ...m, [row.method]: err.message || "Could not save." }));
+    }
+    setSaving(null);
+  };
+
+  return (
+    <div>
+      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 16 }}>
+        DALAB's own collection numbers customers dial to pay for a Shop order — the same "dial this USSD code yourself" flow as the Internet Store, just paying DALAB directly instead of a provider.
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {methods.map((row) => {
+          const draft = edits[row.method] || {};
+          return (
+            <Card key={row.method} style={{ padding: 16 }}>
+              <div style={{ fontWeight: 800, fontSize: 14, color: INK, marginBottom: 10 }}>{row.label}</div>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 140 }}>
+                  <Field label="Label">
+                    <input value={draft.label ?? row.label} onChange={(e) => setEdits((m) => ({ ...m, [row.method]: { ...draft, label: e.target.value } }))} style={inputStyle} />
+                  </Field>
+                </div>
+                <div style={{ flex: 1, minWidth: 140 }}>
+                  <Field label="Payment number">
+                    <input value={draft.paymentNumber ?? row.paymentNumber} onChange={(e) => setEdits((m) => ({ ...m, [row.method]: { ...draft, paymentNumber: e.target.value } }))} style={inputStyle} />
+                  </Field>
+                </div>
+              </div>
+              <Field label="USSD template (must include {amount})">
+                <input value={draft.ussdTemplate ?? row.ussdTemplate} onChange={(e) => setEdits((m) => ({ ...m, [row.method]: { ...draft, ussdTemplate: e.target.value } }))} style={inputStyle} />
+              </Field>
+              {error[row.method] && <div style={{ color: "#C81E2C", fontSize: 12, marginBottom: 8 }}>{error[row.method]}</div>}
+              <Button onClick={() => save(row)} disabled={saving === row.method} spin={saving === row.method}>Save</Button>
+            </Card>
+          );
+        })}
       </div>
     </div>
   );
@@ -10786,6 +12770,93 @@ function OtpSettingsPanel() {
   );
 }
 
+// Customer App home screen's three top-level service cards (Internet,
+// eBadal, Reseller) -- a pure customer-facing visibility toggle, same
+// system_settings store as everything else on this page (service_internet_
+// enabled/service_ebadal_enabled/service_reseller_enabled). Turning one off
+// only hides its card in GET /settings/public's `services` object; nothing
+// about that service's own backend routes, orders, or data is touched, and
+// each of the three is completely independent of the other two.
+function ServiceVisibilityPanel() {
+  const [drafts, setDrafts] = useState({ service_internet_enabled: true, service_ebadal_enabled: true, service_reseller_enabled: true });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!DALAB_API_ENABLED) { setLoading(false); return; }
+    (async () => {
+      try {
+        const data = await DalabAdminApi.getSettings();
+        setDrafts({
+          service_internet_enabled: data[settingsToCamel("service_internet_enabled")] !== "false",
+          service_ebadal_enabled: data[settingsToCamel("service_ebadal_enabled")] !== "false",
+          service_reseller_enabled: data[settingsToCamel("service_reseller_enabled")] !== "false",
+        });
+      } catch (err) {
+        setError(err.message || "Could not load settings.");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      await DalabAdminApi.updateSetting("service_internet_enabled", drafts.service_internet_enabled ? "true" : "false");
+      await DalabAdminApi.updateSetting("service_ebadal_enabled", drafts.service_ebadal_enabled ? "true" : "false");
+      await DalabAdminApi.updateSetting("service_reseller_enabled", drafts.service_reseller_enabled ? "true" : "false");
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      setError(err.message || "Could not save settings.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage settings.</div>;
+  }
+  if (loading) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Loading…</div>;
+  }
+
+  const rows = [
+    { key: "service_internet_enabled", label: "Internet" },
+    { key: "service_ebadal_enabled", label: "eBadal" },
+    { key: "service_reseller_enabled", label: "Reseller" },
+  ];
+
+  return (
+    <Card style={{ padding: 18, maxWidth: 480 }}>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 16 }}>
+        Controls which service cards the Customer App shows on its home screen. Turning a service off only hides it from customers -- it never deletes or disables anything in the backend, and every other service keeps working normally.
+      </div>
+      {rows.map((row) => (
+        <div key={row.key} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+          <input
+            type="checkbox"
+            id={row.key}
+            checked={drafts[row.key]}
+            onChange={(e) => setDrafts((d) => ({ ...d, [row.key]: e.target.checked }))}
+          />
+          <label htmlFor={row.key} style={{ fontSize: 13, color: SLATE }}>
+            Show {row.label} on the Customer App
+          </label>
+        </div>
+      ))}
+      <Button icon={saving ? Loader2 : Check} spin={saving} disabled={saving} onClick={save}>
+        {saving ? "Saving..." : saved ? "Saved" : "Save changes"}
+      </Button>
+    </Card>
+  );
+}
+
 function SettingsPanel() {
   const [tab, setTab] = useState("general");
   return (
@@ -10796,6 +12867,7 @@ function SettingsPanel() {
           { id: "general", label: "General" },
           { id: "otp", label: "SMS OTP" },
           { id: "social", label: "Support & Social Media" },
+          { id: "services", label: "Services" },
           { id: "security", label: "Security" },
         ].map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)} style={{
@@ -10808,6 +12880,7 @@ function SettingsPanel() {
       {tab === "general" && <GeneralSettingsPanel />}
       {tab === "otp" && <OtpSettingsPanel />}
       {tab === "social" && <SocialMediaLinksPanel />}
+      {tab === "services" && <ServiceVisibilityPanel />}
       {tab === "security" && <ChangePasswordCard />}
     </div>
   );
@@ -11899,7 +13972,13 @@ function AdminDashboardShell({ admin, onLogout }) {
           )}
         </div>
         <div style={{ flex: 1, padding: "8px 10px", overflowY: "auto" }}>
-          {NAV.filter((n) => !n.superAdminOnly || admin?.role === "super_admin").map((n) => {
+          {NAV.filter((n) => {
+            // "overview" has neither flag -- always visible, the one
+            // section every Admin sees by default with zero permissions.
+            if (n.superAdminOnly) return admin?.role === "super_admin";
+            if (n.permission) return hasPermission(admin, n.permission);
+            return true;
+          }).map((n) => {
             const Icon = n.icon;
             const isActive = active === n.id;
             return (
@@ -11984,7 +14063,7 @@ function AdminDashboardShell({ admin, onLogout }) {
             </button>
           </div>
         </div>
-        <ConnectionStatusBar />
+        {admin?.role === "super_admin" && <ConnectionStatusBar />}
         <div style={{ padding: 22 }}>
           {active === "overview" && <Overview companies={companies} orders={orders} />}
           {active === "financial-overview" && <FinancialOverview admin={admin} />}
@@ -12007,6 +14086,8 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "commissions" && <CommissionsPanel companies={companies} packages={packages} admin={admin} />}
           {active === "money-exchange" && <MoneyExchangePanel admin={admin} />}
           {active === "resellers" && <ResellerManagement admin={admin} companies={companies} />}
+          {active === "shop" && <ShopManagement />}
+          {active === "vip-numbers" && <VipNumbersManagement companies={companies} />}
           {active === "sms-sender-ids" && <SmsSenderIdsPanel />}
           {active === "feedback" && <FeedbackPanel admin={admin} />}
           {active === "support" && <SupportQueuePanel admin={admin} />}

@@ -119,7 +119,7 @@ test("new provider + new template + new package end to end: correct final USSD w
   );
   const order = await queryOne<any>(`SELECT * FROM orders WHERE id=$1`, [orderId]);
   const generated = await generateUssdForOrder(order);
-  assert.equal(generated.ussd, "*555*685115555*0*5*4471#", "252 stripped, 0.50 -> 0*5, PIN last");
+  assert.equal(generated.ussd, "*555*685115555*05*4471#", "252 stripped, 0.50 -> 05 (single token), PIN last");
 });
 
 test("new package with a valid explicit template link: no warning", async () => {

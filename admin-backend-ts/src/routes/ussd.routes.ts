@@ -243,7 +243,13 @@ ussdRouter.delete("/admin/ussd-templates/:id", requireAuth("super_admin"), async
 const USSD_LOG_COLUMNS = `id, order_id, template_id, company_id, admin_id, created_at,
   COALESCE(generated_string_masked, '(masked — regenerate to view)') AS generated_string`;
 
-ussdRouter.get("/admin/ussd-logs", requireStaff(), async (req, res) => {
+// Device & USSD-exclusive (not called from any other page's read path,
+// unlike getUssdTemplates/getSimRouting/getUssdPinStatus below, which
+// Provider Numbers and Packages also depend on for admins who only hold
+// companies.manage/packages.manage) -- safe to lock to super_admin so a
+// regular Admin gets a real 403 even calling this directly, matching the
+// sidebar being hidden for them.
+ussdRouter.get("/admin/ussd-logs", requireAuth("super_admin"), async (req, res) => {
   const { orderId } = req.query;
   const rows = orderId
     ? await query(`SELECT ${USSD_LOG_COLUMNS} FROM ussd_logs WHERE order_id=$1 ORDER BY created_at DESC`, [orderId])
@@ -433,7 +439,8 @@ export async function selfHealStuckOrders(companyId: string): Promise<{ healed: 
   }
 }
 
-ussdRouter.post("/admin/orders/:id/generate-ussd", requireStaff(), async (req, res) => {
+// Device & USSD-exclusive -- same reasoning as /admin/ussd-logs above.
+ussdRouter.post("/admin/orders/:id/generate-ussd", requireAuth("super_admin"), async (req, res) => {
   const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
   if (!order) return sendJson(res, 404, { error: "Order not found" });
   const result = await generateUssdForOrder(order, req.auth!.sub);
@@ -462,7 +469,10 @@ ussdRouter.get("/admin/agent-devices", requireStaff(), async (_req, res) => {
 // category tags the Agent App's heartbeat retry loop now records
 // (heartbeat_failed_dns/tls/timeout/connection/http_*/unknown), not just a
 // raw success/failure count with no explanation.
-ussdRouter.get("/admin/agent-devices/:id/diagnostics", requireStaff(), async (req, res) => {
+// Device & USSD-exclusive (the Reliability Dashboard) -- not to be confused
+// with GET /admin/agent-devices just above/below, which Resellers' Withdraw
+// SIMs tab also depends on and must stay on requireStaff().
+ussdRouter.get("/admin/agent-devices/:id/diagnostics", requireAuth("super_admin"), async (req, res) => {
   const summary = await query(
     `SELECT tag, COUNT(*) AS count FROM agent_diagnostics_log
      WHERE device_id=$1 AND occurred_at > now() - interval '7 days'
