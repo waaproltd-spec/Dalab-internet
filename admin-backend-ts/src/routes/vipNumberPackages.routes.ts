@@ -77,7 +77,7 @@ async function restorePackageNumbersAvailability(packageId: string) {
 }
 
 const PACKAGE_ORDER_COLUMNS =
-  "id, package_id, size, price, customer_id, customer_full_name, payment_method, sender_phone, payment_status, status, paid_at, completed_at, cancelled_at, created_at, updated_at";
+  "id, package_id, size, price, customer_id, customer_full_name, location, district, mother_name, payment_method, sender_phone, payment_status, status, paid_at, completed_at, cancelled_at, created_at, updated_at";
 
 // Package-order equivalent of vipNumbers.routes.ts's own
 // expireVipNumberOrderIfStale — same FOR UPDATE-locked, race-safe shape,
@@ -248,11 +248,23 @@ vipNumberPackagesRouter.post(
   requireAuth("customer"),
   rateLimit("customer-vip-package-order-create", 20, 15 * 60 * 1000),
   async (req, res) => {
-    const { packageId, paymentMethod, senderPhone, customerFullName } = req.body ?? {};
+    const { packageId, paymentMethod, senderPhone, customerFullName, location, district, motherName } = req.body ?? {};
     if (!packageId) return sendJson(res, 400, { error: "packageId is required" });
     if (!senderPhone) return sendJson(res, 400, { error: "Provide the phone number you'll pay from" });
     if (typeof customerFullName !== "string" || !hasThreeNames(customerFullName)) {
       return sendJson(res, 400, { error: "Enter your full name (first, father's, and grandfather's name)" });
+    }
+    // Collected on the checkout flow's own Customer Information step
+    // (screen 1 of 2) -- same requiredness rule as vipNumbers.routes.ts's
+    // identical fields on the individual flow.
+    if (typeof location !== "string" || !location.trim()) {
+      return sendJson(res, 400, { error: "Enter where you live" });
+    }
+    if (typeof district !== "string" || !district.trim()) {
+      return sendJson(res, 400, { error: "Enter your district" });
+    }
+    if (typeof motherName !== "string" || !motherName.trim()) {
+      return sendJson(res, 400, { error: "Enter your mother's name" });
     }
 
     // Enforced here too, not just hidden in the Customer App UI -- shares
@@ -328,9 +340,21 @@ vipNumberPackagesRouter.post(
             ]);
             await client.query(
               `INSERT INTO vip_number_package_orders (
-                 id, package_id, size, price, customer_id, customer_full_name, payment_method, sender_phone
-               ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-              [orderId, packageId, pkg.size, pkg.price, req.auth!.sub, String(customerFullName).trim(), method.method, senderPhone]
+                 id, package_id, size, price, customer_id, customer_full_name, location, district, mother_name, payment_method, sender_phone
+               ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+              [
+                orderId,
+                packageId,
+                pkg.size,
+                pkg.price,
+                req.auth!.sub,
+                String(customerFullName).trim(),
+                String(location).trim(),
+                String(district).trim(),
+                String(motherName).trim(),
+                method.method,
+                senderPhone,
+              ]
             );
             for (const n of numbers) {
               await client.query(
