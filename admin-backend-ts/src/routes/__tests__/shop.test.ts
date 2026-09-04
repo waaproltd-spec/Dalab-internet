@@ -1536,3 +1536,74 @@ test("GET /admin/shop/analytics summarizes paid revenue, order status counts, an
   const plainRes = await asPlainAdmin("/admin/shop/analytics");
   assert.equal(plainRes.status, 403);
 });
+
+// ==================== Product Images (2-4 per product, no video) ====================
+
+const TEST_PNG_BASE64 =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+test("admin can add up to 4 images to a product; a 5th is rejected", async () => {
+  const ids: string[] = [];
+  for (let i = 0; i < 4; i++) {
+    const res = await asSuperAdmin(`/admin/shop/products/${productId}/images`, {
+      method: "POST",
+      body: JSON.stringify({ imageBase64: TEST_PNG_BASE64 }),
+    });
+    const body = (await res.json()) as any;
+    assert.equal(res.status, 201, JSON.stringify(body));
+    ids.push(body.id);
+  }
+
+  const fifthRes = await asSuperAdmin(`/admin/shop/products/${productId}/images`, {
+    method: "POST",
+    body: JSON.stringify({ imageBase64: TEST_PNG_BASE64 }),
+  });
+  assert.equal(fifthRes.status, 400);
+  const fifthBody = (await fifthRes.json()) as any;
+  assert.match(fifthBody.error, /Maximum 4 images/);
+
+  const listed = await queryOne<{ n: string }>(`SELECT COUNT(*) AS n FROM shop_product_images WHERE product_id=$1`, [productId]);
+  assert.equal(Number(listed?.n), 4);
+});
+
+test("an image upload rejects a non-image mime type (no video)", async () => {
+  const res = await asSuperAdmin(`/admin/shop/products/${productId}/images`, {
+    method: "POST",
+    body: JSON.stringify({ imageBase64: "data:video/mp4;base64,AAAA" }),
+  });
+  assert.equal(res.status, 400);
+  const body = (await res.json()) as any;
+  assert.match(body.error, /Only image files are allowed/);
+});
+
+test("deleting an image is rejected once a product would drop below the 2-image minimum", async () => {
+  const first = await asSuperAdmin(`/admin/shop/products/${productId}/images`, {
+    method: "POST",
+    body: JSON.stringify({ imageBase64: TEST_PNG_BASE64 }),
+  });
+  const firstBody = (await first.json()) as any;
+  const second = await asSuperAdmin(`/admin/shop/products/${productId}/images`, {
+    method: "POST",
+    body: JSON.stringify({ imageBase64: TEST_PNG_BASE64 }),
+  });
+  const secondBody = (await second.json()) as any;
+
+  // At exactly 2 images (the minimum), removing either one is rejected.
+  const blockedRes = await asSuperAdmin(`/admin/shop/products/${productId}/images/${firstBody.id}`, { method: "DELETE" });
+  assert.equal(blockedRes.status, 400);
+  const blockedBody = (await blockedRes.json()) as any;
+  assert.match(blockedBody.error, /at least 2 images/);
+
+  // Add a 3rd so the product is now above the minimum -- deleting down to 2 is fine.
+  const third = await asSuperAdmin(`/admin/shop/products/${productId}/images`, {
+    method: "POST",
+    body: JSON.stringify({ imageBase64: TEST_PNG_BASE64 }),
+  });
+  const thirdBody = (await third.json()) as any;
+  const allowedRes = await asSuperAdmin(`/admin/shop/products/${productId}/images/${thirdBody.id}`, { method: "DELETE" });
+  assert.equal(allowedRes.status, 200);
+
+  const remaining = await query<{ id: string }>(`SELECT id FROM shop_product_images WHERE product_id=$1`, [productId]);
+  assert.equal(remaining.length, 2);
+  assert.deepEqual(remaining.map((r) => r.id).sort(), [firstBody.id, secondBody.id].sort());
+});

@@ -4299,7 +4299,11 @@ const SHOP_ORDER_STATUS_META = {
 // No further status change is valid once an order reaches one of these --
 // mirrors shop.routes.ts's TERMINAL_SHOP_STATUSES exactly.
 const SHOP_TERMINAL_STATUSES = ["delivered", "cancelled", "failed", "returned", "refunded"];
-const MAX_SHOP_PRODUCT_IMAGES = 6;
+// Each product must carry 2-4 images -- the backend enforces this band on
+// add/remove (shop.routes.ts's MIN/MAX_PRODUCT_IMAGES); these mirror it so
+// the UI's own hints and disabled states match what the server will accept.
+const MIN_SHOP_PRODUCT_IMAGES = 2;
+const MAX_SHOP_PRODUCT_IMAGES = 4;
 
 // Shop: DALAB's 4th customer-facing service, alongside Internet/eBadal/
 // Reseller. Everything here (categories/products/images/prices/stock/
@@ -5824,24 +5828,31 @@ function ShopProductModal({ product, categories, onClose, onSaved, onDelete }) {
       </Field>
 
       {!isNew && (
-        <Field label={`Images (${images.length}/${MAX_SHOP_PRODUCT_IMAGES})`}>
+        <Field label={`Images (${images.length}/${MAX_SHOP_PRODUCT_IMAGES}, min ${MIN_SHOP_PRODUCT_IMAGES})`}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
             {images.map((img) => (
               <div key={img.id} style={{ position: "relative", width: 64, height: 64 }}>
                 <img src={DalabAdminApi.shopProductImageUrl(product.id, img.id)} alt="" style={{ width: 64, height: 64, borderRadius: 8, objectFit: "cover", border: `1px solid ${BORDER}` }} />
-                <button onClick={() => removeImage(img.id)} style={{ position: "absolute", top: -6, right: -6, background: "#C81E2C", border: "none", borderRadius: "50%", width: 18, height: 18, color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  <X size={11} />
-                </button>
+                {images.length > MIN_SHOP_PRODUCT_IMAGES && (
+                  <button onClick={() => removeImage(img.id)} style={{ position: "absolute", top: -6, right: -6, background: "#C81E2C", border: "none", borderRadius: "50%", width: 18, height: 18, color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <X size={11} />
+                  </button>
+                )}
               </div>
             ))}
           </div>
+          {images.length < MIN_SHOP_PRODUCT_IMAGES && (
+            <div style={{ fontSize: 11.5, color: "#C81E2C", marginBottom: 8 }}>
+              Add {MIN_SHOP_PRODUCT_IMAGES - images.length} more image{MIN_SHOP_PRODUCT_IMAGES - images.length > 1 ? "s" : ""} — {MIN_SHOP_PRODUCT_IMAGES} minimum, customers see this product's photo gallery.
+            </div>
+          )}
           <input ref={fileInputRef} type="file" accept="image/*" onChange={onFileSelected} style={{ display: "none" }} />
           <Button variant="secondary" icon={Upload} disabled={uploading || images.length >= MAX_SHOP_PRODUCT_IMAGES} spin={uploading} onClick={() => fileInputRef.current?.click()}>
             {uploading ? "Uploading..." : images.length >= MAX_SHOP_PRODUCT_IMAGES ? `Limit reached (${MAX_SHOP_PRODUCT_IMAGES})` : "Add image"}
           </Button>
         </Field>
       )}
-      {isNew && <div style={{ fontSize: 11.5, color: MUTE, marginBottom: 14 }}>Save the product first, then add images.</div>}
+      {isNew && <div style={{ fontSize: 11.5, color: MUTE, marginBottom: 14 }}>Save the product first, then add {MIN_SHOP_PRODUCT_IMAGES}-{MAX_SHOP_PRODUCT_IMAGES} images.</div>}
 
       {!isNew && (
         <Field label={`Variants (size/color/model/storage — leave price blank to use the product's own price)`}>

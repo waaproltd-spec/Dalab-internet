@@ -24,7 +24,10 @@ import { validateMobileNumber } from "../lib/phoneValidation.js";
 // too, not just in the UI.
 export const shopRouter = Router();
 
-const MAX_PRODUCT_IMAGES = 6;
+// Each product must carry 2-4 images (no video) -- enforced on the way in
+// (POST won't add a 5th) and on the way out (DELETE won't drop below 2).
+const MAX_PRODUCT_IMAGES = 4;
+const MIN_PRODUCT_IMAGES = 2;
 
 function generateShopOrderId(): string {
   return "SHP" + Math.floor(100000000 + Math.random() * 900000000);
@@ -1336,6 +1339,9 @@ shopRouter.post("/admin/shop/products/:id/images", requirePermission("shop.manag
   if (!product) return sendJson(res, 404, { error: "Product not found" });
   const parsed = parseDataUri(req.body?.imageBase64);
   if (!parsed) return sendJson(res, 400, { error: "imageBase64 must be a data:<mime>;base64,<data> string" });
+  if (!parsed.mimeType.startsWith("image/")) {
+    return sendJson(res, 400, { error: "Only image files are allowed — no video" });
+  }
   const count = await queryOne<{ n: string }>(`SELECT COUNT(*) AS n FROM shop_product_images WHERE product_id=$1`, [req.params.id]);
   if (Number(count?.n ?? 0) >= MAX_PRODUCT_IMAGES) {
     return sendJson(res, 400, { error: `Maximum ${MAX_PRODUCT_IMAGES} images per product — remove one first` });
@@ -1350,6 +1356,10 @@ shopRouter.post("/admin/shop/products/:id/images", requirePermission("shop.manag
 });
 
 shopRouter.delete("/admin/shop/products/:productId/images/:imageId", requirePermission("shop.manage"), async (req, res) => {
+  const count = await queryOne<{ n: string }>(`SELECT COUNT(*) AS n FROM shop_product_images WHERE product_id=$1`, [req.params.productId]);
+  if (Number(count?.n ?? 0) <= MIN_PRODUCT_IMAGES) {
+    return sendJson(res, 400, { error: `Each product needs at least ${MIN_PRODUCT_IMAGES} images — add another before removing this one` });
+  }
   const result = await query(`DELETE FROM shop_product_images WHERE id=$1 AND product_id=$2 RETURNING id`, [req.params.imageId, req.params.productId]);
   if (result.length === 0) return sendJson(res, 404, { error: "Image not found" });
   sendJson(res, 200, { deleted: true });
