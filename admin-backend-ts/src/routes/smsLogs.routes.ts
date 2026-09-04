@@ -28,6 +28,7 @@ import {
   findMatchingVipNumberPackageOrder,
   confirmVipNumberPackageOrderPaidViaSms,
 } from "./vipNumberSmsMatching.js";
+import { findMatchingShopOrder, confirmShopOrderPaidViaSms } from "./shopSmsMatching.js";
 
 export const smsLogsRouter = Router();
 
@@ -380,6 +381,7 @@ type IngestSmsResult = {
     matchedResellerWithdrawalId?: string | null;
     matchedVipNumberOrderId?: string | null;
     matchedVipNumberPackageOrderId?: string | null;
+    matchedShopOrderId?: string | null;
     requiresManualApproval: boolean;
     duplicate: boolean;
     orderAlreadyCompleted?: boolean;
@@ -562,8 +564,19 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
     vipPackageMatchFailureReason = vipPackageResult.reason;
   }
 
+  // Shop order matching — the true last resort, only once every other
+  // matcher (including VIP Number/VIP Number Package above) has found
+  // nothing. See shopSmsMatching.ts's header for why this exists at all.
+  let shopMatch: Awaited<ReturnType<typeof findMatchingShopOrder>>["order"] = null;
+  let shopMatchFailureReason: string | null = null;
+  if (!match && !exchangeMatch && !resellerDepositMatch && !resellerWithdrawalMatch && !vipNumberMatch && !vipPackageMatch) {
+    const shopResult = await findMatchingShopOrder(parsedAmount, parsedPhone);
+    shopMatch = shopResult.order;
+    shopMatchFailureReason = shopResult.reason;
+  }
+
   const combinedFailureReason =
-    match || exchangeMatch || resellerDepositMatch || resellerWithdrawalMatch || vipNumberMatch || vipPackageMatch
+    match || exchangeMatch || resellerDepositMatch || resellerWithdrawalMatch || vipNumberMatch || vipPackageMatch || shopMatch
       ? null
       : [
           matchFailureReason,
@@ -573,6 +586,7 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
           resellerWithdrawalMatchFailureReason ? `Reseller Withdraw: ${resellerWithdrawalMatchFailureReason}` : null,
           vipNumberMatchFailureReason ? `VIP Number: ${vipNumberMatchFailureReason}` : null,
           vipPackageMatchFailureReason ? `VIP Number Package: ${vipPackageMatchFailureReason}` : null,
+          shopMatchFailureReason ? `Shop: ${shopMatchFailureReason}` : null,
         ]
           .filter(Boolean)
           .join(" | ");
@@ -584,12 +598,12 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
   // different truncated minute than the row that actually won.
   try {
     await query(
-      `INSERT INTO sms_logs (id, agent_id, sender, body, parsed_provider, parsed_amount, parsed_phone, matched_order_id, matched_exchange_order_id, matched_reseller_deposit_id, matched_reseller_withdrawal_id, matched_vip_number_order_id, matched_vip_number_package_order_id, received_at, transaction_ref, sim_slot, match_failure_reason)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+      `INSERT INTO sms_logs (id, agent_id, sender, body, parsed_provider, parsed_amount, parsed_phone, matched_order_id, matched_exchange_order_id, matched_reseller_deposit_id, matched_reseller_withdrawal_id, matched_vip_number_order_id, matched_vip_number_package_order_id, matched_shop_order_id, received_at, transaction_ref, sim_slot, match_failure_reason)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
       [
         id, agentId, sender, body, parsedProvider ?? null, parsedAmount ?? null, parsedPhone ?? null,
         match?.id ?? null, exchangeMatch?.id ?? null, resellerDepositMatch?.id ?? null, resellerWithdrawalMatch?.id ?? null,
-        vipNumberMatch?.id ?? null, vipPackageMatch?.id ?? null,
+        vipNumberMatch?.id ?? null, vipPackageMatch?.id ?? null, shopMatch?.id ?? null,
         effectiveReceivedAt, transactionRef ?? null, simSlot ?? null,
         combinedFailureReason || null,
       ]
@@ -756,6 +770,15 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
     await confirmVipNumberPackageOrderPaidViaSms(vipPackageMatch, id);
   }
 
+  // Shop order: fully automatic, no admin tap required — same "Once the
+  // payment is confirmed..." pattern as Reseller Deposit/VIP Number above.
+  // confirmShopOrderPaidViaSms does its own atomic claim (payment_status=
+  // 'pending' CAS) before marking paid, safe to call more than once for the
+  // same order.
+  if (shopMatch) {
+    await confirmShopOrderPaidViaSms(shopMatch, id);
+  }
+
   // The ledger row for this genuinely-new payment attempt — 'pending' until
   // the Agent App's verify-payment/dial-attempt calls advance it. A null
   // return means idx_payment_tx_order_active's atomic backstop (migration
@@ -788,6 +811,7 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
       matchedResellerWithdrawalId: resellerWithdrawalMatch?.id ?? null,
       matchedVipNumberOrderId: vipNumberMatch?.id ?? null,
       matchedVipNumberPackageOrderId: vipPackageMatch?.id ?? null,
+      matchedShopOrderId: shopMatch?.id ?? null,
       requiresManualApproval,
       duplicate: false,
       status: "new",
@@ -845,6 +869,7 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
     `SELECT id, agent_id, body, parsed_amount, parsed_phone, parsed_provider, sim_slot, transaction_ref, received_at FROM sms_logs
      WHERE matched_order_id IS NULL AND matched_exchange_order_id IS NULL AND matched_reseller_deposit_id IS NULL
        AND matched_reseller_withdrawal_id IS NULL AND matched_vip_number_order_id IS NULL AND matched_vip_number_package_order_id IS NULL
+       AND matched_shop_order_id IS NULL
        AND received_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
      ORDER BY received_at ASC`
   );
@@ -1050,12 +1075,24 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
         continue;
       }
 
-      // Still nothing — try VIP Number Package order last.
+      // Still nothing — try VIP Number Package order next.
       const { order: vipPackageMatch, reason: vipPackageReason } = await findMatchingVipNumberPackageOrder(
         sms.parsed_amount ?? undefined,
         sms.parsed_phone ?? undefined
       );
-      if (!vipPackageMatch) {
+      if (vipPackageMatch) {
+        const vipPackageResult = await confirmVipNumberPackageOrderPaidViaSms(vipPackageMatch, sms.id);
+        if (vipPackageResult.confirmed) relinked++;
+        continue;
+      }
+
+      // No Store/Exchange/Reseller/VIP match — try Shop order last, the
+      // true last resort (same position as the live upload path).
+      const { order: shopMatch, reason: shopReason } = await findMatchingShopOrder(
+        sms.parsed_amount ?? undefined,
+        sms.parsed_phone ?? undefined
+      );
+      if (!shopMatch) {
         await query(`UPDATE sms_logs SET match_failure_reason=$1 WHERE id=$2`, [
           [
             reason,
@@ -1065,6 +1102,7 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
             resellerWithdrawalReason ? `Reseller Withdraw: ${resellerWithdrawalReason}` : null,
             vipNumberReason ? `VIP Number: ${vipNumberReason}` : null,
             vipPackageReason ? `VIP Number Package: ${vipPackageReason}` : null,
+            shopReason ? `Shop: ${shopReason}` : null,
           ]
             .filter(Boolean)
             .join(" | "),
@@ -1072,8 +1110,8 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
         ]);
         continue;
       }
-      const vipPackageResult = await confirmVipNumberPackageOrderPaidViaSms(vipPackageMatch, sms.id);
-      if (vipPackageResult.confirmed) relinked++;
+      const shopResult = await confirmShopOrderPaidViaSms(shopMatch, sms.id);
+      if (shopResult.confirmed) relinked++;
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error(`resweepUnmatchedSmsLogs failed for sms_log ${sms.id}:`, (err as Error).message);
