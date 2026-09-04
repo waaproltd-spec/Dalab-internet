@@ -13651,23 +13651,39 @@ function ServiceVisibilityPanel() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
+  // Distinct from `error` above (which also covers a failed *save* retry,
+  // where Save must stay usable): true only while the initial load hasn't
+  // succeeded, so `drafts` is still just its all-true placeholder rather
+  // than the real saved state. Without this, a failed GET /admin/settings
+  // left every checkbox showing ON with a fully working Save button --
+  // clicking it would silently push "every service ON" over whatever an
+  // admin had actually configured off, since there was nothing to stop a
+  // save built from placeholder data.
+  const [loadFailed, setLoadFailed] = useState(false);
+
+  const load = async () => {
+    if (!DALAB_API_ENABLED) { setLoading(false); return; }
+    setLoading(true);
+    setError("");
+    try {
+      const data = await DalabAdminApi.getSettings();
+      setDrafts(
+        Object.fromEntries(
+          SERVICE_VISIBILITY_ROWS.map((row) => [row.key, data[settingsToCamel(row.key)] !== "false"])
+        )
+      );
+      setLoadFailed(false);
+    } catch (err) {
+      setError(err.message || "Could not load settings.");
+      setLoadFailed(true);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    if (!DALAB_API_ENABLED) { setLoading(false); return; }
-    (async () => {
-      try {
-        const data = await DalabAdminApi.getSettings();
-        setDrafts(
-          Object.fromEntries(
-            SERVICE_VISIBILITY_ROWS.map((row) => [row.key, data[settingsToCamel(row.key)] !== "false"])
-          )
-        );
-      } catch (err) {
-        setError(err.message || "Could not load settings.");
-      } finally {
-        setLoading(false);
-      }
-    })();
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const save = async () => {
@@ -13707,16 +13723,23 @@ function ServiceVisibilityPanel() {
             type="checkbox"
             id={row.key}
             checked={drafts[row.key]}
+            disabled={loadFailed}
             onChange={(e) => setDrafts((d) => ({ ...d, [row.key]: e.target.checked }))}
           />
-          <label htmlFor={row.key} style={{ fontSize: 13, color: SLATE }}>
+          <label htmlFor={row.key} style={{ fontSize: 13, color: loadFailed ? MUTE : SLATE }}>
             Show {row.label} on the Customer App
           </label>
         </div>
       ))}
-      <Button icon={saving ? Loader2 : Check} spin={saving} disabled={saving} onClick={save}>
-        {saving ? "Saving..." : saved ? "Saved" : "Save changes"}
-      </Button>
+      {loadFailed ? (
+        <Button icon={RefreshCw} onClick={load}>
+          Retry loading current settings
+        </Button>
+      ) : (
+        <Button icon={saving ? Loader2 : Check} spin={saving} disabled={saving} onClick={save}>
+          {saving ? "Saving..." : saved ? "Saved" : "Save changes"}
+        </Button>
+      )}
     </Card>
   );
 }
