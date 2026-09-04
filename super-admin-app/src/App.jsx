@@ -470,6 +470,10 @@ const DalabAdminApi = {
   createShopCategory: (body) => dalabAdminApiRequest("/admin/shop/categories", { method: "POST", body }),
   updateShopCategory: (id, body) => dalabAdminApiRequest(`/admin/shop/categories/${id}`, { method: "PUT", body }),
   deleteShopCategory: (id) => dalabAdminApiRequest(`/admin/shop/categories/${id}`, { method: "DELETE" }),
+  // One image per category (unlike products' gallery) -- PUT always replaces.
+  setShopCategoryImage: (id, imageBase64) => dalabAdminApiRequest(`/admin/shop/categories/${id}/image`, { method: "PUT", body: { imageBase64 } }),
+  deleteShopCategoryImage: (id) => dalabAdminApiRequest(`/admin/shop/categories/${id}/image`, { method: "DELETE" }),
+  shopCategoryImageUrl: (id) => `${DALAB_API_BASE_URL}/shop/categories/${id}/image`,
   // Subcategories are generic (any category could have them) but only
   // Electronics's admin UI surfaces them for now, per the spec.
   getShopSubcategories: (categoryId) => dalabAdminApiRequest(`/admin/shop/subcategories${categoryId ? `?categoryId=${categoryId}` : ""}`),
@@ -5360,6 +5364,13 @@ function ShopCategoriesPanel() {
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({ name: "", emoji: "" });
   const [subcategoriesFor, setSubcategoriesFor] = useState(null); // category row, or null when closed
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({ name: "", emoji: "" });
+  const [editSaving, setEditSaving] = useState(false);
+  const [reorderingId, setReorderingId] = useState(null);
+  const [uploadingId, setUploadingId] = useState(null);
+  const uploadTargetId = useRef(null);
+  const fileInputRef = useRef(null);
 
   const fetchCategories = async () => {
     try { setCategories(await DalabAdminApi.getShopCategories()); }
@@ -5403,6 +5414,84 @@ function ShopCategoriesPanel() {
     }
   };
 
+  const startEdit = (cat) => {
+    setEditingId(cat.id);
+    setEditForm({ name: cat.name, emoji: cat.emoji });
+  };
+
+  const saveEdit = async (cat) => {
+    if (!editForm.name.trim()) return;
+    setEditSaving(true);
+    setError("");
+    try {
+      await DalabAdminApi.updateShopCategory(cat.id, { name: editForm.name.trim(), emoji: editForm.emoji.trim() });
+      setEditingId(null);
+      fetchCategories();
+    } catch (err) {
+      setError(err.message || "Could not update category.");
+    }
+    setEditSaving(false);
+  };
+
+  // Swaps this category's position with its neighbor in display order --
+  // two PUTs, then a refetch so the grid reflects the server's own order
+  // rather than assuming the swap landed exactly as requested.
+  const move = async (cat, direction) => {
+    const idx = ordered.findIndex((c) => c.id === cat.id);
+    const neighborIdx = idx + direction;
+    if (neighborIdx < 0 || neighborIdx >= ordered.length) return;
+    const neighbor = ordered[neighborIdx];
+    setReorderingId(cat.id);
+    setError("");
+    try {
+      await Promise.all([
+        DalabAdminApi.updateShopCategory(cat.id, { position: neighbor.position }),
+        DalabAdminApi.updateShopCategory(neighbor.id, { position: cat.position }),
+      ]);
+      await fetchCategories();
+    } catch (err) {
+      setError(err.message || "Could not reorder categories.");
+    }
+    setReorderingId(null);
+  };
+
+  const triggerImageUpload = (cat) => {
+    uploadTargetId.current = cat.id;
+    fileInputRef.current?.click();
+  };
+
+  const onImageSelected = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    const targetId = uploadTargetId.current;
+    if (!file || !targetId) return;
+    setUploadingId(targetId);
+    setError("");
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        await DalabAdminApi.setShopCategoryImage(targetId, reader.result);
+        fetchCategories();
+      } catch (err) {
+        setError(err.message || "Could not upload image.");
+      }
+      setUploadingId(null);
+    };
+    reader.onerror = () => { setError("Could not read that file."); setUploadingId(null); };
+    reader.readAsDataURL(file);
+  };
+
+  const removeImage = async (cat) => {
+    setUploadingId(cat.id);
+    try {
+      await DalabAdminApi.deleteShopCategoryImage(cat.id);
+      fetchCategories();
+    } catch (err) {
+      setError(err.message || "Could not remove image.");
+    }
+    setUploadingId(null);
+  };
+
   return (
     <div>
       <Card style={{ padding: 16, marginBottom: 16 }}>
@@ -5412,34 +5501,90 @@ function ShopCategoriesPanel() {
           <input placeholder="Category name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} style={{ ...inputStyle, flex: 1, minWidth: 160, width: "auto" }} />
           <Button onClick={addCategory} disabled={saving || !form.name.trim()} icon={Plus} spin={saving}>Add</Button>
         </div>
+        <div style={{ fontSize: 11.5, color: MUTE, marginTop: 8 }}>An image can be added after the category is created. The emoji is always shown as a fallback where no image is set.</div>
       </Card>
 
       {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
+      <input ref={fileInputRef} type="file" accept="image/*" onChange={onImageSelected} style={{ display: "none" }} />
+
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 14 }}>
-        {ordered.map((cat) => (
-          <Card key={cat.id} style={{ padding: 14 }}>
-            <div style={{ fontSize: 30 }}>{cat.emoji}</div>
-            <div style={{ fontWeight: 800, fontSize: 14, color: INK, marginTop: 6 }}>{cat.name}</div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12 }}>
-              <Badge tone={cat.active ? "green" : "neutral"}>{cat.active ? "Visible" : "Hidden"}</Badge>
-              <div style={{ display: "flex", gap: 6 }}>
-                <button onClick={() => toggleActive(cat)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
-                  {cat.active ? <EyeOff size={13} color={SLATE} /> : <Eye size={13} color={GREEN} />}
-                </button>
-                <button onClick={() => remove(cat)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
-                  <Trash2 size={13} color="#C81E2C" />
-                </button>
+        {ordered.map((cat, i) => {
+          const isEditing = editingId === cat.id;
+          const busy = uploadingId === cat.id;
+          return (
+            <Card key={cat.id} style={{ padding: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                <div style={{ position: "relative", width: 44, height: 44, flexShrink: 0 }}>
+                  {cat.hasImage ? (
+                    <img src={DalabAdminApi.shopCategoryImageUrl(cat.id)} alt="" style={{ width: 44, height: 44, borderRadius: 10, objectFit: "cover", border: `1px solid ${BORDER}` }} />
+                  ) : (
+                    <div style={{ width: 44, height: 44, borderRadius: 10, border: `1px dashed ${BORDER}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24 }}>
+                      {cat.emoji}
+                    </div>
+                  )}
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button title={cat.hasImage ? "Change image" : "Add image"} onClick={() => triggerImageUpload(cat)} disabled={busy} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: busy ? "default" : "pointer" }}>
+                    {busy ? <Loader2 size={13} color={SLATE} className="animate-spin" /> : <Upload size={13} color={SLATE} />}
+                  </button>
+                  {cat.hasImage && (
+                    <button title="Remove image" onClick={() => removeImage(cat)} disabled={busy} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: busy ? "default" : "pointer" }}>
+                      <X size={13} color="#C81E2C" />
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
-            <button
-              onClick={() => setSubcategoriesFor(cat)}
-              style={{ marginTop: 10, width: "100%", background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "6px 0", cursor: "pointer", fontSize: 11.5, fontWeight: 700, color: INDIGO }}
-            >
-              Manage subcategories
-            </button>
-          </Card>
-        ))}
+
+              {isEditing ? (
+                <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                  <input value={editForm.emoji} onChange={(e) => setEditForm((f) => ({ ...f, emoji: e.target.value }))} style={{ ...inputStyle, width: 50, padding: "6px 8px" }} />
+                  <input value={editForm.name} onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))} style={{ ...inputStyle, flex: 1, padding: "6px 8px" }} />
+                </div>
+              ) : (
+                <div style={{ fontWeight: 800, fontSize: 14, color: INK }}>{cat.name}</div>
+              )}
+
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12 }}>
+                <Badge tone={cat.active ? "green" : "neutral"}>{cat.active ? "Visible" : "Hidden"}</Badge>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button title="Move up" onClick={() => move(cat, -1)} disabled={i === 0 || reorderingId != null} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: i === 0 ? "default" : "pointer", opacity: i === 0 ? 0.4 : 1 }}>
+                    <ArrowUp size={13} color={SLATE} />
+                  </button>
+                  <button title="Move down" onClick={() => move(cat, 1)} disabled={i === ordered.length - 1 || reorderingId != null} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: i === ordered.length - 1 ? "default" : "pointer", opacity: i === ordered.length - 1 ? 0.4 : 1 }}>
+                    <ArrowDown size={13} color={SLATE} />
+                  </button>
+                  {isEditing ? (
+                    <>
+                      <button onClick={() => saveEdit(cat)} disabled={editSaving || !editForm.name.trim()} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                        <Check size={13} color={GREEN} />
+                      </button>
+                      <button onClick={() => setEditingId(null)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                        <X size={13} color={SLATE} />
+                      </button>
+                    </>
+                  ) : (
+                    <button title="Rename / change emoji" onClick={() => startEdit(cat)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                      <Pencil size={13} color={SLATE} />
+                    </button>
+                  )}
+                  <button onClick={() => toggleActive(cat)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                    {cat.active ? <EyeOff size={13} color={SLATE} /> : <Eye size={13} color={GREEN} />}
+                  </button>
+                  <button onClick={() => remove(cat)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                    <Trash2 size={13} color="#C81E2C" />
+                  </button>
+                </div>
+              </div>
+              <button
+                onClick={() => setSubcategoriesFor(cat)}
+                style={{ marginTop: 10, width: "100%", background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "6px 0", cursor: "pointer", fontSize: 11.5, fontWeight: 700, color: INDIGO }}
+              >
+                Manage subcategories
+              </button>
+            </Card>
+          );
+        })}
         {ordered.length === 0 && (
           <div style={{ gridColumn: "1 / -1", padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No categories yet.</div>
         )}

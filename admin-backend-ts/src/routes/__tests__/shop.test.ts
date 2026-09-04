@@ -338,6 +338,69 @@ test("a category with products under it cannot be hard-deleted", async () => {
   assert.equal(res.status, 409);
 });
 
+test("admin can upload, replace, and remove a category's image; hasImage reflects it publicly and to admin", async () => {
+  const noImageRes = await fetch(`${baseUrl}/shop/categories`);
+  const noImageList = (await noImageRes.json()) as any[];
+  assert.equal(noImageList.find((c) => c.id === categoryId)?.hasImage, false);
+
+  const png =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+  const putRes = await asSuperAdmin(`/admin/shop/categories/${categoryId}/image`, { method: "PUT", body: JSON.stringify({ imageBase64: png }) });
+  assert.equal(putRes.status, 200);
+  const afterPut = (await putRes.json()) as any;
+  assert.equal(afterPut.hasImage, true);
+
+  const imgRes = await fetch(`${baseUrl}/shop/categories/${categoryId}/image`);
+  assert.equal(imgRes.status, 200);
+  assert.equal(imgRes.headers.get("content-type"), "image/png");
+
+  // A non-image mime type (no video) is rejected.
+  const videoRes = await asSuperAdmin(`/admin/shop/categories/${categoryId}/image`, {
+    method: "PUT",
+    body: JSON.stringify({ imageBase64: "data:video/mp4;base64,AAAA" }),
+  });
+  assert.equal(videoRes.status, 400);
+
+  const deleteRes = await asSuperAdmin(`/admin/shop/categories/${categoryId}/image`, { method: "DELETE" });
+  assert.equal(deleteRes.status, 200);
+  const afterDelete = (await deleteRes.json()) as any;
+  assert.equal(afterDelete.hasImage, false);
+  const missingImgRes = await fetch(`${baseUrl}/shop/categories/${categoryId}/image`);
+  assert.equal(missingImgRes.status, 404);
+
+  const plainRes = await asPlainAdmin(`/admin/shop/categories/${categoryId}/image`, { method: "PUT", body: JSON.stringify({ imageBase64: png }) });
+  assert.equal(plainRes.status, 403);
+});
+
+test("admin can reorder categories by updating position, and rename/re-emoji an existing one", async () => {
+  const other = await queryOne<{ id: string }>(
+    `INSERT INTO shop_categories (id, name, emoji, position) VALUES ($1,'Test Reorder Category','🎁',97) RETURNING id`,
+    [randomUUID()]
+  );
+
+  const swapRes1 = await asSuperAdmin(`/admin/shop/categories/${categoryId}`, { method: "PUT", body: JSON.stringify({ position: 97 }) });
+  const swapRes2 = await asSuperAdmin(`/admin/shop/categories/${other!.id}`, { method: "PUT", body: JSON.stringify({ position: 99 }) });
+  assert.equal(swapRes1.status, 200);
+  assert.equal(swapRes2.status, 200);
+  const list = (await (await asSuperAdmin("/admin/shop/categories")).json()) as any[];
+  const ordered = [...list].sort((a, b) => a.position - b.position);
+  const idx = (id: string) => ordered.findIndex((c) => c.id === id);
+  assert.ok(idx(categoryId) < idx(other!.id), "the category set to position 97 must now sort before the one set to 99");
+
+  const renameRes = await asSuperAdmin(`/admin/shop/categories/${categoryId}`, { method: "PUT", body: JSON.stringify({ name: "Test Renamed Category", emoji: "🆕" }) });
+  assert.equal(renameRes.status, 200);
+  const renamed = (await renameRes.json()) as any;
+  assert.equal(renamed.name, "Test Renamed Category");
+  assert.equal(renamed.emoji, "🆕");
+
+  // Restore the shared fixture's name/emoji -- beforeEach/after only clean
+  // up a category named exactly 'Test Category', and this row still has
+  // this test's product attached (ON DELETE RESTRICT), so it must be
+  // renamed back rather than deleted.
+  await query(`UPDATE shop_categories SET name='Test Category', emoji='👟' WHERE id=$1`, [categoryId]);
+  await query(`DELETE FROM shop_categories WHERE id=$1`, [other!.id]);
+});
+
 // ==================== Phase 1: subcategories, catalog fields, dedup, statuses ====================
 
 test("subcategories are admin-managed, generic (not hardcoded to any category), and publicly listable once active", async () => {

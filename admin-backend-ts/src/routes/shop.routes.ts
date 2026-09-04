@@ -35,7 +35,10 @@ function generateShopOrderId(): string {
 
 // ==================== Public catalog (no auth — browsing before login) ====================
 
-const CATEGORY_COLUMNS = "id, name, emoji, position, active";
+// image_data itself is never selected here (same reasoning as
+// shop_product_images) -- has_image just tells a client whether to render
+// GET /shop/categories/:id/image or fall back to the emoji.
+const CATEGORY_COLUMNS = "id, name, emoji, position, active, (image_data IS NOT NULL) AS has_image";
 const SUBCATEGORY_COLUMNS = "id, category_id, name, position, active";
 // avg_rating/review_count are correlated subqueries rather than a JOIN +
 // GROUP BY -- this constant gets spliced into several differently-shaped
@@ -71,6 +74,21 @@ const PRODUCT_SORTS: Record<string, string> = {
 
 shopRouter.get("/shop/categories", async (_req, res) => {
   sendJson(res, 200, await query(`SELECT ${CATEGORY_COLUMNS} FROM shop_categories WHERE active=true ORDER BY position`));
+});
+
+// Not gated by active -- same reasoning as the product image route: an
+// admin previewing a hidden category's image (or a client with a stale
+// cached list) should never get a broken image, only a 404 if there's
+// truly no image set.
+shopRouter.get("/shop/categories/:id/image", async (req, res) => {
+  const row = await queryOne<{ image_data: Buffer; mime_type: string }>(
+    `SELECT image_data, image_mime_type AS mime_type FROM shop_categories WHERE id=$1`,
+    [req.params.id]
+  );
+  if (!row?.image_data) return sendJson(res, 404, { error: "No image set for this category" });
+  res.setHeader("Content-Type", row.mime_type);
+  res.setHeader("Cache-Control", "public, max-age=3600");
+  res.send(row.image_data);
 });
 
 // Generic subcategory support (migration 077) -- Electronics is the one
@@ -1122,6 +1140,29 @@ shopRouter.delete("/admin/shop/categories/:id", requirePermission("shop.manage")
     }
     throw err;
   }
+});
+
+// One image per category (unlike shop_product_images' gallery) -- PUT
+// always replaces whatever was there, matching packages.routes.ts's own
+// PUT-based single-image pattern.
+shopRouter.put("/admin/shop/categories/:id/image", requirePermission("shop.manage"), async (req, res) => {
+  const existing = await queryOne(`SELECT id FROM shop_categories WHERE id=$1`, [req.params.id]);
+  if (!existing) return sendJson(res, 404, { error: "Category not found" });
+  const parsed = parseDataUri(req.body?.imageBase64);
+  if (!parsed) return sendJson(res, 400, { error: "imageBase64 must be a data:<mime>;base64,<data> string" });
+  if (!parsed.mimeType.startsWith("image/")) {
+    return sendJson(res, 400, { error: "Only image files are allowed — no video" });
+  }
+  await query(`UPDATE shop_categories SET image_data=$1, image_mime_type=$2, updated_at=now() WHERE id=$3`, [parsed.data, parsed.mimeType, req.params.id]);
+  sendJson(res, 200, await queryOne(`SELECT ${CATEGORY_COLUMNS} FROM shop_categories WHERE id=$1`, [req.params.id]));
+});
+
+// Reverts the category to its emoji -- the Customer App and admin card both
+// already fall back to it whenever has_image is false.
+shopRouter.delete("/admin/shop/categories/:id/image", requirePermission("shop.manage"), async (req, res) => {
+  const result = await query(`UPDATE shop_categories SET image_data=NULL, image_mime_type=NULL, updated_at=now() WHERE id=$1 RETURNING id`, [req.params.id]);
+  if (result.length === 0) return sendJson(res, 404, { error: "Category not found" });
+  sendJson(res, 200, await queryOne(`SELECT ${CATEGORY_COLUMNS} FROM shop_categories WHERE id=$1`, [req.params.id]));
 });
 
 // ==================== Admin: Subcategories ====================
