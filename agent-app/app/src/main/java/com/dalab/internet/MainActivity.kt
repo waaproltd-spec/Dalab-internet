@@ -466,6 +466,7 @@ private fun AgentApp() {
             ShopAgentOrderDetailScreen(
                 order = order,
                 onBack = { screen = Screen.HOME },
+                onOrderUpdated = { selectedAgentShopOrder = it },
             )
         }
 

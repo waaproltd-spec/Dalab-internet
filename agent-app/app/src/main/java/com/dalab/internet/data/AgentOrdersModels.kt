@@ -32,12 +32,24 @@ data class ShopAgentOrder(
     val totalAmount: String? = null,
     val deliveryFee: String? = null,
     val paymentStatus: String? = null,
+    // "pending" | "processing" | "shipped" | "delivered" | "cancelled" |
+    // "failed" | "returned" | "refunded" -- Shop has no separate literal
+    // "completed" status; "delivered" IS the completed/terminal state, same
+    // as admin-backend-ts's SHOP_ORDER_STATUSES/TERMINAL_SHOP_STATUSES.
     val status: String? = null,
     val trackingReference: String? = null,
     val courierName: String? = null,
     val createdAt: String? = null,
     val items: List<ShopAgentOrderItem>? = null,
-)
+) {
+    val isPaid: Boolean get() = paymentStatus == "paid"
+    val isTerminal: Boolean get() = status in TERMINAL_SHOP_STATUSES
+    /** Matches POST agent/shop/orders/{id}/complete's own server-side guard
+     * exactly -- must be paid and not already terminal. */
+    val canComplete: Boolean get() = isPaid && !isTerminal
+}
+
+private val TERMINAL_SHOP_STATUSES = setOf("delivered", "cancelled", "failed", "returned", "refunded")
 
 data class ShopAgentOrderItem(
     val productName: String? = null,

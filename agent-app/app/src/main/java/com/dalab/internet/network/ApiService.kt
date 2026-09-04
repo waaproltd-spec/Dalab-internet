@@ -206,6 +206,14 @@ interface ApiService {
     @GET("agent/shop/orders/{id}")
     suspend fun getAgentShopOrder(@Path("id") id: String): Response<ShopAgentOrder>
 
+    // Real backend status change (pending/processing -> delivered) -- server
+    // refuses with 409 unless payment_status is already 'paid' and the order
+    // isn't already terminal (delivered/cancelled/failed/returned/refunded).
+    // Never touches payment_status itself, so Paid stays Paid. Never
+    // local-only, same as completeAgentVipNumberOrder below.
+    @POST("agent/shop/orders/{id}/complete")
+    suspend fun completeAgentShopOrder(@Path("id") id: String): Response<ShopAgentOrder>
+
     @GET("agent/vip-numbers/orders")
     suspend fun getAgentVipNumberOrders(@Query("status") status: String? = null): Response<List<VipNumberAgentOrder>>
 
