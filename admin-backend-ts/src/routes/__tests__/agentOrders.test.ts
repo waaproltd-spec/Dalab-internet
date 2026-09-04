@@ -153,6 +153,62 @@ test("agent can list and view real Shop order data (read-only, no fake data)", a
   assert.equal(Number(detail.totalAmount), 15);
 });
 
+test("agent cannot complete a Shop order until payment is confirmed, then can complete it, and a second attempt is rejected", async () => {
+  const orderId = randomUUID();
+  await query(
+    `INSERT INTO shop_orders (id, customer_id, payment_method, sender_phone, delivery_name, delivery_phone, delivery_address, total_amount, delivery_fee)
+     VALUES ($1,$2,'evc','617000111','Test Buyer','617000222','Mogadishu',15.00,0)`,
+    [orderId, customerId]
+  );
+
+  // Not yet confirmed paid -- the agent's own Complete Order must refuse it,
+  // same guard VIP Numbers' identical action already enforces.
+  const tooEarly = await asAgent(`/agent/shop/orders/${orderId}/complete`, { method: "POST" });
+  const tooEarlyBody = (await tooEarly.json()) as any;
+  assert.equal(tooEarly.status, 409, JSON.stringify(tooEarlyBody));
+
+  // Admin (or the automatic SMS matcher, in production) confirms payment --
+  // payment_status must never be touched by the completion step itself.
+  const payRes = await asSuperAdmin(`/admin/shop/orders/${orderId}/payment-status`, { method: "PUT", body: "{}" });
+  assert.equal(payRes.status, 200);
+
+  const listRes = await asAgent("/agent/shop/orders?status=processing");
+  const list = (await listRes.json()) as any[];
+  assert.ok(list.some((o) => o.id === orderId), "the paid order must now appear in the agent's Orders list as processing");
+
+  const completeRes = await asAgent(`/agent/shop/orders/${orderId}/complete`, { method: "POST" });
+  const completed = (await completeRes.json()) as any;
+  assert.equal(completeRes.status, 200, JSON.stringify(completed));
+  assert.equal(completed.status, "delivered");
+  assert.equal(completed.paymentStatus, "paid", "completing an order must never change its payment status");
+
+  // Synchronized with the backend, so the Customer App sees it too --
+  // exactly the same shop_orders row the customer's own GET reads from.
+  const fromDb = await queryOne<{ status: string; payment_status: string }>(
+    `SELECT status, payment_status FROM shop_orders WHERE id=$1`,
+    [orderId]
+  );
+  assert.equal(fromDb!.status, "delivered");
+  assert.equal(fromDb!.payment_status, "paid");
+
+  // Already terminal -- a second complete attempt must be rejected, so an
+  // agent can never accidentally move a completed order back to processing.
+  const secondComplete = await asAgent(`/agent/shop/orders/${orderId}/complete`, { method: "POST" });
+  assert.equal(secondComplete.status, 409);
+});
+
+test("agent cannot complete a cancelled Shop order", async () => {
+  const orderId = randomUUID();
+  await query(
+    `INSERT INTO shop_orders (id, customer_id, payment_method, sender_phone, delivery_name, delivery_phone, delivery_address, total_amount, delivery_fee, payment_status, status)
+     VALUES ($1,$2,'evc','617000111','Test Buyer','617000222','Mogadishu',15.00,0,'paid','cancelled')`,
+    [orderId, customerId]
+  );
+  const res = await asAgent(`/agent/shop/orders/${orderId}/complete`, { method: "POST" });
+  const body = (await res.json()) as any;
+  assert.equal(res.status, 409, JSON.stringify(body));
+});
+
 // ---------------- VIP Number: agent visibility + Complete Order ----------------
 
 test("agent sees no order until payment is confirmed, then sees it and can complete it", async () => {

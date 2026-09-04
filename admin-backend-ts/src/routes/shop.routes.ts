@@ -1752,16 +1752,17 @@ shopRouter.get("/admin/shop/orders/:id", requirePermission("shop.manage"), async
   sendJson(res, 200, { ...order, items: await loadOrderItems(req.params.id) });
 });
 
-// ==================== Agent: Orders (read-only) ====================
+// ==================== Agent: Orders (read + Complete Order) ====================
 
 // The Agent App's own Orders tab -- shows real Shop order data straight
 // from this same shop_orders table, same SHOP_ORDER_LIST_SELECT/filters
 // as the Admin Dashboard's identical routes above, just under agent auth
-// instead of the "shop.manage" staff permission. Read-only: Shop's own
-// multi-stage courier/tracking lifecycle (processing/shipped/delivered/
-// returned/refunded) stays admin-managed exactly as it already is --
-// this feature only adds a "Complete Order" action for VIP Numbers (see
-// vipNumbers.routes.ts), not Shop.
+// instead of the "shop.manage" staff permission. Shop's multi-stage
+// courier/tracking lifecycle (processing/shipped/returned/refunded) stays
+// admin-only via the existing PUT .../status route below -- an agent can
+// only ever move a paid order straight to 'delivered' via the Complete
+// Order action further down, mirroring VIP Numbers' identical
+// POST .../complete (vipNumbers.routes.ts).
 shopRouter.get("/agent/shop/orders", requireAuth("agent"), async (req, res) => {
   const { status, search } = req.query as Record<string, string | undefined>;
   const args: unknown[] = [];
@@ -1782,6 +1783,69 @@ shopRouter.get("/agent/shop/orders/:id", requireAuth("agent"), async (req, res) 
   const order = await queryOne(`${SHOP_ORDER_LIST_SELECT} WHERE so.id=$1`, [req.params.id]);
   if (!order) return sendJson(res, 404, { error: "Order not found" });
   sendJson(res, 200, { ...order, items: await loadOrderItems(req.params.id) });
+});
+
+// The Agent App's "Complete Order" action -- same locking/guards as VIP
+// Numbers' identical POST /agent/vip-numbers/orders/:id/complete
+// (payment must already be confirmed, order must not already be
+// terminal), hardcoded to 'delivered' rather than accepting an arbitrary
+// status: an agent can only ever complete a paid order here, never
+// cancel/ship/return one (those stay admin-only via the existing PUT
+// .../status route above). Never touches payment_status/paid_at -- the
+// order is already 'paid' by the time an agent can see it at all (see
+// the read-only GET routes' own comment), and this action has nothing to
+// do with payment. delivered_at/status=delivered is exactly what the
+// admin route's own "delivered" branch already sets, so the Admin
+// Dashboard and Customer App see the identical terminal state regardless
+// of whether an admin or an agent was the one who completed it.
+// recordActivity's adminId is left undefined -- admin_activity_log.admin_id
+// is FK'd to admin_users, not agents, so an agent's own id would violate
+// that constraint (same reasoning vipNumbers.routes.ts's identical action
+// already follows).
+shopRouter.post("/agent/shop/orders/:id/complete", requireAuth("agent"), async (req, res) => {
+  let existing: { status: string; customer_id: string };
+  try {
+    existing = await withTransaction(async (client) => {
+      const row = await client.query(
+        `SELECT status, payment_status, customer_id FROM shop_orders WHERE id=$1 FOR UPDATE`,
+        [req.params.id]
+      );
+      const order = row.rows[0];
+      if (!order) throw Object.assign(new Error("Order not found"), { status: 404 });
+      if (TERMINAL_SHOP_STATUSES.includes(order.status)) {
+        throw Object.assign(new Error(`This order is already ${order.status} and cannot be changed further`), { status: 409 });
+      }
+      if (order.payment_status !== "paid") {
+        throw Object.assign(new Error("This order cannot be completed until payment is confirmed"), { status: 409 });
+      }
+      await client.query(
+        `UPDATE shop_orders SET status='delivered', delivered_at=now(), updated_at=now() WHERE id=$1`,
+        [req.params.id]
+      );
+      return order;
+    });
+  } catch (err: any) {
+    if (err?.status) return sendJson(res, err.status, { error: err.message });
+    throw err;
+  }
+  await query(`INSERT INTO shop_order_status_history (order_id, status, note) VALUES ($1,'delivered','Completed by agent')`, [
+    req.params.id,
+  ]);
+  await recordActivity({
+    adminId: undefined,
+    action: "shop_order_completed_by_agent",
+    entityType: "shop_order",
+    entityId: req.params.id,
+    oldValue: { status: existing.status },
+    newValue: { status: "delivered" },
+  });
+  await notifyCustomer(
+    existing.customer_id,
+    "shop_order_update",
+    "Order Delivered",
+    `Order ${req.params.id} has been delivered. Thank you for shopping with DALAB!`
+  );
+  sendJson(res, 200, await queryOne(`${SHOP_ORDER_LIST_SELECT} WHERE so.id=$1`, [req.params.id]));
 });
 
 // Manual payment confirmation — mirrors Money Exchange's manual-verify path
