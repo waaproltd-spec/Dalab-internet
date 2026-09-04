@@ -8,6 +8,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -15,6 +16,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.painterResource
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Circle
@@ -38,6 +41,7 @@ import com.dalab.internet.auth.SessionManager
 import com.dalab.internet.data.Order
 import com.dalab.internet.data.OrderStatus
 import com.dalab.internet.network.AgentEventBus
+import com.dalab.internet.R
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.ConnectionState
 import com.dalab.internet.notifications.AgentAlertsState
@@ -295,13 +299,21 @@ private fun AgentHomeHeader(
             .padding(20.dp),
     ) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Column {
-                Text("DALAB AGENT", color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                Text(
-                    agentName?.let { "Welcome back, $it" } ?: "Welcome back",
-                    color = Color.White.copy(alpha = 0.85f),
-                    style = MaterialTheme.typography.bodySmall,
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Image(
+                    painter = painterResource(R.drawable.dalab_logo),
+                    contentDescription = null,
+                    modifier = Modifier.size(36.dp).clip(RoundedCornerShape(10.dp)),
                 )
+                Spacer(Modifier.width(10.dp))
+                Column {
+                    Text("DALAB AGENT", color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        agentName?.let { "Welcome back, $it" } ?: "Welcome back",
+                        color = Color.White.copy(alpha = 0.85f),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 NotificationBellButton(unreadCount = unreadAlerts, onClick = onOpenAlerts)
