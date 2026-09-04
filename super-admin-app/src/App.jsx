@@ -5744,9 +5744,27 @@ function ShopProductsPanel() {
               </span>
               <Badge tone={p.stock > 0 ? "neutral" : "red"}>{p.stock} in stock</Badge>
             </div>
-            <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
-              <Badge tone={p.active ? "green" : "neutral"}>{p.active ? "Visible" : "Hidden"}</Badge>
-              {merchandisingBadges(p).map((b) => <Badge key={b.label} tone={b.tone}>{b.label}</Badge>)}
+            <div style={{ marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <Badge tone={p.active ? "green" : "neutral"}>{p.active ? "Visible" : "Hidden"}</Badge>
+                {merchandisingBadges(p).map((b) => <Badge key={b.label} tone={b.tone}>{b.label}</Badge>)}
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button
+                  title="Edit"
+                  onClick={(e) => { e.stopPropagation(); setEditing(p); }}
+                  style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}
+                >
+                  <Pencil size={13} color={SLATE} />
+                </button>
+                <button
+                  title="Delete"
+                  onClick={(e) => { e.stopPropagation(); remove(p); }}
+                  style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}
+                >
+                  <Trash2 size={13} color="#C81E2C" />
+                </button>
+              </div>
             </div>
           </Card>
         ))}
