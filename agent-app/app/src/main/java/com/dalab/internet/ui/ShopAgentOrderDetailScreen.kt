@@ -83,8 +83,10 @@ fun ShopAgentOrderDetailScreen(
                 DetailRow("Name", current.deliveryName ?: "Not provided")
                 DetailRow("Phone", current.deliveryPhone ?: "Not provided")
                 DetailRow("Address", current.deliveryAddress ?: "Not provided")
-                if (current.courierName != null) DetailRow("Courier", current.courierName)
-                if (current.trackingReference != null) DetailRow("Tracking", current.trackingReference)
+                val courierName = current.courierName
+                if (courierName != null) DetailRow("Courier", courierName)
+                val trackingReference = current.trackingReference
+                if (trackingReference != null) DetailRow("Tracking", trackingReference)
 
                 Spacer(Modifier.height(20.dp))
                 SectionLabel("ITEMS")
@@ -99,7 +101,8 @@ fun ShopAgentOrderDetailScreen(
                 Spacer(Modifier.height(20.dp))
                 SectionLabel("PAYMENT")
                 DetailRow("Method", current.paymentMethod ?: "—")
-                if (current.deliveryFee != null) DetailRow("Delivery fee", "$${"%.2f".format(current.deliveryFee.toDoubleOrNull() ?: 0.0)}")
+                val deliveryFee = current.deliveryFee
+                if (deliveryFee != null) DetailRow("Delivery fee", "$${"%.2f".format(deliveryFee.toDoubleOrNull() ?: 0.0)}")
                 DetailRow("Total amount", "$${"%.2f".format(current.totalAmount?.toDoubleOrNull() ?: 0.0)}")
                 DetailRow("Payment status", current.paymentStatus?.replaceFirstChar { it.uppercase() } ?: "—")
 
