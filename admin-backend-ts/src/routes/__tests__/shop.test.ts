@@ -1605,6 +1605,58 @@ test("GET /admin/shop/analytics summarizes paid revenue, order status counts, an
 const TEST_PNG_BASE64 =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
+// Mirrors the Admin Dashboard's "Add product" form exactly: the product is
+// created first (no images yet), then each staged image is uploaded one at
+// a time against the id the create just returned -- the only sequence
+// available to the frontend, since a product must exist before an image
+// can be attached to it. Confirms the full path a new product with photos
+// takes end to end: create -> sequential uploads -> publicly listed with
+// its images -> each image's bytes fetchable -- i.e. exactly what the
+// Customer App reads from GET /shop/products and GET /shop/products/:id.
+test("creating a product then uploading 2-4 images sequentially (the Add Product form's flow) is retrievable with all images, in order, from the public catalog", async () => {
+  const createRes = await asSuperAdmin("/admin/shop/products", {
+    method: "POST",
+    body: JSON.stringify({ categoryId, name: "Test Gallery Product", price: 12.5, stock: 4 }),
+  });
+  assert.equal(createRes.status, 201);
+  const created = (await createRes.json()) as any;
+  assert.equal(created.id != null, true);
+
+  // 3 images, sequentially -- same order-preserving reasoning as the admin
+  // UI's own upload loop.
+  const uploadedIds: string[] = [];
+  for (let i = 0; i < 3; i++) {
+    const res = await asSuperAdmin(`/admin/shop/products/${created.id}/images`, {
+      method: "POST",
+      body: JSON.stringify({ imageBase64: TEST_PNG_BASE64 }),
+    });
+    assert.equal(res.status, 201, `image ${i} upload failed`);
+    uploadedIds.push(((await res.json()) as any).id);
+  }
+
+  // Public catalog list (what the Customer App's product grid reads).
+  const listRes = await fetch(`${baseUrl}/shop/products?categoryId=${categoryId}`);
+  const list = (await listRes.json()) as any[];
+  const listed = list.find((p) => p.id === created.id);
+  assert.ok(listed, "the new product must appear in the public catalog");
+  assert.equal(listed.images.length, 3);
+  assert.deepEqual(
+    listed.images.map((img: any) => img.id).sort(),
+    uploadedIds.slice().sort()
+  );
+
+  // Public single-product read (what the Customer App's product detail
+  // screen's swipeable gallery reads), and each image's actual bytes.
+  const detailRes = await fetch(`${baseUrl}/shop/products/${created.id}`);
+  const detail = (await detailRes.json()) as any;
+  assert.equal(detail.images.length, 3);
+  for (const img of detail.images) {
+    const imgRes = await fetch(`${baseUrl}/shop/products/${created.id}/images/${img.id}`);
+    assert.equal(imgRes.status, 200);
+    assert.equal(imgRes.headers.get("content-type"), "image/png");
+  }
+});
+
 test("admin can add up to 4 images to a product; a 5th is rejected", async () => {
   const ids: string[] = [];
   for (let i = 0; i < 4; i++) {

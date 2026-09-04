@@ -5804,10 +5804,17 @@ function ShopProductModal({ product, categories, onClose, onSaved, onDelete }) {
   });
   const [subcategories, setSubcategories] = useState([]);
   const [images, setImages] = useState(product.images || []);
+  // For a brand-new product (no id yet, so there's nothing to attach an
+  // uploaded image to) -- files picked in the modal are staged here as
+  // {tempId, dataUrl, name} and only actually uploaded (via the same
+  // per-image API the edit-existing-product flow already uses) once the
+  // product itself has been created in save() below.
+  const [pendingImages, setPendingImages] = useState([]);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
   const fileInputRef = useRef(null);
+  const ACCEPTED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
   const [variants, setVariants] = useState([]);
   const [variantForm, setVariantForm] = useState({ label: "", size: "", color: "", price: "", stock: "0" });
@@ -5889,6 +5896,9 @@ function ShopProductModal({ product, categories, onClose, onSaved, onDelete }) {
     if (form.oldPrice && (!Number.isFinite(Number(form.oldPrice)) || Number(form.oldPrice) < 0)) {
       return setError("Original price must be a non-negative number.");
     }
+    if (isNew && (pendingImages.length < MIN_SHOP_PRODUCT_IMAGES || pendingImages.length > MAX_SHOP_PRODUCT_IMAGES)) {
+      return setError(`Add ${MIN_SHOP_PRODUCT_IMAGES}-${MAX_SHOP_PRODUCT_IMAGES} product images before saving.`);
+    }
     setSaving(true);
     setError("");
     try {
@@ -5906,8 +5916,30 @@ function ShopProductModal({ product, categories, onClose, onSaved, onDelete }) {
         bestSeller: form.bestSeller,
         active: form.active,
       };
-      if (isNew) await DalabAdminApi.createShopProduct(body);
-      else await DalabAdminApi.updateShopProduct(product.id, body);
+      if (isNew) {
+        const created = await DalabAdminApi.createShopProduct(body);
+        // Uploaded one at a time (not Promise.all) so the images land in
+        // the exact order they were staged -- the backend assigns each a
+        // position of MAX(existing)+1, which only comes out right if the
+        // uploads themselves are sequential.
+        const failedUploads = [];
+        for (const img of pendingImages) {
+          try {
+            await DalabAdminApi.addShopProductImage(created.id, img.dataUrl);
+          } catch (err) {
+            failedUploads.push(img.name);
+          }
+        }
+        if (failedUploads.length > 0) {
+          // The product itself was created successfully -- surface the
+          // partial image failure without blocking that, same as
+          // removeImage/remove elsewhere in this file use a non-blocking
+          // alert() for a post-success error.
+          alert(`Product created, but ${failedUploads.length} image(s) failed to upload: ${failedUploads.join(", ")}. Add them from Edit.`);
+        }
+      } else {
+        await DalabAdminApi.updateShopProduct(product.id, body);
+      }
       onSaved();
     } catch (err) {
       setError(err.message || "Could not save product.");
@@ -5918,10 +5950,26 @@ function ShopProductModal({ product, categories, onClose, onSaved, onDelete }) {
   const onFileSelected = (e) => {
     const file = e.target.files?.[0];
     e.target.value = "";
-    if (!file || !product.id) return;
-    setUploading(true);
+    if (!file) return;
+    if (!ACCEPTED_IMAGE_TYPES.includes(file.type)) {
+      setError("Only JPG, PNG, or WebP images are supported.");
+      return;
+    }
     setError("");
     const reader = new FileReader();
+    if (isNew) {
+      // No product id yet -- stage locally instead of calling the upload
+      // API. save() uploads these (via the exact same addShopProductImage
+      // call the existing-product path below already uses) right after
+      // the product itself is created.
+      reader.onload = () => {
+        setPendingImages((prev) => [...prev, { tempId: `${Date.now()}-${Math.random()}`, dataUrl: reader.result, name: file.name }]);
+      };
+      reader.onerror = () => setError("Could not read that file.");
+      reader.readAsDataURL(file);
+      return;
+    }
+    setUploading(true);
     reader.onload = async () => {
       try {
         const result = await DalabAdminApi.addShopProductImage(product.id, reader.result);
@@ -5934,6 +5982,8 @@ function ShopProductModal({ product, categories, onClose, onSaved, onDelete }) {
     reader.onerror = () => { setError("Could not read that file."); setUploading(false); };
     reader.readAsDataURL(file);
   };
+
+  const removePendingImage = (tempId) => setPendingImages((prev) => prev.filter((img) => img.tempId !== tempId));
 
   const removeImage = async (imageId) => {
     try {
@@ -5990,32 +6040,49 @@ function ShopProductModal({ product, categories, onClose, onSaved, onDelete }) {
         </label>
       </Field>
 
-      {!isNew && (
-        <Field label={`Images (${images.length}/${MAX_SHOP_PRODUCT_IMAGES}, min ${MIN_SHOP_PRODUCT_IMAGES})`}>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
-            {images.map((img) => (
-              <div key={img.id} style={{ position: "relative", width: 64, height: 64 }}>
-                <img src={DalabAdminApi.shopProductImageUrl(product.id, img.id)} alt="" style={{ width: 64, height: 64, borderRadius: 8, objectFit: "cover", border: `1px solid ${BORDER}` }} />
-                {images.length > MIN_SHOP_PRODUCT_IMAGES && (
-                  <button onClick={() => removeImage(img.id)} style={{ position: "absolute", top: -6, right: -6, background: "#C81E2C", border: "none", borderRadius: "50%", width: 18, height: 18, color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <X size={11} />
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-          {images.length < MIN_SHOP_PRODUCT_IMAGES && (
-            <div style={{ fontSize: 11.5, color: "#C81E2C", marginBottom: 8 }}>
-              Add {MIN_SHOP_PRODUCT_IMAGES - images.length} more image{MIN_SHOP_PRODUCT_IMAGES - images.length > 1 ? "s" : ""} — {MIN_SHOP_PRODUCT_IMAGES} minimum, customers see this product's photo gallery.
+      {(() => {
+        // Unified for both flows: isNew shows/removes pendingImages (staged
+        // locally, uploaded together when "Add product" is clicked);
+        // editing an existing product shows/removes `images`, each already
+        // persisted the moment it's picked (unchanged from before).
+        const count = isNew ? pendingImages.length : images.length;
+        const atMax = count >= MAX_SHOP_PRODUCT_IMAGES;
+        return (
+          <Field label={`Product Images (${count}/${MAX_SHOP_PRODUCT_IMAGES}, min ${MIN_SHOP_PRODUCT_IMAGES})`}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+              {isNew
+                ? pendingImages.map((img) => (
+                    <div key={img.tempId} style={{ position: "relative", width: 64, height: 64 }}>
+                      <img src={img.dataUrl} alt="" style={{ width: 64, height: 64, borderRadius: 8, objectFit: "cover", border: `1px solid ${BORDER}` }} />
+                      <button onClick={() => removePendingImage(img.tempId)} style={{ position: "absolute", top: -6, right: -6, background: "#C81E2C", border: "none", borderRadius: "50%", width: 18, height: 18, color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <X size={11} />
+                      </button>
+                    </div>
+                  ))
+                : images.map((img) => (
+                    <div key={img.id} style={{ position: "relative", width: 64, height: 64 }}>
+                      <img src={DalabAdminApi.shopProductImageUrl(product.id, img.id)} alt="" style={{ width: 64, height: 64, borderRadius: 8, objectFit: "cover", border: `1px solid ${BORDER}` }} />
+                      {images.length > MIN_SHOP_PRODUCT_IMAGES && (
+                        <button onClick={() => removeImage(img.id)} style={{ position: "absolute", top: -6, right: -6, background: "#C81E2C", border: "none", borderRadius: "50%", width: 18, height: 18, color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          <X size={11} />
+                        </button>
+                      )}
+                    </div>
+                  ))}
             </div>
-          )}
-          <input ref={fileInputRef} type="file" accept="image/*" onChange={onFileSelected} style={{ display: "none" }} />
-          <Button variant="secondary" icon={Upload} disabled={uploading || images.length >= MAX_SHOP_PRODUCT_IMAGES} spin={uploading} onClick={() => fileInputRef.current?.click()}>
-            {uploading ? "Uploading..." : images.length >= MAX_SHOP_PRODUCT_IMAGES ? `Limit reached (${MAX_SHOP_PRODUCT_IMAGES})` : "Add image"}
-          </Button>
-        </Field>
-      )}
-      {isNew && <div style={{ fontSize: 11.5, color: MUTE, marginBottom: 14 }}>Save the product first, then add {MIN_SHOP_PRODUCT_IMAGES}-{MAX_SHOP_PRODUCT_IMAGES} images.</div>}
+            {count < MIN_SHOP_PRODUCT_IMAGES && (
+              <div style={{ fontSize: 11.5, color: "#C81E2C", marginBottom: 8 }}>
+                Add {MIN_SHOP_PRODUCT_IMAGES - count} more image{MIN_SHOP_PRODUCT_IMAGES - count > 1 ? "s" : ""} — {MIN_SHOP_PRODUCT_IMAGES} minimum, customers see this product's photo gallery.
+              </div>
+            )}
+            <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/webp" onChange={onFileSelected} style={{ display: "none" }} />
+            <Button variant="secondary" icon={Upload} disabled={uploading || atMax} spin={uploading} onClick={() => fileInputRef.current?.click()}>
+              {uploading ? "Uploading..." : atMax ? `Limit reached (${MAX_SHOP_PRODUCT_IMAGES})` : "Choose Images"}
+            </Button>
+            <div style={{ fontSize: 11, color: MUTE, marginTop: 6 }}>JPG, PNG, or WebP. {MIN_SHOP_PRODUCT_IMAGES}-{MAX_SHOP_PRODUCT_IMAGES} images per product.</div>
+          </Field>
+        );
+      })()}
 
       {!isNew && (
         <Field label={`Variants (size/color/model/storage — leave price blank to use the product's own price)`}>

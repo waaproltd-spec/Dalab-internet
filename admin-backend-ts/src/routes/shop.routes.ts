@@ -52,13 +52,27 @@ const SUBCATEGORY_COLUMNS = "id, category_id, name, position, active";
 // shop_flash_sale_items. Order creation and cart validation below re-resolve
 // the same functions independently at the moment of purchase, so what a
 // customer is actually charged always matches what they were shown.
+// images is a correlated subquery (not a join) for the same reason
+// avg_rating/review_count above are -- and, critically, it's what actually
+// lets every *list* route (public catalog, favorites, recently-viewed,
+// recommended, the admin product grid) show a thumbnail at all: those
+// routes never separately re-fetch shop_product_images the way the two
+// single-product GET routes do (`{ ...product, images: await query(...) }`),
+// so before this column existed here every one of them silently returned
+// no images regardless of how many a product actually had -- the Customer
+// App's card/grid always fell back to its placeholder icon, images only
+// ever showed once a customer tapped into a product's own detail page.
+// COALESCE(..., '[]') so a product with zero images gets an empty array,
+// never null, matching what ShopProduct.fromJson already expects.
 const PRODUCT_COLUMNS =
   "id, category_id, subcategory_id, name, description, " +
   "shop_effective_price(shop_products.id, price) AS price, " +
   "shop_effective_old_price(shop_products.id, price, old_price) AS old_price, " +
   "stock, brand, featured, is_new_arrival, best_seller, sold_count, active, created_at, " +
   "(SELECT ROUND(AVG(rating), 1) FROM shop_reviews WHERE product_id = shop_products.id) AS avg_rating, " +
-  "(SELECT COUNT(*) FROM shop_reviews WHERE product_id = shop_products.id) AS review_count";
+  "(SELECT COUNT(*) FROM shop_reviews WHERE product_id = shop_products.id) AS review_count, " +
+  "COALESCE((SELECT json_agg(json_build_object('id', spi.id, 'position', spi.position) ORDER BY spi.position) " +
+  "FROM shop_product_images spi WHERE spi.product_id = shop_products.id), '[]') AS images";
 
 const VARIANT_COLUMNS = "id, product_id, label, attributes, price, stock, sku, position";
 
