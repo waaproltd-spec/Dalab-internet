@@ -1139,7 +1139,7 @@ test("confirming payment on a pending order appends a 'processing' timeline entr
 
 // ==================== Cancel Order ====================
 
-test("a customer can cancel their own pending/processing order, restoring stock; a shipped order cannot be cancelled", async () => {
+test("a customer can cancel their own pending, unpaid order, restoring stock; a shipped order cannot be cancelled", async () => {
   await fabricateOrder("SHPTESTCANCEL1", "pending");
   await query(
     `INSERT INTO shop_order_items (id, order_id, product_id, product_name, unit_price, quantity, subtotal) VALUES ($1,'SHPTESTCANCEL1',$2,'Test Sneakers',25,1,25)`,
@@ -1159,6 +1159,25 @@ test("a customer can cancel their own pending/processing order, restoring stock;
   await fabricateOrder("SHPTESTCANCEL2", "shipped");
   const tooLateRes = await asCustomer("/shop/orders/SHPTESTCANCEL2/cancel", { method: "POST" });
   assert.equal(tooLateRes.status, 409, "a shipped order can no longer be self-cancelled");
+});
+
+// Once payment is confirmed the order moves into the agent's fulfillment
+// queue and the customer can no longer back out of it themselves -- this is
+// the exact gate the Customer App's Cancel Order button hides for.
+test("a customer cannot cancel a paid order (even while still pending), nor any processing order regardless of payment", async () => {
+  await fabricateOrder("SHPTESTCANCEL4", "pending");
+  await query(`UPDATE shop_orders SET payment_status='paid' WHERE id='SHPTESTCANCEL4'`);
+  const paidPendingRes = await asCustomer("/shop/orders/SHPTESTCANCEL4/cancel", { method: "POST" });
+  assert.equal(paidPendingRes.status, 409, "a paid order can no longer be self-cancelled, even while still pending");
+
+  await fabricateOrder("SHPTESTCANCEL5", "processing");
+  await query(`UPDATE shop_orders SET payment_status='paid' WHERE id='SHPTESTCANCEL5'`);
+  const processingRes = await asCustomer("/shop/orders/SHPTESTCANCEL5/cancel", { method: "POST" });
+  assert.equal(processingRes.status, 409, "a processing, paid order can no longer be self-cancelled");
+
+  await fabricateOrder("SHPTESTCANCEL6", "processing");
+  const unpaidProcessingRes = await asCustomer("/shop/orders/SHPTESTCANCEL6/cancel", { method: "POST" });
+  assert.equal(unpaidProcessingRes.status, 409, "only a still-Pending order qualifies for self-cancel, even if this one is somehow still unpaid");
 });
 
 test("a customer cannot cancel someone else's order", async () => {

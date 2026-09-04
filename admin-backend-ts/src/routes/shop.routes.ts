@@ -824,17 +824,22 @@ shopRouter.get("/shop/orders/:id", requireAuth("customer"), async (req, res) => 
   sendJson(res, 200, { ...order, items: await loadOrderItems(order.id), statusHistory: await loadOrderStatusHistory(order.id) });
 });
 
-// Customer-initiated -- only while an order hasn't been shipped yet, per
-// spec. Reuses the exact same "give the reserved stock back" step the
-// admin status route already applies for cancelled/failed/returned; the
+// Customer-initiated -- only while the order is still pending AND unpaid,
+// per spec: once payment is confirmed, the order moves into the agent's
+// fulfillment queue (Processing) and the customer can no longer back out of
+// it themselves. Reuses the exact same "give the reserved stock back" step
+// the admin status route already applies for cancelled/failed/returned; the
 // dedup partial unique index (WHERE status='pending') is naturally freed
 // up too, so the same cart could be re-ordered afterward without hitting
 // a stale duplicate match.
 shopRouter.post("/shop/orders/:id/cancel", requireAuth("customer"), async (req, res) => {
-  const order = await queryOne<{ status: string }>(`SELECT status FROM shop_orders WHERE id=$1 AND customer_id=$2`, [req.params.id, req.auth!.sub]);
+  const order = await queryOne<{ status: string; payment_status: string }>(
+    `SELECT status, payment_status FROM shop_orders WHERE id=$1 AND customer_id=$2`,
+    [req.params.id, req.auth!.sub]
+  );
   if (!order) return sendJson(res, 404, { error: "Order not found" });
-  if (!["pending", "processing"].includes(order.status)) {
-    return sendJson(res, 409, { error: "This order can no longer be cancelled — it has already been shipped or resolved" });
+  if (order.status !== "pending" || order.payment_status === "paid") {
+    return sendJson(res, 409, { error: "This order can no longer be cancelled — payment has been confirmed and it is now being processed" });
   }
   await restoreShopOrderStock(req.params.id);
   await query(`UPDATE shop_orders SET status='cancelled', cancelled_at=now(), updated_at=now() WHERE id=$1`, [req.params.id]);
