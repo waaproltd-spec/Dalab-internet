@@ -47,19 +47,21 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   social_telegram_enabled: "true",
   social_website_url: "",
   social_website_enabled: "true",
-  // Customer App home screen's three top-level services (Internet, eBadal,
-  // Reseller) -- purely a customer-facing visibility toggle, never a
-  // backend/database disable: turning one off only hides its card on
-  // GET /settings/public's consumers, every order/route/table underneath it
-  // keeps working exactly as before (an existing session already inside
-  // that service, or a direct API call, is completely unaffected). Each key
-  // is independent -- toggling one never touches the other two. Defaults to
-  // "true" so a customer on today's build (before any admin ever visits
-  // this setting) sees exactly what they see now: all three services.
+  // Customer App home screen's top-level services (Internet, eBadal,
+  // Reseller, Shop, VIP Number) -- purely a customer-facing visibility
+  // toggle, never a backend/database disable: turning one off only hides
+  // its card on GET /settings/public's consumers, every order/route/table
+  // underneath it keeps working exactly as before (an existing session
+  // already inside that service, or a direct API call, is completely
+  // unaffected). Each key is independent -- toggling one never touches the
+  // others. Defaults to "true" so a customer on today's build (before any
+  // admin ever visits this setting) sees exactly what they see now: every
+  // service.
   service_internet_enabled: "true",
   service_ebadal_enabled: "true",
   service_reseller_enabled: "true",
   service_shop_enabled: "true",
+  service_vip_numbers_enabled: "true",
 };
 
 const SOCIAL_LINK_FIELDS = [
@@ -181,6 +183,7 @@ settingsRouter.get("/settings/public", async (_req, res) => {
       ebadalEnabled: merged.service_ebadal_enabled !== "false",
       resellerEnabled: merged.service_reseller_enabled !== "false",
       shopEnabled: merged.service_shop_enabled !== "false",
+      vipNumbersEnabled: merged.service_vip_numbers_enabled !== "false",
     },
   });
 });

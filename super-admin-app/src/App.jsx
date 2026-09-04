@@ -13627,15 +13627,26 @@ function OtpSettingsPanel() {
   );
 }
 
-// Customer App home screen's three top-level service cards (Internet,
-// eBadal, Reseller) -- a pure customer-facing visibility toggle, same
-// system_settings store as everything else on this page (service_internet_
-// enabled/service_ebadal_enabled/service_reseller_enabled). Turning one off
-// only hides its card in GET /settings/public's `services` object; nothing
-// about that service's own backend routes, orders, or data is touched, and
-// each of the three is completely independent of the other two.
+// Customer App home screen's five top-level service cards (Internet,
+// eBadal, Reseller, Shop, VIP Number) -- a pure customer-facing visibility
+// toggle, same system_settings store as everything else on this page
+// (service_internet_enabled/service_ebadal_enabled/service_reseller_
+// enabled/service_shop_enabled/service_vip_numbers_enabled). Turning one
+// off only hides its card in GET /settings/public's `services` object;
+// nothing about that service's own backend routes, orders, or data is
+// touched, and each of the five is completely independent of the others.
+const SERVICE_VISIBILITY_ROWS = [
+  { key: "service_internet_enabled", label: "Internet" },
+  { key: "service_ebadal_enabled", label: "eBadal" },
+  { key: "service_reseller_enabled", label: "Reseller" },
+  { key: "service_shop_enabled", label: "Shop" },
+  { key: "service_vip_numbers_enabled", label: "VIP Number" },
+];
+
 function ServiceVisibilityPanel() {
-  const [drafts, setDrafts] = useState({ service_internet_enabled: true, service_ebadal_enabled: true, service_reseller_enabled: true });
+  const [drafts, setDrafts] = useState(
+    Object.fromEntries(SERVICE_VISIBILITY_ROWS.map((row) => [row.key, true]))
+  );
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -13646,11 +13657,11 @@ function ServiceVisibilityPanel() {
     (async () => {
       try {
         const data = await DalabAdminApi.getSettings();
-        setDrafts({
-          service_internet_enabled: data[settingsToCamel("service_internet_enabled")] !== "false",
-          service_ebadal_enabled: data[settingsToCamel("service_ebadal_enabled")] !== "false",
-          service_reseller_enabled: data[settingsToCamel("service_reseller_enabled")] !== "false",
-        });
+        setDrafts(
+          Object.fromEntries(
+            SERVICE_VISIBILITY_ROWS.map((row) => [row.key, data[settingsToCamel(row.key)] !== "false"])
+          )
+        );
       } catch (err) {
         setError(err.message || "Could not load settings.");
       } finally {
@@ -13663,9 +13674,9 @@ function ServiceVisibilityPanel() {
     setSaving(true);
     setError("");
     try {
-      await DalabAdminApi.updateSetting("service_internet_enabled", drafts.service_internet_enabled ? "true" : "false");
-      await DalabAdminApi.updateSetting("service_ebadal_enabled", drafts.service_ebadal_enabled ? "true" : "false");
-      await DalabAdminApi.updateSetting("service_reseller_enabled", drafts.service_reseller_enabled ? "true" : "false");
+      for (const row of SERVICE_VISIBILITY_ROWS) {
+        await DalabAdminApi.updateSetting(row.key, drafts[row.key] ? "true" : "false");
+      }
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {
@@ -13682,11 +13693,7 @@ function ServiceVisibilityPanel() {
     return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Loading…</div>;
   }
 
-  const rows = [
-    { key: "service_internet_enabled", label: "Internet" },
-    { key: "service_ebadal_enabled", label: "eBadal" },
-    { key: "service_reseller_enabled", label: "Reseller" },
-  ];
+  const rows = SERVICE_VISIBILITY_ROWS;
 
   return (
     <Card style={{ padding: 18, maxWidth: 480 }}>
