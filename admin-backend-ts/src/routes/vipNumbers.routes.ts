@@ -642,11 +642,11 @@ vipNumbersRouter.put("/admin/vip-numbers/orders/:id/payment-status", requirePerm
   // Locked (FOR UPDATE) and transactional so this can never race the
   // expiry sweep confirming/expiring the same order at the same moment --
   // see expireVipNumberOrderIfStale's own comment.
-  let existing: { status: string; payment_status: string; customer_id: string; vip_number_id: string };
+  let existing: { status: string; payment_status: string; customer_id: string; vip_number_id: string; phone_number: string; price: string };
   try {
     existing = await withTransaction(async (client) => {
       const row = await client.query(
-        `SELECT status, payment_status, customer_id, vip_number_id FROM vip_number_orders WHERE id=$1 FOR UPDATE`,
+        `SELECT status, payment_status, customer_id, vip_number_id, phone_number, price FROM vip_number_orders WHERE id=$1 FOR UPDATE`,
         [req.params.id]
       );
       const order = row.rows[0];
@@ -689,8 +689,8 @@ vipNumbersRouter.put("/admin/vip-numbers/orders/:id/payment-status", requirePerm
   // sendPushToAllAgents's own comment on why this is a broadcast rather
   // than a targeted per-order recipient.
   await sendPushToAllAgents({
-    title: "⭐ VIP Number Order Paid",
-    body: `Order ${req.params.id} payment confirmed.`,
+    title: "🔔 New VIP Order",
+    body: `VIP Number: ${existing.phone_number}\nPayment confirmed: $${Number(existing.price).toFixed(2)}\nOrder ID: ${req.params.id}`,
     data: { screen: "agent_orders", orderType: "vip_number", orderId: req.params.id },
   });
   sendJson(res, 200, await queryOne(`SELECT ${VIP_ORDER_COLUMNS} FROM vip_number_orders WHERE id=$1`, [req.params.id]));

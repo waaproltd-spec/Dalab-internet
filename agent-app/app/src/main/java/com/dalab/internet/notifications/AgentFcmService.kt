@@ -52,6 +52,15 @@ class AgentFcmService : FirebaseMessagingService() {
         val body = message.notification?.body ?: message.data["body"] ?: ""
         val conversationId = message.data["conversationId"]
         val isOrdersPush = message.data["screen"] == "agent_orders"
+        // Always present on every sendPushToAllAgents() call site this push
+        // can come from (shop.routes.ts, vipNumbers.routes.ts,
+        // vipNumberPackages.routes.ts, vipNumberSmsMatching.ts) -- lets a tap
+        // jump straight to that specific order's detail screen instead of
+        // just the Orders tab. orderType distinguishes "shop" (no detail-
+        // screen deep link exists/needed) from "vip_number"/"vip_package"
+        // (which do -- see MainActivity.kt's AgentApp()).
+        val orderType = message.data["orderType"]
+        val orderId = message.data["orderId"]
 
         // Every support push (a fresh assignment or a customer's follow-up
         // message -- see support.routes.ts's notifyAssignedAgent()/
@@ -64,22 +73,30 @@ class AgentFcmService : FirebaseMessagingService() {
         }
 
         // A payment-confirmed Shop/VIP order (shop.routes.ts/
-        // vipNumbers.routes.ts/vipNumberPackages.routes.ts's
-        // sendPushToAllAgents()) has no single assigned agent and no
-        // in-app unread badge to set -- the real order list itself, once
-        // opened, is the source of truth. This just gets the tap to land on
-        // the Orders tab instead of wherever the app happened to be.
+        // vipNumbers.routes.ts/vipNumberPackages.routes.ts/
+        // vipNumberSmsMatching.ts's sendPushToAllAgents()) has no single
+        // assigned agent and no in-app unread badge to set -- the real order
+        // list/detail itself, once opened, is the source of truth.
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             if (isOrdersPush) {
                 putExtra(MainActivity.EXTRA_OPEN_ORDERS, true)
+                putExtra(MainActivity.EXTRA_ORDER_TYPE, orderType)
+                putExtra(MainActivity.EXTRA_ORDER_ID, orderId)
             } else {
                 putExtra(MainActivity.EXTRA_OPEN_SUPPORT, true)
             }
         }
+        // Distinct request code per order (not just per push "kind") --
+        // PendingIntent equality ignores extras, so two different orders'
+        // notifications visible in the tray at once would otherwise collide
+        // on the same request code and silently share/overwrite each
+        // other's extras, sending a tap on either one to whichever order's
+        // PendingIntent was created last.
+        val requestCode = orderId?.hashCode() ?: conversationId?.hashCode() ?: 0
         val pendingIntent = PendingIntent.getActivity(
             this,
-            conversationId?.hashCode() ?: 0,
+            requestCode,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -89,12 +106,22 @@ class AgentFcmService : FirebaseMessagingService() {
         // existing dedicated channel/id so this change can't affect their
         // behavior at all.
         val channelId = if (isOrdersPush) ORDERS_CHANNEL_ID else SUPPORT_CHANNEL_ID
-        val notificationId = if (isOrdersPush) ORDERS_NOTIFICATION_ID else SUPPORT_NOTIFICATION_ID
+        // Distinct notification ID per order too, for the same reason as the
+        // request code above -- otherwise a second order's push would
+        // silently replace the first one's still-unread tray entry instead
+        // of showing alongside it.
+        val notificationId = if (isOrdersPush) (orderId?.hashCode() ?: ORDERS_NOTIFICATION_ID) else SUPPORT_NOTIFICATION_ID
 
         val notification = NotificationCompat.Builder(this, channelId)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(body)
+            // The order-paid body is multi-line (VIP number/package,
+            // amount, order id, each on its own line) -- BigTextStyle is
+            // what actually renders that as multiple lines once expanded;
+            // without it Android collapses everything after the first
+            // newline into one truncated line.
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setAutoCancel(true)

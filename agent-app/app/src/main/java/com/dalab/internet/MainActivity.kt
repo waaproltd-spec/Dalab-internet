@@ -144,10 +144,28 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIntent(intent: Intent?) {
-        if (intent?.getBooleanExtra(EXTRA_OPEN_SUPPORT, false) == true) {
+        if (intent == null) return
+        // Two different tap paths land here with two different extra
+        // shapes:
+        //  - Foreground (AgentFcmService.onMessageReceived ran): the custom
+        //    EXTRA_OPEN_SUPPORT/EXTRA_OPEN_ORDERS/EXTRA_ORDER_* names below,
+        //    built explicitly by that code.
+        //  - Background/killed (FCM auto-displayed the notification itself,
+        //    onMessageReceived never ran): the system instead launches with
+        //    the RAW data-payload keys as extras, under their original
+        //    names ("screen"/"orderType"/"orderId") -- not the MainActivity
+        //    constants, since no app code executed to remap them. Checking
+        //    both is what makes "tap deep-links correctly" true regardless
+        //    of whether the app was alive when the push arrived.
+        val rawScreen = intent.getStringExtra("screen")
+        if (intent.getBooleanExtra(EXTRA_OPEN_SUPPORT, false) || rawScreen == "support_conversation") {
             SupportDeepLink.pending = true
         }
-        if (intent?.getBooleanExtra(EXTRA_OPEN_ORDERS, false) == true) {
+        if (intent.getBooleanExtra(EXTRA_OPEN_ORDERS, false) || rawScreen == "agent_orders") {
+            // Set together, before pending -- AgentApp()'s effect reads
+            // orderType/orderId the moment pending flips true.
+            OrdersDeepLink.orderType = intent.getStringExtra(EXTRA_ORDER_TYPE) ?: intent.getStringExtra("orderType")
+            OrdersDeepLink.orderId = intent.getStringExtra(EXTRA_ORDER_ID) ?: intent.getStringExtra("orderId")
             OrdersDeepLink.pending = true
         }
     }
@@ -155,6 +173,8 @@ class MainActivity : ComponentActivity() {
     companion object {
         const val EXTRA_OPEN_SUPPORT = "open_support"
         const val EXTRA_OPEN_ORDERS = "open_orders"
+        const val EXTRA_ORDER_TYPE = "order_type"
+        const val EXTRA_ORDER_ID = "order_id"
     }
 
     private fun createNotificationChannel() {
@@ -252,6 +272,57 @@ private fun AgentApp() {
         if (OrdersDeepLink.pending && screen != Screen.HOME) {
             screen = Screen.HOME
         }
+    }
+
+    // Once actually on Home (session resolved, setup done), a VIP Number/
+    // Package order push jumps straight to that order's own detail screen
+    // instead of leaving AgentHome's own effect open the Orders tab --
+    // this is the "tapping the notification opens the correct VIP Order
+    // Detail screen" requirement. Shop pushes (orderType "shop") and any
+    // push with no orderId (an older/unrecognized payload) are left alone
+    // here on purpose: pending stays true, so AgentHome's own effect below
+    // still runs its Orders-tab fallback exactly as before. Only clears
+    // pending/orderId/orderType on success -- a fetch failure (network
+    // drop, the order somehow 404s) also falls through to that same
+    // fallback rather than stranding the agent on a blank screen.
+    LaunchedEffect(OrdersDeepLink.pending, screen) {
+        if (!OrdersDeepLink.pending || screen != Screen.HOME) return@LaunchedEffect
+        val orderId = OrdersDeepLink.orderId
+        val orderType = OrdersDeepLink.orderType
+        if (orderId == null || (orderType != "vip_number" && orderType != "vip_package")) return@LaunchedEffect
+        // Only clear the deep link once navigation has actually happened --
+        // a non-exceptional but empty body (shouldn't happen, but isn't
+        // impossible) must still fall through to AgentHome's Orders-tab
+        // fallback rather than silently discarding the tap.
+        val navigated = try {
+            if (orderType == "vip_number") {
+                val order = ApiClient.service.getAgentVipNumberOrder(orderId).body()
+                if (order != null) {
+                    selectedAgentVipOrder = order
+                    screen = Screen.AGENT_VIP_ORDER_DETAIL
+                }
+                order != null
+            } else {
+                val order = ApiClient.service.getAgentVipPackageOrder(orderId).body()
+                if (order != null) {
+                    selectedAgentVipPackageOrder = order
+                    screen = Screen.AGENT_VIP_PACKAGE_ORDER_DETAIL
+                }
+                order != null
+            }
+        } catch (_: Exception) {
+            false
+        }
+        if (navigated) {
+            OrdersDeepLink.pending = false
+        } else {
+            // Fetch failed -- clear the order-specific fields (leaving
+            // pending=true) so AgentHome's own effect, keyed on orderType,
+            // re-evaluates and takes over as the Orders-tab fallback
+            // instead of this order staying silently un-openable.
+            OrdersDeepLink.orderType = null
+        }
+        OrdersDeepLink.orderId = null
     }
 
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -462,11 +533,17 @@ private fun AgentHome(
     // Same warm/cold-start coverage as the support deep link above, for a
     // payment-confirmed Shop/VIP order push -- `tab` only exists here, so
     // AgentApp's own effect can only get the agent as far as Screen.HOME.
-    LaunchedEffect(OrdersDeepLink.pending) {
-        if (OrdersDeepLink.pending) {
-            OrdersDeepLink.pending = false
-            tab = HomeTab.ORDERS
-        }
+    // Skips (leaves pending untouched) for a VIP Number/Package push:
+    // AgentApp's own effect owns that case end-to-end (fetches the order,
+    // navigates straight to its detail screen, clears pending itself) --
+    // clearing it here first would race that still-in-flight fetch and
+    // strand the agent on the Orders tab instead.
+    LaunchedEffect(OrdersDeepLink.pending, OrdersDeepLink.orderType) {
+        if (!OrdersDeepLink.pending) return@LaunchedEffect
+        val orderType = OrdersDeepLink.orderType
+        if (OrdersDeepLink.orderId != null && (orderType == "vip_number" || orderType == "vip_package")) return@LaunchedEffect
+        OrdersDeepLink.pending = false
+        tab = HomeTab.ORDERS
     }
 
     // Covers a support push that arrived while the app was backgrounded or

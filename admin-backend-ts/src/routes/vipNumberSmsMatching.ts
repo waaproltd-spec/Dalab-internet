@@ -41,7 +41,7 @@ function normalizePhone(phone: string | null | undefined): string {
   return String(phone ?? "").replace(/\D/g, "").slice(-9);
 }
 
-type VipNumberOrderCandidate = { id: string; sender_phone: string; price: number };
+type VipNumberOrderCandidate = { id: string; sender_phone: string; price: number; phone_number: string };
 
 export type VipNumberOrderMatchResult = { order: VipNumberOrderCandidate | null; reason: string | null };
 
@@ -58,7 +58,7 @@ export async function findMatchingVipNumberOrder(
   const candidates = await withTransaction((client) =>
     client
       .query<VipNumberOrderCandidate>(
-        `SELECT id, sender_phone, price FROM vip_number_orders
+        `SELECT id, sender_phone, price, phone_number FROM vip_number_orders
          WHERE payment_status='pending' AND status NOT IN (${VIP_TERMINAL_STATUSES.map((_, i) => `$${i + 2}`).join(",")})
            AND ABS(price - $1) < 0.01 AND updated_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
          ORDER BY created_at ASC
@@ -140,15 +140,18 @@ export async function confirmVipNumberOrderPaidViaSms(
     "Payment Confirmed",
     `Your payment for VIP number order ${order.id} has been confirmed. We're processing your number now.`
   );
+  // Format requested for the agent's system-tray notification: multi-line
+  // body naming the actual VIP number and amount, not just an order id --
+  // see AgentFcmService.kt's own handling of this exact data shape.
   await sendPushToAllAgents({
-    title: "⭐ VIP Number Order Paid",
-    body: `Order ${order.id} payment confirmed.`,
+    title: "🔔 New VIP Order",
+    body: `VIP Number: ${order.phone_number}\nPayment confirmed: $${Number(order.price).toFixed(2)}\nOrder ID: ${order.id}`,
     data: { screen: "agent_orders", orderType: "vip_number", orderId: order.id },
   });
   return { confirmed: true };
 }
 
-type VipNumberPackageOrderCandidate = { id: string; sender_phone: string; price: number };
+type VipNumberPackageOrderCandidate = { id: string; sender_phone: string; price: number; size: number };
 
 export type VipNumberPackageOrderMatchResult = { order: VipNumberPackageOrderCandidate | null; reason: string | null };
 
@@ -165,7 +168,7 @@ export async function findMatchingVipNumberPackageOrder(
   const candidates = await withTransaction((client) =>
     client
       .query<VipNumberPackageOrderCandidate>(
-        `SELECT id, sender_phone, price FROM vip_number_package_orders
+        `SELECT id, sender_phone, price, size FROM vip_number_package_orders
          WHERE payment_status='pending' AND status NOT IN (${VIP_TERMINAL_STATUSES.map((_, i) => `$${i + 2}`).join(",")})
            AND ABS(price - $1) < 0.01 AND updated_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
          ORDER BY created_at ASC
@@ -239,8 +242,8 @@ export async function confirmVipNumberPackageOrderPaidViaSms(
     `Your payment for VIP number package order ${order.id} has been confirmed. We're processing your numbers now.`
   );
   await sendPushToAllAgents({
-    title: "⭐ VIP Number Package Order Paid",
-    body: `Order ${order.id} payment confirmed.`,
+    title: "🔔 New VIP Order",
+    body: `VIP Package: ${order.size} Numbers\nPayment confirmed: $${Number(order.price).toFixed(2)}\nOrder ID: ${order.id}`,
     data: { screen: "agent_orders", orderType: "vip_package", orderId: order.id },
   });
   return { confirmed: true };

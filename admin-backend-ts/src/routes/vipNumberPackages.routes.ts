@@ -744,11 +744,11 @@ vipNumberPackagesRouter.put(
   async (req, res) => {
     // Locked (FOR UPDATE) and transactional -- same TOCTOU protection
     // against the expiry sweep as vipNumbers.routes.ts's identical route.
-    let existing: { status: string; payment_status: string; customer_id: string; package_id: string };
+    let existing: { status: string; payment_status: string; customer_id: string; package_id: string; size: number; price: string };
     try {
       existing = await withTransaction(async (client) => {
         const row = await client.query(
-          `SELECT status, payment_status, customer_id, package_id FROM vip_number_package_orders WHERE id=$1 FOR UPDATE`,
+          `SELECT status, payment_status, customer_id, package_id, size, price FROM vip_number_package_orders WHERE id=$1 FOR UPDATE`,
           [req.params.id]
         );
         const order = row.rows[0];
@@ -797,8 +797,8 @@ vipNumberPackagesRouter.put(
     // Real, push-only signal to every agent device -- see
     // sendPushToAllAgents's own comment.
     await sendPushToAllAgents({
-      title: "⭐ VIP Number Package Order Paid",
-      body: `Order ${req.params.id} payment confirmed.`,
+      title: "🔔 New VIP Order",
+      body: `VIP Package: ${existing.size} Numbers\nPayment confirmed: $${Number(existing.price).toFixed(2)}\nOrder ID: ${req.params.id}`,
       data: { screen: "agent_orders", orderType: "vip_package", orderId: req.params.id },
     });
     sendJson(
