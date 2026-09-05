@@ -75,7 +75,19 @@ export async function hasActivePaymentTransaction(orderId: string): Promise<bool
  * which physical device/SIM is handling this payment. UssdOrchestrator
  * retries a failed dial up to 3 times, so 'failed' is NOT treated as final
  * here (a retry needs to move it back to 'processing') — only 'completed'
- * and 'duplicate_blocked' are permanent end states nothing can leave. */
+ * and 'duplicate_blocked' are permanent end states nothing can leave.
+ *
+ * Every known caller of dial-attempts already pre-creates a payment_transactions
+ * row before an order can reach in_progress+ussd_generated (verify-payment,
+ * /admin/orders/:id/status, the SMS-matched paths) — but that's a convention
+ * enforced by each call site remembering to do it, not by this function
+ * itself. If it's ever missed (or a future call site forgets), the UPDATE
+ * below silently touches 0 rows and the order becomes invisible to both
+ * self-heal-candidates (requires an existing row) and /admin/orders/:id/recover
+ * (refuses to act without one) — a real order stuck with zero recovery path.
+ * This function is the one place every dial attempt for every provider always
+ * goes through, so it's the right place to guarantee the row exists rather
+ * than trusting every caller to have created it first. */
 export async function markPaymentProcessing(params: {
   orderId: string;
   agentDeviceId: string | null;
@@ -91,6 +103,34 @@ export async function markPaymentProcessing(params: {
   );
   if (rows.length > 0) {
     broadcast({ type: "payment_transaction.updated", paymentTransactionId: rows[0].id, orderId: params.orderId });
+    return;
+  }
+
+  // Nothing updated: either no row exists for this order at all, or the
+  // existing one is already completed/duplicate_blocked and must stay
+  // untouched. Distinguish the two before creating anything.
+  const existing = await queryOne<{ id: string }>(`SELECT id FROM payment_transactions WHERE order_id=$1 LIMIT 1`, [params.orderId]);
+  if (existing) return; // already completed/duplicate_blocked — correctly left alone
+
+  const order = await queryOne<{ sender_phone: string | null; amount: string | null }>(
+    `SELECT sender_phone, amount FROM orders WHERE id=$1`,
+    [params.orderId]
+  );
+  const id = randomUUID();
+  try {
+    await query(
+      `INSERT INTO payment_transactions
+         (id, sms_log_id, order_id, transaction_ref, customer_phone, amount, payment_timestamp, status, agent_device_id, sim_slot, ussd_dial_attempt_id)
+       VALUES ($1,NULL,$2,NULL,$3,$4,now(),'processing',$5,$6,$7)`,
+      [id, params.orderId, order?.sender_phone ?? null, order?.amount ?? null, params.agentDeviceId, params.simSlot, params.ussdDialAttemptId]
+    );
+    broadcast({ type: "payment_transaction.updated", paymentTransactionId: id, orderId: params.orderId });
+  } catch (err: any) {
+    // Lost a race to a concurrent creator (e.g. verify-payment's own guard
+    // firing at nearly the same moment) — idx_payment_tx_order_active means
+    // that row already reflects this dial attempt or a newer one; nothing
+    // further to do.
+    if (err?.code !== "23505" || err?.constraint !== "idx_payment_tx_order_active") throw err;
   }
 }
 
