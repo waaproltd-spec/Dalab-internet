@@ -1264,6 +1264,13 @@ const BALANCE_PROVIDER_LABELS = {
   amtel: "Amtel Send Data",
   somnet: "Somnet Send Data",
 };
+// Hormuud Evoucher stays a real, separately-tracked provider_key on the
+// backend (SMS forwarding/detection for sender 740 is unaffected) -- only
+// its own dashboard card/section is hidden here, back to 6 visible
+// buckets. Excluded from `grouped` below too (not just this render list),
+// so its rows never leak into the "unassigned" section either.
+const HIDDEN_PROVIDER_KEYS = new Set(["hormuud_evoucher"]);
+const VISIBLE_PROVIDER_ORDER = BALANCE_PROVIDER_ORDER.filter((id) => !HIDDEN_PROVIDER_KEYS.has(id));
 
 function BalanceDashboard({ admin }) {
   const canManage = hasPermission(admin, "devices.manage");
@@ -1310,9 +1317,10 @@ function BalanceDashboard({ admin }) {
   }, []);
 
   const grouped = useMemo(() => {
-    const byProvider = new Map(BALANCE_PROVIDER_ORDER.map((id) => [id, []]));
+    const byProvider = new Map(VISIBLE_PROVIDER_ORDER.map((id) => [id, []]));
     byProvider.set("unassigned", []);
     for (const r of rows) {
+      if (r.providerKey && HIDDEN_PROVIDER_KEYS.has(r.providerKey)) continue;
       const key = r.providerKey && byProvider.has(r.providerKey) ? r.providerKey : "unassigned";
       byProvider.get(key).push(r);
     }
@@ -1395,7 +1403,7 @@ function BalanceDashboard({ admin }) {
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 14, marginTop: 14 }}>
-        {BALANCE_PROVIDER_ORDER.map((id) => {
+        {VISIBLE_PROVIDER_ORDER.map((id) => {
           const label = BALANCE_PROVIDER_LABELS[id];
           return (
             <Card key={id} style={{ padding: 16 }}>
@@ -1415,7 +1423,7 @@ function BalanceDashboard({ admin }) {
         <Button variant="ghost" icon={RefreshCw} onClick={fetchAll} spin={loading}>Refresh</Button>
       </div>
 
-      {[...BALANCE_PROVIDER_ORDER, "unassigned"].map((id) => {
+      {[...VISIBLE_PROVIDER_ORDER, "unassigned"].map((id) => {
         const list = grouped.get(id) || [];
         if (list.length === 0) return null;
         const label = { ...BALANCE_PROVIDER_LABELS, unassigned: "Not yet assigned to a provider" }[id];
@@ -1488,7 +1496,7 @@ function BalanceDashboard({ admin }) {
           <Field label="Balance Dashboard bucket">
             <select value={editForm.providerKey} onChange={(e) => setEditForm((f) => ({ ...f, providerKey: e.target.value }))} style={inputStyle}>
               <option value="">Leave unchanged</option>
-              {BALANCE_PROVIDER_ORDER.map((id) => (
+              {VISIBLE_PROVIDER_ORDER.map((id) => (
                 <option key={id} value={id}>{BALANCE_PROVIDER_LABELS[id]}</option>
               ))}
             </select>
