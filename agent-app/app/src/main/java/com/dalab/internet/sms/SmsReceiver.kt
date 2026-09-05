@@ -148,6 +148,50 @@ class SmsReceiver : BroadcastReceiver() {
                             payload = VoucherConfirmationAction(voucherSent),
                         )
                     }
+                    // Same "same SMS, two purposes" dual-upload as
+                    // exchangePayoutSent below: this exact message ("[-E-Voucher-]
+                    // Waxaad $X ugu shubtay <phone>, Haraagaagu waa $Y.") also
+                    // carries Hormuud's own remaining Send Data balance in its
+                    // "Haraagaagu waa" phrase, which only the generic SMS
+                    // pipeline's balance detection (resolveBalanceProvider,
+                    // simBalances.ts) ever looks at. Routing exclusively through
+                    // reportVoucherConfirmation above (added in ebf03d8, before
+                    // the Balance Dashboard existed) meant that balance figure
+                    // never reached the backend at all -- confirmed live, this
+                    // is why Hormuud's own Send Data balance went dark.
+                    //
+                    // parsedProvider/parsedAmount/parsedPhone are deliberately
+                    // left null here, unlike withdrawalPayoutEntry below --
+                    // voucherSent.receiverPhone is the phone this SIM just
+                    // topped up, which in the normal fulfillment flow is
+                    // routinely the SAME number as a real order's own
+                    // sender_phone (the USSD top-up that follows a verified
+                    // payment recharges the paying customer's own phone).
+                    // Passing it through as parsedPhone would feed
+                    // findMatchingOrder/findMatchingExchangeOrder/
+                    // findMatchingResellerDeposit/findMatchingResellerWithdrawal/
+                    // findMatchingVipNumberOrder/matchOrCreateOfflineAutoOrder an
+                    // amount+phone pair that could coincidentally match a
+                    // DIFFERENT customer's unrelated pending order -- every one
+                    // of those matchers no-ops immediately when parsedAmount/
+                    // parsedPhone is null (confirmed in each one's own guard
+                    // clause), which is exactly what an outgoing delivery
+                    // confirmation (not an incoming payment) must do. Balance
+                    // detection needs none of these three fields -- it parses
+                    // the balance straight from body.
+                    val voucherUploadEntry = SmsLogEntry(
+                        sender = sender,
+                        body = body,
+                        receivedAt = receivedAt,
+                        simSlot = resolvedSimSlot,
+                    )
+                    if (SmsUploadFlow.uploadAndProcess(appContext, voucherUploadEntry) is UploadOutcome.RetryableUpload) {
+                        PendingActionQueue.enqueue(
+                            id = UUID.randomUUID().toString(),
+                            type = PendingActionQueue.Type.SMS_UPLOAD,
+                            payload = SmsUploadAction(voucherUploadEntry),
+                        )
+                    }
                     return@launch
                 }
                 if (exchangePayoutSent != null) {
