@@ -11,7 +11,7 @@ import {
   linkPaymentTransactionToOrder,
   markPaymentTransactionDuplicateForSms,
 } from "../utils/paymentTransactions.js";
-import { extractBalanceFromSms, resolveCompanyForDeviceSlot, applyBalanceUpdate } from "../utils/simBalances.js";
+import { extractBalanceFromSms, resolveBalanceProvider, isExpectedBalanceSender, applyBalanceUpdate } from "../utils/simBalances.js";
 import { broadcast } from "../realtime/orderEvents.js";
 import { verifyOrderAndGenerateUssd } from "./orders.routes.js";
 import { autoAdvanceExchangeOrderToInProgress } from "./exchange.routes.js";
@@ -651,22 +651,41 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
     if (detected && simSlot != null) {
       const uploadingAgent = await queryOne<{ device_id: string | null }>(`SELECT device_id FROM agents WHERE id=$1`, [agentId]);
       const deviceId = uploadingAgent?.device_id ?? null;
-      // Falls back to a matched order's own company only when this exact
-      // device+slot isn't itself registered in sim_routing yet — that
-      // company is still a verified value (findMatchingOrder/
-      // findMatchingExchangeOrder already confirmed the payment arrived on
-      // ITS expected device/SIM before allowing the match), not a guess.
-      const companyId = deviceId ? (await resolveCompanyForDeviceSlot(deviceId, simSlot)) ?? match?.company_id ?? null : null;
-      if (deviceId && companyId) {
-        await applyBalanceUpdate({
-          deviceId,
-          simSlot,
-          newBalance: detected.balance,
-          companyId,
-          orderId: match?.id ?? null,
-          smsLogId: id,
-          source: "sms",
-        });
+      if (deviceId) {
+        // Falls back to a matched order's own company only when this exact
+        // device+slot isn't itself registered in sim_routing/company_payment_
+        // methods yet — that company is still a verified value
+        // (findMatchingOrder/findMatchingExchangeOrder already confirmed the
+        // payment arrived on ITS expected device/SIM before allowing the
+        // match), not a guess. providerIdentity is the same lookup's own
+        // identity (hormuud/somtel/somnet/amtel/evc_plus/edahab), used ONLY
+        // for the Sender ID gate below.
+        const { companyId, providerIdentity } = await resolveBalanceProvider(deviceId, simSlot, match?.company_id ?? null);
+        if (companyId) {
+          // Provider-specific Sender ID gate: each of the 6 providers
+          // (Hormuud, Somtel, Somnet, Amtel, EVC Plus, eDahab) is only ever
+          // updated from ITS OWN exact SMS Sender ID (BALANCE_SENDER_ID in
+          // simBalances.ts). No fallback to another provider's sender is
+          // ever attempted — a mismatch (or an unrecognized provider
+          // identity) is logged and the balance is left untouched rather
+          // than risking one provider's SMS updating another's balance.
+          if (providerIdentity && isExpectedBalanceSender(providerIdentity, sender)) {
+            await applyBalanceUpdate({
+              deviceId,
+              simSlot,
+              newBalance: detected.balance,
+              companyId,
+              orderId: match?.id ?? null,
+              smsLogId: id,
+              source: "sms",
+            });
+          } else {
+            // eslint-disable-next-line no-console
+            console.warn(
+              `Balance SMS sender mismatch — refusing to update balance (deviceId=${deviceId}, simSlot=${simSlot}, provider=${providerIdentity}, sender=${sender ?? "<none>"})`
+            );
+          }
+        }
       }
     }
   } catch (err) {

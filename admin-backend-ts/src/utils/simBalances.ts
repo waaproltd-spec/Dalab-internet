@@ -64,6 +64,85 @@ export async function resolveCompanyForDeviceSlot(deviceId: string, simSlot: num
   return row?.company_id ?? null;
 }
 
+/**
+ * Six provider identities a balance-report SMS can genuinely come from —
+ * the 4 top-up companies (Hormuud, Somtel, Somnet, Amtel) plus their own
+ * EVC Plus / eDahab mobile-money collection SIMs, each of which is its own
+ * physical device+slot (company_payment_methods.device_id/sim_slot,
+ * 036_payment_method_device.sql — deliberately a different phone from the
+ * one dialing top-up USSD, so it's almost never also in sim_routing).
+ * Checked first: a device+slot registered as an EVC Plus/eDahab collection
+ * method is that identity (and that method's OWN company_id — e.g.
+ * Hormuud for evc_plus, Somtel for edahab — is what sim_balances gets
+ * attributed to, same as any other provider) even if it also happens to
+ * appear in sim_routing; otherwise falls back to sim_routing's top-up
+ * company, then the caller's own fallback company (e.g. a matched order's
+ * company — same fallback resolveCompanyForDeviceSlot's caller in
+ * smsLogs.routes.ts already used before this function existed).
+ *
+ * providerIdentity is the company's own NAME, lowercased — not its
+ * id/primary key. companies.id happens to already equal the lowercase name
+ * in production ('hormuud', 'somtel', ...), but BALANCE_SENDER_ID below
+ * must never be keyed to a raw id string that a differently-seeded
+ * environment (or a test fixture using its own throwaway id) could give a
+ * different value — name is the one thing every environment agrees
+ * actually identifies the provider. evc_plus/edahab are returned as their
+ * own literal identity (never resolved to a company name) since they are
+ * genuinely a different Sender ID from that same company's own top-up SIM.
+ */
+export async function resolveBalanceProvider(
+  deviceId: string,
+  simSlot: number,
+  fallbackCompanyId?: string | null
+): Promise<{ companyId: string | null; providerIdentity: string | null }> {
+  const method = await queryOne<{ method: string; company_id: string }>(
+    `SELECT method, company_id FROM company_payment_methods WHERE device_id=$1 AND sim_slot=$2 AND enabled=true LIMIT 1`,
+    [deviceId, simSlot]
+  );
+  if (method?.method === "evc" || method?.method === "evc_plus") {
+    return { companyId: method.company_id, providerIdentity: "evc_plus" };
+  }
+  if (method?.method === "edahab") {
+    return { companyId: method.company_id, providerIdentity: "edahab" };
+  }
+  const companyId = (await resolveCompanyForDeviceSlot(deviceId, simSlot)) ?? fallbackCompanyId ?? null;
+  if (!companyId) return { companyId: null, providerIdentity: null };
+  const company = await queryOne<{ name: string }>(`SELECT name FROM companies WHERE id=$1`, [companyId]);
+  return { companyId, providerIdentity: company?.name ? company.name.trim().toLowerCase() : null };
+}
+
+/**
+ * The exact SMS Sender ID each provider's own balance-report SMS arrives
+ * from — confirmed per-provider values, never guessed or shared across
+ * providers. Used ONLY to gate automatic balance-SMS detection
+ * (smsLogs.routes.ts); the manual override endpoint
+ * (PUT /admin/sim-balances/:deviceId/:simSlot) is unaffected — it has no
+ * SMS sender to check in the first place (e.g. Amtel, which has no
+ * balance-report SMS to auto-detect from at all).
+ */
+export const BALANCE_SENDER_ID: Record<string, string> = {
+  evc_plus: "192sms",
+  edahab: "edahabsms",
+  hormuud: "sms740",
+  somtel: "smsReseller",
+  amtel: "sms913",
+  somnet: "sms801",
+};
+
+/**
+ * Strict match only — no fallback to another provider's Sender ID, and no
+ * match at all for a provider identity this file doesn't recognize.
+ * Case-insensitive/trimmed since the exact casing an SMS sender ID arrives
+ * with can vary slightly by carrier delivery, but the sender itself must
+ * still be this exact provider's own registered ID, never a substring or
+ * fuzzy match against a different provider's.
+ */
+export function isExpectedBalanceSender(providerIdentity: string, sender: string | null | undefined): boolean {
+  const expected = BALANCE_SENDER_ID[providerIdentity];
+  if (!expected) return false;
+  return String(sender ?? "").trim().toLowerCase() === expected.toLowerCase();
+}
+
 export async function applyBalanceUpdate(params: {
   deviceId: string;
   simSlot: number;
