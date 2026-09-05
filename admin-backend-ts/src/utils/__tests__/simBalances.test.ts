@@ -407,6 +407,15 @@ test("EVC Plus and eDahab collection SIMs (company_payment_methods.device_id/sim
   // top-up USSD.
   const evcMethodId = randomUUID();
   const edahabMethodId = randomUUID();
+  // An unrelated payment method (JEEB) sharing the EXACT SAME device+slot
+  // as the EVC Plus row above -- reproduces the real production bug: with
+  // no ORDER BY, `... LIMIT 1` could nondeterministically return this row
+  // instead of the real evc row, and since 'jeeb' matches neither the
+  // evc_plus nor edahab branch, resolveBalanceProvider fell through to
+  // plain 'hormuud' -- silently misidentifying a real EVC Plus balance SMS
+  // and getting it rejected by the Sender-ID gate. The method IN (...)
+  // filter in the query itself is what's actually under test here.
+  const jeebMethodId = randomUUID();
   await query(
     `INSERT INTO company_payment_methods (id, company_id, method, label, device_id, sim_slot) VALUES ($1,$2,'evc_plus','EVC Plus',$3,1)`,
     [evcMethodId, HORMUUD_ID, DEVICE3_ID]
@@ -414,6 +423,10 @@ test("EVC Plus and eDahab collection SIMs (company_payment_methods.device_id/sim
   await query(
     `INSERT INTO company_payment_methods (id, company_id, method, label, device_id, sim_slot) VALUES ($1,$2,'edahab','eDahab',$3,2)`,
     [edahabMethodId, SOMTEL_ID, DEVICE3_ID]
+  );
+  await query(
+    `INSERT INTO company_payment_methods (id, company_id, method, label, device_id, sim_slot) VALUES ($1,$2,'jeeb','Jeeb',$3,1)`,
+    [jeebMethodId, AMTEL_ID, DEVICE3_ID]
   );
 
   try {
@@ -471,7 +484,7 @@ test("EVC Plus and eDahab collection SIMs (company_payment_methods.device_id/sim
     assert.equal(Number(hormuudTopUp?.balance), 1.64);
     assert.equal(hormuudTopUp?.provider_key, "hormuud");
   } finally {
-    await query(`DELETE FROM company_payment_methods WHERE id IN ($1,$2)`, [evcMethodId, edahabMethodId]);
+    await query(`DELETE FROM company_payment_methods WHERE id IN ($1,$2,$3)`, [evcMethodId, edahabMethodId, jeebMethodId]);
     await query(`DELETE FROM sim_balances WHERE device_id=$1 AND sim_slot IN (1,2)`, [DEVICE3_ID]);
     await query(`DELETE FROM sim_balance_history WHERE sim_balance_id NOT IN (SELECT id FROM sim_balances)`);
   }

@@ -95,8 +95,20 @@ export async function resolveBalanceProvider(
   simSlot: number,
   fallbackCompanyId?: string | null
 ): Promise<{ companyId: string | null; providerIdentity: string | null }> {
+  // Filtered to ONLY the methods this function knows how to interpret --
+  // a device+slot can carry other, unrelated company_payment_methods rows
+  // (e.g. JEEB) that have nothing to do with balance identity resolution.
+  // Without this filter, LIMIT 1 with no ORDER BY can nondeterministically
+  // return one of those unrelated rows instead of the real evc/edahab one
+  // sharing the same slot -- confirmed live (production Mobile 1/SIM 1 has
+  // both Hormuud's own 'evc' row and Amtel's unrelated 'jeeb' row; picking
+  // the 'jeeb' row made this fall through to plain 'hormuud' below, so a
+  // real EVC Plus balance SMS was silently misidentified and rejected by
+  // the Sender-ID gate).
   const method = await queryOne<{ method: string; company_id: string }>(
-    `SELECT method, company_id FROM company_payment_methods WHERE device_id=$1 AND sim_slot=$2 AND enabled=true LIMIT 1`,
+    `SELECT method, company_id FROM company_payment_methods
+     WHERE device_id=$1 AND sim_slot=$2 AND enabled=true AND method IN ('evc','evc_plus','edahab')
+     LIMIT 1`,
     [deviceId, simSlot]
   );
   if (method?.method === "evc" || method?.method === "evc_plus") {
