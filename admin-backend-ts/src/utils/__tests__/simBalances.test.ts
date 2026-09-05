@@ -67,18 +67,21 @@ test("returns null for a body with no recognizable balance phrase", () => {
 
 // ---------------------------------------------------------------------------
 // Part 1b: isExpectedBalanceSender/BALANCE_SENDER_ID -- the exact Sender ID
-// gate itself, no DB involved. Required mapping (Balance Update Fix):
-// EVC Plus -> 192sms, eDahab -> edahabsms, Hormuud -> sms740,
-// Somtel -> smsReseller, Amtel -> sms913, Somnet -> sms801.
+// gate itself, no DB involved. Required mapping (Balance Update Fix), the
+// raw incoming sender exactly as confirmed against real device SMS -- no
+// "sms" prefix/suffix (an earlier version of this map guessed "192sms" for
+// EVC Plus; the real sender is the bare "192", confirmed live):
+// EVC Plus -> 192, eDahab -> edahab, Hormuud -> 740,
+// Somtel -> Reseller, Amtel -> 913, Somnet -> 801.
 // ---------------------------------------------------------------------------
 
 const REQUIRED_BALANCE_SENDER_MAPPING: Array<[string, string]> = [
-  ["evc_plus", "192sms"],
-  ["edahab", "edahabsms"],
-  ["hormuud", "sms740"],
-  ["somtel", "smsReseller"],
-  ["amtel", "sms913"],
-  ["somnet", "sms801"],
+  ["evc_plus", "192"],
+  ["edahab", "edahab"],
+  ["hormuud", "740"],
+  ["somtel", "Reseller"],
+  ["amtel", "913"],
+  ["somnet", "801"],
 ];
 
 for (const [provider, expectedSender] of REQUIRED_BALANCE_SENDER_MAPPING) {
@@ -109,7 +112,7 @@ test("isExpectedBalanceSender never falls back to another provider's Sender ID (
 });
 
 test("isExpectedBalanceSender rejects an unrecognized provider identity or a missing sender (requirement 5)", () => {
-  assert.equal(isExpectedBalanceSender("unknown_provider", "sms740"), false);
+  assert.equal(isExpectedBalanceSender("unknown_provider", "740"), false);
   assert.equal(isExpectedBalanceSender("hormuud", null), false);
   assert.equal(isExpectedBalanceSender("hormuud", undefined), false);
   assert.equal(isExpectedBalanceSender("hormuud", ""), false);
@@ -226,7 +229,7 @@ after(async () => {
 test("a Hormuud E-Voucher balance SMS updates ONLY Hormuud's SIM, never Somnet's -- even though both phrase 'remaining balance' identically", async () => {
   await ingestPaymentSms({
     agentId: AGENT_ID,
-    sender: "sms740", // Hormuud's own registered balance Sender ID (BALANCE_SENDER_ID.hormuud)
+    sender: "740", // Hormuud's own registered balance Sender ID (BALANCE_SENDER_ID.hormuud)
     body: "[-E-Voucher-] Waxaad $0.8 ugu shubtay 252610808086, Haraagaagu waa $1.64.",
     simSlot: 1, // Hormuud's slot on the test device
   });
@@ -245,7 +248,7 @@ test("a Somnet/Jeeb balance SMS on Somnet's own SIM slot updates only Somnet, in
   const somnetDeviceId = DEVICE2_ID;
   await ingestPaymentSms({
     agentId: AGENT2_ID,
-    sender: "sms801", // Somnet's own registered balance Sender ID (BALANCE_SENDER_ID.somnet)
+    sender: "801", // Somnet's own registered balance Sender ID (BALANCE_SENDER_ID.somnet)
     body: "[Jeeb] Tix: 2559004693, $ 1.18 ayaad u dirtay CABDIRISAQ MAXAMED CALI(687031955) Tar 26/08/26 00:43:15, Haraagaagu waa $0.19.",
     simSlot: 1,
   });
@@ -262,7 +265,7 @@ test("a Somnet/Jeeb balance SMS on Somnet's own SIM slot updates only Somnet, in
 
 test("the LATEST valid balance SMS always wins, even when it reports a lower number than an earlier one", async () => {
   // All three arrive from Hormuud's own registered balance Sender ID
-  // (sms740) -- this device+slot is only registered as Hormuud's top-up SIM
+  // (740) -- this device+slot is only registered as Hormuud's top-up SIM
   // (sim_routing), not as an EVC Plus collection method, so an EVC Plus-
   // branded sender would now be correctly refused here (see the dedicated
   // EVC Plus/eDahab test below for that identity's own gate, on its own
@@ -271,7 +274,7 @@ test("the LATEST valid balance SMS always wins, even when it reports a lower num
   // applyBalanceUpdate always takes the most recently-processed value.
   await ingestPaymentSms({
     agentId: AGENT_ID,
-    sender: "sms740",
+    sender: "740",
     body: "[-E-Voucher-] Waxaad $0.45 ugu shubtay 252619991299, Haraagaagu waa $2.215.",
     simSlot: 1,
   });
@@ -280,7 +283,7 @@ test("the LATEST valid balance SMS always wins, even when it reports a lower num
 
   await ingestPaymentSms({
     agentId: AGENT_ID,
-    sender: "sms740",
+    sender: "740",
     body: "[-E-Voucher-] Waxaad $0.75 ugu shubtay 252619991299, Haraagaagu waa $2.965.",
     simSlot: 1,
   });
@@ -291,7 +294,7 @@ test("the LATEST valid balance SMS always wins, even when it reports a lower num
   // wins" is about arrival order, not magnitude.
   await ingestPaymentSms({
     agentId: AGENT_ID,
-    sender: "sms740",
+    sender: "740",
     body: "[-E-Voucher-] Waxaad $0.5 ugu shubtay 252619991299, Haraagaagu waa $1.64.",
     simSlot: 1,
   });
@@ -303,7 +306,7 @@ test("Amtel's '+'-sign balance format is parsed and attributed to Amtel's own SI
   const amtelDeviceId = DEVICE2_ID;
   await ingestPaymentSms({
     agentId: AGENT2_ID,
-    sender: "sms913", // Amtel's own registered balance Sender ID (BALANCE_SENDER_ID.amtel)
+    sender: "913", // Amtel's own registered balance Sender ID (BALANCE_SENDER_ID.amtel)
     body: "Your Transfer Airtime to 252711444497 - 252711444497 has been successfully processed on 25/08/2026 22:41:36, TransactionID is 0425430000026121993; Amount is $+1.20. Now your balance is $+1.15.",
     simSlot: 2,
   });
@@ -329,7 +332,7 @@ test("a balance SMS on an unrouted device+slot updates nothing rather than guess
 test("a balance SMS with an unresolved SIM slot updates nothing rather than guessing which of the device's SIMs it was", async () => {
   await ingestPaymentSms({
     agentId: AGENT_ID,
-    sender: "sms740",
+    sender: "740",
     body: "[-E-Voucher-] Waxaad $0.1 ugu shubtay 252610808086, Haraagaagu waa $77.00.",
     simSlot: null,
   });
@@ -354,7 +357,7 @@ test("a balance SMS with an unresolved SIM slot updates nothing rather than gues
 test("Somtel's own reseller-transfer balance SMS, sent from its registered Sender ID, updates only Somtel", async () => {
   await ingestPaymentSms({
     agentId: AGENT_ID,
-    sender: "smsReseller", // BALANCE_SENDER_ID.somtel
+    sender: "Reseller", // BALANCE_SENDER_ID.somtel
     body: "Yaasiin, waxaad ku guulaysatay inaad lambarkan 620338686 u wareejiso  0.70 oo Dhammays ah.\nHaraagaagu waa:  5.50.\nMahadsanid!",
     simSlot: 2, // Somtel's slot on the test device
   });
@@ -381,13 +384,13 @@ test("a real balance SMS that physically arrives on Hormuud's own SIM slot is RE
 });
 
 test("requirement 3: another provider's OWN real Sender ID is still refused on a SIM slot it doesn't belong to (no cross-provider fallback)", async () => {
-  // "sms801" is Somnet's real, valid Sender ID -- but this SMS lands on
+  // "801" is Somnet's real, valid Sender ID -- but this SMS lands on
   // Hormuud's slot (device 1, slot 1). A correct-for-someone-else sender is
   // still the wrong sender for Hormuud and must be refused exactly like a
   // garbage one.
   await ingestPaymentSms({
     agentId: AGENT_ID,
-    sender: "sms801",
+    sender: "801",
     body: "[-E-Voucher-] Waxaad $9 ugu shubtay 252610808086, Haraagaagu waa $888.88.",
     simSlot: 1,
   });
@@ -414,19 +417,23 @@ test("EVC Plus and eDahab collection SIMs (company_payment_methods.device_id/sim
   );
 
   try {
-    // Wrong sender first -- must be refused on both slots.
+    // Wrong sender first -- must be refused on both slots. "192sms" is a
+    // near-miss for EVC Plus's real sender "192" (the exact bug that was
+    // live in production: an earlier version of this map guessed "192sms"
+    // and every real EVC Plus balance SMS, sent from the bare "192", was
+    // silently rejected).
     await ingestPaymentSms({
       agentId: AGENT3_ID,
-      sender: "192", // NOT the required "192sms"
+      sender: "192sms", // NOT the required "192"
       body: "[-EVCPLUS-] waxaad $0.45 ka heshay 0619991299, Tar: 26/08/26 19:39:31 haraagagu waa $2.215.",
       simSlot: 1,
     });
-    assert.equal(await currentBalance(DEVICE3_ID, 1), null, "EVC Plus must not update from a near-miss sender (\"192\" instead of \"192sms\")");
+    assert.equal(await currentBalance(DEVICE3_ID, 1), null, "EVC Plus must not update from a near-miss sender (\"192sms\" instead of the real \"192\")");
 
     // Correct sender -- must update, attributed to Hormuud (EVC Plus's own company).
     await ingestPaymentSms({
       agentId: AGENT3_ID,
-      sender: "192sms",
+      sender: "192",
       body: "[-EVCPLUS-] waxaad $0.45 ka heshay 0619991299, Tar: 26/08/26 19:39:31 haraagagu waa $2.215.",
       simSlot: 1,
     });
@@ -438,15 +445,15 @@ test("EVC Plus and eDahab collection SIMs (company_payment_methods.device_id/sim
     // eDahab on the same device's OTHER slot -- wrong sender refused, correct sender accepted.
     await ingestPaymentSms({
       agentId: AGENT3_ID,
-      sender: "edahab", // NOT the required "edahabsms"
+      sender: "edahabsms", // NOT the required "edahab"
       body: "1 Dollar Ayaad Ka Heshay Yaasiin Maxamed Aadan.Code-ka:NA.Lambarka :620346060Aqanoosiga : PP260825.1816.F72841  Haraagaaga Cusubi Waa: 31.34 Dollar..Tariikh:25-08-2026[-eDahab-Service-]",
       simSlot: 2,
     });
-    assert.equal(await currentBalance(DEVICE3_ID, 2), null, "eDahab must not update from a near-miss sender (\"edahab\" instead of \"edahabsms\")");
+    assert.equal(await currentBalance(DEVICE3_ID, 2), null, "eDahab must not update from a near-miss sender (\"edahabsms\" instead of the real \"edahab\")");
 
     await ingestPaymentSms({
       agentId: AGENT3_ID,
-      sender: "edahabsms",
+      sender: "edahab",
       body: "1 Dollar Ayaad Ka Heshay Yaasiin Maxamed Aadan.Code-ka:NA.Lambarka :620346060Aqanoosiga : PP260825.1816.F72841  Haraagaaga Cusubi Waa: 31.34 Dollar..Tariikh:25-08-2026[-eDahab-Service-]",
       simSlot: 2,
     });
@@ -565,7 +572,7 @@ test("GET /admin/sim-balances/summary groups byProvider into the 6 buckets, keep
   try {
     await ingestPaymentSms({
       agentId: AGENT3_ID,
-      sender: "192sms",
+      sender: "192",
       body: "[-EVCPLUS-] waxaad $0.10 ka heshay 0619991299, Tar: 26/08/26 20:00:00 haraagagu waa $4.40.",
       simSlot: 1,
     });

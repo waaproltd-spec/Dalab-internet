@@ -113,20 +113,24 @@ export async function resolveBalanceProvider(
 
 /**
  * The exact SMS Sender ID each provider's own balance-report SMS arrives
- * from — confirmed per-provider values, never guessed or shared across
- * providers. Used ONLY to gate automatic balance-SMS detection
- * (smsLogs.routes.ts); the manual override endpoint
+ * from, exactly as the raw incoming sender appears — no "sms" prefix/suffix
+ * added or assumed. Confirmed against real device SMS (e.g. EVC Plus's own
+ * balance SMS arrives from the bare sender "192", not "192sms" — an earlier
+ * version of this map guessed "192sms" and every real EVC Plus balance SMS
+ * was silently rejected as a sender mismatch until corrected here).
+ * Never guessed or shared across providers. Used ONLY to gate automatic
+ * balance-SMS detection (smsLogs.routes.ts); the manual override endpoint
  * (PUT /admin/sim-balances/:deviceId/:simSlot) is unaffected — it has no
  * SMS sender to check in the first place (e.g. Amtel, which has no
  * balance-report SMS to auto-detect from at all).
  */
 export const BALANCE_SENDER_ID: Record<string, string> = {
-  evc_plus: "192sms",
-  edahab: "edahabsms",
-  hormuud: "sms740",
-  somtel: "smsReseller",
-  amtel: "sms913",
-  somnet: "sms801",
+  evc_plus: "192",
+  edahab: "edahab",
+  hormuud: "740",
+  somtel: "Reseller",
+  amtel: "913",
+  somnet: "801",
 };
 
 /**
