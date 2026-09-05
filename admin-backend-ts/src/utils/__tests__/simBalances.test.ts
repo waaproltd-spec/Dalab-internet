@@ -143,10 +143,15 @@ const SOMTEL_ID = "test-balance-somtel";
 const SOMNET_ID = "test-balance-somnet";
 const AMTEL_ID = "test-balance-amtel";
 
-async function currentBalance(deviceId: string, simSlot: number) {
+// providerKey disambiguates when a device+slot now carries more than one
+// balance row (migration 096) -- omitted, this just returns whichever row
+// postgres happens to return first, fine for every existing single-row
+// call site in this file, but a test exercising two rows on the same slot
+// must pass it explicitly.
+async function currentBalance(deviceId: string, simSlot: number, providerKey?: string) {
   return queryOne<{ balance: string | null; company_id: string | null; provider_key: string | null }>(
-    `SELECT balance, company_id, provider_key FROM sim_balances WHERE device_id=$1 AND sim_slot=$2`,
-    [deviceId, simSlot]
+    `SELECT balance, company_id, provider_key FROM sim_balances WHERE device_id=$1 AND sim_slot=$2 AND ($3::text IS NULL OR provider_key IS NOT DISTINCT FROM $3) LIMIT 1`,
+    [deviceId, simSlot, providerKey ?? null]
   );
 }
 
@@ -542,10 +547,12 @@ test("PUT /admin/sim-balances preserves an existing providerKey when the edit do
   assert.equal(row?.provider_key, "hormuud");
 });
 
-test("PUT /admin/sim-balances accepts an explicit providerKey and persists it", async () => {
-  // Somnet's SIM (device 2, slot 1) is manually re-tagged as eDahab here
-  // purely to prove the explicit-value path works end to end -- not a
-  // realistic real-world edit, just isolated proof of the mechanism.
+test("PUT /admin/sim-balances accepts an explicit providerKey and creates its own row alongside an existing different-provider balance on the same slot", async () => {
+  // Device 2/slot 1 already carries Somnet's own Send Data balance
+  // (provider_key='somnet', set by an earlier test). Since one physical
+  // SIM can carry more than one balance (migration 096), an explicit
+  // providerKey the slot doesn't already have a row for creates its OWN
+  // row rather than renaming/overwriting the existing one.
   const res = await fetch(`${routerBaseUrl}/admin/sim-balances/${DEVICE2_ID}/1`, {
     method: "PUT",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${superAdminToken}` },
@@ -555,11 +562,18 @@ test("PUT /admin/sim-balances accepts an explicit providerKey and persists it", 
   const body: any = await res.json();
   assert.equal(body.providerKey, "edahab");
 
-  const row = await currentBalance(DEVICE2_ID, 1);
-  assert.equal(row?.provider_key, "edahab");
+  const rows = await query<{ provider_key: string | null; balance: string | null }>(
+    `SELECT provider_key, balance FROM sim_balances WHERE device_id=$1 AND sim_slot=1`,
+    [DEVICE2_ID]
+  );
+  const edahabRow = rows.find((r) => r.provider_key === "edahab");
+  const somnetRow = rows.find((r) => r.provider_key === "somnet");
+  assert.ok(edahabRow, "the explicit providerKey must have created its own row");
+  assert.equal(Number(edahabRow?.balance), 3.5);
+  assert.ok(somnetRow, "the pre-existing somnet row on the same slot must be untouched by the new one");
 
-  // Restore it back to Somnet for any later test in this file that expects it.
-  await query(`UPDATE sim_balances SET provider_key='somnet' WHERE device_id=$1 AND sim_slot=1`, [DEVICE2_ID]);
+  // Clean up only the row this test created.
+  await query(`DELETE FROM sim_balances WHERE device_id=$1 AND sim_slot=1 AND provider_key='edahab'`, [DEVICE2_ID]);
 });
 
 test("PUT /admin/sim-balances rejects a providerKey outside the 6 known buckets", async () => {
@@ -612,5 +626,73 @@ test("GET /admin/sim-balances/summary groups byProvider into the 6 buckets, keep
     await query(
       `DELETE FROM sim_balance_history WHERE sim_balance_id NOT IN (SELECT id FROM sim_balances)`
     );
+  }
+});
+
+test("a single physical SIM reporting BOTH its own Send Data balance and an EVC Plus wallet balance keeps them as two independent rows, never one overwriting the other", async () => {
+  // Reproduces the exact production incident: Hormuud's Mobile 1/SIM 1 is
+  // simultaneously registered in sim_routing (its own top-up SIM) AND in
+  // company_payment_methods (its EVC Plus collection SIM) -- the SAME
+  // physical device+slot serving both roles, confirmed live by real SMS
+  // (both "[-E-Voucher-]... Haraagaagu waa $X" sender 740 and "[-EVCPLUS-]
+  // ... haraagagu waa $Y" sender 192 arriving on the identical number).
+  // DEVICE3_ID is normally the "no sim_routing" fixture; temporarily given
+  // one here specifically to model this dual-role SIM.
+  await query(`INSERT INTO sim_routing (company_id, device_id, sim_slot, priority) VALUES ($1,$2,1,1)`, [HORMUUD_ID, DEVICE3_ID]);
+  const evcMethodId = randomUUID();
+  await query(
+    `INSERT INTO company_payment_methods (id, company_id, method, label, device_id, sim_slot) VALUES ($1,$2,'evc_plus','EVC Plus',$3,1)`,
+    [evcMethodId, HORMUUD_ID, DEVICE3_ID]
+  );
+
+  try {
+    // Hormuud's own Send Data balance arrives first.
+    await ingestPaymentSms({
+      agentId: AGENT3_ID,
+      sender: "740",
+      body: "[-E-Voucher-] Waxaad $0.1 ugu shubtay 252610808086, Haraagaagu waa $0.01.",
+      simSlot: 1,
+    });
+    let hormuud = await currentBalance(DEVICE3_ID, 1, "hormuud");
+    assert.equal(Number(hormuud?.balance), 0.01);
+    assert.equal(hormuud?.provider_key, "hormuud");
+
+    // Then EVC Plus's wallet balance arrives on the SAME device+slot -- must
+    // create its OWN row, not overwrite Hormuud's Send Data row above.
+    await ingestPaymentSms({
+      agentId: AGENT3_ID,
+      sender: "192",
+      body: "[-EVCPLUS-] waxaad $0.5 ka heshay 0610346060, Tar: 05/09/26 16:57:31 haraagagu waa $1.595.",
+      simSlot: 1,
+    });
+    const evc = await currentBalance(DEVICE3_ID, 1, "evc_plus");
+    assert.equal(Number(evc?.balance), 1.595);
+    assert.equal(evc?.provider_key, "evc_plus");
+
+    // Critically: Hormuud's own Send Data row must be COMPLETELY untouched
+    // by the EVC Plus update that just landed on the same physical SIM --
+    // this is the exact bug that was live in production (the second update
+    // reset the first row's provider_key, reverting its dashboard card to
+    // "Unknown").
+    hormuud = await currentBalance(DEVICE3_ID, 1, "hormuud");
+    assert.equal(Number(hormuud?.balance), 0.01, "Hormuud's Send Data balance must survive an EVC Plus update on the same physical SIM");
+    assert.equal(hormuud?.provider_key, "hormuud");
+
+    // And both rows must be genuinely distinct database rows, not the
+    // same row read twice.
+    const bothRows = await query<{ id: string; provider_key: string | null }>(
+      `SELECT id, provider_key FROM sim_balances WHERE device_id=$1 AND sim_slot=1`,
+      [DEVICE3_ID]
+    );
+    assert.equal(bothRows.length, 2, "one physical SIM reporting two balance types must produce two sim_balances rows");
+    assert.deepEqual(
+      new Set(bothRows.map((r) => r.provider_key)),
+      new Set(["hormuud", "evc_plus"])
+    );
+  } finally {
+    await query(`DELETE FROM company_payment_methods WHERE id=$1`, [evcMethodId]);
+    await query(`DELETE FROM sim_routing WHERE device_id=$1 AND sim_slot=1 AND company_id=$2`, [DEVICE3_ID, HORMUUD_ID]);
+    await query(`DELETE FROM sim_balances WHERE device_id=$1 AND sim_slot=1`, [DEVICE3_ID]);
+    await query(`DELETE FROM sim_balance_history WHERE sim_balance_id NOT IN (SELECT id FROM sim_balances)`);
   }
 });

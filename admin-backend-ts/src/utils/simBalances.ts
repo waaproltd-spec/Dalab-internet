@@ -93,18 +93,18 @@ export async function resolveCompanyForDeviceSlot(deviceId: string, simSlot: num
 export async function resolveBalanceProvider(
   deviceId: string,
   simSlot: number,
+  sender: string | null | undefined,
   fallbackCompanyId?: string | null
 ): Promise<{ companyId: string | null; providerIdentity: string | null }> {
+  const candidates: Array<{ companyId: string; providerIdentity: string }> = [];
+
   // Filtered to ONLY the methods this function knows how to interpret --
   // a device+slot can carry other, unrelated company_payment_methods rows
   // (e.g. JEEB) that have nothing to do with balance identity resolution.
   // Without this filter, LIMIT 1 with no ORDER BY can nondeterministically
   // return one of those unrelated rows instead of the real evc/edahab one
   // sharing the same slot -- confirmed live (production Mobile 1/SIM 1 has
-  // both Hormuud's own 'evc' row and Amtel's unrelated 'jeeb' row; picking
-  // the 'jeeb' row made this fall through to plain 'hormuud' below, so a
-  // real EVC Plus balance SMS was silently misidentified and rejected by
-  // the Sender-ID gate).
+  // both Hormuud's own 'evc' row and Amtel's unrelated 'jeeb' row).
   const method = await queryOne<{ method: string; company_id: string }>(
     `SELECT method, company_id FROM company_payment_methods
      WHERE device_id=$1 AND sim_slot=$2 AND enabled=true AND method IN ('evc','evc_plus','edahab')
@@ -112,15 +112,35 @@ export async function resolveBalanceProvider(
     [deviceId, simSlot]
   );
   if (method?.method === "evc" || method?.method === "evc_plus") {
-    return { companyId: method.company_id, providerIdentity: "evc_plus" };
+    candidates.push({ companyId: method.company_id, providerIdentity: "evc_plus" });
+  } else if (method?.method === "edahab") {
+    candidates.push({ companyId: method.company_id, providerIdentity: "edahab" });
   }
-  if (method?.method === "edahab") {
-    return { companyId: method.company_id, providerIdentity: "edahab" };
+
+  const routedCompanyId = (await resolveCompanyForDeviceSlot(deviceId, simSlot)) ?? fallbackCompanyId ?? null;
+  if (routedCompanyId) {
+    const company = await queryOne<{ name: string }>(`SELECT name FROM companies WHERE id=$1`, [routedCompanyId]);
+    if (company?.name) {
+      candidates.push({ companyId: routedCompanyId, providerIdentity: company.name.trim().toLowerCase() });
+    }
   }
-  const companyId = (await resolveCompanyForDeviceSlot(deviceId, simSlot)) ?? fallbackCompanyId ?? null;
-  if (!companyId) return { companyId: null, providerIdentity: null };
-  const company = await queryOne<{ name: string }>(`SELECT name FROM companies WHERE id=$1`, [companyId]);
-  return { companyId, providerIdentity: company?.name ? company.name.trim().toLowerCase() : null };
+
+  if (candidates.length === 0) return { companyId: null, providerIdentity: null };
+
+  // A device+slot can legitimately carry TWO identities at once: its own
+  // company's Send Data line AND an EVC Plus/eDahab collection line, both
+  // on the exact same physical SIM -- confirmed live for Hormuud's Mobile
+  // 1/SIM 1, which sends both "[-E-Voucher-]... Haraagaagu waa $X" (sender
+  // 740) and "[-EVCPLUS-]... haraagagu waa $Y" (sender 192). Which one a
+  // given SMS actually is comes down to which candidate's own Sender ID
+  // the message matches -- never a fixed priority order (checking
+  // company_payment_methods unconditionally first was the exact bug: a
+  // real "740" Send Data SMS got misidentified as "evc_plus" and rejected,
+  // because that device+slot also had an evc_plus row). No match at all
+  // just reports the first candidate, purely so the caller's own mismatch
+  // log line names a real identity instead of nothing.
+  const matched = candidates.find((c) => isExpectedBalanceSender(c.providerIdentity, sender));
+  return matched ?? candidates[0];
 }
 
 /**
@@ -171,9 +191,23 @@ export async function applyBalanceUpdate(params: {
   source: "sms" | "manual";
   changedBy?: string | null;
 }): Promise<void> {
+  // A single physical SIM can report TWO genuinely separate balances via
+  // two different carrier SMS types from the same number -- confirmed
+  // live: Hormuud's Mobile 1/SIM 1 sends both its own Send Data balance
+  // ("[-E-Voucher-]... Haraagaagu waa $X", sender 740) and its EVC Plus
+  // mobile-money wallet balance ("[-EVCPLUS-]... haraagagu waa $Y",
+  // sender 192) -- not the same value reported twice, two different real
+  // balances. Matching on provider_key too (not just device+slot) is what
+  // keeps them as two rows instead of the second one silently overwriting
+  // the first (095_sim_balance_provider_key.sql's original device+slot-
+  // only uniqueness let exactly this happen: an EVC Plus update reset
+  // Hormuud's own Send Data row's provider_key, making its dashboard card
+  // revert to "Unknown"). IS NOT DISTINCT FROM (not =) so a NULL
+  // providerKey still matches an existing NULL-provider_key row, same
+  // COALESCE-preserve semantics as everywhere else in this function.
   const existing = await queryOne<{ id: string; balance: string | null }>(
-    `SELECT id, balance FROM sim_balances WHERE device_id=$1 AND sim_slot=$2`,
-    [params.deviceId, params.simSlot]
+    `SELECT id, balance FROM sim_balances WHERE device_id=$1 AND sim_slot=$2 AND provider_key IS NOT DISTINCT FROM $3`,
+    [params.deviceId, params.simSlot, params.providerKey ?? null]
   );
 
   let simBalanceId: string;

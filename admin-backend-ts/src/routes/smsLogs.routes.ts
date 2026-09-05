@@ -660,7 +660,7 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
         // match), not a guess. providerIdentity is the same lookup's own
         // identity (hormuud/somtel/somnet/amtel/evc_plus/edahab), used ONLY
         // for the Sender ID gate below.
-        const { companyId, providerIdentity } = await resolveBalanceProvider(deviceId, simSlot, match?.company_id ?? null);
+        const { companyId, providerIdentity } = await resolveBalanceProvider(deviceId, simSlot, sender, match?.company_id ?? null);
         if (companyId) {
           // Provider-specific Sender ID gate: each of the 6 providers
           // (Hormuud, Somtel, Somnet, Amtel, EVC Plus, eDahab) is only ever

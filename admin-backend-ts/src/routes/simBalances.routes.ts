@@ -158,11 +158,17 @@ simBalancesRouter.get("/admin/sim-balances/low-balance-count", requireStaff(), a
   sendJson(res, 200, { count: Number(row?.count ?? 0) });
 });
 
+// providerKey is optional for backward compatibility, but a device+slot
+// carrying more than one balance (e.g. Hormuud's own Send Data AND its
+// EVC Plus wallet, both on the same physical SIM) needs it to know which
+// row's history to return — omitting it just picks whichever row postgres
+// returns first, so the dashboard always passes its own row's providerKey.
 simBalancesRouter.get("/admin/sim-balances/:deviceId/:simSlot/history", requireStaff(), async (req, res) => {
   const simSlot = Number(req.params.simSlot);
+  const providerKey = typeof req.query.providerKey === "string" ? req.query.providerKey : null;
   const balance = await queryOne<{ id: string }>(
-    `SELECT id FROM sim_balances WHERE device_id=$1 AND sim_slot=$2`,
-    [req.params.deviceId, simSlot]
+    `SELECT id FROM sim_balances WHERE device_id=$1 AND sim_slot=$2 AND ($3::text IS NULL OR provider_key IS NOT DISTINCT FROM $3) LIMIT 1`,
+    [req.params.deviceId, simSlot, providerKey]
   );
   if (!balance) return sendJson(res, 200, []);
   sendJson(
@@ -222,8 +228,14 @@ simBalancesRouter.put("/admin/sim-balances/:deviceId/:simSlot", requirePermissio
       return sendJson(res, 400, { error: `providerKey must be one of: ${KNOWN_PROVIDER_KEYS.join(", ")}` });
     }
   } else {
+    // Ambiguous when a device+slot carries more than one balance row (e.g.
+    // Hormuud's own Send Data AND its EVC Plus wallet, same physical SIM)
+    // and the request doesn't say which one it means — this LIMIT 1 just
+    // picks one, same "best effort without a providerKey" trade-off the
+    // history endpoint above makes. The dashboard always sends its own
+    // row's providerKey, so this path is only hit by an edit with none.
     const existingBalance = await queryOne<{ provider_key: string | null }>(
-      `SELECT provider_key FROM sim_balances WHERE device_id=$1 AND sim_slot=$2`,
+      `SELECT provider_key FROM sim_balances WHERE device_id=$1 AND sim_slot=$2 LIMIT 1`,
       [req.params.deviceId, simSlot]
     );
     providerKey = existingBalance?.provider_key ?? companyId ?? null;
@@ -249,10 +261,14 @@ simBalancesRouter.put("/admin/sim-balances/:deviceId/:simSlot", requirePermissio
     // assigning a provider/phone number is not the same as confirming a
     // real balance, and a fake $0.00 here is exactly the stale/invented
     // value the dashboard must never show (migration 068).
+    // Conflict target matches idx_sim_balances_device_slot_provider
+    // (096_sim_balance_multi_provider.sql) -- device+slot alone is no
+    // longer unique, since one physical SIM can carry more than one
+    // balance (its own Send Data balance AND an EVC Plus/eDahab wallet).
     await query(
       `INSERT INTO sim_balances (id, device_id, sim_slot, company_id, provider_key, phone_number)
        VALUES (gen_random_uuid(), $1, $2, $3, $4, $5)
-       ON CONFLICT (device_id, sim_slot) DO UPDATE
+       ON CONFLICT (device_id, sim_slot, provider_key) DO UPDATE
        SET company_id=COALESCE($3, sim_balances.company_id),
            provider_key=COALESCE($4, sim_balances.provider_key),
            phone_number=COALESCE($5, sim_balances.phone_number),
@@ -265,10 +281,10 @@ simBalancesRouter.put("/admin/sim-balances/:deviceId/:simSlot", requirePermissio
     const num = Number(threshold);
     if (!Number.isFinite(num) || num < 0) return sendJson(res, 400, { error: "threshold must be a non-negative number" });
     await query(
-      `INSERT INTO sim_balances (id, device_id, sim_slot, low_balance_threshold)
-       VALUES (gen_random_uuid(), $1, $2, $3)
-       ON CONFLICT (device_id, sim_slot) DO UPDATE SET low_balance_threshold=$3, updated_at=now()`,
-      [req.params.deviceId, simSlot, num]
+      `INSERT INTO sim_balances (id, device_id, sim_slot, provider_key, low_balance_threshold)
+       VALUES (gen_random_uuid(), $1, $2, $3, $4)
+       ON CONFLICT (device_id, sim_slot, provider_key) DO UPDATE SET low_balance_threshold=$4, updated_at=now()`,
+      [req.params.deviceId, simSlot, providerKey ?? null, num]
     );
   }
 
@@ -281,9 +297,12 @@ simBalancesRouter.put("/admin/sim-balances/:deviceId/:simSlot", requirePermissio
     newValue: { deviceId: req.params.deviceId, simSlot, balance, threshold, companyId, providerKey, phoneNumber },
   });
 
+  // Scoped by provider_key too -- a device+slot can now return more than
+  // one row from SIM_BALANCE_LIST_SQL (one per balance it carries), and
+  // the response must reflect the specific one this request just edited.
   const row = await queryOne(
-    `SELECT * FROM (${SIM_BALANCE_LIST_SQL}) rows WHERE device_id=$1 AND sim_slot=$2`,
-    [req.params.deviceId, simSlot]
+    `SELECT * FROM (${SIM_BALANCE_LIST_SQL}) rows WHERE device_id=$1 AND sim_slot=$2 AND provider_key IS NOT DISTINCT FROM $3`,
+    [req.params.deviceId, simSlot, providerKey ?? null]
   );
   sendJson(res, 200, row ?? { deviceId: req.params.deviceId, simSlot });
 });

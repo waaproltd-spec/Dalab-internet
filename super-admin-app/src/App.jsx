@@ -342,7 +342,8 @@ const DalabAdminApi = {
   // payment SMS at all.
   getSimBalances: () => dalabAdminApiRequest("/admin/sim-balances"),
   getSimBalanceSummary: () => dalabAdminApiRequest("/admin/sim-balances/summary"),
-  getSimBalanceHistory: (deviceId, simSlot) => dalabAdminApiRequest(`/admin/sim-balances/${deviceId}/${simSlot}/history`),
+  getSimBalanceHistory: (deviceId, simSlot, providerKey) =>
+    dalabAdminApiRequest(`/admin/sim-balances/${deviceId}/${simSlot}/history${providerKey ? `?providerKey=${encodeURIComponent(providerKey)}` : ""}`),
   updateSimBalance: (deviceId, simSlot, body) => dalabAdminApiRequest(`/admin/sim-balances/${deviceId}/${simSlot}`, { method: "PUT", body }),
   getLowBalanceCount: () => dalabAdminApiRequest("/admin/sim-balances/low-balance-count"),
   // Manual Recovery — orders stuck on a temporary problem (agent offline,
@@ -1358,7 +1359,7 @@ function BalanceDashboard({ admin }) {
     setHistory([]);
     setHistoryLoading(true);
     try {
-      setHistory(await DalabAdminApi.getSimBalanceHistory(row.deviceId, row.simSlot));
+      setHistory(await DalabAdminApi.getSimBalanceHistory(row.deviceId, row.simSlot, row.providerKey));
     } catch (err) {
       console.error("Failed to load balance history:", err.message);
     } finally {
