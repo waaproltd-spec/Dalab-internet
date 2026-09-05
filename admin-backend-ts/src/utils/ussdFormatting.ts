@@ -65,6 +65,28 @@ export function formatUssdAmount(amount: string | number): string {
   return `${dollars}${centsSegment}`;
 }
 
+/** For the minority of Internet Store providers whose top-up USSD menu
+ * takes the amount as its OWN two separate dial-string fields rather than
+ * formatUssdAmount()'s single collapsed token above — confirmed live for
+ * Somnet's top-up code, whose own carrier error response (production order
+ * DLB981226132, $22.50, dialed with the single-token format and rejected
+ * outright) quoted back the expected shape as "*827*number*lacag*cents#":
+ * a genuinely separate "lacag" (whole amount) and "cents" field, unlike
+ * Hormuud/Somtel/Amtel's templates. Exposed as its own {amountWhole}/
+ * {amountCents} placeholder pair in generateUssdForOrder rather than
+ * changing formatUssdAmount()/{amount} itself, so this is purely additive:
+ * every existing single-token template for every other provider is
+ * completely unaffected. Cents is always exactly 2 digits (never the
+ * trailing-zero-dropped shorthand formatUssdAmount uses) since here it's a
+ * standalone field, not concatenated into one token — same convention as
+ * formatEvcDahabUssdAmount above. */
+export function splitUssdAmount(amount: string | number): { whole: string; cents: string } {
+  const numeric = Number(amount);
+  const whole = Math.trunc(numeric);
+  const cents = Math.round((numeric - whole) * 100);
+  return { whole: String(whole), cents: String(cents).padStart(2, "0") };
+}
+
 /** EVC Plus / eDahab's own Dial-to-Pay USSD menu (dial prefixes "*712*" and
  * "*110*", shop_payment_methods.ussd_template e.g. "*712*610338686*{amount}#")
  * is a genuinely different carrier convention from formatUssdAmount() above

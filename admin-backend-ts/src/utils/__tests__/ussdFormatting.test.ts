@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatUssdAmount, formatEvcDahabUssdAmount, normalizePhoneForUssd } from "../ussdFormatting.js";
+import { formatUssdAmount, formatEvcDahabUssdAmount, normalizePhoneForUssd, splitUssdAmount } from "../ussdFormatting.js";
 
 // "0.10" -> "01" and "0.50" -> "05" are real confirmed production values
 // (ussd_logs.generated_string for completed Hormuud Anfac orders, Aug 2026 —
@@ -112,4 +112,32 @@ test("formatEvcDahabUssdAmount substituted into a shop_payment_methods-style tem
   assert.equal(edahabTemplate.replace("{amount}", formatEvcDahabUssdAmount("22.20")), "*110*620338686*22*20#");
   assert.equal(evcTemplate.replace("{amount}", formatEvcDahabUssdAmount("25.00")), "*712*610338686*25*00#");
   assert.equal(evcTemplate.replace("{amount}", formatEvcDahabUssdAmount("100.00")), "*712*610338686*100*00#");
+});
+
+// splitUssdAmount -- Somnet's own top-up USSD menu (real production incident:
+// order DLB981226132, $22.50, dialed with formatUssdAmount's single-token
+// "225" and rejected outright by the carrier, which quoted back the expected
+// 4-field shape "*827*number*lacag*cents#" in its own error response). Unlike
+// formatUssdAmount (one collapsed token) or formatEvcDahabUssdAmount (one
+// "*"-joined token), this exposes whole/cents as two independent values for
+// generateUssdForOrder's {amountWhole}/{amountCents} placeholders -- the
+// template itself supplies the "*" separator between them.
+const SPLIT_AMOUNT_CASES: Array<[string, string, string]> = [
+  ["22.50", "22", "50"],
+  ["25.00", "25", "00"],
+  ["0.10", "0", "10"],
+  ["1.98", "1", "98"],
+  ["100.00", "100", "00"],
+];
+
+for (const [input, whole, cents] of SPLIT_AMOUNT_CASES) {
+  test(`splitUssdAmount("${input}") === { whole: "${whole}", cents: "${cents}" }`, () => {
+    assert.deepEqual(splitUssdAmount(input), { whole, cents });
+  });
+}
+
+test("splitUssdAmount substituted into Somnet's real template shape produces the exact carrier-confirmed dial string", () => {
+  const somnetTemplate = "*827*{number}*{amountWhole}*{amountCents}#";
+  const dialed = somnetTemplate.replace("{amountWhole}", splitUssdAmount("22.50").whole).replace("{amountCents}", splitUssdAmount("22.50").cents);
+  assert.equal(dialed.replace("{number}", "620338686"), "*827*620338686*22*50#");
 });

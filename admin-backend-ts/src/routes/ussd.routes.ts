@@ -12,7 +12,7 @@ import { creditCommissionIfNeeded } from "../utils/commissions.js";
 import { creditReferralBonusIfNeeded } from "../utils/referrals.js";
 import { refundRedeemedPointsIfNeeded } from "../utils/loyaltyPoints.js";
 import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
-import { normalizePhoneForUssd, formatUssdAmount } from "../utils/ussdFormatting.js";
+import { normalizePhoneForUssd, formatUssdAmount, splitUssdAmount } from "../utils/ussdFormatting.js";
 
 export const ussdRouter = Router();
 
@@ -369,6 +369,12 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
   // valid USSD/MMI dial character, so every dial for every provider carried
   // a malformed amount.
   const providerAmountFormatted = formatUssdAmount(order.provider_amount ?? order.amount);
+  // {amountWhole}/{amountCents} — see splitUssdAmount's own comment: the
+  // minority of providers (confirmed: Somnet) whose top-up menu takes the
+  // amount as its own two separate dial-string fields, not one collapsed
+  // token. Computed unconditionally but harmless for every other template:
+  // .replace() is a no-op if the placeholder isn't present in the string.
+  const { whole: amountWhole, cents: amountCents } = splitUssdAmount(order.provider_amount ?? order.amount);
   // {packageCode}/{packageName} are optional — a template that doesn't
   // reference them is unaffected, .replace() is a no-op if the placeholder
   // isn't present in the string.
@@ -377,6 +383,8 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
     .replace("{customerNumber}", deliverTo)
     .replace("{receiverNumber}", deliverTo)
     .replace("{amount}", providerAmountFormatted)
+    .replace("{amountWhole}", amountWhole)
+    .replace("{amountCents}", amountCents)
     .replace("{pin}", pin)
     .replace("{packageCode}", orderWithPackage?.package_code ?? "")
     .replace("{packageName}", orderWithPackage?.package_name ?? "")
@@ -389,6 +397,8 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
     .replace("{customerNumber}", deliverTo)
     .replace("{receiverNumber}", deliverTo)
     .replace("{amount}", providerAmountFormatted)
+    .replace("{amountWhole}", amountWhole)
+    .replace("{amountCents}", amountCents)
     .replace("{pin}", "•".repeat(pin.length))
     .replace("{packageCode}", orderWithPackage?.package_code ?? "")
     .replace("{packageName}", orderWithPackage?.package_name ?? "")
