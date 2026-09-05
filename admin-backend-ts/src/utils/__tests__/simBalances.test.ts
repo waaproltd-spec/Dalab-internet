@@ -37,6 +37,11 @@ test("extracts Hormuud E-Voucher's balance phrase (double-'a' \"Haraagaagu\" spe
   assert.deepEqual(extractBalanceFromSms(body), { balance: 1.64 });
 });
 
+test("extracts Hormuud's Evoucher-stock purchase confirmation and tags it with kind 'hormuud_evoucher' -- distinct wording from the plain Send Data phrase above ('Evoucher-ka waa', not 'Haraagaagu waa')", () => {
+  const body = "[-EVCPlus-]Waxaad iibsatay Evoucher $0.6. Haraagaaga Evoucher-ka waa $0.61.";
+  assert.deepEqual(extractBalanceFromSms(body), { balance: 0.61, kind: "hormuud_evoucher" });
+});
+
 test("extracts Somnet/Jeeb's balance phrase from a [Jeeb] outgoing-transfer confirmation", () => {
   const body =
     "[Jeeb] Tix: 2559004693, $ 1.18 ayaad u dirtay CABDIRISAQ MAXAMED CALI(687031955) Tar 26/08/26 00:43:15, Haraagaagu waa $0.19.";
@@ -109,6 +114,16 @@ test("isExpectedBalanceSender never falls back to another provider's Sender ID (
       );
     }
   }
+});
+
+// hormuud_evoucher is deliberately excluded from REQUIRED_BALANCE_SENDER_MAPPING/
+// the cross-provider loop above -- it's Hormuud's separate Evoucher-stock
+// balance, sharing Hormuud's own "740" Sender ID on purpose (confirmed
+// live: the same short code sends both), disambiguated by SMS body content
+// (resolveBalanceProvider's providerHint) rather than by sender.
+test("BALANCE_SENDER_ID.hormuud_evoucher is the same raw sender as hormuud (\"740\"), by design", () => {
+  assert.equal(BALANCE_SENDER_ID.hormuud_evoucher, "740");
+  assert.equal(isExpectedBalanceSender("hormuud_evoucher", "740"), true);
 });
 
 test("isExpectedBalanceSender rejects an unrecognized provider identity or a missing sender (requirement 5)", () => {
@@ -247,6 +262,50 @@ test("a Hormuud E-Voucher balance SMS updates ONLY Hormuud's SIM, never Somnet's
   const somnetDeviceId = DEVICE2_ID;
   const somnet = await currentBalance(somnetDeviceId, 1);
   assert.equal(somnet, null, "Hormuud's balance SMS must never create/touch Somnet's SIM balance row");
+});
+
+test("Hormuud's Evoucher-stock purchase confirmation (same raw sender 740 as its plain Send Data balance) is tracked as its own separate 7th balance, never merged into either Hormuud Send Data or EVC Plus", async () => {
+  // Real production SMS, sender 740 -- the exact same Sender ID as the
+  // "Haraagaagu waa" Send Data balance in the test right above, but
+  // phrased "Haraagaaga Evoucher-ka waa $X" instead. Sender ID alone can't
+  // tell these apart (both are "740"); resolveBalanceProvider's
+  // providerHint (from extractBalanceFromSms's "kind") is what does.
+  try {
+    await ingestPaymentSms({
+      agentId: AGENT_ID,
+      sender: "740",
+      body: "[-EVCPlus-]Waxaad iibsatay Evoucher $0.6. Haraagaaga Evoucher-ka waa $0.61.",
+      simSlot: 1,
+    });
+
+    const evoucher = await currentBalance(DEVICE_ID, 1, "hormuud_evoucher");
+    assert.equal(Number(evoucher?.balance), 0.61);
+    assert.equal(evoucher?.company_id, HORMUUD_ID);
+    assert.equal(evoucher?.provider_key, "hormuud_evoucher");
+
+    // The previous test's plain Send Data balance (identical sender) must be
+    // completely untouched -- two different real balances, one sender.
+    const hormuud = await currentBalance(DEVICE_ID, 1, "hormuud");
+    assert.equal(Number(hormuud?.balance), 1.64, "Hormuud's plain Send Data balance must survive an Evoucher-stock update from the same sender");
+    assert.equal(hormuud?.provider_key, "hormuud");
+
+    const rows = await query<{ provider_key: string | null }>(`SELECT provider_key FROM sim_balances WHERE device_id=$1 AND sim_slot=1`, [
+      DEVICE_ID,
+    ]);
+    assert.deepEqual(new Set(rows.map((r) => r.provider_key)), new Set(["hormuud", "hormuud_evoucher"]));
+  } finally {
+    // Every OTHER test in this file assumes DEVICE_ID/slot 1 carries exactly
+    // one sim_balances row (Hormuud's own plain Send Data balance) and reads
+    // it via currentBalance(DEVICE_ID, 1) with no providerKey filter -- clean
+    // up the extra hormuud_evoucher row this test created so that "whichever
+    // row postgres returns first" (currentBalance's own documented
+    // trade-off with no providerKey) stays deterministic for every test
+    // after this one, same as before this test existed.
+    await query(`DELETE FROM sim_balance_history WHERE sim_balance_id IN (SELECT id FROM sim_balances WHERE device_id=$1 AND sim_slot=1 AND provider_key='hormuud_evoucher')`, [
+      DEVICE_ID,
+    ]);
+    await query(`DELETE FROM sim_balances WHERE device_id=$1 AND sim_slot=1 AND provider_key='hormuud_evoucher'`, [DEVICE_ID]);
+  }
 });
 
 test("a Somnet/Jeeb balance SMS on Somnet's own SIM slot updates only Somnet, independently of Hormuud's value", async () => {

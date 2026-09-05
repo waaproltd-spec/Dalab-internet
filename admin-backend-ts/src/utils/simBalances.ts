@@ -21,26 +21,35 @@ import { broadcast } from "../realtime/orderEvents.js";
  * verification. A body that doesn't match any of these simply yields no
  * automatic update, never a wrong one.
  */
-const BALANCE_VALUE_PATTERNS: RegExp[] = [
+const BALANCE_VALUE_PATTERNS: Array<{ regex: RegExp; kind?: string }> = [
   // eDahab/Somtel: "Haraagaaga Cusubi Waa: 31.34 Dollar" — its "Cusubi"/
   // "Dollar" wording never collides with the generic pattern below.
-  /Haraagaaga\s+Cusubi\s+Waa\s*:?\s*([\d,]+(?:\.\d+)?)\s*Dollar/i,
+  { regex: /Haraagaaga\s+Cusubi\s+Waa\s*:?\s*([\d,]+(?:\.\d+)?)\s*Dollar/i },
+  // Hormuud's own Evoucher-stock purchase confirmation: "[-EVCPlus-]Waxaad
+  // iibsatay Evoucher $0.6. Haraagaaga Evoucher-ka waa $0.61." — confirmed
+  // live on Hormuud's sender "740", the SAME sender as its plain Send Data
+  // balance below, but a genuinely separate balance (reseller Evoucher
+  // stock, not the Send Data SIM's own airtime, and not the EVC Plus
+  // wallet either, which is sender 192). "kind" lets resolveBalanceProvider
+  // disambiguate it from the generic "Haraag(a?a)gu waa" pattern right
+  // below, which this text would otherwise also partially resemble.
+  { regex: /Evoucher-ka\s+waa\s*:?\s*\$?\s*([\d,]+(?:\.\d+)?)/i, kind: "hormuud_evoucher" },
   // Hormuud (EVC Plus + E-Voucher) and Somnet/Jeeb all phrase their own
   // remaining balance as some spelling of "Haraag(a)agu waa", with or
   // without a "$" sign, with a colon or plain space before the number.
-  /Haraag(?:a?a)gu\s+waa\s*:?\s*\$?\s*([\d,]+(?:\.\d+)?)/i,
+  { regex: /Haraag(?:a?a)gu\s+waa\s*:?\s*\$?\s*([\d,]+(?:\.\d+)?)/i },
   // Amtel: "Now your balance is $+1.15." — the literal "+" before the
   // digits is part of Amtel's own SMS format (also on its "Amount is
   // $+1.00" line), not a typo to strip.
-  /balance\s+is\s*\$?\+?\s*([\d,]+(?:\.\d+)?)/i,
+  { regex: /balance\s+is\s*\$?\+?\s*([\d,]+(?:\.\d+)?)/i },
 ];
 
-export function extractBalanceFromSms(body: string): { balance: number } | null {
+export function extractBalanceFromSms(body: string): { balance: number; kind?: string } | null {
   for (const pattern of BALANCE_VALUE_PATTERNS) {
-    const match = pattern.exec(body);
+    const match = pattern.regex.exec(body);
     if (match) {
       const balance = Number(match[1].replace(/,/g, ""));
-      if (Number.isFinite(balance)) return { balance };
+      if (Number.isFinite(balance)) return pattern.kind ? { balance, kind: pattern.kind } : { balance };
     }
   }
   return null;
@@ -94,7 +103,8 @@ export async function resolveBalanceProvider(
   deviceId: string,
   simSlot: number,
   sender: string | null | undefined,
-  fallbackCompanyId?: string | null
+  fallbackCompanyId?: string | null,
+  providerHint?: string | null
 ): Promise<{ companyId: string | null; providerIdentity: string | null }> {
   const candidates: Array<{ companyId: string; providerIdentity: string }> = [];
 
@@ -121,7 +131,22 @@ export async function resolveBalanceProvider(
   if (routedCompanyId) {
     const company = await queryOne<{ name: string }>(`SELECT name FROM companies WHERE id=$1`, [routedCompanyId]);
     if (company?.name) {
-      candidates.push({ companyId: routedCompanyId, providerIdentity: company.name.trim().toLowerCase() });
+      const baseIdentity = company.name.trim().toLowerCase();
+      // A company's own Sender ID can itself be overloaded across more than
+      // one balance type -- confirmed live: Hormuud's "740" sends both its
+      // plain Send Data balance AND a separate Evoucher-stock purchase
+      // confirmation, with no wording difference sender-matching alone can
+      // use to tell them apart (both candidates below would satisfy the
+      // exact same Sender ID check). providerHint (extractBalanceFromSms's
+      // own "kind", set only when the SMS body matched that specific
+      // pattern) is what disambiguates -- pushed BEFORE the generic company
+      // identity so the .find() below prefers it when both match the
+      // sender; never applied outside the same company this identity was
+      // already routed to.
+      if (providerHint === "hormuud_evoucher" && baseIdentity === "hormuud") {
+        candidates.push({ companyId: routedCompanyId, providerIdentity: "hormuud_evoucher" });
+      }
+      candidates.push({ companyId: routedCompanyId, providerIdentity: baseIdentity });
     }
   }
 
@@ -163,6 +188,10 @@ export const BALANCE_SENDER_ID: Record<string, string> = {
   somtel: "Reseller",
   amtel: "913",
   somnet: "801",
+  // Hormuud's own Evoucher-stock balance -- same raw sender as its plain
+  // Send Data line above (both "740"), disambiguated by message content
+  // via providerHint in resolveBalanceProvider, not by sender ID.
+  hormuud_evoucher: "740",
 };
 
 /**

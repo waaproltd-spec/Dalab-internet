@@ -1254,11 +1254,12 @@ function Overview({ companies, orders }) {
 // companyId, since a company's own Send Data SIM and its EVC Plus/eDahab
 // collection SIM share the same companyId but must never be summed
 // together or shown as one card.
-const BALANCE_PROVIDER_ORDER = ["evc_plus", "edahab", "hormuud", "somtel", "amtel", "somnet"];
+const BALANCE_PROVIDER_ORDER = ["evc_plus", "edahab", "hormuud", "hormuud_evoucher", "somtel", "amtel", "somnet"];
 const BALANCE_PROVIDER_LABELS = {
   evc_plus: "EVC Plus",
   edahab: "eDahab",
   hormuud: "Hormuud Send Data",
+  hormuud_evoucher: "Hormuud Evoucher",
   somtel: "Somtel Send Data",
   amtel: "Amtel Send Data",
   somnet: "Somnet Send Data",
@@ -1393,7 +1394,7 @@ function BalanceDashboard({ admin }) {
         />
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 14, marginTop: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 14, marginTop: 14 }}>
         {BALANCE_PROVIDER_ORDER.map((id) => {
           const label = BALANCE_PROVIDER_LABELS[id];
           return (
