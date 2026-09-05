@@ -1244,10 +1244,24 @@ function Overview({ companies, orders }) {
   );
 }
 
-// Providers grouped in this fixed order for the Balance Dashboard, matching
-// the requested "Hormuud / Somtel / Somnet / Amtel" grouping regardless of
-// how the `companies` table happens to sort them.
-const BALANCE_PROVIDER_ORDER = ["hormuud", "somtel", "somnet", "amtel"];
+// The 6 balances the Balance Dashboard shows, in this fixed order,
+// regardless of how rows happen to come back from the API: the 2 payment
+// methods (EVC Plus, eDahab) first, then the 4 companies' own Send Data
+// balances. Keyed by provider_key (sim_balances.provider_key, the same
+// 6-way identity the backend's Sender-ID gate resolves and persists via
+// resolveBalanceProvider/BALANCE_SENDER_ID in simBalances.ts) -- NOT by
+// companyId, since a company's own Send Data SIM and its EVC Plus/eDahab
+// collection SIM share the same companyId but must never be summed
+// together or shown as one card.
+const BALANCE_PROVIDER_ORDER = ["evc_plus", "edahab", "hormuud", "somtel", "amtel", "somnet"];
+const BALANCE_PROVIDER_LABELS = {
+  evc_plus: "EVC Plus",
+  edahab: "eDahab",
+  hormuud: "Hormuud Send Data",
+  somtel: "Somtel Send Data",
+  amtel: "Amtel Send Data",
+  somnet: "Somnet Send Data",
+};
 
 function BalanceDashboard({ admin }) {
   const canManage = hasPermission(admin, "devices.manage");
@@ -1297,7 +1311,7 @@ function BalanceDashboard({ admin }) {
     const byProvider = new Map(BALANCE_PROVIDER_ORDER.map((id) => [id, []]));
     byProvider.set("unassigned", []);
     for (const r of rows) {
-      const key = r.companyId && byProvider.has(r.companyId) ? r.companyId : "unassigned";
+      const key = r.providerKey && byProvider.has(r.providerKey) ? r.providerKey : "unassigned";
       byProvider.get(key).push(r);
     }
     return byProvider;
@@ -1305,7 +1319,16 @@ function BalanceDashboard({ admin }) {
 
   const openEdit = (row) => {
     setEditing(row);
-    setEditForm({ balance: String(row.balance ?? 0), threshold: String(row.lowBalanceThreshold ?? 5), phoneNumber: row.phoneNumber || "" });
+    setEditForm({
+      balance: String(row.balance ?? 0),
+      threshold: String(row.lowBalanceThreshold ?? 5),
+      phoneNumber: row.phoneNumber || "",
+      // Defaults to this row's current bucket -- leaving it unchanged
+      // preserves it (the backend also preserves it if this field is
+      // omitted entirely, but showing the real current value here avoids a
+      // confusing "blank means unassigned" reading in the dropdown).
+      providerKey: row.providerKey || "",
+    });
     setEditError("");
   };
 
@@ -1319,6 +1342,7 @@ function BalanceDashboard({ admin }) {
         balance: Number(editForm.balance),
         threshold: editForm.threshold !== "" ? Number(editForm.threshold) : undefined,
         phoneNumber: editForm.phoneNumber.trim() || undefined,
+        providerKey: editForm.providerKey || undefined,
       });
       setEditing(null);
       fetchAll();
@@ -1346,12 +1370,12 @@ function BalanceDashboard({ admin }) {
     return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to view balances.</div>;
   }
 
-  const providerTotal = (id) => summary?.byProvider?.find((p) => p.companyId === id)?.total ?? 0;
+  const providerTotal = (id) => summary?.byProvider?.find((p) => p.providerKey === id)?.total ?? 0;
   // knownSimCount (backend COUNTs non-NULL balances) is 0 when this
   // provider's SIM(s) have never had a real SMS-or-manual balance
   // confirmed — the mini-card must say so instead of showing a fake $0.00
   // for "no data" (see migration 068 / SIM_BALANCE_LIST_SQL).
-  const providerHasKnownBalance = (id) => Number(summary?.byProvider?.find((p) => p.companyId === id)?.knownSimCount ?? 0) > 0;
+  const providerHasKnownBalance = (id) => Number(summary?.byProvider?.find((p) => p.providerKey === id)?.knownSimCount ?? 0) > 0;
 
   return (
     <div>
@@ -1368,9 +1392,9 @@ function BalanceDashboard({ admin }) {
         />
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginTop: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 14, marginTop: 14 }}>
         {BALANCE_PROVIDER_ORDER.map((id) => {
-          const label = { hormuud: "Hormuud", somtel: "Somtel", somnet: "Somnet", amtel: "Amtel" }[id];
+          const label = BALANCE_PROVIDER_LABELS[id];
           return (
             <Card key={id} style={{ padding: 16 }}>
               <div style={{ fontSize: 11.5, fontWeight: 700, color: MUTE }}>{label.toUpperCase()}</div>
@@ -1392,7 +1416,7 @@ function BalanceDashboard({ admin }) {
       {[...BALANCE_PROVIDER_ORDER, "unassigned"].map((id) => {
         const list = grouped.get(id) || [];
         if (list.length === 0) return null;
-        const label = { hormuud: "Hormuud", somtel: "Somtel", somnet: "Somnet", amtel: "Amtel", unassigned: "Not yet assigned to a provider" }[id];
+        const label = { ...BALANCE_PROVIDER_LABELS, unassigned: "Not yet assigned to a provider" }[id];
         return (
           <Card key={id} style={{ padding: 18, marginTop: 14 }}>
             <div style={{ fontWeight: 800, color: INK, fontSize: 14, marginBottom: 10 }}>{label}</div>
@@ -1458,6 +1482,14 @@ function BalanceDashboard({ admin }) {
           </Field>
           <Field label="Phone number">
             <input value={editForm.phoneNumber} onChange={(e) => setEditForm((f) => ({ ...f, phoneNumber: e.target.value }))} style={inputStyle} />
+          </Field>
+          <Field label="Balance Dashboard bucket">
+            <select value={editForm.providerKey} onChange={(e) => setEditForm((f) => ({ ...f, providerKey: e.target.value }))} style={inputStyle}>
+              <option value="">Leave unchanged</option>
+              {BALANCE_PROVIDER_ORDER.map((id) => (
+                <option key={id} value={id}>{BALANCE_PROVIDER_LABELS[id]}</option>
+              ))}
+            </select>
           </Field>
           {editError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{editError}</div>}
           <Button onClick={saveEdit} disabled={saving} style={{ width: "100%", justifyContent: "center" }}>{saving ? "Saving..." : "Save"}</Button>

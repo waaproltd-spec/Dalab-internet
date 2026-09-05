@@ -148,6 +148,7 @@ export async function applyBalanceUpdate(params: {
   simSlot: number;
   newBalance: number;
   companyId?: string | null;
+  providerKey?: string | null;
   phoneNumber?: string | null;
   orderId?: string | null;
   smsLogId?: string | null;
@@ -165,23 +166,46 @@ export async function applyBalanceUpdate(params: {
   if (existing) {
     simBalanceId = existing.id;
     previousBalance = existing.balance == null ? null : Number(existing.balance);
+    // provider_key, like company_id, is COALESCEd rather than overwritten
+    // with NULL — a manual balance/threshold/phone-only edit (no
+    // providerKey passed) must never blank out a SIM's already-known
+    // 6-way identity.
     await query(
       `UPDATE sim_balances
        SET balance=$1,
            company_id=COALESCE($2, company_id),
-           phone_number=COALESCE($3, phone_number),
-           last_source=$4,
-           last_sms_log_id=$5,
+           provider_key=COALESCE($3, provider_key),
+           phone_number=COALESCE($4, phone_number),
+           last_source=$5,
+           last_sms_log_id=$6,
            updated_at=now()
-       WHERE id=$6`,
-      [params.newBalance, params.companyId ?? null, params.phoneNumber ?? null, params.source, params.smsLogId ?? null, simBalanceId]
+       WHERE id=$7`,
+      [
+        params.newBalance,
+        params.companyId ?? null,
+        params.providerKey ?? null,
+        params.phoneNumber ?? null,
+        params.source,
+        params.smsLogId ?? null,
+        simBalanceId,
+      ]
     );
   } else {
     simBalanceId = randomUUID();
     await query(
-      `INSERT INTO sim_balances (id, device_id, sim_slot, company_id, phone_number, balance, last_source, last_sms_log_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [simBalanceId, params.deviceId, params.simSlot, params.companyId ?? null, params.phoneNumber ?? null, params.newBalance, params.source, params.smsLogId ?? null]
+      `INSERT INTO sim_balances (id, device_id, sim_slot, company_id, provider_key, phone_number, balance, last_source, last_sms_log_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [
+        simBalanceId,
+        params.deviceId,
+        params.simSlot,
+        params.companyId ?? null,
+        params.providerKey ?? null,
+        params.phoneNumber ?? null,
+        params.newBalance,
+        params.source,
+        params.smsLogId ?? null,
+      ]
     );
   }
 

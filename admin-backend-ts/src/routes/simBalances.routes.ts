@@ -4,7 +4,13 @@ import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { recordActivity } from "../utils/activityLog.js";
-import { applyBalanceUpdate } from "../utils/simBalances.js";
+import { applyBalanceUpdate, BALANCE_SENDER_ID } from "../utils/simBalances.js";
+
+// The 6 provider_key values the Balance Dashboard recognizes — same set
+// BALANCE_SENDER_ID (simBalances.ts) is keyed by, so there's one single
+// source of truth for "what are the 6 providers" shared between the
+// Sender-ID gate and the manual-edit endpoint's validation below.
+const KNOWN_PROVIDER_KEYS = Object.keys(BALANCE_SENDER_ID);
 
 export const simBalancesRouter = Router();
 
@@ -59,6 +65,13 @@ export const SIM_BALANCE_LIST_SQL = `
     d.last_heartbeat_at,
     slot.n AS sim_slot,
     COALESCE(sb.company_id, sr.company_id) AS company_id,
+    -- The 6-way identity (hormuud/somtel/somnet/amtel/evc_plus/edahab) the
+    -- Sender-ID gate resolved and persisted (resolveBalanceProvider,
+    -- simBalances.ts) -- falls back to company_id for a row never touched
+    -- by that gate yet (pre-migration-095 data, or a legacy metadata-only
+    -- assignment), same "presume it's the company's own Send Data balance
+    -- until proven otherwise" rule migration 095's backfill used.
+    COALESCE(sb.provider_key, sb.company_id) AS provider_key,
     COALESCE(c2.name, c.name) AS provider_name,
     COALESCE(sb.phone_number, c.payment_number) AS phone_number,
     sb.id AS balance_id,
@@ -91,12 +104,22 @@ simBalancesRouter.get("/admin/sim-balances/summary", requireStaff(), async (_req
   // because every SIM confirmed a real $0 balance" apart from "$0 total
   // because none of this provider's SIMs have a confirmed balance yet" —
   // sim_count (COUNT(*)) still counts every row regardless of balance.
+  //
+  // Grouped by provider_key (falling back to company_id for a row never
+  // resolved through the Sender-ID gate yet), NOT by company_id — a
+  // company's own Send Data balance and its EVC Plus/eDahab collection
+  // balance both carry the same company_id but must total separately as
+  // their own of the 6 dashboard buckets. Deliberately does NOT also group
+  // by company_id: two different companies can (today, incorrectly --
+  // see the flagged Somtel/SOMLIMK conflict) share one provider_key on
+  // different rows, and this total must still be the single correct sum
+  // for that provider_key's card, not silently split across rows the
+  // dashboard's own lookup-by-key would only find one of.
   const byProvider = await query(
-    `SELECT sb.company_id, c.name AS provider_name, COALESCE(SUM(sb.balance), 0) AS total,
+    `SELECT COALESCE(sb.provider_key, sb.company_id) AS provider_key, COALESCE(SUM(sb.balance), 0) AS total,
             COUNT(*) AS sim_count, COUNT(sb.balance) AS known_sim_count
      FROM sim_balances sb
-     LEFT JOIN companies c ON c.id = sb.company_id
-     GROUP BY sb.company_id, c.name
+     GROUP BY COALESCE(sb.provider_key, sb.company_id)
      ORDER BY total DESC`
   );
   const byDevice = await query(
@@ -167,7 +190,7 @@ simBalancesRouter.put("/admin/sim-balances/:deviceId/:simSlot", requirePermissio
   const device = await queryOne(`SELECT id FROM agent_devices WHERE id=$1`, [req.params.deviceId]);
   if (!device) return sendJson(res, 404, { error: "Device not found" });
 
-  let { companyId } = req.body ?? {};
+  let { companyId, providerKey } = req.body ?? {};
   const { balance, threshold, phoneNumber } = req.body ?? {};
 
   if (companyId) {
@@ -185,6 +208,27 @@ simBalancesRouter.put("/admin/sim-balances/:deviceId/:simSlot", requirePermissio
     companyId = routed?.company_id ?? null;
   }
 
+  // providerKey (one of the 6 Balance Dashboard buckets) is preserved, not
+  // silently reset, on a plain balance/threshold/phone edit: an admin
+  // fixing a typo'd balance on an EVC Plus SIM must never accidentally
+  // demote it back to that company's plain Send Data bucket. Explicit
+  // requests win; otherwise fall back to whatever this row already carries,
+  // and only default to companyId (same "presume Send Data unless proven
+  // otherwise" rule migration 095's backfill used) for a row that's never
+  // had a providerKey at all — e.g. Amtel's balance, which has no SMS to
+  // auto-detect from and is set here for the very first time.
+  if (providerKey !== undefined && providerKey !== null && providerKey !== "") {
+    if (!KNOWN_PROVIDER_KEYS.includes(providerKey)) {
+      return sendJson(res, 400, { error: `providerKey must be one of: ${KNOWN_PROVIDER_KEYS.join(", ")}` });
+    }
+  } else {
+    const existingBalance = await queryOne<{ provider_key: string | null }>(
+      `SELECT provider_key FROM sim_balances WHERE device_id=$1 AND sim_slot=$2`,
+      [req.params.deviceId, simSlot]
+    );
+    providerKey = existingBalance?.provider_key ?? companyId ?? null;
+  }
+
   if (balance !== undefined) {
     const num = Number(balance);
     if (!Number.isFinite(num)) return sendJson(res, 400, { error: "balance must be a number" });
@@ -193,11 +237,12 @@ simBalancesRouter.put("/admin/sim-balances/:deviceId/:simSlot", requirePermissio
       simSlot,
       newBalance: num,
       companyId: companyId ?? null,
+      providerKey: providerKey ?? null,
       phoneNumber: phoneNumber ?? null,
       source: "manual",
       changedBy: req.auth!.sub,
     });
-  } else if (companyId || phoneNumber) {
+  } else if (companyId || phoneNumber || providerKey) {
     // Metadata-only change (assign provider/phone without touching balance)
     // — upsert without writing a history row, since no balance actually
     // moved. balance is left NULL (not defaulted to 0) on a brand-new row:
@@ -205,13 +250,14 @@ simBalancesRouter.put("/admin/sim-balances/:deviceId/:simSlot", requirePermissio
     // real balance, and a fake $0.00 here is exactly the stale/invented
     // value the dashboard must never show (migration 068).
     await query(
-      `INSERT INTO sim_balances (id, device_id, sim_slot, company_id, phone_number)
-       VALUES (gen_random_uuid(), $1, $2, $3, $4)
+      `INSERT INTO sim_balances (id, device_id, sim_slot, company_id, provider_key, phone_number)
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5)
        ON CONFLICT (device_id, sim_slot) DO UPDATE
        SET company_id=COALESCE($3, sim_balances.company_id),
-           phone_number=COALESCE($4, sim_balances.phone_number),
+           provider_key=COALESCE($4, sim_balances.provider_key),
+           phone_number=COALESCE($5, sim_balances.phone_number),
            updated_at=now()`,
-      [req.params.deviceId, simSlot, companyId ?? null, phoneNumber ?? null]
+      [req.params.deviceId, simSlot, companyId ?? null, providerKey ?? null, phoneNumber ?? null]
     );
   }
 
@@ -232,7 +278,7 @@ simBalancesRouter.put("/admin/sim-balances/:deviceId/:simSlot", requirePermissio
     entityType: "sim_balance",
     entityId: `${req.params.deviceId}:${simSlot}`,
     oldValue: null,
-    newValue: { deviceId: req.params.deviceId, simSlot, balance, threshold, companyId, phoneNumber },
+    newValue: { deviceId: req.params.deviceId, simSlot, balance, threshold, companyId, providerKey, phoneNumber },
   });
 
   const row = await queryOne(

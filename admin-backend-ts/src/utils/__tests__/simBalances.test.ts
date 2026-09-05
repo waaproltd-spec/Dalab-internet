@@ -12,9 +12,15 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+import express from "express";
+import "express-async-errors";
 import { query, queryOne, pool } from "../../db/pool.js";
 import { extractBalanceFromSms, isExpectedBalanceSender, BALANCE_SENDER_ID } from "../simBalances.js";
 import { ingestPaymentSms } from "../../routes/smsLogs.routes.js";
+import { simBalancesRouter } from "../../routes/simBalances.routes.js";
+import { signAccessToken } from "../../auth/crypto.js";
 
 // ---------------------------------------------------------------------------
 // Part 1: extractBalanceFromSms -- pure parsing, no DB, using the exact real
@@ -135,8 +141,8 @@ const SOMNET_ID = "test-balance-somnet";
 const AMTEL_ID = "test-balance-amtel";
 
 async function currentBalance(deviceId: string, simSlot: number) {
-  return queryOne<{ balance: string | null; company_id: string | null }>(
-    `SELECT balance, company_id FROM sim_balances WHERE device_id=$1 AND sim_slot=$2`,
+  return queryOne<{ balance: string | null; company_id: string | null; provider_key: string | null }>(
+    `SELECT balance, company_id, provider_key FROM sim_balances WHERE device_id=$1 AND sim_slot=$2`,
     [deviceId, simSlot]
   );
 }
@@ -207,6 +213,13 @@ after(async () => {
   await query(`DELETE FROM companies WHERE id IN ($1,$2,$3,$4)`, [HORMUUD_ID, SOMTEL_ID, SOMNET_ID, AMTEL_ID]);
   await query(`DELETE FROM agents WHERE id IN ($1,$2,$3)`, [AGENT_ID, AGENT2_ID, AGENT3_ID]);
   await query(`DELETE FROM agent_devices WHERE id IN ($1,$2,$3)`, [DEVICE_ID, DEVICE2_ID, DEVICE3_ID]);
+  // Part 4's HTTP server + its admin_users test row are torn down here too
+  // (not in a second after() hook) -- node:test runs multiple after() hooks
+  // in registration order, so a later one that still needs the pool (e.g. a
+  // DELETE) would run AFTER this hook's own pool.end() below and fail with
+  // "Cannot use a pool after calling end on the pool".
+  if (routerServer) await new Promise<void>((resolve) => routerServer.close(() => resolve()));
+  await query(`DELETE FROM admin_users WHERE id=$1`, [SUPER_ADMIN_ID]);
   await pool.end();
 });
 
@@ -221,6 +234,7 @@ test("a Hormuud E-Voucher balance SMS updates ONLY Hormuud's SIM, never Somnet's
   const hormuud = await currentBalance(DEVICE_ID, 1);
   assert.equal(Number(hormuud?.balance), 1.64);
   assert.equal(hormuud?.company_id, HORMUUD_ID);
+  assert.equal(hormuud?.provider_key, "hormuud", "Hormuud's own Send Data balance -- one of the 6 dashboard buckets, persisted from resolveBalanceProvider's identity");
 
   const somnetDeviceId = DEVICE2_ID;
   const somnet = await currentBalance(somnetDeviceId, 1);
@@ -239,6 +253,7 @@ test("a Somnet/Jeeb balance SMS on Somnet's own SIM slot updates only Somnet, in
   const somnet = await currentBalance(somnetDeviceId, 1);
   assert.equal(Number(somnet?.balance), 0.19);
   assert.equal(somnet?.company_id, SOMNET_ID);
+  assert.equal(somnet?.provider_key, "somnet");
 
   // Hormuud's own balance from the previous test must be untouched.
   const hormuud = await currentBalance(DEVICE_ID, 1);
@@ -296,6 +311,7 @@ test("Amtel's '+'-sign balance format is parsed and attributed to Amtel's own SI
   const amtel = await currentBalance(amtelDeviceId, 2);
   assert.equal(Number(amtel?.balance), 1.15);
   assert.equal(amtel?.company_id, AMTEL_ID);
+  assert.equal(amtel?.provider_key, "amtel");
 });
 
 test("a balance SMS on an unrouted device+slot updates nothing rather than guessing a provider", async () => {
@@ -346,6 +362,7 @@ test("Somtel's own reseller-transfer balance SMS, sent from its registered Sende
   const somtel = await currentBalance(DEVICE_ID, 2);
   assert.equal(Number(somtel?.balance), 5.5);
   assert.equal(somtel?.company_id, SOMTEL_ID);
+  assert.equal(somtel?.provider_key, "somtel");
 });
 
 test("a real balance SMS that physically arrives on Hormuud's own SIM slot is REFUSED when its sender isn't Hormuud's registered Sender ID", async () => {
@@ -416,6 +433,7 @@ test("EVC Plus and eDahab collection SIMs (company_payment_methods.device_id/sim
     const evc = await currentBalance(DEVICE3_ID, 1);
     assert.equal(Number(evc?.balance), 2.215);
     assert.equal(evc?.company_id, HORMUUD_ID);
+    assert.equal(evc?.provider_key, "evc_plus", "EVC Plus is its own Balance Dashboard bucket, distinct from Hormuud's plain Send Data provider_key");
 
     // eDahab on the same device's OTHER slot -- wrong sender refused, correct sender accepted.
     await ingestPaymentSms({
@@ -435,14 +453,144 @@ test("EVC Plus and eDahab collection SIMs (company_payment_methods.device_id/sim
     const edahab = await currentBalance(DEVICE3_ID, 2);
     assert.equal(Number(edahab?.balance), 31.34);
     assert.equal(edahab?.company_id, SOMTEL_ID);
+    assert.equal(edahab?.provider_key, "edahab", "eDahab is its own Balance Dashboard bucket, distinct from Somtel's plain Send Data provider_key");
 
     // And critically: EVC Plus's balance (Hormuud's own top-up SIM on
     // DEVICE_ID, slot 1) must remain completely independent of EVC Plus's
     // OWN collection SIM balance on DEVICE3_ID -- two different physical
-    // SIMs for the same company, never conflated.
+    // SIMs for the same company, never conflated -- including their
+    // provider_key, not just their balance value.
     const hormuudTopUp = await currentBalance(DEVICE_ID, 1);
     assert.equal(Number(hormuudTopUp?.balance), 1.64);
+    assert.equal(hormuudTopUp?.provider_key, "hormuud");
   } finally {
     await query(`DELETE FROM company_payment_methods WHERE id IN ($1,$2)`, [evcMethodId, edahabMethodId]);
+    await query(`DELETE FROM sim_balances WHERE device_id=$1 AND sim_slot IN (1,2)`, [DEVICE3_ID]);
+    await query(`DELETE FROM sim_balance_history WHERE sim_balance_id NOT IN (SELECT id FROM sim_balances)`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Part 4: the 6-way Balance Dashboard -- provider_key exposed/grouped
+// correctly through the actual HTTP routes (simBalances.routes.ts), not
+// just the underlying ingestPaymentSms/applyBalanceUpdate functions above.
+// ---------------------------------------------------------------------------
+
+const routerApp = express();
+routerApp.use(express.json());
+routerApp.use(simBalancesRouter);
+let routerServer: http.Server;
+let routerBaseUrl: string;
+let superAdminToken: string;
+const SUPER_ADMIN_ID = randomUUID();
+
+before(async () => {
+  routerServer = http.createServer(routerApp as unknown as http.RequestListener);
+  routerServer.listen(0);
+  await new Promise<void>((resolve) => routerServer.once("listening", resolve));
+  const { port } = routerServer.address() as AddressInfo;
+  routerBaseUrl = `http://127.0.0.1:${port}`;
+  // A real admin_users row -- applyBalanceUpdate's manual-source path
+  // writes sim_balance_history.changed_by, which FKs to admin_users(id),
+  // so the token's sub must be a genuine row, not just a well-formed UUID.
+  await query(`DELETE FROM admin_users WHERE id=$1`, [SUPER_ADMIN_ID]);
+  await query(
+    `INSERT INTO admin_users (id, email, password_hash, role) VALUES ($1, $2, 'x', 'super_admin')`,
+    [SUPER_ADMIN_ID, `balance-test-admin-${SUPER_ADMIN_ID}@example.test`]
+  );
+  superAdminToken = signAccessToken(SUPER_ADMIN_ID, "super_admin");
+});
+// Teardown for this server/admin row happens in the file's single after()
+// hook above (registered first), not a second after() here -- see its
+// comment for why.
+
+test("PUT /admin/sim-balances preserves an existing providerKey when the edit doesn't specify one", async () => {
+  // Hormuud's SIM already carries provider_key='hormuud' from the tests
+  // above -- a plain "just fix the balance" edit (no providerKey in the
+  // body) must leave that as-is, never silently reset it.
+  const res = await fetch(`${routerBaseUrl}/admin/sim-balances/${DEVICE_ID}/1`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${superAdminToken}` },
+    body: JSON.stringify({ balance: 9.99 }),
+  });
+  assert.equal(res.status, 200);
+  const body: any = await res.json();
+  assert.equal(body.providerKey, "hormuud", "editing only the balance must preserve the SIM's existing providerKey");
+
+  const row = await currentBalance(DEVICE_ID, 1);
+  assert.equal(Number(row?.balance), 9.99);
+  assert.equal(row?.provider_key, "hormuud");
+});
+
+test("PUT /admin/sim-balances accepts an explicit providerKey and persists it", async () => {
+  // Somnet's SIM (device 2, slot 1) is manually re-tagged as eDahab here
+  // purely to prove the explicit-value path works end to end -- not a
+  // realistic real-world edit, just isolated proof of the mechanism.
+  const res = await fetch(`${routerBaseUrl}/admin/sim-balances/${DEVICE2_ID}/1`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${superAdminToken}` },
+    body: JSON.stringify({ balance: 3.5, providerKey: "edahab" }),
+  });
+  assert.equal(res.status, 200);
+  const body: any = await res.json();
+  assert.equal(body.providerKey, "edahab");
+
+  const row = await currentBalance(DEVICE2_ID, 1);
+  assert.equal(row?.provider_key, "edahab");
+
+  // Restore it back to Somnet for any later test in this file that expects it.
+  await query(`UPDATE sim_balances SET provider_key='somnet' WHERE device_id=$1 AND sim_slot=1`, [DEVICE2_ID]);
+});
+
+test("PUT /admin/sim-balances rejects a providerKey outside the 6 known buckets", async () => {
+  const res = await fetch(`${routerBaseUrl}/admin/sim-balances/${DEVICE_ID}/1`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${superAdminToken}` },
+    body: JSON.stringify({ balance: 1, providerKey: "not_a_real_provider" }),
+  });
+  assert.equal(res.status, 400);
+
+  // Confirm nothing was written -- the previous test's balance (9.99) must
+  // still stand, not overwritten by this rejected request.
+  const row = await currentBalance(DEVICE_ID, 1);
+  assert.equal(Number(row?.balance), 9.99);
+});
+
+test("GET /admin/sim-balances/summary groups byProvider into the 6 buckets, keeping EVC Plus separate from Hormuud's own Send Data total even though they share a company_id", async () => {
+  const evcMethodId = randomUUID();
+  await query(
+    `INSERT INTO company_payment_methods (id, company_id, method, label, device_id, sim_slot) VALUES ($1,$2,'evc_plus','EVC Plus',$3,1)`,
+    [evcMethodId, HORMUUD_ID, DEVICE3_ID]
+  );
+  try {
+    await ingestPaymentSms({
+      agentId: AGENT3_ID,
+      sender: "192sms",
+      body: "[-EVCPLUS-] waxaad $0.10 ka heshay 0619991299, Tar: 26/08/26 20:00:00 haraagagu waa $4.40.",
+      simSlot: 1,
+    });
+
+    const res = await fetch(`${routerBaseUrl}/admin/sim-balances/summary`, {
+      headers: { Authorization: `Bearer ${superAdminToken}` },
+    });
+    assert.equal(res.status, 200);
+    const body: any = await res.json();
+
+    const hormuudEntry = body.byProvider.find((p: any) => p.providerKey === "hormuud");
+    const evcEntry = body.byProvider.find((p: any) => p.providerKey === "evc_plus");
+    assert.ok(hormuudEntry, "hormuud must appear as its own byProvider bucket");
+    assert.ok(evcEntry, "evc_plus must appear as its own byProvider bucket, separate from hormuud");
+    assert.equal(Number(evcEntry.total), 4.4, "EVC Plus's total must be its own collection SIM's balance only");
+    assert.notEqual(
+      Number(evcEntry.total),
+      Number(hormuudEntry.total),
+      "EVC Plus and Hormuud's Send Data must never be summed into the same bucket just because they share a company_id"
+    );
+  } finally {
+    await query(`DELETE FROM company_payment_methods WHERE id=$1`, [evcMethodId]);
+    await query(`DELETE FROM sim_balances WHERE device_id=$1 AND sim_slot=1`, [DEVICE3_ID]);
+    await query(
+      `DELETE FROM sim_balance_history WHERE sim_balance_id NOT IN (SELECT id FROM sim_balances)`
+    );
   }
 });

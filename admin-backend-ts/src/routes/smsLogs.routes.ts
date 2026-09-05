@@ -675,6 +675,7 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
               simSlot,
               newBalance: detected.balance,
               companyId,
+              providerKey: providerIdentity,
               orderId: match?.id ?? null,
               smsLogId: id,
               source: "sms",
