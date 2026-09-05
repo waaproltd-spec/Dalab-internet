@@ -325,9 +325,17 @@ private fun resolveSimSlotOnce(context: Context, intent: Intent): Int? {
  * unrecognized SMS is worth a diagnostics entry (see the unparsed-SMS branch
  * above) without logging every ordinary personal text/OTP that passes
  * through this receiver. */
+// "haraagaagu" (double-a, ends in "u") is Somtel's "Reseller"-sender
+// transfer-confirmation SMS's own spelling ("Yaasiin, waxaad ku
+// guulaysatay inaad lambarkan <phone> u wareejiso $X ... Haraagaagu waa:
+// $Y. Mahadsanid!"), distinct from "haraagagu"/"haraagaaga" already listed
+// -- and that message has no "$" sign either, so it matched NONE of the
+// keywords below. Confirmed live: it was being silently dropped here (not
+// even uploaded unparsed) before ever reaching the backend, so Somtel's
+// own Send Data balance never had a chance to update.
 private val PAYMENT_LOOKING_KEYWORDS = listOf(
     "heshay", "ka heshay", "dollar", "aqanoosiga", "edahab", "e-dahab",
-    "evcplus", "evc plus", "somnet", "haraagagu", "haraagaaga", "amtel",
+    "evcplus", "evc plus", "somnet", "haraagagu", "haraagaaga", "haraagaagu", "amtel",
 )
 
 private fun looksLikePaymentSms(body: String): Boolean {
