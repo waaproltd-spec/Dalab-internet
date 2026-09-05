@@ -2,7 +2,7 @@ package com.dalab.internet.ui
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
@@ -56,7 +56,16 @@ fun DiagnosticsScreen(onBack: () -> Unit) {
                 )
             } else {
                 LazyColumn {
-                    items(entries, key = { "${it.timestamp}-${it.tag}" }) { entry ->
+                    // Keyed by list position, not content: under a retry storm,
+                    // DiagnosticsLog.record() can produce two entries with the
+                    // exact same millisecond timestamp AND tag (e.g. repeated
+                    // "sim_routing_refresh" failures), which crashed this
+                    // read-only, no-per-item-state list with "Key ... was
+                    // already used" -- a real production crash, not
+                    // hypothetical. Position is always unique and this list
+                    // has nothing (no animation, no per-item mutable state)
+                    // that benefits from content-based identity anyway.
+                    itemsIndexed(entries, key = { index, _ -> index }) { _, entry ->
                         Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
                             Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                                 Text(entry.tag, fontWeight = FontWeight.Bold)
