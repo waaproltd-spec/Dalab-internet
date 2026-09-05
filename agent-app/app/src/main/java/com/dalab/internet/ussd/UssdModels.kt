@@ -1,8 +1,10 @@
 package com.dalab.internet.ussd
 
-/** Mirrors GET /agent/sim-routing. */
+/** Mirrors GET /agent/sim-routing (parsed manually in SimRoutingRepository,
+ * not via automatic Retrofit/Gson conversion -- see that class). */
 data class SimRoutingEntry(
     val companyId: String,
+    val deviceId: String?,
     val simSlot: Int, // 1 or 2, matching the Super Admin's SIM Routing Setup page
     val companyName: String,
 )

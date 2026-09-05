@@ -3,6 +3,7 @@ package com.dalab.internet.ussd
 import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.network.ApiClient
+import com.google.gson.JsonParser
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -26,16 +27,61 @@ object SimRoutingRepository {
 
     suspend fun refresh(): Result<Unit> {
         return try {
-            val response = ApiClient.service.getSimRouting(deviceId = DeviceIdentity.deviceId())
-            if (response.isSuccessful) {
-                cache = response.body()?.associate { it.companyId to it.simSlot } ?: emptyMap()
-                hasLoadedOnce = true
-                Result.success(Unit)
-            } else {
+            val response = ApiClient.service.getSimRoutingRaw(deviceId = DeviceIdentity.deviceId())
+            if (!response.isSuccessful) {
                 val error = IllegalStateException("Failed to load SIM routing: HTTP ${response.code()}")
                 DiagnosticsLog.record("sim_routing_refresh", error.message ?: "unknown error")
-                Result.failure(error)
+                return Result.failure(error)
             }
+            val rawBody = response.body()?.string()
+            // Parsed manually (not via Retrofit's automatic
+            // Response<List<SimRoutingEntry>> conversion, which this used to
+            // use) because that conversion was throwing a bare
+            // "ClassCastException: no message" in production on a device
+            // that was otherwise online and reachable -- with the exception
+            // surfacing deep inside Gson/Retrofit's own internals, there was
+            // no way to see which row (or which field) actually caused it,
+            // and a single bad row failed the ENTIRE refresh, silently
+            // blocking automatic dialing for every company routed through
+            // this device. Parsing element-by-element means one malformed
+            // row is skipped and logged with its own raw JSON instead of
+            // taking down every other (valid) row's routing with it.
+            val elements = try {
+                JsonParser.parseString(rawBody ?: "[]").asJsonArray
+            } catch (e: Exception) {
+                DiagnosticsLog.record(
+                    "sim_routing_refresh",
+                    "Response body isn't a JSON array (${e.javaClass.simpleName}: ${e.message ?: "no message"}). Raw body: ${(rawBody ?: "<empty>").take(1000)}",
+                )
+                return Result.failure(e)
+            }
+            val parsed = mutableMapOf<String, Int>()
+            var skipped = 0
+            for (element in elements) {
+                try {
+                    val obj = element.asJsonObject
+                    val companyId = obj.get("companyId")?.asString
+                        ?: throw IllegalStateException("missing companyId")
+                    val simSlot = obj.get("simSlot")?.asInt
+                        ?: throw IllegalStateException("missing/non-numeric simSlot")
+                    parsed[companyId] = simSlot
+                } catch (e: Exception) {
+                    skipped++
+                    DiagnosticsLog.record(
+                        "sim_routing_refresh",
+                        "Skipped one malformed sim-routing row (${e.javaClass.simpleName}: ${e.message ?: "no message"}). Raw row: $element",
+                    )
+                }
+            }
+            cache = parsed
+            hasLoadedOnce = true
+            // A per-row skip is already logged above with its own raw JSON --
+            // this is still a genuine SUCCESS for every company whose row DID
+            // parse (their cache entry is right there in `parsed`). Returning
+            // failure here would make simSlotFor() treat one unrelated
+            // company's bad row as LoadFailed for every OTHER company on this
+            // device too, exactly undoing the point of parsing row-by-row.
+            Result.success(Unit)
         } catch (e: Exception) {
             // Previously only e.message was recorded, which is null for a
             // real (if rare) class of exception -- a bare NullPointerException,

@@ -20,7 +20,6 @@ import com.dalab.internet.data.VipNumberAgentOrder
 import com.dalab.internet.data.VipPackageAgentOrder
 import com.dalab.internet.data.WalletBalanceEntry
 import com.dalab.internet.sms.SmsSenderIdEntry
-import com.dalab.internet.ussd.SimRoutingEntry
 import okhttp3.ResponseBody
 import retrofit2.Response
 import retrofit2.http.*
@@ -313,8 +312,14 @@ interface ApiService {
     @POST("agent/support/conversations/{id}/close")
     suspend fun closeSupportConversation(@Path("id") id: String): Response<SupportEndConversationResponse>
 
+    // Raw body, parsed manually and defensively in SimRoutingRepository —
+    // see that class's comment for why: Retrofit's automatic
+    // Response<List<SimRoutingEntry>> conversion throws (and previously
+    // logged only an unhelpful "ClassCastException: no message") on this
+    // exact device in production, with no way to see the actual payload
+    // that failed to parse.
     @GET("agent/sim-routing")
-    suspend fun getSimRouting(@Query("deviceId") deviceId: String? = null): Response<List<SimRoutingEntry>>
+    suspend fun getSimRoutingRaw(@Query("deviceId") deviceId: String? = null): Response<ResponseBody>
 
     @GET("agent/sms-sender-ids")
     suspend fun getSmsSenderIds(): Response<List<SmsSenderIdEntry>>
