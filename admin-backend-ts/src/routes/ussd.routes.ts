@@ -657,11 +657,30 @@ ussdRouter.post("/agent/devices/:id/heartbeat", requireAuth("agent"), async (req
 ussdRouter.post("/agent/orders/:id/dial-attempts", requireAuth("agent"), async (req, res) => {
   const { simSlot, ussdString, attemptNumber } = req.body;
   if (!ussdString) return sendJson(res, 400, { error: "ussdString is required" });
-  const order = await queryOne<{ id: string; ussd_generated_masked: string | null }>(
-    `SELECT id, ussd_generated_masked FROM orders WHERE id=$1`,
+  const order = await queryOne<{ id: string; ussd_generated: string | null; ussd_generated_masked: string | null }>(
+    `SELECT id, ussd_generated, ussd_generated_masked FROM orders WHERE id=$1`,
     [req.params.id]
   );
   if (!order) return sendJson(res, 404, { error: "Order not found" });
+
+  // The Admin-configured template (via generateUssdForOrder) is the single
+  // source of truth for what gets dialed — the Agent App never constructs
+  // or guesses a dial string itself, it only ever relays back the exact
+  // orders.ussd_generated value the backend already computed and returned
+  // to it (verify-payment / GET order). Rejecting any mismatch here is what
+  // actually enforces "the Agent cannot override the Admin-configured
+  // template" at the one place that would matter — a modified/compromised
+  // client, or a stale cached string from before a self-heal regeneration,
+  // can no longer get logged (and payment_transactions advanced to
+  // 'processing') as if it were the real dial.
+  if (!order.ussd_generated) {
+    return sendJson(res, 409, { error: "No USSD string has been generated for this order yet — nothing to dial." });
+  }
+  if (ussdString !== order.ussd_generated) {
+    return sendJson(res, 400, {
+      error: "ussdString does not match the Admin-configured template's generated string for this order. The Agent App must dial exactly what the backend generated, never a locally modified or cached string.",
+    });
+  }
 
   const agent = await queryOne<{ device_id: string | null }>(`SELECT device_id FROM agents WHERE id=$1`, [req.auth!.sub]);
   if (agent?.device_id) {
