@@ -59,6 +59,12 @@ test("extracts eDahab/Somtel's own distinct 'Cusubi Waa' balance phrase", () => 
   assert.deepEqual(extractBalanceFromSms(body), { balance: 31.34 });
 });
 
+test("extracts eDahab's own OUTGOING-transfer 'Haraaga:' balance phrase, distinct from 'Cusubi Waa'", () => {
+  const body =
+    "21 Dollar ayad u warejisay Nur Abdulkadir Adan. No: 625859634.Tixrac: PP260827.2236.D28363 Haraaga: 0.34 Dollar Kharashyada Adeegga:0 Dollar Tariikh:27-08-2026[-eDahab-Service-]";
+  assert.deepEqual(extractBalanceFromSms(body), { balance: 0.34 });
+});
+
 test("extracts Amtel's balance phrase, tolerating the literal '+' sign", () => {
   const body =
     "Your Transfer Airtime to 252711444497 - 252711444497 has been successfully processed on 25/08/2026 22:41:36, TransactionID is 0425430000026121993; Amount is $+1.20. Now your balance is $+1.15.";

@@ -25,6 +25,16 @@ const BALANCE_VALUE_PATTERNS: Array<{ regex: RegExp; kind?: string }> = [
   // eDahab/Somtel: "Haraagaaga Cusubi Waa: 31.34 Dollar" — its "Cusubi"/
   // "Dollar" wording never collides with the generic pattern below.
   { regex: /Haraagaaga\s+Cusubi\s+Waa\s*:?\s*([\d,]+(?:\.\d+)?)\s*Dollar/i },
+  // eDahab's OUTGOING-transfer confirmation ("21 Dollar ayad u warejisay
+  // <name>...Haraaga: 0.34 Dollar Kharashyada Adeegga:0 Dollar...") reports
+  // the same eDahab wallet balance as the "Cusubi Waa" pattern above, just
+  // for a transfer-OUT instead of a receive-IN, with its own distinct
+  // "Haraaga:" (no "aaga Cusubi Waa" in between) wording — confirmed live
+  // on real device SMS. The literal colon immediately after "Haraaga"
+  // (no whitespace) is what keeps this from ever matching inside
+  // "Haraagaaga Cusubi Waa" above, which continues "...aga Cusubi..." right
+  // after the same 7 letters, never a colon.
+  { regex: /Haraaga:\s*([\d,]+(?:\.\d+)?)\s*Dollar/i },
   // Hormuud's own Evoucher-stock purchase confirmation: "[-EVCPlus-]Waxaad
   // iibsatay Evoucher $0.6. Haraagaaga Evoucher-ka waa $0.61." — confirmed
   // live on Hormuud's sender "740", the SAME sender as its plain Send Data
