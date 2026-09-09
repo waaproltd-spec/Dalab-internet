@@ -136,3 +136,60 @@ test("DELETE still blocks a genuinely Reserved number with the existing 409", as
   assert.match(body.error ?? "", /reserved or sold/i);
   await query(`DELETE FROM vip_numbers WHERE id=$1`, [vipNumberId]);
 });
+
+test("DELETE still blocks a genuinely Sold number with the existing 409", async () => {
+  const vipNumberId = randomUUID();
+  await query(
+    `INSERT INTO vip_numbers (id, company_id, phone_number, category, price, status) VALUES ($1,$2,'620999997','gold',1.00,'sold')`,
+    [vipNumberId, companyId]
+  );
+  const res = await asSuperAdmin(`/admin/vip-numbers/${vipNumberId}`, { method: "DELETE" });
+  assert.equal(res.status, 409);
+  const body = (await res.json()) as { error?: string };
+  assert.match(body.error ?? "", /reserved or sold/i);
+  await query(`DELETE FROM vip_numbers WHERE id=$1`, [vipNumberId]);
+});
+
+test("DELETE hard-deletes an Available number with zero order history (the plain, no-FK-conflict case)", async () => {
+  const vipNumberId = randomUUID();
+  await query(
+    `INSERT INTO vip_numbers (id, company_id, phone_number, category, price, status) VALUES ($1,$2,'620999996','silver',2.00,'available')`,
+    [vipNumberId, companyId]
+  );
+  const res = await asSuperAdmin(`/admin/vip-numbers/${vipNumberId}`, { method: "DELETE" });
+  const body = (await res.json()) as { deleted?: boolean; softDeleted?: boolean };
+  assert.equal(res.status, 200, `expected 200, got ${res.status}: ${JSON.stringify(body)}`);
+  assert.equal(body.deleted, true);
+  assert.notEqual(body.softDeleted, true, "no order history at all -- this must be a real hard delete, not a soft one");
+
+  const row = await queryOne(`SELECT id FROM vip_numbers WHERE id=$1`, [vipNumberId]);
+  assert.equal(row, null, "row must be genuinely gone from the table, not just soft-deleted");
+});
+
+test("DELETE works for a completely independent second Available number with terminal orders -- not hardcoded to any one fixture", async () => {
+  const vipNumberId = randomUUID();
+  await query(
+    `INSERT INTO vip_numbers (id, company_id, phone_number, category, price, status) VALUES ($1,$2,'620999995','gold',3.50,'available')`,
+    [vipNumberId, companyId]
+  );
+  const phone = randomUUID().replace(/-/g, "").slice(0, 9);
+  const customer = await queryOne<{ id: string }>(`INSERT INTO customers (id, phone, name) VALUES ($1,$2,'Second Delete Test Customer') RETURNING id`, [
+    randomUUID(),
+    phone,
+  ]);
+  const orderId = "VIP" + randomUUID().slice(0, 9).replace(/-/g, "");
+  await query(
+    `INSERT INTO vip_number_orders
+       (id, vip_number_id, customer_id, company_id, phone_number, category, price, customer_full_name, payment_method, sender_phone, status, payment_status)
+     VALUES ($1,$2,$3,$4,'620999995','gold',3.50,'Second Test Customer Full Name','edahab',$5,'cancelled','pending')`,
+    [orderId, vipNumberId, customer!.id, companyId, phone]
+  );
+
+  const res = await asSuperAdmin(`/admin/vip-numbers/${vipNumberId}`, { method: "DELETE" });
+  const body = (await res.json()) as { softDeleted?: boolean; error?: string };
+  assert.equal(res.status, 200, `expected 200, got ${res.status}: ${JSON.stringify(body)}`);
+  assert.equal(body.softDeleted, true);
+  // Customer/order cleanup deliberately left to after() below -- the order
+  // row still references this customer (ON DELETE RESTRICT), same reason
+  // the first test's fixtures aren't cleaned up inline either.
+});
