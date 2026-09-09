@@ -529,7 +529,17 @@ vipNumbersRouter.delete("/admin/vip-numbers/:id", requirePermission("vipNumbers.
     );
     if (result.length > 0) return sendJson(res, 200, { deleted: true });
   } catch (err: any) {
-    if (err?.code !== "23503") throw err;
+    // Postgres reports a blocked ON DELETE RESTRICT as EITHER 23001
+    // (restrict_violation, confirmed live in production) or 23503
+    // (foreign_key_violation, what this repo's local dev Postgres 16
+    // reports for the exact same statement) -- the code alone tells you
+    // nothing about which server version is running, so both must be
+    // treated as the same case here. Checking only 23503 (companies/shop
+    // categories/customers' own delete routes do the same) is why this
+    // route's very first fix attempt still 500'd live: production's real
+    // error code never matched, so it always fell through to the raw
+    // `throw err` below instead of the soft-delete fallback.
+    if (err?.code !== "23503" && err?.code !== "23001") throw err;
     const softDeleted = await query(
       `UPDATE vip_numbers SET deleted_at=now(), updated_at=now() WHERE id=$1 AND status='available' AND deleted_at IS NULL RETURNING id`,
       [req.params.id]

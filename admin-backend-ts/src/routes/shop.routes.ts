@@ -1154,7 +1154,14 @@ shopRouter.delete("/admin/shop/categories/:id", requirePermission("shop.manage")
     if (result.length === 0) return sendJson(res, 404, { error: "Category not found" });
     sendJson(res, 200, { deleted: true });
   } catch (err: any) {
-    if (err?.code === "23503") {
+    // A blocked ON DELETE RESTRICT can surface as either 23503
+    // (foreign_key_violation) or 23001 (restrict_violation, confirmed
+    // live in production for this exact FK shape) depending on the
+    // Postgres version -- checking only 23503 here meant this branch
+    // silently never ran in production (see vipNumbers.routes.ts's DELETE
+    // route, where the identical single-code check was the actual root
+    // cause of a live 500).
+    if (err?.code === "23503" || err?.code === "23001") {
       return sendJson(res, 409, { error: "This category still has products — deactivate it instead, or move/delete its products first" });
     }
     throw err;
