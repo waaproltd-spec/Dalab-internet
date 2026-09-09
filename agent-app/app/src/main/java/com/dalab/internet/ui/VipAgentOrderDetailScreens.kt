@@ -41,12 +41,13 @@ import kotlinx.coroutines.launch
  * the same thing (one or several VIP numbers + one total price) and a
  * second copy of that pattern would just be noise.
  *
- * Complete Order calls the real backend endpoints
- * (POST agent/vip-numbers/orders/{id}/complete,
- * POST agent/vip-numbers/packages/orders/{id}/complete) which themselves
- * refuse anything not currently paid_status=paid and not already terminal
- * — canComplete here only decides whether the button is usable, it is not
- * the source of truth; the server's own guard is.
+ * The workflow is Verify Payment -> Create -> Complete: Verify Payment is
+ * implicit (isPaid, set by Admin/automatic payment confirmation, before an
+ * order ever reaches an agent), Create (POST .../start) marks that the
+ * agent has begun the real-world work, and Complete (POST .../complete)
+ * marks it finished. Both POST routes re-check payment/started/terminal
+ * state on the server independently of what the UI shows, so this is real
+ * enforcement, not just button-hiding — see VipWorkflowSection below.
  */
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -61,6 +62,29 @@ fun VipNumberAgentOrderDetailScreen(
     var message by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
+    fun startOrder() {
+        working = true
+        message = null
+        scope.launch {
+            try {
+                val response = ApiClient.service.startAgentVipNumberOrder(current.id)
+                response.body()?.let {
+                    current = it
+                    onOrderUpdated(it)
+                } ?: run {
+                    message = if (response.code() == 409) {
+                        "Can't start yet — payment isn't verified, or this was already started."
+                    } else {
+                        "Couldn't start — try again."
+                    }
+                }
+            } catch (_: Exception) {
+                message = "Network error while starting."
+            }
+            working = false
+        }
+    }
+
     fun completeOrder() {
         working = true
         message = null
@@ -73,7 +97,7 @@ fun VipNumberAgentOrderDetailScreen(
                     message = "Order marked as completed."
                 } ?: run {
                     message = if (response.code() == 409) {
-                        "This order can't be completed — it isn't paid, or it's already been actioned."
+                        "This order can't be completed — it isn't paid, hasn't been started, or is already actioned."
                     } else {
                         "Couldn't complete — try again."
                     }
@@ -120,12 +144,14 @@ fun VipNumberAgentOrderDetailScreen(
             VipOrderStatusCard(dateText = formatApiDateTime(current.createdAt))
 
             Spacer(Modifier.height(20.dp))
-            VipCompleteSection(
+            VipWorkflowSection(
                 message = message,
                 isTerminal = current.isTerminal,
                 isPaid = current.isPaid,
+                isStarted = current.isStarted,
                 status = current.status,
                 working = working,
+                onStart = ::startOrder,
                 onComplete = ::completeOrder,
             )
         }
@@ -144,6 +170,29 @@ fun VipPackageAgentOrderDetailScreen(
     var message by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
+    fun startOrder() {
+        working = true
+        message = null
+        scope.launch {
+            try {
+                val response = ApiClient.service.startAgentVipPackageOrder(current.id)
+                response.body()?.let {
+                    current = it
+                    onOrderUpdated(it)
+                } ?: run {
+                    message = if (response.code() == 409) {
+                        "Can't start yet — payment isn't verified, or this was already started."
+                    } else {
+                        "Couldn't start — try again."
+                    }
+                }
+            } catch (_: Exception) {
+                message = "Network error while starting."
+            }
+            working = false
+        }
+    }
+
     fun completeOrder() {
         working = true
         message = null
@@ -156,7 +205,7 @@ fun VipPackageAgentOrderDetailScreen(
                     message = "Order marked as completed."
                 } ?: run {
                     message = if (response.code() == 409) {
-                        "This order can't be completed — it isn't paid, or it's already been actioned."
+                        "This order can't be completed — it isn't paid, hasn't been started, or is already actioned."
                     } else {
                         "Couldn't complete — try again."
                     }
@@ -203,12 +252,14 @@ fun VipPackageAgentOrderDetailScreen(
             VipOrderStatusCard(dateText = formatApiDateTime(current.createdAt))
 
             Spacer(Modifier.height(20.dp))
-            VipCompleteSection(
+            VipWorkflowSection(
                 message = message,
                 isTerminal = current.isTerminal,
                 isPaid = current.isPaid,
+                isStarted = current.isStarted,
                 status = current.status,
                 working = working,
+                onStart = ::startOrder,
                 onComplete = ::completeOrder,
             )
         }
@@ -381,14 +432,24 @@ private fun VipOrderStatusCard(dateText: String) {
     }
 }
 
-/** Status message plus the full-width Complete pill button — or the reason it's disabled. */
+/**
+ * Status message plus the current step of the Verify Payment -> Create ->
+ * Complete workflow. Verify Payment isn't its own button -- isPaid is the
+ * server's own payment-verification signal (see agent_started_at's own
+ * migration comment), so once paid the agent sees Create; once Create has
+ * run (isStarted) the agent sees Complete. Both onStart and onComplete hit
+ * real backend routes that independently re-check the same order this
+ * enables the button for, so this is enforcement, not just button-hiding.
+ */
 @Composable
-private fun VipCompleteSection(
+private fun VipWorkflowSection(
     message: String?,
     isTerminal: Boolean,
     isPaid: Boolean,
+    isStarted: Boolean,
     status: String?,
     working: Boolean,
+    onStart: () -> Unit,
     onComplete: () -> Unit,
 ) {
     if (message != null) {
@@ -402,9 +463,18 @@ private fun VipCompleteSection(
             style = MaterialTheme.typography.bodyMedium,
         )
         !isPaid -> Text(
-            "This order hasn't been paid yet — Complete unlocks once payment is confirmed.",
+            "This order hasn't been paid yet — Create unlocks once payment is verified.",
             style = MaterialTheme.typography.labelSmall,
         )
+        !isStarted -> Button(
+            onClick = onStart,
+            enabled = !working,
+            shape = RoundedCornerShape(50),
+            colors = ButtonDefaults.buttonColors(containerColor = DalabIndigo),
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+        ) {
+            Text(if (working) "Starting..." else "Create", fontWeight = FontWeight.Bold)
+        }
         else -> Button(
             onClick = onComplete,
             enabled = !working,

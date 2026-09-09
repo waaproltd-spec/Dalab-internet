@@ -256,6 +256,26 @@ test("agent sees no order until payment is confirmed, then sees it and can compl
   assert.equal(detail.paymentMethod, "evc");
   assert.equal(Number(detail.price), 30);
   assert.equal(detail.paymentStatus, "paid");
+  assert.equal(detail.agentStartedAt, null, "paid but not yet Created");
+
+  // Paid, but Create hasn't run yet -- Complete must still refuse it, not
+  // just because the button is hidden in the Agent App but because the
+  // backend itself checks agent_started_at.
+  const tooEarlyComplete = await asAgent(`/agent/vip-numbers/orders/${orderId}/complete`, { method: "POST" });
+  assert.equal(tooEarlyComplete.status, 409);
+
+  // Create (Agent starts the real-world work) -- this is what the workflow
+  // spec calls Verify Payment -> Create: payment_status='paid' already is
+  // the verification gate below.
+  const startRes = await asAgent(`/agent/vip-numbers/orders/${orderId}/start`, { method: "POST" });
+  const started = (await startRes.json()) as any;
+  assert.equal(startRes.status, 200, JSON.stringify(started));
+  assert.equal(started.status, "processing", "Create must not change the customer-visible status");
+  assert.ok(started.agentStartedAt, "Create must record when the agent started");
+
+  // Starting an already-started order is rejected.
+  const secondStart = await asAgent(`/agent/vip-numbers/orders/${orderId}/start`, { method: "POST" });
+  assert.equal(secondStart.status, 409);
 
   // Now the agent can complete it -- this is a real backend status change,
   // not local-only.
@@ -271,6 +291,17 @@ test("agent sees no order until payment is confirmed, then sees it and can compl
   // Already terminal -- a second complete attempt must be rejected.
   const secondComplete = await asAgent(`/agent/vip-numbers/orders/${orderId}/complete`, { method: "POST" });
   assert.equal(secondComplete.status, 409);
+});
+
+test("agent cannot Create a VIP Number order before payment is verified", async () => {
+  const orderId = "VIPTESTAGT003";
+  await query(
+    `INSERT INTO vip_number_orders (id, vip_number_id, customer_id, company_id, phone_number, category, price, customer_full_name, payment_method, sender_phone, location, district, mother_name)
+     VALUES ($1,$2,$3,$4,'610900099','gold',30.00,$5,'evc','617000111',$6,$7,$8)`,
+    [orderId, numberId, customerId, companyId, CUSTOMER_INFO.customerFullName, CUSTOMER_INFO.location, CUSTOMER_INFO.district, CUSTOMER_INFO.motherName]
+  );
+  const res = await asAgent(`/agent/vip-numbers/orders/${orderId}/start`, { method: "POST" });
+  assert.equal(res.status, 409);
 });
 
 test("agent cannot complete a cancelled VIP Number order", async () => {
@@ -324,6 +355,17 @@ test("agent Complete Order works for a VIP Number Package, showing every number 
   assert.equal(detail.location, CUSTOMER_INFO.location);
   assert.equal(detail.district, CUSTOMER_INFO.district);
   assert.equal(detail.motherName, CUSTOMER_INFO.motherName);
+  assert.equal(detail.agentStartedAt, null, "paid but not yet Created");
+
+  // Paid, but Create hasn't run yet -- Complete must still refuse it.
+  const tooEarlyComplete = await asAgent(`/agent/vip-numbers/packages/orders/${orderId}/complete`, { method: "POST" });
+  assert.equal(tooEarlyComplete.status, 409);
+
+  const startRes = await asAgent(`/agent/vip-numbers/packages/orders/${orderId}/start`, { method: "POST" });
+  const started = (await startRes.json()) as any;
+  assert.equal(startRes.status, 200, JSON.stringify(started));
+  assert.equal(started.status, "processing", "Create must not change the customer-visible status");
+  assert.ok(started.agentStartedAt, "Create must record when the agent started");
 
   const completeRes = await asAgent(`/agent/vip-numbers/packages/orders/${orderId}/complete`, { method: "POST" });
   const completed = (await completeRes.json()) as any;
@@ -348,4 +390,22 @@ test("a non-agent token (e.g. customer) is rejected from every new agent route",
   assert.equal(res2.status, 403);
   const res3 = await fetch(`${baseUrl}/agent/vip-numbers/packages/orders`, { headers: { Authorization: `Bearer ${customerToken}` } });
   assert.equal(res3.status, 403);
+});
+
+// A customer must never be able to Create or Complete their own order --
+// not because the Customer App has no button for it (it doesn't), but
+// because these routes require an agent token, same as every other
+// agent-only route above.
+test("a customer token is rejected from Create and Complete on both VIP Number and Package orders", async () => {
+  const customerToken = signAccessToken(customerId, "customer");
+  const auth = { Authorization: `Bearer ${customerToken}` };
+  const someId = "VIPTESTAGT-NOPE";
+  const r1 = await fetch(`${baseUrl}/agent/vip-numbers/orders/${someId}/start`, { method: "POST", headers: auth });
+  assert.equal(r1.status, 403);
+  const r2 = await fetch(`${baseUrl}/agent/vip-numbers/orders/${someId}/complete`, { method: "POST", headers: auth });
+  assert.equal(r2.status, 403);
+  const r3 = await fetch(`${baseUrl}/agent/vip-numbers/packages/orders/${someId}/start`, { method: "POST", headers: auth });
+  assert.equal(r3.status, 403);
+  const r4 = await fetch(`${baseUrl}/agent/vip-numbers/packages/orders/${someId}/complete`, { method: "POST", headers: auth });
+  assert.equal(r4.status, 403);
 });

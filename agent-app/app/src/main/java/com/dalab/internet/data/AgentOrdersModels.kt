@@ -78,13 +78,22 @@ data class VipNumberAgentOrder(
     val senderPhone: String? = null,
     val paymentStatus: String? = null, // "pending" | "paid"
     val status: String? = null, // "pending" | "processing" | "completed" | "cancelled" | "failed" | "expired"
+    // Set by POST .../start ("Create") -- distinct from payment_status:
+    // isPaid means Verify Payment has happened, agentStartedAt means Create
+    // has happened. Both are required before Complete is allowed.
+    val agentStartedAt: String? = null,
     val createdAt: String? = null,
 ) {
     val isPaid: Boolean get() = paymentStatus == "paid"
+    val isStarted: Boolean get() = agentStartedAt != null
     val isTerminal: Boolean get() = status in TERMINAL_VIP_STATUSES
+    /** Matches POST agent/vip-numbers/orders/{id}/start's own server-side
+     * guard exactly -- must be paid, not already started, not terminal. */
+    val canStart: Boolean get() = isPaid && !isStarted && !isTerminal
     /** Matches POST agent/vip-numbers/orders/{id}/complete's own
-     * server-side guard exactly -- must be paid and not already terminal. */
-    val canComplete: Boolean get() = isPaid && !isTerminal
+     * server-side guard exactly -- must be paid, already started (Create
+     * must have run first), and not already terminal. */
+    val canComplete: Boolean get() = isPaid && isStarted && !isTerminal
 }
 
 data class VipPackageAgentOrder(
@@ -102,14 +111,19 @@ data class VipPackageAgentOrder(
     val senderPhone: String? = null,
     val paymentStatus: String? = null,
     val status: String? = null,
+    val agentStartedAt: String? = null,
     val createdAt: String? = null,
     val items: List<VipPackageAgentOrderItem>? = null,
 ) {
     val isPaid: Boolean get() = paymentStatus == "paid"
+    val isStarted: Boolean get() = agentStartedAt != null
     val isTerminal: Boolean get() = status in TERMINAL_VIP_STATUSES
+    /** Matches POST agent/vip-numbers/packages/orders/{id}/start's own
+     * server-side guard exactly. */
+    val canStart: Boolean get() = isPaid && !isStarted && !isTerminal
     /** Matches POST agent/vip-numbers/packages/orders/{id}/complete's own
      * server-side guard exactly. */
-    val canComplete: Boolean get() = isPaid && !isTerminal
+    val canComplete: Boolean get() = isPaid && isStarted && !isTerminal
 }
 
 data class VipPackageAgentOrderItem(

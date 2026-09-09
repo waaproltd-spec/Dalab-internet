@@ -219,9 +219,19 @@ interface ApiService {
     @GET("agent/vip-numbers/orders/{id}")
     suspend fun getAgentVipNumberOrder(@Path("id") id: String): Response<VipNumberAgentOrder>
 
-    // Real backend status change (pending/processing -> completed) --
-    // server refuses with 409 unless payment_status is already 'paid' and
-    // the order isn't already terminal. Never local-only.
+    // "Create" -- the agent starts the real-world work. Server refuses with
+    // 409 unless payment_status is already 'paid' (Verify Payment), the
+    // order isn't already terminal, and it hasn't already been started.
+    // Never changes the customer-visible status (stays 'processing'), only
+    // sets agentStartedAt -- which is what the /complete route below then
+    // requires before it will let the agent finish the order.
+    @POST("agent/vip-numbers/orders/{id}/start")
+    suspend fun startAgentVipNumberOrder(@Path("id") id: String): Response<VipNumberAgentOrder>
+
+    // Real backend status change (processing -> completed) -- server
+    // refuses with 409 unless payment_status is already 'paid', the order
+    // has been started (agentStartedAt set via /start above), and it isn't
+    // already terminal. Never local-only.
     @POST("agent/vip-numbers/orders/{id}/complete")
     suspend fun completeAgentVipNumberOrder(@Path("id") id: String): Response<VipNumberAgentOrder>
 
@@ -230,6 +240,9 @@ interface ApiService {
 
     @GET("agent/vip-numbers/packages/orders/{id}")
     suspend fun getAgentVipPackageOrder(@Path("id") id: String): Response<VipPackageAgentOrder>
+
+    @POST("agent/vip-numbers/packages/orders/{id}/start")
+    suspend fun startAgentVipPackageOrder(@Path("id") id: String): Response<VipPackageAgentOrder>
 
     @POST("agent/vip-numbers/packages/orders/{id}/complete")
     suspend fun completeAgentVipPackageOrder(@Path("id") id: String): Response<VipPackageAgentOrder>

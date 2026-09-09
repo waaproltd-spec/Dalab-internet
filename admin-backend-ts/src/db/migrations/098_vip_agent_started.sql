@@ -1,0 +1,21 @@
+-- VIP Number / VIP Number Package orders: splits the Agent App's single
+-- "Complete Order" action into the two real steps the workflow spec
+-- requires -- Create (the agent has started the real-world number
+-- registration/porting work) then Complete (the agent has finished it) --
+-- distinct from Verify Payment (payment_status='paid', already tracked and
+-- already gating everything below this point).
+--
+-- agent_started_at is deliberately its own nullable timestamp rather than a
+-- new 'in_progress'/'started' literal in the status column: the customer's
+-- own 4-step timeline (Pending -> Processing -> Create -> Completed, see
+-- customer-app's VipNumberOrder.timelineCompletedUpTo) already treats
+-- 'processing' as covering both "payment verified" and "agent working" --
+-- Customer only ever needs to see Pending/Processing/Completed, never a
+-- distinct fourth backend status -- so adding this column needs no
+-- customer-app change and can't disagree with the timeline it already
+-- renders. It's the new gate the agent-only POST .../complete route checks
+-- in addition to payment_status='paid': an order can't be completed before
+-- it's been created (started), same as it can't be completed before it's
+-- paid.
+ALTER TABLE vip_number_orders ADD COLUMN IF NOT EXISTS agent_started_at TIMESTAMPTZ;
+ALTER TABLE vip_number_package_orders ADD COLUMN IF NOT EXISTS agent_started_at TIMESTAMPTZ;

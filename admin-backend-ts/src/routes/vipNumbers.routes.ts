@@ -95,7 +95,7 @@ async function restoreVipNumberAvailability(vipNumberId: string) {
 }
 
 const VIP_ORDER_COLUMNS =
-  "id, vip_number_id, customer_id, company_id, phone_number, category, price, customer_full_name, payment_method, sender_phone, location, district, mother_name, payment_status, status, paid_at, completed_at, cancelled_at, created_at, updated_at";
+  "id, vip_number_id, customer_id, company_id, phone_number, category, price, customer_full_name, payment_method, sender_phone, location, district, mother_name, payment_status, status, paid_at, agent_started_at, completed_at, cancelled_at, created_at, updated_at";
 
 // Expires exactly one order if it's still 'pending' and has aged past
 // RESERVATION_WINDOW_MINUTES -- locked (FOR UPDATE) so this can never race
@@ -627,12 +627,63 @@ vipNumbersRouter.get("/agent/vip-numbers/orders/:id", requireAuth("agent"), asyn
   sendJson(res, 200, { ...order, statusHistory: await loadOrderStatusHistory(req.params.id) });
 });
 
+// The Agent App's "Create" action -- the real start of the agent-side
+// workflow (Verify Payment -> Create -> Complete). Verify Payment isn't its
+// own endpoint: payment_status='paid' (set by /admin/.../payment-status,
+// the real verification step) already IS the gate below, exactly the
+// "Agent first verifies payment, then can start work" ordering the spec
+// requires. Create can only run once per order (agent_started_at must
+// still be null) and never before payment is confirmed or after the order
+// is terminal -- this is what unlocks the Complete route below; there is no
+// UI-only path around it since Complete independently re-checks the same
+// column server-side.
+vipNumbersRouter.post("/agent/vip-numbers/orders/:id/start", requireAuth("agent"), async (req, res) => {
+  try {
+    await withTransaction(async (client) => {
+      const row = await client.query(
+        `SELECT status, payment_status, agent_started_at FROM vip_number_orders WHERE id=$1 FOR UPDATE`,
+        [req.params.id]
+      );
+      const order = row.rows[0];
+      if (!order) throw Object.assign(new Error("Order not found"), { status: 404 });
+      if (TERMINAL_VIP_ORDER_STATUSES.includes(order.status)) {
+        throw Object.assign(new Error(`This order is already ${order.status} and cannot be changed further`), { status: 409 });
+      }
+      if (order.payment_status !== "paid") {
+        throw Object.assign(new Error("This order cannot be started until payment is verified"), { status: 409 });
+      }
+      if (order.agent_started_at) {
+        throw Object.assign(new Error("This order has already been started"), { status: 409 });
+      }
+      await client.query(`UPDATE vip_number_orders SET agent_started_at=now(), updated_at=now() WHERE id=$1`, [req.params.id]);
+    });
+  } catch (err: any) {
+    if (err?.status) return sendJson(res, err.status, { error: err.message });
+    throw err;
+  }
+  await query(`INSERT INTO vip_number_order_status_history (order_id, status, note) VALUES ($1,'processing','Started by agent')`, [
+    req.params.id,
+  ]);
+  await recordActivity({
+    adminId: undefined,
+    action: "vip_number_order_started_by_agent",
+    entityType: "vip_number_order",
+    entityId: req.params.id,
+    oldValue: { agentStartedAt: null },
+    newValue: { agentStartedAt: "now" },
+  });
+  sendJson(res, 200, await queryOne(`SELECT ${VIP_ORDER_COLUMNS} FROM vip_number_orders WHERE id=$1`, [req.params.id]));
+});
+
 // The Agent App's "Complete Order" action -- same locking/guards as the
 // admin PUT .../status route's own "completed" branch (payment must
 // already be confirmed, order must not already be terminal), hardcoded to
 // 'completed' rather than accepting an arbitrary status: an agent can only
 // ever complete a paid order here, never cancel/fail one (that stays an
-// admin-only action via the existing PUT .../status route above).
+// admin-only action via the existing PUT .../status route above). Also
+// requires agent_started_at (Create must have run first) -- enforced here
+// server-side, not just by the Agent App hiding the Complete button, so a
+// direct API call can't skip the Create step either.
 // recordActivity's adminId is left undefined -- admin_activity_log.admin_id
 // is FK'd to admin_users, not agents, so an agent's own id would violate
 // that constraint (same reasoning orders.routes.ts's completeOrderById
@@ -642,7 +693,7 @@ vipNumbersRouter.post("/agent/vip-numbers/orders/:id/complete", requireAuth("age
   try {
     existing = await withTransaction(async (client) => {
       const row = await client.query(
-        `SELECT status, payment_status, customer_id, vip_number_id FROM vip_number_orders WHERE id=$1 FOR UPDATE`,
+        `SELECT status, payment_status, agent_started_at, customer_id, vip_number_id FROM vip_number_orders WHERE id=$1 FOR UPDATE`,
         [req.params.id]
       );
       const order = row.rows[0];
@@ -652,6 +703,9 @@ vipNumbersRouter.post("/agent/vip-numbers/orders/:id/complete", requireAuth("age
       }
       if (order.payment_status !== "paid") {
         throw Object.assign(new Error("This order cannot be completed until payment is confirmed"), { status: 409 });
+      }
+      if (!order.agent_started_at) {
+        throw Object.assign(new Error("This order cannot be completed until an agent has started the work (Create)"), { status: 409 });
       }
       await client.query(
         `UPDATE vip_number_orders SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1`,

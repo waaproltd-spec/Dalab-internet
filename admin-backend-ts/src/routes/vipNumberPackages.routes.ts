@@ -78,7 +78,7 @@ async function restorePackageNumbersAvailability(packageId: string) {
 }
 
 const PACKAGE_ORDER_COLUMNS =
-  "id, package_id, size, price, customer_id, customer_full_name, location, district, mother_name, payment_method, sender_phone, payment_status, status, paid_at, completed_at, cancelled_at, created_at, updated_at";
+  "id, package_id, size, price, customer_id, customer_full_name, location, district, mother_name, payment_method, sender_phone, payment_status, status, paid_at, agent_started_at, completed_at, cancelled_at, created_at, updated_at";
 
 // Package-order equivalent of vipNumbers.routes.ts's own
 // expireVipNumberOrderIfStale — same FOR UPDATE-locked, race-safe shape,
@@ -682,17 +682,63 @@ vipNumberPackagesRouter.get("/agent/vip-numbers/packages/orders/:id", requireAut
   sendJson(res, 200, { ...order, items, statusHistory });
 });
 
+// The Agent App's "Create" action for a package -- same shape/reasoning as
+// vipNumbers.routes.ts's identical single-number agent route: Verify
+// Payment isn't its own endpoint (payment_status='paid' already is the
+// gate), Create can only run once per order, and it's what unlocks Complete
+// below (independently re-checked there, not just hidden in the UI).
+vipNumberPackagesRouter.post("/agent/vip-numbers/packages/orders/:id/start", requireAuth("agent"), async (req, res) => {
+  try {
+    await withTransaction(async (client) => {
+      const row = await client.query(
+        `SELECT status, payment_status, agent_started_at FROM vip_number_package_orders WHERE id=$1 FOR UPDATE`,
+        [req.params.id]
+      );
+      const order = row.rows[0];
+      if (!order) throw Object.assign(new Error("Order not found"), { status: 404 });
+      if (TERMINAL_PACKAGE_ORDER_STATUSES.includes(order.status)) {
+        throw Object.assign(new Error(`This order is already ${order.status} and cannot be changed further`), { status: 409 });
+      }
+      if (order.payment_status !== "paid") {
+        throw Object.assign(new Error("This order cannot be started until payment is verified"), { status: 409 });
+      }
+      if (order.agent_started_at) {
+        throw Object.assign(new Error("This order has already been started"), { status: 409 });
+      }
+      await client.query(`UPDATE vip_number_package_orders SET agent_started_at=now(), updated_at=now() WHERE id=$1`, [req.params.id]);
+    });
+  } catch (err: any) {
+    if (err?.status) return sendJson(res, err.status, { error: err.message });
+    throw err;
+  }
+  await query(
+    `INSERT INTO vip_number_package_order_status_history (package_order_id, status, note) VALUES ($1,'processing','Started by agent')`,
+    [req.params.id]
+  );
+  await recordActivity({
+    adminId: undefined,
+    action: "vip_number_package_order_started_by_agent",
+    entityType: "vip_number_package_order",
+    entityId: req.params.id,
+    oldValue: { agentStartedAt: null },
+    newValue: { agentStartedAt: "now" },
+  });
+  sendJson(res, 200, await queryOne(`SELECT ${PACKAGE_ORDER_COLUMNS} FROM vip_number_package_orders WHERE id=$1`, [req.params.id]));
+});
+
 // The Agent App's "Complete Order" action for a package -- same shape as
 // vipNumbers.routes.ts's identical single-number agent route: hardcoded to
 // 'completed', payment must already be confirmed, order must not already
-// be terminal. adminId left undefined in recordActivity for the same
-// admin_activity_log FK reason that route's own comment explains.
+// be terminal, and (like that route) also requires agent_started_at --
+// Create must have run first, enforced here server-side so a direct API
+// call can't skip it either. adminId left undefined in recordActivity for
+// the same admin_activity_log FK reason that route's own comment explains.
 vipNumberPackagesRouter.post("/agent/vip-numbers/packages/orders/:id/complete", requireAuth("agent"), async (req, res) => {
   let existing: { status: string; payment_status: string; customer_id: string; package_id: string };
   try {
     existing = await withTransaction(async (client) => {
       const row = await client.query(
-        `SELECT status, payment_status, customer_id, package_id FROM vip_number_package_orders WHERE id=$1 FOR UPDATE`,
+        `SELECT status, payment_status, agent_started_at, customer_id, package_id FROM vip_number_package_orders WHERE id=$1 FOR UPDATE`,
         [req.params.id]
       );
       const order = row.rows[0];
@@ -702,6 +748,9 @@ vipNumberPackagesRouter.post("/agent/vip-numbers/packages/orders/:id/complete", 
       }
       if (order.payment_status !== "paid") {
         throw Object.assign(new Error("This order cannot be completed until payment is confirmed"), { status: 409 });
+      }
+      if (!order.agent_started_at) {
+        throw Object.assign(new Error("This order cannot be completed until an agent has started the work (Create)"), { status: 409 });
       }
       await client.query(
         `UPDATE vip_number_package_orders SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1`,
