@@ -134,14 +134,13 @@ fun VipNumberAgentOrderDetailScreen(
             Spacer(Modifier.height(16.dp))
             VipCustomerInfoCard(
                 fullName = current.customerFullName ?: current.customerName ?: "Not provided",
+                motherName = current.motherName ?: "Not provided",
                 location = current.location ?: "Not provided",
                 district = current.district ?: "Not provided",
-                mother = current.motherName ?: "Not provided",
-                phone = current.customerPhone ?: "Not provided",
             )
 
             Spacer(Modifier.height(16.dp))
-            VipOrderStatusCard(dateText = formatApiDateTime(current.createdAt))
+            VipPaymentCard(paidFrom = current.senderPhone ?: "Not provided")
 
             Spacer(Modifier.height(20.dp))
             VipWorkflowSection(
@@ -242,9 +241,9 @@ fun VipPackageAgentOrderDetailScreen(
             Spacer(Modifier.height(16.dp))
             VipCustomerInfoCard(
                 fullName = current.customerFullName ?: current.customerName ?: "Not provided",
+                motherName = current.motherName ?: "Not provided",
                 location = current.location ?: "Not provided",
                 district = current.district ?: "Not provided",
-                mother = current.motherName ?: "Not provided",
                 phone = current.customerPhone ?: "Not provided",
             )
 
@@ -286,10 +285,10 @@ private fun VipOrderHeaderCard(number: String, company: String) {
             }
             Spacer(Modifier.width(14.dp))
             Column {
-                Text("Number", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                Text("Number to Buy", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                 Text(number, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge, color = DalabIndigo)
                 Spacer(Modifier.height(6.dp))
-                Text("Company name", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                Text("Company", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                 Text(company, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge, color = DalabIndigo)
             }
         }
@@ -346,9 +345,16 @@ private fun VipPackageHeaderCard(size: Int, items: List<com.dalab.internet.data.
     }
 }
 
-/** Dark brand-color card: centered avatar, then a white sub-card of icon-prefixed customer fields. */
+/**
+ * Dark brand-color card: centered avatar, then a white sub-card of
+ * icon-prefixed customer fields -- Full Name, Mother's Name, Location,
+ * District. [phone] is optional: VIP Number Order's own spec says Customer
+ * Info shows only those four fields (payment phone gets its own separate
+ * Payment section, see [VipPaymentCard]), while the Package screen still
+ * shows the customer's phone inline here.
+ */
 @Composable
-private fun VipCustomerInfoCard(fullName: String, location: String, district: String, mother: String, phone: String) {
+private fun VipCustomerInfoCard(fullName: String, motherName: String, location: String, district: String, phone: String? = null) {
     Surface(
         color = DalabIndigo,
         shape = RoundedCornerShape(20.dp),
@@ -369,11 +375,13 @@ private fun VipCustomerInfoCard(fullName: String, location: String, district: St
             Spacer(Modifier.height(16.dp))
             Surface(color = Color.White, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-                    IconDetailRow(Icons.Filled.Person, "Your full name", fullName)
-                    IconDetailRow(Icons.Filled.Place, location, location)
-                    IconDetailRow(Icons.Filled.Apartment, "District", district)
-                    IconDetailRow(Icons.Filled.Groups, "Mother", mother)
-                    IconDetailRow(Icons.Filled.Phone, "Phone number you'll pay from", phone, showDivider = false)
+                    IconDetailRow(Icons.Filled.Person, "Full Name", fullName)
+                    IconDetailRow(Icons.Filled.Groups, "Mother's Name", motherName)
+                    IconDetailRow(Icons.Filled.Place, "Location", location)
+                    IconDetailRow(Icons.Filled.Apartment, "District", district, showDivider = phone != null)
+                    if (phone != null) {
+                        IconDetailRow(Icons.Filled.Phone, "Phone number you'll pay from", phone, showDivider = false)
+                    }
                 }
             }
         }
@@ -401,6 +409,34 @@ private fun IconDetailRow(icon: ImageVector, label: String, value: String, showD
             }
         }
         if (showDivider) HorizontalDivider(color = Color(0xFFF0F0F0))
+    }
+}
+
+/** Light bordered card: the single number the agent verifies payment was made from. */
+@Composable
+private fun VipPaymentCard(paidFrom: String) {
+    Surface(
+        color = Color(0xFFF7FAFC),
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, Color(0xFFE5EEF2)),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp).fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier.size(36.dp).clip(CircleShape).background(DalabSoftBlue.copy(alpha = 0.35f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Filled.Phone, contentDescription = null, tint = DalabIndigo, modifier = Modifier.size(18.dp))
+            }
+            Spacer(Modifier.width(12.dp))
+            Column {
+                Text("Paid From", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                Text(paidFrom, fontWeight = FontWeight.Bold)
+            }
+        }
     }
 }
 
