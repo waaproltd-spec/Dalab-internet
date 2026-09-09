@@ -20,18 +20,22 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.BrokenImage
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Done
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicNone
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.SupportAgent
+import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -43,6 +47,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import android.Manifest
@@ -382,24 +387,51 @@ fun SupportScreen(onBack: () -> Unit) {
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
-                        Text("Agent Support")
-                        if (conversation != null) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    conversation!!.customerName ?: conversation!!.customerPhone ?: "Customer",
-                                    style = MaterialTheme.typography.labelSmall,
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (conversation == null) {
+                            // Only shown on the queue view -- once a chat is
+                            // active, the customer name/Online row below
+                            // already fills that same space.
+                            Box(
+                                modifier = Modifier.size(38.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(MaterialTheme.colorScheme.primaryContainer),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    Icons.Filled.SupportAgent,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.size(22.dp),
                                 )
-                                Spacer(Modifier.width(6.dp))
-                                Box(
-                                    modifier = Modifier.size(7.dp).background(Color(0xFF16A34A), CircleShape)
-                                )
-                                Spacer(Modifier.width(4.dp))
+                            }
+                            Spacer(Modifier.width(10.dp))
+                        }
+                        Column {
+                            Text("Agent Support", fontWeight = FontWeight.Bold)
+                            if (conversation != null) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        conversation!!.customerName ?: conversation!!.customerPhone ?: "Customer",
+                                        style = MaterialTheme.typography.labelSmall,
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Box(
+                                        modifier = Modifier.size(7.dp).background(Color(0xFF16A34A), CircleShape)
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Text(
+                                        "Online",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color(0xFF16A34A),
+                                        fontWeight = FontWeight.Bold,
+                                    )
+                                }
+                            } else {
                                 Text(
-                                    "Online",
+                                    "Help your customers in real-time",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = Color(0xFF16A34A),
-                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                         }
@@ -526,30 +558,67 @@ private fun SupportQueueView(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column {
-                    Text(
-                        "${queue.size}",
-                        style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.Bold,
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Filled.Groups,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(28.dp),
                     )
-                    Text(
-                        if (queue.size == 1) "customer waiting" else "customers waiting",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            "${queue.size}",
+                            style = MaterialTheme.typography.headlineMedium,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Text(
+                            if (queue.size == 1) "customer waiting" else "customers waiting",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
                 }
                 Button(onClick = onClaimNext, enabled = online && queue.isNotEmpty() && claimingId == null) {
                     Text(if (claimingId == "__next__") "Claiming…" else "Claim Next")
+                    if (claimingId != "__next__") {
+                        Spacer(Modifier.width(6.dp))
+                        Icon(Icons.Filled.ArrowForward, contentDescription = null, modifier = Modifier.size(16.dp))
+                    }
                 }
             }
         }
 
         if (!online) {
             Surface(color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    "Go online to claim a waiting customer.",
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
-                    style = MaterialTheme.typography.labelMedium,
-                )
+                Row(
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        modifier = Modifier.size(28.dp).background(Color(0xFFEA580C), CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Filled.WarningAmber,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            "Go online to claim a waiting customer.",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Text(
+                            "Turn on your status to start receiving customers.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f),
+                        )
+                    }
+                }
             }
         }
         error?.let {
@@ -562,12 +631,73 @@ private fun SupportQueueView(
         }
 
         if (queue.isEmpty()) {
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            Column(
+                modifier = Modifier.weight(1f).fillMaxWidth().padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Box(
+                    modifier = Modifier.size(96.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.SupportAgent,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(52.dp),
+                    )
+                }
+                Spacer(Modifier.height(20.dp))
                 Text(
                     "No customers waiting right now.",
-                    modifier = Modifier.align(Alignment.Center),
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center,
                 )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "When customers need help, they will appear here and you can claim them.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(Modifier.height(24.dp))
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.Top) {
+                        Box(
+                            modifier = Modifier.size(32.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primaryContainer),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Filled.Lightbulb,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                "Stay online to get customers faster",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Text(
+                                "Turn on your status and keep the app open for real-time notifications.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
             }
         } else {
             LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
