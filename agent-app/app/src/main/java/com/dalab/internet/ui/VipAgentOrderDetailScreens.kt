@@ -1,13 +1,29 @@
 package com.dalab.internet.ui
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Apartment
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ConfirmationNumber
+import androidx.compose.material.icons.filled.Groups
+import androidx.compose.material.icons.filled.Payment
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.Place
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.dalab.internet.data.VipNumberAgentOrder
@@ -80,55 +96,50 @@ fun VipNumberAgentOrderDetailScreen(
             )
         }
     ) { padding ->
-        Column(modifier = Modifier.padding(padding).padding(20.dp).fillMaxSize()) {
-            SectionLabel("VIP NUMBER")
-            DetailRow("Number", current.phoneNumber ?: "—")
-            DetailRow("Company", current.companyName ?: "—")
-            DetailRow("Category", current.category?.replaceFirstChar { it.uppercase() } ?: "—")
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .verticalScroll(rememberScrollState())
+                .padding(20.dp)
+                .fillMaxSize(),
+        ) {
+            VipOrderHeaderCard(
+                number = current.phoneNumber ?: "—",
+                company = current.companyName ?: "—",
+                category = current.category?.replaceFirstChar { it.uppercase() },
+            )
+
+            Spacer(Modifier.height(16.dp))
+            VipCustomerInfoCard(
+                fullName = current.customerFullName ?: current.customerName ?: "Not provided",
+                location = current.location ?: "Not provided",
+                district = current.district ?: "Not provided",
+                mother = current.motherName ?: "Not provided",
+                phone = current.customerPhone ?: "Not provided",
+            )
+
+            Spacer(Modifier.height(16.dp))
+            VipPaymentCard(
+                method = current.paymentMethod ?: "—",
+                amount = "$${"%.2f".format(current.price?.toDoubleOrNull() ?: 0.0)}",
+                paymentStatus = current.paymentStatus?.replaceFirstChar { it.uppercase() } ?: "—",
+            )
+
+            Spacer(Modifier.height(16.dp))
+            VipOrderStatusCard(
+                status = current.status?.replaceFirstChar { it.uppercase() } ?: "—",
+                dateText = formatApiDateTime(current.createdAt),
+            )
 
             Spacer(Modifier.height(20.dp))
-            SectionLabel("CUSTOMER")
-            DetailRow("Full name", current.customerFullName ?: current.customerName ?: "Not provided")
-            DetailRow("Phone", current.customerPhone ?: "Not provided")
-            DetailRow("Location/City", current.location ?: "Not provided")
-            DetailRow("District", current.district ?: "Not provided")
-            DetailRow("Mother's name", current.motherName ?: "Not provided")
-
-            Spacer(Modifier.height(20.dp))
-            SectionLabel("PAYMENT")
-            DetailRow("Method", current.paymentMethod ?: "—")
-            DetailRow("Amount paid", "$${"%.2f".format(current.price?.toDoubleOrNull() ?: 0.0)}")
-            DetailRow("Payment status", current.paymentStatus?.replaceFirstChar { it.uppercase() } ?: "—")
-
-            Spacer(Modifier.height(20.dp))
-            SectionLabel("ORDER")
-            DetailRow("Status", current.status?.replaceFirstChar { it.uppercase() } ?: "—")
-            DetailRow("Date/time", formatApiDateTime(current.createdAt))
-
-            Spacer(Modifier.height(28.dp))
-
-            if (message != null) {
-                Text(message!!, color = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.height(12.dp))
-            }
-
-            when {
-                current.isTerminal -> Text(
-                    "This order is ${current.status} and can't be changed further.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                !current.isPaid -> Text(
-                    "This order hasn't been paid yet — Complete Order unlocks once payment is confirmed.",
-                    style = MaterialTheme.typography.labelSmall,
-                )
-                else -> Button(
-                    onClick = ::completeOrder,
-                    enabled = !working,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(if (working) "Completing..." else "Complete Order")
-                }
-            }
+            VipCompleteSection(
+                message = message,
+                isTerminal = current.isTerminal,
+                isPaid = current.isPaid,
+                status = current.status,
+                working = working,
+                onComplete = ::completeOrder,
+            )
         }
     }
 }
@@ -179,83 +190,291 @@ fun VipPackageAgentOrderDetailScreen(
             )
         }
     ) { padding ->
-        LazyColumn(modifier = Modifier.padding(padding).padding(horizontal = 20.dp).fillMaxSize()) {
-            item {
-                Spacer(Modifier.height(20.dp))
-                SectionLabel("${current.size ?: current.items?.size ?: "?"} NUMBERS PACKAGE")
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .verticalScroll(rememberScrollState())
+                .padding(20.dp)
+                .fillMaxSize(),
+        ) {
+            VipPackageHeaderCard(
+                size = current.size ?: current.items?.size ?: 0,
+                items = current.items.orEmpty(),
+            )
+
+            Spacer(Modifier.height(16.dp))
+            VipCustomerInfoCard(
+                fullName = current.customerFullName ?: current.customerName ?: "Not provided",
+                location = current.location ?: "Not provided",
+                district = current.district ?: "Not provided",
+                mother = current.motherName ?: "Not provided",
+                phone = current.customerPhone ?: "Not provided",
+            )
+
+            Spacer(Modifier.height(16.dp))
+            VipPaymentCard(
+                method = current.paymentMethod ?: "—",
+                amount = "$${"%.2f".format(current.price?.toDoubleOrNull() ?: 0.0)}",
+                paymentStatus = current.paymentStatus?.replaceFirstChar { it.uppercase() } ?: "—",
+            )
+
+            Spacer(Modifier.height(16.dp))
+            VipOrderStatusCard(
+                status = current.status?.replaceFirstChar { it.uppercase() } ?: "—",
+                dateText = formatApiDateTime(current.createdAt),
+            )
+
+            Spacer(Modifier.height(20.dp))
+            VipCompleteSection(
+                message = message,
+                isTerminal = current.isTerminal,
+                isPaid = current.isPaid,
+                status = current.status,
+                working = working,
+                onComplete = ::completeOrder,
+            )
+        }
+    }
+}
+
+/** Light tinted card at the top: the VIP number itself and who it's registered to. */
+@Composable
+private fun VipOrderHeaderCard(number: String, company: String, category: String?) {
+    Surface(
+        color = DalabSoftBlue.copy(alpha = 0.35f),
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp).fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier.size(48.dp).clip(CircleShape).background(DalabIndigo),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Filled.Phone, contentDescription = null, tint = Color.White, modifier = Modifier.size(22.dp))
             }
-            items(current.items.orEmpty()) { item ->
-                Column(modifier = Modifier.padding(vertical = 6.dp)) {
-                    Text(item.phoneNumber ?: "—", fontWeight = FontWeight.Medium)
-                    Text(
-                        listOfNotNull(item.companyName, item.category?.replaceFirstChar { it.uppercase() }).joinToString(" · "),
-                        style = MaterialTheme.typography.labelSmall,
-                    )
+            Spacer(Modifier.width(14.dp))
+            Column {
+                Text("Number: $number", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium, color = DalabIndigo)
+                Text("Company: $company", style = MaterialTheme.typography.bodyMedium, color = DalabIndigo.copy(alpha = 0.75f))
+                if (!category.isNullOrBlank()) {
+                    Text(category, style = MaterialTheme.typography.labelSmall, color = DalabIndigo.copy(alpha = 0.6f))
                 }
-            }
-            item {
-                Spacer(Modifier.height(20.dp))
-                SectionLabel("CUSTOMER")
-                DetailRow("Full name", current.customerFullName ?: current.customerName ?: "Not provided")
-                DetailRow("Phone", current.customerPhone ?: "Not provided")
-                DetailRow("Location/City", current.location ?: "Not provided")
-                DetailRow("District", current.district ?: "Not provided")
-                DetailRow("Mother's name", current.motherName ?: "Not provided")
-
-                Spacer(Modifier.height(20.dp))
-                SectionLabel("PAYMENT")
-                DetailRow("Method", current.paymentMethod ?: "—")
-                DetailRow("Total package price", "$${"%.2f".format(current.price?.toDoubleOrNull() ?: 0.0)}")
-                DetailRow("Payment status", current.paymentStatus?.replaceFirstChar { it.uppercase() } ?: "—")
-
-                Spacer(Modifier.height(20.dp))
-                SectionLabel("ORDER")
-                DetailRow("Status", current.status?.replaceFirstChar { it.uppercase() } ?: "—")
-                DetailRow("Date/time", formatApiDateTime(current.createdAt))
-
-                Spacer(Modifier.height(28.dp))
-
-                if (message != null) {
-                    Text(message!!, color = MaterialTheme.colorScheme.primary)
-                    Spacer(Modifier.height(12.dp))
-                }
-
-                when {
-                    current.isTerminal -> Text(
-                        "This order is ${current.status} and can't be changed further.",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    !current.isPaid -> Text(
-                        "This order hasn't been paid yet — Complete Order unlocks once payment is confirmed.",
-                        style = MaterialTheme.typography.labelSmall,
-                    )
-                    else -> Button(
-                        onClick = ::completeOrder,
-                        enabled = !working,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(if (working) "Completing..." else "Complete Order")
-                    }
-                }
-                Spacer(Modifier.height(20.dp))
             }
         }
     }
 }
 
+/** Same tinted header treatment as [VipOrderHeaderCard], but for the whole package of numbers. */
 @Composable
-private fun SectionLabel(text: String) {
-    Text(text, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-    Spacer(Modifier.height(6.dp))
+private fun VipPackageHeaderCard(size: Int, items: List<com.dalab.internet.data.VipPackageAgentOrderItem>) {
+    Surface(
+        color = DalabSoftBlue.copy(alpha = 0.35f),
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier.size(48.dp).clip(CircleShape).background(DalabIndigo),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Filled.ConfirmationNumber, contentDescription = null, tint = Color.White, modifier = Modifier.size(22.dp))
+                }
+                Spacer(Modifier.width(14.dp))
+                Text(
+                    "${if (size > 0) size else items.size} Numbers Package",
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = DalabIndigo,
+                )
+            }
+            if (items.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                Surface(color = Color.White, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(horizontal = 14.dp)) {
+                        items.forEachIndexed { index, item ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(item.phoneNumber ?: "—", fontWeight = FontWeight.Medium)
+                                Text(
+                                    listOfNotNull(item.companyName, item.category?.replaceFirstChar { it.uppercase() }).joinToString(" · "),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.Gray,
+                                )
+                            }
+                            if (index != items.lastIndex) HorizontalDivider(color = Color(0xFFF0F0F0))
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
+/** Dark brand-color card: centered avatar, then a white sub-card of icon-prefixed customer fields. */
 @Composable
-private fun DetailRow(label: String, value: String) {
+private fun VipCustomerInfoCard(fullName: String, location: String, district: String, mother: String, phone: String) {
+    Surface(
+        color = DalabIndigo,
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp).fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Box(
+                modifier = Modifier.size(64.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Filled.Person, contentDescription = null, tint = Color.White, modifier = Modifier.size(32.dp))
+            }
+            Spacer(Modifier.height(10.dp))
+            Text("Customer Info", color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(16.dp))
+            Surface(color = Color.White, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                    IconDetailRow(Icons.Filled.Person, "Full name", fullName)
+                    IconDetailRow(Icons.Filled.Place, "Location/City", location)
+                    IconDetailRow(Icons.Filled.Apartment, "District", district)
+                    IconDetailRow(Icons.Filled.Groups, "Mother's name", mother)
+                    IconDetailRow(Icons.Filled.Phone, "Phone", phone, showDivider = false)
+                }
+            }
+        }
+    }
+}
+
+/** One icon-badged label/value row inside the white customer-info sub-card. */
+@Composable
+private fun IconDetailRow(icon: ImageVector, label: String, value: String, showDivider: Boolean = true) {
+    Column {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier.size(32.dp).clip(RoundedCornerShape(8.dp)).background(DalabSoftBlue.copy(alpha = 0.35f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(icon, contentDescription = null, tint = DalabIndigo, modifier = Modifier.size(16.dp))
+            }
+            Spacer(Modifier.width(12.dp))
+            Column {
+                Text(label, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                Text(value, fontWeight = FontWeight.Medium, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+        if (showDivider) HorizontalDivider(color = Color(0xFFF0F0F0))
+    }
+}
+
+/** Light bordered card: payment method, amount paid, and payment status. */
+@Composable
+private fun VipPaymentCard(method: String, amount: String, paymentStatus: String) {
+    Surface(
+        color = Color(0xFFF7FAFC),
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, Color(0xFFE5EEF2)),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.Payment, contentDescription = null, tint = DalabIndigo, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Payment", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge, color = DalabIndigo)
+            }
+            Spacer(Modifier.height(10.dp))
+            SimpleDetailRow("Method", method)
+            SimpleDetailRow("Amount paid", amount, valueColor = DalabGreen, valueBold = true)
+            SimpleDetailRow("Payment status", paymentStatus)
+        }
+    }
+}
+
+/** Light bordered card: order status plus a clock-prefixed timestamp. */
+@Composable
+private fun VipOrderStatusCard(status: String, dateText: String) {
+    Surface(
+        color = Color(0xFFF7FAFC),
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, Color(0xFFE5EEF2)),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp).fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier.size(36.dp).clip(CircleShape).background(DalabSoftBlue.copy(alpha = 0.35f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Filled.Schedule, contentDescription = null, tint = DalabIndigo, modifier = Modifier.size(18.dp))
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Order status", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                Text(status, fontWeight = FontWeight.Bold)
+            }
+            Text(dateText, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+        }
+    }
+}
+
+/** Plain label/value row used inside [VipPaymentCard] (no icon badge — that card already has one heading icon). */
+@Composable
+private fun SimpleDetailRow(label: String, value: String, valueColor: Color = Color.Unspecified, valueBold: Boolean = false) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium)
-        Text(value, fontWeight = FontWeight.Medium)
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
+        Text(
+            value,
+            color = valueColor,
+            fontWeight = if (valueBold) FontWeight.Bold else FontWeight.Medium,
+        )
+    }
+}
+
+/** Status message plus the full-width Complete pill button — or the reason it's disabled. */
+@Composable
+private fun VipCompleteSection(
+    message: String?,
+    isTerminal: Boolean,
+    isPaid: Boolean,
+    status: String?,
+    working: Boolean,
+    onComplete: () -> Unit,
+) {
+    if (message != null) {
+        Text(message, color = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.height(12.dp))
+    }
+
+    when {
+        isTerminal -> Text(
+            "This order is $status and can't be changed further.",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        !isPaid -> Text(
+            "This order hasn't been paid yet — Complete unlocks once payment is confirmed.",
+            style = MaterialTheme.typography.labelSmall,
+        )
+        else -> Button(
+            onClick = onComplete,
+            enabled = !working,
+            shape = RoundedCornerShape(50),
+            colors = ButtonDefaults.buttonColors(containerColor = DalabIndigo),
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+        ) {
+            Text(if (working) "Completing..." else "Complete", fontWeight = FontWeight.Bold)
+        }
     }
 }
