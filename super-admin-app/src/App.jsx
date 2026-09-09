@@ -4618,6 +4618,17 @@ function VipNumbersInventoryPanel({ companies }) {
     }
   };
   useEffect(() => { fetchNumbers(); }, [companyFilter, statusFilter]);
+  // This panel has no SSE push (vip_numbers.routes.ts never calls
+  // broadcast()) -- a number reserved/sold by a real customer order in
+  // another tab/session never reaches an already-open Inventory page,
+  // so its card keeps showing the stale "Available" badge (and Delete
+  // keeps failing with the normal "reserved or sold" 409) until a manual
+  // filter change or reload. Same real-time-ish polling backstop already
+  // used by Balance Dashboard/the Devices panel for the same reason.
+  useEffect(() => {
+    const timer = setInterval(fetchNumbers, 15000);
+    return () => clearInterval(timer);
+  }, [companyFilter, statusFilter]);
 
   const companyName = (id) => companies.find((c) => c.id === id)?.name || id;
 
