@@ -500,13 +500,24 @@ vipNumbersRouter.put("/admin/vip-numbers/:id", requirePermission("vipNumbers.man
 // CASCADE, deliberately, so a sold number's order history is never
 // silently lost).
 vipNumbersRouter.delete("/admin/vip-numbers/:id", requirePermission("vipNumbers.manage"), async (req, res) => {
-  const result = await query(`DELETE FROM vip_numbers WHERE id=$1 AND status='available' RETURNING id`, [req.params.id]);
-  if (result.length === 0) {
-    const existing = await queryOne(`SELECT status FROM vip_numbers WHERE id=$1`, [req.params.id]);
-    if (!existing) return sendJson(res, 404, { error: "VIP number not found" });
-    return sendJson(res, 409, { error: "This number is reserved or sold and can no longer be deleted" });
+  try {
+    const result = await query(`DELETE FROM vip_numbers WHERE id=$1 AND status='available' RETURNING id`, [req.params.id]);
+    if (result.length === 0) {
+      const existing = await queryOne(`SELECT status FROM vip_numbers WHERE id=$1`, [req.params.id]);
+      if (!existing) return sendJson(res, 404, { error: "VIP number not found" });
+      return sendJson(res, 409, { error: "This number is reserved or sold and can no longer be deleted" });
+    }
+    sendJson(res, 200, { deleted: true });
+  } catch (err: any) {
+    // A number back to 'available' (e.g. an expired/cancelled reservation)
+    // can still have historical vip_number_orders/vip_number_package_items
+    // rows referencing it (ON DELETE RESTRICT, 087/088_vip_number*.sql) --
+    // same pattern as companies/shop categories/customers deletes above.
+    if (err?.code === "23503") {
+      return sendJson(res, 409, { error: "This number has existing orders or is part of a package and can't be deleted" });
+    }
+    throw err;
   }
-  sendJson(res, 200, { deleted: true });
 });
 
 // ==================== Admin: orders ====================
