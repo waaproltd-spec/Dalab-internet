@@ -12,7 +12,6 @@ import androidx.compose.material.icons.filled.Apartment
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ConfirmationNumber
 import androidx.compose.material.icons.filled.Groups
-import androidx.compose.material.icons.filled.Payment
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Place
@@ -106,7 +105,6 @@ fun VipNumberAgentOrderDetailScreen(
             VipOrderHeaderCard(
                 number = current.phoneNumber ?: "—",
                 company = current.companyName ?: "—",
-                category = current.category?.replaceFirstChar { it.uppercase() },
             )
 
             Spacer(Modifier.height(16.dp))
@@ -119,17 +117,7 @@ fun VipNumberAgentOrderDetailScreen(
             )
 
             Spacer(Modifier.height(16.dp))
-            VipPaymentCard(
-                method = current.paymentMethod ?: "—",
-                amount = "$${"%.2f".format(current.price?.toDoubleOrNull() ?: 0.0)}",
-                paymentStatus = current.paymentStatus?.replaceFirstChar { it.uppercase() } ?: "—",
-            )
-
-            Spacer(Modifier.height(16.dp))
-            VipOrderStatusCard(
-                status = current.status?.replaceFirstChar { it.uppercase() } ?: "—",
-                dateText = formatApiDateTime(current.createdAt),
-            )
+            VipOrderStatusCard(dateText = formatApiDateTime(current.createdAt))
 
             Spacer(Modifier.height(20.dp))
             VipCompleteSection(
@@ -212,17 +200,7 @@ fun VipPackageAgentOrderDetailScreen(
             )
 
             Spacer(Modifier.height(16.dp))
-            VipPaymentCard(
-                method = current.paymentMethod ?: "—",
-                amount = "$${"%.2f".format(current.price?.toDoubleOrNull() ?: 0.0)}",
-                paymentStatus = current.paymentStatus?.replaceFirstChar { it.uppercase() } ?: "—",
-            )
-
-            Spacer(Modifier.height(16.dp))
-            VipOrderStatusCard(
-                status = current.status?.replaceFirstChar { it.uppercase() } ?: "—",
-                dateText = formatApiDateTime(current.createdAt),
-            )
+            VipOrderStatusCard(dateText = formatApiDateTime(current.createdAt))
 
             Spacer(Modifier.height(20.dp))
             VipCompleteSection(
@@ -239,7 +217,7 @@ fun VipPackageAgentOrderDetailScreen(
 
 /** Light tinted card at the top: the VIP number itself and who it's registered to. */
 @Composable
-private fun VipOrderHeaderCard(number: String, company: String, category: String?) {
+private fun VipOrderHeaderCard(number: String, company: String) {
     Surface(
         color = DalabSoftBlue.copy(alpha = 0.35f),
         shape = RoundedCornerShape(20.dp),
@@ -257,11 +235,11 @@ private fun VipOrderHeaderCard(number: String, company: String, category: String
             }
             Spacer(Modifier.width(14.dp))
             Column {
-                Text("Number: $number", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium, color = DalabIndigo)
-                Text("Company: $company", style = MaterialTheme.typography.bodyMedium, color = DalabIndigo.copy(alpha = 0.75f))
-                if (!category.isNullOrBlank()) {
-                    Text(category, style = MaterialTheme.typography.labelSmall, color = DalabIndigo.copy(alpha = 0.6f))
-                }
+                Text("Number", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                Text(number, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge, color = DalabIndigo)
+                Spacer(Modifier.height(6.dp))
+                Text("Company name", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                Text(company, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge, color = DalabIndigo)
             }
         }
     }
@@ -340,11 +318,11 @@ private fun VipCustomerInfoCard(fullName: String, location: String, district: St
             Spacer(Modifier.height(16.dp))
             Surface(color = Color.White, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-                    IconDetailRow(Icons.Filled.Person, "Full name", fullName)
-                    IconDetailRow(Icons.Filled.Place, "Location/City", location)
+                    IconDetailRow(Icons.Filled.Person, "Your full name", fullName)
+                    IconDetailRow(Icons.Filled.Place, location, location)
                     IconDetailRow(Icons.Filled.Apartment, "District", district)
-                    IconDetailRow(Icons.Filled.Groups, "Mother's name", mother)
-                    IconDetailRow(Icons.Filled.Phone, "Phone", phone, showDivider = false)
+                    IconDetailRow(Icons.Filled.Groups, "Mother", mother)
+                    IconDetailRow(Icons.Filled.Phone, "Phone number you'll pay from", phone, showDivider = false)
                 }
             }
         }
@@ -375,32 +353,9 @@ private fun IconDetailRow(icon: ImageVector, label: String, value: String, showD
     }
 }
 
-/** Light bordered card: payment method, amount paid, and payment status. */
+/** Light bordered card: a clock-prefixed order timestamp. */
 @Composable
-private fun VipPaymentCard(method: String, amount: String, paymentStatus: String) {
-    Surface(
-        color = Color(0xFFF7FAFC),
-        shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.dp, Color(0xFFE5EEF2)),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.Payment, contentDescription = null, tint = DalabIndigo, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("Payment", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge, color = DalabIndigo)
-            }
-            Spacer(Modifier.height(10.dp))
-            SimpleDetailRow("Method", method)
-            SimpleDetailRow("Amount paid", amount, valueColor = DalabGreen, valueBold = true)
-            SimpleDetailRow("Payment status", paymentStatus)
-        }
-    }
-}
-
-/** Light bordered card: order status plus a clock-prefixed timestamp. */
-@Composable
-private fun VipOrderStatusCard(status: String, dateText: String) {
+private fun VipOrderStatusCard(dateText: String) {
     Surface(
         color = Color(0xFFF7FAFC),
         shape = RoundedCornerShape(16.dp),
@@ -418,28 +373,11 @@ private fun VipOrderStatusCard(status: String, dateText: String) {
                 Icon(Icons.Filled.Schedule, contentDescription = null, tint = DalabIndigo, modifier = Modifier.size(18.dp))
             }
             Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Order status", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                Text(status, fontWeight = FontWeight.Bold)
+            Column {
+                Text("Orders status time", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                Text(dateText, fontWeight = FontWeight.Bold)
             }
-            Text(dateText, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
         }
-    }
-}
-
-/** Plain label/value row used inside [VipPaymentCard] (no icon badge — that card already has one heading icon). */
-@Composable
-private fun SimpleDetailRow(label: String, value: String, valueColor: Color = Color.Unspecified, valueBold: Boolean = false) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
-        Text(
-            value,
-            color = valueColor,
-            fontWeight = if (valueBold) FontWeight.Bold else FontWeight.Medium,
-        )
     }
 }
 
