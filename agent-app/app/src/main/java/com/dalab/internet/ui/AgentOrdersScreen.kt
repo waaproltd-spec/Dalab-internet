@@ -1,15 +1,28 @@
 package com.dalab.internet.ui
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CalendarToday
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.dalab.internet.data.ShopAgentOrder
@@ -82,33 +95,64 @@ fun AgentOrdersScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Orders") },
+                title = {
+                    Column {
+                        Text("Orders", fontWeight = FontWeight.Bold)
+                        Text(
+                            "Track and manage your orders",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
                 actions = {
-                    IconButton(onClick = ::refresh) { Icon(Icons.Filled.Refresh, contentDescription = "Refresh") }
+                    Box(
+                        modifier = Modifier.padding(end = 12.dp)
+                            .size(40.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.primaryContainer)
+                            .clickable(onClick = ::refresh),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Filled.Refresh,
+                            contentDescription = "Refresh",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
                 },
             )
         }
     ) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
             TabRow(selectedTabIndex = topTab.ordinal) {
-                Tab(selected = topTab == OrdersTopTab.SHOP, onClick = { topTab = OrdersTopTab.SHOP }, text = { Text("Shop") })
-                Tab(selected = topTab == OrdersTopTab.VIP_NUMBERS, onClick = { topTab = OrdersTopTab.VIP_NUMBERS }, text = { Text("VIP Numbers") })
+                Tab(
+                    selected = topTab == OrdersTopTab.SHOP,
+                    onClick = { topTab = OrdersTopTab.SHOP },
+                    text = { Text("Shop", fontWeight = if (topTab == OrdersTopTab.SHOP) FontWeight.Bold else FontWeight.Normal) },
+                )
+                Tab(
+                    selected = topTab == OrdersTopTab.VIP_NUMBERS,
+                    onClick = { topTab = OrdersTopTab.VIP_NUMBERS },
+                    text = { Text("VIP Numbers", fontWeight = if (topTab == OrdersTopTab.VIP_NUMBERS) FontWeight.Bold else FontWeight.Normal) },
+                )
             }
 
             if (topTab == OrdersTopTab.VIP_NUMBERS) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    FilterChip(
+                    SubTabPill(
+                        label = "Numbers",
                         selected = vipSubTab == VipOrdersSubTab.NUMBERS,
                         onClick = { vipSubTab = VipOrdersSubTab.NUMBERS },
-                        label = { Text("Numbers") },
                     )
-                    FilterChip(
+                    SubTabPill(
+                        label = "Packages",
                         selected = vipSubTab == VipOrdersSubTab.PACKAGES,
                         onClick = { vipSubTab = VipOrdersSubTab.PACKAGES },
-                        label = { Text("Packages") },
                     )
                 }
             }
@@ -152,68 +196,169 @@ fun AgentOrdersScreen(
 
 @Composable
 private fun ShopOrderRow(order: ShopAgentOrder, onClick: () -> Unit) {
-    Column(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp)) {
-        Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-            Column {
-                Text(order.id, fontWeight = FontWeight.Bold)
-                Text(order.customerName ?: "Unknown customer", style = MaterialTheme.typography.bodySmall)
-            }
-            Column(horizontalAlignment = Alignment.End) {
-                Text("$${"%.2f".format(order.totalAmount?.toDoubleOrNull() ?: 0.0)}", fontWeight = FontWeight.Bold)
-                AgentOrderStatusChip(order.status, order.paymentStatus)
-            }
-        }
-        Spacer(Modifier.height(6.dp))
-        Text(formatApiDateTime(order.createdAt), style = MaterialTheme.typography.labelSmall)
-    }
+    OrderRowCard(
+        title = order.id,
+        subtitle = order.customerName ?: "Unknown customer",
+        amount = order.totalAmount?.toDoubleOrNull() ?: 0.0,
+        dateText = formatApiDateTime(order.createdAt),
+        status = order.status,
+        paymentStatus = order.paymentStatus,
+        onClick = onClick,
+    )
 }
 
 @Composable
 private fun VipNumberOrderRow(order: VipNumberAgentOrder, onClick: () -> Unit) {
-    Column(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp)) {
-        Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-            Column {
-                Text(order.phoneNumber ?: order.id, fontWeight = FontWeight.Bold)
-                Text(order.customerFullName ?: order.customerName ?: "Unknown customer", style = MaterialTheme.typography.bodySmall)
-            }
-            Column(horizontalAlignment = Alignment.End) {
-                Text("$${"%.2f".format(order.price?.toDoubleOrNull() ?: 0.0)}", fontWeight = FontWeight.Bold)
-                AgentOrderStatusChip(order.status, order.paymentStatus)
-            }
-        }
-        Spacer(Modifier.height(6.dp))
-        Text(formatApiDateTime(order.createdAt), style = MaterialTheme.typography.labelSmall)
-    }
+    OrderRowCard(
+        title = order.phoneNumber ?: order.id,
+        subtitle = order.customerFullName ?: order.customerName ?: "Unknown customer",
+        amount = order.price?.toDoubleOrNull() ?: 0.0,
+        dateText = formatApiDateTime(order.createdAt),
+        status = order.status,
+        paymentStatus = order.paymentStatus,
+        onClick = onClick,
+    )
 }
 
 @Composable
 private fun VipPackageOrderRow(order: VipPackageAgentOrder, onClick: () -> Unit) {
+    OrderRowCard(
+        title = "${order.size ?: "?"} Numbers Package",
+        subtitle = order.customerFullName ?: order.customerName ?: "Unknown customer",
+        amount = order.price?.toDoubleOrNull() ?: 0.0,
+        dateText = formatApiDateTime(order.createdAt),
+        status = order.status,
+        paymentStatus = order.paymentStatus,
+        onClick = onClick,
+    )
+}
+
+/** Shared list-row layout for every order type on this screen -- leading
+ * phone-icon circle (tinted green once the order is actually Completed,
+ * primary-tinted otherwise), title/subtitle, amount, a calendar-prefixed
+ * date line, and the colored [AgentOrderStatusPill] this row resolves to.
+ * The trailing "more" glyph is deliberately a plain [Icon] (not an
+ * [IconButton]) -- there's no menu behind it yet, so it stays inert rather
+ * than implying a tappable action that does nothing. */
+@Composable
+private fun OrderRowCard(
+    title: String,
+    subtitle: String,
+    amount: Double,
+    dateText: String,
+    status: String?,
+    paymentStatus: String?,
+    onClick: () -> Unit,
+) {
+    val (statusLabel, statusColors) = agentOrderStatus(status, paymentStatus)
     Column(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp)) {
         Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-            Column {
-                Text("${order.size ?: "?"} Numbers Package", fontWeight = FontWeight.Bold)
-                Text(order.customerFullName ?: order.customerName ?: "Unknown customer", style = MaterialTheme.typography.bodySmall)
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                Box(
+                    modifier = Modifier.size(44.dp)
+                        .clip(CircleShape)
+                        .background(statusColors.circleBg),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Filled.Phone, contentDescription = null, tint = statusColors.circleFg, modifier = Modifier.size(20.dp))
+                }
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text(title, fontWeight = FontWeight.Bold)
+                    Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
             Column(horizontalAlignment = Alignment.End) {
-                Text("$${"%.2f".format(order.price?.toDoubleOrNull() ?: 0.0)}", fontWeight = FontWeight.Bold)
-                AgentOrderStatusChip(order.status, order.paymentStatus)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("$${"%.2f".format(amount)}", fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.width(4.dp))
+                    Icon(
+                        Icons.Filled.MoreVert,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
             }
         }
-        Spacer(Modifier.height(6.dp))
-        Text(formatApiDateTime(order.createdAt), style = MaterialTheme.typography.labelSmall)
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Filled.CalendarToday,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(14.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(dateText, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            AgentOrderStatusPill(statusLabel, statusColors)
+        }
     }
 }
 
-/** Shared status pill for every list row in this screen — plain string
- * status/paymentStatus (see AgentOrdersModels.kt's own comment on why),
- * so this just title-cases whatever the backend sent rather than
- * maintaining a parallel label map that could drift out of sync with it. */
+private data class StatusColors(val bg: Color, val fg: Color, val circleBg: Color, val circleFg: Color, val icon: ImageVector)
+
+/** Plain string status/paymentStatus (see AgentOrdersModels.kt's own
+ * comment on why) -- this maps whatever the backend sent to a label and a
+ * color/icon treatment, defaulting to a neutral gray for anything it
+ * doesn't specifically recognize rather than guessing. */
 @Composable
-private fun AgentOrderStatusChip(status: String?, paymentStatus: String?) {
+private fun agentOrderStatus(status: String?, paymentStatus: String?): Pair<String, StatusColors> {
     val label = when {
         paymentStatus != null && paymentStatus != "paid" -> "Unpaid"
         status != null -> status.replaceFirstChar { it.uppercase() }
         else -> "—"
     }
-    AssistChip(onClick = {}, label = { Text(label) })
+    val colors = when (label.lowercase()) {
+        "completed" -> StatusColors(
+            bg = Color(0xFFDCFCE7), fg = Color(0xFF16A34A),
+            circleBg = Color(0xFFDCFCE7), circleFg = Color(0xFF16A34A),
+            icon = Icons.Filled.CheckCircle,
+        )
+        "unpaid", "failed", "cancelled" -> StatusColors(
+            bg = Color(0xFFFEE2E2), fg = Color(0xFFDC2626),
+            circleBg = MaterialTheme.colorScheme.primaryContainer, circleFg = MaterialTheme.colorScheme.primary,
+            icon = Icons.Filled.Error,
+        )
+        else -> StatusColors(
+            bg = Color(0xFFFFEDD5), fg = Color(0xFFC2410C),
+            circleBg = MaterialTheme.colorScheme.primaryContainer, circleFg = MaterialTheme.colorScheme.primary,
+            icon = Icons.Filled.Schedule,
+        )
+    }
+    return label to colors
+}
+
+@Composable
+private fun AgentOrderStatusPill(label: String, colors: StatusColors) {
+    Surface(color = colors.bg, shape = RoundedCornerShape(50)) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(colors.icon, contentDescription = null, tint = colors.fg, modifier = Modifier.size(14.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(label, color = colors.fg, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+private fun SubTabPill(label: String, selected: Boolean, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(50),
+        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Text(
+            label,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+    }
 }
