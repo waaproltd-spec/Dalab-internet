@@ -177,7 +177,7 @@ async function lockAndValidatePackageNumbers(
     `SELECT vn.id, vn.status, pi.package_id AS existing_package_id
      FROM vip_numbers vn
      LEFT JOIN vip_number_package_items pi ON pi.vip_number_id = vn.id
-     WHERE vn.id = ANY($1)
+     WHERE vn.id = ANY($1) AND vn.deleted_at IS NULL
      FOR UPDATE OF vn`,
     [vipNumberIds]
   );

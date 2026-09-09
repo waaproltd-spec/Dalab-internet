@@ -1,0 +1,14 @@
+-- VIP Numbers: vip_number_orders.vip_number_id REFERENCES vip_numbers(id)
+-- ON DELETE RESTRICT (087) blocks a hard delete for ANY number that has
+-- ever had an order, even a fully terminal one ('expired'/'cancelled') with
+-- zero ongoing business relevance -- confirmed live: a number back to
+-- 'available' with only expired orders still can't be hard-deleted, and the
+-- admin has no way to remove it from Inventory at all. Same tension
+-- companies.routes.ts already solves for companies/orders (deleted_at,
+-- migration 021) -- mirrored here rather than invented fresh. The row and
+-- its order history stay intact (order rows already snapshot
+-- company_id/phone_number/category/price themselves, migration 087's own
+-- header, so they never need to re-read this row for display), but a
+-- soft-deleted number is immediately excluded from the Admin Inventory
+-- list, the public catalog, and package-membership validation.
+ALTER TABLE vip_numbers ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;

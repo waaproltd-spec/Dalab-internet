@@ -244,7 +244,7 @@ vipNumbersRouter.get("/vip-numbers", async (req, res) => {
                     vn.phone_number, vn.category, vn.price
              FROM vip_numbers vn
              JOIN companies c ON c.id = vn.company_id
-             WHERE vn.status='available'
+             WHERE vn.status='available' AND vn.deleted_at IS NULL
                AND NOT EXISTS (SELECT 1 FROM vip_number_package_items pi WHERE pi.vip_number_id = vn.id)`;
   if (companyId) {
     args.push(companyId);
@@ -330,11 +330,11 @@ vipNumbersRouter.post(
             // before touching it" principle Shop's own stock reservation
             // (and reseller_withdrawals before it) already uses.
             const row = await client.query(
-              `SELECT id, company_id, phone_number, category, price, status FROM vip_numbers WHERE id=$1 FOR UPDATE`,
+              `SELECT id, company_id, phone_number, category, price, status, deleted_at FROM vip_numbers WHERE id=$1 FOR UPDATE`,
               [vipNumberId]
             );
             const vipNumber = row.rows[0];
-            if (!vipNumber) {
+            if (!vipNumber || vipNumber.deleted_at) {
               throw Object.assign(new Error("VIP number not found"), { status: 404 });
             }
             if (vipNumber.status !== "available") {
@@ -446,7 +446,7 @@ vipNumbersRouter.get("/admin/vip-numbers", requirePermission("vipNumbers.manage"
              FROM vip_numbers vn
              JOIN companies c ON c.id = vn.company_id
              LEFT JOIN vip_number_package_items pi ON pi.vip_number_id = vn.id
-             WHERE 1=1`;
+             WHERE vn.deleted_at IS NULL`;
   if (companyId) {
     args.push(companyId);
     sql += ` AND vn.company_id=$${args.length}`;
@@ -499,25 +499,50 @@ vipNumbersRouter.put("/admin/vip-numbers/:id", requirePermission("vipNumbers.man
 // depends on this row (vip_number_orders.vip_number_id has no ON DELETE
 // CASCADE, deliberately, so a sold number's order history is never
 // silently lost).
+//
+// A number back to 'available' (e.g. an expired/cancelled reservation) can
+// still have historical vip_number_orders rows referencing it (ON DELETE
+// RESTRICT, 087_vip_numbers.sql) even though every one of them is fully
+// terminal — confirmed live: a genuinely Available number with only
+// 'expired' orders still can't be hard-deleted, and an admin had no way to
+// remove it from Inventory at all. That's the actual bug, not the status
+// check itself (which is correct and left alone) -- fixed the same way
+// companies.routes.ts already resolves the identical tension for
+// companies/orders (097_vip_number_soft_delete.sql): fall back to a soft
+// delete (deleted_at) instead of erroring, so the row and its order
+// history stay intact but it's immediately excluded from every listing
+// (GET /admin/vip-numbers, the public catalog, package-membership
+// validation). Package membership is checked FIRST and always blocks
+// (never silently soft-deleted out from under a still-sellable package,
+// which would leave that package short a number) -- a genuinely different,
+// still-open condition the admin must resolve themselves.
 vipNumbersRouter.delete("/admin/vip-numbers/:id", requirePermission("vipNumbers.manage"), async (req, res) => {
-  try {
-    const result = await query(`DELETE FROM vip_numbers WHERE id=$1 AND status='available' RETURNING id`, [req.params.id]);
-    if (result.length === 0) {
-      const existing = await queryOne(`SELECT status FROM vip_numbers WHERE id=$1`, [req.params.id]);
-      if (!existing) return sendJson(res, 404, { error: "VIP number not found" });
-      return sendJson(res, 409, { error: "This number is reserved or sold and can no longer be deleted" });
-    }
-    sendJson(res, 200, { deleted: true });
-  } catch (err: any) {
-    // A number back to 'available' (e.g. an expired/cancelled reservation)
-    // can still have historical vip_number_orders/vip_number_package_items
-    // rows referencing it (ON DELETE RESTRICT, 087/088_vip_number*.sql) --
-    // same pattern as companies/shop categories/customers deletes above.
-    if (err?.code === "23503") {
-      return sendJson(res, 409, { error: "This number has existing orders or is part of a package and can't be deleted" });
-    }
-    throw err;
+  const inPackage = await queryOne(`SELECT package_id FROM vip_number_package_items WHERE vip_number_id=$1`, [req.params.id]);
+  if (inPackage) {
+    return sendJson(res, 409, { error: "This number is part of a package — remove it from the package first" });
   }
+
+  try {
+    const result = await query(
+      `DELETE FROM vip_numbers WHERE id=$1 AND status='available' AND deleted_at IS NULL RETURNING id`,
+      [req.params.id]
+    );
+    if (result.length > 0) return sendJson(res, 200, { deleted: true });
+  } catch (err: any) {
+    if (err?.code !== "23503") throw err;
+    const softDeleted = await query(
+      `UPDATE vip_numbers SET deleted_at=now(), updated_at=now() WHERE id=$1 AND status='available' AND deleted_at IS NULL RETURNING id`,
+      [req.params.id]
+    );
+    if (softDeleted.length > 0) return sendJson(res, 200, { deleted: true, softDeleted: true });
+  }
+
+  const existing = await queryOne<{ status: string; deleted_at: string | null }>(
+    `SELECT status, deleted_at FROM vip_numbers WHERE id=$1`,
+    [req.params.id]
+  );
+  if (!existing || existing.deleted_at) return sendJson(res, 404, { error: "VIP number not found" });
+  return sendJson(res, 409, { error: "This number is reserved or sold and can no longer be deleted" });
 });
 
 // ==================== Admin: orders ====================
