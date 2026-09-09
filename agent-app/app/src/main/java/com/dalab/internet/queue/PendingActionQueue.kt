@@ -2,9 +2,8 @@ package com.dalab.internet.queue
 
 import android.content.Context
 import android.content.SharedPreferences
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import com.dalab.internet.diagnostics.DiagnosticsLog
+import com.dalab.internet.util.SecurePrefs
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 
@@ -43,16 +42,7 @@ object PendingActionQueue {
     @Synchronized
     fun init(context: Context) {
         if (::prefs.isInitialized) return
-        val masterKey = MasterKey.Builder(context.applicationContext)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build()
-        prefs = EncryptedSharedPreferences.create(
-            context.applicationContext,
-            PREFS,
-            masterKey,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-        )
+        prefs = SecurePrefs.createOrFallback(context, PREFS, "pending_queue_init")
     }
 
     @Synchronized
