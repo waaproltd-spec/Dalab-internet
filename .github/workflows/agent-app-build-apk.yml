@@ -91,19 +91,32 @@ jobs:
           echo "$AGENT_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/agent-release.jks"
           echo "path=$RUNNER_TEMP/agent-release.jks" >> "$GITHUB_OUTPUT"
 
-      - name: Build release APK
+      # bundleRelease alongside assembleRelease in one Gradle invocation --
+      # same signingConfig (defined once per buildType in build.gradle.kts,
+      # not per output format), so no separate signing setup needed. The
+      # .apk stays what agents install directly; the .aab is the format
+      # Play Console requires for a Play Store upload/update -- Google no
+      # longer accepts a raw APK for a new upload.
+      - name: Build release APK and AAB
         env:
           AGENT_KEYSTORE_PATH: ${{ steps.keystore.outputs.path }}
           AGENT_KEYSTORE_PASSWORD: ${{ secrets.AGENT_KEYSTORE_PASSWORD }}
           AGENT_KEY_ALIAS: ${{ secrets.AGENT_KEY_ALIAS }}
           AGENT_KEY_PASSWORD: ${{ secrets.AGENT_KEY_PASSWORD }}
-        run: gradle assembleRelease --no-daemon
+        run: gradle assembleRelease bundleRelease --no-daemon
 
       - name: Upload release APK
         uses: actions/upload-artifact@v4
         with:
           name: dalab-agent-release-apk
           path: agent-app/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+
+      - name: Upload release AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: dalab-agent-release-aab
+          path: agent-app/app/build/outputs/bundle/release/app-release.aab
           if-no-files-found: error
 
       # actions/upload-artifact always produces a .zip, and it can only be
@@ -123,7 +136,8 @@ jobs:
           gh release create "$TAG" \
             agent-app/app/build/outputs/apk/debug/app-debug.apk \
             agent-app/app/build/outputs/apk/release/app-release.apk \
+            agent-app/app/build/outputs/bundle/release/app-release.aab \
             --repo "${{ github.repository }}" \
             --title "Agent App build #${{ github.run_number }} ($SHORT_SHA)" \
-            --notes "Automated build from commit $SHORT_SHA on ${{ github.ref_name }}. Direct-installable APKs — no zip, no GitHub login needed. app-debug.apk is unminified (larger, matches the historically-installed build); app-release.apk is R8-shrunk (smaller) and signed with the release keystore — the two are NOT interchangeable updates for each other since they're signed with different keys." \
+            --notes "Automated build from commit $SHORT_SHA on ${{ github.ref_name }}. Direct-installable APKs — no zip, no GitHub login needed. app-debug.apk is unminified (larger, matches the historically-installed build); app-release.apk is R8-shrunk (smaller) and signed with the release keystore — the two are NOT interchangeable updates for each other since they're signed with different keys. app-release.aab is the Android App Bundle for Play Console — Google Play requires this format (not a raw APK) for a Play Store upload/update; it's built from the exact same release-signed source as app-release.apk." \
             --target "${{ github.sha }}"
