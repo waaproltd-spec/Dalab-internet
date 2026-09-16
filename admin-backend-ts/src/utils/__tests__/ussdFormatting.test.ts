@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatUssdAmount, formatEvcDahabUssdAmount, normalizePhoneForUssd, splitUssdAmount } from "../ussdFormatting.js";
+import { formatUssdAmount, formatEvcDahabUssdAmount, normalizePhoneForUssd, splitUssdAmount, formatUssdAmountSplit } from "../ussdFormatting.js";
 
 // "0.10" -> "01" and "0.50" -> "05" are real confirmed production values
 // (ussd_logs.generated_string for completed Hormuud Anfac orders, Aug 2026 —
@@ -140,4 +140,60 @@ test("splitUssdAmount substituted into Somnet's real template shape produces the
   const somnetTemplate = "*827*{number}*{amountWhole}*{amountCents}#";
   const dialed = somnetTemplate.replace("{amountWhole}", splitUssdAmount("22.50").whole).replace("{amountCents}", splitUssdAmount("22.50").cents);
   assert.equal(dialed.replace("{number}", "620338686"), "*827*620338686*22*50#");
+});
+
+// formatUssdAmountSplit -- Somtel's own top-up USSD menu (real production
+// incident: order DLB637490120, provider amount $17.50, dialed with
+// formatUssdAmount's single-token "175" -- and, separately, a raw "17.5" --
+// and left permanently stuck "ambiguous" after 3 dial attempts on an online
+// device). Unlike splitUssdAmount (always both fields, 2-digit cents) or
+// formatUssdAmount (always one concatenated token), this omits the cents
+// field entirely for a whole-dollar amount and "*"-joins (never
+// concatenates) whole and cents when present, collapsing a round-tens cents
+// value to one digit the same way formatUssdAmount's own token does.
+const SPLIT_COLLAPSED_AMOUNT_CASES: Array<[string, string]> = [
+  ["17.00", "17"],
+  ["17.50", "17*5"],
+  ["17.25", "17*25"],
+  ["12.34", "12*34"],
+  ["1.50", "1*5"],
+  ["0.10", "0*1"],
+  ["0.25", "0*25"],
+  ["1.00", "1"],
+  ["25.00", "25"],
+  ["100.00", "100"],
+];
+
+for (const [input, expected] of SPLIT_COLLAPSED_AMOUNT_CASES) {
+  test(`formatUssdAmountSplit("${input}") === "${expected}"`, () => {
+    assert.equal(formatUssdAmountSplit(input), expected);
+  });
+  test(`formatUssdAmountSplit(${input}) (as a number, not a string) === "${expected}"`, () => {
+    assert.equal(formatUssdAmountSplit(Number(input)), expected);
+  });
+}
+
+test("formatUssdAmountSplit never concatenates dollars and cents into one token, and never omits the '*' when cents are present", () => {
+  assert.notEqual(formatUssdAmountSplit("17.50"), "175");
+  assert.notEqual(formatUssdAmountSplit("17.50"), "17.5");
+  assert.equal(formatUssdAmountSplit("17.50"), "17*5");
+});
+
+test("formatUssdAmountSplit never pads a whole-dollar amount with a trailing cents segment", () => {
+  assert.equal(formatUssdAmountSplit("17.00"), "17");
+  assert.ok(!formatUssdAmountSplit("17.00").includes("*"), formatUssdAmountSplit("17.00"));
+});
+
+test("formatUssdAmountSplit substituted into Somtel's real template shape produces the exact dial string that unblocks DLB637490120", () => {
+  const somtelTemplate = "*831*{number}*{amountSplit}*8233{pin}#";
+  const dialWholeDollar = somtelTemplate
+    .replace("{number}", "620338686")
+    .replace("{amountSplit}", formatUssdAmountSplit("17.00"))
+    .replace("{pin}", "1234");
+  const dialWithCents = somtelTemplate
+    .replace("{number}", "620338686")
+    .replace("{amountSplit}", formatUssdAmountSplit("17.50"))
+    .replace("{pin}", "1234");
+  assert.equal(dialWholeDollar, "*831*620338686*17*82331234#");
+  assert.equal(dialWithCents, "*831*620338686*17*5*82331234#");
 });

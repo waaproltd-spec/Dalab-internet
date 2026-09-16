@@ -141,6 +141,28 @@ test("name-fallback package (no ussd_template_id): the same normalization still 
   assert.equal(result.ussd, "*918*685115555*175*8233#");
 });
 
+test("a {amountSplit} template (Somtel's real convention) reproduces the exact fix for stuck order DLB637490120: $17.50 dials as 17*5, never 175 or 17.5", async () => {
+  const templateId = await makeTemplate("Unlimited Data & Voice", "*831*{number}*{amountSplit}*8233{pin}#");
+  const packageId = await makePackage("Dhameys Plus", 17.50, templateId);
+  const order = await makeOrder(packageId, "620338686", 17.50);
+
+  const result = await generateUssdForOrder(order);
+  assert.equal(result.error, undefined);
+  assert.equal(result.ussd, "*831*620338686*17*5*82338233#");
+  assert.ok(!result.ussd!.includes("175"), `must not concatenate into 175: ${result.ussd}`);
+  assert.ok(!result.ussd!.includes("17.5"), `must not embed a decimal point: ${result.ussd}`);
+});
+
+test("a {amountSplit} template with a whole-dollar amount omits the cents field entirely (17.00 -> 17, never 17*0)", async () => {
+  const templateId = await makeTemplate("Unlimited Data & Voice", "*831*{number}*{amountSplit}*8233{pin}#");
+  const packageId = await makePackage("Dhameys Plus Whole", 17.00, templateId);
+  const order = await makeOrder(packageId, "620338686", 17.00);
+
+  const result = await generateUssdForOrder(order);
+  assert.equal(result.ussd, "*831*620338686*17*82338233#");
+  assert.ok(!result.ussd!.includes("*0*"), `unexpected trailing zero segment: ${result.ussd}`);
+});
+
 test("the PIN stays the final parameter before '#' regardless of amount segment count", async () => {
   const templateId = await makeTemplate("No Expire", "*830*{number}*{amount}*{pin}#");
   const packageId = await makePackage("No Expire Bundle", 1.00, templateId);

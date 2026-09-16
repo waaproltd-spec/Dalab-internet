@@ -209,6 +209,56 @@ test("missing device/SIM routing entirely: flagged the moment the template is cr
   assert.match(template.routingWarning, /no device\/SIM routing configured/i);
 });
 
+// Regression test for a real gap the $17.50 USSD-amount-format audit
+// uncovered: hasRequiredPlaceholders() used to require the literal
+// substring "{amount}", which would have rejected the already-live Somnet
+// 5G template (whole/cents as two separate fields) and any new Somtel
+// template written with {amountSplit} -- an admin editing either one
+// through the dashboard (even just a notes change) would have hit a 400 on
+// a template that was otherwise completely valid and already dialing real
+// orders correctly.
+test("a template using {amountWhole}+{amountCents} instead of {amount} is accepted, not rejected", async () => {
+  await query(`INSERT INTO companies (id, name, group_number, color_hex, pin_encrypted) VALUES ($1,'Co Split Fields',1,'#000000',$2)`, [COMPANY_ID, encrypt("1234")]);
+
+  const res = await authed("/admin/ussd-templates", {
+    method: "POST",
+    body: JSON.stringify({ companyId: COMPANY_ID, serviceName: "Split Fields", ussdCode: "*827*{number}*{amountWhole}*{amountCents}*{pin}#" }),
+  });
+  assert.equal(res.status, 201);
+});
+
+test("a template using {amountSplit} instead of {amount} is accepted, not rejected", async () => {
+  await query(`INSERT INTO companies (id, name, group_number, color_hex, pin_encrypted) VALUES ($1,'Co Amount Split',1,'#000000',$2)`, [COMPANY_ID, encrypt("1234")]);
+
+  const res = await authed("/admin/ussd-templates", {
+    method: "POST",
+    body: JSON.stringify({ companyId: COMPANY_ID, serviceName: "Amount Split", ussdCode: "*831*{number}*{amountSplit}*{pin}#" }),
+  });
+  assert.equal(res.status, 201);
+});
+
+test("a template with no amount placeholder at all is still rejected", async () => {
+  await query(`INSERT INTO companies (id, name, group_number, color_hex, pin_encrypted) VALUES ($1,'Co No Amount',1,'#000000',$2)`, [COMPANY_ID, encrypt("1234")]);
+
+  const res = await authed("/admin/ussd-templates", {
+    method: "POST",
+    body: JSON.stringify({ companyId: COMPANY_ID, serviceName: "No Amount", ussdCode: "*999*{number}*{pin}#" }),
+  });
+  assert.equal(res.status, 400);
+  const body = await asJson(res);
+  assert.match(body.error, /amount placeholder/i);
+});
+
+test("a template with only {amountWhole} and not {amountCents} is still rejected -- the pair is required together", async () => {
+  await query(`INSERT INTO companies (id, name, group_number, color_hex, pin_encrypted) VALUES ($1,'Co Half Split',1,'#000000',$2)`, [COMPANY_ID, encrypt("1234")]);
+
+  const res = await authed("/admin/ussd-templates", {
+    method: "POST",
+    body: JSON.stringify({ companyId: COMPANY_ID, serviceName: "Half Split", ussdCode: "*828*{number}*{amountWhole}*{pin}#" }),
+  });
+  assert.equal(res.status, 400);
+});
+
 test("setting deviceId without simSlot (or vice versa) is rejected rather than silently ignored", async () => {
   await query(`INSERT INTO companies (id, name, group_number, color_hex, pin_encrypted) VALUES ($1,'Co G',1,'#000000',$2)`, [COMPANY_ID, encrypt("1234")]);
 
