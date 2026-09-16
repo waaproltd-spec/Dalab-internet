@@ -24,7 +24,6 @@ import androidx.compose.material.icons.filled.Circle
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SettingsInputAntenna
-import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -75,7 +74,6 @@ private enum class OrdersFilter(val label: String, val apiStatus: String?) {
 fun OrdersListScreen(
     onOpenOrder: (Order) -> Unit,
     onOpenAlerts: () -> Unit = {},
-    onOpenSupport: () -> Unit = {},
 ) {
     val context = LocalContext.current
     var orders by remember { mutableStateOf<List<Order>>(emptyList()) }
@@ -90,7 +88,6 @@ fun OrdersListScreen(
     var balancesLoading by remember { mutableStateOf(true) }
     val connectionState by AgentEventBus.connectionState.collectAsState()
     val unreadAlerts by AgentAlertsState.unreadCount.collectAsState()
-    val waitingSupportCustomers by SupportQueueState.waitingCount.collectAsState()
     val scope = rememberCoroutineScope()
     val orchestrator = remember { UssdOrchestrator(context) }
 
@@ -224,13 +221,6 @@ fun OrdersListScreen(
 
             item {
                 AgentBalanceSection(balances = balances, loading = balancesLoading)
-            }
-
-            item {
-                QuickActionsRow(
-                    onOpenSupport = onOpenSupport,
-                    waitingSupportCustomers = waitingSupportCustomers,
-                )
             }
 
             item {
@@ -431,34 +421,6 @@ private fun NotificationBellButton(unreadCount: Int, onClick: () -> Unit) {
     }
 }
 
-// The money-facing actions an agent checks constantly but that used to
-// require a trip into More on every visit — promoted onto Home per the
-// redesign, everything else that's checked far less often (Packages,
-// Device, Diagnostics, ...) stays in More. Agent Support joined this row
-// (rather than staying More-only) specifically so a waiting customer is
-// impossible to miss — its badge is the one thing on Home that demands
-// immediate action, same reasoning as the notification bell up in the
-// header.
-@Composable
-private fun QuickActionsRow(
-    onOpenSupport: () -> Unit,
-    waitingSupportCustomers: Int,
-) {
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-        QuickActionCard(
-            icon = Icons.Filled.SupportAgent,
-            label = if (waitingSupportCustomers > 0) {
-                "Agent Support — $waitingSupportCustomers waiting"
-            } else {
-                "Agent Support"
-            },
-            onClick = onOpenSupport,
-            modifier = Modifier.fillMaxWidth(),
-            badgeCount = waitingSupportCustomers,
-        )
-    }
-}
-
 // Home screen's Agent Balance section, replacing the old Wallet/Money
 // Exchange quick-action cards -- both are still reachable from the More
 // tab (MainActivity's MoreScreen), unchanged. Payment Method (EVC Plus/
@@ -561,37 +523,6 @@ private fun BalanceCard(entry: AgentBalanceEntry, loading: Boolean, modifier: Mo
                 fontWeight = FontWeight.Bold,
                 color = DalabGreen,
             )
-        }
-    }
-}
-
-@Composable
-private fun QuickActionCard(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    label: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    badgeCount: Int = 0,
-) {
-    Surface(
-        onClick = onClick,
-        color = if (badgeCount > 0) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceVariant,
-        shape = RoundedCornerShape(14.dp),
-        modifier = modifier.heightIn(min = 56.dp),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (badgeCount > 0) {
-                BadgedBox(badge = { Badge(containerColor = Color(0xFFF87171)) { Text(if (badgeCount > 9) "9+" else badgeCount.toString()) } }) {
-                    Icon(icon, contentDescription = null, tint = DalabIndigo, modifier = Modifier.size(20.dp))
-                }
-            } else {
-                Icon(icon, contentDescription = null, tint = DalabIndigo, modifier = Modifier.size(20.dp))
-            }
-            Spacer(Modifier.width(10.dp))
-            Text(label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
         }
     }
 }

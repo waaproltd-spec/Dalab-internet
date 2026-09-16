@@ -608,7 +608,6 @@ private fun AgentHome(
                 HomeTab.HOME -> OrdersListScreen(
                     onOpenOrder = onOpenOrder,
                     onOpenAlerts = onOpenAlerts,
-                    onOpenSupport = { tab = HomeTab.SUPPORT; SupportUnreadState.clear() },
                 )
                 HomeTab.ORDERS -> AgentOrdersScreen(
                     onOpenShopOrder = onOpenAgentShopOrder,
