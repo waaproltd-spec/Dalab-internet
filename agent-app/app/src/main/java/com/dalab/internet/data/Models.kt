@@ -102,6 +102,19 @@ data class WalletBalanceEntry(
     val balanceUpdatedAt: String? = null,
 )
 
+/** GET /agent/balances — Home screen's Agent Balance section: always
+ * exactly 6 fixed rows (evc_plus/edahab under "method", hormuud/somnet/
+ * somtel/amtel under "company"), each summed company-wide across every
+ * device, not just this agent's own. [balance] is null (never a fake 0.0)
+ * for a provider with no confirmed balance anywhere yet — same "don't
+ * invent a number" rule the Wallet dashboard's own balances follow. */
+data class AgentBalanceEntry(
+    val providerKey: String,
+    val providerName: String,
+    val category: String,
+    val balance: Double? = null,
+)
+
 /** GET /agent/payment-transactions — every payment_transactions row this
  * agent's own SMS uploads produced, matched or not, dialed or not. */
 data class AgentPaymentTransaction(

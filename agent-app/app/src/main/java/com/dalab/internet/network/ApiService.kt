@@ -1,5 +1,6 @@
 package com.dalab.internet.network
 
+import com.dalab.internet.data.AgentBalanceEntry
 import com.dalab.internet.data.AgentDevice
 import com.dalab.internet.data.AgentProfile
 import com.dalab.internet.data.AgentReport
@@ -254,6 +255,12 @@ interface ApiService {
 
     @GET("agent/wallet-balances")
     suspend fun getWalletBalances(): Response<List<WalletBalanceEntry>>
+
+    // Home screen's Agent Balance section -- see AgentBalanceEntry's own doc
+    // comment for why this is a separate, company-wide-not-per-device call
+    // from getWalletBalances() above.
+    @GET("agent/balances")
+    suspend fun getAgentBalances(): Response<List<AgentBalanceEntry>>
 
     @GET("agent/payment-transactions")
     suspend fun getAgentPaymentTransactions(@Query("limit") limit: Int? = null): Response<List<AgentPaymentTransaction>>

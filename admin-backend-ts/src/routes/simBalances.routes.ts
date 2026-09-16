@@ -43,6 +43,45 @@ simBalancesRouter.get("/agent/wallet-balances", requireAuth("agent"), async (req
   sendJson(res, 200, rows);
 });
 
+// Agent Home screen's Agent Balance section -- the same 6 provider_key
+// buckets the Super Admin's Balance Dashboard totals company-wide
+// (simBalancesRouter's /admin/sim-balances/summary byProvider), not scoped
+// to any one device: an agent's own device only ever carries 1-2 SIM slots,
+// so a per-device view could never show all 6 at once the way the reference
+// design does. Hormuud's Evoucher-stock balance (provider_key
+// "hormuud_evoucher", added after this 6-way set was established) is
+// deliberately excluded -- this screen mirrors the original 6-card
+// Payment Method / Payment Company split, not every bucket the Balance
+// Dashboard now tracks.
+//
+// Always returns exactly these 6 rows, in this fixed order, regardless of
+// whether any sim_balances rows exist yet for a given key -- balance is
+// null (not 0) for a provider with no confirmed balance anywhere, same
+// "never fake a $0.00" rule SIM_BALANCE_LIST_SQL follows, so the app can
+// show "—" instead of a misleading zero.
+const AGENT_BALANCE_SUMMARY_SQL = `
+  SELECT keys.provider_key, keys.provider_name, keys.category, agg.total AS balance
+  FROM (VALUES
+    ('evc_plus', 'EVC Plus', 'method', 1),
+    ('edahab', 'eDahab', 'method', 2),
+    ('hormuud', 'Hormuud', 'company', 3),
+    ('somnet', 'Somnet', 'company', 4),
+    ('somtel', 'Somtel', 'company', 5),
+    ('amtel', 'Amtel', 'company', 6)
+  ) AS keys(provider_key, provider_name, category, sort_order)
+  LEFT JOIN (
+    SELECT COALESCE(provider_key, company_id) AS provider_key, SUM(balance) AS total
+    FROM sim_balances
+    WHERE balance IS NOT NULL
+    GROUP BY COALESCE(provider_key, company_id)
+  ) agg ON agg.provider_key = keys.provider_key
+  ORDER BY keys.sort_order
+`;
+
+simBalancesRouter.get("/agent/balances", requireAuth("agent"), async (_req, res) => {
+  sendJson(res, 200, await query(AGENT_BALANCE_SUMMARY_SQL));
+});
+
 // Every physical SIM slot (1 and 2) on every registered device, whenever
 // that slot isn't confirmed absent (sim1Present/sim2Present is TRUE or
 // unknown/NULL — only an explicit FALSE hides the row) — this is the

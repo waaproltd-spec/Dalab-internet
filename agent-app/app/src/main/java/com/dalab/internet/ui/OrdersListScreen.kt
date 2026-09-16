@@ -17,11 +17,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Circle
-import androidx.compose.material.icons.filled.CurrencyExchange
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SettingsInputAntenna
@@ -38,6 +37,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.dalab.internet.auth.SessionManager
+import com.dalab.internet.data.AgentBalanceEntry
 import com.dalab.internet.data.Order
 import com.dalab.internet.data.OrderStatus
 import com.dalab.internet.network.AgentEventBus
@@ -75,8 +75,6 @@ private enum class OrdersFilter(val label: String, val apiStatus: String?) {
 fun OrdersListScreen(
     onOpenOrder: (Order) -> Unit,
     onOpenAlerts: () -> Unit = {},
-    onOpenWallet: () -> Unit = {},
-    onOpenMoneyExchange: () -> Unit = {},
     onOpenSupport: () -> Unit = {},
 ) {
     val context = LocalContext.current
@@ -88,6 +86,8 @@ fun OrdersListScreen(
     var executingId by remember { mutableStateOf<String?>(null) }
     var bulkExecuting by remember { mutableStateOf(false) }
     var resultMessage by remember { mutableStateOf<String?>(null) }
+    var balances by remember { mutableStateOf<List<AgentBalanceEntry>>(emptyList()) }
+    var balancesLoading by remember { mutableStateOf(true) }
     val connectionState by AgentEventBus.connectionState.collectAsState()
     val unreadAlerts by AgentAlertsState.unreadCount.collectAsState()
     val waitingSupportCustomers by SupportQueueState.waitingCount.collectAsState()
@@ -121,7 +121,25 @@ fun OrdersListScreen(
             }
         }
     }
+
+    // Real balance data from the same SMS/manual balance pipeline the Super
+    // Admin's Balance Dashboard uses -- no mock or hardcoded values. Kept
+    // separate from refreshDashboard() above (notifications/support queue)
+    // since a balances-fetch failure shouldn't touch those badges' state,
+    // and vice versa -- each keeps its last known good value independently.
+    fun refreshBalances() {
+        scope.launch {
+            try {
+                balances = ApiClient.service.getAgentBalances().body().orEmpty()
+            } catch (_: Exception) {
+                // Cards just keep showing their last known balances on failure.
+            }
+            balancesLoading = false
+        }
+    }
     LaunchedEffect(Unit) { refreshDashboard() }
+    LaunchedEffect(Unit) { refreshBalances() }
+    LaunchedEffect(Unit) { AgentEventBus.orderEvents.collect { refreshBalances() } }
     LaunchedEffect(Unit) { AgentEventBus.orderEvents.collect { refreshDashboard() } }
 
     fun refresh() {
@@ -182,83 +200,106 @@ fun OrdersListScreen(
         }
     }
 
+    // A single LazyColumn for the whole screen (header through the order
+    // list) rather than a fixed Column wrapping an inner LazyColumn -- the
+    // Agent Balance section below is tall enough on a small phone that a
+    // fixed (non-scrolling) header+balances+filters block could overflow
+    // the screen with no way to reach the rest, which is exactly what
+    // "make the screen scrollable" is guarding against. Every previous
+    // fixed item becomes its own `item {}`; the order list itself is
+    // unchanged, just no longer its own independently-scrolling LazyColumn.
     Scaffold { padding ->
-        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
-            AgentHomeHeader(
-                agentName = remember { SessionManager.currentAgent()?.name },
-                listeningActive = listeningActive,
-                connectionState = connectionState,
-                lastSyncedAt = lastSyncedAt,
-                unreadAlerts = unreadAlerts,
-                onRefresh = { refresh(); refreshDashboard() },
-                onOpenAlerts = onOpenAlerts,
-            )
+        LazyColumn(modifier = Modifier.padding(padding).fillMaxSize()) {
+            item {
+                AgentHomeHeader(
+                    agentName = remember { SessionManager.currentAgent()?.name },
+                    listeningActive = listeningActive,
+                    connectionState = connectionState,
+                    lastSyncedAt = lastSyncedAt,
+                    unreadAlerts = unreadAlerts,
+                    onRefresh = { refresh(); refreshDashboard(); refreshBalances() },
+                    onOpenAlerts = onOpenAlerts,
+                )
+            }
 
-            QuickActionsRow(
-                onOpenWallet = onOpenWallet,
-                onOpenMoneyExchange = onOpenMoneyExchange,
-                onOpenSupport = onOpenSupport,
-                waitingSupportCustomers = waitingSupportCustomers,
-            )
+            item {
+                AgentBalanceSection(balances = balances, loading = balancesLoading)
+            }
 
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                OrdersFilter.entries.forEach { f ->
-                    FilterChip(selected = filter == f, onClick = { filter = f }, label = { Text(f.label) })
+            item {
+                QuickActionsRow(
+                    onOpenSupport = onOpenSupport,
+                    waitingSupportCustomers = waitingSupportCustomers,
+                )
+            }
+
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OrdersFilter.entries.forEach { f ->
+                        FilterChip(selected = filter == f, onClick = { filter = f }, label = { Text(f.label) })
+                    }
                 }
             }
 
             if (filter == OrdersFilter.PENDING && pendingIds.isNotEmpty()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    TextButton(onClick = {
-                        selectedIds = if (selectedIds.containsAll(pendingIds)) emptySet() else pendingIds
-                    }) {
-                        Text(if (selectedIds.containsAll(pendingIds)) "Deselect All Pending" else "Select All Pending")
-                    }
-                    if (selectedIds.isNotEmpty()) {
-                        Button(onClick = { executeSelectedBulk() }, enabled = !bulkExecuting) {
-                            Text(if (bulkExecuting) "Executing…" else "Fulfill ${selectedIds.size} Selected")
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        TextButton(onClick = {
+                            selectedIds = if (selectedIds.containsAll(pendingIds)) emptySet() else pendingIds
+                        }) {
+                            Text(if (selectedIds.containsAll(pendingIds)) "Deselect All Pending" else "Select All Pending")
+                        }
+                        if (selectedIds.isNotEmpty()) {
+                            Button(onClick = { executeSelectedBulk() }, enabled = !bulkExecuting) {
+                                Text(if (bulkExecuting) "Executing…" else "Fulfill ${selectedIds.size} Selected")
+                            }
                         }
                     }
                 }
             }
 
-            resultMessage?.let {
-                Text(it, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.labelMedium)
+            resultMessage?.let { message ->
+                item {
+                    Text(message, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.labelMedium)
+                }
             }
 
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                if (loading) {
-                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                } else if (orders.isEmpty()) {
+            if (loading) {
+                item {
+                    Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                }
+            } else if (orders.isEmpty()) {
+                item {
                     Text(
                         "No ${filter.label.lowercase()} orders right now.",
-                        modifier = Modifier.align(Alignment.Center),
+                        modifier = Modifier.fillMaxWidth().padding(32.dp),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                         style = MaterialTheme.typography.bodyMedium,
                     )
-                } else {
-                    LazyColumn {
-                        items(orders, key = { it.id }) { order ->
-                            OrderCard(
-                                order = order,
-                                selectable = filter == OrdersFilter.PENDING,
-                                selected = selectedIds.contains(order.id),
-                                onToggleSelected = {
-                                    selectedIds = if (selectedIds.contains(order.id)) selectedIds - order.id else selectedIds + order.id
-                                },
-                                onClick = { onOpenOrder(order) },
-                                onExecute = { simSlot -> executeOne(order, simSlot) },
-                                executing = executingId == order.id,
-                            )
-                            Divider()
-                        }
-                    }
+                }
+            } else {
+                items(orders, key = { it.id }) { order ->
+                    OrderCard(
+                        order = order,
+                        selectable = filter == OrdersFilter.PENDING,
+                        selected = selectedIds.contains(order.id),
+                        onToggleSelected = {
+                            selectedIds = if (selectedIds.contains(order.id)) selectedIds - order.id else selectedIds + order.id
+                        },
+                        onClick = { onOpenOrder(order) },
+                        onExecute = { simSlot -> executeOne(order, simSlot) },
+                        executing = executingId == order.id,
+                    )
+                    Divider()
                 }
             }
         }
@@ -400,27 +441,10 @@ private fun NotificationBellButton(unreadCount: Int, onClick: () -> Unit) {
 // header.
 @Composable
 private fun QuickActionsRow(
-    onOpenWallet: () -> Unit,
-    onOpenMoneyExchange: () -> Unit,
     onOpenSupport: () -> Unit,
     waitingSupportCustomers: Int,
 ) {
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-            QuickActionCard(
-                icon = Icons.Filled.AccountBalanceWallet,
-                label = "Wallet",
-                onClick = onOpenWallet,
-                modifier = Modifier.weight(1f),
-            )
-            QuickActionCard(
-                icon = Icons.Filled.CurrencyExchange,
-                label = "Money Exchange",
-                onClick = onOpenMoneyExchange,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        Spacer(Modifier.height(12.dp))
         QuickActionCard(
             icon = Icons.Filled.SupportAgent,
             label = if (waitingSupportCustomers > 0) {
@@ -432,6 +456,112 @@ private fun QuickActionsRow(
             modifier = Modifier.fillMaxWidth(),
             badgeCount = waitingSupportCustomers,
         )
+    }
+}
+
+// Home screen's Agent Balance section, replacing the old Wallet/Money
+// Exchange quick-action cards -- both are still reachable from the More
+// tab (MainActivity's MoreScreen), unchanged. Payment Method (EVC Plus/
+// eDahab -- balances used for receiving customer payments) and Payment
+// Company (Hormuud/Somnet/Somtel/Amtel -- balances used for sending data/
+// airtime) are always shown as their own labeled group, matching the
+// reference design, regardless of which ones this specific agent has ever
+// dialed through.
+@Composable
+private fun AgentBalanceSection(balances: List<AgentBalanceEntry>, loading: Boolean) {
+    val methodBalances = balances.filter { it.category == "method" }
+    val companyBalances = balances.filter { it.category == "company" }
+
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        BalanceGroupHeader(
+            title = "Payment Method (${methodBalances.size})",
+            subtitle = "Balances used for receiving customer payments",
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+            methodBalances.forEach { entry ->
+                BalanceCard(entry = entry, loading = loading, modifier = Modifier.weight(1f))
+            }
+        }
+
+        Spacer(Modifier.height(22.dp))
+
+        BalanceGroupHeader(
+            title = "Payment Company (${companyBalances.size})",
+            subtitle = "Balances used for sending data/airtime and services",
+        )
+        Spacer(Modifier.height(10.dp))
+        companyBalances.chunked(2).forEach { rowEntries ->
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+                rowEntries.forEach { entry ->
+                    BalanceCard(entry = entry, loading = loading, modifier = Modifier.weight(1f))
+                }
+                if (rowEntries.size == 1) Spacer(modifier = Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun BalanceGroupHeader(title: String, subtitle: String) {
+    Column {
+        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = DalabIndigo)
+        Spacer(Modifier.height(2.dp))
+        Text(subtitle, style = MaterialTheme.typography.bodySmall, color = Color(0xFF6B7280))
+    }
+}
+
+/** Maps a provider_key to its real bundled brand logo -- see
+ * app/src/main/res/drawable/logo_*.png, sourced from the same real brand
+ * marks confirmed against the customer-facing apps (never a mock/generic
+ * icon). Falls back to the DALAB wordmark only if a 7th key is ever added
+ * here without a matching asset. */
+@androidx.annotation.DrawableRes
+private fun logoResFor(providerKey: String): Int = when (providerKey) {
+    "evc_plus" -> R.drawable.logo_evc_plus
+    "edahab" -> R.drawable.logo_edahab
+    "hormuud" -> R.drawable.logo_hormuud
+    "somnet" -> R.drawable.logo_somnet
+    "somtel" -> R.drawable.logo_somtel
+    "amtel" -> R.drawable.logo_amtel
+    else -> R.drawable.dalab_logo
+}
+
+@Composable
+private fun BalanceCard(entry: AgentBalanceEntry, loading: Boolean, modifier: Modifier = Modifier) {
+    Surface(
+        color = Color.White,
+        shape = RoundedCornerShape(16.dp),
+        shadowElevation = 1.dp,
+        modifier = modifier,
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Image(
+                painter = painterResource(logoResFor(entry.providerKey)),
+                contentDescription = entry.providerName,
+                contentScale = ContentScale.Fit,
+                alignment = Alignment.CenterStart,
+                modifier = Modifier.height(28.dp).fillMaxWidth(),
+            )
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "${entry.providerName} Balance",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = DalabIndigo,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                when {
+                    loading -> "…"
+                    entry.balance != null -> "$ ${"%.2f".format(entry.balance)}"
+                    else -> "—"
+                },
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = DalabGreen,
+            )
+        }
     }
 }
 
