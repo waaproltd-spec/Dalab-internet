@@ -105,14 +105,19 @@ data class WalletBalanceEntry(
 /** GET /agent/balances — Home screen's Agent Balance section: always
  * exactly 6 fixed rows (evc_plus/edahab under "method", hormuud/somnet/
  * somtel/amtel under "company"), each summed company-wide across every
- * device, not just this agent's own. [balance] is null (never a fake 0.0)
- * for a provider with no confirmed balance anywhere yet — same "don't
- * invent a number" rule the Wallet dashboard's own balances follow. */
+ * device, not just this agent's own, from the exact same
+ * getProviderBalanceTotals() call the Super Admin's own Balance Dashboard
+ * uses (admin-backend-ts/src/utils/simBalances.ts) -- never a separately
+ * computed value. [balance] is always a real number, defaulting to 0.0 as
+ * the UI placeholder for "no confirmed balance yet" (product decision --
+ * unlike the Admin dashboard's own "Unknown" text for that same case, this
+ * screen always shows a dollar figure); the backend never invents a
+ * database balance to produce it, only a per-request display default. */
 data class AgentBalanceEntry(
     val providerKey: String,
     val providerName: String,
     val category: String,
-    val balance: Double? = null,
+    val balance: Double = 0.0,
 )
 
 /** GET /agent/payment-transactions — every payment_transactions row this

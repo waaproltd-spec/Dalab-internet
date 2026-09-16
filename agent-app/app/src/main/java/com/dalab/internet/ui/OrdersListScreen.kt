@@ -514,11 +514,7 @@ private fun BalanceCard(entry: AgentBalanceEntry, loading: Boolean, modifier: Mo
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                when {
-                    loading -> "…"
-                    entry.balance != null -> "$ ${"%.2f".format(entry.balance)}"
-                    else -> "—"
-                },
+                if (loading) "…" else "$ ${"%.2f".format(entry.balance)}",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
                 color = DalabGreen,

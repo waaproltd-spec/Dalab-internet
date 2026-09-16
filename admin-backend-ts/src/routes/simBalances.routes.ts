@@ -4,7 +4,7 @@ import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { recordActivity } from "../utils/activityLog.js";
-import { applyBalanceUpdate, BALANCE_SENDER_ID } from "../utils/simBalances.js";
+import { applyBalanceUpdate, BALANCE_SENDER_ID, getProviderBalanceTotals } from "../utils/simBalances.js";
 
 // The 6 provider_key values the Balance Dashboard recognizes — same set
 // BALANCE_SENDER_ID (simBalances.ts) is keyed by, so there's one single
@@ -44,10 +44,12 @@ simBalancesRouter.get("/agent/wallet-balances", requireAuth("agent"), async (req
 });
 
 // Agent Home screen's Agent Balance section -- the same 6 provider_key
-// buckets the Super Admin's Balance Dashboard totals company-wide
-// (simBalancesRouter's /admin/sim-balances/summary byProvider), not scoped
-// to any one device: an agent's own device only ever carries 1-2 SIM slots,
-// so a per-device view could never show all 6 at once the way the reference
+// buckets the Super Admin's Balance Dashboard totals company-wide, from the
+// exact same getProviderBalanceTotals() call /admin/sim-balances/summary
+// below uses -- not a separate/duplicated calculation, so the two can never
+// show different numbers for the same provider. Not scoped to any one
+// device: an agent's own device only ever carries 1-2 SIM slots, so a
+// per-device view could never show all 6 at once the way the reference
 // design does. Hormuud's Evoucher-stock balance (provider_key
 // "hormuud_evoucher", added after this 6-way set was established) is
 // deliberately excluded -- this screen mirrors the original 6-card
@@ -55,31 +57,32 @@ simBalancesRouter.get("/agent/wallet-balances", requireAuth("agent"), async (req
 // Dashboard now tracks.
 //
 // Always returns exactly these 6 rows, in this fixed order, regardless of
-// whether any sim_balances rows exist yet for a given key -- balance is
-// null (not 0) for a provider with no confirmed balance anywhere, same
-// "never fake a $0.00" rule SIM_BALANCE_LIST_SQL follows, so the app can
-// show "—" instead of a misleading zero.
-const AGENT_BALANCE_SUMMARY_SQL = `
-  SELECT keys.provider_key, keys.provider_name, keys.category, agg.total AS balance
-  FROM (VALUES
-    ('evc_plus', 'EVC Plus', 'method', 1),
-    ('edahab', 'eDahab', 'method', 2),
-    ('hormuud', 'Hormuud', 'company', 3),
-    ('somnet', 'Somnet', 'company', 4),
-    ('somtel', 'Somtel', 'company', 5),
-    ('amtel', 'Amtel', 'company', 6)
-  ) AS keys(provider_key, provider_name, category, sort_order)
-  LEFT JOIN (
-    SELECT COALESCE(provider_key, company_id) AS provider_key, SUM(balance) AS total
-    FROM sim_balances
-    WHERE balance IS NOT NULL
-    GROUP BY COALESCE(provider_key, company_id)
-  ) agg ON agg.provider_key = keys.provider_key
-  ORDER BY keys.sort_order
-`;
+// whether any sim_balances rows exist yet for a given key. balance is
+// always a number (never null) -- unlike the Admin dashboard, which shows
+// literal "Unknown" text for a provider with zero confirmed SIMs, the Agent
+// card always shows a dollar figure, with 0 standing in as the placeholder
+// for "nothing confirmed yet" (product decision: simpler always-numeric
+// cards on the smaller screen). This never invents balance data in the
+// database -- getProviderBalanceTotals() itself already COALESCEs a
+// providerless/unconfirmed total to 0 at the SQL level, exactly like the
+// Admin dashboard's own providerTotal() helper does when rendering the same
+// underlying total.
+const AGENT_BALANCE_CARDS: Array<{ providerKey: string; providerName: string; category: "method" | "company" }> = [
+  { providerKey: "evc_plus", providerName: "EVC Plus", category: "method" },
+  { providerKey: "edahab", providerName: "eDahab", category: "method" },
+  { providerKey: "hormuud", providerName: "Hormuud", category: "company" },
+  { providerKey: "somnet", providerName: "Somnet", category: "company" },
+  { providerKey: "somtel", providerName: "Somtel", category: "company" },
+  { providerKey: "amtel", providerName: "Amtel", category: "company" },
+];
 
 simBalancesRouter.get("/agent/balances", requireAuth("agent"), async (_req, res) => {
-  sendJson(res, 200, await query(AGENT_BALANCE_SUMMARY_SQL));
+  const totals = await getProviderBalanceTotals();
+  const cards = AGENT_BALANCE_CARDS.map((card) => ({
+    ...card,
+    balance: Number(totals.find((t) => t.provider_key === card.providerKey)?.total ?? 0),
+  }));
+  sendJson(res, 200, cards);
 });
 
 // Every physical SIM slot (1 and 2) on every registered device, whenever
@@ -154,13 +157,11 @@ simBalancesRouter.get("/admin/sim-balances/summary", requireStaff(), async (_req
   // different rows, and this total must still be the single correct sum
   // for that provider_key's card, not silently split across rows the
   // dashboard's own lookup-by-key would only find one of.
-  const byProvider = await query(
-    `SELECT COALESCE(sb.provider_key, sb.company_id) AS provider_key, COALESCE(SUM(sb.balance), 0) AS total,
-            COUNT(*) AS sim_count, COUNT(sb.balance) AS known_sim_count
-     FROM sim_balances sb
-     GROUP BY COALESCE(sb.provider_key, sb.company_id)
-     ORDER BY total DESC`
-  );
+  //
+  // getProviderBalanceTotals() (simBalances.ts) is the exact same call the
+  // Agent App's own GET /agent/balances makes below -- one shared query,
+  // not two copies that could quietly drift apart.
+  const byProvider = await getProviderBalanceTotals();
   const byDevice = await query(
     `SELECT sb.device_id, d.name AS device_name, COALESCE(SUM(sb.balance), 0) AS total, COUNT(*) AS sim_count
      FROM sim_balances sb

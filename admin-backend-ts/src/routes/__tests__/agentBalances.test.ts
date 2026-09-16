@@ -15,6 +15,7 @@ import express from "express";
 import "express-async-errors";
 import { query, pool } from "../../db/pool.js";
 import { signAccessToken } from "../../auth/crypto.js";
+import { getProviderBalanceTotals } from "../../utils/simBalances.js";
 import { simBalancesRouter } from "../simBalances.routes.js";
 
 const app = express();
@@ -70,7 +71,7 @@ async function asJson(res: Response): Promise<any> {
   return res.json();
 }
 
-test("with no sim_balances rows at all, still returns exactly the 6 fixed cards, each with a null balance", async () => {
+test("with no sim_balances rows at all, still returns exactly the 6 fixed cards, each defaulting to a $0.00 placeholder", async () => {
   const res = await authed("/agent/balances");
   assert.equal(res.status, 200);
   const body = await asJson(res);
@@ -78,7 +79,7 @@ test("with no sim_balances rows at all, still returns exactly the 6 fixed cards,
     body.map((r: any) => r.providerKey),
     ["evc_plus", "edahab", "hormuud", "somnet", "somtel", "amtel"]
   );
-  for (const row of body) assert.equal(row.balance, null, `${row.providerKey} should be null, not a fake 0`);
+  for (const row of body) assert.equal(Number(row.balance), 0, `${row.providerKey} should default to 0`);
   assert.deepEqual(
     body.map((r: any) => r.category),
     ["method", "method", "company", "company", "company", "company"]
@@ -126,14 +127,27 @@ test("hormuud_evoucher is excluded entirely -- this is the original 6-card set, 
   assert.ok(!body.some((r: any) => r.providerKey === "hormuud_evoucher"));
 });
 
-test("a row with an unconfirmed (NULL) balance does not turn a provider's total into a fake 0", async () => {
+test("a row with an unconfirmed (NULL) balance shows the same $0.00 placeholder as no row at all, matching the Admin dashboard's own providerTotal() fallback", async () => {
   await query(`INSERT INTO sim_balances (id, device_id, sim_slot, provider_key, balance) VALUES ($1,$2,1,'somtel',NULL)`, [
     randomUUID(),
     DEVICE_A,
   ]);
   const res = await authed("/agent/balances");
   const body = await asJson(res);
-  assert.equal(body.find((r: any) => r.providerKey === "somtel").balance, null);
+  assert.equal(Number(body.find((r: any) => r.providerKey === "somtel").balance), 0);
+});
+
+test("matches the Admin Balance Dashboard's own getProviderBalanceTotals() value exactly for a real confirmed balance", async () => {
+  await query(`INSERT INTO sim_balances (id, device_id, sim_slot, provider_key, balance) VALUES ($1,$2,1,'evc_plus',125.19)`, [
+    randomUUID(),
+    DEVICE_A,
+  ]);
+  const [agentRes, totals] = await Promise.all([authed("/agent/balances"), getProviderBalanceTotals()]);
+  const agentBody = await asJson(agentRes);
+  const adminTotal = Number(totals.find((t) => t.provider_key === "evc_plus")?.total ?? 0);
+  const agentTotal = Number(agentBody.find((r: any) => r.providerKey === "evc_plus").balance);
+  assert.equal(agentTotal, 125.19);
+  assert.equal(agentTotal, adminTotal, "Agent and Admin must report the exact same number for the same provider");
 });
 
 test("requires agent auth -- an unauthenticated request is rejected", async () => {
