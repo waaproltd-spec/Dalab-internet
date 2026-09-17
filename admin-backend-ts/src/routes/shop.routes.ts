@@ -9,7 +9,7 @@ import { parseDataUri } from "../utils/dataUri.js";
 import { notifyCustomer } from "../services/customerNotify.js";
 import { sendPushToAllAgents } from "../services/push.js";
 import { recordActivity } from "../utils/activityLog.js";
-import { formatUssdAmount } from "../utils/ussdFormatting.js";
+import { formatEvcDahabUssdAmount } from "../utils/ussdFormatting.js";
 import { validateMobileNumber } from "../lib/phoneValidation.js";
 
 // Shop: DALAB's 4th independent customer-facing service (Internet | eBadal
@@ -796,13 +796,14 @@ shopRouter.post(
       });
 
       const order = await queryOne<{ total_amount: string }>(`SELECT ${SHOP_ORDER_COLUMNS} FROM shop_orders WHERE id=$1`, [result.orderId]);
-      // formatUssdAmount converts the decimal total into the dollars[*cents]
-      // segments every provider's USSD menu actually expects -- "." isn't a
-      // valid USSD/MMI dial character, so a raw "49.99" would silently
-      // produce a malformed dial string (see ussdFormatting.ts's own header
-      // comment for the real production incident this same bug caused for
-      // Internet Store before it was fixed).
-      const dialUssd = method.ussd_template.replace("{amount}", formatUssdAmount(Number(order!.total_amount)));
+      // Shop's payment methods are EVC Plus/eDahab only (shop_payment_methods'
+      // CHECK constraint) -- the exact same *712*/*110* Dial-to-Pay carrier
+      // menu Money Exchange payouts and VIP Numbers use, so this must go
+      // through formatEvcDahabUssdAmount (the dollars[*cents] shape that
+      // menu actually expects), never formatUssdAmount (Internet Store's
+      // own, different top-up menus only -- see each function's own header
+      // comment in ussdFormatting.ts).
+      const dialUssd = method.ussd_template.replace("{amount}", formatEvcDahabUssdAmount(Number(order!.total_amount)));
       sendJson(res, result.duplicate ? 200 : 201, { ...order, items: await loadOrderItems(result.orderId), dialUssd });
     } catch (err: any) {
       if (err?.status) return sendJson(res, err.status, { error: err.message });
@@ -877,7 +878,7 @@ shopRouter.post("/shop/orders/:id/retry-payment", requireAuth("customer"), async
   }
   const method = await queryOne<{ ussd_template: string }>(`SELECT ussd_template FROM shop_payment_methods WHERE method=$1`, [order.payment_method]);
   if (!method) return sendJson(res, 409, { error: "The payment method on this order is no longer available — please contact support" });
-  const dialUssd = method.ussd_template.replace("{amount}", formatUssdAmount(Number(order.total_amount)));
+  const dialUssd = method.ussd_template.replace("{amount}", formatEvcDahabUssdAmount(Number(order.total_amount)));
   sendJson(res, 200, { dialUssd });
 });
 

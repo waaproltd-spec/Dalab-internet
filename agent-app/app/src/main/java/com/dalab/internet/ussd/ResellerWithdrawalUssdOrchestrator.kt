@@ -209,17 +209,34 @@ class ResellerWithdrawalUssdOrchestrator(context: Context, private val maxAttemp
  * problem: "*726*617080008*1*05*8233#" (dollars and cents as two separate
  * *-delimited tokens instead) succeeded for real — the carrier's own
  * outgoing confirmation SMS showed exactly $1.05 sent and the SIM balance
- * dropping by that amount. So {amount} in a payout template now expands to
- * "<dollars>*<cents>" (e.g. "1*05" for $1.05), not a plain decimal string —
- * the template's own surrounding literal "*"s (e.g.
+ * dropping by that amount. So {amount} in a payout template expands to
+ * "<dollars>*<cents>" (e.g. "1*05" for $1.05) when both are present — the
+ * template's own surrounding literal "*"s (e.g.
  * "*726*{number}*{amount}*8233#") are what turn that into the carrier's
- * expected four-segment amount field once substituted.
+ * expected multi-segment amount field once substituted.
  *
- * Only Hormuud has a payout_ussd_template configured today, so this is the
- * only real-world case this has been verified against — if a future
- * company's carrier genuinely wants plain decimal notation instead, that
- * would need its own per-company flag rather than assuming every provider
- * shares Hormuud's split-token requirement.
+ * A WHOLE-DOLLAR amount must never carry a spurious "*00" cents segment,
+ * the same rule the backend's formatUssdAmount/formatEvcDahabUssdAmount
+ * (admin-backend-ts/src/utils/ussdFormatting.ts) already apply to every
+ * other USSD amount field in the app — live-reported bug: a real whole-
+ * dollar EVC Plus dial ("*712*610338686*42*00#", same underlying
+ * "unconditional dollars*cents split" shape this function used to always
+ * produce) was rejected by the carrier over that exact extra field. Three
+ * cases:
+ *
+ *   1. No cents: just the dollar figure — "1.00" -> "1", "42.00" -> "42".
+ *      Never "1*00"/"42*00".
+ *   2. Cents but no dollars (a sub-$1 amount): just the 2-digit cents
+ *      figure alone, no leading "0*" — "0.05" -> "05". Never "0*05".
+ *   3. Both dollars and cents: the two *-delimited segments as before —
+ *      "1.05" -> "1*05".
+ *
+ * Only Hormuud has a payout_ussd_template configured today, so the split-
+ * token-when-there-are-cents case is the only real-world shape this has
+ * been verified against — if a future company's carrier genuinely wants
+ * plain decimal notation instead, that would need its own per-company flag
+ * rather than assuming every provider shares Hormuud's split-token
+ * requirement.
  */
 internal fun formatHormuudSplitAmount(amount: Double): String {
     // Cents are computed by rounding amount*100 to the nearest whole cent
@@ -231,7 +248,9 @@ internal fun formatHormuudSplitAmount(amount: Double): String {
     val totalCents = Math.round(amount * 100)
     val dollars = totalCents / 100
     val cents = totalCents % 100
-    return "$dollars*${cents.toString().padStart(2, '0')}"
+    if (cents == 0L) return dollars.toString()
+    val centsSegment = cents.toString().padStart(2, '0')
+    return if (dollars == 0L) centsSegment else "$dollars*$centsSegment"
 }
 
 /** Pulled out of [ResellerWithdrawalUssdOrchestrator.processLocked] as a
