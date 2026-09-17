@@ -1387,7 +1387,7 @@ shopRouter.put("/admin/shop/products/:id", requirePermission("shop.manage"), asy
       await query(`UPDATE shop_stock_notify_requests SET notified=true, notified_at=now() WHERE product_id=$1 AND notified=false`, [req.params.id]);
       const productName = name?.trim() || existing.name;
       for (const sub of subscribers) {
-        await notifyCustomer(sub.customer_id, "shop_back_in_stock", "Back in Stock", `"${productName}" is back in stock!`);
+        await notifyCustomer(sub.customer_id, "shop_back_in_stock", "Alaabta Waa Dib Loo Helay", `"${productName}" ayaa dib loo helay!`);
       }
     }
   }
@@ -1854,8 +1854,8 @@ shopRouter.post("/agent/shop/orders/:id/complete", requireAuth("agent"), async (
   await notifyCustomer(
     existing.customer_id,
     "shop_order_update",
-    "Order Delivered",
-    `Order ${req.params.id} has been delivered. Thank you for shopping with DALAB!`
+    "Dalabka Waa La Gaarsiiyay",
+    `Dalabka ${req.params.id} waa la gaarsiiyay. Waad ku mahadsan tahay inaad ka iibsatay DALAB!`
   );
   sendJson(res, 200, await queryOne(`${SHOP_ORDER_LIST_SELECT} WHERE so.id=$1`, [req.params.id]));
 });
@@ -1893,7 +1893,7 @@ shopRouter.put("/admin/shop/orders/:id/payment-status", requirePermission("shop.
   if (existing.status === "pending") {
     await query(`INSERT INTO shop_order_status_history (order_id, status, note) VALUES ($1,'processing','Payment confirmed')`, [req.params.id]);
   }
-  await notifyCustomer(existing.customer_id, "shop_order_update", "Order Confirmed", `Your payment for order ${req.params.id} has been confirmed. We're preparing it now.`);
+  await notifyCustomer(existing.customer_id, "shop_order_update", "Dalabka Waa La Xaqiijiyey", `Lacag-bixinta dalabka ${req.params.id} waa la xaqiijiyey. Hadda waan diyaarinaynaa.`);
   // Broadcast to every agent device -- Shop orders carry no assigned-agent
   // column (customer-initiated checkout, not agent-created), so any agent
   // may need to know a new paid order exists. Real, push-only signal (see
@@ -1907,13 +1907,13 @@ shopRouter.put("/admin/shop/orders/:id/payment-status", requirePermission("shop.
 });
 
 const STATUS_NOTIFICATIONS: Record<string, { title: string; body: (id: string) => string }> = {
-  processing: { title: "Order Processing", body: (id) => `Order ${id} is being prepared.` },
-  shipped: { title: "Order Shipped", body: (id) => `Order ${id} is on its way.` },
-  delivered: { title: "Order Delivered", body: (id) => `Order ${id} has been delivered. Thank you for shopping with DALAB!` },
-  cancelled: { title: "Order Cancelled", body: (id) => `Order ${id} has been cancelled.` },
-  failed: { title: "Order Failed", body: (id) => `Order ${id} could not be completed.` },
-  returned: { title: "Order Returned", body: (id) => `Order ${id} has been marked as returned.` },
-  refunded: { title: "Order Refunded", body: (id) => `Order ${id} has been refunded.` },
+  processing: { title: "Dalabka Waa La Diyaarinayaa", body: (id) => `Dalabka ${id} ayaa la diyaarinayaa.` },
+  shipped: { title: "Dalabka Waa La Diray", body: (id) => `Dalabka ${id} ayaa jidka ku sugan.` },
+  delivered: { title: "Dalabka Waa La Gaarsiiyay", body: (id) => `Dalabka ${id} waa la gaarsiiyay. Waad ku mahadsan tahay inaad ka iibsatay DALAB!` },
+  cancelled: { title: "Dalabka Waa La Joojiyay", body: (id) => `Dalabka ${id} waa la joojiyay.` },
+  failed: { title: "Dalabku Wuu Fashilmay", body: (id) => `Dalabka ${id} lama dhammaystiri karin.` },
+  returned: { title: "Dalabka Waa La Soo Celiyay", body: (id) => `Dalabka ${id} waxaa loo calaamadeeyay soo celin.` },
+  refunded: { title: "Lacagtii Waa Laguu Celiyay", body: (id) => `Dalabka ${id} lacagtiisii waa laguu celiyay.` },
 };
 
 // Staged delivery tracking: pending -> processing -> shipped -> delivered,
@@ -2036,11 +2036,20 @@ shopRouter.get("/admin/shop/returns/:id", requirePermission("shop.manage"), asyn
   sendJson(res, 200, row);
 });
 
+// Somali noun for each of RETURN_TYPES ("return"/"exchange"/"refund"),
+// used only to build the notification body below -- the stored type value
+// itself (validated against RETURN_TYPES) is left untouched.
+const RETURN_TYPE_SOMALI: Record<string, string> = {
+  return: "soo-celinta",
+  exchange: "isdhaafsiga",
+  refund: "lacag-celinta",
+};
+
 const RETURN_STATUS_NOTIFICATIONS: Record<string, { title: string; body: (type: string) => string }> = {
-  approved: { title: "Request Approved", body: (t) => `Your ${t} request has been approved.` },
-  rejected: { title: "Request Rejected", body: (t) => `Your ${t} request was not approved.` },
-  processing: { title: "Request Processing", body: (t) => `Your ${t} request is being processed.` },
-  completed: { title: "Request Completed", body: (t) => `Your ${t} request has been completed.` },
+  approved: { title: "Codsigu Waa La Aqbalay", body: (t) => `Codsigaaga ${RETURN_TYPE_SOMALI[t] ?? t} waa la ogolaaday.` },
+  rejected: { title: "Codsigu Waa La Diiday", body: (t) => `Codsigaaga ${RETURN_TYPE_SOMALI[t] ?? t} lama ogolaan.` },
+  processing: { title: "Codsiga Waa La Shaqeynayaa", body: (t) => `Codsigaaga ${RETURN_TYPE_SOMALI[t] ?? t} ayaa la shaqeynayaa.` },
+  completed: { title: "Codsigu Waa La Dhammeeyay", body: (t) => `Codsigaaga ${RETURN_TYPE_SOMALI[t] ?? t} waa la dhammeystiray.` },
 };
 
 shopRouter.put("/admin/shop/returns/:id/status", requirePermission("shop.manage"), async (req, res) => {

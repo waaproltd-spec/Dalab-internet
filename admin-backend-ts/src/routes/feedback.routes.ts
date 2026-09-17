@@ -24,6 +24,20 @@ const FEEDBACK_CATEGORIES = [
 
 const FEEDBACK_STATUSES = ["pending", "reviewed", "implemented", "rejected"];
 
+// Display-only Somali label for each FEEDBACK_CATEGORIES entry, used when
+// building the "your submission was updated" notification below -- the
+// stored/validated category value itself is left in English so it never
+// has to change in lockstep with the Customer App's own category list.
+const FEEDBACK_CATEGORY_SOMALI: Record<string, string> = {
+  "App Crashes Frequently": "App-ku si joogto ah ayuu u xirmayaa",
+  "Unable to Complete Payment": "Lacag-bixinta lama dhammaystiri karin",
+  "Internet Package Problem": "Dhibaato ku aaddan Xirmada Internetka",
+  "Payment Verification Issue": "Dhibaato ku aaddan Xaqiijinta Lacag-bixinta",
+  "Make Suggestion": "Soo Jeedin",
+  Feedback: "Jawaab-celin",
+  Other: "Kale",
+};
+
 const FEEDBACK_SELECT = `
   SELECT f.*, c.name AS customer_name, c.phone AS customer_phone
   FROM feedback f
@@ -115,18 +129,21 @@ feedbackRouter.put("/admin/feedback/:id", requirePermission("feedback.manage"), 
   // among the four required statuses) tells the customer their submission
   // was actually looked at.
   if (status && status !== "pending" && status !== existing.status) {
+    // Somali verb-phrase completing "Codsigaaga 'X' waa la ___." for each
+    // status -- only used to build this notification's text, never stored,
+    // so it can't drift from FEEDBACK_STATUSES' own validated values above.
     const STATUS_LABEL: Record<string, string> = {
-      reviewed: "reviewed",
-      implemented: "implemented",
-      rejected: "rejected",
+      reviewed: "eegay",
+      implemented: "hirgeliyey",
+      rejected: "diiday",
     };
     await query(
       `INSERT INTO notifications (id, type, title, body, customer_id)
        VALUES ($1,'feedback_update',$2,$3,$4)`,
       [
         randomUUID(),
-        "Update on your feedback",
-        `Your "${existing.category}" submission has been ${STATUS_LABEL[status] ?? status}.${adminReply ? ` "${adminReply}"` : ""}`,
+        "Cusboonaysiin ku saabsan jawaab-celintaada",
+        `Codsigaaga "${FEEDBACK_CATEGORY_SOMALI[existing.category] ?? existing.category}" waa la ${STATUS_LABEL[status] ?? status}.${adminReply ? ` "${adminReply}"` : ""}`,
         existing.customer_id,
       ]
     );

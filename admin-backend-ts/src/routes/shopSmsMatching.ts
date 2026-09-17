@@ -131,8 +131,8 @@ export async function confirmShopOrderPaidViaSms(
   await notifyCustomer(
     claimed.customer_id,
     "shop_order_update",
-    "Order Confirmed",
-    `Your payment for order ${order.id} has been confirmed. We're preparing it now.`
+    "Dalabka Waa La Xaqiijiyey",
+    `Lacag-bixinta dalabka ${order.id} waa la xaqiijiyey. Hadda waan diyaarinaynaa.`
   );
   await sendPushToAllAgents({
     title: "🛒 Shop Order Paid",
