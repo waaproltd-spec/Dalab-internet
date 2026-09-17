@@ -3,6 +3,7 @@ import { query, queryOne } from "../db/pool.js";
 import { requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
+import { parseDataUri } from "../utils/dataUri.js";
 
 export const categoriesRouter = Router();
 
@@ -14,6 +15,11 @@ function slugify(name: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
+// icon_data must never reach any client on the list routes below — same
+// "has_X boolean, raw bytes only through their own dedicated route" pattern
+// as companies.logo_data/has_logo and packages.image_data/has_image.
+const CATEGORY_COLUMNS = `id, company_id, slug, name, status, (icon_data IS NOT NULL) AS has_icon, created_at, updated_at`;
+
 // Public: the Customer/Agent apps' package browsing already groups by the
 // free-text categoryId on packages; this exposes the managed name/status for
 // any UI that wants a nicer label than the raw slug, and to filter out
@@ -23,17 +29,31 @@ categoriesRouter.get("/companies/:id/categories", async (req, res) => {
     res,
     200,
     await query(
-      `SELECT * FROM service_categories WHERE company_id=$1 AND status='enabled' ORDER BY name`,
+      `SELECT ${CATEGORY_COLUMNS} FROM service_categories WHERE company_id=$1 AND status='enabled' ORDER BY name`,
       [req.params.id]
     )
   );
 });
 
+// Public — served by category id (not a secret), same reasoning as
+// companies/:id/logo and packages/:id/image: an <img src> tag can't send an
+// Authorization header anyway.
+categoriesRouter.get("/categories/:id/icon", async (req, res) => {
+  const row = await queryOne<{ icon_data: Buffer | null; icon_mime_type: string | null }>(
+    `SELECT icon_data, icon_mime_type FROM service_categories WHERE id=$1`,
+    [req.params.id]
+  );
+  if (!row || !row.icon_data) return sendJson(res, 404, { error: "Icon not found" });
+  res.setHeader("Content-Type", row.icon_mime_type || "image/png");
+  res.setHeader("Cache-Control", "public, max-age=3600");
+  res.send(row.icon_data);
+});
+
 categoriesRouter.get("/admin/categories", requireStaff(), async (req, res) => {
   const { companyId } = req.query;
   const rows = companyId
-    ? await query(`SELECT * FROM service_categories WHERE company_id=$1 ORDER BY name`, [companyId])
-    : await query(`SELECT * FROM service_categories ORDER BY company_id, name`);
+    ? await query(`SELECT ${CATEGORY_COLUMNS} FROM service_categories WHERE company_id=$1 ORDER BY name`, [companyId])
+    : await query(`SELECT ${CATEGORY_COLUMNS} FROM service_categories ORDER BY company_id, name`);
   sendJson(res, 200, rows);
 });
 
@@ -51,11 +71,13 @@ categoriesRouter.post("/admin/categories", requirePermission("categories.manage"
     return sendJson(res, 409, { error: "A category with this name already exists for this company" });
   }
 
-  const row = await queryOne(
-    `INSERT INTO service_categories (company_id, slug, name) VALUES ($1,$2,$3) RETURNING *`,
-    [companyId, slug, name]
-  );
-  sendJson(res, 201, row);
+  const id = (
+    await queryOne<{ id: string }>(
+      `INSERT INTO service_categories (company_id, slug, name) VALUES ($1,$2,$3) RETURNING id`,
+      [companyId, slug, name]
+    )
+  )!.id;
+  sendJson(res, 201, await queryOne(`SELECT ${CATEGORY_COLUMNS} FROM service_categories WHERE id=$1`, [id]));
 });
 
 categoriesRouter.put("/admin/categories/:id", requirePermission("categories.manage"), async (req, res) => {
@@ -72,7 +94,7 @@ categoriesRouter.put("/admin/categories/:id", requirePermission("categories.mana
     `UPDATE service_categories SET name=$1, status=$2, updated_at=now() WHERE id=$3`,
     [name, status, req.params.id]
   );
-  sendJson(res, 200, await queryOne(`SELECT * FROM service_categories WHERE id=$1`, [req.params.id]));
+  sendJson(res, 200, await queryOne(`SELECT ${CATEGORY_COLUMNS} FROM service_categories WHERE id=$1`, [req.params.id]));
 });
 
 categoriesRouter.put("/admin/categories/:id/status", requirePermission("categories.manage"), async (req, res) => {
@@ -85,7 +107,30 @@ categoriesRouter.put("/admin/categories/:id/status", requirePermission("categori
     [status, req.params.id]
   );
   if (result.length === 0) return sendJson(res, 404, { error: "Category not found" });
-  sendJson(res, 200, await queryOne(`SELECT * FROM service_categories WHERE id=$1`, [req.params.id]));
+  sendJson(res, 200, await queryOne(`SELECT ${CATEGORY_COLUMNS} FROM service_categories WHERE id=$1`, [req.params.id]));
+});
+
+// Dedicated sub-resource rather than a field on POST/PUT /admin/categories,
+// matching how the company logo (companies.routes.ts) and package image
+// are each managed separately from the rest of their parent's fields.
+categoriesRouter.put("/admin/categories/:id/icon", requirePermission("categories.manage"), async (req, res) => {
+  const parsed = parseDataUri(req.body.iconBase64);
+  if (!parsed) return sendJson(res, 400, { error: "iconBase64 must be a data:<mime>;base64,<data> string" });
+  const result = await query(
+    `UPDATE service_categories SET icon_data=$1, icon_mime_type=$2, updated_at=now() WHERE id=$3 RETURNING id`,
+    [parsed.data, parsed.mimeType, req.params.id]
+  );
+  if (result.length === 0) return sendJson(res, 404, { error: "Category not found" });
+  sendJson(res, 200, await queryOne(`SELECT ${CATEGORY_COLUMNS} FROM service_categories WHERE id=$1`, [req.params.id]));
+});
+
+categoriesRouter.delete("/admin/categories/:id/icon", requirePermission("categories.manage"), async (req, res) => {
+  const result = await query(
+    `UPDATE service_categories SET icon_data=NULL, icon_mime_type=NULL, updated_at=now() WHERE id=$1 RETURNING id`,
+    [req.params.id]
+  );
+  if (result.length === 0) return sendJson(res, 404, { error: "Category not found" });
+  sendJson(res, 200, await queryOne(`SELECT ${CATEGORY_COLUMNS} FROM service_categories WHERE id=$1`, [req.params.id]));
 });
 
 // Deleting a category never touches existing packages — categoryId on
