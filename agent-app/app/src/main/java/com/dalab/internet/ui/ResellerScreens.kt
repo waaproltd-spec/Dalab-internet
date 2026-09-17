@@ -73,6 +73,7 @@ fun ResellerScreen(onBack: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ResellerLoginScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
     var resellerId by remember { mutableStateOf("") }
@@ -170,6 +171,7 @@ private fun ResellerLoginScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) 
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ResellerDashboardScreen(onBack: () -> Unit, onLoggedOut: () -> Unit) {
     val scope = rememberCoroutineScope()
