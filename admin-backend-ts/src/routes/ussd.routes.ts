@@ -13,6 +13,7 @@ import { creditReferralBonusIfNeeded } from "../utils/referrals.js";
 import { refundRedeemedPointsIfNeeded } from "../utils/loyaltyPoints.js";
 import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
 import { normalizePhoneForUssd, formatUssdAmount, splitUssdAmount, formatUssdAmountSplit } from "../utils/ussdFormatting.js";
+import { notifyCustomer } from "../services/customerNotify.js";
 
 export const ussdRouter = Router();
 
@@ -902,10 +903,23 @@ ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (r
     // either a retry succeeds or every attempt is exhausted.
     if (finalAttempt) {
       const failed = await query(
-        `UPDATE orders SET status='failed', updated_at=now() WHERE id=$1 AND status != 'completed' RETURNING id`,
+        `UPDATE orders SET status='failed', updated_at=now() WHERE id=$1 AND status != 'completed' RETURNING id, customer_id`,
         [attempt.order_id]
       );
-      if (failed.length > 0) await refundRedeemedPointsIfNeeded(attempt.order_id);
+      if (failed.length > 0) {
+        await refundRedeemedPointsIfNeeded(attempt.order_id);
+        // The customer's own dial genuinely exhausted every retry with no
+        // success -- this is the "payment truly failed" moment (as opposed
+        // to a retry still pending), so notify here rather than leaving it
+        // silent until/unless an admin later marks the order failed by hand.
+        await notifyCustomer(
+          (failed[0] as { customer_id: string }).customer_id,
+          "order_update",
+          "❌ Lacag-bixintu way fashilantay",
+          "Lacagta lama diri karin. Fadlan hubi lacagtaada iyo lambarka aad lacagta ka dirayso, kadibna mar kale isku day.",
+          { screen: "notifications", orderId: attempt.order_id }
+        );
+      }
     }
     // markPaymentFinal itself is not necessarily final — UssdOrchestrator may
     // still retry, which calls markPaymentProcessing again and can still
