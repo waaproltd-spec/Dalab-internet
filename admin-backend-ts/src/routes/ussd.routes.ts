@@ -630,9 +630,59 @@ ussdRouter.get("/agent/sim-routing", requireAuth("agent"), async (req, res) => {
 // Public: the Agent App has no login screen, so it must be able to list
 // devices for its device-setup picker before it has ever authenticated (the
 // deviceId chosen there is what auth/device-login uses to find its agent).
-// Only non-sensitive labels are returned — no PINs, no health telemetry.
+// Only non-sensitive labels + each SIM's own provider/phone number are
+// returned (the same info a customer already sees when paying that SIM) --
+// no PINs, no balances, no health telemetry.
+//
+// SIM 1/2 resolve through sim_routing (which company this device+slot
+// currently dials for) the same way SIM_BALANCE_LIST_SQL does
+// (simBalances.routes.ts) -- phone_number prefers sim_balances' own
+// per-SIM number (set once a payment SMS or manual override has confirmed
+// it) and falls back to the company's shared payment_number otherwise, so
+// the Device Setup picker's SIM numbers can never silently drift from the
+// exact same numbers the Balance Dashboard already shows for this device.
+const AGENT_DEVICE_SIM_SQL = `
+  SELECT d.id AS device_id, d.name, d.description,
+         slot.n AS sim_slot, c.id AS company_id, c.name AS company_name, c.color_hex AS company_color_hex,
+         COALESCE(sb.phone_number, c.payment_number) AS phone_number
+  FROM agent_devices d
+  CROSS JOIN (VALUES (1),(2)) AS slot(n)
+  LEFT JOIN sim_routing sr ON sr.device_id = d.id AND sr.sim_slot = slot.n
+  LEFT JOIN companies c ON c.id = sr.company_id
+  LEFT JOIN sim_balances sb ON sb.device_id = d.id AND sb.sim_slot = slot.n
+  ORDER BY d.name, slot.n
+`;
+
 ussdRouter.get("/agent/devices", async (_req, res) => {
-  sendJson(res, 200, await query(`SELECT id, name, description FROM agent_devices ORDER BY name`));
+  const rows = await query<{
+    device_id: string;
+    name: string;
+    description: string | null;
+    sim_slot: number;
+    company_id: string | null;
+    company_name: string | null;
+    company_color_hex: string | null;
+    phone_number: string | null;
+  }>(AGENT_DEVICE_SIM_SQL);
+
+  const devices = new Map<string, { id: string; name: string; description: string | null; sim1: unknown; sim2: unknown }>();
+  for (const row of rows) {
+    if (!devices.has(row.device_id)) {
+      devices.set(row.device_id, { id: row.device_id, name: row.name, description: row.description, sim1: null, sim2: null });
+    }
+    if (row.company_id) {
+      const sim = {
+        company_id: row.company_id,
+        company_name: row.company_name,
+        company_color_hex: row.company_color_hex,
+        phone_number: row.phone_number,
+      };
+      const device = devices.get(row.device_id)!;
+      if (row.sim_slot === 1) device.sim1 = sim;
+      else device.sim2 = sim;
+    }
+  }
+  sendJson(res, 200, [...devices.values()]);
 });
 
 // Health telemetry from the Agent App's background service — battery,
