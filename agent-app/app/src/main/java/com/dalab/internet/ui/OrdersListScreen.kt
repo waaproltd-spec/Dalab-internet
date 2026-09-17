@@ -18,6 +18,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountBalanceWallet
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Circle
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Refresh
@@ -60,6 +62,9 @@ import java.util.Locale
 internal val DalabIndigo = com.dalab.internet.ui.theme.DalabBlue
 internal val DalabSoftBlue = com.dalab.internet.ui.theme.DalabSoftBlue
 internal val DalabGreen = com.dalab.internet.ui.theme.DalabSuccessGreen
+internal val DalabAmber = com.dalab.internet.ui.theme.DalabWarningAmber
+internal val DalabRed = com.dalab.internet.ui.theme.DalabDangerRed
+internal val DalabBrandBlue = com.dalab.internet.ui.theme.DalabInfoBlue
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -284,31 +289,43 @@ private fun NotificationBellButton(unreadCount: Int, onClick: () -> Unit) {
 // tab (MainActivity's MoreScreen), unchanged. Payment Method (EVC Plus/
 // eDahab -- balances used for receiving customer payments) and Payment
 // Company (Hormuud/Somnet/Somtel/Amtel -- balances used for sending data/
-// airtime) are always shown as their own labeled group, matching the
-// reference design, regardless of which ones this specific agent has ever
-// dialed through.
+// airtime) are always shown as their own labeled group with its own Total
+// Balance summary, matching the reference design, regardless of which
+// ones this specific agent has ever dialed through.
 @Composable
 private fun AgentBalanceSection(balances: List<AgentBalanceEntry>, loading: Boolean) {
     val methodBalances = balances.filter { it.category == "method" }
     val companyBalances = balances.filter { it.category == "company" }
 
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-        BalanceGroupHeader(title = "Payment Method (${methodBalances.size})")
-        Spacer(Modifier.height(10.dp))
+        BalanceGroupHeader(
+            title = "Payment Method (${methodBalances.size})",
+            totalBalance = methodBalances.sumOf { it.balance },
+            loading = loading,
+            accentColor = DalabGreen,
+        )
+        Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
             methodBalances.forEach { entry ->
-                BalanceCard(entry = entry, loading = loading, modifier = Modifier.weight(1f))
+                PaymentMethodCard(entry = entry, loading = loading, modifier = Modifier.weight(1f))
             }
         }
 
-        Spacer(Modifier.height(22.dp))
+        Spacer(Modifier.height(20.dp))
+        HorizontalDivider(color = Color(0xFFE5E7EB))
+        Spacer(Modifier.height(20.dp))
 
-        BalanceGroupHeader(title = "Payment Company (${companyBalances.size})")
-        Spacer(Modifier.height(10.dp))
+        BalanceGroupHeader(
+            title = "Payment Company (${companyBalances.size})",
+            totalBalance = companyBalances.sumOf { it.balance },
+            loading = loading,
+            accentColor = DalabBrandBlue,
+        )
+        Spacer(Modifier.height(12.dp))
         companyBalances.chunked(2).forEach { rowEntries ->
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
                 rowEntries.forEach { entry ->
-                    BalanceCard(entry = entry, loading = loading, modifier = Modifier.weight(1f))
+                    PaymentCompanyCard(entry = entry, loading = loading, modifier = Modifier.weight(1f))
                 }
                 if (rowEntries.size == 1) Spacer(modifier = Modifier.weight(1f))
             }
@@ -316,9 +333,37 @@ private fun AgentBalanceSection(balances: List<AgentBalanceEntry>, loading: Bool
     }
 }
 
+// The section title plus its own right-aligned Total Balance summary --
+// accentColor lets Payment Method (green) and Payment Company (blue) each
+// read as their own group at a glance, matching the reference design. No
+// subtitle/description line under the title, per the current design spec.
 @Composable
-private fun BalanceGroupHeader(title: String) {
-    Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = DalabIndigo)
+private fun BalanceGroupHeader(title: String, totalBalance: Double, loading: Boolean, accentColor: Color) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = DalabIndigo)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier.size(30.dp).clip(CircleShape).background(accentColor),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Filled.AccountBalanceWallet, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+            }
+            Spacer(Modifier.width(8.dp))
+            Column(horizontalAlignment = Alignment.End) {
+                Text("Total Balance", style = MaterialTheme.typography.labelSmall, color = Color(0xFF6B7280))
+                Text(
+                    if (loading) "…" else "$ ${"%.2f".format(totalBalance)}",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = accentColor,
+                )
+            }
+        }
+    }
 }
 
 /** Maps a provider_key to its real bundled brand logo -- see
@@ -337,36 +382,125 @@ internal fun logoResFor(providerKey: String): Int = when (providerKey) {
     else -> R.drawable.dalab_logo
 }
 
+/** Each provider's brand color for the balance cards below -- reused from
+ * the app's existing functional-color set (DalabColors.kt) rather than
+ * introducing new one-off hex values, and matching the same hues the
+ * Customer App already uses for these same providers. */
+private fun providerBrandColor(providerKey: String): Color = when (providerKey) {
+    "evc_plus", "hormuud" -> DalabGreen
+    "edahab", "somtel" -> DalabAmber
+    "somnet" -> DalabBrandBlue
+    "amtel" -> DalabRed
+    else -> DalabIndigo
+}
+
+// Payment Method card (EVC Plus/eDahab): white card with a soft brand-color
+// wash behind the logo and a colored balance figure -- these are the
+// balances an agent *receives* customer payments into, so they stay light
+// and read primarily through their logo, same as the reference design.
 @Composable
-private fun BalanceCard(entry: AgentBalanceEntry, loading: Boolean, modifier: Modifier = Modifier) {
-    Surface(
-        color = Color.White,
-        shape = RoundedCornerShape(16.dp),
-        shadowElevation = 1.dp,
-        modifier = modifier,
-    ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Image(
-                painter = painterResource(logoResFor(entry.providerKey)),
-                contentDescription = entry.providerName,
-                contentScale = ContentScale.Fit,
-                alignment = Alignment.CenterStart,
-                modifier = Modifier.height(28.dp).fillMaxWidth(),
+private fun PaymentMethodCard(entry: AgentBalanceEntry, loading: Boolean, modifier: Modifier = Modifier) {
+    val accent = providerBrandColor(entry.providerKey)
+    Surface(color = Color.White, shape = RoundedCornerShape(18.dp), shadowElevation = 1.dp, modifier = modifier) {
+        Box {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .size(96.dp)
+                    .offset(x = 28.dp, y = 28.dp)
+                    .clip(CircleShape)
+                    .background(accent.copy(alpha = 0.14f)),
             )
-            Spacer(Modifier.height(12.dp))
-            Text(
-                "${entry.providerName} Balance",
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = DalabIndigo,
+            Column(modifier = Modifier.padding(14.dp)) {
+                Image(
+                    painter = painterResource(logoResFor(entry.providerKey)),
+                    contentDescription = entry.providerName,
+                    contentScale = ContentScale.Fit,
+                    alignment = Alignment.CenterStart,
+                    modifier = Modifier.height(26.dp).fillMaxWidth(0.72f),
+                )
+                Spacer(Modifier.height(14.dp))
+                Text(entry.providerName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = DalabIndigo)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    if (loading) "…" else "$ ${"%.2f".format(entry.balance)}",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = accent,
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 10.dp)
+                    .size(28.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFFF3F4F6)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = DalabIndigo, modifier = Modifier.size(18.dp))
+            }
+        }
+    }
+}
+
+// Payment Company card (Hormuud/Somnet/Somtel/Amtel): the full card is the
+// company's own brand color -- these are the balances an agent *spends*
+// dialing data/airtime out, so they read as bold, distinct blocks of
+// color, matching the reference design. The balance figure is tinted to
+// match its own card rather than the single hardcoded green every card
+// used before, fixing the mismatch (e.g. a red Amtel card previously still
+// showing a green balance).
+@Composable
+private fun PaymentCompanyCard(entry: AgentBalanceEntry, loading: Boolean, modifier: Modifier = Modifier) {
+    val brand = providerBrandColor(entry.providerKey)
+    // Somtel's brand color is a bright yellow -- white text on it reads
+    // poorly, so it's the one company card using dark text instead of
+    // white, matching the reference design's own contrast choice.
+    val onBrand = if (entry.providerKey == "somtel") DalabIndigo else Color.White
+    Surface(color = brand, shape = RoundedCornerShape(18.dp), shadowElevation = 1.dp, modifier = modifier) {
+        Box {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .size(90.dp)
+                    .offset(x = 26.dp, y = 26.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.08f)),
             )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                if (loading) "…" else "$ ${"%.2f".format(entry.balance)}",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = DalabGreen,
-            )
+            Column(modifier = Modifier.padding(14.dp)) {
+                Box(
+                    modifier = Modifier.size(36.dp).clip(RoundedCornerShape(10.dp)).background(Color.White),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Image(
+                        painter = painterResource(logoResFor(entry.providerKey)),
+                        contentDescription = entry.providerName,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.size(28.dp).clip(RoundedCornerShape(6.dp)),
+                    )
+                }
+                Spacer(Modifier.height(14.dp))
+                Text(entry.providerName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = onBrand)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    if (loading) "…" else "$ ${"%.2f".format(entry.balance)}",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = onBrand,
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 10.dp)
+                    .size(28.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.9f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = brand, modifier = Modifier.size(18.dp))
+            }
         }
     }
 }
