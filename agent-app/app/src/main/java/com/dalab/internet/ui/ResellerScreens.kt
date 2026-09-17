@@ -53,7 +53,7 @@ import java.util.UUID
  * screen (a reseller's own Reseller ID + PIN, a completely separate
  * identity from this device's agent login) and a dashboard (balance,
  * Orders/Deposits/Withdrawals history, and creating a new one of each) --
- * every read/write here goes straight through the same `/reseller/*`
+ * every read/write here goes straight through the same `/reseller/...`
  * routes admin-backend-ts already exposes and super-admin-app already
  * calls as Admin's own Resellers tab. No new backend route, table, or
  * business rule was added for this -- purely a new client of what already
