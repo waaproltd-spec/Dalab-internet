@@ -11,17 +11,20 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Savings
 import androidx.compose.material.icons.filled.ShoppingCart
+import androidx.compose.material.icons.filled.Stars
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
@@ -40,6 +43,8 @@ import com.dalab.internet.data.CustomerDetail
 import com.dalab.internet.data.CustomerOrderHistoryEntry
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.SetCustomerPinRequest
+import com.dalab.internet.network.UpdateCustomerRequest
+import com.dalab.internet.network.UpdateCustomerWalletNumbersRequest
 import com.dalab.internet.ui.theme.DalabDangerRed
 import com.dalab.internet.ui.theme.DalabSurfaceTint
 import kotlinx.coroutines.launch
@@ -47,7 +52,7 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
 
-private enum class DetailView { MAIN, ORDER_HISTORY, RESET_PIN, RESET_PIN_SUCCESS, SUSPEND_CONFIRM }
+private enum class DetailView { MAIN, ORDER_HISTORY, RESET_PIN, RESET_PIN_SUCCESS, SUSPEND_CONFIRM, EDIT, WALLET }
 
 /** Same customer-management power Admin has (customers.routes.ts's
  * /agent/customers/{id}* routes) -- detail, full order history, Suspend/
@@ -108,6 +113,37 @@ fun CustomerDetailScreen(customerId: String, onBack: () -> Unit) {
                 }
             },
             onViewOrders = { view = DetailView.ORDER_HISTORY },
+            onEdit = { view = DetailView.EDIT },
+            onWallet = { view = DetailView.WALLET },
+        )
+
+        DetailView.EDIT -> EditCustomerScreen(
+            detail = detail,
+            onBack = { view = DetailView.MAIN },
+            onSave = { name, phone ->
+                val response = ApiClient.service.updateCustomer(customerId, UpdateCustomerRequest(name, phone))
+                if (response.isSuccessful) {
+                    load()
+                    view = DetailView.MAIN
+                }
+                response.isSuccessful
+            },
+        )
+
+        DetailView.WALLET -> WalletNumbersScreen(
+            detail = detail,
+            onBack = { view = DetailView.MAIN },
+            onSave = { evcPlusName, evcPlusNumber, edahabName, edahabNumber ->
+                val response = ApiClient.service.updateCustomerWalletNumbers(
+                    customerId,
+                    UpdateCustomerWalletNumbersRequest(evcPlusName, evcPlusNumber, edahabName, edahabNumber),
+                )
+                if (response.isSuccessful) {
+                    load()
+                    view = DetailView.MAIN
+                }
+                response.isSuccessful
+            },
         )
 
         DetailView.ORDER_HISTORY -> CustomerOrderHistoryScreen(
@@ -135,6 +171,14 @@ fun CustomerDetailScreen(customerId: String, onBack: () -> Unit) {
                     generatedPin = body.pin
                     load()
                     view = DetailView.RESET_PIN_SUCCESS
+                }
+                response.isSuccessful
+            },
+            onClearPin = {
+                val response = ApiClient.service.clearCustomerPin(customerId)
+                if (response.isSuccessful) {
+                    load()
+                    view = DetailView.MAIN
                 }
                 response.isSuccessful
             },
@@ -192,6 +236,8 @@ private fun CustomerDetailMain(
     onResetPin: () -> Unit,
     onSuspendOrActivate: () -> Unit,
     onViewOrders: () -> Unit,
+    onEdit: () -> Unit,
+    onWallet: () -> Unit,
 ) {
     Scaffold(containerColor = Color.White) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
@@ -230,12 +276,19 @@ private fun CustomerDetailMain(
                             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                                 StatCard(icon = Icons.Filled.ShoppingCart, label = "Total Orders", value = "${detail.totalOrders}", modifier = Modifier.weight(1f))
                                 StatCard(icon = Icons.Filled.Savings, label = "Total Spent", value = "$${"%.2f".format(detail.totalSpent)}", modifier = Modifier.weight(1f))
+                                StatCard(icon = Icons.Filled.Stars, label = "Macaash Points", value = "${detail.macaashPoints}", modifier = Modifier.weight(1f))
                             }
                         }
 
                         item {
                             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                                ActionButton(icon = Icons.Filled.Edit, label = "Edit", color = DalabIndigo, onClick = onEdit, modifier = Modifier.weight(1f))
                                 ActionButton(icon = Icons.Filled.Lock, label = "Reset PIN", color = DalabIndigo, onClick = onResetPin, modifier = Modifier.weight(1f))
+                                ActionButton(icon = Icons.Filled.AccountBalanceWallet, label = "Wallet", color = DalabIndigo, onClick = onWallet, modifier = Modifier.weight(1f))
+                            }
+                        }
+                        item {
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                                 ActionButton(
                                     icon = if (suspended) Icons.Filled.CheckCircle else Icons.Filled.Block,
                                     label = if (suspended) "Activate" else "Suspend",
@@ -244,6 +297,7 @@ private fun CustomerDetailMain(
                                     modifier = Modifier.weight(1f),
                                 )
                                 ActionButton(icon = Icons.Filled.Receipt, label = "View Orders", color = DalabIndigo, onClick = onViewOrders, modifier = Modifier.weight(1f))
+                                Spacer(Modifier.weight(1f))
                             }
                         }
 
@@ -254,6 +308,16 @@ private fun CustomerDetailMain(
                                     InfoRow(Icons.Filled.Person, "Name", detail.name?.takeIf { it.isNotBlank() } ?: "—")
                                     InfoRow(Icons.Filled.Phone, "Phone Number", detail.phone)
                                     InfoRow(Icons.Filled.CheckCircle, "Account Status", if (suspended) "Suspended" else "Active")
+                                    InfoRow(
+                                        Icons.Filled.AccountBalanceWallet,
+                                        "EVC Plus",
+                                        detail.evcPlusNumber?.takeIf { it.isNotBlank() } ?: "Not set",
+                                    )
+                                    InfoRow(
+                                        Icons.Filled.AccountBalanceWallet,
+                                        "eDahab",
+                                        detail.edahabNumber?.takeIf { it.isNotBlank() } ?: "Not set",
+                                    )
                                     InfoRow(Icons.Filled.CalendarToday, "Joined Date", formatDate(detail.createdAt), showDivider = false)
                                 }
                             }
@@ -402,6 +466,7 @@ private fun ResetCustomerPinScreen(
     onBack: () -> Unit,
     onSetPin: suspend (String) -> Boolean,
     onGeneratePin: suspend () -> Boolean,
+    onClearPin: suspend () -> Boolean,
 ) {
     var pin by remember { mutableStateOf("") }
     var confirmPin by remember { mutableStateOf("") }
@@ -512,6 +577,26 @@ private fun ResetCustomerPinScreen(
                     modifier = Modifier.fillMaxWidth().height(48.dp),
                 ) {
                     Text("Generate a random PIN instead")
+                }
+
+                if (detail?.pinSet == true) {
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(
+                        onClick = {
+                            error = null
+                            saving = true
+                            scope.launch {
+                                if (!onClearPin()) error = "Couldn't clear this PIN. Try again."
+                                saving = false
+                            }
+                        },
+                        enabled = !saving,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = DalabDangerRed),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                    ) {
+                        Text("Clear PIN entirely")
+                    }
                 }
 
                 Spacer(Modifier.height(8.dp))
@@ -694,6 +779,180 @@ private fun SuspendCustomerScreen(detail: CustomerDetail?, onCancel: () -> Unit,
                 Text("Cancel")
             }
             Spacer(Modifier.height(20.dp))
+        }
+    }
+}
+
+// ---------------- Edit customer info ----------------
+
+@Composable
+private fun EditCustomerScreen(detail: CustomerDetail?, onBack: () -> Unit, onSave: suspend (String, String) -> Boolean) {
+    var name by remember(detail?.id) { mutableStateOf(detail?.name ?: "") }
+    var phone by remember(detail?.id) { mutableStateOf(detail?.phone ?: "") }
+    var error by remember { mutableStateOf<String?>(null) }
+    var saving by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    Scaffold(containerColor = Color.White) { padding ->
+        Column(modifier = Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState())) {
+            DetailTopBar("Edit Customer", onBack)
+
+            Column(modifier = Modifier.padding(horizontal = 20.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = phone,
+                    onValueChange = { if (it.all { c -> c.isDigit() }) phone = it },
+                    label = { Text("Phone Number") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                if (error != null) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(error!!, color = DalabDangerRed, style = MaterialTheme.typography.bodySmall)
+                }
+
+                Spacer(Modifier.height(20.dp))
+
+                Button(
+                    onClick = {
+                        error = null
+                        saving = true
+                        scope.launch {
+                            if (!onSave(name.trim(), phone.trim())) error = "Couldn't save these changes. Check the phone number and try again."
+                            saving = false
+                        }
+                    },
+                    enabled = phone.isNotBlank() && !saving,
+                    colors = ButtonDefaults.buttonColors(containerColor = DalabIndigo),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                ) {
+                    Text(if (saving) "Saving…" else "Save Changes")
+                }
+                Spacer(Modifier.height(8.dp))
+                TextButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
+                    Text("Cancel")
+                }
+                Spacer(Modifier.height(16.dp))
+            }
+        }
+    }
+}
+
+// ---------------- Wallet numbers (EVC Plus / eDahab) ----------------
+
+@Composable
+private fun WalletNumbersScreen(
+    detail: CustomerDetail?,
+    onBack: () -> Unit,
+    onSave: suspend (String?, String?, String?, String?) -> Boolean,
+) {
+    var evcPlusName by remember(detail?.id) { mutableStateOf(detail?.evcPlusName ?: "") }
+    var evcPlusNumber by remember(detail?.id) { mutableStateOf(detail?.evcPlusNumber ?: "") }
+    var edahabName by remember(detail?.id) { mutableStateOf(detail?.edahabName ?: "") }
+    var edahabNumber by remember(detail?.id) { mutableStateOf(detail?.edahabNumber ?: "") }
+    var error by remember { mutableStateOf<String?>(null) }
+    var saving by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    // Each wallet is a name+number pair, saved or cleared together -- same
+    // rule the backend enforces (walletPairError in customers.routes.ts).
+    val evcValid = evcPlusName.isBlank() == evcPlusNumber.isBlank()
+    val edahabValid = edahabName.isBlank() == edahabNumber.isBlank()
+
+    Scaffold(containerColor = Color.White) { padding ->
+        Column(modifier = Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState())) {
+            DetailTopBar("Wallet Numbers", onBack)
+
+            Column(modifier = Modifier.padding(horizontal = 20.dp)) {
+                Text("EVC Plus", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = DalabIndigo)
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = evcPlusName,
+                    onValueChange = { evcPlusName = it },
+                    label = { Text("Name on account") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = evcPlusNumber,
+                    onValueChange = { if (it.all { c -> c.isDigit() }) evcPlusNumber = it },
+                    label = { Text("Number") },
+                    singleLine = true,
+                    isError = !evcValid,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                    supportingText = if (!evcValid) { { Text("Provide both a name and a number, or clear both") } } else null,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                Spacer(Modifier.height(18.dp))
+
+                Text("eDahab", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = DalabIndigo)
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = edahabName,
+                    onValueChange = { edahabName = it },
+                    label = { Text("Name on account") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = edahabNumber,
+                    onValueChange = { if (it.all { c -> c.isDigit() }) edahabNumber = it },
+                    label = { Text("Number") },
+                    singleLine = true,
+                    isError = !edahabValid,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                    supportingText = if (!edahabValid) { { Text("Provide both a name and a number, or clear both") } } else null,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                if (error != null) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(error!!, color = DalabDangerRed, style = MaterialTheme.typography.bodySmall)
+                }
+
+                Spacer(Modifier.height(20.dp))
+
+                Button(
+                    onClick = {
+                        error = null
+                        saving = true
+                        scope.launch {
+                            val ok = onSave(
+                                evcPlusName.trim().ifBlank { null },
+                                evcPlusNumber.trim().ifBlank { null },
+                                edahabName.trim().ifBlank { null },
+                                edahabNumber.trim().ifBlank { null },
+                            )
+                            if (!ok) error = "Couldn't save wallet numbers. Try again."
+                            saving = false
+                        }
+                    },
+                    enabled = evcValid && edahabValid && !saving,
+                    colors = ButtonDefaults.buttonColors(containerColor = DalabIndigo),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                ) {
+                    Text(if (saving) "Saving…" else "Save Wallet Numbers")
+                }
+                Spacer(Modifier.height(8.dp))
+                TextButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
+                    Text("Cancel")
+                }
+                Spacer(Modifier.height(16.dp))
+            }
         }
     }
 }

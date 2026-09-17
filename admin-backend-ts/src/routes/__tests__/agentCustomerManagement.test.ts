@@ -152,6 +152,105 @@ test("GET /agent/customers/:id/orders returns this customer's real orders, newes
   assert.equal(notFound.status, 404);
 });
 
+// ---------------- Edit name/phone ----------------
+
+test("PUT /agent/customers/:id edits name and phone, matching the Admin route", async () => {
+  const newPhone = "617500899";
+  const res = await authed(`/agent/customers/${CUSTOMER_A_ID}`, {
+    method: "PUT",
+    body: JSON.stringify({ name: "Renamed By Agent", phone: newPhone }),
+  });
+  assert.equal(res.status, 200);
+  const body = await asJson(res);
+  assert.equal(body.name, "Renamed By Agent");
+  assert.equal(body.phone, newPhone);
+
+  // Restore so later tests keep using the original fixture phone.
+  await query(`UPDATE customers SET name='Agent Mgmt Customer A', phone=$1 WHERE id=$2`, [CUSTOMER_A_PHONE, CUSTOMER_A_ID]);
+});
+
+test("PUT /agent/customers/:id 404s for an unknown customer and rejects a duplicate phone", async () => {
+  assert.equal((await authed(`/agent/customers/${randomUUID()}`, { method: "PUT", body: JSON.stringify({ name: "x" }) })).status, 404);
+
+  const dup = await authed(`/agent/customers/${CUSTOMER_A_ID}`, { method: "PUT", body: JSON.stringify({ phone: CUSTOMER_B_PHONE }) });
+  assert.equal(dup.status, 409);
+});
+
+// ---------------- Wallet numbers + exchange limits (customer-management parity) ----------------
+
+test("PUT /agent/customers/:id/wallet-numbers sets and clears an EVC Plus/eDahab pair, matching the Admin route", async () => {
+  const setRes = await authed(`/agent/customers/${CUSTOMER_A_ID}/wallet-numbers`, {
+    method: "PUT",
+    body: JSON.stringify({ evcPlusName: "Agent Mgmt Customer A", evcPlusNumber: "617500801" }),
+  });
+  assert.equal(setRes.status, 200);
+  const setBody = await asJson(setRes);
+  assert.equal(setBody.evcPlusNumber, "617500801");
+  assert.equal(setBody.evcPlusName, "Agent Mgmt Customer A");
+
+  const clearRes = await authed(`/agent/customers/${CUSTOMER_A_ID}/wallet-numbers`, {
+    method: "PUT",
+    body: JSON.stringify({ evcPlusName: null, evcPlusNumber: null }),
+  });
+  assert.equal(clearRes.status, 200);
+  const clearBody = await asJson(clearRes);
+  assert.equal(clearBody.evcPlusNumber, null);
+});
+
+test("PUT /agent/customers/:id/wallet-numbers rejects a lopsided name/number pair and 404s for an unknown customer", async () => {
+  const lopsided = await authed(`/agent/customers/${CUSTOMER_A_ID}/wallet-numbers`, {
+    method: "PUT",
+    body: JSON.stringify({ evcPlusName: "Only A Name" }),
+  });
+  assert.equal(lopsided.status, 400);
+
+  const notFound = await authed(`/agent/customers/${randomUUID()}/wallet-numbers`, {
+    method: "PUT",
+    body: JSON.stringify({ evcPlusName: "x", evcPlusNumber: "617500801" }),
+  });
+  assert.equal(notFound.status, 404);
+});
+
+test("PUT /agent/customers/:id/exchange-limits sets custom limits, matching the Admin route", async () => {
+  const res = await authed(`/agent/customers/${CUSTOMER_A_ID}/exchange-limits`, {
+    method: "PUT",
+    body: JSON.stringify({ dailyLimit: 250, monthlyLimit: 1000, yearlyLimit: 5000 }),
+  });
+  assert.equal(res.status, 200);
+  const body = await asJson(res);
+  assert.equal(body.exchangeDailyLimit, "250.00");
+  assert.equal(body.hasHigherExchangeLimit, true);
+
+  const reset = await authed(`/agent/customers/${CUSTOMER_A_ID}/exchange-limits`, {
+    method: "PUT",
+    body: JSON.stringify({ dailyLimit: null, monthlyLimit: null, yearlyLimit: null }),
+  });
+  assert.equal((await asJson(reset)).hasHigherExchangeLimit, false);
+});
+
+test("PUT /agent/customers/:id/exchange-limits rejects a non-positive limit and 404s for an unknown customer", async () => {
+  const invalid = await authed(`/agent/customers/${CUSTOMER_A_ID}/exchange-limits`, {
+    method: "PUT",
+    body: JSON.stringify({ dailyLimit: -5 }),
+  });
+  assert.equal(invalid.status, 400);
+
+  const notFound = await authed(`/agent/customers/${randomUUID()}/exchange-limits`, {
+    method: "PUT",
+    body: JSON.stringify({ dailyLimit: 10 }),
+  });
+  assert.equal(notFound.status, 404);
+});
+
+test("GET /agent/customers/:id exposes macaashPoints, walletNumbers, and exchange limits, same columns Admin sees", async () => {
+  const res = await authed(`/agent/customers/${CUSTOMER_A_ID}`);
+  const body = await asJson(res);
+  assert.ok("macaashPoints" in body);
+  assert.ok("evcPlusNumber" in body);
+  assert.ok("edahabNumber" in body);
+  assert.ok("exchangeDailyLimitEffective" in body);
+});
+
 // ---------------- Suspend / Reactivate ----------------
 
 test("PUT /agent/customers/:id/block toggles active <-> blocked", async () => {

@@ -284,10 +284,12 @@ customersRouter.delete("/admin/customers/:id", requirePermission("customers.mana
 // Per explicit product decision, an Agent sees and manages the exact same
 // customer set Admin does -- every customer in the system, never scoped to
 // "customers this agent has personally served" (there's no such ownership
-// concept here; any agent can serve any walk-in). pin_encrypted/password
-// fields don't exist on customers, but explicit column list still keeps this
-// in sync with what the Agent App actually needs.
-const AGENT_CUSTOMER_COLUMNS = "id, phone, name, status, macaash_points, created_at";
+// concept here; any agent can serve any walk-in). Reuses ADMIN_CUSTOMER_COLUMNS
+// itself (rather than a separately-maintained narrower list) so Admin and
+// Agent can never quietly drift apart on what "full customer management"
+// exposes -- balance (macaash_points), wallet numbers, and exchange limits
+// included, same as Admin's own list/detail responses.
+const AGENT_CUSTOMER_COLUMNS = ADMIN_CUSTOMER_COLUMNS;
 
 customersRouter.get("/agent/customers", requireAuth("agent"), async (req, res) => {
   const { search } = req.query;
@@ -359,6 +361,24 @@ customersRouter.get("/agent/customers/:id/orders", requireAuth("agent"), async (
   sendJson(res, 200, rows);
 });
 
+// Edit name/phone -- identical to PUT /admin/customers/:id above, just
+// agent-authenticated.
+customersRouter.put("/agent/customers/:id", requireAuth("agent"), async (req, res) => {
+  const existing = await queryOne(`SELECT * FROM customers WHERE id=$1`, [req.params.id]);
+  if (!existing) return sendJson(res, 404, { error: "Customer not found" });
+  const name = req.body.name ?? existing.name;
+  const phone = req.body.phone ?? existing.phone;
+  if (phone !== existing.phone) {
+    const phoneCheck = validateMobileNumber(String(phone));
+    if (!phoneCheck.valid) return sendJson(res, 400, { error: phoneCheck.error });
+  }
+  if (phone !== existing.phone && (await queryOne(`SELECT id FROM customers WHERE phone=$1`, [phone]))) {
+    return sendJson(res, 409, { error: "A customer with this phone already exists" });
+  }
+  await query(`UPDATE customers SET name=$1, phone=$2 WHERE id=$3`, [name, phone, req.params.id]);
+  sendJson(res, 200, await queryOne(`SELECT ${AGENT_CUSTOMER_COLUMNS} FROM customers WHERE id=$1`, [req.params.id]));
+});
+
 // Suspend/Reactivate -- identical toggle to PUT /admin/customers/:id/block
 // above, just agent-authenticated.
 customersRouter.put("/agent/customers/:id/block", requireAuth("agent"), async (req, res) => {
@@ -366,6 +386,84 @@ customersRouter.put("/agent/customers/:id/block", requireAuth("agent"), async (r
   if (!customer) return sendJson(res, 404, { error: "Customer not found" });
   const nextStatus = customer.status === "active" ? "blocked" : "active";
   await query(`UPDATE customers SET status=$1 WHERE id=$2`, [nextStatus, req.params.id]);
+  sendJson(res, 200, await queryOne(`SELECT ${AGENT_CUSTOMER_COLUMNS} FROM customers WHERE id=$1`, [req.params.id]));
+});
+
+// ---------------- Agent: customer wallet info override ----------------
+// Identical to PUT /admin/customers/:id/wallet-numbers above, just
+// agent-authenticated -- same EVC Plus/eDahab name+number pair, same "no
+// lock check here" override power an Admin has.
+customersRouter.put("/agent/customers/:id/wallet-numbers", requireAuth("agent"), async (req, res) => {
+  const existing = await queryOne<{
+    evc_plus_name: string | null;
+    evc_plus_number: string | null;
+    evc_plus_saved_at: string | null;
+    edahab_name: string | null;
+    edahab_number: string | null;
+    edahab_saved_at: string | null;
+  }>(
+    `SELECT evc_plus_name, evc_plus_number, evc_plus_saved_at, edahab_name, edahab_number, edahab_saved_at FROM customers WHERE id=$1`,
+    [req.params.id]
+  );
+  if (!existing) return sendJson(res, 404, { error: "Customer not found" });
+  const body = req.body ?? {};
+
+  for (const field of ["evcPlusNumber", "edahabNumber"] as const) {
+    if (field in body && body[field] != null) {
+      const check = validateMobileNumber(String(body[field]), field === "evcPlusNumber" ? "evc_plus" : "edahab");
+      if (!check.valid) return sendJson(res, 400, { error: check.error });
+    }
+  }
+
+  const touchesEvc = "evcPlusName" in body || "evcPlusNumber" in body;
+  const touchesEdahab = "edahabName" in body || "edahabNumber" in body;
+
+  const evcPlusName = "evcPlusName" in body ? (body.evcPlusName == null ? null : String(body.evcPlusName).trim()) : existing.evc_plus_name;
+  const evcPlusNumber = "evcPlusNumber" in body ? (body.evcPlusNumber == null ? null : String(body.evcPlusNumber)) : existing.evc_plus_number;
+  const edahabName = "edahabName" in body ? (body.edahabName == null ? null : String(body.edahabName).trim()) : existing.edahab_name;
+  const edahabNumber = "edahabNumber" in body ? (body.edahabNumber == null ? null : String(body.edahabNumber)) : existing.edahab_number;
+
+  if (touchesEvc && (evcPlusName == null) !== (evcPlusNumber == null)) return sendJson(res, 400, walletPairError("EVC Plus"));
+  if (touchesEdahab && (edahabName == null) !== (edahabNumber == null)) return sendJson(res, 400, walletPairError("eDahab"));
+
+  let evcPlusSavedAt = evcPlusName != null && evcPlusNumber != null ? existing.evc_plus_saved_at : null;
+  let edahabSavedAt = edahabName != null && edahabNumber != null ? existing.edahab_saved_at : null;
+  if (body.unlockEvcPlus === true && evcPlusName != null) evcPlusSavedAt = new Date().toISOString();
+  if (body.unlockEdahab === true && edahabName != null) edahabSavedAt = new Date().toISOString();
+
+  await query(
+    `UPDATE customers SET evc_plus_name=$1, evc_plus_number=$2, evc_plus_saved_at=$3, edahab_name=$4, edahab_number=$5, edahab_saved_at=$6 WHERE id=$7`,
+    [evcPlusName, evcPlusNumber, evcPlusSavedAt, edahabName, edahabNumber, edahabSavedAt, req.params.id]
+  );
+  sendJson(res, 200, await queryOne(`SELECT ${AGENT_CUSTOMER_COLUMNS} FROM customers WHERE id=$1`, [req.params.id]));
+});
+
+// ---------------- Agent: customer exchange limits ----------------
+// Identical to PUT /admin/customers/:id/exchange-limits above, just
+// agent-authenticated -- the closest existing "per-customer service
+// configuration" an Agent can be given parity on.
+customersRouter.put("/agent/customers/:id/exchange-limits", requireAuth("agent"), async (req, res) => {
+  const existing = await queryOne<{ exchange_daily_limit: string | null; exchange_monthly_limit: string | null; exchange_yearly_limit: string | null }>(
+    `SELECT exchange_daily_limit, exchange_monthly_limit, exchange_yearly_limit FROM customers WHERE id=$1`,
+    [req.params.id]
+  );
+  if (!existing) return sendJson(res, 404, { error: "Customer not found" });
+  const body = req.body ?? {};
+
+  for (const field of ["dailyLimit", "monthlyLimit", "yearlyLimit"] as const) {
+    if (field in body && body[field] != null && !(Number.isFinite(Number(body[field])) && Number(body[field]) > 0)) {
+      return sendJson(res, 400, { error: `${field} must be a positive number or null` });
+    }
+  }
+
+  const dailyLimit = "dailyLimit" in body ? (body.dailyLimit == null ? null : Number(body.dailyLimit)) : existing.exchange_daily_limit;
+  const monthlyLimit = "monthlyLimit" in body ? (body.monthlyLimit == null ? null : Number(body.monthlyLimit)) : existing.exchange_monthly_limit;
+  const yearlyLimit = "yearlyLimit" in body ? (body.yearlyLimit == null ? null : Number(body.yearlyLimit)) : existing.exchange_yearly_limit;
+
+  await query(
+    `UPDATE customers SET exchange_daily_limit=$1, exchange_monthly_limit=$2, exchange_yearly_limit=$3 WHERE id=$4`,
+    [dailyLimit, monthlyLimit, yearlyLimit, req.params.id]
+  );
   sendJson(res, 200, await queryOne(`SELECT ${AGENT_CUSTOMER_COLUMNS} FROM customers WHERE id=$1`, [req.params.id]));
 });
 

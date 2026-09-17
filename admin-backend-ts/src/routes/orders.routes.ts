@@ -1150,6 +1150,16 @@ ordersRouter.post("/admin/orders/:id/reverse", requirePermission("orders.reverse
   sendJson(res, 200, maskOrder(await loadOrder(req.params.id)));
 });
 
+// Identical to POST /admin/orders/:id/reverse above, just agent-authenticated
+// -- part of full Customer-order-management parity (cancel/claw-back an
+// order for a customer, same as Admin can).
+ordersRouter.post("/agent/orders/:id/reverse", requireAuth("agent"), async (req, res) => {
+  const result = await reverseOrderInternal(req.params.id);
+  if (!result.order) return sendJson(res, 404, { error: "Order not found" });
+  if (!result.ok) return sendJson(res, 409, { error: "Order has already been reversed" });
+  sendJson(res, 200, maskOrder(await loadOrder(req.params.id)));
+});
+
 ordersRouter.get("/admin/dashboard/stats", requireStaff(), async (_req, res) => {
   const totals = await queryOne<{
     total_sales: string;
