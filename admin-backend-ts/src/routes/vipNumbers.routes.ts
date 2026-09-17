@@ -136,8 +136,8 @@ export async function expireVipNumberOrderIfStale(orderId: string): Promise<bool
   await notifyCustomer(
     expired.customerId,
     "vip_number_order_update",
-    "Reservation Expired",
-    `Your VIP number order ${orderId} expired because payment wasn't received in time. The number has been released.`
+    "Xujintu Way Dhacday",
+    `Dalabkaaga lambarka VIP ${orderId} wuu dhacay sababtoo ah lacagta lama helin wakhtigeedii. Lambarkii hadda waa la sii daayay.`
   );
   return true;
 }
@@ -728,7 +728,7 @@ vipNumbersRouter.post("/agent/vip-numbers/orders/:id/complete", requireAuth("age
     oldValue: { status: existing.status },
     newValue: { status: "completed" },
   });
-  await notifyCustomer(existing.customer_id, "vip_number_order_update", "VIP Number Ready", `Your VIP number order ${req.params.id} has been completed.`);
+  await notifyCustomer(existing.customer_id, "vip_number_order_update", "Lambarka VIP-ga waa diyaar", `Dalabka lambarkaaga VIP ${req.params.id} waa la dhammeystiray.`);
   sendJson(res, 200, await queryOne(`SELECT ${VIP_ORDER_COLUMNS} FROM vip_number_orders WHERE id=$1`, [req.params.id]));
 });
 
@@ -782,8 +782,8 @@ vipNumbersRouter.put("/admin/vip-numbers/orders/:id/payment-status", requirePerm
   await notifyCustomer(
     existing.customer_id,
     "vip_number_order_update",
-    "Payment Confirmed",
-    `Your payment for VIP number order ${req.params.id} has been confirmed. We're processing your number now.`
+    "Lacag-bixinta waa la xaqiijiyey",
+    `Lacag-bixinta dalabka lambarka VIP ${req.params.id} waa la xaqiijiyey. Hadda waxaan diyaarinaynaa lambarkaaga.`
   );
   // Real, push-only signal to every agent device -- see
   // sendPushToAllAgents's own comment on why this is a broadcast rather
@@ -855,9 +855,9 @@ vipNumbersRouter.put("/admin/vip-numbers/orders/:id/status", requirePermission("
   });
   const notification =
     status === "completed"
-      ? { title: "VIP Number Ready", body: `Your VIP number order ${req.params.id} has been completed.` }
+      ? { title: "Lambarka VIP-ga waa diyaar", body: `Dalabka lambarkaaga VIP ${req.params.id} waa la dhammeystiray.` }
       : status === "cancelled" || status === "failed"
-        ? { title: "VIP Number Order Cancelled", body: `Your VIP number order ${req.params.id} was cancelled.` }
+        ? { title: "Dalabka Lambarka VIP waa la joojiyay", body: `Dalabkaaga lambarka VIP ${req.params.id} waa la joojiyay.` }
         : null;
   if (notification) {
     await notifyCustomer(existing.customer_id, "vip_number_order_update", notification.title, notification.body);

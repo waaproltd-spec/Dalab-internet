@@ -137,8 +137,8 @@ export async function confirmVipNumberOrderPaidViaSms(
   await notifyCustomer(
     claimed.customer_id,
     "vip_number_order_update",
-    "Payment Confirmed",
-    `Your payment for VIP number order ${order.id} has been confirmed. We're processing your number now.`
+    "Lacag-bixinta waa la xaqiijiyey",
+    `Lacag-bixinta dalabka lambarka VIP ${order.id} waa la xaqiijiyey. Hadda waxaan diyaarinaynaa lambarkaaga.`
   );
   // Format requested for the agent's system-tray notification: multi-line
   // body naming the actual VIP number and amount, not just an order id --
@@ -238,8 +238,8 @@ export async function confirmVipNumberPackageOrderPaidViaSms(
   await notifyCustomer(
     claimed.customer_id,
     "vip_number_package_order_update",
-    "Payment Confirmed",
-    `Your payment for VIP number package order ${order.id} has been confirmed. We're processing your numbers now.`
+    "Lacag-bixinta waa la xaqiijiyey",
+    `Lacag-bixinta dalabka xirmada lambarrada VIP ${order.id} waa la xaqiijiyey. Hadda waxaan diyaarinaynaa lambarradaada.`
   );
   await sendPushToAllAgents({
     title: "🔔 New VIP Order",
