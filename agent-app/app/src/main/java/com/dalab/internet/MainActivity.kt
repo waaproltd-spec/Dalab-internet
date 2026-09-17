@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -67,6 +68,8 @@ import com.dalab.internet.service.AgentBackgroundService
 import com.dalab.internet.sms.SmsInboxScanner
 import com.dalab.internet.sms.SmsListenerState
 import com.dalab.internet.ui.AgentOrdersScreen
+import com.dalab.internet.ui.OrdersTopTab
+import com.dalab.internet.ui.VipOrdersSubTab
 import com.dalab.internet.ui.AlertsScreen
 import com.dalab.internet.ui.AutoLoginScreen
 import com.dalab.internet.ui.CustomerDetailScreen
@@ -261,6 +264,43 @@ private fun AgentApp() {
     var selectedCustomerId by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
+    // Back navigation for every normal in-app destination -- a real stack of
+    // where `screen` has been, not a hardcoded "always return to Home".
+    // navigate() pushes the screen being left before switching; goBack()
+    // pops it. Every onBack callback below calls goBack() instead of
+    // hardcoding its own idea of "the" previous screen, so Back always
+    // lands wherever the agent actually came from (Orders tab, More tab,
+    // a list screen, etc.) -- see also homeTab/ordersTopTab/ordersVipSubTab
+    // below, hoisted out of AgentHome/AgentOrdersScreen for the same reason:
+    // their own local `remember` state would otherwise reset every time
+    // this composable leaves Screen.HOME and comes back.
+    val backStack = remember { mutableStateListOf<Screen>() }
+    fun navigate(to: Screen) {
+        backStack.add(screen)
+        screen = to
+    }
+    fun goBack() {
+        screen = backStack.removeLastOrNull() ?: Screen.HOME
+    }
+
+    // AgentHome's bottom-nav tab, and AgentOrdersScreen's own Shop/VIP
+    // Numbers top-tab + Numbers/Packages sub-tab -- hoisted here (rather
+    // than each screen's own local `remember`) so they survive navigating
+    // into an order's/Report's/etc. detail screen and back. Onboarding
+    // screens (PERMISSIONS/DEVICE_SETUP/AUTHENTICATING/RELIABILITY_SETUP)
+    // never touch these; they only matter once `screen` is Screen.HOME.
+    var homeTab by remember { mutableStateOf(HomeTab.HOME) }
+    var ordersTopTab by remember { mutableStateOf(OrdersTopTab.SHOP) }
+    var ordersVipSubTab by remember { mutableStateOf(VipOrdersSubTab.NUMBERS) }
+
+    // System back gesture/button mirrors the in-app Back arrows above: pop
+    // the stack if there's somewhere to pop to, otherwise fall back to the
+    // Home tab if on some other tab -- only truly exits the app (default,
+    // unhandled behavior) once at the real root, same as before this fix.
+    BackHandler(enabled = backStack.isNotEmpty() || homeTab != HomeTab.HOME) {
+        if (backStack.isNotEmpty()) goBack() else homeTab = HomeTab.HOME
+    }
+
     // A support-request push (support.routes.ts's notifyAssignedAgent()/
     // notifyAgentOfNewMessage()) was tapped -- jump to Home so AgentHome gets
     // composed, which is where the flag is actually consumed (it switches its
@@ -407,82 +447,88 @@ private fun AgentApp() {
         Screen.RELIABILITY_SETUP -> ReliabilitySetupScreen(onContinue = { screen = Screen.HOME })
 
         Screen.HOME -> AgentHome(
-            onOpenOrder = { order -> selectedOrder = order; screen = Screen.ORDER_DETAIL },
-            onOpenAgentShopOrder = { order -> selectedAgentShopOrder = order; screen = Screen.AGENT_SHOP_ORDER_DETAIL },
-            onOpenAgentVipOrder = { order -> selectedAgentVipOrder = order; screen = Screen.AGENT_VIP_ORDER_DETAIL },
-            onOpenAgentVipPackageOrder = { order -> selectedAgentVipPackageOrder = order; screen = Screen.AGENT_VIP_PACKAGE_ORDER_DETAIL },
-            onOpenPackages = { screen = Screen.PACKAGES },
-            onOpenTransactions = { screen = Screen.TRANSACTIONS },
-            onOpenWallet = { screen = Screen.WALLET },
-            onOpenDeviceSetup = { screen = Screen.DEVICE_SETUP },
-            onOpenDiagnostics = { screen = Screen.DIAGNOSTICS },
-            onOpenPermissionsStatus = { screen = Screen.PERMISSIONS_STATUS },
-            onOpenReliabilityDashboard = { screen = Screen.RELIABILITY_DASHBOARD },
-            onOpenMoneyExchange = { screen = Screen.EXCHANGE_LIST },
-            onOpenAlerts = { screen = Screen.ALERTS },
-            onOpenResellerWithdrawalSetup = { screen = Screen.RESELLER_WITHDRAWAL_INTERACTIVE_SETUP },
-            onOpenSales = { screen = Screen.SALES },
-            onOpenCustomers = { screen = Screen.CUSTOMERS },
-            onOpenReports = { screen = Screen.REPORTS },
+            tab = homeTab,
+            onTabChange = { homeTab = it },
+            ordersTopTab = ordersTopTab,
+            onOrdersTopTabChange = { ordersTopTab = it },
+            ordersVipSubTab = ordersVipSubTab,
+            onOrdersVipSubTabChange = { ordersVipSubTab = it },
+            onOpenOrder = { order -> selectedOrder = order; navigate(Screen.ORDER_DETAIL) },
+            onOpenAgentShopOrder = { order -> selectedAgentShopOrder = order; navigate(Screen.AGENT_SHOP_ORDER_DETAIL) },
+            onOpenAgentVipOrder = { order -> selectedAgentVipOrder = order; navigate(Screen.AGENT_VIP_ORDER_DETAIL) },
+            onOpenAgentVipPackageOrder = { order -> selectedAgentVipPackageOrder = order; navigate(Screen.AGENT_VIP_PACKAGE_ORDER_DETAIL) },
+            onOpenPackages = { navigate(Screen.PACKAGES) },
+            onOpenTransactions = { navigate(Screen.TRANSACTIONS) },
+            onOpenWallet = { navigate(Screen.WALLET) },
+            onOpenDeviceSetup = { navigate(Screen.DEVICE_SETUP) },
+            onOpenDiagnostics = { navigate(Screen.DIAGNOSTICS) },
+            onOpenPermissionsStatus = { navigate(Screen.PERMISSIONS_STATUS) },
+            onOpenReliabilityDashboard = { navigate(Screen.RELIABILITY_DASHBOARD) },
+            onOpenMoneyExchange = { navigate(Screen.EXCHANGE_LIST) },
+            onOpenAlerts = { navigate(Screen.ALERTS) },
+            onOpenResellerWithdrawalSetup = { navigate(Screen.RESELLER_WITHDRAWAL_INTERACTIVE_SETUP) },
+            onOpenSales = { navigate(Screen.SALES) },
+            onOpenCustomers = { navigate(Screen.CUSTOMERS) },
+            onOpenReports = { navigate(Screen.REPORTS) },
         )
 
         Screen.ORDER_DETAIL -> selectedOrder?.let { order ->
             OrderDetailScreen(
                 order = order,
-                onBack = { screen = Screen.HOME },
+                onBack = { goBack() },
                 onOrderUpdated = { selectedOrder = it },
             )
         }
 
-        Screen.PACKAGES -> PackagesScreen(onBack = { screen = Screen.HOME })
+        Screen.PACKAGES -> PackagesScreen(onBack = { goBack() })
 
-        Screen.TRANSACTIONS -> TransactionHistoryScreen(onBack = { screen = Screen.HOME })
+        Screen.TRANSACTIONS -> TransactionHistoryScreen(onBack = { goBack() })
 
-        Screen.WALLET -> WalletDashboardScreen(onBack = { screen = Screen.HOME })
+        Screen.WALLET -> WalletDashboardScreen(onBack = { goBack() })
 
-        Screen.DIAGNOSTICS -> DiagnosticsScreen(onBack = { screen = Screen.HOME })
+        Screen.DIAGNOSTICS -> DiagnosticsScreen(onBack = { goBack() })
 
-        Screen.PERMISSIONS_STATUS -> PermissionsStatusScreen(onBack = { screen = Screen.HOME })
+        Screen.PERMISSIONS_STATUS -> PermissionsStatusScreen(onBack = { goBack() })
 
-        Screen.RELIABILITY_DASHBOARD -> ReliabilityDashboardScreen(onBack = { screen = Screen.HOME })
+        Screen.RELIABILITY_DASHBOARD -> ReliabilityDashboardScreen(onBack = { goBack() })
 
         Screen.EXCHANGE_LIST -> ExchangeOrdersListScreen(
-            onOpenOrder = { order -> selectedExchangeOrder = order; screen = Screen.EXCHANGE_DETAIL },
-            onOpenSetup = { screen = Screen.EXCHANGE_SETUP },
-            onBack = { screen = Screen.HOME },
+            onOpenOrder = { order -> selectedExchangeOrder = order; navigate(Screen.EXCHANGE_DETAIL) },
+            onOpenSetup = { navigate(Screen.EXCHANGE_SETUP) },
+            onBack = { goBack() },
         )
 
         Screen.EXCHANGE_DETAIL -> selectedExchangeOrder?.let { order ->
             ExchangeOrderDetailScreen(
                 order = order,
-                onBack = { screen = Screen.EXCHANGE_LIST },
+                onBack = { goBack() },
                 onOrderUpdated = { selectedExchangeOrder = it },
             )
         }
 
-        Screen.EXCHANGE_SETUP -> ExchangeAccessibilitySetupScreen(onBack = { screen = Screen.EXCHANGE_LIST })
+        Screen.EXCHANGE_SETUP -> ExchangeAccessibilitySetupScreen(onBack = { goBack() })
 
-        Screen.ALERTS -> AlertsScreen(onBack = { screen = Screen.HOME })
+        Screen.ALERTS -> AlertsScreen(onBack = { goBack() })
 
-        Screen.RESELLER_WITHDRAWAL_INTERACTIVE_SETUP -> ResellerWithdrawalInteractiveAccessibilitySetupScreen(onBack = { screen = Screen.HOME })
+        Screen.RESELLER_WITHDRAWAL_INTERACTIVE_SETUP -> ResellerWithdrawalInteractiveAccessibilitySetupScreen(onBack = { goBack() })
 
-        Screen.SALES -> NewSaleScreen(onBack = { screen = Screen.HOME })
+        Screen.SALES -> NewSaleScreen(onBack = { goBack() })
 
         Screen.CUSTOMERS -> CustomersScreen(
-            onBack = { screen = Screen.HOME },
-            onOpenCustomer = { customerId -> selectedCustomerId = customerId; screen = Screen.CUSTOMER_DETAIL },
+            onBack = { goBack() },
+            onOpenCustomer = { customerId -> selectedCustomerId = customerId; navigate(Screen.CUSTOMER_DETAIL) },
         )
 
         Screen.CUSTOMER_DETAIL -> selectedCustomerId?.let { customerId ->
-            CustomerDetailScreen(customerId = customerId, onBack = { screen = Screen.CUSTOMERS })
+            CustomerDetailScreen(customerId = customerId, onBack = { goBack() })
         }
 
-        Screen.REPORTS -> ReportsScreen(onBack = { screen = Screen.HOME })
+        Screen.REPORTS -> ReportsScreen(onBack = { goBack() })
 
         Screen.AGENT_SHOP_ORDER_DETAIL -> selectedAgentShopOrder?.let { order ->
             ShopAgentOrderDetailScreen(
                 order = order,
-                onBack = { screen = Screen.HOME },
+                onBack = { goBack() },
                 onOrderUpdated = { selectedAgentShopOrder = it },
             )
         }
@@ -490,7 +536,7 @@ private fun AgentApp() {
         Screen.AGENT_VIP_ORDER_DETAIL -> selectedAgentVipOrder?.let { order ->
             VipNumberAgentOrderDetailScreen(
                 order = order,
-                onBack = { screen = Screen.HOME },
+                onBack = { goBack() },
                 onOrderUpdated = { selectedAgentVipOrder = it },
             )
         }
@@ -498,7 +544,7 @@ private fun AgentApp() {
         Screen.AGENT_VIP_PACKAGE_ORDER_DETAIL -> selectedAgentVipPackageOrder?.let { order ->
             VipPackageAgentOrderDetailScreen(
                 order = order,
-                onBack = { screen = Screen.HOME },
+                onBack = { goBack() },
                 onOrderUpdated = { selectedAgentVipPackageOrder = it },
             )
         }
@@ -515,6 +561,12 @@ private fun rememberLauncherForSmsPermissions(
 /** Bottom-nav shell for the logged-in agent: Home, Support Agent, Broadcast, More. */
 @Composable
 private fun AgentHome(
+    tab: HomeTab,
+    onTabChange: (HomeTab) -> Unit,
+    ordersTopTab: OrdersTopTab,
+    onOrdersTopTabChange: (OrdersTopTab) -> Unit,
+    ordersVipSubTab: VipOrdersSubTab,
+    onOrdersVipSubTabChange: (VipOrdersSubTab) -> Unit,
     onOpenOrder: (Order) -> Unit,
     onOpenAgentShopOrder: (ShopAgentOrder) -> Unit,
     onOpenAgentVipOrder: (VipNumberAgentOrder) -> Unit,
@@ -533,35 +585,35 @@ private fun AgentHome(
     onOpenCustomers: () -> Unit,
     onOpenReports: () -> Unit,
 ) {
-    var tab by remember { mutableStateOf(HomeTab.HOME) }
 
     // A support push tapped while this composable already exists (warm
     // start, or the agent was mid-session on some other tab) -- AgentApp's
     // own effect only gets the agent as far as Screen.HOME; this is what
-    // actually switches to the Support tab and clears the badge, since `tab`
-    // is local state that only exists here.
+    // actually switches to the Support tab and clears the badge. `tab` is
+    // now hoisted up to AgentApp, so this goes through onTabChange.
     LaunchedEffect(SupportDeepLink.pending) {
         if (SupportDeepLink.pending) {
             SupportDeepLink.pending = false
-            tab = HomeTab.SUPPORT
+            onTabChange(HomeTab.SUPPORT)
             SupportUnreadState.clear()
         }
     }
 
     // Same warm/cold-start coverage as the support deep link above, for a
-    // payment-confirmed Shop/VIP order push -- `tab` only exists here, so
-    // AgentApp's own effect can only get the agent as far as Screen.HOME.
-    // Skips (leaves pending untouched) for a VIP Number/Package push:
-    // AgentApp's own effect owns that case end-to-end (fetches the order,
-    // navigates straight to its detail screen, clears pending itself) --
-    // clearing it here first would race that still-in-flight fetch and
-    // strand the agent on the Orders tab instead.
+    // payment-confirmed Shop/VIP order push -- AgentApp's own effect can
+    // only get the agent as far as Screen.HOME, so this is what actually
+    // switches to the Orders tab. Skips (leaves pending untouched) for a
+    // VIP Number/Package push: AgentApp's own effect owns that case
+    // end-to-end (fetches the order, navigates straight to its detail
+    // screen, clears pending itself) -- clearing it here first would race
+    // that still-in-flight fetch and strand the agent on the Orders tab
+    // instead.
     LaunchedEffect(OrdersDeepLink.pending, OrdersDeepLink.orderType) {
         if (!OrdersDeepLink.pending) return@LaunchedEffect
         val orderType = OrdersDeepLink.orderType
         if (OrdersDeepLink.orderId != null && (orderType == "vip_number" || orderType == "vip_package")) return@LaunchedEffect
         OrdersDeepLink.pending = false
-        tab = HomeTab.ORDERS
+        onTabChange(HomeTab.ORDERS)
     }
 
     // Covers a support push that arrived while the app was backgrounded or
@@ -585,7 +637,7 @@ private fun AgentHome(
             DalabBottomNavigation(
                 selectedTab = tab,
                 onSelectTab = { newTab ->
-                    tab = newTab
+                    onTabChange(newTab)
                     if (newTab == HomeTab.SUPPORT) SupportUnreadState.clear()
                 },
                 supportHasUnread = SupportUnreadState.hasUnread,
@@ -599,12 +651,16 @@ private fun AgentHome(
                     onOpenAlerts = onOpenAlerts,
                 )
                 HomeTab.ORDERS -> AgentOrdersScreen(
+                    topTab = ordersTopTab,
+                    onTopTabChange = onOrdersTopTabChange,
+                    vipSubTab = ordersVipSubTab,
+                    onVipSubTabChange = onOrdersVipSubTabChange,
                     onOpenShopOrder = onOpenAgentShopOrder,
                     onOpenVipOrder = onOpenAgentVipOrder,
                     onOpenVipPackageOrder = onOpenAgentVipPackageOrder,
                 )
-                HomeTab.SUPPORT -> SupportScreen(onBack = { tab = HomeTab.HOME })
-                HomeTab.BROADCAST -> NotificationsScreen(onBack = { tab = HomeTab.HOME })
+                HomeTab.SUPPORT -> SupportScreen(onBack = { onTabChange(HomeTab.HOME) })
+                HomeTab.BROADCAST -> NotificationsScreen(onBack = { onTabChange(HomeTab.HOME) })
                 HomeTab.MORE -> MoreScreen(
                     onOpenPackages = onOpenPackages,
                     onOpenTransactions = onOpenTransactions,

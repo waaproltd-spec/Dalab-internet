@@ -33,8 +33,13 @@ import com.dalab.internet.network.ApiClient
 import com.dalab.internet.util.formatApiDateTime
 import kotlinx.coroutines.launch
 
-private enum class OrdersTopTab { SHOP, VIP_NUMBERS }
-private enum class VipOrdersSubTab { NUMBERS, PACKAGES }
+// Not private -- MainActivity hoists the selected tab/sub-tab up to its own
+// AgentApp() state (see MainActivity's ordersTopTab/ordersVipSubTab) so
+// that selection survives navigating to an order's detail screen and back,
+// instead of resetting to Shop/Numbers every time this composable is torn
+// down and recreated.
+enum class OrdersTopTab { SHOP, VIP_NUMBERS }
+enum class VipOrdersSubTab { NUMBERS, PACKAGES }
 
 /**
  * The Agent App's real Orders tab — Shop | VIP Numbers, with VIP Numbers
@@ -53,13 +58,14 @@ private enum class VipOrdersSubTab { NUMBERS, PACKAGES }
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AgentOrdersScreen(
+    topTab: OrdersTopTab,
+    onTopTabChange: (OrdersTopTab) -> Unit,
+    vipSubTab: VipOrdersSubTab,
+    onVipSubTabChange: (VipOrdersSubTab) -> Unit,
     onOpenShopOrder: (ShopAgentOrder) -> Unit,
     onOpenVipOrder: (VipNumberAgentOrder) -> Unit,
     onOpenVipPackageOrder: (VipPackageAgentOrder) -> Unit,
 ) {
-    var topTab by remember { mutableStateOf(OrdersTopTab.SHOP) }
-    var vipSubTab by remember { mutableStateOf(VipOrdersSubTab.NUMBERS) }
-
     var shopOrders by remember { mutableStateOf<List<ShopAgentOrder>>(emptyList()) }
     var vipOrders by remember { mutableStateOf<List<VipNumberAgentOrder>>(emptyList()) }
     var vipPackageOrders by remember { mutableStateOf<List<VipPackageAgentOrder>>(emptyList()) }
@@ -129,12 +135,12 @@ fun AgentOrdersScreen(
             TabRow(selectedTabIndex = topTab.ordinal) {
                 Tab(
                     selected = topTab == OrdersTopTab.SHOP,
-                    onClick = { topTab = OrdersTopTab.SHOP },
+                    onClick = { onTopTabChange(OrdersTopTab.SHOP) },
                     text = { Text("Shop", fontWeight = if (topTab == OrdersTopTab.SHOP) FontWeight.Bold else FontWeight.Normal) },
                 )
                 Tab(
                     selected = topTab == OrdersTopTab.VIP_NUMBERS,
-                    onClick = { topTab = OrdersTopTab.VIP_NUMBERS },
+                    onClick = { onTopTabChange(OrdersTopTab.VIP_NUMBERS) },
                     text = { Text("VIP Numbers", fontWeight = if (topTab == OrdersTopTab.VIP_NUMBERS) FontWeight.Bold else FontWeight.Normal) },
                 )
             }
@@ -147,12 +153,12 @@ fun AgentOrdersScreen(
                     SubTabPill(
                         label = "Numbers",
                         selected = vipSubTab == VipOrdersSubTab.NUMBERS,
-                        onClick = { vipSubTab = VipOrdersSubTab.NUMBERS },
+                        onClick = { onVipSubTabChange(VipOrdersSubTab.NUMBERS) },
                     )
                     SubTabPill(
                         label = "Packages",
                         selected = vipSubTab == VipOrdersSubTab.PACKAGES,
-                        onClick = { vipSubTab = VipOrdersSubTab.PACKAGES },
+                        onClick = { onVipSubTabChange(VipOrdersSubTab.PACKAGES) },
                     )
                 }
             }
