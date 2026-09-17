@@ -234,7 +234,10 @@ data class PackageItem(
     val active: Boolean = true,
 )
 
-/** Mirrors GET/POST /agent/customers — a lighter view than the admin customer record. */
+/** Mirrors GET/POST /agent/customers -- same columns Admin's own customer
+ * list/edit responses use (customers.routes.ts's AGENT_CUSTOMER_COLUMNS ==
+ * ADMIN_CUSTOMER_COLUMNS), so an Agent action never sees a narrower shape
+ * than Admin does. */
 data class CustomerSummary(
     val id: String,
     val phone: String,
@@ -242,6 +245,10 @@ data class CustomerSummary(
     val status: String, // "active" | "blocked"
     val macaashPoints: Int = 0,
     val createdAt: String,
+    val evcPlusName: String? = null,
+    val evcPlusNumber: String? = null,
+    val edahabName: String? = null,
+    val edahabNumber: String? = null,
 )
 
 /** Mirrors GET /agent/customers/{id} -- the Customer Details screen's header
@@ -258,6 +265,10 @@ data class CustomerDetail(
     val pinSet: Boolean = false,
     val totalOrders: Int = 0,
     val totalSpent: Double = 0.0,
+    val evcPlusName: String? = null,
+    val evcPlusNumber: String? = null,
+    val edahabName: String? = null,
+    val edahabNumber: String? = null,
 )
 
 /** Mirrors GET /agent/customers/{id}/orders -- this customer's own Internet

@@ -155,6 +155,13 @@ data class SupportSendMessageRequest(
 data class SupportEndConversationResponse(val ended: Boolean, val next: SupportConversation? = null)
 
 data class CreateCustomerRequest(val phone: String, val name: String? = null)
+data class UpdateCustomerRequest(val name: String? = null, val phone: String? = null)
+data class UpdateCustomerWalletNumbersRequest(
+    val evcPlusName: String? = null,
+    val evcPlusNumber: String? = null,
+    val edahabName: String? = null,
+    val edahabNumber: String? = null,
+)
 data class SetCustomerPinRequest(val pin: String)
 data class CustomerPinStatusResponse(val isSet: Boolean)
 data class CustomerPinActionResponse(val message: String, val isSet: Boolean)
@@ -403,6 +410,12 @@ interface ApiService {
 
     @GET("agent/customers/{id}")
     suspend fun getCustomerDetail(@Path("id") customerId: String): Response<CustomerDetail>
+
+    @PUT("agent/customers/{id}")
+    suspend fun updateCustomer(@Path("id") customerId: String, @Body body: UpdateCustomerRequest): Response<CustomerSummary>
+
+    @PUT("agent/customers/{id}/wallet-numbers")
+    suspend fun updateCustomerWalletNumbers(@Path("id") customerId: String, @Body body: UpdateCustomerWalletNumbersRequest): Response<CustomerSummary>
 
     @GET("agent/customers/{id}/orders")
     suspend fun getCustomerOrders(@Path("id") customerId: String): Response<List<CustomerOrderHistoryEntry>>
