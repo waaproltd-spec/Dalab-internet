@@ -166,11 +166,12 @@ test("a customer can place an order: stock is reserved, total is server-computed
 // dial character), and Shop's EVC Plus/eDahab checkout previously going
 // through formatUssdAmount (Internet Store's own single-token convention,
 // "0.10" -> "01") instead of formatEvcDahabUssdAmount (the real *712*/*110*
-// Dial-to-Pay carrier convention this template actually needs, where a
-// sub-$1 amount with no dollars is just the 2-digit cents figure alone,
-// no leading "0*" and no round-tens collapse) -- see
-// utils/__tests__/ussdFormatting.test.ts for the full formatting-function
-// coverage this mirrors.
+// Dial-to-Pay carrier convention this template actually needs). A sub-$1
+// amount keeps its "0*" dollar segment -- omitting it was itself a real,
+// separate bug (a live $0.99 Money Exchange payout misread by the carrier
+// as "$99" with the segment dropped) -- see formatEvcDahabUssdAmount's own
+// doc comment and utils/__tests__/ussdFormatting.test.ts for the full
+// formatting-function coverage this mirrors.
 test("the USSD dial string uses formatEvcDahabUssdAmount, not Internet Store's formatUssdAmount, for a fractional total", async () => {
   const cheapProduct = await queryOne<{ id: string }>(
     `INSERT INTO shop_products (id, category_id, name, price, stock) VALUES ($1,$2,'Test Keychain',0.10,5) RETURNING id`,
@@ -190,7 +191,7 @@ test("the USSD dial string uses formatEvcDahabUssdAmount, not Internet Store's f
   const order = (await res.json()) as any;
   assert.equal(res.status, 201, JSON.stringify(order));
   assert.equal(Number(order.totalAmount), 0.1);
-  assert.equal(order.dialUssd, "*712*610338686*10#", "must be the real EVC/eDahab dial format (2-digit cents, no dollars segment), never Internet Store's '01' or a literal decimal point");
+  assert.equal(order.dialUssd, "*712*610338686*0*10#", "must be the real EVC/eDahab dial format (dollars '0' + 2-digit cents), never Internet Store's '01', a literal decimal point, or a bare cents figure the carrier could misread as whole dollars");
 });
 
 test("ordering more than available stock is rejected and reserves nothing", async () => {

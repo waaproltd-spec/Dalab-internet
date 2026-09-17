@@ -80,17 +80,20 @@ test("normalizePhoneForUssd handles null/undefined/empty without throwing", () =
 // dialed as "*712*610338686*42*00#") -- a whole-dollar amount must never
 // get a spurious "*00" cents segment, the same "never pad a round amount
 // with an empty-looking field" rule formatUssdAmount/formatUssdAmountSplit
-// above already apply. A sub-$1 amount (no dollars) must likewise never
-// carry a leading "0*" -- just the cents figure alone.
+// above already apply. A sub-$1 amount must ALWAYS keep its "0*" dollar
+// segment -- see formatEvcDahabUssdAmount's own doc comment for the real
+// $0.99 Money Exchange payout that got misread by the carrier as "$99"
+// when that segment was dropped.
 const EVC_DAHAB_AMOUNT_CASES: Array<[string, string]> = [
   ["22.20", "22*20"],
   ["25.00", "25"],
   ["100.00", "100"],
   ["1.98", "1*98"],
   ["10.30", "10*30"],
-  ["0.10", "10"],
-  ["0.05", "05"],
-  ["0.50", "50"],
+  ["0.10", "0*10"],
+  ["0.05", "0*05"],
+  ["0.50", "0*50"],
+  ["0.99", "0*99"],
   ["1.00", "1"],
   ["1.05", "1*05"],
   ["42.00", "42"],
@@ -121,7 +124,24 @@ test("formatEvcDahabUssdAmount substituted into a shop_payment_methods-style tem
   assert.equal(evcTemplate.replace("{amount}", formatEvcDahabUssdAmount("25.00")), "*712*610338686*25#");
   assert.equal(evcTemplate.replace("{amount}", formatEvcDahabUssdAmount("100.00")), "*712*610338686*100#");
   assert.equal(evcTemplate.replace("{amount}", formatEvcDahabUssdAmount("42.00")), "*712*610338686*42#");
-  assert.equal(evcTemplate.replace("{amount}", formatEvcDahabUssdAmount("0.05")), "*712*610338686*05#");
+  assert.equal(evcTemplate.replace("{amount}", formatEvcDahabUssdAmount("0.05")), "*712*610338686*0*05#");
+});
+
+// Regression coverage for a real production incident: a Money Exchange
+// payout for $0.99 (EVC Plus -> eDahab, order sent from 252619991299 to
+// receiver 252620346060) dialed as "*<prefix>*<receiver>*99#" -- no dollar
+// segment -- and the carrier's own confirmation screen read back
+// "99 Dollar ayaad u wareejinaysaa" (you are transferring 99 Dollars), a
+// 100x misread of $0.99 as $99. The fix always keeps the dollar segment
+// (even "0") whenever there are cents, so the carrier can never mistake a
+// sub-$1 amount for a whole-dollar one.
+test("a sub-$1 amount is never dialed as a bare cents figure the carrier can misread as whole dollars", () => {
+  assert.equal(formatEvcDahabUssdAmount("0.99"), "0*99");
+  assert.notEqual(formatEvcDahabUssdAmount("0.99"), "99");
+  assert.equal(formatEvcDahabUssdAmount(0.99), "0*99");
+
+  const evcTemplate = "*712*610338686*{amount}#";
+  assert.equal(evcTemplate.replace("{amount}", formatEvcDahabUssdAmount("0.99")), "*712*610338686*0*99#");
 });
 
 // splitUssdAmount -- Somnet's own top-up USSD menu (real production incident:

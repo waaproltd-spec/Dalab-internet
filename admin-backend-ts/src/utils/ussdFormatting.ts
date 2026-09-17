@@ -142,15 +142,23 @@ export function splitUssdAmount(amount: string | number): { whole: string; cents
  * already apply — live-confirmed broken: a real $42.00 VIP Number order
  * dialed as "*712*610338686*42*00#" (the previous unconditional split
  * below), an extra empty-looking field the carrier's menu doesn't expect
- * for a round amount. Three cases:
+ * for a round amount. Two cases:
  *
  *   1. No cents (cents === 0): just the dollar figure — "42.00" -> "42",
  *      "1.00" -> "1". Never "42*00"/"1*00".
- *   2. Cents but no dollars (a sub-$1 amount): just the 2-digit cents
- *      figure alone, no leading "0*" — "0.05" -> "05", "0.50" -> "50".
- *      Never "0*05".
- *   3. Both dollars and cents: the two *-delimited segments as before —
- *      "1.05" -> "1*05", "1.98" -> "1*98".
+ *   2. Any cents at all, dollars zero or not: the two *-delimited
+ *      segments, dollars ALWAYS present even when it's "0" — "1.05" ->
+ *      "1*05", "1.98" -> "1*98", "0.99" -> "0*99". A previous version of
+ *      this function dropped the "0*" for a sub-$1 amount ("0.99" -> bare
+ *      "99"), reasoning by false symmetry with case 1 rather than from an
+ *      actual live test — live-confirmed broken for real: a real $0.99
+ *      Money Exchange payout dialed as "*<prefix>*<receiver>*99#" (no
+ *      dollar segment) had its own carrier's confirmation screen read
+ *      "99 Dollar" back to the agent, a 100x misread of $0.99 as $99,
+ *      exactly the same class of bug case 1 above was fixed for, just the
+ *      opposite edge. The dollar segment is the only thing telling the
+ *      carrier's menu "this is cents, not the whole amount" — it can't be
+ *      omitted just because its value happens to be zero.
  *
  * amount is always a NUMERIC(10,2) column value as returned by pg (a
  * decimal string like "0.10" or "25.00"), but Number() handles a raw
@@ -163,5 +171,5 @@ export function formatEvcDahabUssdAmount(amount: string | number): string {
   const cents = Math.round((numeric - dollars) * 100);
   if (cents === 0) return String(dollars);
   const centsSegment = String(cents).padStart(2, "0");
-  return dollars === 0 ? centsSegment : `${dollars}*${centsSegment}`;
+  return `${dollars}*${centsSegment}`;
 }
