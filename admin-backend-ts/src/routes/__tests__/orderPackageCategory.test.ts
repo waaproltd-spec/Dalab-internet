@@ -27,7 +27,6 @@ let customerToken: string;
 const CUSTOMER_ID = randomUUID();
 const CUSTOMER_PHONE = "252611200777";
 const COMPANY_ID = "test-order-category-co";
-const CATEGORY_ID = "test-order-category-cat";
 const PACKAGE_WITH_CATEGORY_ID = randomUUID();
 const PACKAGE_WITHOUT_CATEGORY_ID = randomUUID();
 const ORDER_WITH_CATEGORY_ID = randomUUID();
