@@ -1406,6 +1406,46 @@ smsLogsRouter.get("/agent/payment-transactions", requireAuth("agent"), async (re
   sendJson(res, 200, rows);
 });
 
+// Customer-management parity: "view payment details and payment status" for
+// a specific customer, across every order they've placed — not scoped to
+// this agent's own SMS uploads like GET /agent/payment-transactions above,
+// since an agent managing a customer needs that customer's full payment
+// history regardless of which agent originally handled each order.
+smsLogsRouter.get("/agent/customers/:id/payment-transactions", requireAuth("agent"), async (req, res) => {
+  const customer = await queryOne(`SELECT id FROM customers WHERE id=$1`, [req.params.id]);
+  if (!customer) return sendJson(res, 404, { error: "Customer not found" });
+  const limit = Math.min(Number(req.query.limit) || 100, 500);
+  const rows = await query(
+    `SELECT pt.*, o.company_id AS order_company_id, c.name AS provider_name, d.name AS device_name
+     FROM payment_transactions pt
+     JOIN orders o ON o.id = pt.order_id
+     LEFT JOIN companies c ON c.id = o.company_id
+     LEFT JOIN agent_devices d ON d.id = pt.agent_device_id
+     WHERE o.customer_id = $1
+     ORDER BY pt.created_at DESC
+     LIMIT $2`,
+    [req.params.id, limit]
+  );
+  sendJson(res, 200, rows);
+});
+
+// Identical to GET /admin/payment-transactions/:id/timeline below, just
+// agent-authenticated — same full chronological trace (matched SMS, dial
+// attempts, audit-log entries) an Admin can already see.
+smsLogsRouter.get("/agent/payment-transactions/:id/timeline", requireAuth("agent"), async (req, res) => {
+  const tx = await queryOne<Record<string, unknown>>(
+    `SELECT pt.*, o.company_id AS order_company_id, c.name AS provider_name, d.name AS device_name
+     FROM payment_transactions pt
+     LEFT JOIN orders o ON o.id = pt.order_id
+     LEFT JOIN companies c ON c.id = o.company_id
+     LEFT JOIN agent_devices d ON d.id = pt.agent_device_id
+     WHERE pt.id=$1`,
+    [req.params.id]
+  );
+  if (!tx) return sendJson(res, 404, { error: "Payment transaction not found" });
+  sendJson(res, 200, await serializePaymentTransactionTimeline(tx));
+});
+
 // "Stuck" is precise, not a guess: payment_transactions.status only ever
 // leaves 'pending' when a dial attempt is actually logged (markPaymentProcessing,
 // called from POST /agent/orders/:id/dial-attempts). So a transaction still
@@ -1447,19 +1487,10 @@ smsLogsRouter.get("/admin/payment-transactions/duplicate-count", requireStaff(),
 // tied to either the SMS log or the order — activity-log writes elsewhere
 // in this codebase key by whichever of the two happened to be in scope at
 // the time (payment_verified/payment_already_processed use smsLogId,
-// payment_completed uses orderId), so both are checked here.
-smsLogsRouter.get("/admin/payment-transactions/:id/timeline", requireStaff(), async (req, res) => {
-  const tx = await queryOne<Record<string, unknown>>(
-    `SELECT pt.*, o.company_id AS order_company_id, c.name AS provider_name, d.name AS device_name
-     FROM payment_transactions pt
-     LEFT JOIN orders o ON o.id = pt.order_id
-     LEFT JOIN companies c ON c.id = o.company_id
-     LEFT JOIN agent_devices d ON d.id = pt.agent_device_id
-     WHERE pt.id=$1`,
-    [req.params.id]
-  );
-  if (!tx) return sendJson(res, 404, { error: "Payment transaction not found" });
-
+// payment_completed uses orderId), so both are checked here. Shared by both
+// the Admin and Agent timeline routes so their responses can never drift
+// apart.
+async function serializePaymentTransactionTimeline(tx: Record<string, unknown>) {
   const smsLog = tx.sms_log_id ? await queryOne(`SELECT * FROM sms_logs WHERE id=$1`, [tx.sms_log_id]) : null;
   const order = tx.order_id
     ? await queryOne<Record<string, unknown>>(
@@ -1492,5 +1523,19 @@ smsLogsRouter.get("/admin/payment-transactions/:id/timeline", requireStaff(), as
       )
     : [];
 
-  sendJson(res, 200, { transaction: tx, smsLog, order, dialAttempts, activity });
+  return { transaction: tx, smsLog, order, dialAttempts, activity };
+}
+
+smsLogsRouter.get("/admin/payment-transactions/:id/timeline", requireStaff(), async (req, res) => {
+  const tx = await queryOne<Record<string, unknown>>(
+    `SELECT pt.*, o.company_id AS order_company_id, c.name AS provider_name, d.name AS device_name
+     FROM payment_transactions pt
+     LEFT JOIN orders o ON o.id = pt.order_id
+     LEFT JOIN companies c ON c.id = o.company_id
+     LEFT JOIN agent_devices d ON d.id = pt.agent_device_id
+     WHERE pt.id=$1`,
+    [req.params.id]
+  );
+  if (!tx) return sendJson(res, 404, { error: "Payment transaction not found" });
+  sendJson(res, 200, await serializePaymentTransactionTimeline(tx));
 });
