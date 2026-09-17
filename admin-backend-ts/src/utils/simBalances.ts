@@ -227,7 +227,12 @@ export async function applyBalanceUpdate(params: {
   phoneNumber?: string | null;
   orderId?: string | null;
   smsLogId?: string | null;
-  source: "sms" | "manual";
+  // 'ussd_dial': the balance came from the carrier's own USSD dial
+  // response text (ussd_dial_attempts.response_message), not a separate
+  // incoming SMS -- see PUT /agent/dial-attempts/:attemptId in
+  // ussd.routes.ts. Distinct from 'sms' so the dashboard/history can show
+  // which real signal actually produced this reading.
+  source: "sms" | "manual" | "ussd_dial";
   changedBy?: string | null;
 }): Promise<void> {
   // A single physical SIM can report TWO genuinely separate balances via
