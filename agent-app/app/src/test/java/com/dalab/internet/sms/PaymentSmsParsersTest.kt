@@ -339,6 +339,69 @@ class HormuudEVoucherSomaliParserTest {
 }
 
 /**
+ * Regression coverage for Somnet's Jeeb-branded top-up-sent confirmation —
+ * see SomnetJeebVoucherSentParser's doc comment: this exact format went
+ * completely unrecognized (sms_receiver_unrecognized, Diagnostics) for a
+ * real in_progress Store order despite the direct USSD dial response
+ * already reporting SUCCESS for that same order.
+ */
+class SomnetJeebVoucherSentParserTest {
+
+    // The exact real SMS captured live in Diagnostics, unaltered.
+    private val realCapturedBody = "[-Jeeb-] Waxaad \$0.1 ugu shubtay 252685115555, Haraagaagu waa \$29.8."
+
+    @Test
+    fun `sender 801 is recognized`() {
+        assertEquals(listOf("801"), SomnetJeebVoucherSentParser.senders)
+    }
+
+    @Test
+    fun `the real captured confirmation SMS parses correctly end to end`() {
+        val entry = SomnetJeebVoucherSentParser.tryParse("801", realCapturedBody)
+        requireNotNull(entry) { "Expected the real captured SMS to parse — it did not." }
+        assertEquals("Somnet", entry.provider)
+        assertEquals(0.1, entry.amount, 0.0001)
+        assertEquals("252685115555", entry.receiverPhone)
+    }
+
+    @Test
+    fun `a whole-dollar amount with no decimal point is still parsed correctly`() {
+        val entry = SomnetJeebVoucherSentParser.tryParse("801", "[-Jeeb-] Waxaad \$1 ugu shubtay 252685115555, Haraagaagu waa \$29.8.")
+        assertEquals(1.0, entry?.amount ?: -1.0, 0.0001)
+    }
+
+    @Test
+    fun `a wrong sender is rejected even with matching wording`() {
+        assertNull(SomnetJeebVoucherSentParser.tryParse("192", realCapturedBody))
+    }
+
+    @Test
+    fun `an unrelated SMS from sender 801 is rejected`() {
+        assertNull(SomnetJeebVoucherSentParser.tryParse("801", "Your OTP code is 1234"))
+    }
+
+    @Test
+    fun `Hormuud's own 740 parsers never match this Jeeb-801 wording, and vice versa`() {
+        // Mutual exclusivity: this new parser and Hormuud's existing
+        // "ugu shubtay" parser must never both match a real message —
+        // confirmed here since both use the same underlying phrase shape,
+        // disambiguated only by sender.
+        assertNull(HormuudEVoucherSomaliParser.tryParse("801", realCapturedBody))
+        val hormuudBody = "[-E-Voucher-] Waxaad \$0.1 ugu shubtay 252619991299, Haraagaagu waa \$0.51.\nLa soo deg App-ka WAAFI http://onelink.to/waafi"
+        assertNull(SomnetJeebVoucherSentParser.tryParse("740", hormuudBody))
+    }
+
+    @Test
+    fun `registered in VoucherSentParsers so SmsReceiver actually reaches it`() {
+        val entry = VoucherSentParsers.parse("801", realCapturedBody)
+        requireNotNull(entry) { "SomnetJeebVoucherSentParser must be registered in VoucherSentParsers.ALL" }
+        assertEquals("Somnet", entry.provider)
+        assertEquals(0.1, entry.amount, 0.0001)
+        assertEquals("252685115555", entry.receiverPhone)
+    }
+}
+
+/**
  * Regression coverage for Somtel eDahab's second real outgoing-transfer
  * wording — see SomtelWareejisayPayoutSentParser's doc comment: this exact
  * format went completely unparsed for a real, successfully-paid Reseller
