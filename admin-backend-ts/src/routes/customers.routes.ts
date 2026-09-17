@@ -415,7 +415,20 @@ customersRouter.delete("/agent/customers/:id/pin", requireAuth("agent"), async (
 
 // ---------------- Customer: own profile ----------------
 const CUSTOMER_PROFILE_COLUMNS =
-  "id, phone, name, email, macaash_points, evc_plus_name, evc_plus_number, evc_plus_saved_at, edahab_name, edahab_number, edahab_saved_at, photo_base64, created_at";
+  "id, phone, name, email, status, macaash_points, evc_plus_name, evc_plus_number, evc_plus_saved_at, edahab_name, edahab_number, edahab_saved_at, photo_base64, created_at";
+
+// The one customer-facing endpoint a suspended account can still call
+// outside Agent Support (see server.ts's suspension-enforcement middleware,
+// which exempts this exact path) -- this is what the Customer App uses to
+// find out it's suspended in the first place (at app bootstrap, for a
+// session that was already signed in before the suspension happened) and
+// to notice reactivation later (polled while the blocking screen is up),
+// without needing every other endpoint to double as a status probe.
+customersRouter.get("/customer/status", requireAuth("customer"), async (req, res) => {
+  const customer = await queryOne<{ status: string }>(`SELECT status FROM customers WHERE id=$1`, [req.auth!.sub]);
+  if (!customer) return sendJson(res, 404, { error: "Customer not found" });
+  sendJson(res, 200, { status: customer.status });
+});
 
 customersRouter.get("/customer/profile", requireAuth("customer"), async (req, res) => {
   const customer = await queryOne(`SELECT ${CUSTOMER_PROFILE_COLUMNS} FROM customers WHERE id=$1`, [req.auth!.sub]);

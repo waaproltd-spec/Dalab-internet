@@ -108,6 +108,7 @@ authRouter.post("/auth/register", rateLimit("customer-register", 10, 15 * 60 * 1
       phone: customer!.phone,
       name: customer!.name,
       email: customer!.email,
+      status: customer!.status,
       evcPlusNumber: customer!.evc_plus_number,
       edahabNumber: customer!.edahab_number,
     },
@@ -136,7 +137,12 @@ authRouter.post("/auth/login", rateLimit("customer-login", 10, 15 * 60 * 1000), 
     return sendJson(res, 401, { error: "This account hasn't set up a password yet. Please create your account to continue.", needsPasswordSetup: true });
   }
   if (!(await verifyPassword(password, customer.password_hash))) return genericError();
-  if (customer.status === "blocked") return sendJson(res, 403, { error: "This account has been blocked" });
+  // A suspended customer is deliberately still allowed to sign in — the
+  // Customer App reads `customer.status` below and shows its full-screen
+  // suspension block (with Agent Support still reachable, everything else
+  // rejected server-side by server.ts's suspension-enforcement middleware)
+  // instead of the normal app, rather than being refused a session entirely
+  // with no way to even reach support from inside the app.
 
   const tokens = await issueTokens(customer.id, "customer");
   sendJson(res, 200, {
@@ -146,6 +152,7 @@ authRouter.post("/auth/login", rateLimit("customer-login", 10, 15 * 60 * 1000), 
       phone: customer.phone,
       name: customer.name,
       email: customer.email,
+      status: customer.status,
       evcPlusNumber: customer.evc_plus_number,
       edahabNumber: customer.edahab_number,
     },
@@ -226,7 +233,10 @@ authRouter.post("/auth/identify", rateLimit("customer-identify", 20, 15 * 60 * 1
 
   let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
   if (customer) {
-    if (customer.status === "blocked") return sendJson(res, 403, { error: "This account has been blocked" });
+    // A suspended customer is deliberately still allowed to identify/sign
+    // in here too — same reasoning as /auth/login above: the Customer App
+    // reads `customer.status` below and shows its suspension block instead
+    // of refusing a session outright.
     // Only fills in a missing name — never overwrites a name the customer
     // (or an admin) already set, since a later device re-entering the same
     // phone shouldn't silently rename an existing profile.
@@ -246,6 +256,7 @@ authRouter.post("/auth/identify", rateLimit("customer-identify", 20, 15 * 60 * 1
       phone: customer!.phone,
       name: customer!.name,
       email: customer!.email,
+      status: customer!.status,
       evcPlusNumber: customer!.evc_plus_number,
       edahabNumber: customer!.edahab_number,
     },
@@ -337,6 +348,7 @@ authRouter.post("/auth/customer/signup", rateLimit("customer-pin-signup", 10, 15
       phone: customer!.phone,
       name: customer!.name,
       email: customer!.email,
+      status: customer!.status,
       evcPlusNumber: customer!.evc_plus_number,
       edahabNumber: customer!.edahab_number,
     },
@@ -354,8 +366,11 @@ authRouter.post("/auth/customer/login", rateLimit("customer-pin-login", 10, 15 *
   const genericError = () => sendJson(res, 401, { error: "Invalid phone number or PIN" });
   if (!customer || !customer.pin_hash) return genericError();
   if (!(await verifyPassword(pin, customer.pin_hash))) return genericError();
-  if (customer.status === "blocked") return sendJson(res, 403, { error: "This account has been blocked" });
-
+  // A suspended customer is deliberately still allowed to sign in — the
+  // Customer App reads `customer.status` below and shows its full-screen
+  // suspension block (with Agent Support still reachable) instead of the
+  // normal app, rather than being refused a session entirely and left with
+  // no way to even reach support from inside the app.
   const tokens = await issueTokens(customer.id, "customer");
   sendJson(res, 200, {
     ...tokens,
@@ -364,6 +379,7 @@ authRouter.post("/auth/customer/login", rateLimit("customer-pin-login", 10, 15 *
       phone: customer.phone,
       name: customer.name,
       email: customer.email,
+      status: customer.status,
       evcPlusNumber: customer.evc_plus_number,
       edahabNumber: customer.edahab_number,
     },
