@@ -688,8 +688,8 @@ export async function completeOrderById(orderId: string): Promise<{ order: any; 
   await notifyCustomer(
     order.customer_id,
     "order_update",
-    "🎉 Hambalyo! Lacagta waa la diray",
-    `Lacagta waxaa laga diray lambarkan +${order.sender_phone}, waxaana si guuleysata loogu diray lambarka internet-ka +${order.receiver_phone}.`,
+    "🎉 Hambalyo Macmiil! Lacagtaada waa la helay",
+    "Lacagtaada si guul leh ayaa loo helay, oo data-da waxaa hadda loo diray number-ka aad dooratay. Adeeggaagu wuu dhammaaday — wax sugitaan ah ma jiro. Mahadsanid inaad isticmaashay Dalab App. ❤️",
     { screen: "notifications", orderId: order.id }
   );
   await recordActivity({
@@ -978,8 +978,8 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
       await notifyCustomer(
         order.customer_id,
         "order_update",
-        "🎉 Hambalyo! Lacagta waa la diray",
-        `Lacagta waxaa laga diray lambarkan +${order.sender_phone}, waxaana si guuleysata loogu diray lambarka internet-ka +${order.receiver_phone}.`,
+        "🎉 Hambalyo Macmiil! Lacagtaada waa la helay",
+        "Lacagtaada si guul leh ayaa loo helay, oo data-da waxaa hadda loo diray number-ka aad dooratay. Adeeggaagu wuu dhammaaday — wax sugitaan ah ma jiro. Mahadsanid inaad isticmaashay Dalab App. ❤️",
         { screen: "notifications", orderId: order.id }
       );
     }
@@ -1036,9 +1036,9 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
       await notifyCustomer(
         order.customer_id,
         "order_update",
-        status === "failed" ? "❌ Lacag-bixintu way fashilantay" : "Dalabkaaga waa la joojiyay",
+        status === "failed" ? "❌ Lacag-bixintu way ciladeysatay" : "Dalabkaaga waa la joojiyay",
         status === "failed"
-          ? "Lacagta lama diri karin. Fadlan hubi lacagtaada iyo lambarka aad lacagta ka dirayso, kadibna mar kale isku day."
+          ? "Macmiil, lacag-bixintaada waxaa ku dhacday cilad. Fadlan ha dirin lacagta mar kale. Haddii aad hubisay in number-ka iyo faahfaahinta dalabkaagu ay sax yihiin, fadlan la xiriir Agent-ka Dalab si loo caawiyo oo dhibaatada looga saaro. 🤝"
           : "Dalabkaagii waa la joojiyay. Fadlan la xiriir taageerada haddii aad su'aalo qabto.",
         { screen: "notifications", orderId: order.id }
       );
