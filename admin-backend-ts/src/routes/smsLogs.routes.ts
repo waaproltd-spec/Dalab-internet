@@ -129,7 +129,8 @@ async function findMatchingOrder(
   parsedAmount: number | undefined,
   parsedPhone: string | undefined,
   uploadingAgentId: string,
-  uploadingSimSlot: number | null | undefined
+  uploadingSimSlot: number | null | undefined,
+  receivedAt: string
 ): Promise<MatchResult> {
   if (parsedAmount == null || !parsedPhone) {
     return { order: null, reason: "SMS did not parse a usable amount and/or sender phone number" };
@@ -137,14 +138,26 @@ async function findMatchingOrder(
   const target = normalizePhone(parsedPhone);
   if (!target) return { order: null, reason: "Parsed phone number had no digits after normalization" };
 
+  // created_at <= receivedAt (+ a small grace window for ordinary clock
+  // skew between the phone that timestamped the SMS and this server) is a
+  // real production incident fix, not defensive polish: a payment SMS can
+  // only be for an order that already existed when it was sent. Without
+  // this, an old orphaned SMS sitting in the resweep queue (received_at
+  // hours in the past, still unmatched) could attach itself to a brand-new
+  // order of the same amount+phone created long after that SMS arrived —
+  // confirmed live: an 11:31 SMS retroactively "paid" a 17:21 order,
+  // stealing that order's real payment, which then cascaded into Offline
+  // Auto-Order minting and paying an entirely unrelated second order for
+  // the SMS that actually belonged to the first one.
   const candidates = await withTransaction((client) =>
     client
       .query<OrderMatch>(
         `SELECT id, sender_phone, receiver_phone, amount, company_id, payment_method_id FROM orders
          WHERE status='pending' AND ABS(amount - $1) < 0.01 AND updated_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
+           AND created_at <= $2::timestamptz + interval '2 minutes'
          ORDER BY created_at ASC
          FOR UPDATE SKIP LOCKED`,
-        [parsedAmount]
+        [parsedAmount, receivedAt]
       )
       .then((r) => r.rows)
   );
@@ -493,7 +506,7 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
     if (existingByRef) return buildAlreadyProcessedResult(existingByRef, transactionRef, effectiveReceivedAt, parsedPhone, parsedAmount);
   }
 
-  const { order: storeMatch, reason: matchFailureReason } = await findMatchingOrder(parsedAmount, parsedPhone, agentId, simSlot);
+  const { order: storeMatch, reason: matchFailureReason } = await findMatchingOrder(parsedAmount, parsedPhone, agentId, simSlot, effectiveReceivedAt);
 
   // Offline Auto-Order only runs when the Store matcher found nothing for
   // this SMS — a payment that matches a real pending online order always
@@ -902,7 +915,7 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
   let relinked = 0;
   for (const sms of orphans) {
     try {
-      const { order: match, reason } = await findMatchingOrder(sms.parsed_amount ?? undefined, sms.parsed_phone ?? undefined, sms.agent_id, sms.sim_slot);
+      const { order: match, reason } = await findMatchingOrder(sms.parsed_amount ?? undefined, sms.parsed_phone ?? undefined, sms.agent_id, sms.sim_slot, sms.received_at);
       if (match) {
         // Atomically claim this row — a concurrent live upload or another
         // sweep pass may have linked it (or a different SMS to this same
