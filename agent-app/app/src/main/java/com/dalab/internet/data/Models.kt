@@ -327,4 +327,18 @@ data class AgentDevice(
     val id: String,
     val name: String,
     val description: String? = null,
+    val sim1: DeviceSimInfo? = null,
+    val sim2: DeviceSimInfo? = null,
+)
+
+/** One SIM slot's real routing (ussd.routes.ts's AGENT_DEVICE_SIM_SQL) --
+ * which company this device+slot currently dials for, and that SIM's own
+ * confirmed phone number (falling back to the company's shared payment
+ * number until one is confirmed). Null when this slot has no sim_routing
+ * entry yet -- never a placeholder company/number. */
+data class DeviceSimInfo(
+    val companyId: String,
+    val companyName: String,
+    val companyColorHex: String?,
+    val phoneNumber: String?,
 )
