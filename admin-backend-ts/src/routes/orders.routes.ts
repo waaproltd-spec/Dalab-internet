@@ -26,13 +26,20 @@ function orderRef(): string {
   return "DLB" + Math.floor(100000000 + Math.random() * 900000000);
 }
 
+// sc (service_categories) is LEFT JOINed, not INNER — same reasoning as
+// companies.routes.ts's own package listing: a package whose category_id
+// doesn't match any current category slug (renamed/removed since the order
+// was placed) still returns the order, with package_category simply null,
+// never dropped from the response.
 const ORDER_LIST_SELECT = `
   SELECT o.*, c.name AS customer_name, c.phone AS customer_phone,
-         co.name AS company_name, co.color_hex AS company_color, p.name AS package_name
+         co.name AS company_name, co.color_hex AS company_color, p.name AS package_name,
+         sc.name AS package_category
   FROM orders o
   JOIN customers c ON c.id = o.customer_id
   JOIN companies co ON co.id = o.company_id
-  JOIN packages p ON p.id = o.package_id`;
+  JOIN packages p ON p.id = o.package_id
+  LEFT JOIN service_categories sc ON sc.company_id = p.company_id AND sc.slug = p.category_id`;
 
 async function loadOrder(id: string) {
   return queryOne(`${ORDER_LIST_SELECT} WHERE o.id=$1`, [id]);
@@ -216,8 +223,11 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
 // essentially never needs more than that in a mobile list.
 ordersRouter.get("/orders", requireAuth("customer"), async (req, res) => {
   const rows = await query(
-    `SELECT o.*, co.name AS company_name, p.name AS package_name
-     FROM orders o JOIN companies co ON co.id=o.company_id JOIN packages p ON p.id=o.package_id
+    `SELECT o.*, co.name AS company_name, co.color_hex AS company_color, p.name AS package_name, sc.name AS package_category
+     FROM orders o
+     JOIN companies co ON co.id=o.company_id
+     JOIN packages p ON p.id=o.package_id
+     LEFT JOIN service_categories sc ON sc.company_id = p.company_id AND sc.slug = p.category_id
      WHERE o.customer_id=$1 ORDER BY o.created_at DESC LIMIT 100`,
     [req.auth!.sub]
   );
