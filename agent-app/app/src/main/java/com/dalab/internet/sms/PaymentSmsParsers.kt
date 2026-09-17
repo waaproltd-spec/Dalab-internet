@@ -264,9 +264,43 @@ object HormuudEVoucherSomaliParser : VoucherSentParser {
     }
 }
 
+/**
+ * Somnet's Jeeb-branded top-up-sent confirmation SMS — same "ugu shubtay"
+ * ("topped up onto") outgoing-transfer shape [HormuudEVoucherSomaliParser]
+ * already handles for Hormuud's E-Voucher sender, just Jeeb/Somnet-tagged
+ * and from sender "801" (Somnet's own registered balance-report sender —
+ * see BALANCE_SENDER_ID.somnet in the backend's simBalances.ts) instead of
+ * Hormuud's "740". Confirmed live: this exact format
+ * ("[-Jeeb-] Waxaad $0.1 ugu shubtay 252685115555, Haraagaagu waa $29.8.")
+ * went completely unrecognized (sms_receiver_unrecognized) for a real
+ * in_progress Store order despite the direct USSD dial response already
+ * reporting SUCCESS for that same order — this parser is what lets the
+ * corroboration safety net catch it next time the direct response is
+ * ambiguous/failed instead, same reasoning as HormuudEVoucherSomaliParser's
+ * own doc comment.
+ */
+object SomnetJeebVoucherSentParser : VoucherSentParser {
+    override val senders: List<String>
+        get() = SmsSenderIdRepository.sendersFor("somnet_jeeb", listOf("801"))
+
+    private val pattern = Regex(
+        """\$$AMOUNT_PATTERN\s*ugu\s+shubtay\s+(\d{6,15})""",
+        RegexOption.IGNORE_CASE
+    )
+
+    override fun tryParse(sender: String, body: String): VoucherSentEntry? {
+        if (senders.none { it.equals(sender.trim(), ignoreCase = true) }) return null
+        if (!body.contains("ugu shubtay", ignoreCase = true)) return null
+        val match = pattern.find(body) ?: return null
+        val (amount, phone) = match.destructured
+        val parsedAmount = parseAmount(amount) ?: return null
+        return VoucherSentEntry(receiverPhone = phone, amount = parsedAmount, provider = "Somnet")
+    }
+}
+
 /** Registry for outgoing voucher-sent confirmations — mirrors [PaymentSmsParsers]. */
 object VoucherSentParsers {
-    val ALL: List<VoucherSentParser> = listOf(HormuudEVoucherParser, HormuudEVoucherSomaliParser)
+    val ALL: List<VoucherSentParser> = listOf(HormuudEVoucherParser, HormuudEVoucherSomaliParser, SomnetJeebVoucherSentParser)
 
     fun parse(sender: String, body: String): VoucherSentEntry? {
         for (parser in ALL) {
