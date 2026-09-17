@@ -76,22 +76,25 @@ test("normalizePhoneForUssd handles null/undefined/empty without throwing", () =
 // formatEvcDahabUssdAmount -- EVC Plus/eDahab's own *712*/*110* Dial-to-Pay
 // menu, a genuinely different carrier convention from formatUssdAmount()
 // above (which is for Internet Store's single-token top-up templates
-// only). This is the exact bug reported against VIP Numbers: a price of
-// $22.20 must never collapse to a single "222" token the way
-// formatUssdAmount would -- it must produce the two *-delimited segments
-// "22*20" the carrier's own menu actually expects (see
-// ussdFormatting.ts's own header/function comments for the live-confirmed
-// incident this is based on, and exchange.routes.ts's ussdAmountSegments,
-// now this same shared function, which Money Exchange's payout flow has
-// used correctly in production all along).
+// only). Real bug reported live (screenshot: a $42.00 VIP Number order
+// dialed as "*712*610338686*42*00#") -- a whole-dollar amount must never
+// get a spurious "*00" cents segment, the same "never pad a round amount
+// with an empty-looking field" rule formatUssdAmount/formatUssdAmountSplit
+// above already apply. A sub-$1 amount (no dollars) must likewise never
+// carry a leading "0*" -- just the cents figure alone.
 const EVC_DAHAB_AMOUNT_CASES: Array<[string, string]> = [
   ["22.20", "22*20"],
-  ["25.00", "25*00"],
-  ["100.00", "100*00"],
+  ["25.00", "25"],
+  ["100.00", "100"],
   ["1.98", "1*98"],
   ["10.30", "10*30"],
-  ["0.10", "0*10"],
-  ["90.00", "90*00"], // e.g. a $100 package discounted 10% to $90
+  ["0.10", "10"],
+  ["0.05", "05"],
+  ["0.50", "50"],
+  ["1.00", "1"],
+  ["1.05", "1*05"],
+  ["42.00", "42"],
+  ["90.00", "90"], // e.g. a $100 package discounted 10% to $90
 ];
 
 for (const [input, expected] of EVC_DAHAB_AMOUNT_CASES) {
@@ -105,13 +108,20 @@ test("formatEvcDahabUssdAmount never collapses $22.20 into the buggy single-toke
   assert.equal(formatEvcDahabUssdAmount("22.20"), "22*20");
 });
 
+test("formatEvcDahabUssdAmount never pads a whole-dollar amount with a trailing '*00' — the real reported bug", () => {
+  assert.equal(formatEvcDahabUssdAmount("42.00"), "42");
+  assert.notEqual(formatEvcDahabUssdAmount("42.00"), "42*00");
+});
+
 test("formatEvcDahabUssdAmount substituted into a shop_payment_methods-style template produces the real carrier dial string", () => {
   const evcTemplate = "*712*610338686*{amount}#";
   const edahabTemplate = "*110*620338686*{amount}#";
   assert.equal(evcTemplate.replace("{amount}", formatEvcDahabUssdAmount("22.20")), "*712*610338686*22*20#");
   assert.equal(edahabTemplate.replace("{amount}", formatEvcDahabUssdAmount("22.20")), "*110*620338686*22*20#");
-  assert.equal(evcTemplate.replace("{amount}", formatEvcDahabUssdAmount("25.00")), "*712*610338686*25*00#");
-  assert.equal(evcTemplate.replace("{amount}", formatEvcDahabUssdAmount("100.00")), "*712*610338686*100*00#");
+  assert.equal(evcTemplate.replace("{amount}", formatEvcDahabUssdAmount("25.00")), "*712*610338686*25#");
+  assert.equal(evcTemplate.replace("{amount}", formatEvcDahabUssdAmount("100.00")), "*712*610338686*100#");
+  assert.equal(evcTemplate.replace("{amount}", formatEvcDahabUssdAmount("42.00")), "*712*610338686*42#");
+  assert.equal(evcTemplate.replace("{amount}", formatEvcDahabUssdAmount("0.05")), "*712*610338686*05#");
 });
 
 // splitUssdAmount -- Somnet's own top-up USSD menu (real production incident:

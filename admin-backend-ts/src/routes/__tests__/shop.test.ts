@@ -161,11 +161,17 @@ test("a customer can place an order: stock is reserved, total is server-computed
 
 // A whole-dollar total (like the $50 case above) can't tell "correctly
 // formatted" apart from "the raw decimal string" -- both happen to render
-// identically. This uses a fractional total specifically to catch the
-// exact bug ussdFormatting.ts's own header comment documents (a raw "."
-// is not a valid USSD/MMI dial character): $0.10 must dial as "01", not
-// "0.1".
-test("the USSD dial string uses formatUssdAmount, not a raw decimal string, for a fractional total", async () => {
+// identically. This uses a fractional, sub-$1 total specifically to catch
+// two real bugs: a raw "." reaching the dial string (not a valid USSD/MMI
+// dial character), and Shop's EVC Plus/eDahab checkout previously going
+// through formatUssdAmount (Internet Store's own single-token convention,
+// "0.10" -> "01") instead of formatEvcDahabUssdAmount (the real *712*/*110*
+// Dial-to-Pay carrier convention this template actually needs, where a
+// sub-$1 amount with no dollars is just the 2-digit cents figure alone,
+// no leading "0*" and no round-tens collapse) -- see
+// utils/__tests__/ussdFormatting.test.ts for the full formatting-function
+// coverage this mirrors.
+test("the USSD dial string uses formatEvcDahabUssdAmount, not Internet Store's formatUssdAmount, for a fractional total", async () => {
   const cheapProduct = await queryOne<{ id: string }>(
     `INSERT INTO shop_products (id, category_id, name, price, stock) VALUES ($1,$2,'Test Keychain',0.10,5) RETURNING id`,
     [randomUUID(), categoryId]
@@ -184,7 +190,7 @@ test("the USSD dial string uses formatUssdAmount, not a raw decimal string, for 
   const order = (await res.json()) as any;
   assert.equal(res.status, 201, JSON.stringify(order));
   assert.equal(Number(order.totalAmount), 0.1);
-  assert.equal(order.dialUssd, "*712*610338686*01#", "must be the dollars+cents dial format, not a literal decimal point");
+  assert.equal(order.dialUssd, "*712*610338686*10#", "must be the real EVC/eDahab dial format (2-digit cents, no dollars segment), never Internet Store's '01' or a literal decimal point");
 });
 
 test("ordering more than available stock is rejected and reserves nothing", async () => {

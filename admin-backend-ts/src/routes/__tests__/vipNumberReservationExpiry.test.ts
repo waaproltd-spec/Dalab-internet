@@ -346,6 +346,25 @@ test("the generated USSD dial string uses the correct dollars*cents segments, ne
   assert.notEqual(order.dialUssd, "*712*610338686*222#", "must never collapse $22.20 into the buggy single token 222");
 });
 
+// Real reported bug (screenshot: a live device dialing "*712*610338686*42*00#"
+// for a whole-dollar $42.00 VIP Number order) — distinct from the $22.20
+// collapsed-token bug above, this is a spurious "*00" cents segment the
+// carrier's menu doesn't expect for a round amount.
+test("a whole-dollar VIP Number price never carries a spurious '*00' cents segment", async () => {
+  const wholeDollarNumber = await queryOne<{ id: string }>(
+    `INSERT INTO vip_numbers (id, company_id, phone_number, category, price) VALUES ($1,$2,'610900042','gold',42.00) RETURNING id`,
+    [randomUUID(), companyId]
+  );
+  const res = await asCustomerA("/vip-numbers/orders", {
+    method: "POST",
+    body: JSON.stringify({ vipNumberId: wholeDollarNumber!.id, paymentMethod: "evc", senderPhone: "617000111", ...CUSTOMER_INFO }),
+  });
+  const order = (await res.json()) as any;
+  assert.equal(res.status, 201, JSON.stringify(order));
+  assert.equal(order.dialUssd, "*712*610338686*42#");
+  assert.notEqual(order.dialUssd, "*712*610338686*42*00#", "must never pad a whole-dollar amount with a trailing '*00'");
+});
+
 // ---------------- Package order: expiry mirrors the individual flow ----------------
 
 test("package order: Pending -> Expired releases every member number", async () => {
@@ -369,7 +388,7 @@ test("package order: Pending -> Expired releases every member number", async () 
   });
   const order = (await createRes.json()) as any;
   assert.equal(createRes.status, 201, JSON.stringify(order));
-  assert.equal(order.dialUssd, "*712*610338686*30*00#");
+  assert.equal(order.dialUssd, "*712*610338686*30#", "a whole-dollar amount must never carry a spurious '*00' segment");
 
   await query(`UPDATE vip_number_package_orders SET created_at = now() - interval '16 minutes' WHERE id=$1`, [order.id]);
   const expired = await expirePackageOrderIfStale(order.id);

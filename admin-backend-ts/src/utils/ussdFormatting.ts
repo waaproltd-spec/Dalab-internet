@@ -125,24 +125,43 @@ export function splitUssdAmount(amount: string | number): { whole: string; cents
  * "*110*", shop_payment_methods.ussd_template e.g. "*712*610338686*{amount}#")
  * is a genuinely different carrier convention from formatUssdAmount() above
  * and must never use it — that one is for Internet Store's single-token
- * top-up templates only (see its own header comment). This one is the
- * exact formula Money Exchange's agent payout flow already uses live
- * against the same two menus (originally exchange.routes.ts's own
- * ussdAmountSegments, moved here as the single shared implementation so
- * every EVC Plus/eDahab dial string in the app — Money Exchange payouts,
- * Shop, VIP Numbers — is built the exact same way): "." is not a valid
- * GSM/USSD MMI dial character, so a decimal amount like "22.20" embedded
- * directly in the dial string never reaches the carrier intact — confirmed
- * live against the real *712*...# payout flow, which flattened "1.98" into
- * "198" (misread as $198, a 100x error) every time. The carrier's own
- * two-step Dial-to-Pay menu instead expects the amount as two separate
+ * top-up templates only (see its own header comment). This is the shared
+ * implementation for every EVC Plus/eDahab dial string in the app — Money
+ * Exchange payouts, Shop, VIP Numbers: "." is not a valid GSM/USSD MMI dial
+ * character, so a decimal amount like "22.20" embedded directly in the dial
+ * string never reaches the carrier intact — confirmed live against the real
+ * *712*...# payout flow, which flattened "1.98" into "198" (misread as
+ * $198, a 100x error) every time. For an amount with cents, the carrier's
+ * own two-step Dial-to-Pay menu instead expects the amount as two separate
  * *-delimited segments, whole dollars then cents — also confirmed live:
  * dialing "*712*<number>*1*98#" correctly showed "$1.98" in the carrier's
- * own confirmation text. amount is always a NUMERIC(10,2) column value as
- * returned by pg, so it's always exactly "<dollars>.<2-digit cents>" as a
- * string; the ?? "00" fallback only guards a value that somehow arrives
- * without a decimal point. */
+ * own confirmation text.
+ *
+ * A WHOLE-DOLLAR amount must never get a spurious "*00" cents segment
+ * appended, the same rule formatUssdAmount()/formatUssdAmountSplit() above
+ * already apply — live-confirmed broken: a real $42.00 VIP Number order
+ * dialed as "*712*610338686*42*00#" (the previous unconditional split
+ * below), an extra empty-looking field the carrier's menu doesn't expect
+ * for a round amount. Three cases:
+ *
+ *   1. No cents (cents === 0): just the dollar figure — "42.00" -> "42",
+ *      "1.00" -> "1". Never "42*00"/"1*00".
+ *   2. Cents but no dollars (a sub-$1 amount): just the 2-digit cents
+ *      figure alone, no leading "0*" — "0.05" -> "05", "0.50" -> "50".
+ *      Never "0*05".
+ *   3. Both dollars and cents: the two *-delimited segments as before —
+ *      "1.05" -> "1*05", "1.98" -> "1*98".
+ *
+ * amount is always a NUMERIC(10,2) column value as returned by pg (a
+ * decimal string like "0.10" or "25.00"), but Number() handles a raw
+ * numeric input identically — same numeric (not string-split) approach as
+ * formatUssdAmount() above, which also avoids a naive string amount ever
+ * arriving without a decimal point in the first place. */
 export function formatEvcDahabUssdAmount(amount: string | number): string {
-  const [dollars, cents] = String(amount).split(".");
-  return `${dollars}*${(cents ?? "00").padEnd(2, "0")}`;
+  const numeric = Number(amount);
+  const dollars = Math.trunc(numeric);
+  const cents = Math.round((numeric - dollars) * 100);
+  if (cents === 0) return String(dollars);
+  const centsSegment = String(cents).padStart(2, "0");
+  return dollars === 0 ? centsSegment : `${dollars}*${centsSegment}`;
 }
