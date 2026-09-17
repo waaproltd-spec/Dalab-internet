@@ -947,8 +947,8 @@ ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (r
         await notifyCustomer(
           (failed[0] as { customer_id: string }).customer_id,
           "order_update",
-          "❌ Lacag-bixintu way fashilantay",
-          "Lacagta lama diri karin. Fadlan hubi lacagtaada iyo lambarka aad lacagta ka dirayso, kadibna mar kale isku day.",
+          "❌ Lacag-bixintu way ciladeysatay",
+          "Macmiil, lacag-bixintaada waxaa ku dhacday cilad. Fadlan ha dirin lacagta mar kale. Haddii aad hubisay in number-ka iyo faahfaahinta dalabkaagu ay sax yihiin, fadlan la xiriir Agent-ka Dalab si loo caawiyo oo dhibaatada looga saaro. 🤝",
           { screen: "notifications", orderId: attempt.order_id }
         );
       }
