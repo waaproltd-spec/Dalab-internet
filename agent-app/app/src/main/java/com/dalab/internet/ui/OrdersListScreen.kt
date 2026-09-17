@@ -55,13 +55,16 @@ import java.util.Date
 import java.util.Locale
 
 // DALAB brand — Dark Azure + Soft Blue, shared with the Customer App and
-// Admin Dashboard. DalabGreen stays separate: it's the functional
-// success/money-earned color (order-amount text further down), not brand,
-// per the shared two-color rule's own carve-out. Internal (not private) so
-// other Home-adjacent screens in this module can match the brand exactly.
-internal val DalabIndigo = Color(0xFF003152)
-internal val DalabSoftBlue = Color(0xFFADDFF1)
-internal val DalabGreen = Color(0xFF16A34A)
+// Admin Dashboard. Re-exported here (under the names this module's screens
+// already call them by) from ui/theme/DalabColors.kt, the one place any of
+// these hex values is actually defined -- see that file's own header
+// comment. DalabGreen stays separate: it's the functional success/
+// money-earned color (order-amount text further down), not brand, per the
+// shared two-color rule's own carve-out. Internal (not private) so other
+// Home-adjacent screens in this module can match the brand exactly.
+internal val DalabIndigo = com.dalab.internet.ui.theme.DalabBlue
+internal val DalabSoftBlue = com.dalab.internet.ui.theme.DalabSoftBlue
+internal val DalabGreen = com.dalab.internet.ui.theme.DalabSuccessGreen
 
 private enum class OrdersFilter(val label: String, val apiStatus: String?) {
     PENDING("Pending", "pending"),

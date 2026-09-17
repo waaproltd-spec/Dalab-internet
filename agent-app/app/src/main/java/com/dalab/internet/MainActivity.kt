@@ -92,6 +92,7 @@ import com.dalab.internet.ui.TransactionHistoryScreen
 import com.dalab.internet.ui.VipNumberAgentOrderDetailScreen
 import com.dalab.internet.ui.VipPackageAgentOrderDetailScreen
 import com.dalab.internet.ui.WalletDashboardScreen
+import com.dalab.internet.ui.theme.DalabTheme
 import kotlinx.coroutines.launch
 
 private val SMS_PERMISSIONS = arrayOf(Manifest.permission.RECEIVE_SMS, Manifest.permission.READ_SMS)
@@ -125,7 +126,7 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            MaterialTheme {
+            DalabTheme {
                 AgentApp()
             }
         }
