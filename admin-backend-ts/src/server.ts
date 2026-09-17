@@ -46,6 +46,7 @@ import { vipNumberPackagesRouter } from "./routes/vipNumberPackages.routes.js";
 import { pool, queryOne } from "./db/pool.js";
 import { seedAll } from "./db/seed.js";
 import { sendJson } from "./utils/camelCase.js";
+import { customerSuspensionMiddleware } from "./auth/middleware.js";
 
 // Express 4 route handlers here are plain `async (req, res) => {...}` with no
 // wrapper — a promise rejection inside one (e.g. an uncaught DB error) never
@@ -256,6 +257,8 @@ app.use(async (req: Request, res: Response, next: NextFunction) => {
   }
   next();
 });
+
+app.use(customerSuspensionMiddleware);
 
 app.use(authRouter);
 app.use(usersRouter);
