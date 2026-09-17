@@ -14,6 +14,7 @@ import { refundRedeemedPointsIfNeeded } from "../utils/loyaltyPoints.js";
 import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
 import { normalizePhoneForUssd, formatUssdAmount, splitUssdAmount, formatUssdAmountSplit } from "../utils/ussdFormatting.js";
 import { notifyCustomer } from "../services/customerNotify.js";
+import { extractBalanceFromSms, applyBalanceUpdate } from "../utils/simBalances.js";
 
 export const ussdRouter = Router();
 
@@ -844,10 +845,41 @@ ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (r
     if (!existing) return sendJson(res, 404, { error: "Dial attempt not found" });
     return sendJson(res, 200, existing);
   }
-  const attempt = result[0] as { order_id: string };
+  const attempt = result[0] as { order_id: string; sim_slot: number | null };
 
   if (status === "success") {
     const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [attempt.order_id]);
+
+    // A carrier's own USSD dial response can report the SIM's real
+    // remaining balance in the same breath as confirming the top-up itself
+    // (e.g. Somtel's "...Haraagaagu waa: $28.75.") — this is the ONLY place
+    // that text is ever seen; unlike a real incoming SMS, it never reaches
+    // ingestPaymentSms/extractBalanceFromSms (smsLogs.routes.ts), so a
+    // provider whose carrier doesn't also send a separate balance-report
+    // SMS (confirmed for Somtel) had its balance go stale indefinitely
+    // despite a fresh reading arriving on every single successful dial.
+    // Attribution here doesn't need the SMS path's sender-ID heuristic —
+    // this dial attempt's own order.company_id and sim_slot already say
+    // with certainty which company's SIM this balance belongs to.
+    if (order && responseMessage && attempt.sim_slot != null) {
+      const extracted = extractBalanceFromSms(String(responseMessage));
+      if (extracted) {
+        const agent = await queryOne<{ device_id: string | null }>(`SELECT device_id FROM agents WHERE id=$1`, [req.auth!.sub]);
+        const company = await queryOne<{ name: string }>(`SELECT name FROM companies WHERE id=$1`, [order.company_id]);
+        if (agent?.device_id && company?.name) {
+          await applyBalanceUpdate({
+            deviceId: agent.device_id,
+            simSlot: attempt.sim_slot,
+            newBalance: extracted.balance,
+            companyId: order.company_id,
+            providerKey: company.name.trim().toLowerCase(),
+            orderId: order.id,
+            source: "ussd_dial",
+          });
+        }
+      }
+    }
+
     if (order && order.status !== "completed") {
       const completed = await query(
         `UPDATE orders SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1 AND status != 'completed' RETURNING id`,
