@@ -36,6 +36,18 @@
 // Both are fixed with the same pattern every other double-fire-sensitive
 // branch in this file already uses: UPDATE ... WHERE status differs from
 // the target, RETURNING id, and only notify when a row actually came back.
+//
+// 3. Separately (found while verifying the above fix against a real live
+//    order, DLB336495502): PUT /agent/dial-attempts/:attemptId's own
+//    success branch -- a successful USSD dial completing the order, the
+//    single most common way a real Internet order ever completes -- never
+//    called notifyCustomer at all. completeOrderById's success notification
+//    only covers the OTHER completion paths (admin manual complete,
+//    SOMLINK, voucher-confirmation corroboration), so a customer whose
+//    order completed via this exact branch got zero notifications, not a
+//    duplicate but a complete absence. Fixed by adding the same approved
+//    success notification here too, gated on `completed.length > 0` exactly
+//    like every other side effect in that branch.
 import { test, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -313,4 +325,45 @@ test("a full successful Internet order lifecycle produces exactly one notificati
   const notifications = await orderUpdateNotifications(CUSTOMER_ID);
   assert.equal(notifications.length, 1, `expected exactly one total notification for this order, got ${notifications.length}`);
   assert.equal(notifications[0].title, "🎉 Hambalyo Macmiil!");
+});
+
+// Regression coverage for DLB336495502: a real order that completed via a
+// successful USSD dial report got zero notifications, because this branch
+// never called notifyCustomer at all (distinct from every duplicate/repeat
+// scenario above -- this is an absence, not a repeat).
+test("a successful USSD dial that completes an order sends the success notification exactly once, with the approved copy", async () => {
+  const orderId = await insertPendingOrder();
+  await setStatus(orderId, "in_progress");
+  const attemptId = await insertDialAttempt(orderId, 1);
+
+  const res = await reportDialAttempt(attemptId, "success", true);
+  assert.equal(res.status, 200);
+
+  const order = await queryOne<{ status: string }>(`SELECT status FROM orders WHERE id=$1`, [orderId]);
+  assert.equal(order?.status, "completed");
+
+  const notifications = await orderUpdateNotifications(CUSTOMER_ID);
+  assert.equal(notifications.length, 1, `expected exactly one success notification, got ${notifications.length}`);
+  assert.equal(notifications[0].title, "🎉 Hambalyo Macmiil!");
+  assert.equal(
+    notifications[0].body,
+    "Lacagtaada si guul leh ayaa loo helay, Internet-kana waxaa loo diray number-ka aad dooratay. Wax sugitaan ah ma jiro. Mahadsanid inaad isticmaashay Dalab App. ❤️"
+  );
+});
+
+test("a retried report of an already-resolved successful dial attempt never re-sends the success notification", async () => {
+  const orderId = await insertPendingOrder();
+  await setStatus(orderId, "in_progress");
+  const attemptId = await insertDialAttempt(orderId, 1);
+
+  const first = await reportDialAttempt(attemptId, "success", true);
+  assert.equal(first.status, 200);
+  // The dial_attempts row itself is only ever 'pending' once -- a retried
+  // report of the SAME attempt id is a no-op read of the already-resolved
+  // row, never a second run of the completion side effects.
+  const second = await reportDialAttempt(attemptId, "success", true);
+  assert.equal(second.status, 200);
+
+  const notifications = await orderUpdateNotifications(CUSTOMER_ID);
+  assert.equal(notifications.length, 1, `expected exactly one success notification, got ${notifications.length}`);
 });

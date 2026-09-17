@@ -923,6 +923,26 @@ ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (r
           },
         });
       }
+      // This is THE primary way a real Internet order completes -- a
+      // successful USSD dial, reported directly by the Agent App -- yet it
+      // never sent a success notification at all (completeOrderById's own
+      // notification only covers the OTHER completion paths: admin manual
+      // complete, SOMLINK, voucher-confirmation corroboration). Confirmed in
+      // production: a real order (DLB336495502) completed cleanly through
+      // this exact branch and the customer got zero notifications, neither
+      // "processing" (correctly, now removed) nor a success push. Gated the
+      // same way every other side effect above is -- only the call that
+      // actually flipped the order sends it, never a retried/duplicate
+      // report of an already-completed attempt.
+      if (completed.length > 0) {
+        await notifyCustomer(
+          order.customer_id,
+          "order_update",
+          "🎉 Hambalyo Macmiil!",
+          "Lacagtaada si guul leh ayaa loo helay, Internet-kana waxaa loo diray number-ka aad dooratay. Wax sugitaan ah ma jiro. Mahadsanid inaad isticmaashay Dalab App. ❤️",
+          { screen: "notifications", orderId: order.id }
+        );
+      }
     }
     await markPaymentFinal(attempt.order_id, "completed");
   } else {
