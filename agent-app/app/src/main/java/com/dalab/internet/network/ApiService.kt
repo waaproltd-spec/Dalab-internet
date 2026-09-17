@@ -11,6 +11,14 @@ import com.dalab.internet.data.CustomerSummary
 import com.dalab.internet.data.ExchangeOrder
 import com.dalab.internet.data.Order
 import com.dalab.internet.data.PackageItem
+import com.dalab.internet.data.ResellerCompany
+import com.dalab.internet.data.ResellerDeposit
+import com.dalab.internet.data.ResellerDepositMethod
+import com.dalab.internet.data.ResellerLoginResponse
+import com.dalab.internet.data.ResellerMe
+import com.dalab.internet.data.ResellerOrder
+import com.dalab.internet.data.ResellerPaymentNumber
+import com.dalab.internet.data.ResellerWithdrawal
 import com.dalab.internet.data.ResellerWithdrawalPendingPayout
 import com.dalab.internet.data.ResellerWithdrawalSimRoutingEntry
 import com.dalab.internet.data.ShopAgentOrder
@@ -49,6 +57,27 @@ data class LoginResponse(val accessToken: String, val refreshToken: String, val 
 data class RegisterDeviceTokenRequest(val fcmToken: String)
 data class RefreshRequest(val refreshToken: String)
 data class RefreshResponse(val accessToken: String, val refreshToken: String)
+
+// ---------------- Reseller (reseller-role login; see auth/ResellerSessionManager.kt) ----------------
+data class ResellerLoginRequest(val resellerId: String, val pin: String)
+data class ResellerCreateOrderRequest(
+    val companyId: String,
+    val receivingNumber: String,
+    val amount: Double,
+    val clientRequestId: String,
+)
+data class ResellerCreateDepositRequest(
+    val method: String,
+    val fromNumber: String,
+    val amount: Double,
+    val clientRequestId: String,
+)
+data class ResellerCreateWithdrawalRequest(
+    val companyId: String,
+    val destinationNumber: String,
+    val amount: Double,
+    val clientRequestId: String,
+)
 data class VerifyPaymentRequest(val smsLogId: String? = null)
 data class SmsLogUploadResponse(
     val id: String,
@@ -469,4 +498,56 @@ interface ApiService {
     // getSimRouting's shape/scoping exactly (see SimRoutingRepository.kt).
     @GET("agent/reseller-withdrawal-sim-routing")
     suspend fun getResellerWithdrawalSimRouting(@Query("deviceId") deviceId: String? = null): Response<List<ResellerWithdrawalSimRoutingEntry>>
+
+    // ---------------- Reseller account (reseller-role login) ----------------
+    // Exposes the SAME Admin Reseller system (admin-backend-ts's
+    // resellers.routes.ts/resellerOrders.routes.ts/
+    // resellerDepositsWithdrawals.routes.ts/resellerPaymentConfig.routes.ts)
+    // super-admin-app already manages, now reachable directly by a reseller
+    // logging in with their own Reseller ID + PIN — see
+    // auth/ResellerSessionManager.kt and network/ResellerApiClient.kt for
+    // why these calls run through a completely separate token/session from
+    // every other endpoint in this file. Called only via
+    // ResellerApiClient.service, never via ApiClient.service.
+    @POST("reseller/auth/login")
+    suspend fun resellerLogin(@Body body: ResellerLoginRequest): Response<ResellerLoginResponse>
+
+    @GET("reseller/me")
+    suspend fun getResellerMe(): Response<ResellerMe>
+
+    @GET("reseller/companies")
+    suspend fun getResellerCompanies(): Response<List<ResellerCompany>>
+
+    @GET("reseller/payment-numbers")
+    suspend fun getResellerPaymentNumbers(
+        @Query("companyId") companyId: String,
+        @Query("role") role: String? = null,
+    ): Response<List<ResellerPaymentNumber>>
+
+    @GET("reseller/deposit-methods")
+    suspend fun getResellerDepositMethods(): Response<List<ResellerDepositMethod>>
+
+    @POST("reseller/orders")
+    suspend fun createResellerOrder(@Body body: ResellerCreateOrderRequest): Response<ResellerOrder>
+
+    @GET("reseller/orders")
+    suspend fun getResellerOrders(): Response<List<ResellerOrder>>
+
+    @PUT("reseller/orders/{id}/payment-sent")
+    suspend fun markResellerOrderPaymentSent(@Path("id") id: String): Response<ResellerOrder>
+
+    @POST("reseller/deposits")
+    suspend fun createResellerDeposit(@Body body: ResellerCreateDepositRequest): Response<ResellerDeposit>
+
+    @GET("reseller/deposits")
+    suspend fun getResellerDeposits(): Response<List<ResellerDeposit>>
+
+    @POST("reseller/withdrawals")
+    suspend fun createResellerWithdrawal(@Body body: ResellerCreateWithdrawalRequest): Response<ResellerWithdrawal>
+
+    @GET("reseller/withdrawals")
+    suspend fun getResellerWithdrawals(): Response<List<ResellerWithdrawal>>
+
+    @PUT("reseller/withdrawals/{id}/cancel")
+    suspend fun cancelResellerWithdrawal(@Path("id") id: String): Response<ResponseBody>
 }

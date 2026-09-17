@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Sell
 import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -49,6 +50,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.dalab.internet.auth.DeviceIdentity
+import com.dalab.internet.auth.ResellerSessionManager
 import com.dalab.internet.auth.SessionManager
 import com.dalab.internet.data.ExchangeOrder
 import com.dalab.internet.data.Order
@@ -89,6 +91,7 @@ import com.dalab.internet.ui.PermissionsStatusScreen
 import com.dalab.internet.ui.ReliabilityDashboardScreen
 import com.dalab.internet.ui.ReliabilitySetupScreen
 import com.dalab.internet.ui.ReportsScreen
+import com.dalab.internet.ui.ResellerScreen
 import com.dalab.internet.ui.ShopAgentOrderDetailScreen
 import com.dalab.internet.ui.SmsPermissionScreen
 import com.dalab.internet.ui.SupportScreen
@@ -110,6 +113,7 @@ class MainActivity : ComponentActivity() {
         // normal case, but still guarded individually here too so a lingering
         // failure in one can't prevent the screen from ever rendering.
         safely("session_init") { SessionManager.init(this) }
+        safely("reseller_session_init") { ResellerSessionManager.init(this) }
         safely("device_identity_init") { DeviceIdentity.init(this) }
         safely("sms_listener_init") { SmsListenerState.init(this) }
         safely("pending_queue_init") { PendingActionQueue.init(this) }
@@ -206,7 +210,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP, SALES, CUSTOMERS, CUSTOMER_DETAIL, REPORTS, AGENT_SHOP_ORDER_DETAIL, AGENT_VIP_ORDER_DETAIL, AGENT_VIP_PACKAGE_ORDER_DETAIL }
+private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP, SALES, CUSTOMERS, CUSTOMER_DETAIL, REPORTS, RESELLER, AGENT_SHOP_ORDER_DETAIL, AGENT_VIP_ORDER_DETAIL, AGENT_VIP_PACKAGE_ORDER_DETAIL }
 // Bottom nav is exactly 5 tabs: Home, Orders, Support Agent, Broadcast, More --
 // Sales/Customers/Reports (formerly their own tabs) moved under More as
 // ordinary Screen.X destinations instead (see MoreScreen's "My Work"
@@ -470,6 +474,7 @@ private fun AgentApp() {
             onOpenSales = { navigate(Screen.SALES) },
             onOpenCustomers = { navigate(Screen.CUSTOMERS) },
             onOpenReports = { navigate(Screen.REPORTS) },
+            onOpenReseller = { navigate(Screen.RESELLER) },
         )
 
         Screen.ORDER_DETAIL -> selectedOrder?.let { order ->
@@ -524,6 +529,8 @@ private fun AgentApp() {
         }
 
         Screen.REPORTS -> ReportsScreen(onBack = { goBack() })
+
+        Screen.RESELLER -> ResellerScreen(onBack = { goBack() })
 
         Screen.AGENT_SHOP_ORDER_DETAIL -> selectedAgentShopOrder?.let { order ->
             ShopAgentOrderDetailScreen(
@@ -584,6 +591,7 @@ private fun AgentHome(
     onOpenSales: () -> Unit,
     onOpenCustomers: () -> Unit,
     onOpenReports: () -> Unit,
+    onOpenReseller: () -> Unit,
 ) {
 
     // A support push tapped while this composable already exists (warm
@@ -674,6 +682,7 @@ private fun AgentHome(
                     onOpenSales = onOpenSales,
                     onOpenCustomers = onOpenCustomers,
                     onOpenReports = onOpenReports,
+                    onOpenReseller = onOpenReseller,
                 )
             }
         }
@@ -810,6 +819,7 @@ private fun MoreScreen(
     onOpenSales: () -> Unit,
     onOpenCustomers: () -> Unit,
     onOpenReports: () -> Unit,
+    onOpenReseller: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         // Sales/Customers/Reports were their own bottom-nav tabs before the
@@ -855,6 +865,17 @@ private fun MoreScreen(
                 subtitle = "Enable automated multi-step payouts (e.g. eDahab)",
                 icon = Icons.Filled.AccountBalanceWallet,
                 onClick = onOpenResellerWithdrawalSetup,
+            )
+            // Log in with a Reseller ID + PIN to see that reseller's own
+            // balance, orders, deposits, and withdrawals -- the exact same
+            // Admin Reseller system (see MainActivity's ResellerScreen /
+            // ui/ResellerScreens.kt), just reachable from here instead of
+            // only from the Admin Dashboard.
+            MoreItem(
+                title = "Reseller",
+                subtitle = "Log in as a Reseller: balance, orders, deposits, withdrawals",
+                icon = Icons.Filled.Storefront,
+                onClick = onOpenReseller,
             )
         }
         MoreSection(title = "Catalog & Sales") {
