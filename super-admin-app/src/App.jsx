@@ -178,6 +178,12 @@ const DalabAdminApi = {
   updateCategory: (id, body) => dalabAdminApiRequest(`/admin/categories/${id}`, { method: "PUT", body }),
   toggleCategoryStatus: (id, status) => dalabAdminApiRequest(`/admin/categories/${id}/status`, { method: "PUT", body: { status } }),
   deleteCategory: (id) => dalabAdminApiRequest(`/admin/categories/${id}`, { method: "DELETE" }),
+  // The logo/icon shown on this category's card in the Customer/Agent apps —
+  // a dedicated sub-resource (same shape as companyLogoUrl/packageImageUrl
+  // above) so re-uploading it never touches the category's name/status.
+  updateCategoryIcon: (id, iconBase64) => dalabAdminApiRequest(`/admin/categories/${id}/icon`, { method: "PUT", body: { iconBase64 } }),
+  deleteCategoryIcon: (id) => dalabAdminApiRequest(`/admin/categories/${id}/icon`, { method: "DELETE" }),
+  categoryIconUrl: (id) => `${DALAB_API_BASE_URL}/categories/${id}/icon`,
   getOrders: (status, search, companyId, dateFrom, dateTo) => {
     const qs = new URLSearchParams({
       ...(status ? { status } : {}),
@@ -2541,6 +2547,8 @@ function Categories({ companies, admin }) {
   const [editing, setEditing] = useState(null); // 'new' | category object | null
   const [form, setForm] = useState({});
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const fileInputRef = useRef(null);
   const canManage = hasPermission(admin, "categories.manage");
 
   const fetchCategories = async () => {
@@ -2555,18 +2563,56 @@ function Categories({ companies, admin }) {
   useEffect(() => { if (!companyFilter && companies[0]) setCompanyFilter(companies[0].id); }, [companies]);
 
   const openNew = () => { setForm({ name: "" }); setEditing("new"); setError(""); };
-  const openEdit = (c) => { setForm(c); setEditing(c.id); setError(""); };
+  const openEdit = (c) => { setForm({ ...c, iconBase64: null }); setEditing(c.id); setError(""); };
 
+  const onIconSelected = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setForm((prev) => ({ ...prev, iconBase64: reader.result }));
+    reader.onerror = () => setError("Could not read that image file.");
+    reader.readAsDataURL(file);
+  };
+
+  // The icon is a dedicated sub-resource on the backend (PUT
+  // /admin/categories/:id/icon), separate from name/status — so a newly
+  // picked file is only actually uploaded once Save is pressed (giving the
+  // "preview before saving" the dashboard spec asks for), against whichever
+  // id the name/status save just produced.
   const save = async () => {
     if (!form.name) return;
+    setSaving(true);
+    setError("");
     try {
-      if (editing === "new") await DalabAdminApi.createCategory({ companyId: companyFilter, name: form.name });
-      else await DalabAdminApi.updateCategory(editing, { name: form.name });
+      let id = editing;
+      if (editing === "new") {
+        const created = await DalabAdminApi.createCategory({ companyId: companyFilter, name: form.name });
+        id = created.id;
+      } else {
+        await DalabAdminApi.updateCategory(editing, { name: form.name });
+      }
+      if (form.iconBase64) await DalabAdminApi.updateCategoryIcon(id, form.iconBase64);
       await fetchCategories();
       setEditing(null);
     } catch (err) {
       setError(err.message || "Could not save category.");
     }
+    setSaving(false);
+  };
+
+  const removeIcon = async () => {
+    if (editing === "new") { setForm((prev) => ({ ...prev, iconBase64: null })); return; }
+    setSaving(true);
+    setError("");
+    try {
+      await DalabAdminApi.deleteCategoryIcon(editing);
+      setForm((prev) => ({ ...prev, iconBase64: null, hasIcon: false }));
+      await fetchCategories();
+    } catch (err) {
+      setError(err.message || "Could not remove icon.");
+    }
+    setSaving(false);
   };
 
   const toggleStatus = async (c) => {
@@ -2614,7 +2660,7 @@ function Categories({ companies, admin }) {
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: "#FAFBFF" }}>
-              {["Name", "Slug", "Status", ""].map((h) => (
+              {["Icon", "Name", "Slug", "Status", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
             </tr>
@@ -2622,6 +2668,15 @@ function Categories({ companies, admin }) {
           <tbody>
             {categories.map((c) => (
               <tr key={c.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px" }}>
+                  <div style={{ width: 34, height: 34, borderRadius: 8, border: `1px solid ${BORDER}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", background: "#FAFBFF" }}>
+                    {c.hasIcon ? (
+                      <img src={DalabAdminApi.categoryIconUrl(c.id)} alt={c.name} style={{ maxHeight: "100%", maxWidth: "100%", objectFit: "contain" }} />
+                    ) : (
+                      <Tags size={15} color={MUTE} />
+                    )}
+                  </div>
+                </td>
                 <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{c.name}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12, color: SLATE, fontFamily: "monospace" }}>{c.slug}</td>
                 <td style={{ padding: "10px 14px" }}><Badge tone={c.status === "enabled" ? "green" : "gray"}>{c.status === "enabled" ? "Enabled" : "Disabled"}</Badge></td>
@@ -2643,7 +2698,7 @@ function Categories({ companies, admin }) {
               </tr>
             ))}
             {categories.length === 0 && (
-              <tr><td colSpan={4} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No categories for this company yet.</td></tr>
+              <tr><td colSpan={5} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No categories for this company yet.</td></tr>
             )}
           </tbody>
         </table>
@@ -2654,9 +2709,30 @@ function Categories({ companies, admin }) {
           <Field label="Category name">
             <input style={inputStyle} value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Anfac Plus" />
           </Field>
+
+          <Field label="Category icon/logo (image)">
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ width: 44, height: 44, borderRadius: 10, border: `1px solid ${BORDER}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", flexShrink: 0, background: "#FAFBFF" }}>
+                {form.iconBase64 ? (
+                  <img src={form.iconBase64} alt="Icon preview" style={{ maxHeight: "100%", maxWidth: "100%", objectFit: "contain" }} />
+                ) : editing !== "new" && form.hasIcon ? (
+                  <img src={DalabAdminApi.categoryIconUrl(editing)} alt="Current icon" style={{ maxHeight: "100%", maxWidth: "100%", objectFit: "contain" }} />
+                ) : (
+                  <Tags size={18} color={MUTE} />
+                )}
+              </div>
+              <input ref={fileInputRef} type="file" accept="image/*" onChange={onIconSelected} style={{ display: "none" }} />
+              <Button variant="ghost" icon={Upload} onClick={() => fileInputRef.current?.click()}>Choose file</Button>
+              {(form.iconBase64 || (editing !== "new" && form.hasIcon)) && (
+                <Button variant="ghost" icon={Trash2} onClick={removeIcon} disabled={saving}>Remove</Button>
+              )}
+            </div>
+            <div style={{ fontSize: 11, color: MUTE, marginTop: 6 }}>Shown on this category's card in the Customer/Agent apps. Uploads apply when you press Save; existing categories keep their current icon until you change it here.</div>
+          </Field>
+
           {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
           <div style={{ display: "flex", gap: 10 }}>
-            <Button onClick={save} icon={Check}>Save</Button>
+            <Button onClick={save} icon={Check} disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
             <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
           </div>
         </Modal>
