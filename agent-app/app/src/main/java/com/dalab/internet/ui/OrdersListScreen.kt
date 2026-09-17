@@ -293,10 +293,7 @@ private fun AgentBalanceSection(balances: List<AgentBalanceEntry>, loading: Bool
     val companyBalances = balances.filter { it.category == "company" }
 
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-        BalanceGroupHeader(
-            title = "Payment Method (${methodBalances.size})",
-            subtitle = "Balances used for receiving customer payments",
-        )
+        BalanceGroupHeader(title = "Payment Method (${methodBalances.size})")
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
             methodBalances.forEach { entry ->
@@ -306,10 +303,7 @@ private fun AgentBalanceSection(balances: List<AgentBalanceEntry>, loading: Bool
 
         Spacer(Modifier.height(22.dp))
 
-        BalanceGroupHeader(
-            title = "Payment Company (${companyBalances.size})",
-            subtitle = "Balances used for sending data/airtime and services",
-        )
+        BalanceGroupHeader(title = "Payment Company (${companyBalances.size})")
         Spacer(Modifier.height(10.dp))
         companyBalances.chunked(2).forEach { rowEntries ->
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
@@ -323,12 +317,8 @@ private fun AgentBalanceSection(balances: List<AgentBalanceEntry>, loading: Bool
 }
 
 @Composable
-private fun BalanceGroupHeader(title: String, subtitle: String) {
-    Column {
-        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = DalabIndigo)
-        Spacer(Modifier.height(2.dp))
-        Text(subtitle, style = MaterialTheme.typography.bodySmall, color = Color(0xFF6B7280))
-    }
+private fun BalanceGroupHeader(title: String) {
+    Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = DalabIndigo)
 }
 
 /** Maps a provider_key to its real bundled brand logo -- see
