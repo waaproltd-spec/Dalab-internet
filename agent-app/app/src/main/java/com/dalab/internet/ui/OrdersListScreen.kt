@@ -337,7 +337,7 @@ private fun BalanceGroupHeader(title: String, subtitle: String) {
  * icon). Falls back to the DALAB wordmark only if a 7th key is ever added
  * here without a matching asset. */
 @androidx.annotation.DrawableRes
-private fun logoResFor(providerKey: String): Int = when (providerKey) {
+internal fun logoResFor(providerKey: String): Int = when (providerKey) {
     "evc_plus" -> R.drawable.logo_evc_plus
     "edahab" -> R.drawable.logo_edahab
     "hormuud" -> R.drawable.logo_hormuud
