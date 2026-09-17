@@ -69,6 +69,7 @@ import com.dalab.internet.sms.SmsListenerState
 import com.dalab.internet.ui.AgentOrdersScreen
 import com.dalab.internet.ui.AlertsScreen
 import com.dalab.internet.ui.AutoLoginScreen
+import com.dalab.internet.ui.CustomerDetailScreen
 import com.dalab.internet.ui.CustomersScreen
 import com.dalab.internet.ui.DeviceSetupScreen
 import com.dalab.internet.ui.DiagnosticsScreen
@@ -202,7 +203,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP, SALES, CUSTOMERS, REPORTS, AGENT_SHOP_ORDER_DETAIL, AGENT_VIP_ORDER_DETAIL, AGENT_VIP_PACKAGE_ORDER_DETAIL }
+private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP, SALES, CUSTOMERS, CUSTOMER_DETAIL, REPORTS, AGENT_SHOP_ORDER_DETAIL, AGENT_VIP_ORDER_DETAIL, AGENT_VIP_PACKAGE_ORDER_DETAIL }
 // Bottom nav is exactly 5 tabs: Home, Orders, Support Agent, Broadcast, More --
 // Sales/Customers/Reports (formerly their own tabs) moved under More as
 // ordinary Screen.X destinations instead (see MoreScreen's "My Work"
@@ -257,6 +258,7 @@ private fun AgentApp() {
     var selectedAgentShopOrder by remember { mutableStateOf<ShopAgentOrder?>(null) }
     var selectedAgentVipOrder by remember { mutableStateOf<VipNumberAgentOrder?>(null) }
     var selectedAgentVipPackageOrder by remember { mutableStateOf<VipPackageAgentOrder?>(null) }
+    var selectedCustomerId by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
     // A support-request push (support.routes.ts's notifyAssignedAgent()/
@@ -466,7 +468,14 @@ private fun AgentApp() {
 
         Screen.SALES -> NewSaleScreen(onBack = { screen = Screen.HOME })
 
-        Screen.CUSTOMERS -> CustomersScreen(onBack = { screen = Screen.HOME })
+        Screen.CUSTOMERS -> CustomersScreen(
+            onBack = { screen = Screen.HOME },
+            onOpenCustomer = { customerId -> selectedCustomerId = customerId; screen = Screen.CUSTOMER_DETAIL },
+        )
+
+        Screen.CUSTOMER_DETAIL -> selectedCustomerId?.let { customerId ->
+            CustomerDetailScreen(customerId = customerId, onBack = { screen = Screen.CUSTOMERS })
+        }
 
         Screen.REPORTS -> ReportsScreen(onBack = { screen = Screen.HOME })
 

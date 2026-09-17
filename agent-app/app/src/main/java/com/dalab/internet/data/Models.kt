@@ -244,6 +244,36 @@ data class CustomerSummary(
     val createdAt: String,
 )
 
+/** Mirrors GET /agent/customers/{id} -- the Customer Details screen's header
+ * card. Same fields as [CustomerSummary] plus this customer's own real
+ * completed-order totals (computed server-side, never estimated here) and
+ * [pinSet] -- whether a login/recovery PIN exists, never the PIN itself. */
+data class CustomerDetail(
+    val id: String,
+    val phone: String,
+    val name: String?,
+    val status: String, // "active" | "blocked"
+    val macaashPoints: Int = 0,
+    val createdAt: String,
+    val pinSet: Boolean = false,
+    val totalOrders: Int = 0,
+    val totalSpent: Double = 0.0,
+)
+
+/** Mirrors GET /agent/customers/{id}/orders -- this customer's own Internet
+ * Store order history, newest first, real orders table data (same one
+ * [Order] itself mirrors), never a separately-maintained history. */
+data class CustomerOrderHistoryEntry(
+    val id: String,
+    val companyId: String,
+    val companyName: String,
+    val packageName: String,
+    val amount: Double,
+    val status: String, // "pending" | "in_progress" | "completed" | "failed" | "cancelled"
+    val createdAt: String,
+    val completedAt: String? = null,
+)
+
 data class ReportTotals(
     val totalSales: Double,
     val totalOrders: Int,

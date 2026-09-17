@@ -5,6 +5,8 @@ import com.dalab.internet.data.AgentDevice
 import com.dalab.internet.data.AgentProfile
 import com.dalab.internet.data.AgentReport
 import com.dalab.internet.data.Company
+import com.dalab.internet.data.CustomerDetail
+import com.dalab.internet.data.CustomerOrderHistoryEntry
 import com.dalab.internet.data.CustomerSummary
 import com.dalab.internet.data.ExchangeOrder
 import com.dalab.internet.data.Order
@@ -124,6 +126,10 @@ data class SupportSendMessageRequest(
 data class SupportEndConversationResponse(val ended: Boolean, val next: SupportConversation? = null)
 
 data class CreateCustomerRequest(val phone: String, val name: String? = null)
+data class SetCustomerPinRequest(val pin: String)
+data class CustomerPinStatusResponse(val isSet: Boolean)
+data class CustomerPinActionResponse(val message: String, val isSet: Boolean)
+data class GenerateCustomerPinResponse(val message: String, val pin: String, val isSet: Boolean)
 data class CreateSaleRequest(
     val customerPhone: String,
     val companyId: String,
@@ -358,13 +364,34 @@ interface ApiService {
     @POST("agent/devices/{id}/heartbeat")
     suspend fun sendHeartbeat(@Path("id") deviceId: String, @Body body: HeartbeatRequest): Response<Unit>
 
-    // ---------------- Customer management (walk-in sales) ----------------
+    // ---------------- Customer management (same visibility/power as Admin) ----------------
 
     @GET("agent/customers")
     suspend fun getCustomers(@Query("search") search: String? = null): Response<List<CustomerSummary>>
 
     @POST("agent/customers")
     suspend fun createCustomer(@Body body: CreateCustomerRequest): Response<CustomerSummary>
+
+    @GET("agent/customers/{id}")
+    suspend fun getCustomerDetail(@Path("id") customerId: String): Response<CustomerDetail>
+
+    @GET("agent/customers/{id}/orders")
+    suspend fun getCustomerOrders(@Path("id") customerId: String): Response<List<CustomerOrderHistoryEntry>>
+
+    @PUT("agent/customers/{id}/block")
+    suspend fun toggleCustomerBlock(@Path("id") customerId: String): Response<CustomerSummary>
+
+    @GET("agent/customers/{id}/pin-status")
+    suspend fun getCustomerPinStatus(@Path("id") customerId: String): Response<CustomerPinStatusResponse>
+
+    @PUT("agent/customers/{id}/pin")
+    suspend fun setCustomerPin(@Path("id") customerId: String, @Body body: SetCustomerPinRequest): Response<CustomerPinActionResponse>
+
+    @POST("agent/customers/{id}/pin/generate")
+    suspend fun generateCustomerPin(@Path("id") customerId: String): Response<GenerateCustomerPinResponse>
+
+    @DELETE("agent/customers/{id}/pin")
+    suspend fun clearCustomerPin(@Path("id") customerId: String): Response<CustomerPinActionResponse>
 
     // ---------------- Packages catalog (for sales + browsing) ----------------
 

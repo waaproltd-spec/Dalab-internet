@@ -42,6 +42,13 @@ function walletPairError(label: string) {
   return { error: `Provide both a name and a number for ${label}, or clear both` };
 }
 
+// Shared by both the Super Admin's and the Agent's own "generate a new
+// Recovery PIN" route below -- one place defining what a generated PIN
+// looks like (4 digits) so the two can never quietly drift apart.
+function generateRandomPin(): string {
+  return String(Math.floor(1000 + Math.random() * 9000));
+}
+
 customersRouter.get("/admin/customers", requireStaff(), async (req, res) => {
   const { search } = req.query;
   const rows = search
@@ -205,7 +212,7 @@ customersRouter.put("/admin/customers/:id/pin", requireAuth("super_admin"), asyn
 customersRouter.post("/admin/customers/:id/pin/generate", requireAuth("super_admin"), async (req, res) => {
   const existing = await queryOne(`SELECT id FROM customers WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Customer not found" });
-  const pin = String(Math.floor(1000 + Math.random() * 9000));
+  const pin = generateRandomPin();
   const pinHash = await hashPassword(pin);
   await query(`UPDATE customers SET pin_hash=$1 WHERE id=$2`, [pinHash, req.params.id]);
   sendJson(res, 200, { message: "New Recovery PIN generated", pin, isSet: true });
@@ -273,9 +280,13 @@ customersRouter.delete("/admin/customers/:id", requirePermission("customers.mana
   }
 });
 
-// ---------------- Agent: customer lookup (for walk-in sales) ----------------
-// pin_encrypted/password fields don't exist on customers, but explicit
-// column list still keeps this in sync with what the Agent App actually needs.
+// ---------------- Agent: customer visibility + management (same power as Admin) ----------------
+// Per explicit product decision, an Agent sees and manages the exact same
+// customer set Admin does -- every customer in the system, never scoped to
+// "customers this agent has personally served" (there's no such ownership
+// concept here; any agent can serve any walk-in). pin_encrypted/password
+// fields don't exist on customers, but explicit column list still keeps this
+// in sync with what the Agent App actually needs.
 const AGENT_CUSTOMER_COLUMNS = "id, phone, name, status, macaash_points, created_at";
 
 customersRouter.get("/agent/customers", requireAuth("agent"), async (req, res) => {
@@ -301,6 +312,105 @@ customersRouter.post("/agent/customers", requireAuth("agent"), async (req, res) 
   const id = randomUUID();
   await query(`INSERT INTO customers (id, phone, name) VALUES ($1,$2,$3)`, [id, phone, name]);
   sendJson(res, 201, await queryOne(`SELECT ${AGENT_CUSTOMER_COLUMNS} FROM customers WHERE id=$1`, [id]));
+});
+
+// Single-customer detail: the same list columns plus pinSet (never the PIN
+// itself) and this customer's own completed-order totals -- the Agent App's
+// Customer Details screen header card. totalOrders/totalSpent are computed
+// here rather than reusing the Agent Reports totals (reports.routes.ts),
+// which are scoped to orders one specific agent completed -- this is scoped
+// to the customer instead, across every agent, since it's "this customer's
+// history," not "my sales."
+customersRouter.get("/agent/customers/:id", requireAuth("agent"), async (req, res) => {
+  const customer = await queryOne(
+    `SELECT ${AGENT_CUSTOMER_COLUMNS}, (pin_hash IS NOT NULL) AS pin_set FROM customers WHERE id=$1`,
+    [req.params.id]
+  );
+  if (!customer) return sendJson(res, 404, { error: "Customer not found" });
+  const totals = await queryOne<{ total_orders: string; total_spent: string }>(
+    `SELECT COUNT(*) FILTER (WHERE status='completed') AS total_orders,
+            COALESCE(SUM(amount) FILTER (WHERE status='completed'), 0) AS total_spent
+     FROM orders WHERE customer_id=$1`,
+    [req.params.id]
+  );
+  sendJson(res, 200, {
+    ...customer,
+    total_orders: Number(totals?.total_orders ?? 0),
+    total_spent: Number(totals?.total_spent ?? 0),
+  });
+});
+
+// Most recent 50 Internet Store orders for this customer, newest first --
+// the same `orders` table/columns the rest of the Agent App already reads
+// (Order/OrderStatus in Models.kt), not a second order history system.
+customersRouter.get("/agent/customers/:id/orders", requireAuth("agent"), async (req, res) => {
+  const customer = await queryOne(`SELECT id FROM customers WHERE id=$1`, [req.params.id]);
+  if (!customer) return sendJson(res, 404, { error: "Customer not found" });
+  const rows = await query(
+    `SELECT o.id, o.company_id, co.name AS company_name, p.name AS package_name, o.amount, o.status, o.created_at, o.completed_at
+     FROM orders o
+     JOIN companies co ON co.id = o.company_id
+     JOIN packages p ON p.id = o.package_id
+     WHERE o.customer_id = $1
+     ORDER BY o.created_at DESC
+     LIMIT 50`,
+    [req.params.id]
+  );
+  sendJson(res, 200, rows);
+});
+
+// Suspend/Reactivate -- identical toggle to PUT /admin/customers/:id/block
+// above, just agent-authenticated.
+customersRouter.put("/agent/customers/:id/block", requireAuth("agent"), async (req, res) => {
+  const customer = await queryOne<{ status: string }>(`SELECT status FROM customers WHERE id=$1`, [req.params.id]);
+  if (!customer) return sendJson(res, 404, { error: "Customer not found" });
+  const nextStatus = customer.status === "active" ? "blocked" : "active";
+  await query(`UPDATE customers SET status=$1 WHERE id=$2`, [nextStatus, req.params.id]);
+  sendJson(res, 200, await queryOne(`SELECT ${AGENT_CUSTOMER_COLUMNS} FROM customers WHERE id=$1`, [req.params.id]));
+});
+
+// ---------------- Agent: customer PIN management ----------------
+// A deliberate widening of who can reset a customer's PIN -- the Super Admin
+// routes above are explicitly NOT delegable to a regular Admin, but per
+// explicit product decision the Agent App gets the exact same three actions
+// (generate/set/clear) Super Admin has, not a narrower subset. Same
+// bcrypt-hashed pin_hash column, same "never returned to any client" rule.
+customersRouter.get("/agent/customers/:id/pin-status", requireAuth("agent"), async (req, res) => {
+  const customer = await queryOne<{ pin_hash: string | null }>(`SELECT pin_hash FROM customers WHERE id=$1`, [req.params.id]);
+  if (!customer) return sendJson(res, 404, { error: "Customer not found" });
+  sendJson(res, 200, { isSet: Boolean(customer.pin_hash) });
+});
+
+// Same handler covers both "create" and "change", same as the Super Admin
+// route above.
+customersRouter.put("/agent/customers/:id/pin", requireAuth("agent"), async (req, res) => {
+  const { pin } = req.body;
+  if (!isValidPin(String(pin ?? ""))) return sendJson(res, 400, { error: "PIN must be 4-8 digits" });
+  const existing = await queryOne(`SELECT id FROM customers WHERE id=$1`, [req.params.id]);
+  if (!existing) return sendJson(res, 404, { error: "Customer not found" });
+  const pinHash = await hashPassword(String(pin));
+  await query(`UPDATE customers SET pin_hash=$1 WHERE id=$2`, [pinHash, req.params.id]);
+  sendJson(res, 200, { message: "PIN saved", isSet: true });
+});
+
+// Generates and overwrites in one step, same as the Super Admin route above
+// -- the agent relays the returned plaintext PIN to the customer out-of-band
+// (in person, since this is the walk-in/field-agent flow); it is never
+// logged or stored anywhere but this one bcrypt hash.
+customersRouter.post("/agent/customers/:id/pin/generate", requireAuth("agent"), async (req, res) => {
+  const existing = await queryOne(`SELECT id FROM customers WHERE id=$1`, [req.params.id]);
+  if (!existing) return sendJson(res, 404, { error: "Customer not found" });
+  const pin = generateRandomPin();
+  const pinHash = await hashPassword(pin);
+  await query(`UPDATE customers SET pin_hash=$1 WHERE id=$2`, [pinHash, req.params.id]);
+  sendJson(res, 200, { message: "New Recovery PIN generated", pin, isSet: true });
+});
+
+customersRouter.delete("/agent/customers/:id/pin", requireAuth("agent"), async (req, res) => {
+  const existing = await queryOne(`SELECT id FROM customers WHERE id=$1`, [req.params.id]);
+  if (!existing) return sendJson(res, 404, { error: "Customer not found" });
+  await query(`UPDATE customers SET pin_hash=NULL WHERE id=$1`, [req.params.id]);
+  sendJson(res, 200, { message: "PIN reset", isSet: false });
 });
 
 // ---------------- Customer: own profile ----------------
