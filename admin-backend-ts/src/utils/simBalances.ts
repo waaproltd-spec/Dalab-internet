@@ -323,3 +323,38 @@ export async function applyBalanceUpdate(params: {
 
   broadcast({ type: "sim_balance.updated", deviceId: params.deviceId, simSlot: params.simSlot });
 }
+
+export interface ProviderBalanceTotal {
+  provider_key: string;
+  total: number;
+  sim_count: number;
+  known_sim_count: number;
+}
+
+/**
+ * The single source of truth for "how much does each balance bucket
+ * currently total, across every device" -- grouped by provider_key
+ * (falling back to company_id for a legacy row never resolved through the
+ * Sender-ID gate). Both the Super Admin Balance Dashboard
+ * (GET /admin/sim-balances/summary) and the Agent App's own Home screen
+ * (GET /agent/balances) call this exact function rather than each running
+ * their own copy of this query -- one balance pipeline (SMS parsing ->
+ * resolveBalanceProvider -> applyBalanceUpdate -> sim_balances) feeding two
+ * authenticated views, so the two can never quietly drift out of sync with
+ * each other. total is COALESCEd to 0 (never NULL) so a caller can render
+ * it directly as a placeholder for "no confirmed balance yet" without a
+ * separate null check -- known_sim_count is what distinguishes that case
+ * from a genuinely-confirmed $0 balance, for a caller that wants to draw
+ * that distinction (the Admin dashboard shows "Unknown" instead of "$0.00"
+ * when known_sim_count is 0; the Agent app deliberately doesn't make that
+ * distinction, always showing the numeric total, per product decision).
+ */
+export async function getProviderBalanceTotals(): Promise<ProviderBalanceTotal[]> {
+  return query<ProviderBalanceTotal>(
+    `SELECT COALESCE(sb.provider_key, sb.company_id) AS provider_key, COALESCE(SUM(sb.balance), 0) AS total,
+            COUNT(*) AS sim_count, COUNT(sb.balance) AS known_sim_count
+     FROM sim_balances sb
+     GROUP BY COALESCE(sb.provider_key, sb.company_id)
+     ORDER BY total DESC`
+  );
+}

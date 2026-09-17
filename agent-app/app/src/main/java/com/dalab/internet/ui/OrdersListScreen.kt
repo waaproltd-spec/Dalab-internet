@@ -10,22 +10,18 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Circle
-import androidx.compose.material.icons.filled.CurrencyExchange
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SettingsInputAntenna
-import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -38,6 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.dalab.internet.auth.SessionManager
+import com.dalab.internet.data.AgentBalanceEntry
 import com.dalab.internet.data.Order
 import com.dalab.internet.data.OrderStatus
 import com.dalab.internet.network.AgentEventBus
@@ -47,52 +44,36 @@ import com.dalab.internet.network.ConnectionState
 import com.dalab.internet.notifications.AgentAlertsState
 import com.dalab.internet.service.AgentBackgroundService
 import com.dalab.internet.support.SupportQueueState
-import com.dalab.internet.ussd.SimRoutingRepository
-import com.dalab.internet.ussd.SimSlotResult
-import com.dalab.internet.ussd.UssdOrchestrator
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 // DALAB brand — Dark Azure + Soft Blue, shared with the Customer App and
-// Admin Dashboard. DalabGreen stays separate: it's the functional
-// success/money-earned color (order-amount text further down), not brand,
-// per the shared two-color rule's own carve-out. Internal (not private) so
-// other Home-adjacent screens in this module can match the brand exactly.
-internal val DalabIndigo = Color(0xFF003152)
-internal val DalabSoftBlue = Color(0xFFADDFF1)
-internal val DalabGreen = Color(0xFF16A34A)
-
-private enum class OrdersFilter(val label: String, val apiStatus: String?) {
-    PENDING("Pending", "pending"),
-    COMPLETED("Completed", "completed"),
-    ALL("All", null),
-}
+// Admin Dashboard. Re-exported here (under the names this module's screens
+// already call them by) from ui/theme/DalabColors.kt, the one place any of
+// these hex values is actually defined -- see that file's own header
+// comment. DalabGreen stays separate: it's the functional success/
+// money-earned color (order-amount text further down), not brand, per the
+// shared two-color rule's own carve-out. Internal (not private) so other
+// Home-adjacent screens in this module can match the brand exactly.
+internal val DalabIndigo = com.dalab.internet.ui.theme.DalabBlue
+internal val DalabSoftBlue = com.dalab.internet.ui.theme.DalabSoftBlue
+internal val DalabGreen = com.dalab.internet.ui.theme.DalabSuccessGreen
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OrdersListScreen(
     onOpenOrder: (Order) -> Unit,
     onOpenAlerts: () -> Unit = {},
-    onOpenWallet: () -> Unit = {},
-    onOpenMoneyExchange: () -> Unit = {},
-    onOpenSupport: () -> Unit = {},
 ) {
     val context = LocalContext.current
-    var orders by remember { mutableStateOf<List<Order>>(emptyList()) }
-    var loading by remember { mutableStateOf(true) }
     var lastSyncedAt by remember { mutableStateOf<Date?>(null) }
-    var filter by remember { mutableStateOf(OrdersFilter.PENDING) }
-    var selectedIds by remember { mutableStateOf(setOf<String>()) }
-    var executingId by remember { mutableStateOf<String?>(null) }
-    var bulkExecuting by remember { mutableStateOf(false) }
-    var resultMessage by remember { mutableStateOf<String?>(null) }
+    var balances by remember { mutableStateOf<List<AgentBalanceEntry>>(emptyList()) }
+    var balancesLoading by remember { mutableStateOf(true) }
     val connectionState by AgentEventBus.connectionState.collectAsState()
     val unreadAlerts by AgentAlertsState.unreadCount.collectAsState()
-    val waitingSupportCustomers by SupportQueueState.waitingCount.collectAsState()
     val scope = rememberCoroutineScope()
-    val orchestrator = remember { UssdOrchestrator(context) }
 
     fun smsListeningActive(): Boolean {
         val readGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_SMS) == PackageManager.PERMISSION_GRANTED
@@ -121,145 +102,53 @@ fun OrdersListScreen(
             }
         }
     }
-    LaunchedEffect(Unit) { refreshDashboard() }
-    LaunchedEffect(Unit) { AgentEventBus.orderEvents.collect { refreshDashboard() } }
 
-    fun refresh() {
-        loading = true
+    // Real balance data from the same SMS/manual balance pipeline the Super
+    // Admin's Balance Dashboard uses -- no mock or hardcoded values. Kept
+    // separate from refreshDashboard() above (notifications/support queue)
+    // since a balances-fetch failure shouldn't touch those badges' state,
+    // and vice versa -- each keeps its last known good value independently.
+    fun refreshBalances() {
         scope.launch {
             try {
-                val response = ApiClient.service.getOrders(status = filter.apiStatus)
-                orders = response.body().orEmpty()
+                balances = ApiClient.service.getAgentBalances().body().orEmpty()
                 lastSyncedAt = Date()
             } catch (_: Exception) {
-                // Leave the previous list in place; a banner/snackbar in a full
-                // implementation would say "couldn't refresh" here.
+                // Cards just keep showing their last known balances on failure.
             }
-            loading = false
+            balancesLoading = false
         }
     }
-
-    LaunchedEffect(filter) {
-        selectedIds = emptySet()
-        refresh()
-    }
-
+    LaunchedEffect(Unit) { refreshDashboard() }
+    LaunchedEffect(Unit) { refreshBalances() }
     // Real-time push: AgentBackgroundService owns the single SSE connection
     // (so it keeps running even off this screen / in the background) and
     // broadcasts here on every order change anywhere (customer app, another
     // agent, the dashboard) instead of this screen opening its own connection.
-    LaunchedEffect(Unit) {
-        AgentEventBus.orderEvents.collect { refresh() }
-    }
+    LaunchedEffect(Unit) { AgentEventBus.orderEvents.collect { refreshBalances() } }
+    LaunchedEffect(Unit) { AgentEventBus.orderEvents.collect { refreshDashboard() } }
 
-    val pendingIds = orders.filter { it.status == OrderStatus.PENDING }.map { it.id }.toSet()
-
-    fun executeOne(order: Order, simSlot: Int) {
-        executingId = order.id
-        scope.launch {
-            val result = orchestrator.executeManually(order.id, simSlot)
-            resultMessage = "${order.id}: ${result.outcome} — ${result.responseMessage ?: ""}".trim()
-            executingId = null
-            refresh()
-        }
-    }
-
-    fun executeSelectedBulk() {
-        val targets = orders.filter { selectedIds.contains(it.id) && it.status == OrderStatus.PENDING }
-        if (targets.isEmpty()) return
-        bulkExecuting = true
-        scope.launch {
-            var successCount = 0
-            for (order in targets) {
-                val slot = (SimRoutingRepository.simSlotFor(order.companyId) as? SimSlotResult.Slot)?.slot ?: 1
-                val result = orchestrator.executeManually(order.id, slot)
-                if (result.outcome.name == "SUCCESS") successCount++
-            }
-            resultMessage = "Bulk fulfillment: $successCount of ${targets.size} succeeded."
-            selectedIds = emptySet()
-            bulkExecuting = false
-            refresh()
-        }
-    }
-
+    // Home is balance-only now -- the Pending/Completed/All dial queue that
+    // used to live below the balance section was removed per product
+    // decision (superseded by the Shop/VIP order flow on the Orders tab);
+    // onOpenOrder is kept as a parameter only because OrderDetailScreen's
+    // navigation wiring in MainActivity still references it.
     Scaffold { padding ->
-        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
-            AgentHomeHeader(
-                agentName = remember { SessionManager.currentAgent()?.name },
-                listeningActive = listeningActive,
-                connectionState = connectionState,
-                lastSyncedAt = lastSyncedAt,
-                unreadAlerts = unreadAlerts,
-                onRefresh = { refresh(); refreshDashboard() },
-                onOpenAlerts = onOpenAlerts,
-            )
-
-            QuickActionsRow(
-                onOpenWallet = onOpenWallet,
-                onOpenMoneyExchange = onOpenMoneyExchange,
-                onOpenSupport = onOpenSupport,
-                waitingSupportCustomers = waitingSupportCustomers,
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                OrdersFilter.entries.forEach { f ->
-                    FilterChip(selected = filter == f, onClick = { filter = f }, label = { Text(f.label) })
-                }
+        LazyColumn(modifier = Modifier.padding(padding).fillMaxSize()) {
+            item {
+                AgentHomeHeader(
+                    agentName = remember { SessionManager.currentAgent()?.name },
+                    listeningActive = listeningActive,
+                    connectionState = connectionState,
+                    lastSyncedAt = lastSyncedAt,
+                    unreadAlerts = unreadAlerts,
+                    onRefresh = { refreshDashboard(); refreshBalances() },
+                    onOpenAlerts = onOpenAlerts,
+                )
             }
 
-            if (filter == OrdersFilter.PENDING && pendingIds.isNotEmpty()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    TextButton(onClick = {
-                        selectedIds = if (selectedIds.containsAll(pendingIds)) emptySet() else pendingIds
-                    }) {
-                        Text(if (selectedIds.containsAll(pendingIds)) "Deselect All Pending" else "Select All Pending")
-                    }
-                    if (selectedIds.isNotEmpty()) {
-                        Button(onClick = { executeSelectedBulk() }, enabled = !bulkExecuting) {
-                            Text(if (bulkExecuting) "Executing…" else "Fulfill ${selectedIds.size} Selected")
-                        }
-                    }
-                }
-            }
-
-            resultMessage?.let {
-                Text(it, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.labelMedium)
-            }
-
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                if (loading) {
-                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                } else if (orders.isEmpty()) {
-                    Text(
-                        "No ${filter.label.lowercase()} orders right now.",
-                        modifier = Modifier.align(Alignment.Center),
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                } else {
-                    LazyColumn {
-                        items(orders, key = { it.id }) { order ->
-                            OrderCard(
-                                order = order,
-                                selectable = filter == OrdersFilter.PENDING,
-                                selected = selectedIds.contains(order.id),
-                                onToggleSelected = {
-                                    selectedIds = if (selectedIds.contains(order.id)) selectedIds - order.id else selectedIds + order.id
-                                },
-                                onClick = { onOpenOrder(order) },
-                                onExecute = { simSlot -> executeOne(order, simSlot) },
-                                executing = executingId == order.id,
-                            )
-                            Divider()
-                        }
-                    }
-                }
+            item {
+                AgentBalanceSection(balances = balances, loading = balancesLoading)
             }
         }
     }
@@ -390,147 +279,105 @@ private fun NotificationBellButton(unreadCount: Int, onClick: () -> Unit) {
     }
 }
 
-// The money-facing actions an agent checks constantly but that used to
-// require a trip into More on every visit — promoted onto Home per the
-// redesign, everything else that's checked far less often (Packages,
-// Device, Diagnostics, ...) stays in More. Agent Support joined this row
-// (rather than staying More-only) specifically so a waiting customer is
-// impossible to miss — its badge is the one thing on Home that demands
-// immediate action, same reasoning as the notification bell up in the
-// header.
+// Home screen's Agent Balance section, replacing the old Wallet/Money
+// Exchange quick-action cards -- both are still reachable from the More
+// tab (MainActivity's MoreScreen), unchanged. Payment Method (EVC Plus/
+// eDahab -- balances used for receiving customer payments) and Payment
+// Company (Hormuud/Somnet/Somtel/Amtel -- balances used for sending data/
+// airtime) are always shown as their own labeled group, matching the
+// reference design, regardless of which ones this specific agent has ever
+// dialed through.
 @Composable
-private fun QuickActionsRow(
-    onOpenWallet: () -> Unit,
-    onOpenMoneyExchange: () -> Unit,
-    onOpenSupport: () -> Unit,
-    waitingSupportCustomers: Int,
-) {
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-            QuickActionCard(
-                icon = Icons.Filled.AccountBalanceWallet,
-                label = "Wallet",
-                onClick = onOpenWallet,
-                modifier = Modifier.weight(1f),
-            )
-            QuickActionCard(
-                icon = Icons.Filled.CurrencyExchange,
-                label = "Money Exchange",
-                onClick = onOpenMoneyExchange,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        Spacer(Modifier.height(12.dp))
-        QuickActionCard(
-            icon = Icons.Filled.SupportAgent,
-            label = if (waitingSupportCustomers > 0) {
-                "Agent Support — $waitingSupportCustomers waiting"
-            } else {
-                "Agent Support"
-            },
-            onClick = onOpenSupport,
-            modifier = Modifier.fillMaxWidth(),
-            badgeCount = waitingSupportCustomers,
+private fun AgentBalanceSection(balances: List<AgentBalanceEntry>, loading: Boolean) {
+    val methodBalances = balances.filter { it.category == "method" }
+    val companyBalances = balances.filter { it.category == "company" }
+
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        BalanceGroupHeader(
+            title = "Payment Method (${methodBalances.size})",
+            subtitle = "Balances used for receiving customer payments",
         )
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+            methodBalances.forEach { entry ->
+                BalanceCard(entry = entry, loading = loading, modifier = Modifier.weight(1f))
+            }
+        }
+
+        Spacer(Modifier.height(22.dp))
+
+        BalanceGroupHeader(
+            title = "Payment Company (${companyBalances.size})",
+            subtitle = "Balances used for sending data/airtime and services",
+        )
+        Spacer(Modifier.height(10.dp))
+        companyBalances.chunked(2).forEach { rowEntries ->
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+                rowEntries.forEach { entry ->
+                    BalanceCard(entry = entry, loading = loading, modifier = Modifier.weight(1f))
+                }
+                if (rowEntries.size == 1) Spacer(modifier = Modifier.weight(1f))
+            }
+        }
     }
 }
 
 @Composable
-private fun QuickActionCard(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    label: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    badgeCount: Int = 0,
-) {
+private fun BalanceGroupHeader(title: String, subtitle: String) {
+    Column {
+        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = DalabIndigo)
+        Spacer(Modifier.height(2.dp))
+        Text(subtitle, style = MaterialTheme.typography.bodySmall, color = Color(0xFF6B7280))
+    }
+}
+
+/** Maps a provider_key to its real bundled brand logo -- see
+ * app/src/main/res/drawable/logo_*.png, sourced from the same real brand
+ * marks confirmed against the customer-facing apps (never a mock/generic
+ * icon). Falls back to the DALAB wordmark only if a 7th key is ever added
+ * here without a matching asset. */
+@androidx.annotation.DrawableRes
+internal fun logoResFor(providerKey: String): Int = when (providerKey) {
+    "evc_plus" -> R.drawable.logo_evc_plus
+    "edahab" -> R.drawable.logo_edahab
+    "hormuud" -> R.drawable.logo_hormuud
+    "somnet" -> R.drawable.logo_somnet
+    "somtel" -> R.drawable.logo_somtel
+    "amtel" -> R.drawable.logo_amtel
+    else -> R.drawable.dalab_logo
+}
+
+@Composable
+private fun BalanceCard(entry: AgentBalanceEntry, loading: Boolean, modifier: Modifier = Modifier) {
     Surface(
-        onClick = onClick,
-        color = if (badgeCount > 0) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceVariant,
-        shape = RoundedCornerShape(14.dp),
-        modifier = modifier.heightIn(min = 56.dp),
+        color = Color.White,
+        shape = RoundedCornerShape(16.dp),
+        shadowElevation = 1.dp,
+        modifier = modifier,
     ) {
-        Row(
-            modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (badgeCount > 0) {
-                BadgedBox(badge = { Badge(containerColor = Color(0xFFF87171)) { Text(if (badgeCount > 9) "9+" else badgeCount.toString()) } }) {
-                    Icon(icon, contentDescription = null, tint = DalabIndigo, modifier = Modifier.size(20.dp))
-                }
-            } else {
-                Icon(icon, contentDescription = null, tint = DalabIndigo, modifier = Modifier.size(20.dp))
-            }
-            Spacer(Modifier.width(10.dp))
-            Text(label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-        }
-    }
-}
-
-@Composable
-private fun OrderCard(
-    order: Order,
-    selectable: Boolean,
-    selected: Boolean,
-    onToggleSelected: () -> Unit,
-    onClick: () -> Unit,
-    onExecute: (Int) -> Unit,
-    executing: Boolean,
-) {
-    val recommendedSlot = remember(order.companyId) { SimRoutingRepository.cachedSlotFor(order.companyId) }
-
-    Column(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp)) {
-        Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (selectable) {
-                    Checkbox(checked = selected, onCheckedChange = { onToggleSelected() })
-                }
-                Column {
-                    Text(order.id, fontWeight = FontWeight.Bold)
-                    Text("${order.companyName} · ${order.packageName}", style = MaterialTheme.typography.bodySmall)
-                }
-            }
-            Column(horizontalAlignment = Alignment.End) {
-                Text("$${"%.2f".format(order.amount)}", fontWeight = FontWeight.Bold, color = DalabGreen)
-                StatusChip(order)
-            }
-        }
-
-        Spacer(Modifier.height(8.dp))
-        DetailLine("Receiver", order.receiverPhone ?: "—")
-        DetailLine("Sender wallet number", order.senderPhone ?: "—")
-        DetailLine("Payment wallet", order.paymentMethod ?: "—")
-
-        if (order.status == OrderStatus.PENDING) {
-            Spacer(Modifier.height(10.dp))
-            Text(
-                "USSD command: ${order.ussdGenerated ?: "generated automatically when executed"}",
-                style = MaterialTheme.typography.labelSmall,
+        Column(modifier = Modifier.padding(14.dp)) {
+            Image(
+                painter = painterResource(logoResFor(entry.providerKey)),
+                contentDescription = entry.providerName,
+                contentScale = ContentScale.Fit,
+                alignment = Alignment.CenterStart,
+                modifier = Modifier.height(28.dp).fillMaxWidth(),
             )
-            if (recommendedSlot != null) {
-                Text("Recommended: SIM $recommendedSlot", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-            }
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(1, 2).forEach { slot ->
-                    val isRecommended = recommendedSlot == slot
-                    OutlinedButton(
-                        onClick = { onExecute(slot) },
-                        enabled = !executing,
-                        colors = if (isRecommended) ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary) else ButtonDefaults.outlinedButtonColors(),
-                    ) {
-                        Text(if (isRecommended) "Execute SIM $slot ★" else "Execute SIM $slot")
-                    }
-                }
-            }
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "${entry.providerName} Balance",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = DalabIndigo,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                if (loading) "…" else "$ ${"%.2f".format(entry.balance)}",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = DalabGreen,
+            )
         }
-    }
-}
-
-@Composable
-private fun DetailLine(label: String, value: String) {
-    Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-        Text(label, style = MaterialTheme.typography.labelSmall)
-        Text(value, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Medium)
     }
 }
 

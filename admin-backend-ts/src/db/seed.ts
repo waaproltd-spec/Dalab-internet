@@ -67,7 +67,14 @@ async function seedUssdTemplates() {
     { company: "somnet", name: "Kaafi Voice", code: "*829*{number}*{amount}*8233{pin}#" },
     { company: "somnet", name: "Qanciye Plus", code: "*830*{number}*{amount}*8233{pin}#" },
     { company: "somnet", name: "Unlimited Data & Voice", code: "*834*{number}*{amount}*8233{pin}#" },
-    { company: "somnet", name: "5G", code: "*827*{number}*{amount}*8233{pin}#" },
+    // Real production order DLB981226132 ($22.50) was rejected by Somtel's
+    // carrier menu when dialed with a single collapsed {amount} token --
+    // fixed live in production (see task history) to the two-field
+    // {amountWhole}/{amountCents} shape confirmed against that incident;
+    // this seed entry was stale until now (see ussdFormatting.test.ts's
+    // "splitUssdAmount substituted into Somnet's real template shape" test
+    // for the exact confirmed shape).
+    { company: "somnet", name: "5G", code: "*827*{number}*{amountWhole}*{amountCents}*8233{pin}#" },
     { company: "hormuud", name: "Anfac", code: "*737*{number}*{amount}*8233{pin}#" },
     { company: "hormuud", name: "Anfac Plus", code: "*738*{number}*{amount}*8233{pin}#" },
     { company: "hormuud", name: "Unlimited Data & Voice", code: "*729*{number}*{amount}*8233{pin}#" },
@@ -75,10 +82,18 @@ async function seedUssdTemplates() {
     { company: "hormuud", name: "5G Plus", code: "*727*{number}*{amount}*8233{pin}#" },
     { company: "hormuud", name: "ADSL Plus", code: "*729*{number}*{amount}*8233{pin}#" },
     { company: "hormuud", name: "Kaar Kuhadal", code: "*727*{number}*{amount}*8233{pin}#" },
-    { company: "somtel", name: "Unlimited Data & Voice", code: "*831*{number}*{amount}*8233{pin}#" },
-    { company: "somtel", name: "No Expire", code: "*830*{number}*{amount}*8233{pin}#" },
-    { company: "somtel", name: "Unlimited Calls", code: "*834*{number}*{amount}*8233{pin}#" },
-    { company: "somtel", name: "Voice", code: "*832*{number}*{amount}*8233{pin}#" },
+    // Real production order DLB637490120 ($17.50) was left permanently
+    // stuck "ambiguous" on an online device when dialed with a single
+    // collapsed {amount} token ("175") -- Somtel's *83x* menu needs the
+    // whole-dollar figure and cents as separate fields, with no cents field
+    // at all for a whole-dollar amount (see ussdFormatting.ts's
+    // formatUssdAmountSplit and migration 099). Every Somtel template below
+    // shares this same carrier menu family (same trailing "8233{pin}"
+    // selector), so all four use {amountSplit}, not just the one that failed.
+    { company: "somtel", name: "Unlimited Data & Voice", code: "*831*{number}*{amountSplit}*8233{pin}#" },
+    { company: "somtel", name: "No Expire", code: "*830*{number}*{amountSplit}*8233{pin}#" },
+    { company: "somtel", name: "Unlimited Calls", code: "*834*{number}*{amountSplit}*8233{pin}#" },
+    { company: "somtel", name: "Voice", code: "*832*{number}*{amountSplit}*8233{pin}#" },
   ];
   for (const t of templates) {
     await query(

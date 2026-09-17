@@ -65,6 +65,40 @@ export function formatUssdAmount(amount: string | number): string {
   return `${dollars}${centsSegment}`;
 }
 
+/** For the minority of Internet Store providers whose top-up USSD menu takes
+ * the amount as its own dial-string field ONLY when there are cents — a
+ * whole-dollar amount has no second field at all, not even a "*0" — unlike
+ * splitUssdAmount()/{amountWhole}+{amountCents} below, which always emits
+ * both fields. Confirmed against a real stuck order (DLB637490120, Somtel
+ * "Unlimited Data & Voice", provider amount $17.50): formatUssdAmount's
+ * single-token "175" and a raw "17.5" both left the order permanently stuck
+ * "ambiguous" after 3 dial attempts on an online device — Somtel's *831*
+ * menu for this package needs "17*5", not "175" or "17*50". Same
+ * trailing-zero-collapse rule as formatUssdAmount's cents segment (50 cents
+ * -> "5", 25 cents -> "25"), just "*"-joined to the whole-dollar figure
+ * instead of concatenated, and entirely omitted (no separator, no "0") when
+ * there are no cents:
+ *
+ *   17.00 -> "17"      (no second field)
+ *   17.50 -> "17*5"    (not "175", not "17*50")
+ *   17.25 -> "17*25"
+ *   12.34 -> "12*34"
+ *    1.50 -> "1*5"
+ *
+ * Substituted into a single {amountSplit} placeholder — the "*" lives inside
+ * the substituted value itself, so the template around it stays a single
+ * placeholder shape, same as {amount} above, not a fixed two-field shape
+ * like {amountWhole}/{amountCents}.
+ */
+export function formatUssdAmountSplit(amount: string | number): string {
+  const numeric = Number(amount);
+  const dollars = Math.trunc(numeric);
+  const cents = Math.round((numeric - dollars) * 100);
+  if (cents === 0) return String(dollars);
+  const centsSegment = cents % 10 === 0 ? String(cents / 10) : String(cents).padStart(2, "0");
+  return `${dollars}*${centsSegment}`;
+}
+
 /** For the minority of Internet Store providers whose top-up USSD menu
  * takes the amount as its OWN two separate dial-string fields rather than
  * formatUssdAmount()'s single collapsed token above — confirmed live for

@@ -102,6 +102,24 @@ data class WalletBalanceEntry(
     val balanceUpdatedAt: String? = null,
 )
 
+/** GET /agent/balances — Home screen's Agent Balance section: always
+ * exactly 6 fixed rows (evc_plus/edahab under "method", hormuud/somnet/
+ * somtel/amtel under "company"), each summed company-wide across every
+ * device, not just this agent's own, from the exact same
+ * getProviderBalanceTotals() call the Super Admin's own Balance Dashboard
+ * uses (admin-backend-ts/src/utils/simBalances.ts) -- never a separately
+ * computed value. [balance] is always a real number, defaulting to 0.0 as
+ * the UI placeholder for "no confirmed balance yet" (product decision --
+ * unlike the Admin dashboard's own "Unknown" text for that same case, this
+ * screen always shows a dollar figure); the backend never invents a
+ * database balance to produce it, only a per-request display default. */
+data class AgentBalanceEntry(
+    val providerKey: String,
+    val providerName: String,
+    val category: String,
+    val balance: Double = 0.0,
+)
+
 /** GET /agent/payment-transactions — every payment_transactions row this
  * agent's own SMS uploads produced, matched or not, dialed or not. */
 data class AgentPaymentTransaction(
@@ -226,11 +244,34 @@ data class CustomerSummary(
     val createdAt: String,
 )
 
-/** One day's worth of an agent's completed sales, from GET /agent/reports. */
-data class ReportPoint(
-    val day: String,
-    val sales: Double,
-    val orders: Int,
+/** Mirrors GET /agent/customers/{id} -- the Customer Details screen's header
+ * card. Same fields as [CustomerSummary] plus this customer's own real
+ * completed-order totals (computed server-side, never estimated here) and
+ * [pinSet] -- whether a login/recovery PIN exists, never the PIN itself. */
+data class CustomerDetail(
+    val id: String,
+    val phone: String,
+    val name: String?,
+    val status: String, // "active" | "blocked"
+    val macaashPoints: Int = 0,
+    val createdAt: String,
+    val pinSet: Boolean = false,
+    val totalOrders: Int = 0,
+    val totalSpent: Double = 0.0,
+)
+
+/** Mirrors GET /agent/customers/{id}/orders -- this customer's own Internet
+ * Store order history, newest first, real orders table data (same one
+ * [Order] itself mirrors), never a separately-maintained history. */
+data class CustomerOrderHistoryEntry(
+    val id: String,
+    val companyId: String,
+    val companyName: String,
+    val packageName: String,
+    val amount: Double,
+    val status: String, // "pending" | "in_progress" | "completed" | "failed" | "cancelled"
+    val createdAt: String,
+    val completedAt: String? = null,
 )
 
 data class ReportTotals(
@@ -238,10 +279,47 @@ data class ReportTotals(
     val totalOrders: Int,
 )
 
+/** [range]-scoped totals (unlike [ReportTotals], which is always all-time) --
+ * totalCustomers is the distinct count of customers this agent completed at
+ * least one order for during the selected period. */
+data class ReportPeriodTotals(
+    val totalSales: Double,
+    val totalOrders: Int,
+    val totalCustomers: Int,
+)
+
+/** One of the 4 fixed companies (Hormuud/Somnet/Somtel/Amtel) -- always
+ * present even at 0 orders, see reports.routes.ts's AGENT_REPORT_COMPANIES.
+ * [rank] is server-computed: 1 is always the highest seller in [range],
+ * ties broken by original company order -- never a fixed/hardcoded rank. */
+data class ReportCompanyPerformance(
+    val companyId: String,
+    val companyName: String,
+    val totalSales: Double,
+    val totalOrders: Int,
+    val rank: Int,
+)
+
+/** Up to 5 rows, highest completed-order-count first, from GET /agent/reports. */
+data class ReportTopCustomer(
+    val rank: Int,
+    val customerId: String,
+    val name: String?,
+    val phone: String,
+    val completedOrders: Int,
+    val totalSpent: Double,
+)
+
+/** Mirrors GET /agent/reports (reports.routes.ts) -- the Agent App's "My
+ * Reports" screen. [totals] is all-time and stays accurate even when
+ * [periodTotals]/[companies]/[topCustomers] (all scoped to [range]) are
+ * empty for the selected period. */
 data class AgentReport(
     val range: String,
-    val series: List<ReportPoint>,
     val totals: ReportTotals,
+    val periodTotals: ReportPeriodTotals,
+    val companies: List<ReportCompanyPerformance>,
+    val topCustomers: List<ReportTopCustomer>,
 )
 
 /** Mirrors GET /agent/devices — the physical Agent App installs registered under this account. */

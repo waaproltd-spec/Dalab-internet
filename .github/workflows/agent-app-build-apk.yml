@@ -33,8 +33,20 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # packages explicitly pinned to platform-tools only -- this action's
+      # own default package list still includes the legacy standalone
+      # "tools" package, which Google has removed from the SDK repository
+      # entirely (confirmed failure: "Warning: Failed to find package
+      # 'tools'", sdkmanager exits 1, the whole step fails before Gradle
+      # ever runs). Nothing else needs to be listed here: the Android
+      # Gradle Plugin downloads whatever specific platform/build-tools
+      # version this project's own build.gradle.kts requires on its own,
+      # the moment `gradle` below actually runs, using the licenses this
+      # same action already accepts regardless of the packages list.
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v3

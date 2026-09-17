@@ -12,9 +12,14 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -36,7 +41,9 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -62,6 +69,7 @@ import com.dalab.internet.sms.SmsListenerState
 import com.dalab.internet.ui.AgentOrdersScreen
 import com.dalab.internet.ui.AlertsScreen
 import com.dalab.internet.ui.AutoLoginScreen
+import com.dalab.internet.ui.CustomerDetailScreen
 import com.dalab.internet.ui.CustomersScreen
 import com.dalab.internet.ui.DeviceSetupScreen
 import com.dalab.internet.ui.DiagnosticsScreen
@@ -85,6 +93,7 @@ import com.dalab.internet.ui.TransactionHistoryScreen
 import com.dalab.internet.ui.VipNumberAgentOrderDetailScreen
 import com.dalab.internet.ui.VipPackageAgentOrderDetailScreen
 import com.dalab.internet.ui.WalletDashboardScreen
+import com.dalab.internet.ui.theme.DalabTheme
 import kotlinx.coroutines.launch
 
 private val SMS_PERMISSIONS = arrayOf(Manifest.permission.RECEIVE_SMS, Manifest.permission.READ_SMS)
@@ -118,7 +127,7 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            MaterialTheme {
+            DalabTheme {
                 AgentApp()
             }
         }
@@ -194,7 +203,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP, SALES, CUSTOMERS, REPORTS, AGENT_SHOP_ORDER_DETAIL, AGENT_VIP_ORDER_DETAIL, AGENT_VIP_PACKAGE_ORDER_DETAIL }
+private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP, SALES, CUSTOMERS, CUSTOMER_DETAIL, REPORTS, AGENT_SHOP_ORDER_DETAIL, AGENT_VIP_ORDER_DETAIL, AGENT_VIP_PACKAGE_ORDER_DETAIL }
 // Bottom nav is exactly 5 tabs: Home, Orders, Support Agent, Broadcast, More --
 // Sales/Customers/Reports (formerly their own tabs) moved under More as
 // ordinary Screen.X destinations instead (see MoreScreen's "My Work"
@@ -249,6 +258,7 @@ private fun AgentApp() {
     var selectedAgentShopOrder by remember { mutableStateOf<ShopAgentOrder?>(null) }
     var selectedAgentVipOrder by remember { mutableStateOf<VipNumberAgentOrder?>(null) }
     var selectedAgentVipPackageOrder by remember { mutableStateOf<VipPackageAgentOrder?>(null) }
+    var selectedCustomerId by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
     // A support-request push (support.routes.ts's notifyAssignedAgent()/
@@ -458,7 +468,14 @@ private fun AgentApp() {
 
         Screen.SALES -> NewSaleScreen(onBack = { screen = Screen.HOME })
 
-        Screen.CUSTOMERS -> CustomersScreen(onBack = { screen = Screen.HOME })
+        Screen.CUSTOMERS -> CustomersScreen(
+            onBack = { screen = Screen.HOME },
+            onOpenCustomer = { customerId -> selectedCustomerId = customerId; screen = Screen.CUSTOMER_DETAIL },
+        )
+
+        Screen.CUSTOMER_DETAIL -> selectedCustomerId?.let { customerId ->
+            CustomerDetailScreen(customerId = customerId, onBack = { screen = Screen.CUSTOMERS })
+        }
 
         Screen.REPORTS -> ReportsScreen(onBack = { screen = Screen.HOME })
 
@@ -565,42 +582,14 @@ private fun AgentHome(
 
     Scaffold(
         bottomBar = {
-            NavigationBar {
-                NavigationBarItem(
-                    selected = tab == HomeTab.HOME,
-                    onClick = { tab = HomeTab.HOME },
-                    icon = { Icon(Icons.Filled.Home, contentDescription = "Home") },
-                    label = { Text("Home") },
-                )
-                NavigationBarItem(
-                    selected = tab == HomeTab.ORDERS,
-                    onClick = { tab = HomeTab.ORDERS },
-                    icon = { Icon(Icons.Filled.ShoppingCart, contentDescription = "Orders") },
-                    label = { Text("Orders") },
-                )
-                NavigationBarItem(
-                    selected = tab == HomeTab.SUPPORT,
-                    onClick = { tab = HomeTab.SUPPORT; SupportUnreadState.clear() },
-                    icon = {
-                        BadgedBox(badge = { if (SupportUnreadState.hasUnread && tab != HomeTab.SUPPORT) Badge() }) {
-                            Icon(Icons.Filled.SupportAgent, contentDescription = "Support Agent")
-                        }
-                    },
-                    label = { Text("Support Agent") },
-                )
-                NavigationBarItem(
-                    selected = tab == HomeTab.BROADCAST,
-                    onClick = { tab = HomeTab.BROADCAST },
-                    icon = { Icon(Icons.Filled.Notifications, contentDescription = "Broadcast") },
-                    label = { Text("Broadcast") },
-                )
-                NavigationBarItem(
-                    selected = tab == HomeTab.MORE,
-                    onClick = { tab = HomeTab.MORE },
-                    icon = { Icon(Icons.Filled.MoreHoriz, contentDescription = "More") },
-                    label = { Text("More") },
-                )
-            }
+            DalabBottomNavigation(
+                selectedTab = tab,
+                onSelectTab = { newTab ->
+                    tab = newTab
+                    if (newTab == HomeTab.SUPPORT) SupportUnreadState.clear()
+                },
+                supportHasUnread = SupportUnreadState.hasUnread,
+            )
         }
     ) { padding ->
         Box(modifier = Modifier.padding(padding)) {
@@ -608,9 +597,6 @@ private fun AgentHome(
                 HomeTab.HOME -> OrdersListScreen(
                     onOpenOrder = onOpenOrder,
                     onOpenAlerts = onOpenAlerts,
-                    onOpenWallet = onOpenWallet,
-                    onOpenMoneyExchange = onOpenMoneyExchange,
-                    onOpenSupport = { tab = HomeTab.SUPPORT; SupportUnreadState.clear() },
                 )
                 HomeTab.ORDERS -> AgentOrdersScreen(
                     onOpenShopOrder = onOpenAgentShopOrder,
@@ -633,6 +619,113 @@ private fun AgentHome(
                     onOpenCustomers = onOpenCustomers,
                     onOpenReports = onOpenReports,
                 )
+            }
+        }
+    }
+}
+
+private data class BottomNavTab(
+    val tab: HomeTab,
+    val icon: androidx.compose.ui.graphics.vector.ImageVector,
+    val label: String,
+)
+
+private val BOTTOM_NAV_TABS = listOf(
+    BottomNavTab(HomeTab.HOME, Icons.Filled.Home, "Home"),
+    BottomNavTab(HomeTab.ORDERS, Icons.Filled.ShoppingCart, "Orders"),
+    BottomNavTab(HomeTab.SUPPORT, Icons.Filled.SupportAgent, "Support Agent"),
+    BottomNavTab(HomeTab.BROADCAST, Icons.Filled.Notifications, "Broadcast"),
+    BottomNavTab(HomeTab.MORE, Icons.Filled.MoreHoriz, "More"),
+)
+
+/**
+ * Same 5 tabs, same routes/onClick logic, same colors as the plain
+ * NavigationBar this replaces -- every NavigationBarItem below still exists
+ * with its normal selected/onClick/label, so click targets, ripple, and
+ * TalkBack semantics (selected tab announced, etc.) are all exactly what
+ * they were. The only change is purely visual: instead of each item fading
+ * its own indicator in behind its own icon, a single shared circular
+ * indicator slides horizontally to whichever tab is selected and floats
+ * slightly above the bar's top edge, matching the reference animation
+ * (icon lifts into an elevated circular badge; the tab it leaves smoothly
+ * returns to a plain icon on the flat bar).
+ *
+ * How: each item's own icon is rendered fully transparent while selected
+ * (tint animates out) -- the floating circle overlay, drawn after
+ * (on top of) the NavigationBar, draws that same icon itself, in the
+ * selected color, inside the badge. Position math is plain division by
+ * BOTTOM_NAV_TABS.size (NavigationBar lays its items out in equal-width
+ * columns internally), not per-item position tracking, so there's no
+ * onGloballyPositioned/measurement coupling to get wrong or destabilize.
+ * Every animated value is a plain animateDpAsState/animateColorAsState --
+ * no custom Shape/Path math, no third-party animation library.
+ */
+@Composable
+private fun DalabBottomNavigation(
+    selectedTab: HomeTab,
+    onSelectTab: (HomeTab) -> Unit,
+    supportHasUnread: Boolean,
+) {
+    val selectedIndex = BOTTOM_NAV_TABS.indexOfFirst { it.tab == selectedTab }
+    // The exact same tokens NavigationBarItemDefaults.colors() already
+    // resolves to today, so this is purely an animation change -- the
+    // brand-neutral colors this bar has always shown are unchanged.
+    val indicatorColor = MaterialTheme.colorScheme.secondaryContainer
+    val selectedIconColor = MaterialTheme.colorScheme.onSecondaryContainer
+    val unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant
+
+    Box {
+        NavigationBar {
+            BOTTOM_NAV_TABS.forEach { spec ->
+                val selected = spec.tab == selectedTab
+                val iconTint by animateColorAsState(
+                    targetValue = if (selected) Color.Transparent else unselectedIconColor,
+                    label = "navIconTint",
+                )
+                NavigationBarItem(
+                    selected = selected,
+                    onClick = { onSelectTab(spec.tab) },
+                    icon = {
+                        if (spec.tab == HomeTab.SUPPORT) {
+                            BadgedBox(badge = { if (supportHasUnread && !selected) Badge() }) {
+                                Icon(spec.icon, contentDescription = spec.label, tint = iconTint)
+                            }
+                        } else {
+                            Icon(spec.icon, contentDescription = spec.label, tint = iconTint)
+                        }
+                    },
+                    label = { Text(spec.label) },
+                    colors = NavigationBarItemDefaults.colors(indicatorColor = Color.Transparent),
+                )
+            }
+        }
+
+        // The single shared elevated circular indicator -- see this
+        // function's own doc comment above for why it's a separate overlay
+        // rather than each item's own indicator.
+        BoxWithConstraints(Modifier.matchParentSize()) {
+            val itemWidth = maxWidth / BOTTOM_NAV_TABS.size
+            val indicatorSize = 44.dp
+            val indicatorX by animateDpAsState(
+                targetValue = itemWidth * selectedIndex + (itemWidth - indicatorSize) / 2,
+                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow),
+                label = "navIndicatorX",
+            )
+            Surface(
+                color = indicatorColor,
+                shape = CircleShape,
+                shadowElevation = 6.dp,
+                modifier = Modifier
+                    .offset(x = indicatorX, y = (-16).dp)
+                    .size(indicatorSize),
+            ) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                    Icon(
+                        BOTTOM_NAV_TABS[selectedIndex].icon,
+                        contentDescription = null,
+                        tint = selectedIconColor,
+                    )
+                }
             }
         }
     }

@@ -12,7 +12,7 @@ import { creditCommissionIfNeeded } from "../utils/commissions.js";
 import { creditReferralBonusIfNeeded } from "../utils/referrals.js";
 import { refundRedeemedPointsIfNeeded } from "../utils/loyaltyPoints.js";
 import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
-import { normalizePhoneForUssd, formatUssdAmount, splitUssdAmount } from "../utils/ussdFormatting.js";
+import { normalizePhoneForUssd, formatUssdAmount, splitUssdAmount, formatUssdAmountSplit } from "../utils/ussdFormatting.js";
 
 export const ussdRouter = Router();
 
@@ -69,10 +69,31 @@ ussdRouter.get("/admin/ussd-templates", requireStaff(), async (req, res) => {
 // {customerNumber} is accepted as an alias for {number} (same substitution)
 // so a template can be written either way — kept for that one placeholder
 // only, since {amount}/{pin} were never ambiguous in how admins referred to them.
+//
+// The amount itself has three mutually-exclusive valid forms (see
+// ussdFormatting.ts's header comment for why a single carrier convention
+// can't cover every provider): the single collapsed {amount} token, the
+// always-both-fields {amountWhole}+{amountCents} pair (confirmed: Somnet),
+// or {amountSplit} (confirmed: Somtel) — a single placeholder whose
+// substituted value embeds its own "*" only when there are cents. Requiring
+// literally "{amount}" alone here would reject every template written with
+// the other two forms — exactly the shape of a real gap this caught: the
+// already-live Somnet 5G template (*827*{number}*{amountWhole}*{amountCents}
+// *8233{pin}#) has no bare "{amount}" substring at all, so saving even an
+// unrelated field on it (e.g. a notes edit) through this same validation
+// would have failed outright.
+function hasAmountPlaceholder(code: string): boolean {
+  return (
+    code.includes("{amount}") ||
+    code.includes("{amountSplit}") ||
+    (code.includes("{amountWhole}") && code.includes("{amountCents}"))
+  );
+}
+
 function hasRequiredPlaceholders(code: string): boolean {
   return (
     (code.includes("{number}") || code.includes("{customerNumber}") || code.includes("{receiverNumber}")) &&
-    code.includes("{amount}") &&
+    hasAmountPlaceholder(code) &&
     code.includes("{pin}")
   );
 }
@@ -121,7 +142,7 @@ ussdRouter.post("/admin/ussd-templates", requireAuth("super_admin"), async (req,
     return sendJson(res, 400, { error: "companyId, serviceName, and ussdCode are required" });
   }
   if (!hasRequiredPlaceholders(ussdCode)) {
-    return sendJson(res, 400, { error: "ussdCode must contain {number}, {amount}, and {pin} placeholders" });
+    return sendJson(res, 400, { error: "ussdCode must contain {number}, {pin}, and an amount placeholder ({amount}, {amountSplit}, or both {amountWhole} and {amountCents})" });
   }
   if (!isValidSimSlot(simSlot)) return sendJson(res, 400, { error: "simSlot must be 1 or 2" });
   if (hasMismatchedDeviceSimPair(deviceId, simSlot)) {
@@ -160,7 +181,7 @@ ussdRouter.put("/admin/ussd-templates/:id", requireAuth("super_admin"), async (r
   if (!existing) return sendJson(res, 404, { error: "Template not found" });
   const merged = { ...existing, ...req.body };
   if (merged.ussd_code && !hasRequiredPlaceholders(merged.ussd_code)) {
-    return sendJson(res, 400, { error: "ussdCode must contain {number}, {amount}, and {pin} placeholders" });
+    return sendJson(res, 400, { error: "ussdCode must contain {number}, {pin}, and an amount placeholder ({amount}, {amountSplit}, or both {amountWhole} and {amountCents})" });
   }
   if (merged.status && !["enabled", "disabled"].includes(merged.status)) {
     return sendJson(res, 400, { error: "status must be 'enabled' or 'disabled'" });
@@ -375,6 +396,15 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
   // token. Computed unconditionally but harmless for every other template:
   // .replace() is a no-op if the placeholder isn't present in the string.
   const { whole: amountWhole, cents: amountCents } = splitUssdAmount(order.provider_amount ?? order.amount);
+  // {amountSplit} — see formatUssdAmountSplit's own comment: the minority of
+  // providers (confirmed: Somtel) whose top-up menu takes the amount as its
+  // own dial-string field only when there are cents, with no field at all
+  // for a whole-dollar amount — a single-{amount}-placeholder template still
+  // works here since the "*" is embedded inside the substituted value
+  // itself. Computed unconditionally but harmless for every other template,
+  // same as amountWhole/amountCents above: .replace() is a no-op if the
+  // placeholder isn't present.
+  const providerAmountSplit = formatUssdAmountSplit(order.provider_amount ?? order.amount);
   // {packageCode}/{packageName} are optional — a template that doesn't
   // reference them is unaffected, .replace() is a no-op if the placeholder
   // isn't present in the string.
@@ -385,6 +415,7 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
     .replace("{amount}", providerAmountFormatted)
     .replace("{amountWhole}", amountWhole)
     .replace("{amountCents}", amountCents)
+    .replace("{amountSplit}", providerAmountSplit)
     .replace("{pin}", pin)
     .replace("{packageCode}", orderWithPackage?.package_code ?? "")
     .replace("{packageName}", orderWithPackage?.package_name ?? "")
@@ -399,6 +430,7 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
     .replace("{amount}", providerAmountFormatted)
     .replace("{amountWhole}", amountWhole)
     .replace("{amountCents}", amountCents)
+    .replace("{amountSplit}", providerAmountSplit)
     .replace("{pin}", "•".repeat(pin.length))
     .replace("{packageCode}", orderWithPackage?.package_code ?? "")
     .replace("{packageName}", orderWithPackage?.package_name ?? "")
