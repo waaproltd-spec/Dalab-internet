@@ -25,16 +25,30 @@ function requiredEnv(name: string): string {
  * code or a leading 0 (the same ambiguity orders.routes.ts's own
  * normalizePhone and smsLogs.routes.ts's own normalizePhone already exist
  * to handle). order.receiver_phone/sender_phone are stored in whatever raw
- * form the customer/agent entered — e.g. the 12-digit "252645390044" on the
- * real order that got SOMLINK error 126 — while SOMLINK_PHONE (the wallet
- * number SOMLINK's own /auth/data_v3_login already authenticates
- * successfully) is the bare local 9-digit form ("647177774"). A 12-digit
- * data_phone SOMLINK doesn't recognize as a valid MSISDN is a plausible
- * cause of a generic "SORRY_THERE_IS_ISSUE_IN_THE_DATA_SERVER" rather than
- * a specific invalid-phone error; normalizing both phone params to the one
- * local form SOMLINK is confirmed to accept removes that mismatch. */
+ * form the customer/agent entered. SOMLINK_PHONE (the wallet number
+ * SOMLINK's own /auth/data_v3_login already authenticates successfully) is
+ * the bare local 9-digit form ("647177774") -- that format is confirmed
+ * correct for wallet_phone/login and is untouched by the fix below. */
 function toLocalPhone(phone: string | null | undefined): string {
   return String(phone ?? "").replace(/\D/g, "").slice(-9);
+}
+
+/** data_phone (the destination customer's number) needs a DIFFERENT format
+ * than wallet_phone -- confirmed live against the real API on 2026-09-18
+ * with two independent real numbers (including the exact number that
+ * produced the original "252645390044" / error 126 report): stripping it
+ * to the bare 9-digit local form toLocalPhone produces gets rejected
+ * outright with error 125 INVALID_DATA_PHONE_NUMBER, while the same number
+ * normalized to 12 digits with the 252 country code prepended (no leading
+ * '+') passes that validation and reaches a different, SOMLINK-side
+ * failure instead (126 SORRY_THERE_IS_ISSUE_IN_THE_DATA_SERVER, unrelated
+ * to phone format -- see the SOMLINK support follow-up this same fix's
+ * commit references). The previous toLocalPhone-for-both-params approach
+ * was based on an incorrect assumption that the 12-digit form was itself
+ * the problem; it was actually the one SOMLINK accepts. */
+function toDataPhone(phone: string | null | undefined): string {
+  const local = toLocalPhone(phone);
+  return local ? `252${local}` : "";
 }
 
 /**
@@ -63,7 +77,7 @@ export async function deliverViaSomlink(order: any): Promise<{ ok: true } | { ok
   if (!rawDataPhone) {
     return { ok: false, reason: "no_customer_phone" };
   }
-  const dataPhone = toLocalPhone(rawDataPhone);
+  const dataPhone = toDataPhone(rawDataPhone);
   if (!dataPhone) {
     return { ok: false, reason: "no_customer_phone" };
   }

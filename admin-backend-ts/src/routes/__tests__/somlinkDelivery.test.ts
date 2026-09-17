@@ -141,14 +141,17 @@ test("a confirmed DATA_PAID_SUCCESSFULLY response completes the order and credit
   assert.ok((customer?.macaash_points ?? 0) >= 10);
 });
 
-// Regression test for the real error-126 investigation: the real order
-// that got "SORRY_THERE_IS_ISSUE_IN_THE_DATA_SERVER" had a 12-digit
-// receiver_phone ("252645390044") while SOMLINK's own wallet_phone
-// (SOMLINK_PHONE) is always the bare 9-digit local form — deliverViaSomlink
-// must send SOMLINK the same normalized local form for both, not the raw
-// stored value, matching orders.routes.ts's/smsLogs.routes.ts's own
-// normalizePhone convention for this exact "252/0/bare" ambiguity.
-test("data_phone and wallet_phone are normalized to the bare local 9-digit form before being sent to SOMLINK", async (t) => {
+// Regression test, updated after the live 2026-09-18 investigation: the
+// original error-126 report ("SORRY_THERE_IS_ISSUE_IN_THE_DATA_SERVER" for
+// receiver_phone "252645390044") was mis-diagnosed as a "needs the bare
+// 9-digit form" problem — that "fix" actually made things worse, producing
+// a hard 125 INVALID_DATA_PHONE_NUMBER rejection instead. Confirmed live
+// against the real API with two independent real numbers: data_phone must
+// be the 12-digit form WITH the 252 country code (no leading '+') to pass
+// SOMLINK's own validation at all; wallet_phone stays the bare 9-digit
+// local form, which was never the problem (SOMLINK's own
+// /auth/data_v3_login already confirms that format works for it).
+test("data_phone is sent as the 12-digit 252-prefixed form; wallet_phone stays the bare 9-digit form", async (t) => {
   const orderId = await insertOrder();
   await query(`UPDATE orders SET status='in_progress', receiver_phone='252645390044' WHERE id=$1`, [orderId]);
 
@@ -167,15 +170,41 @@ test("data_phone and wallet_phone are normalized to the bare local 9-digit form 
     amount: 1,
   });
   assert.equal(result.ok, true);
-  assert.equal(sentBody.data_phone, "645390044");
+  assert.equal(sentBody.data_phone, "252645390044");
   assert.equal(sentBody.wallet_phone, "647177774");
 
   const tx = await queryOne<{ data_phone: string; wallet_phone: string }>(
     `SELECT data_phone, wallet_phone FROM somlink_transactions WHERE order_id=$1`,
     [orderId]
   );
-  assert.equal(tx?.data_phone, "645390044");
+  assert.equal(tx?.data_phone, "252645390044");
   assert.equal(tx?.wallet_phone, "647177774");
+});
+
+// Companion case: a receiver_phone stored WITHOUT the 252 country code
+// (the bare 9-digit local form a customer might type directly) must still
+// arrive at SOMLINK with the country code prepended -- toDataPhone always
+// normalizes to 12 digits regardless of which raw form the order started with.
+test("a receiver_phone with no country code stored is still sent to SOMLINK with 252 prepended", async (t) => {
+  const orderId = await insertOrder();
+  await query(`UPDATE orders SET status='in_progress', receiver_phone='645390044' WHERE id=$1`, [orderId]);
+
+  let sentBody: any = null;
+  t.mock.method(globalThis, "fetch", async (_input: any, init?: any) => {
+    const body = init?.body ? JSON.parse(init.body) : {};
+    if (body.data_phone || body.wallet_phone) sentBody = body;
+    return new Response(JSON.stringify({ code: 200, message: "DATA_PAID_SUCCESSFULLY", paid_amount: 1, balance: 1 }), { status: 200 });
+  });
+
+  const result = await deliverViaSomlink({
+    id: orderId,
+    customer_id: CUSTOMER_ID,
+    package_id: packageId,
+    receiver_phone: "645390044",
+    amount: 1,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(sentBody.data_phone, "252645390044");
 });
 
 test("a structured SOMLINK error (e.g. insufficient balance) leaves the order in_progress, not completed", async (t) => {
