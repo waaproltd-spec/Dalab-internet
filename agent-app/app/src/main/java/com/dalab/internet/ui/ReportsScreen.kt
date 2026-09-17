@@ -37,7 +37,7 @@ import com.dalab.internet.ui.theme.DalabOutline
 import com.dalab.internet.ui.theme.DalabSurfaceTint
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
-import java.util.Date
+import java.util.Calendar
 import java.util.Locale
 
 private data class ReportRange(val value: String, val label: String)
@@ -87,7 +87,7 @@ fun ReportsScreen(onBack: () -> Unit) {
 
     Scaffold(containerColor = Color.White) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
-            ReportsHeader(onBack = onBack)
+            ReportsHeader(onBack = onBack, range = range)
 
             Row(
                 modifier = Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp),
@@ -130,7 +130,7 @@ fun ReportsScreen(onBack: () -> Unit) {
 }
 
 @Composable
-private fun ReportsHeader(onBack: () -> Unit) {
+private fun ReportsHeader(onBack: () -> Unit, range: String) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -148,7 +148,7 @@ private fun ReportsHeader(onBack: () -> Unit) {
         }
         Surface(color = DalabSoftBlue.copy(alpha = 0.35f), shape = RoundedCornerShape(999.dp)) {
             Text(
-                remember { SimpleDateFormat("MMM d, yyyy", Locale.US).format(Date()) },
+                remember(range) { rangeDateLabel(range) },
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = DalabIndigo,
@@ -156,6 +156,32 @@ private fun ReportsHeader(onBack: () -> Unit) {
             )
         }
     }
+}
+
+// Mirrors AGENT_REPORT_RANGES' own boundaries (reports.routes.ts) so this
+// label never claims a date span the backend isn't actually filtering by --
+// previously this always showed today's date regardless of which pill was
+// selected, which read as "Sep 17" while "Yesterday"'s data (Sep 16) was on
+// screen.
+private fun rangeDateLabel(range: String): String {
+    val dayFormat = SimpleDateFormat("MMM d", Locale.US)
+    val dayYearFormat = SimpleDateFormat("MMM d, yyyy", Locale.US)
+    val today = Calendar.getInstance()
+    val from = today.clone() as Calendar
+    when (range) {
+        "today" -> return dayYearFormat.format(today.time)
+        "yesterday" -> {
+            from.add(Calendar.DAY_OF_YEAR, -1)
+            return dayYearFormat.format(from.time)
+        }
+        "week" -> from.add(Calendar.DAY_OF_YEAR, -7)
+        "1month" -> from.add(Calendar.MONTH, -1)
+        "3months" -> from.add(Calendar.MONTH, -3)
+        "6months" -> from.add(Calendar.MONTH, -6)
+        "1year" -> from.add(Calendar.YEAR, -1)
+        else -> return dayYearFormat.format(today.time)
+    }
+    return "${dayFormat.format(from.time)} – ${dayYearFormat.format(today.time)}"
 }
 
 @Composable
