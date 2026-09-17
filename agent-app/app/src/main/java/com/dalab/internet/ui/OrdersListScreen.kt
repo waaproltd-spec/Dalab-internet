@@ -10,10 +10,8 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
@@ -46,9 +44,6 @@ import com.dalab.internet.network.ConnectionState
 import com.dalab.internet.notifications.AgentAlertsState
 import com.dalab.internet.service.AgentBackgroundService
 import com.dalab.internet.support.SupportQueueState
-import com.dalab.internet.ussd.SimRoutingRepository
-import com.dalab.internet.ussd.SimSlotResult
-import com.dalab.internet.ussd.UssdOrchestrator
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -66,12 +61,6 @@ internal val DalabIndigo = com.dalab.internet.ui.theme.DalabBlue
 internal val DalabSoftBlue = com.dalab.internet.ui.theme.DalabSoftBlue
 internal val DalabGreen = com.dalab.internet.ui.theme.DalabSuccessGreen
 
-private enum class OrdersFilter(val label: String, val apiStatus: String?) {
-    PENDING("Pending", "pending"),
-    COMPLETED("Completed", "completed"),
-    ALL("All", null),
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OrdersListScreen(
@@ -79,20 +68,12 @@ fun OrdersListScreen(
     onOpenAlerts: () -> Unit = {},
 ) {
     val context = LocalContext.current
-    var orders by remember { mutableStateOf<List<Order>>(emptyList()) }
-    var loading by remember { mutableStateOf(true) }
     var lastSyncedAt by remember { mutableStateOf<Date?>(null) }
-    var filter by remember { mutableStateOf(OrdersFilter.PENDING) }
-    var selectedIds by remember { mutableStateOf(setOf<String>()) }
-    var executingId by remember { mutableStateOf<String?>(null) }
-    var bulkExecuting by remember { mutableStateOf(false) }
-    var resultMessage by remember { mutableStateOf<String?>(null) }
     var balances by remember { mutableStateOf<List<AgentBalanceEntry>>(emptyList()) }
     var balancesLoading by remember { mutableStateOf(true) }
     val connectionState by AgentEventBus.connectionState.collectAsState()
     val unreadAlerts by AgentAlertsState.unreadCount.collectAsState()
     val scope = rememberCoroutineScope()
-    val orchestrator = remember { UssdOrchestrator(context) }
 
     fun smsListeningActive(): Boolean {
         val readGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_SMS) == PackageManager.PERMISSION_GRANTED
@@ -131,6 +112,7 @@ fun OrdersListScreen(
         scope.launch {
             try {
                 balances = ApiClient.service.getAgentBalances().body().orEmpty()
+                lastSyncedAt = Date()
             } catch (_: Exception) {
                 // Cards just keep showing their last known balances on failure.
             }
@@ -139,75 +121,18 @@ fun OrdersListScreen(
     }
     LaunchedEffect(Unit) { refreshDashboard() }
     LaunchedEffect(Unit) { refreshBalances() }
-    LaunchedEffect(Unit) { AgentEventBus.orderEvents.collect { refreshBalances() } }
-    LaunchedEffect(Unit) { AgentEventBus.orderEvents.collect { refreshDashboard() } }
-
-    fun refresh() {
-        loading = true
-        scope.launch {
-            try {
-                val response = ApiClient.service.getOrders(status = filter.apiStatus)
-                orders = response.body().orEmpty()
-                lastSyncedAt = Date()
-            } catch (_: Exception) {
-                // Leave the previous list in place; a banner/snackbar in a full
-                // implementation would say "couldn't refresh" here.
-            }
-            loading = false
-        }
-    }
-
-    LaunchedEffect(filter) {
-        selectedIds = emptySet()
-        refresh()
-    }
-
     // Real-time push: AgentBackgroundService owns the single SSE connection
     // (so it keeps running even off this screen / in the background) and
     // broadcasts here on every order change anywhere (customer app, another
     // agent, the dashboard) instead of this screen opening its own connection.
-    LaunchedEffect(Unit) {
-        AgentEventBus.orderEvents.collect { refresh() }
-    }
+    LaunchedEffect(Unit) { AgentEventBus.orderEvents.collect { refreshBalances() } }
+    LaunchedEffect(Unit) { AgentEventBus.orderEvents.collect { refreshDashboard() } }
 
-    val pendingIds = orders.filter { it.status == OrderStatus.PENDING }.map { it.id }.toSet()
-
-    fun executeOne(order: Order, simSlot: Int) {
-        executingId = order.id
-        scope.launch {
-            val result = orchestrator.executeManually(order.id, simSlot)
-            resultMessage = "${order.id}: ${result.outcome} — ${result.responseMessage ?: ""}".trim()
-            executingId = null
-            refresh()
-        }
-    }
-
-    fun executeSelectedBulk() {
-        val targets = orders.filter { selectedIds.contains(it.id) && it.status == OrderStatus.PENDING }
-        if (targets.isEmpty()) return
-        bulkExecuting = true
-        scope.launch {
-            var successCount = 0
-            for (order in targets) {
-                val slot = (SimRoutingRepository.simSlotFor(order.companyId) as? SimSlotResult.Slot)?.slot ?: 1
-                val result = orchestrator.executeManually(order.id, slot)
-                if (result.outcome.name == "SUCCESS") successCount++
-            }
-            resultMessage = "Bulk fulfillment: $successCount of ${targets.size} succeeded."
-            selectedIds = emptySet()
-            bulkExecuting = false
-            refresh()
-        }
-    }
-
-    // A single LazyColumn for the whole screen (header through the order
-    // list) rather than a fixed Column wrapping an inner LazyColumn -- the
-    // Agent Balance section below is tall enough on a small phone that a
-    // fixed (non-scrolling) header+balances+filters block could overflow
-    // the screen with no way to reach the rest, which is exactly what
-    // "make the screen scrollable" is guarding against. Every previous
-    // fixed item becomes its own `item {}`; the order list itself is
-    // unchanged, just no longer its own independently-scrolling LazyColumn.
+    // Home is balance-only now -- the Pending/Completed/All dial queue that
+    // used to live below the balance section was removed per product
+    // decision (superseded by the Shop/VIP order flow on the Orders tab);
+    // onOpenOrder is kept as a parameter only because OrderDetailScreen's
+    // navigation wiring in MainActivity still references it.
     Scaffold { padding ->
         LazyColumn(modifier = Modifier.padding(padding).fillMaxSize()) {
             item {
@@ -217,83 +142,13 @@ fun OrdersListScreen(
                     connectionState = connectionState,
                     lastSyncedAt = lastSyncedAt,
                     unreadAlerts = unreadAlerts,
-                    onRefresh = { refresh(); refreshDashboard(); refreshBalances() },
+                    onRefresh = { refreshDashboard(); refreshBalances() },
                     onOpenAlerts = onOpenAlerts,
                 )
             }
 
             item {
                 AgentBalanceSection(balances = balances, loading = balancesLoading)
-            }
-
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    OrdersFilter.entries.forEach { f ->
-                        FilterChip(selected = filter == f, onClick = { filter = f }, label = { Text(f.label) })
-                    }
-                }
-            }
-
-            if (filter == OrdersFilter.PENDING && pendingIds.isNotEmpty()) {
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        TextButton(onClick = {
-                            selectedIds = if (selectedIds.containsAll(pendingIds)) emptySet() else pendingIds
-                        }) {
-                            Text(if (selectedIds.containsAll(pendingIds)) "Deselect All Pending" else "Select All Pending")
-                        }
-                        if (selectedIds.isNotEmpty()) {
-                            Button(onClick = { executeSelectedBulk() }, enabled = !bulkExecuting) {
-                                Text(if (bulkExecuting) "Executing…" else "Fulfill ${selectedIds.size} Selected")
-                            }
-                        }
-                    }
-                }
-            }
-
-            resultMessage?.let { message ->
-                item {
-                    Text(message, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.labelMedium)
-                }
-            }
-
-            if (loading) {
-                item {
-                    Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator()
-                    }
-                }
-            } else if (orders.isEmpty()) {
-                item {
-                    Text(
-                        "No ${filter.label.lowercase()} orders right now.",
-                        modifier = Modifier.fillMaxWidth().padding(32.dp),
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                }
-            } else {
-                items(orders, key = { it.id }) { order ->
-                    OrderCard(
-                        order = order,
-                        selectable = filter == OrdersFilter.PENDING,
-                        selected = selectedIds.contains(order.id),
-                        onToggleSelected = {
-                            selectedIds = if (selectedIds.contains(order.id)) selectedIds - order.id else selectedIds + order.id
-                        },
-                        onClick = { onOpenOrder(order) },
-                        onExecute = { simSlot -> executeOne(order, simSlot) },
-                        executing = executingId == order.id,
-                    )
-                    Divider()
-                }
             }
         }
     }
@@ -523,74 +378,6 @@ private fun BalanceCard(entry: AgentBalanceEntry, loading: Boolean, modifier: Mo
                 color = DalabGreen,
             )
         }
-    }
-}
-
-@Composable
-private fun OrderCard(
-    order: Order,
-    selectable: Boolean,
-    selected: Boolean,
-    onToggleSelected: () -> Unit,
-    onClick: () -> Unit,
-    onExecute: (Int) -> Unit,
-    executing: Boolean,
-) {
-    val recommendedSlot = remember(order.companyId) { SimRoutingRepository.cachedSlotFor(order.companyId) }
-
-    Column(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp)) {
-        Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (selectable) {
-                    Checkbox(checked = selected, onCheckedChange = { onToggleSelected() })
-                }
-                Column {
-                    Text(order.id, fontWeight = FontWeight.Bold)
-                    Text("${order.companyName} · ${order.packageName}", style = MaterialTheme.typography.bodySmall)
-                }
-            }
-            Column(horizontalAlignment = Alignment.End) {
-                Text("$${"%.2f".format(order.amount)}", fontWeight = FontWeight.Bold, color = DalabGreen)
-                StatusChip(order)
-            }
-        }
-
-        Spacer(Modifier.height(8.dp))
-        DetailLine("Receiver", order.receiverPhone ?: "—")
-        DetailLine("Sender wallet number", order.senderPhone ?: "—")
-        DetailLine("Payment wallet", order.paymentMethod ?: "—")
-
-        if (order.status == OrderStatus.PENDING) {
-            Spacer(Modifier.height(10.dp))
-            Text(
-                "USSD command: ${order.ussdGenerated ?: "generated automatically when executed"}",
-                style = MaterialTheme.typography.labelSmall,
-            )
-            if (recommendedSlot != null) {
-                Text("Recommended: SIM $recommendedSlot", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-            }
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(1, 2).forEach { slot ->
-                    val isRecommended = recommendedSlot == slot
-                    OutlinedButton(
-                        onClick = { onExecute(slot) },
-                        enabled = !executing,
-                        colors = if (isRecommended) ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary) else ButtonDefaults.outlinedButtonColors(),
-                    ) {
-                        Text(if (isRecommended) "Execute SIM $slot ★" else "Execute SIM $slot")
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun DetailLine(label: String, value: String) {
-    Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-        Text(label, style = MaterialTheme.typography.labelSmall)
-        Text(value, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Medium)
     }
 }
 
