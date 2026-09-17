@@ -534,6 +534,18 @@ export async function verifyOrderAndGenerateUssd(
     return { ok: false, alreadyProcessed: order.status !== "pending" };
   }
 
+  // Payment has been verified but the top-up itself hasn't happened yet
+  // (USSD not dialed / SOMLINK not confirmed) -- must never read as "money
+  // sent" (that's completeOrderById's notification, once it's genuinely
+  // completed), only "we got your payment, we're working on it now".
+  await notifyCustomer(
+    order.customer_id,
+    "order_update",
+    "⏳ Lacag-bixintu way socotaa",
+    "Lacag-bixintaada weli waa la farsameynayaa. Fadlan sug inta lacagta la xaqiijinayo.",
+    { screen: "notifications", orderId: order.id }
+  );
+
   // A SOMLINK-fulfilled company skips USSD entirely — deliverViaSomlink
   // calls the real API directly; on a confirmed DATA_PAID_SUCCESSFULLY
   // response this immediately completes the order via the same
@@ -673,12 +685,11 @@ export async function completeOrderById(orderId: string): Promise<{ order: any; 
   // in_progress order, and a successful SOMLINK API delivery (see
   // somlink.routes.ts's call into this same function) — one hook instead
   // of three.
-  const pkg = await queryOne<{ name: string }>(`SELECT name FROM packages WHERE id=$1`, [order.package_id]);
   await notifyCustomer(
     order.customer_id,
     "order_update",
-    "Dalabkaaga waa la dhammeeyay",
-    pkg ? `Xirmadaada ${pkg.name} waa la hawlgeliyay, waana diyaar in la isticmaalo.` : "Dalabkaaga waa la hawlgeliyay, waana diyaar in la isticmaalo.",
+    "🎉 Hambalyo! Lacagta waa la diray",
+    `Lacagta waxaa laga diray lambarkan +${order.sender_phone}, waxaana si guuleysata loogu diray lambarka internet-ka +${order.receiver_phone}.`,
     { screen: "notifications", orderId: order.id }
   );
   await recordActivity({
@@ -964,12 +975,11 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
       await creditMacaashIfNeeded(order);
       await creditCommissionIfNeeded(order);
       await creditReferralBonusIfNeeded(order);
-      const pkg = await queryOne<{ name: string }>(`SELECT name FROM packages WHERE id=$1`, [order.package_id]);
       await notifyCustomer(
         order.customer_id,
         "order_update",
-        "Dalabkaaga waa la dhammeeyay",
-        pkg ? `Xirmadaada ${pkg.name} waa la hawlgeliyay, waana diyaar in la isticmaalo.` : "Dalabkaaga waa la hawlgeliyay, waana diyaar in la isticmaalo.",
+        "🎉 Hambalyo! Lacagta waa la diray",
+        `Lacagta waxaa laga diray lambarkan +${order.sender_phone}, waxaana si guuleysata loogu diray lambarka internet-ka +${order.receiver_phone}.`,
         { screen: "notifications", orderId: order.id }
       );
     }
@@ -979,6 +989,13 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
       [req.params.id]
     );
     if (result.length > 0) {
+      await notifyCustomer(
+        order.customer_id,
+        "order_update",
+        "⏳ Lacag-bixintu way socotaa",
+        "Lacag-bixintaada weli waa la farsameynayaa. Fadlan sug inta lacagta la xaqiijinayo.",
+        { screen: "notifications", orderId: order.id }
+      );
       // Same ledger-row requirement as /agent/orders/:id/verify-payment
       // (see that route's own comment for the full production incident this
       // guards against): this admin "Start Processing" action is a second,
@@ -1019,9 +1036,9 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
       await notifyCustomer(
         order.customer_id,
         "order_update",
-        status === "failed" ? "Dalabkaaga lama dhamaystiri karin" : "Dalabkaaga waa la joojiyay",
+        status === "failed" ? "❌ Lacag-bixintu way fashilantay" : "Dalabkaaga waa la joojiyay",
         status === "failed"
-          ? "Dalabkaaga lama dhammaystirin karin. Fadlan la xiriir taageerada si aad caawimaad u hesho."
+          ? "Lacagta lama diri karin. Fadlan hubi lacagtaada iyo lambarka aad lacagta ka dirayso, kadibna mar kale isku day."
           : "Dalabkaagii waa la joojiyay. Fadlan la xiriir taageerada haddii aad su'aalo qabto.",
         { screen: "notifications", orderId: order.id }
       );
