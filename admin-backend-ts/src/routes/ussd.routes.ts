@@ -934,8 +934,13 @@ ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (r
     // now the order stays at its current status (still 'in_progress') until
     // either a retry succeeds or every attempt is exhausted.
     if (finalAttempt) {
+      // Excludes an order that's already 'failed', not just 'completed' —
+      // a stray/duplicate exhausted-retries report for an order this same
+      // check already failed once (e.g. a second independent dial round
+      // self-heal kicked off before this response landed) must be a no-op,
+      // never a second failure push for the same order.
       const failed = await query(
-        `UPDATE orders SET status='failed', updated_at=now() WHERE id=$1 AND status != 'completed' RETURNING id, customer_id`,
+        `UPDATE orders SET status='failed', updated_at=now() WHERE id=$1 AND status NOT IN ('completed','failed') RETURNING id, customer_id`,
         [attempt.order_id]
       );
       if (failed.length > 0) {
@@ -947,8 +952,8 @@ ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (r
         await notifyCustomer(
           (failed[0] as { customer_id: string }).customer_id,
           "order_update",
-          "❌ Lacag-bixintu way ciladeysatay",
-          "Macmiil, lacag-bixintaada waxaa ku dhacday cilad. Fadlan ha dirin lacagta mar kale. Haddii aad hubisay in number-ka iyo faahfaahinta dalabkaagu ay sax yihiin, fadlan la xiriir Agent-ka Dalab si loo caawiyo oo dhibaatada looga saaro. 🤝",
+          "⚠️ Lacag-bixintu way ciladeysatay",
+          "Macmiil, lacag-bixintaada cilad ayaa ku timid, Internet-kana lama dirin. Fadlan lacagta mar kale ha dirin. Haddii number-ka iyo xogta dalabka ay sax yihiin, la xiriir Agent-ka Dalab si uu kuu caawiyo. 🤝",
           { screen: "notifications", orderId: attempt.order_id }
         );
       }

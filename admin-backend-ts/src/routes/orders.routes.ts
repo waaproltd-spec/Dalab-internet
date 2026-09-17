@@ -534,17 +534,18 @@ export async function verifyOrderAndGenerateUssd(
     return { ok: false, alreadyProcessed: order.status !== "pending" };
   }
 
-  // Payment has been verified but the top-up itself hasn't happened yet
-  // (USSD not dialed / SOMLINK not confirmed) -- must never read as "money
-  // sent" (that's completeOrderById's notification, once it's genuinely
-  // completed), only "we got your payment, we're working on it now".
-  await notifyCustomer(
-    order.customer_id,
-    "order_update",
-    "⏳ Lacag-bixintu way socotaa",
-    "Lacag-bixintaada weli waa la farsameynayaa. Fadlan sug inta lacagta la xaqiijinayo.",
-    { screen: "notifications", orderId: order.id }
-  );
+  // Deliberately no customer notification here. This transition (payment
+  // verified, top-up not dialed yet) used to push an intermediate "⏳ still
+  // processing" notification -- but every caller of this function
+  // (verify-payment, resweepUnmatchedSmsLogs, the admin "Start Processing"
+  // route below) can legitimately run more than once for the same order
+  // over its lifetime (a failed dial recovered and retried lands back here),
+  // and each run is its own genuine pending->in_progress transition, so a
+  // per-transition notification is fundamentally a repeat notification from
+  // the customer's point of view. A real Internet order must produce
+  // exactly one customer-facing notification: completeOrderById's success
+  // message, or the exhausted-retries/admin failure message below -- never
+  // an intermediate one in between.
 
   // A SOMLINK-fulfilled company skips USSD entirely — deliverViaSomlink
   // calls the real API directly; on a confirmed DATA_PAID_SUCCESSFULLY
@@ -688,8 +689,8 @@ export async function completeOrderById(orderId: string): Promise<{ order: any; 
   await notifyCustomer(
     order.customer_id,
     "order_update",
-    "🎉 Hambalyo Macmiil! Lacagtaada waa la helay",
-    "Lacagtaada si guul leh ayaa loo helay, oo data-da waxaa hadda loo diray number-ka aad dooratay. Adeeggaagu wuu dhammaaday — wax sugitaan ah ma jiro. Mahadsanid inaad isticmaashay Dalab App. ❤️",
+    "🎉 Hambalyo Macmiil!",
+    "Lacagtaada si guul leh ayaa loo helay, Internet-kana waxaa loo diray number-ka aad dooratay. Wax sugitaan ah ma jiro. Mahadsanid inaad isticmaashay Dalab App. ❤️",
     { screen: "notifications", orderId: order.id }
   );
   await recordActivity({
@@ -962,10 +963,15 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
   const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
   if (!order) return sendJson(res, 404, { error: "Order not found" });
 
-  // Only 'completed' (Macaash credit) and 'in_progress' (USSD generation)
-  // have a double-fire side effect — guard those two atomically so a
-  // duplicate/concurrent call re-setting the same target status is a no-op;
-  // other lateral transitions (e.g. failed -> cancelled) have no such risk.
+  // 'completed', 'in_progress', and now 'failed'/'cancelled' (the else
+  // branch below) are ALL guarded by the same atomic
+  // "only if the status is actually changing" compare-and-swap — every one
+  // of them fires a customer notification, and a duplicate/concurrent/
+  // re-submitted call re-setting a status the order is already at must
+  // never send that notification a second time. (The failed/cancelled
+  // branch used to have no such guard at all — a genuine production bug:
+  // clicking "Mark Failed" twice, or a retried admin request, sent the
+  // customer the failure notification twice for one order.)
   if (status === "completed") {
     const result = await query(
       `UPDATE orders SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1 AND status != 'completed' RETURNING id`,
@@ -978,8 +984,8 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
       await notifyCustomer(
         order.customer_id,
         "order_update",
-        "🎉 Hambalyo Macmiil! Lacagtaada waa la helay",
-        "Lacagtaada si guul leh ayaa loo helay, oo data-da waxaa hadda loo diray number-ka aad dooratay. Adeeggaagu wuu dhammaaday — wax sugitaan ah ma jiro. Mahadsanid inaad isticmaashay Dalab App. ❤️",
+        "🎉 Hambalyo Macmiil!",
+        "Lacagtaada si guul leh ayaa loo helay, Internet-kana waxaa loo diray number-ka aad dooratay. Wax sugitaan ah ma jiro. Mahadsanid inaad isticmaashay Dalab App. ❤️",
         { screen: "notifications", orderId: order.id }
       );
     }
@@ -989,13 +995,10 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
       [req.params.id]
     );
     if (result.length > 0) {
-      await notifyCustomer(
-        order.customer_id,
-        "order_update",
-        "⏳ Lacag-bixintu way socotaa",
-        "Lacag-bixintaada weli waa la farsameynayaa. Fadlan sug inta lacagta la xaqiijinayo.",
-        { screen: "notifications", orderId: order.id }
-      );
+      // Deliberately no customer notification here — see
+      // verifyOrderAndGenerateUssd's own comment above for why an
+      // intermediate "still processing" push is a repeat notification in
+      // the making rather than a one-time event.
       // Same ledger-row requirement as /agent/orders/:id/verify-payment
       // (see that route's own comment for the full production incident this
       // guards against): this admin "Start Processing" action is a second,
@@ -1030,15 +1033,18 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
       }
     }
   } else {
-    await query(`UPDATE orders SET status=$1, updated_at=now() WHERE id=$2`, [status, req.params.id]);
-    if (status === "failed" || status === "cancelled") {
+    const result = await query(`UPDATE orders SET status=$1, updated_at=now() WHERE id=$2 AND status != $1 RETURNING id`, [
+      status,
+      req.params.id,
+    ]);
+    if (result.length > 0 && (status === "failed" || status === "cancelled")) {
       await refundRedeemedPointsIfNeeded(req.params.id);
       await notifyCustomer(
         order.customer_id,
         "order_update",
-        status === "failed" ? "❌ Lacag-bixintu way ciladeysatay" : "Dalabkaaga waa la joojiyay",
+        status === "failed" ? "⚠️ Lacag-bixintu way ciladeysatay" : "Dalabkaaga waa la joojiyay",
         status === "failed"
-          ? "Macmiil, lacag-bixintaada waxaa ku dhacday cilad. Fadlan ha dirin lacagta mar kale. Haddii aad hubisay in number-ka iyo faahfaahinta dalabkaagu ay sax yihiin, fadlan la xiriir Agent-ka Dalab si loo caawiyo oo dhibaatada looga saaro. 🤝"
+          ? "Macmiil, lacag-bixintaada cilad ayaa ku timid, Internet-kana lama dirin. Fadlan lacagta mar kale ha dirin. Haddii number-ka iyo xogta dalabka ay sax yihiin, la xiriir Agent-ka Dalab si uu kuu caawiyo. 🤝"
           : "Dalabkaagii waa la joojiyay. Fadlan la xiriir taageerada haddii aad su'aalo qabto.",
         { screen: "notifications", orderId: order.id }
       );
