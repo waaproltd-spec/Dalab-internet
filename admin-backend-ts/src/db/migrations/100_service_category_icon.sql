@@ -6,5 +6,5 @@
 -- route) -- nothing else about service_categories changes, and every
 -- existing category keeps working exactly as before (both columns default
 -- to NULL, which the app already knows how to fall back from).
-ALTER TABLE service_categories ADD COLUMN icon_data BYTEA;
-ALTER TABLE service_categories ADD COLUMN icon_mime_type TEXT;
+ALTER TABLE service_categories ADD COLUMN IF NOT EXISTS icon_data BYTEA;
+ALTER TABLE service_categories ADD COLUMN IF NOT EXISTS icon_mime_type TEXT;
