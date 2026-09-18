@@ -55,6 +55,7 @@ import java.net.URL
  * this app nor the Admin dashboard can bypass that, since publishing
  * happens through this exact same `published` field both write to.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NalaSocoManagementScreen(onBack: () -> Unit) {
     var posts by remember { mutableStateOf<List<NalaSocoPostResponse>>(emptyList()) }
@@ -232,7 +233,7 @@ private fun NalaSocoPostCard(
                 }
                 if (post.hasImage) {
                     Spacer(Modifier.width(10.dp))
-                    Icon(ImageIcon, contentDescription = "Has image", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Filled.ImageIcon, contentDescription = "Has image", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
                 }
             }
             Spacer(Modifier.height(10.dp))
@@ -471,7 +472,7 @@ private fun NalaSocoImagePicker(
         }
     } else {
         OutlinedButton(onClick = onPick) {
-            Icon(ImageIcon, contentDescription = null, modifier = Modifier.size(18.dp))
+            Icon(Icons.Filled.ImageIcon, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(8.dp))
             Text("Upload image")
         }
