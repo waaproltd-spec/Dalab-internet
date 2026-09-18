@@ -6,7 +6,7 @@ import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { hashPassword, verifyPassword, isValidPin } from "../auth/crypto.js";
 import { parseDataUri } from "../utils/dataUri.js";
-import { validateMobileNumber, companyKeyFromLabel } from "../lib/phoneValidation.js";
+import { validateMobileNumber, companyKeyFromLabel, normalizeMobileDigits } from "../lib/phoneValidation.js";
 
 export const customersRouter = Router();
 
@@ -52,10 +52,27 @@ function walletPairError(label: string) {
 const EBADAL_DUPLICATE_NUMBER_ERROR =
   "Number-kan hore ayuu uga diiwaangashan yahay Ebadal, mana suuragal ahan in account cusub lagu sameeyo ama mar kale la kiciyo. Fadlan isticmaal number kale.";
 
+// The number passed in is whatever a client happened to submit (bare 9
+// digits, "252"-prefixed, "+252"-prefixed, punctuated, ...) and the
+// stored evc_plus_number/edahab_number are just as inconsistent, because
+// historically both were persisted verbatim rather than canonicalized. A
+// bare/prefixed pair for the SAME real phone number (e.g. "619991299" vs
+// "252619991299") is therefore not equal as raw strings — an exact-match
+// comparison silently let a genuine duplicate through in production
+// (619991299 re-registered onto a second account). Normalize both sides
+// (strip non-digits, drop a leading "252") before comparing so every
+// stored/submitted representation of the same number is recognized.
 async function isWalletNumberTakenByAnotherCustomer(customerId: string, number: string): Promise<boolean> {
+  const normalized = normalizeMobileDigits(number);
+  const withCountryCode = normalized.length === 9 ? `252${normalized}` : normalized;
   const clash = await queryOne<{ id: string }>(
-    `SELECT id FROM customers WHERE id != $1 AND (evc_plus_number = $2 OR edahab_number = $2)`,
-    [customerId, number]
+    `SELECT id FROM customers
+     WHERE id != $1
+       AND (
+         regexp_replace(COALESCE(evc_plus_number, ''), '\\D', '', 'g') IN ($2, $3)
+         OR regexp_replace(COALESCE(edahab_number, ''), '\\D', '', 'g') IN ($2, $3)
+       )`,
+    [customerId, normalized, withCountryCode]
   );
   return clash != null;
 }
