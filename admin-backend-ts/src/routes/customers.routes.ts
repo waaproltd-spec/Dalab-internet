@@ -6,7 +6,7 @@ import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { hashPassword, verifyPassword, isValidPin } from "../auth/crypto.js";
 import { parseDataUri } from "../utils/dataUri.js";
-import { validateMobileNumber, normalizeMobileDigits, companyKeyFromLabel } from "../lib/phoneValidation.js";
+import { validateMobileNumber, companyKeyFromLabel } from "../lib/phoneValidation.js";
 
 export const customersRouter = Router();
 
@@ -605,59 +605,16 @@ customersRouter.put("/customer/wallet-numbers", requireAuth("customer"), async (
   if (touchesEvc && evcLocked) return sendJson(res, 403, { error: "Your EVC Plus wallet info is locked. Contact support to update it." });
   if (touchesEdahab && edahabLocked) return sendJson(res, 403, { error: "Your eDahab wallet info is locked. Contact support to update it." });
 
-  // Safety rule: a customer can never save a wallet's registered name as
-  // free text of their own — the "Complete Account" flow only ever collects
-  // a number (see wallet_numbers_screen.dart), and the name comes from a
-  // completed Wallet Name Lookup (wallet_name_lookups, read live off a SIM
-  // by an agent device — see exchange.routes.ts's own wallet-lookups
-  // endpoints). A non-null evcPlusName/edahabName in this request must be
-  // backed by a lookupId pointing at a 'success' row for THIS customer,
-  // THIS wallet type, and THIS exact number, whose own registered_name is
-  // what actually gets saved — never body.evcPlusName/body.edahabName's own
-  // string value, so a tampered client can't submit an unverified name even
-  // if it tries. Agent/Admin's own override routes below are untouched and
-  // keep setting a name directly — this restriction is customer-submitted
-  // input only, a support/admin correction is not "the customer typing a
-  // name" this rule is about.
-  const lookupId = body.lookupId != null ? String(body.lookupId) : null;
-  async function verifiedLookupName(walletId: "evc_plus" | "edahab", number: string): Promise<string | { error: string }> {
-    if (!lookupId) return { error: "Wallet name not verified — look up this number again before saving." };
-    const lookup = await queryOne<{ wallet_id: string; phone_number: string; status: string; registered_name: string | null }>(
-      `SELECT wallet_id, phone_number, status, registered_name FROM wallet_name_lookups WHERE id=$1 AND customer_id=$2`,
-      [lookupId, req.auth!.sub]
-    );
-    if (!lookup || lookup.status !== "success" || lookup.wallet_id !== walletId || !lookup.registered_name) {
-      return { error: "Wallet name not verified — look up this number again before saving." };
-    }
-    if (lookup.phone_number !== normalizeMobileDigits(number)) {
-      return { error: "The verified name doesn't match this number — look it up again." };
-    }
-    return lookup.registered_name;
-  }
-
+  // The customer types both the name and the number themselves on
+  // wallet_numbers_screen.dart and saves them directly — same free-text
+  // name handling as the Admin/Agent override routes above. (A separate
+  // Wallet Name Lookup feature — an agent device reading a carrier's
+  // registered account name live via USSD — exists for Money Exchange, but
+  // is intentionally not required here.)
+  const evcPlusName = "evcPlusName" in body ? (body.evcPlusName == null ? null : String(body.evcPlusName).trim()) : existing.evc_plus_name;
   const evcPlusNumber = "evcPlusNumber" in body ? (body.evcPlusNumber == null ? null : String(body.evcPlusNumber)) : existing.evc_plus_number;
+  const edahabName = "edahabName" in body ? (body.edahabName == null ? null : String(body.edahabName).trim()) : existing.edahab_name;
   const edahabNumber = "edahabNumber" in body ? (body.edahabNumber == null ? null : String(body.edahabNumber)) : existing.edahab_number;
-
-  let evcPlusName = existing.evc_plus_name;
-  if ("evcPlusName" in body) {
-    if (body.evcPlusName == null) {
-      evcPlusName = null;
-    } else {
-      const verified = await verifiedLookupName("evc_plus", evcPlusNumber ?? "");
-      if (typeof verified !== "string") return sendJson(res, 400, verified);
-      evcPlusName = verified;
-    }
-  }
-  let edahabName = existing.edahab_name;
-  if ("edahabName" in body) {
-    if (body.edahabName == null) {
-      edahabName = null;
-    } else {
-      const verified = await verifiedLookupName("edahab", edahabNumber ?? "");
-      if (typeof verified !== "string") return sendJson(res, 400, verified);
-      edahabName = verified;
-    }
-  }
 
   // Only validate the pair on a wallet this request actually touches — a
   // customer who saved a bare number before the name field existed
