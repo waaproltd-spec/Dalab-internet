@@ -6,6 +6,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -15,8 +16,42 @@ import kotlinx.coroutines.withTimeoutOrNull
  * deliberately tiny and stateless-between-attempts: the PIN is held here
  * only for the seconds it takes the service to fill+submit it, then cleared
  * — never logged, never persisted, never exposed outside this process.
+ *
+ * This same instance is ALSO used by [WalletLookupUssdOrchestrator] (its
+ * read-only $1 name lookup reuses this bridge/accessibility service rather
+ * than duplicating the dialog-detection heuristics) -- which means [arm] and
+ * every other piece of mutable state below (lockedPackageName, the event
+ * channel, etc.) is shared by two conceptually different flows. [UssdSimLock]
+ * only serializes the actual DIAL per SIM slot; it does nothing to stop a
+ * real Money Exchange payout on one SIM slot and a Wallet Name Lookup on a
+ * DIFFERENT slot from both calling [arm] on THIS single un-slotted object at
+ * the same moment -- confirmed live: a wallet lookup's reported failure
+ * carried a different, concurrently-running real payout's own dialed number
+ * as its "raw response" (arm() unconditionally resets lockedPackageName and
+ * every other field, so whichever caller's arm() ran last silently hijacked
+ * the other's in-flight session). See [acquireSession]/[releaseSession].
  */
 object ExchangeUssdBridge {
+
+    /** Must be held for the entire span from [arm] through [disarm] -- see
+     * this object's own doc comment for why. Deliberately a separate lock
+     * from [UssdSimLock] (which stays scoped to "one dial per SIM slot"):
+     * this one exists purely to protect this bridge's own shared mutable
+     * state from two DIFFERENT SIM slots' flows both using it at once, and
+     * every caller acquires [UssdSimLock] first, this second -- a
+     * consistent global lock order, so the two can never deadlock against
+     * each other. */
+    private val sessionMutex = Mutex()
+
+    suspend fun acquireSession() = sessionMutex.lock()
+
+    /** Pairs with [acquireSession] -- call from the same `finally` block
+     * that calls [disarm], after it. Tolerates being called when not held
+     * so a caller that failed before ever acquiring can still safely no-op
+     * this in a shared cleanup path. */
+    fun releaseSession() {
+        if (sessionMutex.isLocked) sessionMutex.unlock()
+    }
 
     @Volatile
     var serviceConnected: Boolean = false

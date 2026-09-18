@@ -114,6 +114,15 @@ class WalletLookupUssdOrchestrator(private val context: Context) {
 
         wakeLock?.acquire(45_000)
         ExchangeUssdBridge.activeWakeLock = wakeLock
+        // Second, separate lock beyond the per-slot UssdSimLock above --
+        // this lookup and a concurrent real Money Exchange payout on a
+        // DIFFERENT SIM slot both drive THIS SAME shared bridge/
+        // accessibility service (WalletLookupUssdOrchestrator reuses
+        // ExchangeUssdBridge rather than duplicating its dialog-detection
+        // heuristics); see ExchangeUssdBridge's own doc comment for the live
+        // incident this closes. Always acquired after UssdSimLock, never
+        // before, so the two locks can't deadlock against each other.
+        ExchangeUssdBridge.acquireSession()
         ExchangeUssdBridge.arm(orderId = pending.id, attemptId = body.id)
         try {
             dialer.dial(subscriptionId, body.lookupUssdString)
@@ -147,6 +156,7 @@ class WalletLookupUssdOrchestrator(private val context: Context) {
             return WalletLookupResult(WalletLookupOutcome.SUCCESS, registeredName = registeredName)
         } finally {
             ExchangeUssdBridge.disarm()
+            ExchangeUssdBridge.releaseSession()
             if (wakeLock?.isHeld == true) wakeLock.release()
             ExchangeUssdBridge.activeWakeLock = null
             UssdSimLock.release(sessionTicket)
