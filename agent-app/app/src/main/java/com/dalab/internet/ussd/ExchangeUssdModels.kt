@@ -28,6 +28,12 @@ sealed class UssdDialogEvent {
     data class DialogSeen(val text: String, val hasInput: Boolean) : UssdDialogEvent()
     object PinSubmitted : UssdDialogEvent()
 
+    /** The dialog was actively backed out of via [ExchangeUssdBridge.armDialogCancellation]
+     * — used by lookup-only flows (see WalletLookupUssdOrchestrator) to confirm the
+     * Cancel/No button was actually found and tapped after the response text was
+     * already read, so no PIN is ever entered and no transfer ever completes. */
+    object DialogCancelled : UssdDialogEvent()
+
     /** An intermediate dialog with no input field but a recognizable
      * Send/OK/Dial/Yes button was auto-confirmed — not the carrier's final
      * answer, so the orchestrator should keep waiting rather than treat
@@ -48,3 +54,25 @@ sealed class UssdDialogEvent {
  * to — [PRE_PIN] (Step 1, before the PIN prompt) or [POST_PIN] (Step 3, the
  * separate confirmation screen after the PIN has been submitted). */
 enum class ConfirmationStage { PRE_PIN, POST_PIN }
+
+/** Outcomes for a Wallet Name Lookup (Complete Account) — a read-only $1
+ * USSD prompt, never a payout, so this is deliberately a much smaller enum
+ * than [ExchangeDialOutcome]: there is no PIN step to fail at, no ambiguous
+ * "was the money actually sent" state to represent, since money never moves
+ * either way. See ussd/WalletLookupUssdOrchestrator.kt. */
+enum class WalletLookupOutcome {
+    SUCCESS,
+    NOT_FOUND,
+    TIMEOUT,
+    PERMISSION_DENIED,
+    NO_SIM_PRESENT,
+    ACCESSIBILITY_NOT_ENABLED,
+    NETWORK_UNAVAILABLE,
+    ALREADY_CLAIMED,
+}
+
+data class WalletLookupResult(
+    val outcome: WalletLookupOutcome,
+    val registeredName: String? = null,
+    val message: String? = null,
+)

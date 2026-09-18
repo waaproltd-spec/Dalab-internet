@@ -1006,3 +1006,148 @@ exchangeRouter.get("/exchange/orders/:id", requireAuth("customer"), async (req, 
   );
   sendJson(res, 200, { ...order, payoutStarted: Boolean(activeAttempt) });
 });
+
+// ---------------- Wallet Name Lookup (Complete Account) ----------------
+// Verifies an EVC Plus/eDahab number against the carrier's own registered
+// account name BEFORE it's saved as a customer's Money Exchange wallet
+// (wallet_numbers_screen.dart's "Complete Account") -- the customer only
+// ever types a number; the name comes from here, read live off a SIM by an
+// agent device (see agent-app's WalletLookupUssdOrchestrator), never
+// customer-supplied text. This is a read-only $1 USSD prompt: no PIN is
+// entered and no money moves (see that orchestrator's own doc comment) --
+// completely separate from the payout dial-attempts above, which really do
+// send money and really do need a PIN.
+//
+// Only EVC Plus/eDahab are wallet TYPES a customer can look up here --
+// mirrors WalletNumbersScreen's own two sections exactly.
+const LOOKUP_WALLET_IDS = ["evc_plus", "edahab"];
+
+exchangeRouter.post("/customer/wallet-lookups", requireAuth("customer"), async (req, res) => {
+  const { walletId, phoneNumber } = req.body ?? {};
+  if (!LOOKUP_WALLET_IDS.includes(walletId)) {
+    return sendJson(res, 400, { error: "walletId must be one of: " + LOOKUP_WALLET_IDS.join(", ") });
+  }
+  const check = validateMobileNumber(String(phoneNumber ?? ""), walletId);
+  if (!check.valid) return sendJson(res, 400, { error: check.error });
+
+  const id = randomUUID();
+  await query(
+    `INSERT INTO wallet_name_lookups (id, customer_id, wallet_id, phone_number, status)
+     VALUES ($1,$2,$3,$4,'pending')`,
+    [id, req.auth!.sub, walletId, normalizePhone(phoneNumber)]
+  );
+  // Same generic "something changed, resweep" SSE signal every other
+  // self-heal-triggering event already uses — every agent device's
+  // WalletLookupSelfHealSweeper picks this up within moments instead of
+  // waiting out the periodic backstop sweep's own interval.
+  broadcast({ type: "wallet_lookup.created", lookupId: id });
+  sendJson(res, 201, { id, walletId, phoneNumber: normalizePhone(phoneNumber), status: "pending" });
+});
+
+exchangeRouter.get("/customer/wallet-lookups/:id", requireAuth("customer"), async (req, res) => {
+  const row = await queryOne<{ id: string; wallet_id: string; phone_number: string; status: string; registered_name: string | null }>(
+    `SELECT id, wallet_id, phone_number, status, registered_name FROM wallet_name_lookups WHERE id=$1 AND customer_id=$2`,
+    [req.params.id, req.auth!.sub]
+  );
+  if (!row) return sendJson(res, 404, { error: "Lookup not found" });
+  sendJson(res, 200, row);
+});
+
+// Polled by every agent device's WalletLookupSelfHealSweeper, same
+// shared-queue-with-backend-enforced-idempotency shape as GET
+// /agent/exchange/orders above: any device may see a given pending row, but
+// only one can actually win it (see the claim endpoint's atomic UPDATE).
+// A claim that's never reported back (app killed mid-lookup, device lost
+// connectivity) would otherwise strand that row forever -- invisible to
+// this list (status='claimed') yet never completed -- so a claim older
+// than 2 minutes with no result is treated as abandoned and put back up
+// for grabs before the list is built. 2 minutes is generous for a single
+// $1 read-only USSD round trip (contrast the 30s+15s+25s budgets
+// ExchangeUssdOrchestrator's real 2-step payout gets) but cheap: an
+// abandoned lookup has no PIN, no pending money movement, and no downside
+// to simply trying again.
+exchangeRouter.get("/agent/wallet-lookups", requireAuth("agent"), async (_req, res) => {
+  await query(
+    `UPDATE wallet_name_lookups SET status='pending', agent_id=NULL
+     WHERE status='claimed' AND created_at < now() - interval '2 minutes'`
+  );
+  const rows = await query<{ id: string; wallet_id: string; phone_number: string }>(
+    `SELECT id, wallet_id, phone_number FROM wallet_name_lookups WHERE status='pending' ORDER BY created_at ASC LIMIT 20`
+  );
+  sendJson(res, 200, rows);
+});
+
+exchangeRouter.post("/agent/wallet-lookups/:id/claim", requireAuth("agent"), async (req, res) => {
+  const claimed = await query<{ id: string; wallet_id: string; phone_number: string }>(
+    `UPDATE wallet_name_lookups SET status='claimed', agent_id=$1
+     WHERE id=$2 AND status='pending' RETURNING id, wallet_id, phone_number`,
+    [req.auth!.sub, req.params.id]
+  );
+  if (claimed.length === 0) {
+    // Another device already claimed it (or it's already resolved) -- not
+    // an error, just nothing for this device to do.
+    return sendJson(res, 409, { error: "Already claimed by another device" });
+  }
+  const { wallet_id: walletId, phone_number: phoneNumber } = claimed[0];
+
+  const wallet = await queryOne<{ dial_prefix: string }>(`SELECT dial_prefix FROM payment_wallets WHERE id=$1`, [walletId]);
+  // Any configured payout wallet for this type supplies the SIM slot to
+  // dial from -- a lookup doesn't move money so it doesn't need that row's
+  // PIN, just the same SIM DALAB already uses to send real EVC
+  // Plus/eDahab payouts, since that's the SIM genuinely registered with
+  // that carrier's wallet service. Picks the oldest configured one
+  // (arbitrary but stable) when more than one exists for the same type.
+  const payoutWallet = await queryOne<{ sim_slot: number | null }>(
+    `SELECT sim_slot FROM exchange_payout_wallets WHERE wallet_id=$1 ORDER BY created_at ASC LIMIT 1`,
+    [walletId]
+  );
+  if (!wallet || payoutWallet?.sim_slot == null) {
+    // Release the claim -- can't dial without a configured SIM, but this
+    // isn't this lookup's fault; leave it for a device to retry once
+    // configured (or for a Super Admin to notice via a stuck queue).
+    await query(`UPDATE wallet_name_lookups SET status='pending', agent_id=NULL WHERE id=$1`, [req.params.id]);
+    return sendJson(res, 409, { error: `No SIM configured for wallet "${walletId}" — ask a Super Admin to configure a payout wallet for it.` });
+  }
+
+  // "*{dialPrefix}*{phoneNumber}*1#" -- a nominal $1 Dial-to-Pay request,
+  // same shape as a real payout's step1UssdString above, just a fixed
+  // amount since the only thing this reads is the registered name the
+  // carrier's own confirmation prompt always shows before any PIN field —
+  // see WalletLookupUssdOrchestrator (agent-app) for what happens to this
+  // string next (dialed, read, then explicitly cancelled -- never
+  // completed).
+  const lookupUssdString = `*${wallet.dial_prefix}*${normalizePhone(phoneNumber)}*${formatEvcDahabUssdAmount(1)}#`;
+  sendJson(res, 200, { id: req.params.id, walletId, phoneNumber, lookupUssdString, simSlot: payoutWallet.sim_slot });
+});
+
+exchangeRouter.put("/agent/wallet-lookups/:id", requireAuth("agent"), async (req, res) => {
+  const { status, registeredName, rawResponse } = req.body ?? {};
+  if (!["success", "not_found", "failed"].includes(status)) {
+    return sendJson(res, 400, { error: "status must be success, not_found, or failed" });
+  }
+  // Fail-safe, matching the product's own explicit safety rule: a
+  // 'success' report with no name (or a blank one) is refused outright
+  // rather than silently downgraded to 'failed' -- an agent-app bug that
+  // reports SUCCESS with an empty name must be visible as a 400 during
+  // development, not quietly saved as a lookup with no name to show.
+  if (status === "success" && !String(registeredName ?? "").trim()) {
+    return sendJson(res, 400, { error: "registeredName is required when status is success" });
+  }
+  const result = await query(
+    `UPDATE wallet_name_lookups
+     SET status=$1, registered_name=$2, raw_response=$3, completed_at=now()
+     WHERE id=$4 AND agent_id=$5 AND status='claimed'
+     RETURNING id`,
+    [status, status === "success" ? String(registeredName).trim() : null, rawResponse ?? null, req.params.id, req.auth!.sub]
+  );
+  if (result.length === 0) {
+    // Already reported (by this device on a retry, or — shouldn't happen —
+    // by a different one) or never actually claimed by this device.
+    // Idempotent from the caller's point of view: whatever the row's
+    // current state is, is fine to just return rather than error.
+    const existing = await queryOne(`SELECT id, status, registered_name FROM wallet_name_lookups WHERE id=$1`, [req.params.id]);
+    if (!existing) return sendJson(res, 404, { error: "Lookup not found" });
+    return sendJson(res, 200, existing);
+  }
+  sendJson(res, 200, { id: result[0].id, status });
+});

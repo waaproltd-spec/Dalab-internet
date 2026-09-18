@@ -36,6 +36,7 @@ import com.dalab.internet.sms.SmsSenderIdRepository
 import com.dalab.internet.ussd.ExchangeSelfHealSweeper
 import com.dalab.internet.ussd.ResellerWithdrawalSelfHealSweeper
 import com.dalab.internet.ussd.SelfHealSweeper
+import com.dalab.internet.ussd.WalletLookupSelfHealSweeper
 import com.dalab.internet.ussd.SimRoutingRepository
 import com.dalab.internet.ussd.ResellerWithdrawalSimRoutingRepository
 import com.dalab.internet.ussd.UssdDialer
@@ -144,6 +145,13 @@ class AgentBackgroundService : Service() {
             }
         }
         newScope.launch {
+            try {
+                WalletLookupSelfHealSweeper.sweep(applicationContext)
+            } catch (e: Exception) {
+                DiagnosticsLog.record("wallet_lookup_self_heal_sweep", "Initial sweep failed: ${e.stackTraceToString().take(2000)}")
+            }
+        }
+        newScope.launch {
             // Near-instant recovery the moment a Super Admin fixes whatever
             // blocked generation (a missing PIN/template) — the backend's own
             // self-heal broadcasts order.updated over this same SSE stream
@@ -170,6 +178,11 @@ class AgentBackgroundService : Service() {
                 } catch (e: Exception) {
                     DiagnosticsLog.record("reseller_withdrawal_self_heal_sweep", "Event-triggered sweep failed: ${e.stackTraceToString().take(2000)}")
                 }
+                try {
+                    WalletLookupSelfHealSweeper.sweep(applicationContext)
+                } catch (e: Exception) {
+                    DiagnosticsLog.record("wallet_lookup_self_heal_sweep", "Event-triggered sweep failed: ${e.stackTraceToString().take(2000)}")
+                }
             }
         }
 
@@ -179,6 +192,7 @@ class AgentBackgroundService : Service() {
         newScope.launch { selfHealSweepLoop() }
         newScope.launch { exchangeSelfHealSweepLoop() }
         newScope.launch { resellerWithdrawalSelfHealSweepLoop() }
+        newScope.launch { walletLookupSelfHealSweepLoop() }
         newScope.launch {
             // There's no login screen to send the agent to anymore, so a dead
             // session first tries to silently re-authenticate itself the same
@@ -292,6 +306,13 @@ class AgentBackgroundService : Service() {
                         ResellerWithdrawalSelfHealSweeper.sweep(applicationContext)
                     } catch (e: Exception) {
                         DiagnosticsLog.record("reseller_withdrawal_self_heal_sweep", "Network-available sweep failed: ${e.stackTraceToString().take(2000)}")
+                    }
+                }
+                scope.launch {
+                    try {
+                        WalletLookupSelfHealSweeper.sweep(applicationContext)
+                    } catch (e: Exception) {
+                        DiagnosticsLog.record("wallet_lookup_self_heal_sweep", "Network-available sweep failed: ${e.stackTraceToString().take(2000)}")
                     }
                 }
             }
@@ -456,6 +477,23 @@ class AgentBackgroundService : Service() {
                 ResellerWithdrawalSelfHealSweeper.sweep(applicationContext)
             } catch (e: Exception) {
                 DiagnosticsLog.record("reseller_withdrawal_self_heal_sweep_loop", "Tick failed: ${e.stackTraceToString().take(2000)}")
+            }
+        }
+    }
+
+    // Same backstop role as the sweep loops above, for Wallet Name Lookup's
+    // own queue (Complete Account) — a fourth, independent business line
+    // with its own queue and orchestrator; the event-triggered sweep in
+    // onCreate's AgentEventBus.orderEvents.collect{} is the fast path for
+    // this one (wallet_lookup.created), this loop is only the backstop.
+    private suspend fun walletLookupSelfHealSweepLoop() {
+        val currentScope = scope ?: return
+        while (currentScope.isActive) {
+            delay(SELF_HEAL_SWEEP_INTERVAL_MS)
+            try {
+                WalletLookupSelfHealSweeper.sweep(applicationContext)
+            } catch (e: Exception) {
+                DiagnosticsLog.record("wallet_lookup_self_heal_sweep_loop", "Tick failed: ${e.stackTraceToString().take(2000)}")
             }
         }
     }

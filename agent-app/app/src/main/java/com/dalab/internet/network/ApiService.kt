@@ -196,6 +196,32 @@ data class ExchangeDialAttemptDto(
     val completedAt: String? = null,
 )
 
+// ---------------- Wallet Name Lookup (Complete Account) ----------------
+// Read-only $1 USSD prompt — verifies an EVC Plus/eDahab number against the
+// carrier's own registered account name before a customer can save it as a
+// Money Exchange wallet. Deliberately separate from the payout endpoints
+// above: never carries a PIN, never moves money — see
+// ussd/WalletLookupUssdOrchestrator.kt.
+
+/** One row from GET agent/wallet-lookups — a lookup no device has claimed
+ * yet. Deliberately minimal (id/walletId/phoneNumber only); the dial string
+ * and SIM slot are resolved server-side at claim time (POST .../claim), not
+ * here, so a device that never claims a given row never needs to know how
+ * to build its dial string. */
+data class WalletLookupPending(val id: String, val walletId: String, val phoneNumber: String)
+
+/** Response to POST agent/wallet-lookups/{id}/claim — present only when the
+ * claim actually succeeded (a 409 means another device already won it). */
+data class WalletLookupClaimResponse(
+    val id: String,
+    val walletId: String,
+    val phoneNumber: String,
+    val lookupUssdString: String,
+    val simSlot: Int,
+)
+
+data class WalletLookupReportRequest(val status: String, val registeredName: String? = null, val rawResponse: String? = null)
+
 /**
  * Mirrors the backend architecture doc, §4 "Agent-facing", and the real
  * implementation in dalab-backend.zip (src/routes/ *.js) — every path and body
@@ -478,6 +504,20 @@ interface ApiService {
         @Path("attemptId") attemptId: String,
         @Body body: ExchangeStepRequest,
     ): Response<ExchangeDialAttemptDto>
+
+    // ---------------- Wallet Name Lookup (Complete Account) ----------------
+
+    @GET("agent/wallet-lookups")
+    suspend fun getWalletLookups(): Response<List<WalletLookupPending>>
+
+    @POST("agent/wallet-lookups/{id}/claim")
+    suspend fun claimWalletLookup(@Path("id") id: String): Response<WalletLookupClaimResponse>
+
+    @PUT("agent/wallet-lookups/{id}")
+    suspend fun reportWalletLookup(
+        @Path("id") id: String,
+        @Body body: WalletLookupReportRequest,
+    ): Response<Unit>
 
     // ---------------- Reseller Withdraw (automatic payout — see ussd/ResellerWithdrawalUssdOrchestrator.kt) ----------------
     // Same one-shot combined-string USSD dial as Internet Store above (not

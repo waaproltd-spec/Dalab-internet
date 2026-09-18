@@ -14,7 +14,8 @@ export type OrderEvent =
   | { type: "feedback.updated" }
   | { type: "exchange_order.updated"; exchangeOrderId: string }
   | { type: "reseller_withdrawal.updated"; withdrawalId: string }
-  | { type: "support_conversation.updated"; conversationId: string };
+  | { type: "support_conversation.updated"; conversationId: string }
+  | { type: "wallet_lookup.created"; lookupId: string };
 
 const subscribers = new Set<Response>();
 
