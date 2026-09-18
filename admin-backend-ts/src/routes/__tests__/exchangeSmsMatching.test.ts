@@ -1469,6 +1469,124 @@ test("concurrent retry dial-attempt-start calls never create two attempts with t
   );
 });
 
+// ==================== Payout-confirmation candidate matching (DEX681285323/DEX139625920) ====================
+// Live incident: a stale order that had genuinely failed hours earlier and
+// a fresh order whose dial attempt had literally just gone out shared the
+// exact same amount+receiver_phone (an unremarkable coincidence with a
+// round test amount to a repeat recipient). The candidate query picked
+// "oldest first" and awarded the fresh order's own real confirmation SMS to
+// the unrelated stale order instead -- silently completing the wrong
+// order with someone else's confirmation text, while the order the payout
+// actually belonged to stayed Failed with no trace of ever being
+// confirmed.
+
+test("payout-confirmation SMS prefers the most recently active order over a stale one sharing the same amount+phone (DEX681285323/DEX139625920 incident)", async () => {
+  // Stale order: a genuine dial attempt of its own that reached step2 and
+  // failed, then ages into the past -- exactly DEX681285323's real history
+  // before this incident (not an untouched order; it must pass the
+  // "a real payout was actually attempted" gate too, just like the real one did).
+  const staleOrderId = await insertExchangeOrder({
+    corridorId: corridorEdahabToEvc,
+    fromWalletId: "edahab",
+    toWalletId: "evc_plus",
+    amountSent: 91,
+    senderPhone: "252611131030",
+  });
+  await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "eDahab",
+    body: "Lacag $91.00 ah (stale order's own payment)",
+    parsedAmount: 91,
+    parsedPhone: "252611131030",
+    simSlot: 2,
+    transactionRef: nextRef(),
+  });
+  const staleStart = await asJson(
+    await fetch(`${payoutBaseUrl}/agent/exchange/orders/${staleOrderId}/dial-attempts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+      body: JSON.stringify({ attemptNumber: 1 }),
+    })
+  );
+  await fetch(`${payoutBaseUrl}/agent/exchange/dial-attempts/${staleStart.id}/step1`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ status: "step1_success", responseMessage: "PIN prompt" }),
+  });
+  await fetch(`${payoutBaseUrl}/agent/exchange/dial-attempts/${staleStart.id}/step2`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ status: "failed", responseMessage: "Insufficient balance (unrelated old failure)", isFinalAttempt: true }),
+  });
+  await query(`UPDATE exchange_orders SET updated_at = now() - interval '48 hours' WHERE id=$1`, [staleOrderId]);
+
+  // Fresh order: same amount, same receiver (insertExchangeOrder always
+  // uses the same test receiver_phone) -- its own dial attempt is
+  // in-flight right now and ends ambiguous, exactly DEX139625920's case.
+  const freshOrderId = await insertExchangeOrder({
+    corridorId: corridorEdahabToEvc,
+    fromWalletId: "edahab",
+    toWalletId: "evc_plus",
+    amountSent: 91,
+    senderPhone: "252611131031",
+  });
+  await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "eDahab",
+    body: "Lacag $91.00 ah (fresh order's own payment)",
+    parsedAmount: 91,
+    parsedPhone: "252611131031",
+    simSlot: 2,
+    transactionRef: nextRef(),
+  });
+  const freshStart = await asJson(
+    await fetch(`${payoutBaseUrl}/agent/exchange/orders/${freshOrderId}/dial-attempts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+      body: JSON.stringify({ attemptNumber: 1 }),
+    })
+  );
+  await fetch(`${payoutBaseUrl}/agent/exchange/dial-attempts/${freshStart.id}/step1`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({
+      status: "step1_success",
+      responseMessage: "91 Dollar ayaad u wareejinaysaa Yaasiin Maxamed Aadan. Lambarka 688000000 .Lacagta 0.00.Fadlan Geli PIN ka Si aad u Xaqiijiso :",
+    }),
+  });
+  await fetch(`${payoutBaseUrl}/agent/exchange/dial-attempts/${freshStart.id}/step2`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ status: "ambiguous", responseMessage: "No final confirmation received after entering the PIN.", isFinalAttempt: true }),
+  });
+  const afterAmbiguous = await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [freshOrderId]);
+  assert.equal(afterAmbiguous?.status, "failed");
+
+  // The real eDahab confirmation SMS format from the live incident
+  // (amount/reference adapted to this test's own order).
+  const confirmRes = await fetch(`${payoutBaseUrl}/agent/exchange/orders/payout-confirmation`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({
+      receiverPhone: "688000000",
+      amount: 91,
+      rawText:
+        "91 Dollar ayad u warejisay Yaasiin Maxamed Aadan. No: 688000000.Tixrac: PP260918.2236.F24164 Haraaga: 0.04 Dollar Kharashyada Adeegga:0 Dollar Tariikh:18-09-2026[-eDahab-Service-]",
+    }),
+  });
+  assert.equal(confirmRes.status, 200);
+  const confirmBody = await asJson(confirmRes);
+  assert.equal(confirmBody.matched, true);
+  assert.equal(confirmBody.completed, true);
+
+  const [freshAfter, staleAfter] = await Promise.all([
+    queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [freshOrderId]),
+    queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [staleOrderId]),
+  ]);
+  assert.equal(freshAfter?.status, "completed", "the order whose dial attempt is actually recent must be the one the confirmation completes");
+  assert.equal(staleAfter?.status, "failed", "the unrelated stale order sharing the same amount+phone must be left completely untouched");
+});
+
 // GET /exchange/wallets is public (no auth) -- the Customer App reads
 // dialPrefix from it to build the customer's own "Dial to Pay" collection
 // USSD string client-side (*{dialPrefix}*{collectionNumber}*{amount}#, same
