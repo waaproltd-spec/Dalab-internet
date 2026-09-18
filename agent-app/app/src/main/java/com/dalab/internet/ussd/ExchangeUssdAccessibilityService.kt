@@ -117,6 +117,39 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
                 return
             }
 
+            if (ExchangeUssdBridge.consumeCancelRequest()) {
+                // Lookup-only flow (WalletLookupUssdOrchestrator): the response
+                // text has already been read by this same scan (messageText,
+                // above) -- now back out of the carrier's USSD session instead
+                // of leaving it sitting on a live PIN prompt. Never touches
+                // inputNode (never types anything) and never taps the positive
+                // (Send/OK) button -- only ever the negative one.
+                val negativeButton = findNegativeButton(root)
+                if (negativeButton != null) {
+                    negativeButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    ExchangeUssdBridge.emit(UssdDialogEvent.DialogCancelled)
+                } else {
+                    // Button not renderable yet on this scan (or this OEM's
+                    // dialog doesn't expose one the way expected) -- put the
+                    // request back so the next poll tries again. The orchestrator
+                    // already has the name it needed from messageText regardless
+                    // of whether this ever succeeds; a lookup that can't be
+                    // actively cancelled is not itself unsafe (no PIN was ever
+                    // typed, so nothing can be sent from this dialog either way)
+                    // -- see WalletLookupUssdOrchestrator for its own timeout on
+                    // waiting for DialogCancelled.
+                    if (ExchangeUssdBridge.shouldLogPinFieldMiss()) {
+                        DiagnosticsLog.record(
+                            "exchange_lookup_cancel_button_miss",
+                            "Locked window \"$windowPackage\" has no recognizable Cancel/No button yet -- not cancelled on this poll. Dialog text: \"$messageText\".",
+                            isError = false,
+                        )
+                    }
+                    ExchangeUssdBridge.restoreCancelRequest()
+                }
+                return
+            }
+
             val pendingPin = ExchangeUssdBridge.consumePendingPinToInject()
             if (pendingPin != null) {
                 if (inputNode == null) {
@@ -525,6 +558,31 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
         for (button in clickableButtons) {
             @Suppress("DEPRECATION")
             button.recycle()
+        }
+        return null
+    }
+
+    /** Finds the dialog's Cancel/No button — deliberately text-match only,
+     * unlike [findPositiveButton]'s "only clickable button" fallback: a
+     * wrong guess here risks tapping the positive (Send) button instead,
+     * and this is only ever called for a lookup, where declining to cancel
+     * is always safe (no PIN was ever typed into the dialog either way —
+     * see the call site's own comment) but tapping the wrong button is not
+     * a risk worth taking for a cosmetic cleanup step. Returns null rather
+     * than guess when no button text matches. */
+    private fun findNegativeButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        if (node.isClickable && node.className?.contains("Button") == true) {
+            val text = node.text?.toString()?.lowercase()
+            if (text != null && text.contains("cancel")) {
+                return node
+            }
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findNegativeButton(child)
+            if (found != null) return found
+            @Suppress("DEPRECATION")
+            child.recycle()
         }
         return null
     }

@@ -29,6 +29,16 @@ object ExchangeUssdBridge {
     @Volatile
     private var pendingPinToInject: String? = null
 
+    /** True while a lookup-only attempt wants the next scan to find and tap
+     * the dialog's Cancel/No button instead of doing anything else with it
+     * — see [armDialogCancellation]. Deliberately separate from
+     * [pendingPinToInject]: the two are mutually exclusive within a single
+     * attempt (a lookup never arms PIN injection at all), but kept as
+     * distinct flags rather than one combined "pending action" so neither
+     * can be silently overwritten by the other. */
+    @Volatile
+    private var cancelRequested: Boolean = false
+
     /** True once [UssdDialogEvent.PinSubmitted] has been emitted for the
      * current attempt — the signal that distinguishes a pre-PIN confirm
      * screen (Step 1) from the separate post-PIN confirm screen (Step 3),
@@ -152,6 +162,7 @@ object ExchangeUssdBridge {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var pinPollRunnable: Runnable? = null
+    private var cancelPollRunnable: Runnable? = null
     private const val PIN_POLL_INTERVAL_MS = 500L
 
     fun isAccessibilityServiceEnabled(context: Context): Boolean {
@@ -169,6 +180,7 @@ object ExchangeUssdBridge {
     fun arm(orderId: String? = null, attemptId: String? = null) {
         events = Channel(capacity = Channel.CONFLATED)
         pendingPinToInject = null
+        cancelRequested = false
         pinSubmitted = false
         lastPreConfirmText = null
         lastPostConfirmText = null
@@ -184,12 +196,14 @@ object ExchangeUssdBridge {
         currentAttemptId = attemptId
         detectionAttemptCounter = 0
         stopPinPolling()
+        stopCancelPolling()
         armed = true
     }
 
     fun disarm() {
         armed = false
         pendingPinToInject = null
+        cancelRequested = false
         pinSubmitted = false
         lastPreConfirmText = null
         lastPostConfirmText = null
@@ -205,6 +219,7 @@ object ExchangeUssdBridge {
         currentAttemptId = null
         detectionAttemptCounter = 0
         stopPinPolling()
+        stopCancelPolling()
     }
 
     /** Tells the service to fill+submit this PIN into the next input-bearing
@@ -255,6 +270,57 @@ object ExchangeUssdBridge {
      * still gets it. */
     internal fun restorePendingPinToInject(pin: String) {
         pendingPinToInject = pin
+    }
+
+    /** Tells the service to find and tap the dialog's Cancel/No button on
+     * its next scan, then emit [UssdDialogEvent.DialogCancelled] — used by
+     * lookup-only flows the instant they've read the response text they
+     * needed, so the carrier's own USSD session is backed out of instead of
+     * left sitting on a live PIN prompt. Polls the same way
+     * [armPinInjection] does and for the same reason: this is normally
+     * called right after the very dialog it targets was just scanned, so
+     * the button is usually there immediately, but a poll is cheap
+     * insurance against a scan landing a beat before the button itself
+     * renders. */
+    fun armDialogCancellation() {
+        cancelRequested = true
+        startCancelPolling()
+    }
+
+    private fun startCancelPolling() {
+        stopCancelPolling()
+        val runnable = object : Runnable {
+            override fun run() {
+                if (!armed || !cancelRequested) return // cancelled, or attempt finished — stop
+                ExchangeUssdAccessibilityService.instance?.scanAndAct()
+                if (armed && cancelRequested) {
+                    mainHandler.postDelayed(this, PIN_POLL_INTERVAL_MS)
+                }
+            }
+        }
+        cancelPollRunnable = runnable
+        mainHandler.post(runnable)
+    }
+
+    private fun stopCancelPolling() {
+        cancelPollRunnable?.let(mainHandler::removeCallbacks)
+        cancelPollRunnable = null
+    }
+
+    /** True (and clears the request) the first time a scan sees this
+     * armed cancellation — mirrors [consumePendingPinToInject]'s
+     * consume-once shape. */
+    internal fun consumeCancelRequest(): Boolean {
+        val requested = cancelRequested
+        cancelRequested = false
+        return requested
+    }
+
+    /** Puts the cancel request back if the window scanAndAct just looked at
+     * wasn't the right one yet — same rationale as
+     * [restorePendingPinToInject]. */
+    internal fun restoreCancelRequest() {
+        cancelRequested = true
     }
 
     /** True the first time this exact dialog text is seen *for the current
