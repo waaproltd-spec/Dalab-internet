@@ -230,6 +230,78 @@ test("EVC Plus: SMS arriving on the wrong SIM slot for a device-linked payment m
   await query(`DELETE FROM company_payment_methods WHERE id=$1`, [methodId]);
 });
 
+// Regression test for a real stuck order (DLB481187316): Android fails to
+// resolve which physical SIM slot received an SMS on ~6% of deliveries
+// (SmsReceiver.kt) -- a real, correctly-formatted payment (right amount,
+// right phone, right device) stayed pending forever purely because
+// simSlot came back null. Conservative fix: an unresolved slot is only
+// accepted when this device has never registered more than one distinct
+// slot across its own payment methods, so there is no other method it
+// could actually be confused with.
+test("EVC Plus: SMS with an unresolved SIM slot matches when this device only ever collects on one slot", async () => {
+  const methodId = randomUUID();
+  await query(
+    `INSERT INTO company_payment_methods (id, company_id, method, label, device_id, sim_slot) VALUES ($1,$2,'evc_plus','EVC Plus',$3,1)`,
+    [methodId, COMPANY_HORMUUD, DEVICE_ID]
+  );
+  const orderId = await query<{ id: string }>(
+    `INSERT INTO orders (id, customer_id, company_id, package_id, amount, status, sender_phone, receiver_phone, payment_method_id)
+     VALUES ($1,$2,$3,$4,0.09,'pending','619991299','252619991299',$5) RETURNING id`,
+    [`SMSTEST${++orderCounter}`, CUSTOMER_ID, COMPANY_HORMUUD, pkgHormuud, methodId]
+  ).then((r) => r[0].id);
+
+  const result = await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "192",
+    body: "[-EVCPLUS-] waxaad $0.09 ka heshay 0619991299, Tar: 18/09/26",
+    parsedProvider: "Hormuud",
+    parsedAmount: 0.09,
+    parsedPhone: "0619991299",
+    simSlot: null,
+  });
+  assert.equal(result.body.matchedOrderId, orderId, "an unresolved slot on a single-slot device has nothing to be confused with");
+  // Matching alone doesn't move the order past 'pending' (verify-payment
+  // does that separately) -- delete it, not just the payment method, so
+  // it can't collide with the next test's own pending-order dedup index.
+  await query(`DELETE FROM orders WHERE id=$1`, [orderId]);
+  await query(`DELETE FROM company_payment_methods WHERE id=$1`, [methodId]);
+});
+
+test("EVC Plus: SMS with an unresolved SIM slot is still rejected when this device genuinely has two distinct slots in play", async () => {
+  const methodId = randomUUID();
+  const otherMethodId = randomUUID();
+  await query(
+    `INSERT INTO company_payment_methods (id, company_id, method, label, device_id, sim_slot) VALUES ($1,$2,'evc_plus','EVC Plus',$3,1)`,
+    [methodId, COMPANY_HORMUUD, DEVICE_ID]
+  );
+  // A second payment method on the SAME device but a DIFFERENT slot --
+  // this is the real ambiguity the slot check exists to protect against,
+  // so an unresolved reading must still be rejected here.
+  await query(
+    `INSERT INTO company_payment_methods (id, company_id, method, label, device_id, sim_slot) VALUES ($1,$2,'edahab','eDahab',$3,2)`,
+    [otherMethodId, COMPANY_HORMUUD, DEVICE_ID]
+  );
+  const orderId = await query<{ id: string }>(
+    `INSERT INTO orders (id, customer_id, company_id, package_id, amount, status, sender_phone, receiver_phone, payment_method_id)
+     VALUES ($1,$2,$3,$4,0.09,'pending','619991298','252619991298',$5) RETURNING id`,
+    [`SMSTEST${++orderCounter}`, CUSTOMER_ID, COMPANY_HORMUUD, pkgHormuud, methodId]
+  ).then((r) => r[0].id);
+
+  const result = await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "192",
+    body: "[-EVCPLUS-] waxaad $0.09 ka heshay 0619991298, Tar: 18/09/26",
+    parsedProvider: "Hormuud",
+    parsedAmount: 0.09,
+    parsedPhone: "0619991298",
+    simSlot: null,
+  });
+  assert.equal(result.body.matchedOrderId, null, "a genuinely ambiguous multi-slot device must still reject an unresolved slot");
+  const order = await queryOne<{ status: string }>(`SELECT status FROM orders WHERE id=$1`, [orderId]);
+  assert.equal(order?.status, "pending");
+  await query(`DELETE FROM company_payment_methods WHERE id IN ($1,$2)`, [methodId, otherMethodId]);
+});
+
 // ==================== Provider 2: Somtel eDahab (sender "eDahab") ====================
 
 test("eDahab (Somtel, sender 'eDahab'): real SMS format matches the correct order and completes the pipeline", async () => {

@@ -215,6 +215,24 @@ async function findMatchingOrder(
     // narrowed down yet) only needs the device to match, same as before
     // slot-level tracking existed.
     if (method.sim_slot != null && method.sim_slot !== uploadingSimSlot) {
+      // Android fails to resolve which physical SIM slot received an SMS
+      // on ~6% of deliveries (see SmsReceiver.kt's own doc comment) —
+      // confirmed live: a real, correctly-formatted payment (right
+      // amount, right phone, right device) stayed 'pending' forever
+      // purely because the slot came back unresolved. The slot check
+      // exists to tell apart two DIFFERENT payment methods collecting on
+      // the SAME device via different SIMs — when this device has never
+      // actually registered more than one distinct slot, there is no
+      // other method an unresolved reading could be confused with, so
+      // there is nothing left to verify. A device with a genuine
+      // multi-slot setup keeps the exact same strict rejection as before.
+      const distinctSlots = await queryOne<{ count: string }>(
+        `SELECT COUNT(DISTINCT sim_slot) AS count FROM company_payment_methods WHERE device_id=$1 AND sim_slot IS NOT NULL`,
+        [method.device_id]
+      );
+      if (uploadingSimSlot == null && Number(distinctSlots?.count ?? 0) <= 1) {
+        return { order: candidate, reason: null };
+      }
       skipped.push(`order ${candidate.id}: expects SIM slot ${method.sim_slot}, this SMS arrived on slot ${uploadingSimSlot ?? "(unresolved)"}`);
       continue;
     }
@@ -314,6 +332,17 @@ async function findMatchingExchangeOrder(
       continue;
     }
     if (collectionWallet.sim_slot != null && collectionWallet.sim_slot !== uploadingSimSlot) {
+      // Same conservative unresolved-slot allowance as findMatchingOrder
+      // above, applied to exchange_payout_wallets instead of
+      // company_payment_methods -- see that function's own doc comment
+      // for the ~6% Android SIM-slot resolution failure this covers.
+      const distinctSlots = await queryOne<{ count: string }>(
+        `SELECT COUNT(DISTINCT sim_slot) AS count FROM exchange_payout_wallets WHERE device_id=$1 AND sim_slot IS NOT NULL`,
+        [collectionWallet.device_id]
+      );
+      if (uploadingSimSlot == null && Number(distinctSlots?.count ?? 0) <= 1) {
+        return { order: candidate, reason: null };
+      }
       skipped.push(
         `order ${candidate.id}: expects SIM slot ${collectionWallet.sim_slot}, this SMS arrived on slot ${uploadingSimSlot ?? "(unresolved)"}`
       );

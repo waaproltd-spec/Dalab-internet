@@ -34,7 +34,16 @@ before(async () => {
   await query(`DELETE FROM orders`);
   await query(`DELETE FROM company_payment_methods`);
   await query(`DELETE FROM payment_wallets WHERE company_id=$1`, [COMPANY_ID]);
+  // Must precede the companies DELETE below -- packages.company_id's own
+  // FK otherwise blocks it on any second run against the same local test
+  // DB (the "a normal Internet Store payment SMS..." test below inserts
+  // one but this file never cleaned it up).
+  await query(`DELETE FROM packages WHERE company_id=$1`, [COMPANY_ID]);
   await query(`DELETE FROM companies WHERE id=$1`, [COMPANY_ID]);
+  // The "normal Internet Store payment SMS" test below uses this fixed
+  // literal phone -- same reason as packages above, never cleaned up
+  // anywhere else in this file.
+  await query(`DELETE FROM customers WHERE phone='615556666'`);
   await query(`DELETE FROM agents`);
   await query(`DELETE FROM agent_devices`);
   await query(`DELETE FROM admin_activity_log`);
@@ -188,6 +197,81 @@ test("device/SIM auto-links on first match, then a second EVC Plus deposit on a 
   assert.equal(result.body.matchedResellerDepositId, null);
   const deposit = await queryOne<{ status: string }>(`SELECT status FROM reseller_deposits WHERE id=$1`, [depositId]);
   assert.equal(deposit!.status, "pending", "an SMS from the wrong device/SIM must never verify a deposit");
+});
+
+// Same conservative unresolved-slot allowance as findMatchingOrder
+// (smsLogs.routes.ts) -- Android fails to resolve which physical SIM slot
+// received an SMS on ~6% of deliveries. reseller_deposit_methods.method is
+// itself the primary key ('evc'/'edahab' are the only two values that
+// exist at all), so there is no room to invent extra method rows -- this
+// gives 'evc' (already linked to DEVICE_ID above, sim_slot still null) an
+// explicit slot and adds 'edahab' on that SAME device with a different
+// slot, making DEVICE_ID a genuine two-slot device where an unresolved
+// reading must still be rejected.
+test("unresolved SIM slot is still rejected once this device has two real deposit methods", async () => {
+  await query(`UPDATE reseller_deposit_methods SET sim_slot=1 WHERE method='evc'`);
+  await query(
+    `INSERT INTO reseller_deposit_methods (method, label, payment_number, ussd_template, device_id, sim_slot) VALUES ('edahab', 'eDahab', '620000001', '*828*620000001*{amount}#',$1,2)`,
+    [DEVICE_ID]
+  );
+  const depositId = await createPendingDeposit("615556666", 45);
+
+  const result = await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "192",
+    body: "unresolved-slot-two-methods-test",
+    parsedAmount: 45,
+    parsedPhone: "615556666",
+    simSlot: null,
+  });
+
+  assert.equal(result.body.matchedResellerDepositId, null, "a genuinely two-slot device must still reject an unresolved slot");
+  const deposit = await queryOne<{ status: string }>(`SELECT status FROM reseller_deposits WHERE id=$1`, [depositId]);
+  assert.equal(deposit!.status, "pending");
+
+  await query(`DELETE FROM reseller_deposits WHERE id=$1`, [depositId]);
+});
+
+// Companion case: move 'edahab' off DEVICE_ID onto its own isolated
+// device, leaving DEVICE_ID with only 'evc' again (one distinct slot) and
+// giving 'edahab' its own single-method device. With nothing else on
+// either device to be confused with, an unresolved slot has nothing left
+// to verify and must match on both.
+test("unresolved SIM slot matches once each device is back down to only one deposit method", async () => {
+  const soloDeviceId = "test-reseller-solo-device";
+  const soloAgentId = randomUUID();
+  await query(`INSERT INTO agent_devices (id, name) VALUES ($1, 'Solo Reseller Device')`, [soloDeviceId]);
+  await query(`INSERT INTO agents (id, phone, name, password_hash, device_id) VALUES ($1, '252699000096', 'Solo Reseller Agent', 'x', $2)`, [
+    soloAgentId,
+    soloDeviceId,
+  ]);
+  await query(`UPDATE reseller_deposit_methods SET device_id=$1, sim_slot=1 WHERE method='edahab'`, [soloDeviceId]);
+
+  const depositId = "DEP" + Math.floor(100000000 + Math.random() * 900000000);
+  await query(`INSERT INTO reseller_deposits (id, reseller_id, method, to_number, from_number, amount) VALUES ($1,$2,'edahab','620000001',$3,$4)`, [
+    depositId,
+    RESELLER_ID,
+    "615557777",
+    46,
+  ]);
+
+  const result = await ingestPaymentSms({
+    agentId: soloAgentId,
+    sender: "192",
+    body: "unresolved-slot-one-method-test",
+    parsedAmount: 46,
+    parsedPhone: "615557777",
+    simSlot: null,
+  });
+
+  assert.equal(result.body.matchedResellerDepositId, depositId, "an unresolved slot on a single-method device has nothing to be confused with");
+  const deposit = await queryOne<{ status: string }>(`SELECT status FROM reseller_deposits WHERE id=$1`, [depositId]);
+  assert.equal(deposit!.status, "verified");
+
+  await query(`DELETE FROM reseller_deposits WHERE id=$1`, [depositId]);
+  await query(`DELETE FROM reseller_deposit_methods WHERE method='edahab'`);
+  await query(`DELETE FROM agents WHERE id=$1`, [soloAgentId]);
+  await query(`DELETE FROM agent_devices WHERE id=$1`, [soloDeviceId]);
 });
 
 test("a normal Internet Store payment SMS is completely unaffected — Reseller matching only runs after Store finds nothing", async () => {
