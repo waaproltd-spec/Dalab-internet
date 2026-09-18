@@ -7,23 +7,23 @@ import java.io.File
 
 /**
  * Source-level guard for requirement "no two USSD sessions may ever dial
- * simultaneously through the same Mobile/SIM": every orchestrator that can
- * trigger a real USSD dial on this device — one-shot
+ * simultaneously through the same Mobile/SIM": every orchestrator that
+ * triggers a REAL USSD dial on this device — one-shot
  * (TelephonyManager.sendUssdRequest(), no visible dialog) or interactive
  * (ACTION_CALL + the on-screen "USSD message" reply dialog, read by an
  * AccessibilityService) — must acquire [UssdSimLock] for the SIM slot it's
- * about to dial on before doing so.
+ * about to dial on before doing so, and release it after every dial attempt
+ * ends (success, failure, or timeout). Internet Store recharge
+ * (UssdOrchestrator) is included: it dials a real USSD code via
+ * TelephonyManager.sendUssdRequest() exactly like Reseller Withdraw's own
+ * one-shot path does, just with no visible dialog — "no visible dialog"
+ * never meant "not a real dial," and the carrier/modem still serializes
+ * USSD sessions per SIM regardless of which Android API triggered either
+ * side. A feature that never actually dials USSD has no business being
+ * wired into this lock at all — this suite only covers the flows that do.
  *
- * This replaces a prior, narrower guard (UssdOrchestratorIndependenceTest)
- * that asserted the OPPOSITE for Internet Store specifically — reasoning
- * that since its one-shot dial shows no visible dialog, it "cannot collide
- * with anything on screen" the way eBadal/Reseller Withdraw's interactive
- * flows could collide with EACH OTHER. That reasoning was incomplete: two
- * USSD sessions on the SAME physical SIM can still collide at the
- * carrier/modem level regardless of which Android API triggered either one
- * — the carrier's own USSD session is per-SIM, not per-API. A behavioral
- * test can't prove a dependency was never added (or omitted); reading the
- * actual source can.
+ * A behavioral test can't prove a dependency was never added (or omitted);
+ * reading the actual source can.
  */
 class UssdSimLockWiringTest {
 
@@ -39,14 +39,14 @@ class UssdSimLockWiringTest {
 
     @Test
     fun `every USSD-dialing orchestrator acquires and releases UssdSimLock`() {
-        // The inverse of the old (now-removed) independence test: confirms
-        // this suite would actually fail if someone dialed on any of these
-        // paths without going through the shared per-SIM lock, rather than
-        // only ever passing trivially.
+        // The inverse of "never wired in": confirms this suite would
+        // actually fail if someone dialed on any of these paths without
+        // going through the shared per-SIM lock, rather than only ever
+        // passing trivially.
         val dialingOrchestrators = listOf(
-            "UssdOrchestrator.kt",                              // Internet Store, one-shot
+            "UssdOrchestrator.kt",                              // Internet Store recharge, one-shot
             "ResellerWithdrawalUssdOrchestrator.kt",            // Reseller Withdraw, one-shot
-            "ExchangeUssdOrchestrator.kt",                      // Money Exchange payout, interactive
+            "ExchangeUssdOrchestrator.kt",                      // Money Exchange/eBadal payout, interactive
             "ResellerWithdrawalInteractiveUssdOrchestrator.kt", // Reseller Withdraw, interactive
             "WalletLookupUssdOrchestrator.kt",                  // Wallet Name Lookup, interactive, read-only
         )

@@ -15,7 +15,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import express from "express";
 import "express-async-errors";
-import { query, queryOne, pool } from "../../db/pool.js";
+import { query, pool } from "../../db/pool.js";
 import { signAccessToken } from "../../auth/crypto.js";
 import { exchangeRouter } from "../exchange.routes.js";
 import { customersRouter } from "../customers.routes.js";

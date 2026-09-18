@@ -88,7 +88,7 @@ class UssdSimLockTest {
         // isolate each Mobile/SIM... only one USSD session at a time per
         // SIM", never a device-wide serialization).
         val sim1 = async {
-            val ticket = UssdSimLock.acquire(1, "internet_store:ORDER1", arrivalTimeMs = 1_000L)
+            val ticket = UssdSimLock.acquire(1, "reseller_withdrawal:WDR1", arrivalTimeMs = 1_000L)
             try {
                 synchronized(order) { order.add("sim1-start") }
                 activeCountSim1.incrementAndGet()

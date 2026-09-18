@@ -188,15 +188,18 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
                 )
                 SubscriptionLookupResult.NotPresent -> DialResult(DialOutcome.NO_SIM_PRESENT, "SIM $simSlot isn't physically inserted on this device.")
                 is SubscriptionLookupResult.Found -> {
-                    // Waits its turn for THIS order's own SIM slot -- every
-                    // other flow that can dial that same slot (Money
-                    // Exchange, Reseller Withdraw, a Wallet Name Lookup)
-                    // goes through this same lock; see UssdSimLock's doc
-                    // comment. Held for exactly the span of this one dial
-                    // attempt, not the whole retry loop -- a later attempt
-                    // (after the backoff delay below) re-acquires, so a
-                    // different request queued for this slot in between
-                    // isn't blocked behind this order's own retry backoff.
+                    // Internet Store recharge genuinely dials a real USSD
+                    // code here (TelephonyManager.sendUssdRequest(), inside
+                    // dialer.dial() below) — it must wait its turn for THIS
+                    // order's own SIM slot exactly like every other flow
+                    // that can dial that same slot (Money Exchange/eBadal,
+                    // Reseller Withdraw, a Wallet Name Lookup); see
+                    // UssdSimLock's doc comment. Held for exactly the span
+                    // of this one dial attempt, not the whole retry loop --
+                    // a later attempt (after the backoff delay below)
+                    // re-acquires, so a different request queued for this
+                    // slot in between isn't blocked behind this order's own
+                    // retry backoff.
                     val ticket = UssdSimLock.acquire(simSlot, "internet_store:$orderId:attempt$attempt", System.currentTimeMillis())
                     try {
                         // UssdDialer only catches SecurityException around the telephony
