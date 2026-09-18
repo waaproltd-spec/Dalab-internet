@@ -933,11 +933,28 @@ exchangeRouter.post("/agent/exchange/orders/payout-confirmation", requireAuth("a
   // amount+receiver-phone match is already specific enough in practice, and
   // completeExchangeOrderByPayoutConfirmation's atomic status guard is what
   // actually prevents a stray SMS from double-completing anything.
+  //
+  // ORDER BY updated_at DESC (most recently active candidate first) --
+  // confirmed live as a real bug the other way around (ASC, oldest-first):
+  // a stale, long-failed order (DEX681285323) and a fresh order whose dial
+  // attempt had literally just gone out (DEX139625920) shared the exact
+  // same amount+receiver_phone (an unremarkable coincidence with round
+  // test/common amounts to a repeat recipient), and the confirmation SMS
+  // for the FRESH order's own payout was awarded to the STALE one purely
+  // because it was older -- silently completing the wrong order with
+  // someone else's confirmation text, while the order the payout actually
+  // belonged to stayed Failed. A confirmation SMS is overwhelmingly likely
+  // to be reporting on whichever candidate was touched most recently, so
+  // this ordering picks the right one whenever there's a real ambiguity,
+  // while a genuinely stale order with no competing candidate (the
+  // late-arriving-SMS rescue case this whole endpoint exists for) is
+  // completely unaffected -- ordering only matters when there's more than
+  // one match.
   const candidates = await withTransaction((client) =>
     client
       .query<{ id: string; receiver_phone: string | null }>(
         `SELECT id, receiver_phone FROM exchange_orders WHERE status IN ('in_progress','failed') AND ABS(amount_received - $1) < 0.01
-         ORDER BY updated_at ASC
+         ORDER BY updated_at DESC
          FOR UPDATE SKIP LOCKED`,
         [amount]
       )
