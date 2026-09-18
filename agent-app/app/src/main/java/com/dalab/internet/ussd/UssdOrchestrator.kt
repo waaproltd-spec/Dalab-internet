@@ -188,18 +188,32 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
                 )
                 SubscriptionLookupResult.NotPresent -> DialResult(DialOutcome.NO_SIM_PRESENT, "SIM $simSlot isn't physically inserted on this device.")
                 is SubscriptionLookupResult.Found -> {
-                    // UssdDialer only catches SecurityException around the telephony
-                    // call — other stack exceptions (e.g. IllegalStateException when
-                    // the modem/RIL isn't ready) previously escaped uncaught all the
-                    // way to QueueDrainer, which then classified them terminal and
-                    // dropped a genuinely transient failure forever. Catching here
-                    // converts it into a normal FAILED outcome, which this same retry
-                    // loop already knows how to handle.
+                    // Waits its turn for THIS order's own SIM slot -- every
+                    // other flow that can dial that same slot (Money
+                    // Exchange, Reseller Withdraw, a Wallet Name Lookup)
+                    // goes through this same lock; see UssdSimLock's doc
+                    // comment. Held for exactly the span of this one dial
+                    // attempt, not the whole retry loop -- a later attempt
+                    // (after the backoff delay below) re-acquires, so a
+                    // different request queued for this slot in between
+                    // isn't blocked behind this order's own retry backoff.
+                    val ticket = UssdSimLock.acquire(simSlot, "internet_store:$orderId:attempt$attempt", System.currentTimeMillis())
                     try {
-                        dialer.dial(lookup.subscriptionId, ussdString)
-                    } catch (e: Exception) {
-                        DiagnosticsLog.record("ussd_dial", "Dial threw (order $orderId, attempt $attempt): ${e.message}", isError = true)
-                        DialResult(DialOutcome.FAILED, "Dial error: ${e.message}")
+                        // UssdDialer only catches SecurityException around the telephony
+                        // call — other stack exceptions (e.g. IllegalStateException when
+                        // the modem/RIL isn't ready) previously escaped uncaught all the
+                        // way to QueueDrainer, which then classified them terminal and
+                        // dropped a genuinely transient failure forever. Catching here
+                        // converts it into a normal FAILED outcome, which this same retry
+                        // loop already knows how to handle.
+                        try {
+                            dialer.dial(lookup.subscriptionId, ussdString)
+                        } catch (e: Exception) {
+                            DiagnosticsLog.record("ussd_dial", "Dial threw (order $orderId, attempt $attempt): ${e.message}", isError = true)
+                            DialResult(DialOutcome.FAILED, "Dial error: ${e.message}")
+                        }
+                    } finally {
+                        UssdSimLock.release(ticket)
                     }
                 }
             }

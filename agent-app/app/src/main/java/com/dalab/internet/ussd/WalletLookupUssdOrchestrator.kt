@@ -99,7 +99,15 @@ class WalletLookupUssdOrchestrator(private val context: Context) {
                 PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
                 "DalabAgent:WalletLookupUssdDial",
             )
-        val sessionTicket = InteractiveUssdSessionQueue.acquire(
+        // Waits its turn for this lookup's own SIM slot -- every other flow
+        // that can dial that same slot (Internet Store recharge, a real
+        // Money Exchange payout, Reseller Withdraw) goes through this same
+        // lock; see UssdSimLock's doc comment. "Now" is used as the arrival
+        // time (not a real creation timestamp) since a lookup has no
+        // cross-flow-discovery-race to solve the way Exchange/Reseller do —
+        // see UssdSimLock's own doc comment for that distinction.
+        val sessionTicket = UssdSimLock.acquire(
+            simSlot = body.simSlot,
             requestId = "wallet-lookup:${pending.id}",
             arrivalTimeMs = System.currentTimeMillis(),
         )
@@ -141,7 +149,7 @@ class WalletLookupUssdOrchestrator(private val context: Context) {
             ExchangeUssdBridge.disarm()
             if (wakeLock?.isHeld == true) wakeLock.release()
             ExchangeUssdBridge.activeWakeLock = null
-            InteractiveUssdSessionQueue.release(sessionTicket)
+            UssdSimLock.release(sessionTicket)
         }
     }
 

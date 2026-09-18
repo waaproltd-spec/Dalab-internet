@@ -137,12 +137,14 @@ class ExchangeUssdOrchestrator(private val context: Context) {
                 PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
                 "DalabAgent:ExchangeUssdDial",
             )
-        // Waits its turn behind Reseller Withdraw's own interactive flow (if
-        // any) before touching the wake lock/screen at all -- see
-        // InteractiveUssdSessionQueue's doc comment for why a plain Mutex
-        // isn't enough to keep the two flows' AccessibilityService sessions
-        // from ever overlapping. Internet Store never calls into this queue.
-        val sessionTicket = InteractiveUssdSessionQueue.acquire(
+        // Waits its turn for THIS payout's own SIM slot (every other flow
+        // that can dial that same slot -- Internet Store recharge, Reseller
+        // Withdraw, a Wallet Name Lookup -- goes through this same lock; see
+        // UssdSimLock's doc comment) before touching the wake lock/screen at
+        // all. A simultaneous dial on the OTHER SIM slot never waits on this
+        // one -- the lock is per slot, not device-wide.
+        val sessionTicket = UssdSimLock.acquire(
+            simSlot = slot,
             requestId = "exchange:${order.id}",
             arrivalTimeMs = parseApiDate(order.createdAt)?.time ?: System.currentTimeMillis(),
         )
@@ -194,7 +196,7 @@ class ExchangeUssdOrchestrator(private val context: Context) {
             ExchangeUssdBridge.disarm()
             if (wakeLock?.isHeld == true) wakeLock.release()
             ExchangeUssdBridge.activeWakeLock = null
-            InteractiveUssdSessionQueue.release(sessionTicket)
+            UssdSimLock.release(sessionTicket)
         }
     }
 
