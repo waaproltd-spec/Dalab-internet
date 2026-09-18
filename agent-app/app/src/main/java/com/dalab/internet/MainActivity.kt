@@ -27,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.CurrencyExchange
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
@@ -210,7 +211,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP, SALES, CUSTOMERS, CUSTOMER_DETAIL, REPORTS, RESELLER, AGENT_SHOP_ORDER_DETAIL, AGENT_VIP_ORDER_DETAIL, AGENT_VIP_PACKAGE_ORDER_DETAIL }
+private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP, SALES, CUSTOMERS, CUSTOMER_DETAIL, REPORTS, RESELLER, AGENT_SHOP_ORDER_DETAIL, AGENT_VIP_ORDER_DETAIL, AGENT_VIP_PACKAGE_ORDER_DETAIL, NALA_SOCO }
 // Bottom nav is exactly 5 tabs: Home, Orders, Support Agent, Broadcast, More --
 // Sales/Customers/Reports (formerly their own tabs) moved under More as
 // ordinary Screen.X destinations instead (see MoreScreen's "My Work"
@@ -475,6 +476,7 @@ private fun AgentApp() {
             onOpenCustomers = { navigate(Screen.CUSTOMERS) },
             onOpenReports = { navigate(Screen.REPORTS) },
             onOpenReseller = { navigate(Screen.RESELLER) },
+            onOpenNalaSoco = { navigate(Screen.NALA_SOCO) },
         )
 
         Screen.ORDER_DETAIL -> selectedOrder?.let { order ->
@@ -514,6 +516,8 @@ private fun AgentApp() {
         Screen.EXCHANGE_SETUP -> ExchangeAccessibilitySetupScreen(onBack = { goBack() })
 
         Screen.ALERTS -> AlertsScreen(onBack = { goBack() })
+
+        Screen.NALA_SOCO -> NalaSocoManagementScreen(onBack = { goBack() })
 
         Screen.RESELLER_WITHDRAWAL_INTERACTIVE_SETUP -> ResellerWithdrawalInteractiveAccessibilitySetupScreen(onBack = { goBack() })
 
@@ -592,6 +596,7 @@ private fun AgentHome(
     onOpenCustomers: () -> Unit,
     onOpenReports: () -> Unit,
     onOpenReseller: () -> Unit,
+    onOpenNalaSoco: () -> Unit,
 ) {
 
     // A support push tapped while this composable already exists (warm
@@ -683,6 +688,7 @@ private fun AgentHome(
                     onOpenCustomers = onOpenCustomers,
                     onOpenReports = onOpenReports,
                     onOpenReseller = onOpenReseller,
+                    onOpenNalaSoco = onOpenNalaSoco,
                 )
             }
         }
@@ -820,6 +826,7 @@ private fun MoreScreen(
     onOpenCustomers: () -> Unit,
     onOpenReports: () -> Unit,
     onOpenReseller: () -> Unit,
+    onOpenNalaSoco: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         // Sales/Customers/Reports were their own bottom-nav tabs before the
@@ -890,6 +897,15 @@ private fun MoreScreen(
                 subtitle = "Orders you've completed",
                 icon = Icons.Filled.History,
                 onClick = onOpenTransactions,
+            )
+            // Same create/edit/publish/delete capability the Admin dashboard's
+            // own Nala Soco section has -- see NalaSocoManagementScreen's own
+            // doc comment.
+            MoreItem(
+                title = "Nala Soco",
+                subtitle = "Manage announcements shown in the Customer App",
+                icon = Icons.Filled.Campaign,
+                onClick = onOpenNalaSoco,
             )
         }
         // Agent Support and Customer Broadcast moved to their own bottom-nav
