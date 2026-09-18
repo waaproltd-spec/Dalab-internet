@@ -619,8 +619,59 @@ exchangeRouter.post("/admin/exchange/orders/:id/verify", requirePermission("exch
 // and is never written to any log, dial-attempt record, or UI (see Security
 // section of the plan).
 
+// The Agent App's own attemptNumber (still sent in the request body by
+// every build, including the currently-installed one — it hardcodes 1) is
+// deliberately never trusted: it can only ever know about attempts it made
+// itself, never about a prior attempt from a previous device, an admin's
+// retry-payout re-opening a failed order, or a genuinely concurrent call.
+// The backend is the only thing that can safely determine "what attempt
+// number is this really" — see the doc comment on the route below for why
+// that matters (DEX667832625: attemptNumber hardcoded to 1 collided with
+// the existing attempt #1 from the order's first, failed try, silently
+// blocking every retry after Retry Payout put it back in_progress).
+async function determineExchangeDialAttempt(
+  client: import("pg").PoolClient,
+  orderId: string,
+  agentId: string,
+  simSlot: number | null,
+  step1UssdString: string
+): Promise<{ id: string; step1UssdString: string; isNew: boolean }> {
+  // Locks this order's row for the rest of the transaction so two
+  // concurrent dial-attempts-start calls for the SAME order (two agent
+  // taps, or a manual tap racing the self-heal sweeper) serialize instead
+  // of both computing the same "next" attempt number — the second call
+  // simply waits for the first's transaction to commit, then sees its
+  // freshly-inserted row before deciding anything. This route is the only
+  // writer of exchange_dial_attempts, so this one lock is sufficient.
+  await client.query(`SELECT id FROM exchange_orders WHERE id=$1 FOR UPDATE`, [orderId]);
+
+  const latest = await client.query<{ id: string; attempt_number: number; status: string; step1_ussd_string: string | null }>(
+    `SELECT id, attempt_number, status, step1_ussd_string FROM exchange_dial_attempts
+     WHERE exchange_order_id=$1 ORDER BY attempt_number DESC LIMIT 1`,
+    [orderId]
+  );
+  const latestAttempt = latest.rows[0];
+
+  // An attempt that hasn't reached a terminal state yet (no step1/step2
+  // report has landed) means this call is a duplicate/retry of that exact
+  // same attempt — a dropped response, a UI double-tap — never a request
+  // for a new one. Returns the existing row's own USSD string, and no PIN
+  // (matching the pre-existing "never issue the PIN twice" guarantee).
+  if (latestAttempt && ["pending", "step1_success"].includes(latestAttempt.status)) {
+    return { id: latestAttempt.id, step1UssdString: latestAttempt.step1_ussd_string ?? step1UssdString, isNew: false };
+  }
+
+  const nextAttemptNumber = latestAttempt ? latestAttempt.attempt_number + 1 : 1;
+  const id = randomUUID();
+  await client.query(
+    `INSERT INTO exchange_dial_attempts (id, exchange_order_id, agent_id, sim_slot, attempt_number, step1_ussd_string, status)
+     VALUES ($1,$2,$3,$4,$5,$6,'pending')`,
+    [id, orderId, agentId, simSlot, nextAttemptNumber, step1UssdString]
+  );
+  return { id, step1UssdString, isNew: true };
+}
+
 exchangeRouter.post("/agent/exchange/orders/:id/dial-attempts", requireAuth("agent"), async (req, res) => {
-  const { attemptNumber } = req.body ?? {};
   const order = await queryOne<{ id: string; status: string; corridor_id: string; receiver_phone: string; amount_received: string }>(
     `SELECT id, status, corridor_id, receiver_phone, amount_received FROM exchange_orders WHERE id=$1`,
     [req.params.id]
@@ -650,27 +701,18 @@ exchangeRouter.post("/agent/exchange/orders/:id/dial-attempts", requireAuth("age
   // formatEvcDahabUssdAmount() for why.
   const step1UssdString = `*${dialPrefix}*${normalizePhone(order.receiver_phone)}*${formatEvcDahabUssdAmount(order.amount_received)}#`;
 
-  const id = randomUUID();
-  try {
-    await query(
-      `INSERT INTO exchange_dial_attempts (id, exchange_order_id, agent_id, sim_slot, attempt_number, step1_ussd_string, status)
-       VALUES ($1,$2,$3,$4,$5,$6,'pending')`,
-      [id, req.params.id, req.auth!.sub, payoutWallet.sim_slot, attemptNumber ?? 1, step1UssdString]
-    );
-  } catch (err: any) {
-    if (err?.code !== "23505") throw err;
-    const existing = await queryOne<{ id: string }>(
-      `SELECT id FROM exchange_dial_attempts WHERE exchange_order_id=$1 AND attempt_number=$2`,
-      [req.params.id, attemptNumber ?? 1]
-    );
-    return sendJson(res, 200, { id: existing!.id, step1UssdString, simSlot: payoutWallet.sim_slot });
+  const attempt = await withTransaction((client) =>
+    determineExchangeDialAttempt(client, req.params.id, req.auth!.sub, payoutWallet.sim_slot, step1UssdString)
+  );
+  if (!attempt.isNew) {
+    return sendJson(res, 200, { id: attempt.id, step1UssdString: attempt.step1UssdString, simSlot: payoutWallet.sim_slot });
   }
 
   // The one and only place the raw PIN ever leaves the server — scoped to
   // this specific authenticated agent's dial attempt for an already-verified
   // order, over HTTPS, held in the agent device's memory only.
   const pin = decrypt(payoutWallet.pin_encrypted);
-  sendJson(res, 201, { id, step1UssdString, pin, simSlot: payoutWallet.sim_slot });
+  sendJson(res, 201, { id: attempt.id, step1UssdString: attempt.step1UssdString, pin, simSlot: payoutWallet.sim_slot });
 });
 
 exchangeRouter.put("/agent/exchange/dial-attempts/:attemptId/step1", requireAuth("agent"), async (req, res) => {
