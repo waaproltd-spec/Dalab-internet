@@ -10,11 +10,11 @@ import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Cross-flow FIFO lock enforcing "one USSD session at a time per physical
- * SIM slot" — across EVERY flow that can dial a USSD code on this device:
- * Internet Store recharge (UssdOrchestrator), Money Exchange payout
+ * SIM slot" — across EVERY flow that dials a real USSD code on this device:
+ * Internet Store recharge (UssdOrchestrator), Money Exchange/eBadal payout
  * (ExchangeUssdOrchestrator) and its own Wallet Name Lookup
  * (WalletLookupUssdOrchestrator), and Reseller Withdraw (both its one-shot
- * UssdOrchestrator-style path and its interactive
+ * UssdDialer-based path and its interactive
  * ResellerWithdrawalInteractiveUssdOrchestrator path). Every one of those
  * ultimately drives the same physical modem/SIM radio, whether via
  * TelephonyManager.sendUssdRequest() (no visible dialog) or ACTION_CALL +
@@ -24,22 +24,26 @@ import java.util.concurrent.atomic.AtomicLong
  * sessions per SIM itself; dialing a second one mid-session can abort the
  * first, return a garbled/cross-contaminated response, or simply fail), and
  * two DIFFERENT SIMs are two independent physical radios that never need to
- * wait on each other at all.
+ * wait on each other at all. Every one of these flows performs a REAL USSD
+ * dial (not just something adjacent to one) — this lock is scoped to
+ * exactly that set, on purpose: a feature that never actually dials USSD
+ * has no need to touch this and must stay unwired.
  *
  * This was formerly InteractiveUssdSessionQueue, a single GLOBAL queue
  * (deliberately covering only the two AccessibilityService-driven flows,
  * since those were the only ones that could visibly collide with each
  * OTHER on screen). Two gaps that left real overlap possible: (1) it never
  * serialized against the one-shot TelephonyManager-based flows at all — an
- * Internet Store recharge and a Money Exchange payout could genuinely dial
- * the same physical SIM at the same moment; (2) it was one shared queue for
- * the whole device, not per SIM slot — a 2-SIM device serialized SIM 1 and
- * SIM 2 against each other unnecessarily, even though they're independent
- * radios. Generalized here to key every bit of this state (the waiter
- * list, the debounce leader, the busy flag) by [Int] SIM slot (1 or 2):
- * each slot gets its own fully independent FIFO queue, and every dialing
- * flow — one-shot or interactive — now acquires the lock for the SIM slot
- * it's about to dial on, for exactly the span of that one dial attempt.
+ * Internet Store recharge and a Money Exchange/eBadal payout could
+ * genuinely dial the same physical SIM at the same moment; (2) it was one
+ * shared queue for the whole device, not per SIM slot — a 2-SIM device
+ * serialized SIM 1 and SIM 2 against each other unnecessarily, even though
+ * they're independent radios. Generalized here to key every bit of this
+ * state (the waiter list, the debounce leader, the busy flag) by [Int] SIM
+ * slot (1 or 2): each slot gets its own fully independent FIFO queue, and
+ * every dialing flow — one-shot or interactive — acquires the lock for the
+ * SIM slot it's about to dial on, for exactly the span of that one dial
+ * attempt.
  *
  * Ordering within one SIM slot's queue is by each request's own real
  * arrival time (business creation timestamp where the caller has one —
