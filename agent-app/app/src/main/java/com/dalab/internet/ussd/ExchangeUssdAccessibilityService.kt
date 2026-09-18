@@ -91,7 +91,7 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
             // attempted -- an accepted small cost on a small dialog tree,
             // not worth threading a cached node reference through for.
             val looksLikeUssdDialog = inputNode != null || isTransientLoadingDialog(messageText) || findPositiveButton(root) != null
-            if (!ExchangeUssdBridge.isWindowAllowed(windowPackage, windowId, looksLikeUssdDialog)) {
+            if (!ExchangeUssdBridge.isWindowAllowed(windowPackage, windowId, looksLikeUssdDialog, ownPackageName = packageName)) {
                 // Either the foreground drifted to a different app mid-attempt
                 // (e.g. Chrome) after a lock was already established --
                 // confirmed live: order DEX624960716 reported SUCCESS off a

@@ -356,8 +356,23 @@ object ExchangeUssdBridge {
      * [lockedWindowId]) checked only once the primary package-name check
      * has already failed against an established lock -- it can never
      * change whether/when a lock is first established, only widen how an
-     * *already-locked* window is re-recognized on a later scan. */
-    internal fun isWindowAllowed(packageName: String?, windowId: Int?, looksLikeUssdDialog: Boolean): Boolean {
+     * *already-locked* window is re-recognized on a later scan.
+     *
+     * [ownPackageName] is this agent app's own package (from the
+     * accessibility service's own Context) -- confirmed live (Wallet Name
+     * Lookup attempts 9cfba9d4/c9176de9/4ab743dc): a background/self-heal
+     * dial can fire while the agent app's OWN foreground screen is still
+     * showing (the same dial()-vs-dialer-UI race the comment below already
+     * covers), and if that screen happens to have any clickable button --
+     * completely unrelated to USSD -- it satisfies [looksLikeUssdDialog]
+     * just like a real dialog would. The agent app locked onto itself
+     * (`com.dalab.internet.debug`), read a phone number visible in its own
+     * UI as the "dialog text", then never found the real carrier window
+     * again. The carrier's reply dialog can never live inside this app's
+     * own package, so it's excluded outright rather than trusted to the
+     * same heuristic as every other (genuinely unpredictable, OEM-varying)
+     * package. */
+    internal fun isWindowAllowed(packageName: String?, windowId: Int?, looksLikeUssdDialog: Boolean, ownPackageName: String?): Boolean {
         val locked = lockedPackageName
         if (locked == null) {
             // Don't lock onto whatever's merely on screen -- confirmed live
@@ -371,6 +386,7 @@ object ExchangeUssdBridge {
             // lock; anything else is skipped so a later scan, once the real
             // dialer appears, gets to establish it correctly instead.
             if (!looksLikeUssdDialog) return false
+            if (ownPackageName != null && packageName == ownPackageName) return false
             lockedPackageName = packageName
             lockedWindowId = windowId
             return true
