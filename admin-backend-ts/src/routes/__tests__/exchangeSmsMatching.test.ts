@@ -1214,6 +1214,261 @@ test("reverse now also cancels a failed exchange order (cancel/refund path), but
   assert.equal(reverseCompletedRes.status, 409);
 });
 
+// ==================== Dial-attempt numbering (DEX667832625) ====================
+// The Agent App's own attemptNumber is never trusted -- every build,
+// including the currently-installed one, hardcodes attemptNumber: 1 on
+// every dial-attempts-start call, whether it's genuinely the first attempt
+// or a retry after Retry Payout re-opened a failed order. Before this fix,
+// a retry's hardcoded 1 collided with the existing attempt #1 row (UNIQUE
+// constraint), and the conflict-handling path returned the OLD attempt's
+// data with no pin -- silently blocking every retry, live, on
+// DEX667832625. The backend now ignores the client's attemptNumber
+// entirely and determines the real next attempt number itself. These tests
+// send attemptNumber: 1 on every call (exactly what the real, unmodified
+// Agent App sends today) to prove the fix works without needing an app
+// update.
+
+test("first dial attempt for a fresh order is always #1, exactly as before", async () => {
+  const orderId = await insertExchangeOrder({
+    corridorId: corridorEdahabToEvc,
+    fromWalletId: "edahab",
+    toWalletId: "evc_plus",
+    amountSent: 80,
+    senderPhone: "252611131020",
+  });
+  await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "eDahab",
+    body: "Lacag $80.00 ah",
+    parsedAmount: 80,
+    parsedPhone: "252611131020",
+    simSlot: 2,
+    transactionRef: nextRef(),
+  });
+
+  const res = await fetch(`${payoutBaseUrl}/agent/exchange/orders/${orderId}/dial-attempts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ attemptNumber: 1 }),
+  });
+  assert.equal(res.status, 201);
+  const body = await asJson(res);
+  assert.ok(body.pin, "the first-ever attempt for an order must always get a real PIN");
+
+  const attempts = await query<{ attempt_number: number; status: string }>(
+    `SELECT attempt_number, status FROM exchange_dial_attempts WHERE exchange_order_id=$1 ORDER BY attempt_number`,
+    [orderId]
+  );
+  assert.equal(attempts.length, 1);
+  assert.equal(attempts[0].attempt_number, 1);
+});
+
+test("retry after a failed attempt #1 creates attempt #2 (the exact DEX667832625 fix)", async () => {
+  const orderId = await insertExchangeOrder({
+    corridorId: corridorEdahabToEvc,
+    fromWalletId: "edahab",
+    toWalletId: "evc_plus",
+    amountSent: 81,
+    senderPhone: "252611131021",
+  });
+  await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "eDahab",
+    body: "Lacag $81.00 ah",
+    parsedAmount: 81,
+    parsedPhone: "252611131021",
+    simSlot: 2,
+    transactionRef: nextRef(),
+  });
+
+  // Attempt #1: dialed, then genuinely fails at step1 -- no PIN was ever
+  // submitted to the carrier (mirrors DEX667832625's real failure exactly).
+  const first = await fetch(`${payoutBaseUrl}/agent/exchange/orders/${orderId}/dial-attempts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ attemptNumber: 1 }),
+  });
+  const firstBody = await asJson(first);
+  await fetch(`${payoutBaseUrl}/agent/exchange/dial-attempts/${firstBody.id}/step1`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ status: "failed", responseMessage: null }),
+  });
+  const afterFail = await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]);
+  assert.equal(afterFail?.status, "failed");
+
+  const retryRes = await fetch(`${payoutBaseUrl}/admin/exchange/orders/${orderId}/retry-payout`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${superAdminToken}` },
+  });
+  assert.equal(retryRes.status, 200);
+
+  // The real (unmodified) Agent App sends attemptNumber: 1 again here --
+  // it has no way to know a prior attempt exists. Before the fix, this
+  // collided with attempt #1 and silently returned no PIN.
+  const second = await fetch(`${payoutBaseUrl}/agent/exchange/orders/${orderId}/dial-attempts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ attemptNumber: 1 }),
+  });
+  assert.equal(second.status, 201, "a genuinely new attempt must be created, not the stale conflict-path response");
+  const secondBody = await asJson(second);
+  assert.ok(secondBody.pin, "the agent must receive a real PIN for the new attempt");
+  assert.notEqual(secondBody.id, firstBody.id, "must be a distinct dial-attempts row, not the old failed one");
+
+  const attempts = await query<{ attempt_number: number; status: string }>(
+    `SELECT attempt_number, status FROM exchange_dial_attempts WHERE exchange_order_id=$1 ORDER BY attempt_number`,
+    [orderId]
+  );
+  assert.deepEqual(
+    attempts.map((a) => a.attempt_number),
+    [1, 2],
+    "must have exactly attempts #1 (failed) and #2 (the new one), never two rows both numbered 1"
+  );
+  assert.equal(attempts[0].status, "failed");
+  assert.equal(attempts[1].status, "pending");
+});
+
+test("a second retry after attempt #2 also fails creates attempt #3", async () => {
+  const orderId = await insertExchangeOrder({
+    corridorId: corridorEdahabToEvc,
+    fromWalletId: "edahab",
+    toWalletId: "evc_plus",
+    amountSent: 82,
+    senderPhone: "252611131022",
+  });
+  await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "eDahab",
+    body: "Lacag $82.00 ah",
+    parsedAmount: 82,
+    parsedPhone: "252611131022",
+    simSlot: 2,
+    transactionRef: nextRef(),
+  });
+
+  // Attempt #1 fails.
+  const attempt1 = await asJson(
+    await fetch(`${payoutBaseUrl}/agent/exchange/orders/${orderId}/dial-attempts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+      body: JSON.stringify({ attemptNumber: 1 }),
+    })
+  );
+  await fetch(`${payoutBaseUrl}/agent/exchange/dial-attempts/${attempt1.id}/step1`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ status: "failed", responseMessage: null }),
+  });
+
+  // First retry -> attempt #2, also fails.
+  await fetch(`${payoutBaseUrl}/admin/exchange/orders/${orderId}/retry-payout`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${superAdminToken}` },
+  });
+  const attempt2 = await asJson(
+    await fetch(`${payoutBaseUrl}/agent/exchange/orders/${orderId}/dial-attempts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+      body: JSON.stringify({ attemptNumber: 1 }),
+    })
+  );
+  await fetch(`${payoutBaseUrl}/agent/exchange/dial-attempts/${attempt2.id}/step1`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ status: "failed", responseMessage: null }),
+  });
+
+  // Second retry -> must be attempt #3.
+  const retry2Res = await fetch(`${payoutBaseUrl}/admin/exchange/orders/${orderId}/retry-payout`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${superAdminToken}` },
+  });
+  assert.equal(retry2Res.status, 200, "retry-payout must work again after a second failure, not just the first");
+  const attempt3Res = await fetch(`${payoutBaseUrl}/agent/exchange/orders/${orderId}/dial-attempts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ attemptNumber: 1 }),
+  });
+  assert.equal(attempt3Res.status, 201);
+  const attempt3 = await asJson(attempt3Res);
+  assert.ok(attempt3.pin);
+
+  const attempts = await query<{ attempt_number: number }>(
+    `SELECT attempt_number FROM exchange_dial_attempts WHERE exchange_order_id=$1 ORDER BY attempt_number`,
+    [orderId]
+  );
+  assert.deepEqual(attempts.map((a) => a.attempt_number), [1, 2, 3]);
+});
+
+test("concurrent retry dial-attempt-start calls never create two attempts with the same or skipped number", async () => {
+  const orderId = await insertExchangeOrder({
+    corridorId: corridorEdahabToEvc,
+    fromWalletId: "edahab",
+    toWalletId: "evc_plus",
+    amountSent: 83,
+    senderPhone: "252611131023",
+  });
+  await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "eDahab",
+    body: "Lacag $83.00 ah",
+    parsedAmount: 83,
+    parsedPhone: "252611131023",
+    simSlot: 2,
+    transactionRef: nextRef(),
+  });
+
+  const attempt1 = await asJson(
+    await fetch(`${payoutBaseUrl}/agent/exchange/orders/${orderId}/dial-attempts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+      body: JSON.stringify({ attemptNumber: 1 }),
+    })
+  );
+  await fetch(`${payoutBaseUrl}/agent/exchange/dial-attempts/${attempt1.id}/step1`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ status: "failed", responseMessage: null }),
+  });
+  await fetch(`${payoutBaseUrl}/admin/exchange/orders/${orderId}/retry-payout`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${superAdminToken}` },
+  });
+
+  // Two overlapping calls racing to start "the next" attempt -- e.g. a
+  // manual tap racing the self-heal sweeper, or two sweep passes. Both send
+  // the same (untrusted) attemptNumber: 1, exactly like two real concurrent
+  // callers would.
+  const [raceA, raceB] = await Promise.all([
+    fetch(`${payoutBaseUrl}/agent/exchange/orders/${orderId}/dial-attempts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+      body: JSON.stringify({ attemptNumber: 1 }),
+    }),
+    fetch(`${payoutBaseUrl}/agent/exchange/orders/${orderId}/dial-attempts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+      body: JSON.stringify({ attemptNumber: 1 }),
+    }),
+  ]);
+  const [bodyA, bodyB] = await Promise.all([asJson(raceA), asJson(raceB)]);
+
+  const pins = [bodyA, bodyB].filter((b) => b.pin);
+  assert.equal(pins.length, 1, "exactly one of the two racing calls may ever receive a PIN for the new attempt");
+  assert.equal(bodyA.id, bodyB.id, "the loser must be told about the exact same attempt the winner created, not a third one");
+
+  const attempts = await query<{ attempt_number: number; status: string }>(
+    `SELECT attempt_number, status FROM exchange_dial_attempts WHERE exchange_order_id=$1 ORDER BY attempt_number`,
+    [orderId]
+  );
+  assert.deepEqual(
+    attempts.map((a) => a.attempt_number),
+    [1, 2],
+    "the race must produce exactly one new attempt (#2), never a duplicate #2 or a skipped-ahead #3"
+  );
+});
+
 // GET /exchange/wallets is public (no auth) -- the Customer App reads
 // dialPrefix from it to build the customer's own "Dial to Pay" collection
 // USSD string client-side (*{dialPrefix}*{collectionNumber}*{amount}#, same
