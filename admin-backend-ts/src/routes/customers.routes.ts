@@ -562,7 +562,7 @@ customersRouter.delete("/agent/customers/:id/pin", requireAuth("agent"), async (
 
 // ---------------- Customer: own profile ----------------
 const CUSTOMER_PROFILE_COLUMNS =
-  "id, phone, name, email, status, macaash_points, evc_plus_name, evc_plus_number, evc_plus_saved_at, edahab_name, edahab_number, edahab_saved_at, photo_base64, created_at";
+  "id, phone, name, email, status, macaash_points, evc_plus_name, evc_plus_number, evc_plus_saved_at, edahab_name, edahab_number, edahab_saved_at, photo_base64, created_at, friend_code";
 
 // The one customer-facing endpoint a suspended account can still call
 // outside Agent Support (see server.ts's suspension-enforcement middleware,

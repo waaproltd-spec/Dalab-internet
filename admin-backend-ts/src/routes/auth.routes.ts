@@ -111,6 +111,7 @@ authRouter.post("/auth/register", rateLimit("customer-register", 10, 15 * 60 * 1
       status: customer!.status,
       evcPlusNumber: customer!.evc_plus_number,
       edahabNumber: customer!.edahab_number,
+      friendCode: customer!.friend_code,
     },
     pinSet: Boolean(customer!.pin_hash),
   });
@@ -155,6 +156,7 @@ authRouter.post("/auth/login", rateLimit("customer-login", 10, 15 * 60 * 1000), 
       status: customer.status,
       evcPlusNumber: customer.evc_plus_number,
       edahabNumber: customer.edahab_number,
+      friendCode: customer.friend_code,
     },
     pinSet: Boolean(customer.pin_hash),
   });
@@ -259,6 +261,7 @@ authRouter.post("/auth/identify", rateLimit("customer-identify", 20, 15 * 60 * 1
       status: customer!.status,
       evcPlusNumber: customer!.evc_plus_number,
       edahabNumber: customer!.edahab_number,
+      friendCode: customer!.friend_code,
     },
     pinSet: Boolean(customer!.pin_hash),
   });
@@ -351,6 +354,7 @@ authRouter.post("/auth/customer/signup", rateLimit("customer-pin-signup", 10, 15
       status: customer!.status,
       evcPlusNumber: customer!.evc_plus_number,
       edahabNumber: customer!.edahab_number,
+      friendCode: customer!.friend_code,
     },
   });
 });
@@ -382,6 +386,7 @@ authRouter.post("/auth/customer/login", rateLimit("customer-pin-login", 10, 15 *
       status: customer.status,
       evcPlusNumber: customer.evc_plus_number,
       edahabNumber: customer.edahab_number,
+      friendCode: customer.friend_code,
     },
   });
 });
