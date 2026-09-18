@@ -226,6 +226,15 @@ const DalabAdminApi = {
   updatePromoImage: (id, body) => dalabAdminApiRequest(`/admin/promo-images/${id}`, { method: "PUT", body }),
   deletePromoImage: (id) => dalabAdminApiRequest(`/admin/promo-images/${id}`, { method: "DELETE" }),
   promoImageUrl: (id) => `${DALAB_API_BASE_URL}/promo-images/${id}/image`,
+  // Nala Soco ("Follow Us") — the Customer App's own bottom-nav feed of
+  // announcements/promos/news (Internet Store only). image is optional here
+  // (a post can be text-only), unlike Promo Images where it's the whole
+  // point — still a data URI for the same reason as above.
+  getNalaSocoPosts: () => dalabAdminApiRequest("/admin/nala-soco"),
+  createNalaSocoPost: (body) => dalabAdminApiRequest("/admin/nala-soco", { method: "POST", body }),
+  updateNalaSocoPost: (id, body) => dalabAdminApiRequest(`/admin/nala-soco/${id}`, { method: "PUT", body }),
+  deleteNalaSocoPost: (id) => dalabAdminApiRequest(`/admin/nala-soco/${id}`, { method: "DELETE" }),
+  nalaSocoImageUrl: (id) => `${DALAB_API_BASE_URL}/nala-soco/${id}/image`,
   // Push-notification broadcast — one shared route the Agent App hits with
   // the exact same body shape, so there is no capability difference between
   // the two apps. targetType: 'single'|'multiple'|'all'|'recent';
@@ -922,6 +931,7 @@ const NAV = [
   { id: "feedback", label: "Feedback & Suggestions", icon: Lightbulb, permission: "feedback.manage" },
   { id: "support", label: "Agent Support", icon: MessageCircle, permission: "support.manage" },
   { id: "promo-images", label: "Promo Images", icon: ImageIcon, superAdminOnly: true },
+  { id: "nala-soco", label: "Nala Soco", icon: Share2, permission: "settings.manage" },
   { id: "devices", label: "Device & USSD", icon: SmartphoneNfc, superAdminOnly: true },
   { id: "sms-logs", label: "SMS Monitor", icon: MessageSquare, permission: "devices.manage" },
   { id: "payment-transactions", label: "Payment Transactions", icon: Activity, permission: "orders.manage" },
@@ -4404,6 +4414,189 @@ function PromoImages() {
           <div style={{ gridColumn: "1 / -1", padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No promo images yet — upload one to start the carousel.</div>
         )}
       </div>
+    </div>
+  );
+}
+
+// Nala Soco ("Follow Us") — announcements/promos/news posts shown on the
+// Customer App's own bottom-nav feed (Internet Store only). Unlike Promo
+// Images, staff below Super Admin can manage this (requireStaff() on the
+// backend, not requireSuperAdmin()) since it's ordinary content, not
+// system/marketing configuration — no superAdminOnly on this NAV entry.
+function NalaSocoPostForm({ initial, onSave, onCancel }) {
+  const [title, setTitle] = useState(initial?.title || "");
+  const [body, setBody] = useState(initial?.body || "");
+  const [published, setPublished] = useState(initial ? initial.published : true);
+  const [imageDataUri, setImageDataUri] = useState(undefined); // undefined = leave unchanged, null = remove, string = replace
+  const [removeExistingImage, setRemoveExistingImage] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const fileInputRef = useRef(null);
+
+  const onFileSelected = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => { setImageDataUri(reader.result); setRemoveExistingImage(false); };
+    reader.readAsDataURL(file);
+  };
+
+  const previewSrc = imageDataUri || (initial?.hasImage && !removeExistingImage ? DalabAdminApi.nalaSocoImageUrl(initial.id) : null);
+
+  const submit = async () => {
+    if (!title.trim()) return setError("Title is required.");
+    if (!body.trim()) return setError("Body is required.");
+    setSaving(true);
+    setError("");
+    try {
+      const payload = { title: title.trim(), body: body.trim(), published };
+      if (removeExistingImage) payload.imageBase64 = null;
+      else if (typeof imageDataUri === "string") payload.imageBase64 = imageDataUri;
+      await onSave(payload);
+    } catch (err) {
+      setError(err.message || "Could not save this post.");
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title={initial ? "Edit Nala Soco Post" : "New Nala Soco Post"} onClose={onCancel} width={480}>
+      <Field label="Title">
+        <input style={inputStyle} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Post title" />
+      </Field>
+      <Field label="Body">
+        <textarea style={{ ...inputStyle, minHeight: 110, resize: "vertical", fontFamily: "inherit" }} value={body} onChange={(e) => setBody(e.target.value)} placeholder="Post body" />
+      </Field>
+      <Field label="Image (optional)">
+        <input ref={fileInputRef} type="file" accept="image/*" onChange={onFileSelected} style={{ display: "none" }} />
+        {previewSrc ? (
+          <div>
+            <div style={{ width: "100%", height: 140, borderRadius: 10, overflow: "hidden", background: INDIGO_SOFT, marginBottom: 8 }}>
+              <img src={previewSrc} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <Button variant="secondary" onClick={() => fileInputRef.current?.click()}>Replace</Button>
+              <Button variant="secondary" onClick={() => { setImageDataUri(undefined); setRemoveExistingImage(true); }}>Remove</Button>
+            </div>
+          </div>
+        ) : (
+          <Button variant="secondary" icon={Upload} onClick={() => fileInputRef.current?.click()}>Upload image</Button>
+        )}
+      </Field>
+      <Field label="Visibility">
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: INK, cursor: "pointer" }}>
+          <input type="checkbox" checked={published} onChange={(e) => setPublished(e.target.checked)} />
+          Published (visible on the Customer App feed)
+        </label>
+      </Field>
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
+        <Button variant="secondary" onClick={onCancel} disabled={saving}>Cancel</Button>
+        <Button onClick={submit} disabled={saving} spin={saving}>{saving ? "Saving..." : "Save"}</Button>
+      </div>
+    </Modal>
+  );
+}
+
+function NalaSoco() {
+  const [posts, setPosts] = useState([]);
+  const [error, setError] = useState("");
+  const [editing, setEditing] = useState(null); // null = no modal, {} = new post, {...} = editing existing
+  const [busyId, setBusyId] = useState(null);
+
+  const fetchPosts = async () => {
+    if (!DALAB_API_ENABLED) return;
+    try {
+      setPosts(await DalabAdminApi.getNalaSocoPosts());
+    } catch (err) {
+      setError(err.message || "Could not load Nala Soco posts.");
+    }
+  };
+  useEffect(() => { fetchPosts(); }, []);
+
+  const save = async (payload) => {
+    if (editing?.id) await DalabAdminApi.updateNalaSocoPost(editing.id, payload);
+    else await DalabAdminApi.createNalaSocoPost(payload);
+    setEditing(null);
+    await fetchPosts();
+  };
+
+  const togglePublished = async (post) => {
+    setBusyId(post.id);
+    setPosts((prev) => prev.map((p) => (p.id === post.id ? { ...p, published: !p.published } : p))); // optimistic
+    try {
+      await DalabAdminApi.updateNalaSocoPost(post.id, { published: !post.published });
+    } catch (err) {
+      setError(err.message);
+      fetchPosts();
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const remove = async (post) => {
+    if (!window.confirm(`Delete "${post.title}"? This can't be undone.`)) return;
+    try {
+      await DalabAdminApi.deleteNalaSocoPost(post.id);
+      fetchPosts();
+    } catch (err) {
+      alert(err.message || "Could not delete this post.");
+    }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage Nala Soco posts.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 16, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Nala Soco</div>
+          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>
+            Announcements, promos, and news shown on the Customer App's own Nala Soco tab (Internet Store only). Only published posts appear there.
+          </div>
+        </div>
+        <Button icon={Plus} onClick={() => setEditing({})}>New post</Button>
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14 }}>
+        {posts.map((post) => (
+          <Card key={post.id} style={{ padding: 14 }}>
+            {post.hasImage && (
+              <div style={{ width: "100%", height: 120, borderRadius: 10, overflow: "hidden", background: INDIGO_SOFT, marginBottom: 10 }}>
+                <img src={DalabAdminApi.nalaSocoImageUrl(post.id)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              </div>
+            )}
+            <div style={{ fontWeight: 800, fontSize: 14, color: INK, marginBottom: 4 }}>{post.title}</div>
+            <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 10, display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{post.body}</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <Badge tone={post.published ? "green" : "neutral"}>{post.published ? "Published" : "Draft"}</Badge>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button onClick={() => togglePublished(post)} disabled={busyId === post.id} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                  {post.published ? <EyeOff size={13} color={SLATE} /> : <Eye size={13} color={GREEN} />}
+                </button>
+                <button onClick={() => setEditing(post)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                  <Pencil size={13} color={INDIGO} />
+                </button>
+                <button onClick={() => remove(post)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
+                  <Trash2 size={13} color="#C81E2C" />
+                </button>
+              </div>
+            </div>
+          </Card>
+        ))}
+        {posts.length === 0 && (
+          <div style={{ gridColumn: "1 / -1", padding: 30, textAlign: "center", fontSize: 12.5, color: MUTE }}>No Nala Soco posts yet — create one to populate the Customer App feed.</div>
+        )}
+      </div>
+
+      {editing !== null && (
+        <NalaSocoPostForm initial={editing.id ? editing : null} onSave={save} onCancel={() => setEditing(null)} />
+      )}
     </div>
   );
 }
@@ -15096,6 +15289,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "agents" && <AgentsSection companies={companies} admin={admin} />}
           {active === "notifications" && <Notifications />}
           {active === "promo-images" && <PromoImages />}
+          {active === "nala-soco" && <NalaSoco />}
           {active === "devices" && <DeviceUssdModule companies={companies} admin={admin} onPackagesChanged={refreshMissingTemplateCount} />}
           {active === "sms-logs" && <SmsLogs companies={companies} />}
           {active === "payment-transactions" && <PaymentTransactionsPanel companies={companies} />}
