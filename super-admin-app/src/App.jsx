@@ -431,6 +431,7 @@ const DalabAdminApi = {
   getExchangeOrder: (id) => dalabAdminApiRequest(`/admin/exchange/orders/${id}`),
   verifyExchangeOrder: (id) => dalabAdminApiRequest(`/admin/exchange/orders/${id}/verify`, { method: "POST" }),
   reverseExchangeOrder: (id) => dalabAdminApiRequest(`/admin/exchange/orders/${id}/reverse`, { method: "POST" }),
+  retryExchangePayout: (id) => dalabAdminApiRequest(`/admin/exchange/orders/${id}/retry-payout`, { method: "POST" }),
   // Which real SMS sender ID(s) each provider network (Hormuud EVC Plus,
   // Somtel eDahab, Somnet EVC Plus, ...) is allowed to send from — the Agent
   // App's PaymentSmsParsers/ExchangePayoutSentParsers fetch and cache this
@@ -10120,6 +10121,8 @@ function MoneyExchangePanel({ admin }) {
   const [detailId, setDetailId] = useState(null);
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailActing, setDetailActing] = useState(false);
+  const [detailActionError, setDetailActionError] = useState("");
 
   const [creating, setCreating] = useState(false);
   const [createForm, setCreateForm] = useState(NEW_EXCHANGE_ORDER_FORM);
@@ -10296,6 +10299,7 @@ function MoneyExchangePanel({ admin }) {
   const openDetail = async (id) => {
     setDetailId(id);
     setDetail(null);
+    setDetailActionError("");
     setDetailLoading(true);
     try {
       setDetail(await DalabAdminApi.getExchangeOrder(id));
@@ -10303,6 +10307,43 @@ function MoneyExchangePanel({ admin }) {
       console.error("getExchangeOrder failed:", err.message);
     } finally {
       setDetailLoading(false);
+    }
+  };
+  // Money was already collected before this order could ever reach
+  // in_progress, so a 'failed' order (a genuine payout attempt that didn't
+  // go through) must never be a dead end — retryExchangePayout puts it back
+  // in_progress so the agent can safely dial again, and reverseExchangeOrder
+  // (below) is the alternative when the admin decides to refund instead.
+  const retryPayout = async () => {
+    setDetailActing(true);
+    setDetailActionError("");
+    try {
+      await DalabAdminApi.retryExchangePayout(detailId);
+      // Re-fetch via getExchangeOrder rather than using retryExchangePayout's
+      // own (leaner) response, so `detail` keeps its dialAttempts array —
+      // the modal below reads detail.dialAttempts directly.
+      setDetail(await DalabAdminApi.getExchangeOrder(detailId));
+      fetchPending();
+      fetchOrders();
+    } catch (err) {
+      setDetailActionError(err.message || "Could not retry this payout.");
+    } finally {
+      setDetailActing(false);
+    }
+  };
+  const reversePayout = async () => {
+    if (!window.confirm("Reverse this exchange? It will be marked Cancelled. Any refund to the customer is handled manually, outside this dashboard.")) return;
+    setDetailActing(true);
+    setDetailActionError("");
+    try {
+      await DalabAdminApi.reverseExchangeOrder(detailId);
+      setDetail(await DalabAdminApi.getExchangeOrder(detailId));
+      fetchPending();
+      fetchOrders();
+    } catch (err) {
+      setDetailActionError(err.message || "Could not reverse this exchange.");
+    } finally {
+      setDetailActing(false);
     }
   };
 
@@ -10689,6 +10730,19 @@ function MoneyExchangePanel({ admin }) {
                 ))}
               </div>
               <div style={{ fontSize: 11, color: MUTE, fontStyle: "italic" }}>The payout PIN is never shown here or anywhere in the dashboard.</div>
+              {canManage && ["pending", "in_progress", "failed"].includes(detail.status) && (
+                <div style={{ display: "flex", gap: 8, paddingTop: 10, borderTop: `1px solid ${BORDER}` }}>
+                  {detail.status === "failed" && (
+                    <Button icon={RotateCcw} onClick={retryPayout} disabled={detailActing}>
+                      {detailActing ? "Retrying…" : "Retry Payout"}
+                    </Button>
+                  )}
+                  <Button variant="danger" onClick={reversePayout} disabled={detailActing}>
+                    {detailActing ? "Reversing…" : "Reverse"}
+                  </Button>
+                </div>
+              )}
+              {detailActionError && <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{detailActionError}</div>}
             </div>
           )}
         </Modal>
