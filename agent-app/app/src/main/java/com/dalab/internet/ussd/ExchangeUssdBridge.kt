@@ -6,7 +6,6 @@ import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -33,25 +32,17 @@ import kotlinx.coroutines.withTimeoutOrNull
  */
 object ExchangeUssdBridge {
 
-    /** Must be held for the entire span from [arm] through [disarm] -- see
-     * this object's own doc comment for why. Deliberately a separate lock
-     * from [UssdSimLock] (which stays scoped to "one dial per SIM slot"):
-     * this one exists purely to protect this bridge's own shared mutable
-     * state from two DIFFERENT SIM slots' flows both using it at once, and
-     * every caller acquires [UssdSimLock] first, this second -- a
-     * consistent global lock order, so the two can never deadlock against
-     * each other. */
-    private val sessionMutex = Mutex()
+    /** Thin delegation to [ExchangeSessionLock] -- see that object's own doc
+     * comment for why the lock itself lives in a separate, Android-free
+     * object rather than as a property here (this object eagerly
+     * constructs a real Handler tied to the main Looper below, which makes
+     * merely REFERENCING this class throw outside a real Android runtime —
+     * a plain lock property here would make it impossible to unit-test the
+     * lock on its own). Call from the same `finally` block that calls
+     * [disarm], after it. */
+    suspend fun acquireSession() = ExchangeSessionLock.acquire()
 
-    suspend fun acquireSession() = sessionMutex.lock()
-
-    /** Pairs with [acquireSession] -- call from the same `finally` block
-     * that calls [disarm], after it. Tolerates being called when not held
-     * so a caller that failed before ever acquiring can still safely no-op
-     * this in a shared cleanup path. */
-    fun releaseSession() {
-        if (sessionMutex.isLocked) sessionMutex.unlock()
-    }
+    fun releaseSession() = ExchangeSessionLock.release()
 
     @Volatile
     var serviceConnected: Boolean = false
