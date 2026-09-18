@@ -42,6 +42,24 @@ function walletPairError(label: string) {
   return { error: `Provide both a name and a number for ${label}, or clear both` };
 }
 
+// A phone number can only ever be registered/activated in eBadal once,
+// system-wide -- enforced here (not just client-side) so the same number
+// can't slip through any of the three routes that can set it (customer
+// self-service, Agent override, Admin override). Checked against BOTH
+// wallet columns, not just the one being set, so a number already
+// registered as someone's EVC Plus number can't be re-registered as a
+// DIFFERENT customer's eDahab number either.
+const EBADAL_DUPLICATE_NUMBER_ERROR =
+  "Number-kan hore ayuu uga diiwaangashan yahay Ebadal, mana suuragal ahan in account cusub lagu sameeyo ama mar kale la kiciyo. Fadlan isticmaal number kale.";
+
+async function isWalletNumberTakenByAnotherCustomer(customerId: string, number: string): Promise<boolean> {
+  const clash = await queryOne<{ id: string }>(
+    `SELECT id FROM customers WHERE id != $1 AND (evc_plus_number = $2 OR edahab_number = $2)`,
+    [customerId, number]
+  );
+  return clash != null;
+}
+
 // Shared by both the Super Admin's and the Agent's own "generate a new
 // Recovery PIN" route below -- one place defining what a generated PIN
 // looks like (4 digits) so the two can never quietly drift apart.
@@ -116,6 +134,13 @@ customersRouter.put("/admin/customers/:id/wallet-numbers", requirePermission("cu
   const evcPlusNumber = "evcPlusNumber" in body ? (body.evcPlusNumber == null ? null : String(body.evcPlusNumber)) : existing.evc_plus_number;
   const edahabName = "edahabName" in body ? (body.edahabName == null ? null : String(body.edahabName).trim()) : existing.edahab_name;
   const edahabNumber = "edahabNumber" in body ? (body.edahabNumber == null ? null : String(body.edahabNumber)) : existing.edahab_number;
+
+  if (evcPlusNumber != null && evcPlusNumber !== existing.evc_plus_number && (await isWalletNumberTakenByAnotherCustomer(req.params.id, evcPlusNumber))) {
+    return sendJson(res, 409, { error: EBADAL_DUPLICATE_NUMBER_ERROR });
+  }
+  if (edahabNumber != null && edahabNumber !== existing.edahab_number && (await isWalletNumberTakenByAnotherCustomer(req.params.id, edahabNumber))) {
+    return sendJson(res, 409, { error: EBADAL_DUPLICATE_NUMBER_ERROR });
+  }
 
   // Only validate the pair on a wallet this request actually touches — a
   // customer/admin editing just one wallet shouldn't get blocked by the
@@ -423,6 +448,13 @@ customersRouter.put("/agent/customers/:id/wallet-numbers", requireAuth("agent"),
   const edahabName = "edahabName" in body ? (body.edahabName == null ? null : String(body.edahabName).trim()) : existing.edahab_name;
   const edahabNumber = "edahabNumber" in body ? (body.edahabNumber == null ? null : String(body.edahabNumber)) : existing.edahab_number;
 
+  if (evcPlusNumber != null && evcPlusNumber !== existing.evc_plus_number && (await isWalletNumberTakenByAnotherCustomer(req.params.id, evcPlusNumber))) {
+    return sendJson(res, 409, { error: EBADAL_DUPLICATE_NUMBER_ERROR });
+  }
+  if (edahabNumber != null && edahabNumber !== existing.edahab_number && (await isWalletNumberTakenByAnotherCustomer(req.params.id, edahabNumber))) {
+    return sendJson(res, 409, { error: EBADAL_DUPLICATE_NUMBER_ERROR });
+  }
+
   if (touchesEvc && (evcPlusName == null) !== (evcPlusNumber == null)) return sendJson(res, 400, walletPairError("EVC Plus"));
   if (touchesEdahab && (edahabName == null) !== (edahabNumber == null)) return sendJson(res, 400, walletPairError("eDahab"));
 
@@ -615,6 +647,13 @@ customersRouter.put("/customer/wallet-numbers", requireAuth("customer"), async (
   const evcPlusNumber = "evcPlusNumber" in body ? (body.evcPlusNumber == null ? null : String(body.evcPlusNumber)) : existing.evc_plus_number;
   const edahabName = "edahabName" in body ? (body.edahabName == null ? null : String(body.edahabName).trim()) : existing.edahab_name;
   const edahabNumber = "edahabNumber" in body ? (body.edahabNumber == null ? null : String(body.edahabNumber)) : existing.edahab_number;
+
+  if (evcPlusNumber != null && evcPlusNumber !== existing.evc_plus_number && (await isWalletNumberTakenByAnotherCustomer(req.auth!.sub, evcPlusNumber))) {
+    return sendJson(res, 409, { error: EBADAL_DUPLICATE_NUMBER_ERROR });
+  }
+  if (edahabNumber != null && edahabNumber !== existing.edahab_number && (await isWalletNumberTakenByAnotherCustomer(req.auth!.sub, edahabNumber))) {
+    return sendJson(res, 409, { error: EBADAL_DUPLICATE_NUMBER_ERROR });
+  }
 
   // Only validate the pair on a wallet this request actually touches — a
   // customer who saved a bare number before the name field existed
