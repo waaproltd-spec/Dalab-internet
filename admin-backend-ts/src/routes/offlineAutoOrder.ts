@@ -178,11 +178,24 @@ async function verifyOfflinePaymentMethod(
     };
   }
   if (method.sim_slot != null && method.sim_slot !== uploadingSimSlot) {
-    return {
-      ok: false,
-      reason: `SMS arrived on the wrong SIM slot for ${method.label}'s payment collection (expects slot ${method.sim_slot}, got ${uploadingSimSlot ?? "(unresolved)"})`,
-      paymentMethod: null,
-    };
+    // Same conservative unresolved-slot allowance as findMatchingOrder
+    // (smsLogs.routes.ts) -- Android fails to resolve which physical SIM
+    // slot received an SMS on ~6% of deliveries; when this device has
+    // never registered more than one distinct slot across its own payment
+    // methods, there is no OTHER method an unresolved reading could be
+    // confused with, so there is nothing left to verify. A device with a
+    // genuine multi-slot setup keeps the exact same strict rejection.
+    const distinctSlots = await queryOne<{ count: string }>(
+      `SELECT COUNT(DISTINCT sim_slot) AS count FROM company_payment_methods WHERE device_id=$1 AND sim_slot IS NOT NULL`,
+      [method.device_id]
+    );
+    if (!(uploadingSimSlot == null && Number(distinctSlots?.count ?? 0) <= 1)) {
+      return {
+        ok: false,
+        reason: `SMS arrived on the wrong SIM slot for ${method.label}'s payment collection (expects slot ${method.sim_slot}, got ${uploadingSimSlot ?? "(unresolved)"})`,
+        paymentMethod: null,
+      };
+    }
   }
   return { ok: true, reason: null, paymentMethod: methodInfo };
 }

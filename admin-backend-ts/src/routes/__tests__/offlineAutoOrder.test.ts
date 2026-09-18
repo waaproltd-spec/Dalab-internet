@@ -326,6 +326,86 @@ test("a Hormuud Offline Profile is never matched by a Somtel-provider SMS, even 
   assert.equal(orders.length, 0);
 });
 
+// Same conservative unresolved-slot allowance as findMatchingOrder (Online
+// orders) -- Android fails to resolve which physical SIM slot received an
+// SMS on ~6% of deliveries. This suite's shared DEVICE_ID already has two
+// distinct slots (Hormuud=1, Somtel=2), a genuine ambiguity case, so an
+// unresolved reading must still be rejected here, unchanged from before.
+test("a Hormuud Offline Profile still rejects an unresolved SIM slot on this device (it genuinely has two slots in play)", async () => {
+  const customerId = await makeCustomer("252611110066");
+  await saveOfflineProfile(customerId, "611116677", "612226677", COMPANY_ID, packageId, hormuudMethodId);
+
+  const result = await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "192",
+    body: "offline-unresolved-slot-two-slot-device-test",
+    parsedProvider: "Hormuud",
+    parsedAmount: 0.89,
+    parsedPhone: "611116677",
+    transactionRef: "TX-OFFLINE-066",
+    simSlot: null,
+  });
+
+  assert.equal(result.body.matchedOrderId, null, "a genuinely two-slot device must still reject an unresolved slot");
+  const orders = await query(`SELECT id FROM orders WHERE customer_id=$1`, [customerId]);
+  assert.equal(orders.length, 0);
+
+  // This SMS is intentionally left unmatched -- clean it up (and the
+  // customer/profile it could still be matched against) so it can never
+  // be picked up by a later test's own resweepUnmatchedSmsLogs() call,
+  // which sweeps every unmatched row in the table, not just its own.
+  await query(`DELETE FROM sms_logs WHERE transaction_ref=$1`, ["TX-OFFLINE-066"]);
+  await query(`DELETE FROM customers WHERE id=$1`, [customerId]);
+});
+
+// Companion case, on an isolated single-slot device: with nothing else on
+// this device to be confused with, an unresolved slot has nothing left to
+// verify and must match.
+test("an unresolved SIM slot matches on a device with only one registered payment method", async () => {
+  const soloDeviceId = "test-solo-offline-device";
+  const soloAgentId = randomUUID();
+  const soloMethodId = randomUUID();
+  await query(`INSERT INTO agent_devices (id, name) VALUES ($1, 'Solo Offline Device')`, [soloDeviceId]);
+  await query(
+    `INSERT INTO agents (id, phone, name, password_hash, device_id) VALUES ($1, '252699000088', 'Solo Offline Agent', 'x', $2)`,
+    [soloAgentId, soloDeviceId]
+  );
+  await query(
+    `INSERT INTO company_payment_methods (id, company_id, method, label, payment_number, ussd_template, enabled, sort_order, device_id, sim_slot)
+     VALUES ($1,$2,'jeeb','Jeeb','68 0000003','*828*68 0000003*{amount}#',true,2,$3,1)`,
+    [soloMethodId, COMPANY_ID, soloDeviceId]
+  );
+  const customerId = await makeCustomer("252611110067");
+  await saveOfflineProfile(customerId, "611116688", "612226688", COMPANY_ID, packageId, soloMethodId);
+
+  const result = await ingestPaymentSms({
+    agentId: soloAgentId,
+    sender: "192",
+    body: "offline-unresolved-slot-solo-device-test",
+    parsedProvider: "Hormuud",
+    parsedAmount: 0.89,
+    parsedPhone: "611116688",
+    transactionRef: "TX-OFFLINE-067",
+    simSlot: null,
+  });
+
+  assert.notEqual(result.body.matchedOrderId, null, "an unresolved slot on a single-method device has nothing to be confused with");
+  const orders = await query(`SELECT id FROM orders WHERE customer_id=$1`, [customerId]);
+  assert.equal(orders.length, 1);
+
+  // Deleting the order (FK is ON DELETE SET NULL) would otherwise leave
+  // this SMS's matched_order_id null again with no failure reason -- an
+  // orphaned row resweepUnmatchedSmsLogs() (used by a later test) would
+  // pick back up. Delete the SMS log and the customer/profile first so
+  // nothing is left for any later resweep to find.
+  await query(`DELETE FROM sms_logs WHERE transaction_ref=$1`, ["TX-OFFLINE-067"]);
+  await query(`DELETE FROM orders WHERE customer_id=$1`, [customerId]);
+  await query(`DELETE FROM customers WHERE id=$1`, [customerId]);
+  await query(`DELETE FROM company_payment_methods WHERE id=$1`, [soloMethodId]);
+  await query(`DELETE FROM agents WHERE id=$1`, [soloAgentId]);
+  await query(`DELETE FROM agent_devices WHERE id=$1`, [soloDeviceId]);
+});
+
 test("a real pending Online order always wins over an Offline Profile that would otherwise also match", async () => {
   const customerId = await makeCustomer("252611110007");
   await saveOfflineProfile(customerId, "611117777", "612227777", COMPANY_ID, packageId);

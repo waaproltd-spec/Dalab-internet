@@ -62,6 +62,11 @@ before(async () => {
   await query(`DELETE FROM exchange_corridors`);
   await query(`DELETE FROM exchange_payout_wallets`);
   await query(`DELETE FROM payment_transactions`);
+  // Must precede the blanket `DELETE FROM customers` below -- a customer
+  // row credited macaash points by an earlier run (of this file or a
+  // sibling suite sharing the same local test DB) otherwise blocks that
+  // delete on macaash_transactions' own FK.
+  await query(`DELETE FROM macaash_transactions`);
   await query(`DELETE FROM orders`);
   await query(`DELETE FROM packages`);
   await query(`DELETE FROM service_categories`);
@@ -319,6 +324,96 @@ test("wrong collection wallet (SIM mismatch) does not match", async () => {
   assert.equal(result.body.matchedExchangeOrderId, null);
   const row = await queryOne<{ match_failure_reason: string | null }>(`SELECT match_failure_reason FROM sms_logs WHERE id=$1`, [result.body.id]);
   assert.match(row!.match_failure_reason!, /collection-wallet device\/SIM verification/);
+});
+
+// Same conservative unresolved-slot allowance findMatchingOrder (Internet
+// Store) applies -- Android fails to resolve which physical SIM slot
+// received an SMS on ~6% of deliveries. This suite's own DEVICE_ID already
+// has two real wallets on two distinct slots (edahab=2, evc_plus=1 -- the
+// exact "Mobile 1 / SIM 1 = EVC Plus, Mobile 1 / SIM 2 = eDahab" setup the
+// fixture's own comment describes), so it's a genuine ambiguity case: an
+// unresolved reading must still be rejected here, unchanged from before.
+test("unresolved SIM slot is still rejected on a device with two real collection wallets", async () => {
+  await insertExchangeOrder({
+    corridorId: corridorEdahabToEvc,
+    fromWalletId: "edahab",
+    toWalletId: "evc_plus",
+    amountSent: 21,
+    senderPhone: "252611111116",
+  });
+
+  const result = await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "eDahab",
+    body: "Lacag $21.00 ah",
+    parsedAmount: 21,
+    parsedPhone: "252611111116",
+    simSlot: null,
+    transactionRef: nextRef(),
+  });
+
+  assert.equal(result.body.matchedExchangeOrderId, null, "a genuinely two-slot device must still reject an unresolved slot");
+  const row = await queryOne<{ match_failure_reason: string | null }>(`SELECT match_failure_reason FROM sms_logs WHERE id=$1`, [result.body.id]);
+  assert.match(row!.match_failure_reason!, /collection-wallet device\/SIM verification/);
+});
+
+// Companion case, on an isolated single-wallet device: with nothing else
+// on this device to be confused with, an unresolved slot has nothing left
+// to verify and must match.
+test("unresolved SIM slot matches on a device with only one collection wallet", async () => {
+  // The matcher's device/SIM check keys off the ORDER's from_wallet_id
+  // (the customer's paying-FROM currency, i.e. the collection side) --
+  // 'evc_plus' and 'edahab' are both already claimed by this suite's own
+  // shared fixture (on the shared DEVICE_ID), so this test uses 'jeeb' as
+  // the isolated collection wallet and pays out via the shared fixture's
+  // existing evc_plus wallet, which is irrelevant to the slot check here.
+  const soloDeviceId = "test-solo-wallet-device";
+  await query(`INSERT INTO agent_devices (id, name) VALUES ($1, 'Solo Wallet Device')`, [soloDeviceId]);
+  await query(
+    `INSERT INTO exchange_payout_wallets (wallet_id, device_id, sim_slot, phone_number, pin_encrypted) VALUES ('jeeb',$1,1,'252680338686',$2)`,
+    [soloDeviceId, encrypt("9999")]
+  );
+  const evcPayoutWalletId = (
+    await queryOne<{ id: string }>(`SELECT id FROM exchange_payout_wallets WHERE wallet_id='evc_plus' ORDER BY created_at ASC LIMIT 1`)
+  )!.id;
+  const soloCorridor = (
+    await queryOne<{ id: string }>(
+      `INSERT INTO exchange_corridors (from_wallet_id, to_wallet_id, rate, fee_type, fee_value, payout_wallet_id)
+       VALUES ('jeeb','evc_plus',1,'fixed',1,$1) RETURNING id`,
+      [evcPayoutWalletId]
+    )
+  )!.id;
+  const soloAgentId = randomUUID();
+  await query(
+    `INSERT INTO agents (id, phone, name, password_hash, device_id) VALUES ($1, '252699000099', 'Solo Test Agent', 'x', $2)`,
+    [soloAgentId, soloDeviceId]
+  );
+
+  const soloOrderId = await insertExchangeOrder({
+    corridorId: soloCorridor,
+    fromWalletId: "jeeb",
+    toWalletId: "evc_plus",
+    amountSent: 22,
+    senderPhone: "252611111117",
+  });
+
+  const result = await ingestPaymentSms({
+    agentId: soloAgentId,
+    sender: "eDahab",
+    body: "Lacag $22.00 ah",
+    parsedAmount: 22,
+    parsedPhone: "252611111117",
+    simSlot: null,
+    transactionRef: nextRef(),
+  });
+
+  assert.notEqual(result.body.matchedExchangeOrderId, null, "an unresolved slot on a single-wallet device has nothing to be confused with");
+
+  await query(`DELETE FROM exchange_orders WHERE id=$1`, [soloOrderId]);
+  await query(`DELETE FROM exchange_corridors WHERE id=$1`, [soloCorridor]);
+  await query(`DELETE FROM exchange_payout_wallets WHERE device_id=$1`, [soloDeviceId]);
+  await query(`DELETE FROM agents WHERE id=$1`, [soloAgentId]);
+  await query(`DELETE FROM agent_devices WHERE id=$1`, [soloDeviceId]);
 });
 
 test("non-pending (already completed) exchange order does not match", async () => {

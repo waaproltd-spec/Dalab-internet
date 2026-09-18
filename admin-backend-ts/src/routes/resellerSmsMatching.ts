@@ -98,8 +98,17 @@ export async function findMatchingResellerDeposit(
       continue;
     }
     if (method.sim_slot != null && method.sim_slot !== uploadingSimSlot) {
-      skipped.push(`deposit ${candidate.id}: expects SIM slot ${method.sim_slot}, this SMS arrived on slot ${uploadingSimSlot ?? "(unresolved)"}`);
-      continue;
+      // Same conservative unresolved-slot allowance as findMatchingOrder
+      // (smsLogs.routes.ts) -- see that function's own doc comment for
+      // the ~6% Android SIM-slot resolution failure this covers.
+      const distinctSlots = await queryOne<{ count: string }>(
+        `SELECT COUNT(DISTINCT sim_slot) AS count FROM reseller_deposit_methods WHERE device_id=$1 AND sim_slot IS NOT NULL`,
+        [method.device_id]
+      );
+      if (!(uploadingSimSlot == null && Number(distinctSlots?.count ?? 0) <= 1)) {
+        skipped.push(`deposit ${candidate.id}: expects SIM slot ${method.sim_slot}, this SMS arrived on slot ${uploadingSimSlot ?? "(unresolved)"}`);
+        continue;
+      }
     }
     return { deposit: candidate, reason: null };
   }
