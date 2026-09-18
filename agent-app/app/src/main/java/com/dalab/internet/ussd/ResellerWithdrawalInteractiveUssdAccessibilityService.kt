@@ -72,7 +72,7 @@ class ResellerWithdrawalInteractiveUssdAccessibilityService : AccessibilityServi
             windowInfo?.recycle()
             val inputNode = findEditableNode(root)
             val looksLikeUssdDialog = inputNode != null || isTransientLoadingDialog(messageText) || findPositiveButton(root) != null
-            if (!bridge.isWindowAllowed(windowPackage, windowId, looksLikeUssdDialog)) {
+            if (!bridge.isWindowAllowed(windowPackage, windowId, looksLikeUssdDialog, ownPackageName = packageName)) {
                 if (bridge.shouldLogWindowMismatch(windowPackage)) {
                     val reason = if (bridge.lockedWindowPackageOrNull() == null) {
                         "doesn't look like the carrier dialog yet (no input field, button, or loading text)"

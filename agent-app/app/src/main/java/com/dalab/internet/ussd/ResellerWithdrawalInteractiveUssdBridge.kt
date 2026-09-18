@@ -202,10 +202,17 @@ object ResellerWithdrawalInteractiveUssdBridge {
 
     internal fun currentStage(): Int = repliesSubmittedCount
 
-    internal fun isWindowAllowed(packageName: String?, windowId: Int?, looksLikeUssdDialog: Boolean): Boolean {
+    /** [ownPackageName] -- this agent app's own package -- is excluded
+     * outright from ever establishing the lock: see
+     * ExchangeUssdBridge.isWindowAllowed's own doc comment for the live
+     * incident (Wallet Name Lookup locking onto its own foreground screen)
+     * that this mirrors the fix for. The carrier's reply dialog can never
+     * live inside this app's own package. */
+    internal fun isWindowAllowed(packageName: String?, windowId: Int?, looksLikeUssdDialog: Boolean, ownPackageName: String?): Boolean {
         val locked = lockedPackageName
         if (locked == null) {
             if (!looksLikeUssdDialog) return false
+            if (ownPackageName != null && packageName == ownPackageName) return false
             lockedPackageName = packageName
             lockedWindowId = windowId
             return true
