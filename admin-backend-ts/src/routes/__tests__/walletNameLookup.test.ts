@@ -334,6 +334,53 @@ test("619991299 already registered to one account cannot be linked to a second a
   assert.equal(ownResave.status, 200, "the original account must still be able to re-save/update its own number");
 });
 
+// Format-mismatch regression: the number stored on an existing account and
+// the number a NEW registration submits can be different textual
+// representations of the same real phone number -- e.g. a legacy row
+// stored "252"-prefixed ("252619991299") while a fresh submission sends
+// the bare 9-digit form ("619991299"). An exact-string-match duplicate
+// check misses this and lets the number be re-registered onto a second
+// account -- this is exactly what happened live in production (619991299
+// was re-duplicated onto a second account via an admin call submitting
+// the bare form against a 252-prefixed stored value). The guard must
+// normalize both sides before comparing.
+test("a 252-prefixed stored number still blocks a bare-digit duplicate registration (and vice versa)", async () => {
+  // Directly store the number in its 252-prefixed form, bypassing the API,
+  // to simulate the legacy/inconsistent storage format found in production.
+  await query(`UPDATE customers SET evc_plus_name=$1, evc_plus_number=$2, evc_plus_saved_at=now() WHERE id=$3`, [
+    "PREFIXED FORM OWNER",
+    "252619991299",
+    CUSTOMER_ID,
+  ]);
+
+  // A second account submitting the SAME number in its bare 9-digit form
+  // must still be rejected.
+  const bareAttempt = await fetch(`${baseUrl}/admin/customers/${OTHER_CUSTOMER_ID}/wallet-numbers`, {
+    method: "PUT",
+    ...authed(superAdminToken, { evcPlusName: "BARE FORM DUPLICATE", evcPlusNumber: "619991299" }),
+  });
+  assert.equal(bareAttempt.status, 409, "a bare-digit submission must still be recognized as a duplicate of the 252-prefixed stored number");
+  assert.equal((await asJson(bareAttempt)).error, EBADAL_DUPLICATE_MESSAGE);
+
+  const otherState = await queryOne<{ evc_plus_number: string | null }>(`SELECT evc_plus_number FROM customers WHERE id=$1`, [OTHER_CUSTOMER_ID]);
+  assert.notEqual(otherState?.evc_plus_number, "619991299");
+
+  // And the reverse: a third account submitting the 252-prefixed form of a
+  // number stored BARE elsewhere must also be rejected. Store a fresh
+  // number bare on THIRD_CUSTOMER_ID to set this up directly.
+  await query(`UPDATE customers SET edahab_name=$1, edahab_number=$2, edahab_saved_at=now() WHERE id=$3`, [
+    "BARE FORM OWNER",
+    "621112233",
+    THIRD_CUSTOMER_ID,
+  ]);
+  const prefixedAttempt = await fetch(`${baseUrl}/admin/customers/${OTHER_CUSTOMER_ID}/wallet-numbers`, {
+    method: "PUT",
+    ...authed(superAdminToken, { edahabName: "PREFIXED FORM DUPLICATE", edahabNumber: "252621112233" }),
+  });
+  assert.equal(prefixedAttempt.status, 409, "a 252-prefixed submission must still be recognized as a duplicate of a bare-digit stored number");
+  assert.equal((await asJson(prefixedAttempt)).error, EBADAL_DUPLICATE_MESSAGE);
+});
+
 // Strict "one number = one account" rule: a registration submitting BOTH an
 // EVC Plus and an eDahab number in the same call must be rejected in full
 // the moment EITHER one is already taken -- even when the other number is
