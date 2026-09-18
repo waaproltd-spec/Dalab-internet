@@ -111,6 +111,15 @@ class ResellerWithdrawalInteractiveUssdOrchestrator(private val context: Context
         wakeLock?.acquire(120_000)
         ResellerWithdrawalInteractiveUssdBridge.activeWakeLock = wakeLock
 
+        // Second, separate lock beyond the per-slot UssdSimLock above --
+        // this withdrawal and a concurrent real Money Exchange payout or
+        // Wallet Name Lookup on a DIFFERENT SIM slot all drive an
+        // AccessibilityService watching the SAME single physical screen;
+        // see InteractiveUssdScreenLock's own doc comment for the live
+        // incident this generalizes the fix for. Always acquired after
+        // UssdSimLock, never before, so the two locks can't deadlock
+        // against each other.
+        ResellerWithdrawalInteractiveUssdBridge.acquireSession()
         ResellerWithdrawalInteractiveUssdBridge.arm(replies.size)
         try {
             dialer.dial(subscriptionId, payout.initialDial)
@@ -156,6 +165,7 @@ class ResellerWithdrawalInteractiveUssdOrchestrator(private val context: Context
             return result
         } finally {
             ResellerWithdrawalInteractiveUssdBridge.disarm()
+            ResellerWithdrawalInteractiveUssdBridge.releaseSession()
             if (wakeLock?.isHeld == true) wakeLock.release()
             ResellerWithdrawalInteractiveUssdBridge.activeWakeLock = null
             UssdSimLock.release(sessionTicket)

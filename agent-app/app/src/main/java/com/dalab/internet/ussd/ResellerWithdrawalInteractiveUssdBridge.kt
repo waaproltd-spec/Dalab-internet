@@ -34,8 +34,27 @@ import kotlinx.coroutines.withTimeoutOrNull
  * the LAST one in the sequence the orchestrator arms) — see
  * ResellerWithdrawalInteractiveUssdOrchestrator for where the reply queue is
  * actually built.
+ *
+ * Despite being a separate object/bridge from [ExchangeUssdBridge], this
+ * flow's dial can still collide with a real Money Exchange payout or a
+ * Wallet Name Lookup running on a DIFFERENT SIM slot at the same moment:
+ * Android delivers accessibility events to every enabled
+ * AccessibilityService regardless of which flow's dial produced them, and
+ * neither this bridge's own [ExchangeUssdAccessibilityService]-style
+ * heuristics nor its counterpart's have any way to tell "this on-screen
+ * dialog is MY flow's own dial" -- there is only one physical screen. See
+ * [InteractiveUssdScreenLock]'s own doc comment for the full reasoning;
+ * [ResellerWithdrawalInteractiveUssdOrchestrator] acquires it exactly like
+ * the other two interactive flows do.
  */
 object ResellerWithdrawalInteractiveUssdBridge {
+
+    /** Thin delegation to [InteractiveUssdScreenLock] -- see that object's
+     * own doc comment. Call from the same `finally` block that calls
+     * [disarm], after it. */
+    suspend fun acquireSession() = InteractiveUssdScreenLock.acquire()
+
+    fun releaseSession() = InteractiveUssdScreenLock.release()
 
     @Volatile
     var serviceConnected: Boolean = false

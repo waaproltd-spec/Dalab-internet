@@ -32,17 +32,19 @@ import kotlinx.coroutines.withTimeoutOrNull
  */
 object ExchangeUssdBridge {
 
-    /** Thin delegation to [ExchangeSessionLock] -- see that object's own doc
-     * comment for why the lock itself lives in a separate, Android-free
-     * object rather than as a property here (this object eagerly
-     * constructs a real Handler tied to the main Looper below, which makes
-     * merely REFERENCING this class throw outside a real Android runtime —
-     * a plain lock property here would make it impossible to unit-test the
-     * lock on its own). Call from the same `finally` block that calls
-     * [disarm], after it. */
-    suspend fun acquireSession() = ExchangeSessionLock.acquire()
+    /** Thin delegation to [InteractiveUssdScreenLock] -- see that object's
+     * own doc comment for why the lock itself lives in a separate,
+     * Android-free object rather than as a property here (this object
+     * eagerly constructs a real Handler tied to the main Looper below,
+     * which makes merely REFERENCING this class throw outside a real
+     * Android runtime — a plain lock property here would make it
+     * impossible to unit-test the lock on its own), and for why this lock
+     * is now shared with Reseller Withdraw's own separate bridge too, not
+     * just the two flows that already share this bridge object. Call from
+     * the same `finally` block that calls [disarm], after it. */
+    suspend fun acquireSession() = InteractiveUssdScreenLock.acquire()
 
-    fun releaseSession() = ExchangeSessionLock.release()
+    fun releaseSession() = InteractiveUssdScreenLock.release()
 
     @Volatile
     var serviceConnected: Boolean = false
