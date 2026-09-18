@@ -69,6 +69,10 @@ fun CustomerDetailScreen(customerId: String, onBack: () -> Unit) {
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var generatedPin by remember { mutableStateOf<String?>(null) }
+    // Surfaces a failed Activate tap (the one action on this screen with no
+    // confirmation screen of its own to show an error on) -- Suspend has
+    // SuspendCustomerScreen's own inline error for the same failure.
+    var statusToggleError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
     fun load() {
@@ -98,16 +102,27 @@ fun CustomerDetailScreen(customerId: String, onBack: () -> Unit) {
             orders = orders,
             loading = loading,
             error = error,
+            statusToggleError = statusToggleError,
             onBack = onBack,
             onResetPin = { generatedPin = null; view = DetailView.RESET_PIN },
             onSuspendOrActivate = {
                 detail?.let { current ->
                     if (current.status == "active") {
+                        statusToggleError = null
                         view = DetailView.SUSPEND_CONFIRM
                     } else {
+                        statusToggleError = null
                         scope.launch {
-                            ApiClient.service.toggleCustomerBlock(customerId)
-                            load()
+                            try {
+                                val response = ApiClient.service.toggleCustomerBlock(customerId)
+                                if (response.isSuccessful) {
+                                    load()
+                                } else {
+                                    statusToggleError = "Couldn't activate this customer. Try again."
+                                }
+                            } catch (_: Exception) {
+                                statusToggleError = "Couldn't activate this customer. Check your connection and try again."
+                            }
                         }
                     }
                 }
@@ -194,12 +209,16 @@ fun CustomerDetailScreen(customerId: String, onBack: () -> Unit) {
             detail = detail,
             onCancel = { view = DetailView.MAIN },
             onConfirm = {
-                val response = ApiClient.service.toggleCustomerBlock(customerId)
-                if (response.isSuccessful) {
-                    load()
-                    view = DetailView.MAIN
+                try {
+                    val response = ApiClient.service.toggleCustomerBlock(customerId)
+                    if (response.isSuccessful) {
+                        load()
+                        view = DetailView.MAIN
+                    }
+                    response.isSuccessful
+                } catch (_: Exception) {
+                    false
                 }
-                response.isSuccessful
             },
         )
     }
@@ -232,6 +251,7 @@ private fun CustomerDetailMain(
     orders: List<CustomerOrderHistoryEntry>,
     loading: Boolean,
     error: String?,
+    statusToggleError: String?,
     onBack: () -> Unit,
     onResetPin: () -> Unit,
     onSuspendOrActivate: () -> Unit,
@@ -298,6 +318,19 @@ private fun CustomerDetailMain(
                                 )
                                 ActionButton(icon = Icons.Filled.Receipt, label = "View Orders", color = DalabIndigo, onClick = onViewOrders, modifier = Modifier.weight(1f))
                                 Spacer(Modifier.weight(1f))
+                            }
+                        }
+
+                        if (statusToggleError != null) {
+                            item {
+                                Surface(color = DalabDangerRed.copy(alpha = 0.08f), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+                                    Text(
+                                        statusToggleError,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = DalabDangerRed,
+                                        modifier = Modifier.padding(12.dp),
+                                    )
+                                }
                             }
                         }
 
