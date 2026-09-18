@@ -28,13 +28,19 @@ export async function notifyCustomer(
   const id = randomUUID();
   const sentAt = new Date().toISOString();
   try {
-    await query(`INSERT INTO notifications (id, type, title, body, customer_id, sent_at) VALUES ($1,$2,$3,$4,$5,$6)`, [
+    // data is persisted too (not just pushed) so the in-app notifications
+    // list itself can carry structured routing info -- e.g. friends.routes.ts
+    // needs the customer app's notification card to know exactly which
+    // friend_requests row a "friend_request" notification is about, to
+    // offer Aqbal/Diid right there without a second lookup.
+    await query(`INSERT INTO notifications (id, type, title, body, customer_id, sent_at, data) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [
       id,
       type,
       title,
       body,
       customerId,
       sentAt,
+      data ? JSON.stringify(data) : null,
     ]);
   } catch (err) {
     // eslint-disable-next-line no-console
