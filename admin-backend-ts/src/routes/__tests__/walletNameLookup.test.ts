@@ -3,11 +3,14 @@
 //   DATABASE_URL=postgres://user:pass@127.0.0.1:5432/dalab_test PGSSL=false \
 //     npx tsx --test --test-force-exit src/routes/__tests__/walletNameLookup.test.ts
 //
-// Covers the Wallet Name Lookup flow (Complete Account) end to end at the
-// HTTP layer: a customer starting a lookup, an agent device claiming and
-// reporting it, and — the actual safety rule this feature exists for — PUT
-// /customer/wallet-numbers refusing to save a name the customer typed
-// themselves, only ever a name a completed 'success' lookup produced.
+// Covers the Wallet Name Lookup flow end to end at the HTTP layer: a
+// customer (or anything else that starts one) starting a lookup, an agent
+// device claiming and reporting it, and the customer polling for the
+// result. This feature stays available as its own infrastructure, but
+// PUT /customer/wallet-numbers (the "Complete Account" / eBadal save) does
+// NOT require or read a lookup at all — the customer types both the Full
+// Name and the Number themselves on wallet_numbers_screen.dart and saves
+// them directly, same as the Admin/Agent override routes.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -54,8 +57,12 @@ before(async () => {
   await query(`DELETE FROM exchange_orders`);
   await query(`DELETE FROM exchange_corridors`);
   await query(`DELETE FROM exchange_payout_wallets`);
-  await query(`DELETE FROM customers WHERE id IN ($1,$2)`, [CUSTOMER_ID, OTHER_CUSTOMER_ID]);
-  await query(`DELETE FROM agents WHERE id IN ($1,$2)`, [AGENT_ID, OTHER_AGENT_ID]);
+  // Deletes by the fixed literal phone too, not just this run's fresh
+  // random id -- a prior run that crashed mid-test can leave a
+  // same-phone row behind under a DIFFERENT id, which an id-only delete
+  // would never find, tripping the unique constraint on this run's insert.
+  await query(`DELETE FROM customers WHERE id IN ($1,$2) OR phone IN ('252677100001','252677100002')`, [CUSTOMER_ID, OTHER_CUSTOMER_ID]);
+  await query(`DELETE FROM agents WHERE id IN ($1,$2) OR phone IN ('252699000002','252699000003')`, [AGENT_ID, OTHER_AGENT_ID]);
   await query(`DELETE FROM agent_devices WHERE id=$1`, [DEVICE_ID]);
 
   await query(`INSERT INTO agent_devices (id, name) VALUES ($1, 'Test Lookup Device')`, [DEVICE_ID]);
@@ -108,7 +115,7 @@ test("POST /customer/wallet-lookups rejects a number with the wrong carrier pref
   assert.equal(res.status, 400);
 });
 
-test("full lookup lifecycle: customer starts it, agent claims + reports success, customer sees it, and only that verified name can be saved", async () => {
+test("full lookup lifecycle: customer starts it, agent claims + reports success, customer sees it", async () => {
   const startRes = await fetch(`${baseUrl}/customer/wallet-lookups`, {
     method: "POST",
     ...authed(customerToken, { walletId: "evc_plus", phoneNumber: "610338686" }),
@@ -156,70 +163,34 @@ test("full lookup lifecycle: customer starts it, agent claims + reports success,
   const polled = await asJson(polledRes);
   assert.equal(polled.status, "success");
   assert.equal(polled.registeredName, "YASIIN MAXAMED AADAN");
-
-  // The actual safety rule: even if the customer's own client tries to
-  // submit a DIFFERENT name than what was verified, the server must save
-  // the LOOKUP's own name, never the client-submitted string.
-  const saveRes = await fetch(`${baseUrl}/customer/wallet-numbers`, {
-    method: "PUT",
-    ...authed(customerToken, {
-      evcPlusName: "SOME OTHER NAME I TYPED MYSELF",
-      evcPlusNumber: "252610338686",
-      lookupId: started.id,
-    }),
-  });
-  assert.equal(saveRes.status, 200);
-  const saved = await asJson(saveRes);
-  assert.equal(saved.evcPlusName, "YASIIN MAXAMED AADAN", "must save the verified lookup's own name, never the client-submitted one");
-  assert.equal(saved.evcPlusNumber, "252610338686");
 });
 
-test("PUT /customer/wallet-numbers refuses to set a name with no lookupId at all", async () => {
+test("PUT /customer/wallet-numbers saves a name the customer typed themselves, with no lookup involved at all", async () => {
   const res = await fetch(`${baseUrl}/customer/wallet-numbers`, {
     method: "PUT",
-    ...authed(customerToken, { evcPlusName: "ANY NAME", evcPlusNumber: "252610338687" }),
+    ...authed(customerToken, { evcPlusName: "SELF TYPED NAME", evcPlusNumber: "252610338687" }),
   });
-  assert.equal(res.status, 400);
+  assert.equal(res.status, 200);
+  const saved = await asJson(res);
+  assert.equal(saved.evcPlusName, "SELF TYPED NAME", "the customer's own typed name must be saved as-is — no Wallet Name Lookup required");
+  assert.equal(saved.evcPlusNumber, "252610338687");
 });
 
-test("PUT /customer/wallet-numbers refuses a lookupId whose number doesn't match the number being saved", async () => {
+test("PUT /customer/wallet-numbers ignores a lookupId if one is still sent — it is not read or enforced", async () => {
   const startRes = await fetch(`${baseUrl}/customer/wallet-lookups`, {
     method: "POST",
     ...authed(customerToken, { walletId: "evc_plus", phoneNumber: "610338688" }),
   });
   const started = await asJson(startRes);
-  await fetch(`${baseUrl}/agent/wallet-lookups/${started.id}/claim`, { method: "POST", ...authed(agentToken) });
-  await fetch(`${baseUrl}/agent/wallet-lookups/${started.id}`, {
-    method: "PUT",
-    ...authed(agentToken, { status: "success", registeredName: "ANOTHER PERSON" }),
-  });
 
-  // Correct lookup, but a DIFFERENT number than what was actually verified.
   const res = await fetch(`${baseUrl}/customer/wallet-numbers`, {
     method: "PUT",
-    ...authed(customerToken, { evcPlusName: "ANOTHER PERSON", evcPlusNumber: "252610338699", lookupId: started.id }),
+    ...authed(customerToken, { evcPlusName: "TYPED NAME", evcPlusNumber: "252610338699", lookupId: started.id }),
   });
-  assert.equal(res.status, 400);
-});
-
-test("a failed lookup can never be used to save a name", async () => {
-  const startRes = await fetch(`${baseUrl}/customer/wallet-lookups`, {
-    method: "POST",
-    ...authed(customerToken, { walletId: "evc_plus", phoneNumber: "610338689" }),
-  });
-  const started = await asJson(startRes);
-  await fetch(`${baseUrl}/agent/wallet-lookups/${started.id}/claim`, { method: "POST", ...authed(agentToken) });
-  const reportRes = await fetch(`${baseUrl}/agent/wallet-lookups/${started.id}`, {
-    method: "PUT",
-    ...authed(agentToken, { status: "failed", rawResponse: "USSD code running…" }),
-  });
-  assert.equal(reportRes.status, 200);
-
-  const saveRes = await fetch(`${baseUrl}/customer/wallet-numbers`, {
-    method: "PUT",
-    ...authed(customerToken, { evcPlusName: "WHATEVER", evcPlusNumber: "252610338689", lookupId: started.id }),
-  });
-  assert.equal(saveRes.status, 400);
+  assert.equal(res.status, 200);
+  const saved = await asJson(res);
+  assert.equal(saved.evcPlusName, "TYPED NAME");
+  assert.equal(saved.evcPlusNumber, "252610338699", "the saved number need not match the unrelated lookup's own number");
 });
 
 test("an abandoned claim (past its 2-minute grace) is put back up for grabs", async () => {
