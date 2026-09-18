@@ -130,6 +130,30 @@ data class NotificationCampaign(
     val createdByRole: String,
     val createdAt: String,
 )
+
+// ---------------- Nala Soco ----------------
+// Shared Admin+Agent management -- same GET/POST/PUT/DELETE /admin/nala-soco
+// routes the Admin dashboard's own Nala Soco section uses (App.jsx's
+// DalabAdminApi.getNalaSocoPosts/createNalaSocoPost/updateNalaSocoPost/
+// deleteNalaSocoPost), same reasoning as the notification broadcast section
+// above: requireAuth("super_admin","admin","agent") on the backend, not
+// requireStaff(), so an Agent has the exact same create/edit/publish/
+// unpublish/delete capability an Admin has, with no capability gap.
+data class NalaSocoPostResponse(
+    val id: String,
+    val title: String,
+    val body: String,
+    val hasImage: Boolean,
+    val published: Boolean,
+    val createdAt: String,
+    val updatedAt: String,
+)
+data class NalaSocoCreateRequest(
+    val title: String,
+    val body: String,
+    val published: Boolean = true,
+    val imageBase64: String? = null,
+)
 data class DialAttemptStartRequest(val simSlot: Int?, val ussdString: String, val attemptNumber: Int)
 data class DialAttemptStartResponse(val id: String)
 // isFinalAttempt: true when this is the last outcome this order will get
@@ -350,6 +374,31 @@ interface ApiService {
 
     @GET("notifications/campaigns")
     suspend fun getNotificationCampaigns(): Response<List<NotificationCampaign>>
+
+    // See NalaSocoPostResponse's own doc comment. GET here is deliberately
+    // the "list every post, including unpublished drafts" management view
+    // (/admin/nala-soco) -- distinct from the plain public feed
+    // (/nala-soco, published-only) this app has no reason to call.
+    @GET("admin/nala-soco")
+    suspend fun getNalaSocoPosts(): Response<List<NalaSocoPostResponse>>
+
+    @POST("admin/nala-soco")
+    suspend fun createNalaSocoPost(@Body body: NalaSocoCreateRequest): Response<NalaSocoPostResponse>
+
+    // @Body is a raw JsonObject, not a typed data class, on purpose: the
+    // backend's PUT distinguishes "imageBase64 key entirely absent" (leave
+    // the existing image untouched) from "imageBase64: null" (remove it)
+    // from "imageBase64: <data URI>" (replace it) -- and Gson's default
+    // (non-serializeNulls) POJO field serialization silently OMITS a null
+    // Kotlin field rather than emitting `"imageBase64":null`, which would
+    // make "remove" indistinguishable from "leave unchanged". A hand-built
+    // JsonObject sidesteps that: JsonNull.INSTANCE is emitted as a real
+    // JSON null, and a key never added is genuinely absent.
+    @PUT("admin/nala-soco/{id}")
+    suspend fun updateNalaSocoPost(@Path("id") id: String, @Body body: com.google.gson.JsonObject): Response<NalaSocoPostResponse>
+
+    @DELETE("admin/nala-soco/{id}")
+    suspend fun deleteNalaSocoPost(@Path("id") id: String): Response<Unit>
 
     // Registers/clears this device's FCM token so a newly-assigned support
     // conversation can push straight to it -- see notifications/

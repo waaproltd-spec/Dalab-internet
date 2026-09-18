@@ -1,11 +1,19 @@
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
 import { query, queryOne } from "../db/pool.js";
-import { requireStaff } from "../auth/middleware.js";
+import { requireAuth } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
 import { parseDataUri } from "../utils/dataUri.js";
 
 export const nalaSocoRouter = Router();
+
+// Management (list-all, create, update, delete) is shared identically
+// between the Admin dashboard and the Agent app -- same three roles, same
+// routes, same DB rows -- exactly like notifications.routes.ts's own
+// broadcast/campaign endpoints. Deliberately NOT requireStaff() (which
+// would exclude "agent"): an Agent has the exact same Nala Soco
+// permissions as an Admin here, by explicit product decision.
+const requireNalaSocoManager = () => requireAuth("super_admin", "admin", "agent");
 
 // image_data (BYTEA) is deliberately never selected here -- it's only ever
 // read by the dedicated .../image route below, served raw rather than
@@ -42,11 +50,11 @@ nalaSocoRouter.get("/nala-soco/:id/image", async (req, res) => {
   res.send(row.image_data);
 });
 
-nalaSocoRouter.get("/admin/nala-soco", requireStaff(), async (_req, res) => {
+nalaSocoRouter.get("/admin/nala-soco", requireNalaSocoManager(), async (_req, res) => {
   sendJson(res, 200, await query(`SELECT ${NALA_SOCO_LIST_COLUMNS} FROM nala_soco_posts ORDER BY created_at DESC`));
 });
 
-nalaSocoRouter.post("/admin/nala-soco", requireStaff(), async (req, res) => {
+nalaSocoRouter.post("/admin/nala-soco", requireNalaSocoManager(), async (req, res) => {
   const title = typeof req.body.title === "string" ? req.body.title.trim() : "";
   const body = typeof req.body.body === "string" ? req.body.body.trim() : "";
   if (!title) return sendJson(res, 400, { error: "title is required" });
@@ -69,7 +77,7 @@ nalaSocoRouter.post("/admin/nala-soco", requireStaff(), async (req, res) => {
   sendJson(res, 201, await queryOne(`SELECT ${NALA_SOCO_LIST_COLUMNS} FROM nala_soco_posts WHERE id=$1`, [id]));
 });
 
-nalaSocoRouter.put("/admin/nala-soco/:id", requireStaff(), async (req, res) => {
+nalaSocoRouter.put("/admin/nala-soco/:id", requireNalaSocoManager(), async (req, res) => {
   const existing = await queryOne<{ title: string; body: string; published: boolean }>(
     `SELECT title, body, published FROM nala_soco_posts WHERE id=$1`,
     [req.params.id]
@@ -111,7 +119,7 @@ nalaSocoRouter.put("/admin/nala-soco/:id", requireStaff(), async (req, res) => {
   sendJson(res, 200, await queryOne(`SELECT ${NALA_SOCO_LIST_COLUMNS} FROM nala_soco_posts WHERE id=$1`, [req.params.id]));
 });
 
-nalaSocoRouter.delete("/admin/nala-soco/:id", requireStaff(), async (req, res) => {
+nalaSocoRouter.delete("/admin/nala-soco/:id", requireNalaSocoManager(), async (req, res) => {
   const result = await query(`DELETE FROM nala_soco_posts WHERE id=$1 RETURNING id`, [req.params.id]);
   if (result.length === 0) return sendJson(res, 404, { error: "Post not found" });
   sendJson(res, 200, { deleted: true });
