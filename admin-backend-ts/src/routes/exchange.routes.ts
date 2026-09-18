@@ -787,6 +787,17 @@ exchangeRouter.put("/agent/exchange/dial-attempts/:attemptId/step2", requireAuth
 // bridge's conflated event channel got a stray event). A stray/unmatched
 // confirmation is not an error — nothing to complete just means this
 // particular SMS doesn't correspond to a DALAB payout, or already did.
+//
+// The SMS is corroboration for a payout that was actually dialed, never a
+// substitute for one: an order that has never had a dial attempt reach
+// step2 must NOT be completed by this alone, however well the amount/phone
+// match — otherwise an unrelated or coincidental carrier SMS could mark a
+// payout "Completed" that nobody ever sent. completed_at on
+// exchange_dial_attempts is only ever set by the step2 handler, so its
+// presence is proof a transfer was actually attempted (PIN submitted to the
+// carrier), independent of whether that attempt was reported success,
+// failed, or ambiguous — which is exactly the DEX176626979 case this
+// function exists to rescue.
 
 async function completeExchangeOrderByPayoutConfirmation(
   orderId: string,
@@ -797,6 +808,29 @@ async function completeExchangeOrderByPayoutConfirmation(
     [orderId]
   );
   if (!order) return null;
+
+  if (order.status === "completed") {
+    return { order, success: true, alreadyCompleted: true };
+  }
+  if (!["in_progress", "failed"].includes(order.status)) {
+    return { order, success: false, alreadyCompleted: false };
+  }
+
+  const attemptedPayout = await queryOne<{ id: string }>(
+    `SELECT id FROM exchange_dial_attempts WHERE exchange_order_id=$1 AND completed_at IS NOT NULL LIMIT 1`,
+    [orderId]
+  );
+  if (!attemptedPayout) {
+    await recordActivity({
+      adminId: undefined,
+      action: "exchange_payout_sms_ignored_no_attempt",
+      entityType: "exchange_order",
+      entityId: orderId,
+      oldValue: { status: order.status },
+      newValue: { confirmationText },
+    });
+    return { order, success: false, alreadyCompleted: false };
+  }
 
   const result = await query(
     `UPDATE exchange_orders SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1 AND status IN ('in_progress','failed') RETURNING *`,
@@ -871,14 +905,63 @@ exchangeRouter.post("/agent/exchange/orders/payout-confirmation", requireAuth("a
   if (!match) return sendJson(res, 200, { matched: false });
 
   const result = await completeExchangeOrderByPayoutConfirmation(match.id, String(rawText ?? ""));
-  sendJson(res, 200, { matched: true, orderId: match.id, alreadyCompleted: result?.alreadyCompleted ?? false });
+  sendJson(res, 200, {
+    matched: true,
+    orderId: match.id,
+    completed: result?.success ?? false,
+    alreadyCompleted: result?.alreadyCompleted ?? false,
+  });
 });
 
-// ---------------- Reverse (pre-payout cancellation only) ----------------
+// ---------------- Retry payout (failed -> in_progress) ----------------
+// The customer's money was already collected before an order could ever
+// reach 'in_progress' (see autoAdvanceExchangeOrderToInProgress above), so
+// a 'failed' order is money-in, payout-not-sent — it must never be a dead
+// end. This is a deliberate, admin-approved retry, distinct from the
+// automatic payout ExchangeSelfHealSweeper performs: putting the order back
+// in 'in_progress' does NOT clear its existing exchange_dial_attempts rows,
+// so the sweeper's own "never auto-dial an order that already has a dial
+// attempt" rule (see GET /agent/exchange/orders above) still keeps it from
+// being auto-redialed — the agent must explicitly start a new dial attempt
+// (with an incremented attemptNumber) from the app, same as any other
+// manual payout action.
+
+exchangeRouter.post("/admin/exchange/orders/:id/retry-payout", requirePermission("exchange.manage"), async (req, res) => {
+  const result = await query(
+    `UPDATE exchange_orders SET status='in_progress', updated_at=now() WHERE id=$1 AND status='failed' RETURNING id, customer_id`,
+    [req.params.id]
+  );
+  if (result.length === 0) {
+    const existing = await queryOne(`SELECT status FROM exchange_orders WHERE id=$1`, [req.params.id]);
+    if (!existing) return sendJson(res, 404, { error: "Exchange order not found" });
+    return sendJson(res, 409, { error: `Cannot retry payout for an order in status '${existing.status}'` });
+  }
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "retry_exchange_payout",
+    entityType: "exchange_order",
+    entityId: req.params.id,
+    oldValue: { status: "failed" },
+    newValue: { status: "in_progress" },
+  });
+  broadcast({ type: "exchange_order.updated", exchangeOrderId: req.params.id });
+  sendJson(res, 200, await queryOne(`${EXCHANGE_ORDER_LIST_SELECT} WHERE eo.id=$1`, [req.params.id]));
+});
+
+// ---------------- Reverse (cancel & refund — pre-payout or after a failed payout) ----------------
+// Covers two distinct cases with identical mechanics: cancelling an order
+// before any payout was attempted ('pending'/'in_progress'), and cancelling
+// one whose payout attempt genuinely failed ('failed') as the alternative
+// to retry-payout above, when the admin decides to refund the customer
+// instead of re-dialing. Either way this only flips the status/notifies the
+// customer — same as it always has — the actual money movement back to the
+// customer is handled by the admin outside this system, exactly as it
+// already was for the pre-payout 'in_progress' case (which also has money
+// already collected, with no automatic refund execution here either).
 
 exchangeRouter.post("/admin/exchange/orders/:id/reverse", requirePermission("exchange.manage"), async (req, res) => {
   const result = await query(
-    `UPDATE exchange_orders SET status='cancelled', reversed_at=now(), updated_at=now() WHERE id=$1 AND status IN ('pending','in_progress') RETURNING id, customer_id`,
+    `UPDATE exchange_orders SET status='cancelled', reversed_at=now(), updated_at=now() WHERE id=$1 AND status IN ('pending','in_progress','failed') RETURNING id, customer_id`,
     [req.params.id]
   );
   if (result.length === 0) {

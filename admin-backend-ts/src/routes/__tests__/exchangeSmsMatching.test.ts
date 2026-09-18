@@ -23,6 +23,7 @@ import { ingestPaymentSms } from "../smsLogs.routes.js";
 import { autoAdvanceExchangeOrderToInProgress, exchangeRouter } from "../exchange.routes.js";
 
 const AGENT_ID = randomUUID();
+const SUPER_ADMIN_ID = randomUUID();
 const DEVICE_ID = "test-device-1";
 const CUSTOMER_ID = randomUUID();
 const STORE_CUSTOMER_ID = randomUUID();
@@ -76,6 +77,16 @@ before(async () => {
   await query(`DELETE FROM agents`);
   await query(`DELETE FROM agent_devices`);
   await query(`DELETE FROM admin_activity_log`);
+  await query(`DELETE FROM admin_users WHERE id=$1 OR email='exchange-sms-test-super@example.com'`, [SUPER_ADMIN_ID]);
+
+  // A real admin_users row -- required so recordActivity's admin_id FK
+  // succeeds for the admin-authenticated retry-payout/reverse routes below
+  // (a bare signAccessToken() sub with no backing row fails that insert
+  // silently, which the retry-payout test's activity-log assertion caught).
+  await query(
+    `INSERT INTO admin_users (id, email, password_hash, role) VALUES ($1,'exchange-sms-test-super@example.com','x','super_admin')`,
+    [SUPER_ADMIN_ID]
+  );
 
   await query(`INSERT INTO agent_devices (id, name) VALUES ($1, 'Test Device')`, [DEVICE_ID]);
   await query(
@@ -128,7 +139,7 @@ before(async () => {
   );
 
   agentToken = signAccessToken(AGENT_ID, "agent");
-  superAdminToken = signAccessToken(randomUUID(), "super_admin");
+  superAdminToken = signAccessToken(SUPER_ADMIN_ID, "super_admin");
   payoutServer = http.createServer(payoutApp as unknown as http.RequestListener);
   payoutServer.listen(0);
   await new Promise<void>((resolve) => payoutServer.once("listening", resolve));
@@ -924,6 +935,283 @@ test("payout USSD string uses the correct carrier code for each wallet: EVC Plus
   );
   assert.equal(edahabStart.simSlot, 2, "must dial on the eDahab payout wallet's SIM (2)");
   assert.equal(edahabStart.step1UssdString, "*110*688000000*64#", "eDahab payout must dial *110*NUMBER*AMOUNT#, a whole-dollar amount with no spurious '*00'");
+});
+
+// ==================== Payout-safety audit tests (DEX679253805) ====================
+// A customer's payment being received must never be treated as proof the
+// payout was sent. These cover the 3 fixes made in response to that audit:
+// (1) a carrier confirmation SMS can only complete an order that actually
+// had a dial attempt reach step2 -- never one that was simply never dialed,
+// or only failed at step1 (no PIN ever submitted); (2) the DEX176626979
+// rescue case (step2 genuinely attempted but misclassified) still works;
+// (3) a 'failed' order is no longer a dead end -- admin retry-payout and
+// reverse (cancel/refund) both now work on it.
+
+test("payout-confirmation SMS does not complete an order that was never dialed at all", async () => {
+  const orderId = await insertExchangeOrder({
+    corridorId: corridorEdahabToEvc,
+    fromWalletId: "edahab",
+    toWalletId: "evc_plus",
+    amountSent: 70,
+    senderPhone: "252611131010",
+  });
+  await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "eDahab",
+    body: "Lacag $70.00 ah",
+    parsedAmount: 70,
+    parsedPhone: "252611131010",
+    simSlot: 2,
+    transactionRef: nextRef(),
+  });
+  const beforeStatus = await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]);
+  assert.equal(beforeStatus?.status, "in_progress");
+
+  // A carrier SMS arrives on the payout wallet's phone matching this order's
+  // amount+receiver_phone, but no dial attempt was ever made for it.
+  const res = await fetch(`${payoutBaseUrl}/agent/exchange/orders/payout-confirmation`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ receiverPhone: "688000000", amount: 70, rawText: "You have sent $70.00 to 688000000" }),
+  });
+  assert.equal(res.status, 200);
+  const body = await asJson(res);
+  assert.equal(body.matched, true, "the SMS does correspond to this order by amount+phone");
+  assert.equal(body.completed, false, "but must not complete it -- nothing was ever dialed");
+
+  const after = await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]);
+  assert.equal(after?.status, "in_progress", "the order must stay in_progress, not be silently completed by an unattempted payout");
+
+  assert.ok(
+    await activityFor(orderId, "exchange_payout_sms_ignored_no_attempt"),
+    "expected an exchange_payout_sms_ignored_no_attempt activity log entry for audit visibility"
+  );
+});
+
+test("payout-confirmation SMS does not complete a failed order whose dial attempt never reached step2", async () => {
+  const orderId = await insertExchangeOrder({
+    corridorId: corridorEdahabToEvc,
+    fromWalletId: "edahab",
+    toWalletId: "evc_plus",
+    amountSent: 71,
+    senderPhone: "252611131011",
+  });
+  await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "eDahab",
+    body: "Lacag $71.00 ah",
+    parsedAmount: 71,
+    parsedPhone: "252611131011",
+    simSlot: 2,
+    transactionRef: nextRef(),
+  });
+
+  const startRes = await fetch(`${payoutBaseUrl}/agent/exchange/orders/${orderId}/dial-attempts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ attemptNumber: 1 }),
+  });
+  const start = await asJson(startRes);
+
+  // Step1 itself fails (final) -- no PIN was ever submitted to the carrier,
+  // so nothing was ever actually attempted at the transfer step.
+  await fetch(`${payoutBaseUrl}/agent/exchange/dial-attempts/${start.id}/step1`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ status: "failed", responseMessage: "USSD session ended" }),
+  });
+  const afterStep1 = await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]);
+  assert.equal(afterStep1?.status, "failed");
+
+  const res = await fetch(`${payoutBaseUrl}/agent/exchange/orders/payout-confirmation`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ receiverPhone: "688000000", amount: 71, rawText: "You have sent $71.00 to 688000000" }),
+  });
+  const body = await asJson(res);
+  assert.equal(body.completed, false, "a step1-only failure means no transfer was ever attempted -- the SMS must not complete it");
+
+  const after = await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]);
+  assert.equal(after?.status, "failed", "must remain failed, not be silently completed");
+});
+
+test("payout-confirmation SMS still rescues an order whose dial attempt genuinely reached step2 (DEX176626979 case)", async () => {
+  const orderId = await insertExchangeOrder({
+    corridorId: corridorEdahabToEvc,
+    fromWalletId: "edahab",
+    toWalletId: "evc_plus",
+    amountSent: 72,
+    senderPhone: "252611131012",
+  });
+  await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "eDahab",
+    body: "Lacag $72.00 ah",
+    parsedAmount: 72,
+    parsedPhone: "252611131012",
+    simSlot: 2,
+    transactionRef: nextRef(),
+  });
+
+  const startRes = await fetch(`${payoutBaseUrl}/agent/exchange/orders/${orderId}/dial-attempts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ attemptNumber: 1 }),
+  });
+  const start = await asJson(startRes);
+  await fetch(`${payoutBaseUrl}/agent/exchange/dial-attempts/${start.id}/step1`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ status: "step1_success", responseMessage: "Fadlan geli lambarka sirta ah (PIN)" }),
+  });
+  // Step2 genuinely reaches the carrier and is misclassified as failed on
+  // screen (e.g. a stray accessibility event), even though the transfer
+  // actually went through.
+  await fetch(`${payoutBaseUrl}/agent/exchange/dial-attempts/${start.id}/step2`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ status: "failed", responseMessage: "STEP2_FAILED (stray event)", isFinalAttempt: true }),
+  });
+  const afterStep2 = await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]);
+  assert.equal(afterStep2?.status, "failed");
+
+  const res = await fetch(`${payoutBaseUrl}/agent/exchange/orders/payout-confirmation`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ receiverPhone: "688000000", amount: 72, rawText: "You have sent $72.00 to 688000000" }),
+  });
+  const body = await asJson(res);
+  assert.equal(body.completed, true, "step2 was genuinely attempted, so the carrier's own SMS must still be trusted to rescue it");
+
+  const after = await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]);
+  assert.equal(after?.status, "completed");
+
+  const attempt = await queryOne<{ status: string }>(`SELECT status FROM exchange_dial_attempts WHERE id=$1`, [start.id]);
+  assert.equal(attempt?.status, "success", "the dial attempt's own record must be reconciled to match reality");
+});
+
+test("retry-payout moves a failed order back to in_progress, and rejects any other status", async () => {
+  const orderId = await insertExchangeOrder({
+    corridorId: corridorEdahabToEvc,
+    fromWalletId: "edahab",
+    toWalletId: "evc_plus",
+    amountSent: 73,
+    senderPhone: "252611131013",
+  });
+  await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "eDahab",
+    body: "Lacag $73.00 ah",
+    parsedAmount: 73,
+    parsedPhone: "252611131013",
+    simSlot: 2,
+    transactionRef: nextRef(),
+  });
+
+  // Not failed yet -- retry-payout must reject it.
+  const tooEarly = await fetch(`${payoutBaseUrl}/admin/exchange/orders/${orderId}/retry-payout`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${superAdminToken}` },
+  });
+  assert.equal(tooEarly.status, 409);
+
+  const startRes = await fetch(`${payoutBaseUrl}/agent/exchange/orders/${orderId}/dial-attempts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ attemptNumber: 1 }),
+  });
+  const start = await asJson(startRes);
+  await fetch(`${payoutBaseUrl}/agent/exchange/dial-attempts/${start.id}/step2`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ status: "failed", responseMessage: "Insufficient balance", isFinalAttempt: true }),
+  });
+  const failedStatus = await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]);
+  assert.equal(failedStatus?.status, "failed");
+
+  const retryRes = await fetch(`${payoutBaseUrl}/admin/exchange/orders/${orderId}/retry-payout`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${superAdminToken}` },
+  });
+  assert.equal(retryRes.status, 200);
+  const afterRetry = await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]);
+  assert.equal(afterRetry?.status, "in_progress", "retry-payout must put the order back in_progress so the agent can re-dial");
+  assert.ok(await activityFor(orderId, "retry_exchange_payout"), "expected a retry_exchange_payout activity log entry");
+
+  // The existing dial attempt still keeps ExchangeSelfHealSweeper from
+  // auto-redialing -- a new attempt requires an explicit, incremented
+  // attemptNumber from the agent, exactly like any other manual retry.
+  const dialedFlag = await queryOne<{ has_dial_attempt: boolean }>(
+    `SELECT EXISTS(SELECT 1 FROM exchange_dial_attempts WHERE exchange_order_id=$1) AS has_dial_attempt`,
+    [orderId]
+  );
+  assert.equal(dialedFlag?.has_dial_attempt, true);
+
+  const retryAgain = await fetch(`${payoutBaseUrl}/admin/exchange/orders/${orderId}/retry-payout`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${superAdminToken}` },
+  });
+  assert.equal(retryAgain.status, 409, "an in_progress order is not itself failed, so a second retry-payout call must be rejected");
+});
+
+test("reverse now also cancels a failed exchange order (cancel/refund path), but never a completed one", async () => {
+  const orderId = await insertExchangeOrder({
+    corridorId: corridorEdahabToEvc,
+    fromWalletId: "edahab",
+    toWalletId: "evc_plus",
+    amountSent: 74,
+    senderPhone: "252611131014",
+  });
+  await ingestPaymentSms({
+    agentId: AGENT_ID,
+    sender: "eDahab",
+    body: "Lacag $74.00 ah",
+    parsedAmount: 74,
+    parsedPhone: "252611131014",
+    simSlot: 2,
+    transactionRef: nextRef(),
+  });
+  const startRes = await fetch(`${payoutBaseUrl}/agent/exchange/orders/${orderId}/dial-attempts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ attemptNumber: 1 }),
+  });
+  const start = await asJson(startRes);
+  await fetch(`${payoutBaseUrl}/agent/exchange/dial-attempts/${start.id}/step2`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ status: "failed", responseMessage: "Insufficient balance", isFinalAttempt: true }),
+  });
+  const failedStatus = await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]);
+  assert.equal(failedStatus?.status, "failed");
+
+  const reverseRes = await fetch(`${payoutBaseUrl}/admin/exchange/orders/${orderId}/reverse`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${superAdminToken}` },
+  });
+  assert.equal(reverseRes.status, 200, "a failed order must now be reversible (cancel/refund), not a dead end");
+  const afterReverse = await queryOne<{ status: string; reversed_at: string | null }>(
+    `SELECT status, reversed_at FROM exchange_orders WHERE id=$1`,
+    [orderId]
+  );
+  assert.equal(afterReverse?.status, "cancelled");
+  assert.ok(afterReverse?.reversed_at);
+
+  // A completed order (real money already paid out) must never be
+  // reversible through this route.
+  const completedOrderId = await insertExchangeOrder({
+    corridorId: corridorEdahabToEvc,
+    fromWalletId: "edahab",
+    toWalletId: "evc_plus",
+    amountSent: 75,
+    senderPhone: "252611131015",
+    status: "completed",
+  });
+  const reverseCompletedRes = await fetch(`${payoutBaseUrl}/admin/exchange/orders/${completedOrderId}/reverse`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${superAdminToken}` },
+  });
+  assert.equal(reverseCompletedRes.status, 409);
 });
 
 // GET /exchange/wallets is public (no auth) -- the Customer App reads
