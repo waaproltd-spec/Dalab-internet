@@ -83,6 +83,7 @@ import com.dalab.internet.ui.ExchangeAccessibilitySetupScreen
 import com.dalab.internet.ui.ExchangeOrderDetailScreen
 import com.dalab.internet.ui.ResellerWithdrawalInteractiveAccessibilitySetupScreen
 import com.dalab.internet.ui.ExchangeOrdersListScreen
+import com.dalab.internet.ui.NalaSocoManagementScreen
 import com.dalab.internet.ui.NewSaleScreen
 import com.dalab.internet.ui.NotificationsScreen
 import com.dalab.internet.ui.OrderDetailScreen
