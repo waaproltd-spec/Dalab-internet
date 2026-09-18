@@ -97,12 +97,13 @@ class ResellerWithdrawalInteractiveUssdOrchestrator(private val context: Context
                 PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
                 "DalabAgent:ResellerWithdrawalInteractiveUssdDial",
             )
-        // Waits its turn behind eBadal's own interactive flow (if any)
-        // before touching the wake lock/screen at all -- see
-        // InteractiveUssdSessionQueue's doc comment for why a plain Mutex
-        // isn't enough to keep the two flows' AccessibilityService sessions
-        // from ever overlapping. Internet Store never calls into this queue.
-        val sessionTicket = InteractiveUssdSessionQueue.acquire(
+        // Waits its turn for this withdrawal's own SIM slot before touching
+        // the wake lock/screen at all -- see UssdSimLock's doc comment for
+        // why a plain Mutex isn't enough, and why this is scoped to
+        // route.simSlot rather than a single device-wide lock (a
+        // simultaneous dial on the OTHER SIM slot never waits on this one).
+        val sessionTicket = UssdSimLock.acquire(
+            simSlot = route.simSlot,
             requestId = "reseller:${withdrawal.id}",
             arrivalTimeMs = parseApiDate(withdrawal.createdAt)?.time ?: System.currentTimeMillis(),
         )
@@ -157,7 +158,7 @@ class ResellerWithdrawalInteractiveUssdOrchestrator(private val context: Context
             ResellerWithdrawalInteractiveUssdBridge.disarm()
             if (wakeLock?.isHeld == true) wakeLock.release()
             ResellerWithdrawalInteractiveUssdBridge.activeWakeLock = null
-            InteractiveUssdSessionQueue.release(sessionTicket)
+            UssdSimLock.release(sessionTicket)
         }
     }
 

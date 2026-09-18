@@ -97,16 +97,26 @@ class ResellerWithdrawalUssdOrchestrator(context: Context, private val maxAttemp
                 )
                 SubscriptionLookupResult.NotPresent -> DialResult(DialOutcome.NO_SIM_PRESENT, "SIM $simSlot isn't physically inserted on this device.")
                 is SubscriptionLookupResult.Found -> {
+                    // Waits its turn for THIS withdrawal's own SIM slot --
+                    // same UssdSimLock every other dialing flow on this
+                    // device goes through, held for exactly this one dial
+                    // attempt (not the whole retry loop) -- see
+                    // UssdOrchestrator's identical pattern for why.
+                    val ticket = UssdSimLock.acquire(simSlot, "reseller_withdrawal:$withdrawalId:attempt$attempt", System.currentTimeMillis())
                     try {
                         // Reseller Withdraw's own stricter three-way classifier
                         // (SUCCESS/FAILED/AMBIGUOUS, never defaults unknown text
                         // to SUCCESS) — see classifyResellerWithdrawalUssdResponse
                         // in UssdDialer.kt for why this can't just reuse the
                         // Internet Store recharge default.
-                        dialer.dial(lookup.subscriptionId, ussdString, classify = ::classifyResellerWithdrawalUssdResponse)
-                    } catch (e: Exception) {
-                        DiagnosticsLog.record("reseller_withdrawal_ussd_dial", "Dial threw (withdrawal $withdrawalId, attempt $attempt): ${e.message}", isError = true)
-                        DialResult(DialOutcome.FAILED, "Dial error: ${e.message}")
+                        try {
+                            dialer.dial(lookup.subscriptionId, ussdString, classify = ::classifyResellerWithdrawalUssdResponse)
+                        } catch (e: Exception) {
+                            DiagnosticsLog.record("reseller_withdrawal_ussd_dial", "Dial threw (withdrawal $withdrawalId, attempt $attempt): ${e.message}", isError = true)
+                            DialResult(DialOutcome.FAILED, "Dial error: ${e.message}")
+                        }
+                    } finally {
+                        UssdSimLock.release(ticket)
                     }
                 }
             }
