@@ -482,9 +482,11 @@ authRouter.post("/admin/auth/forgot-password", rateLimit("forgot-password", 3, 6
       `INSERT INTO admin_password_resets (id, admin_id, token_hash, expires_at) VALUES ($1,$2,$3, now() + interval '30 minutes')`,
       [randomUUID(), admin.id, createHash("sha256").update(resetToken).digest("hex")]
     );
-    // eslint-disable-next-line no-console
-    console.log(`[EMAIL SIM] Password reset for ${email}: https://admin.example.com/reset-password?token=${resetToken}`);
-    if (process.env.NODE_ENV !== "production") response.debugResetToken = resetToken;
+    if (process.env.NODE_ENV !== "production") {
+      // eslint-disable-next-line no-console
+      console.log(`[EMAIL SIM] Password reset for ${email}: https://admin.example.com/reset-password?token=${resetToken}`);
+      response.debugResetToken = resetToken;
+    }
   }
   sendJson(res, 200, response);
 });
@@ -563,6 +565,22 @@ authRouter.post("/auth/refresh", async (req, res) => {
     if (!reseller || reseller.status !== "active") {
       await query(`UPDATE refresh_tokens SET revoked=true WHERE id=$1`, [row.id]);
       return sendJson(res, 401, { error: "This Reseller account is no longer active" });
+    }
+  }
+
+  // Same reasoning as the Reseller check above, for Agents: device-login
+  // (POST /agent/auth/device-login) already refuses a suspended agent's
+  // FIRST login (WHERE status='active'), but requireAuth() only verifies
+  // the JWT itself and never re-checks the agents table, so a device that
+  // was already logged in when Admin suspended it kept refreshing forever
+  // with no server-side cutoff -- the one-time login gate was the only
+  // enforcement. This closes that gap the same way, and also covers an
+  // agent whose row was deleted outright (query then finds nothing).
+  if (payload.role === "agent") {
+    const agent = await queryOne<{ status: string }>(`SELECT status FROM agents WHERE id=$1`, [payload.sub]);
+    if (!agent || agent.status !== "active") {
+      await query(`UPDATE refresh_tokens SET revoked=true WHERE id=$1`, [row.id]);
+      return sendJson(res, 401, { error: "This Agent account is no longer active" });
     }
   }
 

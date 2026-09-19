@@ -108,11 +108,19 @@ customersRouter.put("/admin/customers/:id", requirePermission("customers.manage"
   sendJson(res, 200, await queryOne(`SELECT ${ADMIN_CUSTOMER_COLUMNS} FROM customers WHERE id=$1`, [req.params.id]));
 });
 
+// A single atomic UPDATE, not a separate read-then-write -- two of these
+// landing close together (a double-click, or two admin tabs) used to both
+// read the same pre-toggle status and both write the same new value,
+// silently undoing the intended suspend/activate with no error shown.
+// Postgres locks the row for the UPDATE's duration, so concurrent calls
+// serialize and each one flips relative to the row's true current value,
+// never a stale one.
 customersRouter.put("/admin/customers/:id/block", requirePermission("customers.manage"), async (req, res) => {
-  const customer = await queryOne(`SELECT * FROM customers WHERE id=$1`, [req.params.id]);
-  if (!customer) return sendJson(res, 404, { error: "Customer not found" });
-  const nextStatus = customer.status === "active" ? "blocked" : "active";
-  await query(`UPDATE customers SET status=$1 WHERE id=$2`, [nextStatus, req.params.id]);
+  const updated = await queryOne<{ id: string }>(
+    `UPDATE customers SET status = CASE WHEN status='active' THEN 'blocked' ELSE 'active' END WHERE id=$1 RETURNING id`,
+    [req.params.id]
+  );
+  if (!updated) return sendJson(res, 404, { error: "Customer not found" });
   sendJson(res, 200, await queryOne(`SELECT ${ADMIN_CUSTOMER_COLUMNS} FROM customers WHERE id=$1`, [req.params.id]));
 });
 
@@ -422,12 +430,14 @@ customersRouter.put("/agent/customers/:id", requireAuth("agent"), async (req, re
 });
 
 // Suspend/Reactivate -- identical toggle to PUT /admin/customers/:id/block
-// above, just agent-authenticated.
+// above (see its comment on why this is one atomic UPDATE, not a separate
+// read-then-write), just agent-authenticated.
 customersRouter.put("/agent/customers/:id/block", requireAuth("agent"), async (req, res) => {
-  const customer = await queryOne<{ status: string }>(`SELECT status FROM customers WHERE id=$1`, [req.params.id]);
-  if (!customer) return sendJson(res, 404, { error: "Customer not found" });
-  const nextStatus = customer.status === "active" ? "blocked" : "active";
-  await query(`UPDATE customers SET status=$1 WHERE id=$2`, [nextStatus, req.params.id]);
+  const updated = await queryOne<{ id: string }>(
+    `UPDATE customers SET status = CASE WHEN status='active' THEN 'blocked' ELSE 'active' END WHERE id=$1 RETURNING id`,
+    [req.params.id]
+  );
+  if (!updated) return sendJson(res, 404, { error: "Customer not found" });
   sendJson(res, 200, await queryOne(`SELECT ${AGENT_CUSTOMER_COLUMNS} FROM customers WHERE id=$1`, [req.params.id]));
 });
 

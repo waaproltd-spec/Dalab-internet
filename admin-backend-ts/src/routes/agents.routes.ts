@@ -35,12 +35,17 @@ agentsRouter.put("/admin/agents/:id", requirePermission("agents.manage"), async 
   sendJson(res, 200, await queryOne(`SELECT id, phone, name, status, device_id, last_login_at, created_at FROM agents WHERE id=$1`, [req.params.id]));
 });
 
+// A single atomic UPDATE, not a separate read-then-write -- see
+// customers.routes.ts's identical PUT /admin/customers/:id/block comment
+// for why (two of these landing close together used to silently undo the
+// intended suspend/activate with no error shown).
 agentsRouter.put("/admin/agents/:id/suspend", requirePermission("agents.manage"), async (req, res) => {
-  const agent = await queryOne(`SELECT * FROM agents WHERE id=$1`, [req.params.id]);
-  if (!agent) return sendJson(res, 404, { error: "Agent not found" });
-  const next = agent.status === "active" ? "suspended" : "active";
-  await query(`UPDATE agents SET status=$1 WHERE id=$2`, [next, req.params.id]);
-  sendJson(res, 200, { id: agent.id, status: next });
+  const updated = await queryOne<{ id: string; status: string }>(
+    `UPDATE agents SET status = CASE WHEN status='active' THEN 'suspended' ELSE 'active' END WHERE id=$1 RETURNING id, status`,
+    [req.params.id]
+  );
+  if (!updated) return sendJson(res, 404, { error: "Agent not found" });
+  sendJson(res, 200, { id: updated.id, status: updated.status });
 });
 
 // Agents/customers/orders reference this agent via ON DELETE SET NULL, so a

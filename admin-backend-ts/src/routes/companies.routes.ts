@@ -160,6 +160,13 @@ companiesRouter.put("/admin/companies/:id/payment-number", requireAuth("super_ad
   if (paymentNumber && !/^\d{6,15}$/.test(String(paymentNumber))) {
     return sendJson(res, 400, { error: "paymentNumber must be 6-15 digits" });
   }
+  // A non-empty template must actually carry the {amount} placeholder --
+  // one missing it would dial with no amount ever substituted in, silently
+  // sending the wrong (or no) amount on every order for this company. Same
+  // rule company_payment_methods.routes.ts and shop.routes.ts enforce.
+  if (paymentUssdTemplate && !String(paymentUssdTemplate).includes("{amount}")) {
+    return sendJson(res, 400, { error: "paymentUssdTemplate must include {amount}" });
+  }
   await query(
     `UPDATE companies SET payment_number=$1, payment_ussd_template=$2, updated_at=now() WHERE id=$3`,
     [paymentNumber, paymentUssdTemplate, req.params.id]

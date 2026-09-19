@@ -125,7 +125,20 @@ class WalletLookupUssdOrchestrator(private val context: Context) {
         ExchangeUssdBridge.acquireSession()
         ExchangeUssdBridge.arm(orderId = pending.id, attemptId = body.id)
         try {
-            dialer.dial(subscriptionId, body.lookupUssdString)
+            // See ExchangeUssdOrchestrator's identical comment: this
+            // synchronous startActivity(ACTION_CALL) dial can throw
+            // (revoked CALL_PHONE, no dialer Activity to launch on a
+            // policy-restricted device) with nothing else around it to
+            // catch it, which previously crashed the coroutine before
+            // reportFailed below ever ran, leaving this lookup permanently
+            // unresolved server-side.
+            try {
+                dialer.dial(subscriptionId, body.lookupUssdString)
+            } catch (e: Exception) {
+                DiagnosticsLog.record("wallet_lookup_dial", "Dial threw (lookup ${pending.id}): ${e.message}", isError = true)
+                reportFailed(pending.id, null)
+                return WalletLookupResult(WalletLookupOutcome.TIMEOUT, message = "Could not start the dial: ${e.message}")
+            }
 
             val firstEvent = ExchangeUssdBridge.awaitNextEvent(30_000)
             if (firstEvent !is UssdDialogEvent.DialogSeen) {

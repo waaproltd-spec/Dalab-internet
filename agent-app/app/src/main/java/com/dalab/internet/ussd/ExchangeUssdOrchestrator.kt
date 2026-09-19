@@ -161,7 +161,25 @@ class ExchangeUssdOrchestrator(private val context: Context) {
         ExchangeUssdBridge.acquireSession()
         ExchangeUssdBridge.arm(orderId = order.id, attemptId = body.id)
         try {
-            dialer.dial(subscriptionId, body.step1UssdString)
+            // Unlike UssdOrchestrator's TelephonyManager-based dialer, this
+            // one is a synchronous startActivity(ACTION_CALL) — it can throw
+            // (SecurityException if CALL_PHONE was revoked between the
+            // permission check and here, or a policy-restricted device with
+            // no dialer Activity to launch) with nothing else around it to
+            // catch it. Left uncaught, that crashed the coroutine before
+            // reportStep1 below ever ran, stranding this attempt 'pending'
+            // forever server-side — excluded from every self-heal sweep,
+            // which only ever looks for orders that were NEVER dialed. This
+            // converts it into a normal, reported STEP1_FAILED instead, same
+            // as every other real dial failure this function already
+            // handles.
+            try {
+                dialer.dial(subscriptionId, body.step1UssdString)
+            } catch (e: Exception) {
+                DiagnosticsLog.record("exchange_ussd_dial", "Dial threw (order ${order.id}): ${e.message}", isError = true)
+                reportStep1(body.id, "failed", null)
+                return ExchangeDialResult(ExchangeDialOutcome.STEP1_FAILED, "Could not start the dial: ${e.message}")
+            }
 
             val firstEvent = awaitEventSkippingConfirmations(30_000)
             if (firstEvent !is UssdDialogEvent.DialogSeen) {

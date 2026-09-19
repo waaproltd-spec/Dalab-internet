@@ -45,6 +45,15 @@ companyPaymentMethodsRouter.post("/admin/companies/:id/payment-methods", require
   if (paymentNumber && !/^\d{6,15}$/.test(String(paymentNumber))) {
     return sendJson(res, 400, { error: "paymentNumber must be 6-15 digits" });
   }
+  // A USSD template is optional (not every method dials one), but a
+  // non-empty one must actually carry the {amount} placeholder -- a
+  // template missing it would dial with no amount ever substituted in,
+  // silently sending the wrong (or no) amount on every order for this
+  // method. Same rule shop.routes.ts's PUT /admin/shop/payment-methods
+  // already enforces.
+  if (ussdTemplate && !String(ussdTemplate).includes("{amount}")) {
+    return sendJson(res, 400, { error: "ussdTemplate must include {amount}" });
+  }
   if (deviceId && !(await queryOne(`SELECT id FROM agent_devices WHERE id=$1`, [deviceId]))) {
     return sendJson(res, 404, { error: "Device not found" });
   }
