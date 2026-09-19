@@ -122,7 +122,21 @@ class ResellerWithdrawalInteractiveUssdOrchestrator(private val context: Context
         ResellerWithdrawalInteractiveUssdBridge.acquireSession()
         ResellerWithdrawalInteractiveUssdBridge.arm(replies.size)
         try {
-            dialer.dial(subscriptionId, payout.initialDial)
+            // See ExchangeUssdOrchestrator's identical comment: this
+            // synchronous startActivity(ACTION_CALL) dial can throw
+            // (revoked CALL_PHONE, no dialer Activity to launch on a
+            // policy-restricted device) with nothing else around it to
+            // catch it, which previously crashed the coroutine before
+            // reportDialResult below ever ran, stranding this withdrawal's
+            // attempt unresolved server-side.
+            try {
+                dialer.dial(subscriptionId, payout.initialDial)
+            } catch (e: Exception) {
+                DiagnosticsLog.record("reseller_withdrawal_dial", "Dial threw (withdrawal ${withdrawal.id}): ${e.message}", isError = true)
+                val result = DialResult(DialOutcome.FAILED, "Could not start the dial: ${e.message}")
+                reportDialResult(withdrawal.id, route.simSlot, auditString, attemptId, result)
+                return result
+            }
 
             for ((index, reply) in replies.withIndex()) {
                 val dialogEvent = awaitEventSkippingConfirmations(if (index == 0) 30_000L else 15_000L)

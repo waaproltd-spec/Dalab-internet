@@ -59,8 +59,18 @@ fun ExchangeOrderDetailScreen(order: ExchangeOrder, onBack: () -> Unit, onOrderU
         working = true
         message = null
         scope.launch {
-            val result = orchestrator.executePayout(current)
-            message = "${result.outcome}${result.message?.let { " — $it" } ?: ""}"
+            // Belt-and-suspenders alongside ExchangeUssdOrchestrator's own
+            // dial-specific try/catch: this is the one call site on this
+            // screen with no guard at all (startManual below already has
+            // one) -- an uncaught exception here would leave `working` true
+            // forever (a permanently spinning button) with no message shown,
+            // on top of whatever server-side state the exception interrupted.
+            try {
+                val result = orchestrator.executePayout(current)
+                message = "${result.outcome}${result.message?.let { " — $it" } ?: ""}"
+            } catch (e: Exception) {
+                message = "Error: ${e.message} — check the order's status on the dashboard before retrying."
+            }
             refreshFromList()
             working = false
         }

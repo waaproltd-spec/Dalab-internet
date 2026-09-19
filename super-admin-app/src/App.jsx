@@ -3567,6 +3567,13 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
   const [limitsDraft, setLimitsDraft] = useState({});
   const [limitsError, setLimitsError] = useState("");
   const [limitsSaving, setLimitsSaving] = useState(false);
+  // Suspend/Activate is a pure toggle server-side, not a set-to-value op --
+  // two clicks landing close together (a double-click, or an impatient
+  // re-click on a slow connection) would flip status twice and silently
+  // undo the intended change with no error shown. This guards against that
+  // the same way PaymentNumbers' togglingId already does for the Agent
+  // Payment Gateway toggle.
+  const [blockTogglingId, setBlockTogglingId] = useState(null);
   const canManage = hasPermission(admin, "customers.manage");
   // Not delegable via customers.manage — only the Super Admin role itself,
   // matching the backend's requireAuth("super_admin") on every PIN route.
@@ -3580,11 +3587,14 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
     : customers.filter((c) => (c?.name || "").toLowerCase().includes(search.toLowerCase()) || (c?.phone || "").includes(search));
 
   const toggleBlock = async (c) => {
+    if (blockTogglingId === c.id) return;
+    setBlockTogglingId(c.id);
     const nextStatus = c.status === "active" ? "blocked" : "active";
     setCustomers((prev) => prev.map((x) => (x.id === c.id ? { ...x, status: nextStatus } : x))); // optimistic
     if (DALAB_API_ENABLED) {
       try { await DalabAdminApi.toggleCustomerBlock(c.id); } catch (err) { setError(err.message || "Could not update status."); refreshCustomers(search || undefined); }
     }
+    setBlockTogglingId(null);
   };
 
   const openEdit = (c) => { setForm(c); setEditing(c.id); setError(""); };
@@ -3814,7 +3824,7 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12, paddingTop: 12, borderTop: `1px solid ${BORDER}` }}>
                   {canManage && (
                     <>
-                      <Button variant={c.status === "active" ? "danger" : "ghost"} icon={c.status === "active" ? XCircle : Check} onClick={() => toggleBlock(c)} style={{ padding: "7px 11px", fontSize: 12 }}>
+                      <Button variant={c.status === "active" ? "danger" : "ghost"} icon={c.status === "active" ? XCircle : Check} onClick={() => toggleBlock(c)} disabled={blockTogglingId === c.id} style={{ padding: "7px 11px", fontSize: 12 }}>
                         {c.status === "active" ? "Block" : "Unblock"}
                       </Button>
                       <Button variant="ghost" icon={Pencil} onClick={() => openEdit(c)} style={{ padding: "7px 11px", fontSize: 12 }}>Edit</Button>
@@ -3885,7 +3895,7 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
                 <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
                   {canManage && (
                     <>
-                      <Button variant={c.status === "active" ? "danger" : "ghost"} onClick={() => toggleBlock(c)}>
+                      <Button variant={c.status === "active" ? "danger" : "ghost"} onClick={() => toggleBlock(c)} disabled={blockTogglingId === c.id}>
                         {c.status === "active" ? "Block" : "Unblock"}
                       </Button>
                       <button onClick={() => openEdit(c)} style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
@@ -4106,6 +4116,10 @@ function AgentsSection({ companies, admin }) {
   const [form, setForm] = useState({});
   const [assigning, setAssigning] = useState(null); // agent object | null
   const [assignedCompanyIds, setAssignedCompanyIds] = useState([]);
+  // Same reasoning as Customers' blockTogglingId -- Suspend/Activate here is
+  // also a pure toggle, so a double-click would flip status twice and
+  // silently undo an intended suspend with no error shown.
+  const [suspendTogglingId, setSuspendTogglingId] = useState(null);
   const canManage = hasPermission(admin, "agents.manage");
 
   const fetchAgents = async () => {
@@ -4138,6 +4152,8 @@ function AgentsSection({ companies, admin }) {
   };
 
   const toggleSuspend = async (a) => {
+    if (suspendTogglingId === a.id) return;
+    setSuspendTogglingId(a.id);
     const nextStatus = a.status === "active" ? "suspended" : "active";
     setAgents((prev) => prev.map((x) => (x.id === a.id ? { ...x, status: nextStatus } : x))); // optimistic
     try {
@@ -4146,6 +4162,7 @@ function AgentsSection({ companies, admin }) {
       setError(err.message || "Could not update agent status.");
       fetchAgents();
     }
+    setSuspendTogglingId(null);
   };
 
   const remove = async (a) => {
@@ -4212,7 +4229,7 @@ function AgentsSection({ companies, admin }) {
                   {canManage && (
                     <>
                       <Button variant="ghost" onClick={() => openAssign(a)}>Companies</Button>
-                      <button onClick={() => toggleSuspend(a)} title={a.status === "active" ? "Suspend" : "Activate"} style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
+                      <button onClick={() => toggleSuspend(a)} disabled={suspendTogglingId === a.id} title={a.status === "active" ? "Suspend" : "Activate"} style={{ background: "none", border: "none", cursor: suspendTogglingId === a.id ? "default" : "pointer", opacity: suspendTogglingId === a.id ? 0.5 : 1, marginLeft: 8 }}>
                         <Power size={14} color={a.status === "active" ? GREEN : "#C81E2C"} />
                       </button>
                       <button onClick={() => openEdit(a)} style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
@@ -15048,6 +15065,7 @@ function AdminDashboardShell({ admin, onLogout }) {
   const [orders, setOrders] = useState(initialOrders);
   const [customers, setCustomers] = useState(initialCustomers);
   const [stuckCount, setStuckCount] = useState(0);
+  const [stalledProcessingCount, setStalledProcessingCount] = useState(0);
   const [duplicateBlockedCount, setDuplicateBlockedCount] = useState(0);
   const [lowBalanceCount, setLowBalanceCount] = useState(0);
   const [pendingRecoveryCount, setPendingRecoveryCount] = useState(0);
@@ -15088,7 +15106,15 @@ function AdminDashboardShell({ admin, onLogout }) {
   const refreshStuckCount = async () => {
     if (!DALAB_API_ENABLED) return;
     try {
-      setStuckCount((await DalabAdminApi.getStuckPaymentCount()).count);
+      const res = await DalabAdminApi.getStuckPaymentCount();
+      setStuckCount(res.count);
+      // A dial attempt WAS logged for these but never resolved to
+      // success/failed (device died mid-dial, OS dropped the USSD
+      // callback) -- distinct from stuckCount above (never dialed at
+      // all), and deliberately never auto-retried by anything, since a
+      // blind re-dial risks a real double-charge if the original dial
+      // actually went through. Surfaced for manual review only.
+      setStalledProcessingCount(res.stalledProcessingCount ?? 0);
     } catch (err) {
       console.error("Failed to load stuck payment count:", err.message);
     }
@@ -15258,9 +15284,18 @@ function AdminDashboardShell({ admin, onLogout }) {
               >
                 <Icon size={17} />
                 {!collapsed && n.label}
-                {!collapsed && n.id === "payment-transactions" && (stuckCount > 0 || duplicateBlockedCount > 0) && (
+                {!collapsed && n.id === "payment-transactions" && (stuckCount > 0 || stalledProcessingCount > 0 || duplicateBlockedCount > 0) && (
                   <span style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
-                    {stuckCount > 0 && <Badge tone="red">{stuckCount}</Badge>}
+                    {stuckCount > 0 && (
+                      <span title="Verified but never dialed">
+                        <Badge tone="red">{stuckCount}</Badge>
+                      </span>
+                    )}
+                    {stalledProcessingCount > 0 && (
+                      <span title="Dialed, but no result ever reported — check manually before retrying">
+                        <Badge tone="red">{stalledProcessingCount}</Badge>
+                      </span>
+                    )}
                     {duplicateBlockedCount > 0 && (
                       <span title="Duplicate delivery prevented">
                         <Badge tone="amber">{duplicateBlockedCount}</Badge>

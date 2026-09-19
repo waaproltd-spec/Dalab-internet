@@ -1504,7 +1504,36 @@ smsLogsRouter.get("/admin/payment-transactions/stuck-count", requireStaff(), asy
        AND pt.created_at < now() - ($1 || ' minutes')::interval`,
     [thresholdMinutes]
   );
-  sendJson(res, 200, { count: Number(row?.count ?? 0), thresholdMinutes });
+  // A second, deliberately separate signal: pt.status already flipped to
+  // 'processing' (a dial attempt WAS logged, via POST .../dial-attempts),
+  // but no dial attempt for this order has ever resolved to 'success' or
+  // 'failed' -- the Agent App started dialing and never reported back
+  // (process killed, OS dropped the USSD callback, device lost power).
+  // Every existing recovery path (self-heal-candidates above, and this
+  // endpoint's own 'pending' count) only ever looks for pt.status='pending',
+  // so an order in this later, already-dialing state was previously
+  // invisible everywhere -- surfaced here for a human to check the SIM
+  // balance and decide, never auto-retried (a blind re-dial risks a real
+  // double-charge if the original dial actually went through).
+  const stalledMinutes = Math.min(Number(req.query.stalledMinutes) || 10, 1440);
+  const stalledRow = await queryOne<{ count: string }>(
+    `SELECT COUNT(*) AS count
+     FROM payment_transactions pt
+     JOIN orders o ON o.id = pt.order_id
+     WHERE pt.status = 'processing' AND o.status = 'in_progress'
+       AND NOT EXISTS (
+         SELECT 1 FROM ussd_dial_attempts da WHERE da.order_id = o.id AND da.status IN ('success','failed')
+       )
+       AND (SELECT MAX(da.created_at) FROM ussd_dial_attempts da WHERE da.order_id = o.id)
+           < now() - ($1 || ' minutes')::interval`,
+    [stalledMinutes]
+  );
+  sendJson(res, 200, {
+    count: Number(row?.count ?? 0),
+    thresholdMinutes,
+    stalledProcessingCount: Number(stalledRow?.count ?? 0),
+    stalledMinutes,
+  });
 });
 
 // Critical-fix warning badge: every payment_transactions row blocked as a
