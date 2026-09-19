@@ -154,6 +154,31 @@ data class NalaSocoCreateRequest(
     val published: Boolean = true,
     val imageBase64: String? = null,
 )
+// ---------------- Promo Ad popup (Customer App app-open popup) ----------------
+// Agent-only management (requireAuth("agent") on the backend, not shared
+// with Admin the way Nala Soco above is) -- Add/Edit/Enable-Disable/
+// Reorder/Delete the slides shown in the Customer App's promotional ad
+// popup. Deliberately a separate feature/table from Nala Soco and from
+// promo-images (the Admin-managed, image-only Home-screen carousel banner)
+// -- this is the full-screen popup with its own headline/body text, shown
+// once per 24h per customer on app open.
+data class PromoAdResponse(
+    val id: String,
+    val title: String?,
+    val body: String?,
+    val enabled: Boolean,
+    val position: Int,
+    val createdAt: String,
+    val updatedAt: String,
+)
+data class PromoAdCreateRequest(
+    val imageBase64: String,
+    val title: String?,
+    val body: String?,
+)
+data class PromoAdStatusRequest(val enabled: Boolean)
+data class PromoAdReorderRequest(val orderedIds: List<String>)
+
 data class DialAttemptStartRequest(val simSlot: Int?, val ussdString: String, val attemptNumber: Int)
 data class DialAttemptStartResponse(val id: String)
 // isFinalAttempt: true when this is the last outcome this order will get
@@ -399,6 +424,31 @@ interface ApiService {
 
     @DELETE("admin/nala-soco/{id}")
     suspend fun deleteNalaSocoPost(@Path("id") id: String): Response<Unit>
+
+    // See PromoAdResponse's own doc comment. GET here is the management
+    // view (every ad, enabled or not) -- distinct from the Customer App's
+    // own GET /promo-ads (enabled-only), which this app never calls.
+    @GET("agent/promo-ads")
+    suspend fun getPromoAds(): Response<List<PromoAdResponse>>
+
+    @POST("agent/promo-ads")
+    suspend fun createPromoAd(@Body body: PromoAdCreateRequest): Response<PromoAdResponse>
+
+    // Same raw-JsonObject reasoning as updateNalaSocoPost above --
+    // imageBase64 omitted entirely means "keep the existing image", which a
+    // typed nullable Kotlin field can't express (Gson's default POJO
+    // serialization drops a null field rather than sending it).
+    @PUT("agent/promo-ads/{id}")
+    suspend fun updatePromoAd(@Path("id") id: String, @Body body: com.google.gson.JsonObject): Response<PromoAdResponse>
+
+    @PUT("agent/promo-ads/{id}/status")
+    suspend fun updatePromoAdStatus(@Path("id") id: String, @Body body: PromoAdStatusRequest): Response<PromoAdResponse>
+
+    @PUT("agent/promo-ads/reorder")
+    suspend fun reorderPromoAds(@Body body: PromoAdReorderRequest): Response<List<PromoAdResponse>>
+
+    @DELETE("agent/promo-ads/{id}")
+    suspend fun deletePromoAd(@Path("id") id: String): Response<Unit>
 
     // Registers/clears this device's FCM token so a newly-assigned support
     // conversation can push straight to it -- see notifications/

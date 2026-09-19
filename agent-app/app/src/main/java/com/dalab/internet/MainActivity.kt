@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.CurrencyExchange
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.LocalOffer
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PhoneAndroid
@@ -84,6 +85,7 @@ import com.dalab.internet.ui.ExchangeOrderDetailScreen
 import com.dalab.internet.ui.ResellerWithdrawalInteractiveAccessibilitySetupScreen
 import com.dalab.internet.ui.ExchangeOrdersListScreen
 import com.dalab.internet.ui.NalaSocoManagementScreen
+import com.dalab.internet.ui.PromoAdManagementScreen
 import com.dalab.internet.ui.NewSaleScreen
 import com.dalab.internet.ui.NotificationsScreen
 import com.dalab.internet.ui.OrderDetailScreen
@@ -212,7 +214,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP, SALES, CUSTOMERS, CUSTOMER_DETAIL, REPORTS, RESELLER, AGENT_SHOP_ORDER_DETAIL, AGENT_VIP_ORDER_DETAIL, AGENT_VIP_PACKAGE_ORDER_DETAIL, NALA_SOCO }
+private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP, SALES, CUSTOMERS, CUSTOMER_DETAIL, REPORTS, RESELLER, AGENT_SHOP_ORDER_DETAIL, AGENT_VIP_ORDER_DETAIL, AGENT_VIP_PACKAGE_ORDER_DETAIL, NALA_SOCO, PROMO_ADS }
 // Bottom nav is exactly 5 tabs: Home, Orders, Support Agent, Broadcast, More --
 // Sales/Customers/Reports (formerly their own tabs) moved under More as
 // ordinary Screen.X destinations instead (see MoreScreen's "My Work"
@@ -478,6 +480,7 @@ private fun AgentApp() {
             onOpenReports = { navigate(Screen.REPORTS) },
             onOpenReseller = { navigate(Screen.RESELLER) },
             onOpenNalaSoco = { navigate(Screen.NALA_SOCO) },
+            onOpenPromoAds = { navigate(Screen.PROMO_ADS) },
         )
 
         Screen.ORDER_DETAIL -> selectedOrder?.let { order ->
@@ -519,6 +522,8 @@ private fun AgentApp() {
         Screen.ALERTS -> AlertsScreen(onBack = { goBack() })
 
         Screen.NALA_SOCO -> NalaSocoManagementScreen(onBack = { goBack() })
+
+        Screen.PROMO_ADS -> PromoAdManagementScreen(onBack = { goBack() })
 
         Screen.RESELLER_WITHDRAWAL_INTERACTIVE_SETUP -> ResellerWithdrawalInteractiveAccessibilitySetupScreen(onBack = { goBack() })
 
@@ -598,6 +603,7 @@ private fun AgentHome(
     onOpenReports: () -> Unit,
     onOpenReseller: () -> Unit,
     onOpenNalaSoco: () -> Unit,
+    onOpenPromoAds: () -> Unit,
 ) {
 
     // A support push tapped while this composable already exists (warm
@@ -690,6 +696,7 @@ private fun AgentHome(
                     onOpenReports = onOpenReports,
                     onOpenReseller = onOpenReseller,
                     onOpenNalaSoco = onOpenNalaSoco,
+                    onOpenPromoAds = onOpenPromoAds,
                 )
             }
         }
@@ -828,6 +835,7 @@ private fun MoreScreen(
     onOpenReports: () -> Unit,
     onOpenReseller: () -> Unit,
     onOpenNalaSoco: () -> Unit,
+    onOpenPromoAds: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         // Sales/Customers/Reports were their own bottom-nav tabs before the
@@ -907,6 +915,12 @@ private fun MoreScreen(
                 subtitle = "Manage announcements shown in the Customer App",
                 icon = Icons.Filled.Campaign,
                 onClick = onOpenNalaSoco,
+            )
+            MoreItem(
+                title = "Promo Ads",
+                subtitle = "Manage the popup shown when the Customer App opens",
+                icon = Icons.Filled.LocalOffer,
+                onClick = onOpenPromoAds,
             )
         }
         // Agent Support and Customer Broadcast moved to their own bottom-nav
