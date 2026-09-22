@@ -4,8 +4,27 @@ import { query, queryOne, withTransaction } from "../db/pool.js";
 import { requireAuth } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
 import { parseDataUri } from "../utils/dataUri.js";
+import { readImageDimensions } from "../utils/imageDimensions.js";
 
 export const promoAdsRouter = Router();
+
+// Every Promo Ad image must be exactly this size/aspect ratio -- the
+// Customer App's mandatory full-screen launch carousel (PromoAdLaunchScreen,
+// entirely separate from the Home banner, which is /promo-images) renders
+// these at a fixed 16:9 frame, so a mismatched upload would only ever show
+// cropped or distorted. Enforced here (not just in the Agent App's own
+// picker) since this is the actual system boundary for the upload.
+const PROMO_AD_IMAGE_WIDTH = 1280;
+const PROMO_AD_IMAGE_HEIGHT = 720;
+
+function validatePromoAdImage(data: Buffer): string | null {
+  const dims = readImageDimensions(data);
+  if (!dims) return "Image must be a JPEG or PNG file.";
+  if (dims.width !== PROMO_AD_IMAGE_WIDTH || dims.height !== PROMO_AD_IMAGE_HEIGHT) {
+    return `Image must be exactly ${PROMO_AD_IMAGE_WIDTH}x${PROMO_AD_IMAGE_HEIGHT}px (16:9) -- got ${dims.width}x${dims.height}.`;
+  }
+  return null;
+}
 
 // Full customer-management power the Agent App already has elsewhere
 // (customers.routes.ts's own doc comment: "Same customer-management power
@@ -55,6 +74,8 @@ promoAdsRouter.get("/agent/promo-ads", requireAgent(), async (_req, res) => {
 promoAdsRouter.post("/agent/promo-ads", requireAgent(), async (req, res) => {
   const parsed = parseDataUri(req.body.imageBase64);
   if (!parsed) return sendJson(res, 400, { error: "imageBase64 must be a data:<mime>;base64,<data> string" });
+  const imageError = validatePromoAdImage(parsed.data);
+  if (imageError) return sendJson(res, 400, { error: imageError });
   const title = req.body.title != null ? String(req.body.title).trim() : null;
   const body = req.body.body != null ? String(req.body.body).trim() : null;
 
@@ -80,6 +101,8 @@ promoAdsRouter.put("/agent/promo-ads/:id", requireAgent(), async (req, res) => {
   if (req.body.imageBase64 !== undefined) {
     const parsed = parseDataUri(req.body.imageBase64);
     if (!parsed) return sendJson(res, 400, { error: "imageBase64 must be a data:<mime>;base64,<data> string" });
+    const imageError = validatePromoAdImage(parsed.data);
+    if (imageError) return sendJson(res, 400, { error: imageError });
     imageData = parsed.data;
     mimeType = parsed.mimeType;
   }

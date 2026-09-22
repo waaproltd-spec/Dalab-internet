@@ -320,6 +320,11 @@ private data class PickedAdImage(val bytes: ByteArray, val mimeType: String) {
     val dataUri: String get() = "data:$mimeType;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
 }
 
+// Every Promo Ad image must be exactly this size/aspect ratio -- matches
+// the same fixed requirement promoAds.routes.ts enforces server-side.
+private const val PROMO_AD_IMAGE_WIDTH = 1280
+private const val PROMO_AD_IMAGE_HEIGHT = 720
+
 @Composable
 private fun PromoAdFormDialog(
     mode: PromoAdFormMode,
@@ -346,8 +351,21 @@ private fun PromoAdFormDialog(
                     context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                 }
                 if (bytes != null) {
+                    // Bounds-only decode (no pixel allocation) -- every
+                    // Promo Ad image must be exactly 1280x720 (16:9), same
+                    // requirement the backend enforces on upload; checking
+                    // here lets the agent fix it immediately instead of
+                    // discovering it from a failed Save.
+                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                    if (bounds.outWidth != PROMO_AD_IMAGE_WIDTH || bounds.outHeight != PROMO_AD_IMAGE_HEIGHT) {
+                        error = "Image must be exactly ${PROMO_AD_IMAGE_WIDTH}x$PROMO_AD_IMAGE_HEIGHT px (16:9)" +
+                            " -- picked image is ${bounds.outWidth}x${bounds.outHeight}."
+                        return@launch
+                    }
                     val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
                     pickedImage = PickedAdImage(bytes, mime)
+                    error = null
                 }
             } catch (e: Exception) {
                 error = "Couldn't read that image: ${e.message ?: "unknown error"}"
@@ -408,6 +426,12 @@ private fun PromoAdFormDialog(
                 Spacer(Modifier.height(16.dp))
 
                 Text("Image" + if (existing == null) " (required)" else "", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "Must be exactly ${PROMO_AD_IMAGE_WIDTH}x$PROMO_AD_IMAGE_HEIGHT px (16:9)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 Spacer(Modifier.height(8.dp))
                 PromoAdImagePicker(
                     existingAdId = existing?.id,
