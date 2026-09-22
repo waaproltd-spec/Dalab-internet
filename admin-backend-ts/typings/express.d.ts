@@ -29,6 +29,7 @@ declare module "express" {
   export type ErrorRequestHandler = (err: Error, req: Request, res: Response, next: NextFunction) => void;
 
   export interface Router {
+    use(...args: unknown[]): Router;
     get(path: string, ...handlers: RequestHandler[]): Router;
     post(path: string, ...handlers: RequestHandler[]): Router;
     put(path: string, ...handlers: RequestHandler[]): Router;
@@ -44,7 +45,7 @@ declare module "express" {
   }
   function express(): Express;
   namespace express {
-    function json(options?: { limit?: string }): RequestHandler;
+    function json(options?: { limit?: string; type?: string | ((req: Request) => boolean); inflate?: boolean; strict?: boolean; verify?: (req: Request, res: Response, buf: Buffer, encoding: string) => void }): RequestHandler;
   }
   export default express;
 }
