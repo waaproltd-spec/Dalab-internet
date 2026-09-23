@@ -10,18 +10,24 @@ import { sendJson } from "../utils/camelCase.js";
 import { Role } from "../types/index.js";
 import { rateLimit } from "../auth/rateLimit.js";
 import { validateMobileNumber } from "../lib/phoneValidation.js";
+import { parseDeviceInfo, registerCustomerDeviceLogin } from "../services/deviceTracking.js";
 
 export const authRouter = Router();
 
-async function issueTokens(subjectId: string, role: Role) {
+// deviceId is optional and, today, only ever sent by customer-app login/
+// signup/refresh calls (see Trusted Devices, deviceTracking.ts) -- every
+// other role's call sites below simply don't pass one, so this is a purely
+// additive column with no change to how tokens are issued or verified for
+// admin/agent/reseller.
+async function issueTokens(subjectId: string, role: Role, deviceId: string | null = null) {
   const accessToken = signAccessToken(subjectId, role);
   const jti = randomUUID();
   const refreshToken = signRefreshToken(subjectId, role, jti);
   const tokenHash = createHash("sha256").update(refreshToken).digest("hex");
   const expiresAt = new Date(Date.now() + refreshTtlMsForRole(role));
   await query(
-    `INSERT INTO refresh_tokens (id, subject_id, subject_role, token_hash, expires_at) VALUES ($1,$2,$3,$4,$5)`,
-    [randomUUID(), subjectId, role, tokenHash, expiresAt]
+    `INSERT INTO refresh_tokens (id, subject_id, subject_role, token_hash, expires_at, device_id) VALUES ($1,$2,$3,$4,$5,$6)`,
+    [randomUUID(), subjectId, role, tokenHash, expiresAt, deviceId]
   );
   return { accessToken, refreshToken };
 }
@@ -100,7 +106,9 @@ authRouter.post("/auth/register", rateLimit("customer-register", 10, 15 * 60 * 1
     );
   }
 
-  const tokens = await issueTokens(customer!.id, "customer");
+  const deviceInfo = parseDeviceInfo(req.body.device);
+  const tokens = await issueTokens(customer!.id, "customer", deviceInfo?.deviceId ?? null);
+  await registerCustomerDeviceLogin(customer!.id, deviceInfo);
   sendJson(res, 201, {
     ...tokens,
     customer: {
@@ -147,7 +155,9 @@ authRouter.post("/auth/login", rateLimit("customer-login", 10, 15 * 60 * 1000), 
   // instead of the normal app, rather than being refused a session entirely
   // with no way to even reach support from inside the app.
 
-  const tokens = await issueTokens(customer.id, "customer");
+  const deviceInfo = parseDeviceInfo(req.body.device);
+  const tokens = await issueTokens(customer.id, "customer", deviceInfo?.deviceId ?? null);
+  await registerCustomerDeviceLogin(customer.id, deviceInfo);
   sendJson(res, 200, {
     ...tokens,
     customer: {
@@ -254,7 +264,9 @@ authRouter.post("/auth/identify", rateLimit("customer-identify", 20, 15 * 60 * 1
     customer = await queryOne(`INSERT INTO customers (id, phone, name) VALUES ($1,$2,$3) RETURNING *`, [randomUUID(), phone, name]);
   }
 
-  const tokens = await issueTokens(customer!.id, "customer");
+  const deviceInfo = parseDeviceInfo(req.body.device);
+  const tokens = await issueTokens(customer!.id, "customer", deviceInfo?.deviceId ?? null);
+  await registerCustomerDeviceLogin(customer!.id, deviceInfo);
   sendJson(res, 200, {
     ...tokens,
     customer: {
@@ -349,7 +361,9 @@ authRouter.post("/auth/customer/signup", rateLimit("customer-pin-signup", 10, 15
     );
   }
 
-  const tokens = await issueTokens(customer!.id, "customer");
+  const deviceInfo = parseDeviceInfo(req.body.device);
+  const tokens = await issueTokens(customer!.id, "customer", deviceInfo?.deviceId ?? null);
+  await registerCustomerDeviceLogin(customer!.id, deviceInfo);
   sendJson(res, 201, {
     ...tokens,
     customer: {
@@ -383,7 +397,9 @@ authRouter.post("/auth/customer/login", rateLimit("customer-pin-login", 10, 15 *
   // suspension block (with Agent Support still reachable) instead of the
   // normal app, rather than being refused a session entirely and left with
   // no way to even reach support from inside the app.
-  const tokens = await issueTokens(customer.id, "customer");
+  const deviceInfo = parseDeviceInfo(req.body.device);
+  const tokens = await issueTokens(customer.id, "customer", deviceInfo?.deviceId ?? null);
+  await registerCustomerDeviceLogin(customer.id, deviceInfo);
   sendJson(res, 200, {
     ...tokens,
     customer: {
@@ -584,8 +600,31 @@ authRouter.post("/auth/refresh", async (req, res) => {
     }
   }
 
+  // A customer's session must end the moment they remove this exact device
+  // from Trusted Devices -- otherwise a device already holding a valid,
+  // not-yet-expired refresh token would just keep silently refreshing
+  // forever, ignoring the removal. Same "closes the refresh-time gap"
+  // pattern as the Reseller/Agent checks above, scoped to requests that
+  // actually carry a device_id (a customer session from before this
+  // feature existed has none, and is simply unaffected).
+  if (payload.role === "customer" && row.device_id) {
+    const device = await queryOne<{ revoked_at: string | null }>(
+      `SELECT revoked_at FROM customer_devices WHERE customer_id=$1 AND device_id=$2`,
+      [payload.sub, row.device_id]
+    );
+    if (device?.revoked_at) {
+      await query(`UPDATE refresh_tokens SET revoked=true WHERE id=$1`, [row.id]);
+      return sendJson(res, 401, { error: "This device's access has been removed. Please sign in again." });
+    }
+  }
+
   await query(`UPDATE refresh_tokens SET revoked=true WHERE id=$1`, [row.id]);
-  const tokens = await issueTokens(payload.sub, payload.role);
+  // Carries the same device_id forward onto the new token row -- a
+  // refreshed session is still the same physical device, not a new one,
+  // and Trusted Devices' "this device's session" revocation (see
+  // devices.routes.ts) needs every token this device ever holds to be
+  // taggable back to it, not just the one issued at the original login.
+  const tokens = await issueTokens(payload.sub, payload.role, row.device_id ?? null);
   sendJson(res, 200, tokens);
 });
 

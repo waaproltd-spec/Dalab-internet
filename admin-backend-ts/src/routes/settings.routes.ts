@@ -62,6 +62,15 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   service_reseller_enabled: "true",
   service_shop_enabled: "true",
   service_vip_numbers_enabled: "true",
+  // The Customer App's own in-app "Update Available" prompt (see
+  // UpdateCheckGate/UpdateAvailableDialog) -- a Super Admin sets this to
+  // whatever version was just published to the Play Store, and any
+  // customer whose installed build (PackageInfo.version) is older sees the
+  // prompt on next app open. Never auto-detected from the Play Store
+  // itself (this app has no Play Console integration) -- purely an admin-
+  // entered value, same "free text a staff member keeps in sync by hand"
+  // trust level as social_play_store_url below it.
+  customer_app_latest_version: "1.7.0",
 };
 
 const SOCIAL_LINK_FIELDS = [
@@ -174,6 +183,7 @@ settingsRouter.get("/settings/public", async (_req, res) => {
   sendJson(res, 200, {
     appName: merged.app_name,
     supportPhone: merged.support_phone,
+    latestAppVersion: merged.customer_app_latest_version,
     socialLinks,
     // Fails safe (visible) on anything but the literal string "false" --
     // an unset/missing/malformed value must never hide a service that was

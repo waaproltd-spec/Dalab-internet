@@ -13866,7 +13866,14 @@ function settingsToCamel(s) {
 }
 
 function GeneralSettingsPanel() {
-  const [drafts, setDrafts] = useState({ app_name: "", app_slogan: "", support_phone: "", support_email: "", maintenance_mode: false });
+  const [drafts, setDrafts] = useState({
+    app_name: "",
+    app_slogan: "",
+    support_phone: "",
+    support_email: "",
+    maintenance_mode: false,
+    customer_app_latest_version: "",
+  });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -13883,6 +13890,7 @@ function GeneralSettingsPanel() {
           support_phone: data[settingsToCamel("support_phone")] ?? "",
           support_email: data[settingsToCamel("support_email")] ?? "",
           maintenance_mode: data[settingsToCamel("maintenance_mode")] === "true",
+          customer_app_latest_version: data[settingsToCamel("customer_app_latest_version")] ?? "",
         });
       } catch (err) {
         setError(err.message || "Could not load settings.");
@@ -13901,6 +13909,7 @@ function GeneralSettingsPanel() {
       await DalabAdminApi.updateSetting("support_phone", drafts.support_phone.trim());
       await DalabAdminApi.updateSetting("support_email", drafts.support_email.trim());
       await DalabAdminApi.updateSetting("maintenance_mode", drafts.maintenance_mode ? "true" : "false");
+      await DalabAdminApi.updateSetting("customer_app_latest_version", drafts.customer_app_latest_version.trim());
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {
@@ -13931,6 +13940,18 @@ function GeneralSettingsPanel() {
       </Field>
       <Field label="Support email">
         <input style={inputStyle} value={drafts.support_email} onChange={(e) => setDrafts((d) => ({ ...d, support_email: e.target.value }))} />
+      </Field>
+      <Field label="Customer App latest version">
+        <input
+          style={inputStyle}
+          value={drafts.customer_app_latest_version}
+          onChange={(e) => setDrafts((d) => ({ ...d, customer_app_latest_version: e.target.value }))}
+          placeholder="e.g. 1.7.0"
+        />
+        <div style={{ fontSize: 11.5, color: MUTE, marginTop: 4 }}>
+          Set this to the version just published to the Play Store. Any customer on an older installed build sees an
+          in-app "Update Available" prompt on next app open.
+        </div>
       </Field>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
         <input
