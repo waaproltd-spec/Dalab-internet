@@ -19,7 +19,7 @@ const requireSuperAdmin = () => requireAuth("super_admin");
 // read by the dedicated .../image route below, served raw rather than
 // through sendJson (which would otherwise try to camelCase-walk the Buffer).
 const PROMO_IMAGE_COLUMNS = "id, mime_type, position, active, created_at";
-const MAX_ACTIVE_PROMO_IMAGES = 5;
+const MAX_ACTIVE_PROMO_IMAGES = 30;
 
 promoImagesRouter.get("/promo-images", async (_req, res) => {
   const rows = await query(

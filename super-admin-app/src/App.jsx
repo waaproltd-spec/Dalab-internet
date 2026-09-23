@@ -217,10 +217,10 @@ const DalabAdminApi = {
   // customers.manage (delegable), unlike the PIN/password routes above.
   updateCustomerWallet: (id, body) => dalabAdminApiRequest(`/admin/customers/${id}/wallet-numbers`, { method: "PUT", body }),
   setCustomerExchangeLimits: (id, body) => dalabAdminApiRequest(`/admin/customers/${id}/exchange-limits`, { method: "PUT", body }),
-  // Promo Images — up to 5 promotional images shown as a carousel on the
-  // Customer App Home screen. Images are uploaded as data URIs (base64)
-  // rather than multipart form data, since dalabAdminApiRequest already
-  // sends everything as JSON.
+  // Promo Images — up to MAX_PROMO_IMAGES promotional images shown as a
+  // carousel on the Customer App Home screen. Images are uploaded as data
+  // URIs (base64) rather than multipart form data, since
+  // dalabAdminApiRequest already sends everything as JSON.
   getPromoImages: () => dalabAdminApiRequest("/admin/promo-images"),
   createPromoImage: (imageBase64) => dalabAdminApiRequest("/admin/promo-images", { method: "POST", body: { imageBase64 } }),
   updatePromoImage: (id, body) => dalabAdminApiRequest(`/admin/promo-images/${id}`, { method: "PUT", body }),
@@ -4296,7 +4296,7 @@ function AgentsSection({ companies, admin }) {
   );
 }
 
-const MAX_PROMO_IMAGES = 5;
+const MAX_PROMO_IMAGES = 30;
 
 function PromoImages() {
   const [images, setImages] = useState([]);
