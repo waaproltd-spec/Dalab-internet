@@ -117,6 +117,7 @@ class AgentBackgroundService : Service() {
         newScope.launch { ResellerWithdrawalSimRoutingRepository.refresh() }
         newScope.launch { SmsSenderIdRepository.refresh() }
         newScope.launch {
+            if (!SessionManager.isLoggedIn()) return@launch
             try {
                 QueueDrainer.drainAll(applicationContext)
             } catch (e: Exception) {
@@ -124,6 +125,7 @@ class AgentBackgroundService : Service() {
             }
         }
         newScope.launch {
+            if (!SessionManager.isLoggedIn()) return@launch
             try {
                 SelfHealSweeper.sweep(applicationContext)
             } catch (e: Exception) {
@@ -131,6 +133,7 @@ class AgentBackgroundService : Service() {
             }
         }
         newScope.launch {
+            if (!SessionManager.isLoggedIn()) return@launch
             try {
                 ExchangeSelfHealSweeper.sweep(applicationContext)
             } catch (e: Exception) {
@@ -138,6 +141,7 @@ class AgentBackgroundService : Service() {
             }
         }
         newScope.launch {
+            if (!SessionManager.isLoggedIn()) return@launch
             try {
                 ResellerWithdrawalSelfHealSweeper.sweep(applicationContext)
             } catch (e: Exception) {
@@ -145,6 +149,7 @@ class AgentBackgroundService : Service() {
             }
         }
         newScope.launch {
+            if (!SessionManager.isLoggedIn()) return@launch
             try {
                 WalletLookupSelfHealSweeper.sweep(applicationContext)
             } catch (e: Exception) {
@@ -163,6 +168,7 @@ class AgentBackgroundService : Service() {
             // payment is verified/a withdrawal is created — see
             // ExchangeSelfHealSweeper/ResellerWithdrawalSelfHealSweeper.
             AgentEventBus.orderEvents.collect {
+                if (!SessionManager.isLoggedIn()) return@collect
                 try {
                     SelfHealSweeper.sweep(applicationContext)
                 } catch (e: Exception) {
@@ -285,9 +291,13 @@ class AgentBackgroundService : Service() {
         val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                scope.launch { QueueDrainer.drainAll(applicationContext) }
+                scope.launch {
+                    if (!SessionManager.isLoggedIn()) return@launch
+                    QueueDrainer.drainAll(applicationContext)
+                }
                 scope.launch { realtimeClient?.connect() }
                 scope.launch {
+                    if (!SessionManager.isLoggedIn()) return@launch
                     try {
                         SelfHealSweeper.sweep(applicationContext)
                     } catch (e: Exception) {
@@ -295,6 +305,7 @@ class AgentBackgroundService : Service() {
                     }
                 }
                 scope.launch {
+                    if (!SessionManager.isLoggedIn()) return@launch
                     try {
                         ExchangeSelfHealSweeper.sweep(applicationContext)
                     } catch (e: Exception) {
@@ -302,6 +313,7 @@ class AgentBackgroundService : Service() {
                     }
                 }
                 scope.launch {
+                    if (!SessionManager.isLoggedIn()) return@launch
                     try {
                         ResellerWithdrawalSelfHealSweeper.sweep(applicationContext)
                     } catch (e: Exception) {
@@ -309,6 +321,7 @@ class AgentBackgroundService : Service() {
                     }
                 }
                 scope.launch {
+                    if (!SessionManager.isLoggedIn()) return@launch
                     try {
                         WalletLookupSelfHealSweeper.sweep(applicationContext)
                     } catch (e: Exception) {
@@ -425,6 +438,7 @@ class AgentBackgroundService : Service() {
         val currentScope = scope ?: return
         while (currentScope.isActive) {
             delay(QUEUE_DRAIN_INTERVAL_MS)
+            if (!SessionManager.isLoggedIn()) continue
             try {
                 QueueDrainer.drainAll(applicationContext)
             } catch (e: Exception) {
@@ -441,6 +455,7 @@ class AgentBackgroundService : Service() {
         val currentScope = scope ?: return
         while (currentScope.isActive) {
             delay(SELF_HEAL_SWEEP_INTERVAL_MS)
+            if (!SessionManager.isLoggedIn()) continue
             try {
                 SelfHealSweeper.sweep(applicationContext)
             } catch (e: Exception) {
@@ -457,6 +472,7 @@ class AgentBackgroundService : Service() {
         val currentScope = scope ?: return
         while (currentScope.isActive) {
             delay(SELF_HEAL_SWEEP_INTERVAL_MS)
+            if (!SessionManager.isLoggedIn()) continue
             try {
                 ExchangeSelfHealSweeper.sweep(applicationContext)
             } catch (e: Exception) {
@@ -473,6 +489,7 @@ class AgentBackgroundService : Service() {
         val currentScope = scope ?: return
         while (currentScope.isActive) {
             delay(SELF_HEAL_SWEEP_INTERVAL_MS)
+            if (!SessionManager.isLoggedIn()) continue
             try {
                 ResellerWithdrawalSelfHealSweeper.sweep(applicationContext)
             } catch (e: Exception) {
@@ -490,6 +507,7 @@ class AgentBackgroundService : Service() {
         val currentScope = scope ?: return
         while (currentScope.isActive) {
             delay(SELF_HEAL_SWEEP_INTERVAL_MS)
+            if (!SessionManager.isLoggedIn()) continue
             try {
                 WalletLookupSelfHealSweeper.sweep(applicationContext)
             } catch (e: Exception) {
