@@ -8,7 +8,6 @@ import com.dalab.internet.sms.SmsUploadFlow
 import com.dalab.internet.sms.UploadOutcome
 import com.dalab.internet.sms.VerifyPaymentAction
 import com.dalab.internet.sms.ExchangePayoutConfirmationAction
-import com.dalab.internet.sms.OfflineOrderPackagePickAction
 import com.dalab.internet.sms.VoucherConfirmationAction
 import com.dalab.internet.ussd.DialAttemptAuditAction
 import com.dalab.internet.ussd.ExchangeDialStepReportAction
@@ -64,7 +63,6 @@ object QueueDrainer {
                 }
                 PendingActionQueue.Type.VOUCHER_CONFIRMATION -> drainVoucherConfirmation(action)
                 PendingActionQueue.Type.EXCHANGE_PAYOUT_CONFIRMATION -> drainExchangePayoutConfirmation(action)
-                PendingActionQueue.Type.OFFLINE_ORDER_PACKAGE_PICK -> drainOfflineOrderPackagePick(action)
                 PendingActionQueue.Type.SALE_CREATE -> {
                     val payload = PendingActionQueue.payloadOf<SaleCreateAction>(action)
                     RetryClassifier.requireSuccessful(ApiClient.service.createSale(payload.request))
@@ -141,19 +139,6 @@ object QueueDrainer {
                 PendingActionQueue.remove(action.id)
             }
             is UploadOutcome.RetryableVerify -> PendingActionQueue.remove(action.id) // unreachable from reportExchangePayoutConfirmation
-        }
-    }
-
-    private suspend fun drainOfflineOrderPackagePick(action: PendingActionQueue.PendingAction) {
-        val payload = PendingActionQueue.payloadOf<OfflineOrderPackagePickAction>(action)
-        when (val outcome = SmsUploadFlow.reportOfflineOrderPackagePick(payload.entry)) {
-            is UploadOutcome.Success -> PendingActionQueue.remove(action.id)
-            is UploadOutcome.RetryableUpload -> PendingActionQueue.markAttempt(action.id, outcome.reason)
-            is UploadOutcome.Terminal -> {
-                DiagnosticsLog.record("queue_drain", "Dropped OFFLINE_ORDER_PACKAGE_PICK (terminal): ${outcome.reason}")
-                PendingActionQueue.remove(action.id)
-            }
-            is UploadOutcome.RetryableVerify -> PendingActionQueue.remove(action.id) // unreachable from reportOfflineOrderPackagePick
         }
     }
 }

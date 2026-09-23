@@ -9,7 +9,6 @@ import com.dalab.internet.data.SmsLogEntry
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.ExchangePayoutConfirmationRequest
-import com.dalab.internet.network.OfflineOrderPackagePickRequest
 import com.dalab.internet.network.VoucherConfirmationRequest
 import com.dalab.internet.queue.PendingActionQueue
 import com.dalab.internet.queue.RetryClassifier
@@ -22,7 +21,6 @@ data class SmsUploadAction(val entry: SmsLogEntry)
 data class VerifyPaymentAction(val orderId: String, val smsLogId: String?, val parsedAmount: Double?)
 data class VoucherConfirmationAction(val entry: VoucherSentEntry)
 data class ExchangePayoutConfirmationAction(val entry: ExchangePayoutConfirmedEntry)
-data class OfflineOrderPackagePickAction(val entry: OfflineOrderPickEntry)
 
 sealed class UploadOutcome {
     object Success : UploadOutcome()
@@ -143,31 +141,6 @@ object SmsUploadFlow {
             DiagnosticsLog.record("exchange_payout_confirmation", "${if (retryable) "Queued for retry" else "Rejected"}: ${e.message}")
             if (retryable) UploadOutcome.RetryableUpload(e.message ?: "network error")
             else UploadOutcome.Terminal(e.message ?: "exchange payout confirmation failed")
-        }
-    }
-
-    /**
-     * Rukumo Offline's own side channel (see [OfflineOrderPickParser]): reports
-     * the package the customer just picked, straight from the SMS their phone
-     * sent without needing mobile internet. Best-effort/idempotent
-     * server-side (applyOfflineOrderPackagePick) exactly like
-     * [reportVoucherConfirmation] — an unmatched or redundant pick is not an
-     * error, and this never creates or touches an order by itself, only sets
-     * a field matchOrCreateOfflineAutoOrder (and its resweep retry) then use.
-     */
-    suspend fun reportOfflineOrderPackagePick(entry: OfflineOrderPickEntry): UploadOutcome {
-        return try {
-            RetryClassifier.requireSuccessful(
-                ApiClient.service.reportOfflineOrderPackagePick(
-                    OfflineOrderPackagePickRequest(entry.senderPhone, entry.packageId)
-                )
-            )
-            UploadOutcome.Success
-        } catch (e: Exception) {
-            val retryable = RetryClassifier.isRetryable(e)
-            DiagnosticsLog.record("offline_order_package_pick", "${if (retryable) "Queued for retry" else "Rejected"}: ${e.message}")
-            if (retryable) UploadOutcome.RetryableUpload(e.message ?: "network error")
-            else UploadOutcome.Terminal(e.message ?: "offline order package pick failed")
         }
     }
 

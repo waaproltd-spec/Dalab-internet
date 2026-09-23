@@ -83,18 +83,7 @@ class SmsReceiver : BroadcastReceiver() {
             DiagnosticsLog.record("sms_receiver_parse", "Parser threw on incoming SMS: ${e.stackTraceToString().take(2000)}")
             return
         }
-        // Rukumo Offline's own side channel (see OfflineOrderPickParser's own
-        // doc comment) — checked only once every other parser has already
-        // missed, same position the rest of this chain already follows.
-        val offlinePick = if (parsed == null && voucherSent == null && exchangePayoutSent == null) {
-            try {
-                OfflineOrderPickParser.tryParse(sender, body)
-            } catch (e: Exception) {
-                DiagnosticsLog.record("sms_receiver_parse", "Offline order pick parser threw: ${e.stackTraceToString().take(2000)}")
-                null
-            }
-        } else null
-        if (parsed == null && voucherSent == null && exchangePayoutSent == null && offlinePick == null) {
+        if (parsed == null && voucherSent == null && exchangePayoutSent == null) {
             // Most SMS on this phone are personal texts/OTPs and are correctly
             // ignored here — logging every one of those would flood
             // Diagnostics and leak their content. But an SMS that *looks*
@@ -149,21 +138,6 @@ class SmsReceiver : BroadcastReceiver() {
         val appContext = context.applicationContext
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                if (offlinePick != null) {
-                    // Rukumo Offline's own side channel — not an incoming
-                    // customer payment, just the package the customer picked,
-                    // reported straight from the SMS their phone sent without
-                    // needing mobile internet. See OfflineOrderPickParser's
-                    // own doc comment.
-                    if (SmsUploadFlow.reportOfflineOrderPackagePick(offlinePick) is UploadOutcome.RetryableUpload) {
-                        PendingActionQueue.enqueue(
-                            id = UUID.randomUUID().toString(),
-                            type = PendingActionQueue.Type.OFFLINE_ORDER_PACKAGE_PICK,
-                            payload = OfflineOrderPackagePickAction(offlinePick),
-                        )
-                    }
-                    return@launch
-                }
                 if (voucherSent != null) {
                     // Flow 2: agent's own SIM confirmed it sent the top-up — a
                     // corroborating signal, not an incoming customer payment.

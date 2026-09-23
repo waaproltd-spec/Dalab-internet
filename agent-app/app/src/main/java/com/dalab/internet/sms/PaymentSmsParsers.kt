@@ -492,31 +492,3 @@ object ExchangePayoutSentParsers {
         return null
     }
 }
-
-/**
- * Rukumo Offline's own side-channel: the Customer App (OfflineOrderSms,
- * MainActivity.kt) sends this compact "DALAB-PKG:<packageId>" text as an
- * ordinary silent SMS — no mobile internet needed, just the SIM/signaling
- * channel USSD already relies on — the instant the customer taps "Iibso
- * Hadda", to the company's own payment number: the exact physical line this
- * device holds and already monitors for every other incoming SMS (see
- * SmsReceiver's own class doc: "fires on every incoming SMS"). Distinct from
- * every payment/voucher SMS above by construction: it originates from an
- * ordinary customer phone number, not a provider's own sender ID/shortcode,
- * and this exact text never appears in any real carrier message. Lets the
- * backend's offline_package_id (see applyOfflineOrderPackagePick,
- * offlineAutoOrder.ts) get set WITHOUT depending on the customer's own phone
- * ever reconnecting to the internet — a second, additional path alongside
- * the reconnect-triggered PUT /customer/offline-profile retry, not a
- * replacement for it.
- */
-data class OfflineOrderPickEntry(val senderPhone: String, val packageId: String)
-
-object OfflineOrderPickParser {
-    private val pattern = Regex("""DALAB-PKG:([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})""")
-
-    fun tryParse(sender: String, body: String): OfflineOrderPickEntry? {
-        val match = pattern.find(body) ?: return null
-        return OfflineOrderPickEntry(senderPhone = sender, packageId = match.groupValues[1])
-    }
-}

@@ -15,7 +15,7 @@ import { extractBalanceFromSms, resolveBalanceProvider, isExpectedBalanceSender,
 import { broadcast } from "../realtime/orderEvents.js";
 import { verifyOrderAndGenerateUssd } from "./orders.routes.js";
 import { autoAdvanceExchangeOrderToInProgress } from "./exchange.routes.js";
-import { matchOrCreateOfflineAutoOrder, applyOfflineOrderPackagePick } from "./offlineAutoOrder.js";
+import { matchOrCreateOfflineAutoOrder } from "./offlineAutoOrder.js";
 import {
   findMatchingResellerDeposit,
   confirmResellerDepositViaSms,
@@ -892,24 +892,6 @@ smsLogsRouter.post("/agent/sms-logs", requireAuth("agent"), async (req, res) => 
   if (!sender || !body) return sendJson(res, 400, { error: "sender and body are required" });
   const result = await ingestPaymentSms({ agentId: req.auth!.sub, ...req.body });
   sendJson(res, result.status, result.body);
-});
-
-// Uploaded by the Agent App (SmsUploadFlow.reportOfflineOrderPackagePick)
-// when its SmsReceiver recognizes the Customer App's own "DALAB-PKG:<id>"
-// side-channel text (see OfflineOrderPickParser in the Agent App and
-// OfflineOrderSms in the Customer App) — a compact, silent SMS the customer's
-// phone sends over the SIM/signaling channel, without mobile internet, the
-// instant "Iibso Hadda" is tapped. Same shape as voucher-confirmation/
-// payout-confirmation above: best-effort/idempotent, a redundant or
-// unmatched pick is not an error, and this never creates or touches an
-// order itself — see applyOfflineOrderPackagePick's own doc comment.
-smsLogsRouter.post("/agent/offline-orders/package-pick", requireAuth("agent"), async (req, res) => {
-  const { senderPhone, packageId } = req.body ?? {};
-  if (!senderPhone || !packageId) {
-    return sendJson(res, 400, { error: "senderPhone and packageId are required" });
-  }
-  const result = await applyOfflineOrderPackagePick(String(senderPhone), String(packageId));
-  sendJson(res, 200, { applied: result.applied, reason: result.reason });
 });
 
 type OrphanedSmsRow = {

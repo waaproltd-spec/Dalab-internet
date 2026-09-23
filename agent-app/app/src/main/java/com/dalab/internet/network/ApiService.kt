@@ -95,8 +95,6 @@ data class VoucherConfirmationRequest(val receiverPhone: String, val amount: Dou
 data class VoucherConfirmationResponse(val matched: Boolean, val orderId: String? = null, val alreadyCompleted: Boolean = false)
 data class ExchangePayoutConfirmationRequest(val receiverPhone: String, val amount: Double, val rawText: String)
 data class ExchangePayoutConfirmationResponse(val matched: Boolean, val orderId: String? = null, val alreadyCompleted: Boolean = false)
-data class OfflineOrderPackagePickRequest(val senderPhone: String, val packageId: String)
-data class OfflineOrderPackagePickResponse(val applied: Boolean, val reason: String? = null)
 
 // ---------------- Notification broadcast ----------------
 // Same POST /notifications/broadcast + GET /notifications/campaigns the
@@ -392,9 +390,6 @@ interface ApiService {
 
     @POST("agent/exchange/orders/payout-confirmation")
     suspend fun reportExchangePayoutConfirmation(@Body body: ExchangePayoutConfirmationRequest): Response<ExchangePayoutConfirmationResponse>
-
-    @POST("agent/offline-orders/package-pick")
-    suspend fun reportOfflineOrderPackagePick(@Body body: OfflineOrderPackagePickRequest): Response<OfflineOrderPackagePickResponse>
 
     @GET("agent/notifications")
     suspend fun getNotifications(): Response<List<AgentNotification>>
