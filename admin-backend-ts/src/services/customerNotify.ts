@@ -29,10 +29,9 @@ export async function notifyCustomer(
   const sentAt = new Date().toISOString();
   try {
     // data is persisted too (not just pushed) so the in-app notifications
-    // list itself can carry structured routing info -- e.g. friends.routes.ts
-    // needs the customer app's notification card to know exactly which
-    // friend_requests row a "friend_request" notification is about, to
-    // offer Aqbal/Diid right there without a second lookup.
+    // list itself can carry structured routing info specific to a
+    // notification's type, for the customer app's notification card to act
+    // on without a second lookup.
     await query(`INSERT INTO notifications (id, type, title, body, customer_id, sent_at, data) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [
       id,
       type,

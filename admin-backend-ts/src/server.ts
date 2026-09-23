@@ -45,8 +45,6 @@ import { shopRouter } from "./routes/shop.routes.js";
 import { vipNumbersRouter } from "./routes/vipNumbers.routes.js";
 import { vipNumberPackagesRouter } from "./routes/vipNumberPackages.routes.js";
 import { nalaSocoRouter } from "./routes/nalaSoco.routes.js";
-import { friendsRouter } from "./routes/friends.routes.js";
-import { savedNumbersRouter } from "./routes/savedNumbers.routes.js";
 import { devicesRouter } from "./routes/devices.routes.js";
 import { pool, queryOne } from "./db/pool.js";
 import { seedAll } from "./db/seed.js";
@@ -305,8 +303,6 @@ app.use(shopRouter);
 app.use(vipNumbersRouter);
 app.use(vipNumberPackagesRouter);
 app.use(nalaSocoRouter);
-app.use(friendsRouter);
-app.use(savedNumbersRouter);
 app.use(devicesRouter);
 
 app.use((_req: Request, res: Response) => {
