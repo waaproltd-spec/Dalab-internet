@@ -761,17 +761,27 @@ customersRouter.get("/customer/offline-profile", requireAuth("customer"), async 
   sendJson(res, 200, profile);
 });
 
-// All four fields are saved together, every time — Company and Package are
-// coupled (a package must belong to the chosen company), and the whole
-// point of one screen with one Save button (spec requirement 2/18) is that
-// there's no intermediate, partially-configured profile to reason about.
+// senderNumber/destinationNumber/companyId are always required -- this is
+// the customer's own "Macamilka Xogtiisa" (Customer Information) identity
+// for Offline: who pays, who receives, and which company. packageId is
+// optional here (Customer Information no longer collects a package at
+// all -- see the Customer App's offline_profile_screen.dart): a profile
+// with company+numbers but no package saves successfully, it just isn't
+// eligible for automatic SMS-matched ordering yet (offlineAutoOrder.ts's
+// own candidate query already requires offline_package_id IS NOT NULL, so
+// this never risks auto-creating an order for a package nobody picked).
+// The package Rukumo Offline actually orders is always set separately, at
+// purchase time, by that flow's own call to this same route with a real
+// packageId (see rukumo_offline_package_detail_screen.dart) -- so once a
+// customer has bought anything through Rukumo Offline at least once, this
+// profile does have a package and full auto-matching applies from then on.
 // Price is never accepted from the client (spec requirement 5/16) — it's
 // always read back from the package the customer picked, here and again at
 // match time.
 customersRouter.put("/customer/offline-profile", requireAuth("customer"), async (req, res) => {
   const { senderNumber, destinationNumber, companyId, packageId, paymentMethodId } = req.body ?? {};
-  if (!senderNumber || !destinationNumber || !companyId || !packageId) {
-    return sendJson(res, 400, { error: "senderNumber, destinationNumber, companyId, and packageId are all required" });
+  if (!senderNumber || !destinationNumber || !companyId) {
+    return sendJson(res, 400, { error: "senderNumber, destinationNumber, and companyId are all required" });
   }
 
   const company = await queryOne<{ id: string; name: string; status: string }>(
@@ -781,9 +791,12 @@ customersRouter.put("/customer/offline-profile", requireAuth("customer"), async 
   if (!company) return sendJson(res, 404, { error: "Company not found" });
   if (company.status === "offline") return sendJson(res, 409, { error: `${company.name} is currently offline` });
 
-  const pkg = await queryOne<{ id: string; company_id: string }>(`SELECT id, company_id FROM packages WHERE id=$1 AND active=true`, [packageId]);
-  if (!pkg) return sendJson(res, 404, { error: "Package not found" });
-  if (pkg.company_id !== companyId) return sendJson(res, 400, { error: "Package does not belong to the selected company" });
+  let pkg: { id: string; company_id: string } | null = null;
+  if (packageId) {
+    pkg = await queryOne<{ id: string; company_id: string }>(`SELECT id, company_id FROM packages WHERE id=$1 AND active=true`, [packageId]);
+    if (!pkg) return sendJson(res, 404, { error: "Package not found" });
+    if (pkg.company_id !== companyId) return sendJson(res, 400, { error: "Package does not belong to the selected company" });
+  }
 
   // Which specific payment method (EVC Plus/eDahab/JEEB/...) the customer
   // pays from -- same lookup+validation orders.routes.ts's POST /orders
@@ -811,7 +824,7 @@ customersRouter.put("/customer/offline-profile", requireAuth("customer"), async 
 
   await query(
     `UPDATE customers SET offline_sender_number=$1, offline_destination_number=$2, offline_company_id=$3, offline_package_id=$4, offline_payment_method_id=$5, offline_profile_updated_at=now() WHERE id=$6`,
-    [String(senderNumber), String(destinationNumber), companyId, packageId, selectedMethod?.id ?? null, req.auth!.sub]
+    [String(senderNumber), String(destinationNumber), companyId, packageId ?? null, selectedMethod?.id ?? null, req.auth!.sub]
   );
   sendJson(res, 200, await serializeOfflineProfile(req.auth!.sub));
 });
