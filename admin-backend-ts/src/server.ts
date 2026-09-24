@@ -23,6 +23,7 @@ import { macaashRouter } from "./routes/macaash.routes.js";
 import { bannersRouter } from "./routes/banners.routes.js";
 import { promoImagesRouter } from "./routes/promoImages.routes.js";
 import { promoAdsRouter } from "./routes/promoAds.routes.js";
+import { whatsappAutoReplyRouter } from "./routes/whatsappAutoReply.routes.js";
 import { notificationsRouter } from "./routes/notifications.routes.js";
 import { executionLogsRouter } from "./routes/executionLogs.routes.js";
 import { activityLogRouter } from "./routes/activityLog.routes.js";
@@ -304,6 +305,7 @@ app.use(vipNumbersRouter);
 app.use(vipNumberPackagesRouter);
 app.use(nalaSocoRouter);
 app.use(devicesRouter);
+app.use(whatsappAutoReplyRouter);
 
 app.use((_req: Request, res: Response) => {
   res.status(404).json({ error: "Not found" });
