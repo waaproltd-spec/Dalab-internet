@@ -258,12 +258,22 @@ fun looksLikeFailureResponse(text: String): Boolean {
  *     u wareejiso $X oo <package> ah. Haraagaagu waa: $Y. Mahadsanid!" ("you
  *     succeeded in transferring $X <package> to this number") —
  *     "guulaysatay" ("succeeded").
- *
- * Amtel is out of scope for this classifier entirely: companies.gateway is
- * 'Manual' for Amtel (payment_ussd_template is NULL), so no USSD is ever
- * dialed for it — see admin-backend-ts/src/db/seed.ts.
+ *   - Amtel: "You have transferred $X - <number>. Date-Time:... Transaction
+ *     ID:... Your balance $Y." — confirmed live from a real production
+ *     ussd_dial_attempts row (order DLB470102794, 2026-09-24): Amtel now has
+ *     a real PIN + enabled USSD template (the earlier assumption below that
+ *     it never dials at all is stale), and its genuine success confirmation
+ *     is English "transferred", not Somali. Missing here, this fell through
+ *     to AMBIGUOUS on every dial — which dialWithRetry treats as retryable
+ *     — so a single real payment triggered 3 separate real USSD transfers
+ *     (3 real debits from the Amtel SIM) before the order was still
+ *     incorrectly left 'failed' once retries ran out. "transferred" is the
+ *     same word already used (for the identical carrier-confirmation
+ *     pattern) as a SUCCESS keyword in
+ *     classifyResellerWithdrawalUssdResponse's own SUCCESS_RESPONSE_KEYWORDS
+ *     below — this was simply never carried over to this sibling list.
  */
-private val SUCCESS_RESPONSE_KEYWORDS_RECHARGE = listOf("guulaysatay", "ugu shubtay")
+private val SUCCESS_RESPONSE_KEYWORDS_RECHARGE = listOf("guulaysatay", "ugu shubtay", "transferred")
 
 fun classifyRechargeUssdResponse(text: String): DialOutcome {
     val trimmed = text.trim()
