@@ -359,6 +359,11 @@ private const val PROMO_AD_IMAGE_HEIGHT = 720
 
 private enum class PromoAdDestinationMode { NONE, COMPANY, PACKAGE }
 
+// ExposedDropdownMenuBox/ExposedDropdownMenu (used by the destination
+// picker below) are experimental Material3 APIs -- same opt-in
+// PromoAdManagementScreen itself already carries, required here too since
+// this is a separate composable function.
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PromoAdFormDialog(
     mode: PromoAdFormMode,
