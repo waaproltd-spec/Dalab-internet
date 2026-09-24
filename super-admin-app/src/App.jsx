@@ -509,6 +509,8 @@ const DalabAdminApi = {
   shopProductImageUrl: (productId, imageId) => `${DALAB_API_BASE_URL}/shop/products/${productId}/images/${imageId}`,
   getShopPaymentMethods: () => dalabAdminApiRequest("/admin/shop/payment-methods"),
   updateShopPaymentMethod: (method, body) => dalabAdminApiRequest(`/admin/shop/payment-methods/${method}`, { method: "PUT", body }),
+  getOfflinePaymentMethods: () => dalabAdminApiRequest("/admin/offline/payment-methods"),
+  updateOfflinePaymentMethod: (method, body) => dalabAdminApiRequest(`/admin/offline/payment-methods/${method}`, { method: "PUT", body }),
   getShopOrders: (status, search) => {
     const qs = new URLSearchParams({ ...(status ? { status } : {}), ...(search ? { search } : {}) }).toString();
     return dalabAdminApiRequest(`/admin/shop/orders${qs ? `?${qs}` : ""}`);
@@ -9146,6 +9148,7 @@ function OfflinePanel({ companies }) {
           { id: "orders", label: "Offline Orders" },
           { id: "customers", label: "Offline Customers" },
           { id: "transactions", label: "Payment Transactions" },
+          { id: "paymentMethods", label: "Payment Methods" },
         ].map((t) => (
           <button
             key={t.id}
@@ -9170,8 +9173,78 @@ function OfflinePanel({ companies }) {
       )}
       {tab === "customers" && <OfflineCustomersTab onViewOrders={goToOrders} />}
       {tab === "transactions" && <OfflinePaymentTransactionsTab companies={companies} onViewOrder={setOpenOrderId} />}
+      {tab === "paymentMethods" && <OfflinePaymentMethodsPanel />}
 
       {openOrderId && <OfflineOrderDetailDrawer orderId={openOrderId} onClose={() => setOpenOrderId(null)} />}
+    </div>
+  );
+}
+
+// The 3 numbers (EVC Plus/Jeeb/eDahab) the Customer App's Offline Orders
+// intro screen dials -- previously hard-coded in the app itself. Mirrors
+// ShopPaymentMethodsPanel's own "load one config object, edit label/
+// paymentNumber/ussdTemplate inline, save" shape exactly.
+function OfflinePaymentMethodsPanel() {
+  const [methods, setMethods] = useState([]);
+  const [edits, setEdits] = useState({});
+  const [saving, setSaving] = useState(null);
+  const [error, setError] = useState({});
+
+  const fetchMethods = async () => {
+    try { setMethods(await DalabAdminApi.getOfflinePaymentMethods()); }
+    catch (err) { console.error("getOfflinePaymentMethods failed:", err.message); }
+  };
+  useEffect(() => { fetchMethods(); }, []);
+
+  const save = async (row) => {
+    const draft = edits[row.method] || {};
+    const label = draft.label ?? row.label;
+    const paymentNumber = draft.paymentNumber ?? row.paymentNumber;
+    const ussdTemplate = draft.ussdTemplate ?? row.ussdTemplate;
+    setSaving(row.method);
+    setError((m) => ({ ...m, [row.method]: "" }));
+    try {
+      await DalabAdminApi.updateOfflinePaymentMethod(row.method, { label, paymentNumber, ussdTemplate });
+      setEdits((m) => ({ ...m, [row.method]: undefined }));
+      fetchMethods();
+    } catch (err) {
+      setError((m) => ({ ...m, [row.method]: err.message || "Could not save." }));
+    }
+    setSaving(null);
+  };
+
+  return (
+    <div>
+      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 16 }}>
+        The numbers a customer dials themselves on the Offline Orders intro screen, before signing in — changing one here updates the Customer App automatically, no app release needed.
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {methods.map((row) => {
+          const draft = edits[row.method] || {};
+          return (
+            <Card key={row.method} style={{ padding: 16 }}>
+              <div style={{ fontWeight: 800, fontSize: 14, color: INK, marginBottom: 10 }}>{row.label}</div>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 140 }}>
+                  <Field label="Label">
+                    <input value={draft.label ?? row.label} onChange={(e) => setEdits((m) => ({ ...m, [row.method]: { ...draft, label: e.target.value } }))} style={inputStyle} />
+                  </Field>
+                </div>
+                <div style={{ flex: 1, minWidth: 140 }}>
+                  <Field label="Payment number">
+                    <input value={draft.paymentNumber ?? row.paymentNumber} onChange={(e) => setEdits((m) => ({ ...m, [row.method]: { ...draft, paymentNumber: e.target.value } }))} style={inputStyle} />
+                  </Field>
+                </div>
+              </div>
+              <Field label={'USSD template (must include "$" as the amount placeholder)'}>
+                <input value={draft.ussdTemplate ?? row.ussdTemplate} onChange={(e) => setEdits((m) => ({ ...m, [row.method]: { ...draft, ussdTemplate: e.target.value } }))} style={inputStyle} />
+              </Field>
+              {error[row.method] && <div style={{ color: "#C81E2C", fontSize: 12, marginBottom: 8 }}>{error[row.method]}</div>}
+              <Button onClick={() => save(row)} disabled={saving === row.method} spin={saving === row.method}>Save</Button>
+            </Card>
+          );
+        })}
+      </div>
     </div>
   );
 }
