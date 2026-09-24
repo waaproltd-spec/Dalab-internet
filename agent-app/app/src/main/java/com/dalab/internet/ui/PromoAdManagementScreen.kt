@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -573,7 +574,18 @@ private fun PromoAdFormDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                // Horizontally scrollable rather than a plain Row -- a
+                // plain Row has no way to give each FilterChip its natural
+                // width when the three together are wider than the dialog
+                // (true for "Specific package" on most phone widths), so it
+                // compresses them instead, wrapping "Specific package"'s
+                // text one character per line. Scrolling keeps every chip's
+                // label on one line; there are only three, so it reads
+                // fine even without a visible scrollbar hint.
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                ) {
                     FilterChip(
                         selected = destinationMode == PromoAdDestinationMode.NONE,
                         onClick = {
