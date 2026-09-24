@@ -162,12 +162,21 @@ data class NalaSocoCreateRequest(
 // promo-images (the Admin-managed, image-only Home-screen carousel banner)
 // -- this is the full-screen popup with its own headline/body text, shown
 // once per 24h per customer on app open.
+// destinationType is "company" (go to that provider's packages), "package"
+// (go to one exact package), or null (tapping the ad does nothing but
+// close the popup, same as before this existed). destinationCompanyId is
+// set for both non-null types; destinationPackageId only for "package" --
+// see migration 110's header comment (admin-backend-ts) for why the three
+// are always written together.
 data class PromoAdResponse(
     val id: String,
     val title: String?,
     val body: String?,
     val enabled: Boolean,
     val position: Int,
+    val destinationType: String? = null,
+    val destinationCompanyId: String? = null,
+    val destinationPackageId: String? = null,
     val createdAt: String,
     val updatedAt: String,
 )
@@ -175,6 +184,9 @@ data class PromoAdCreateRequest(
     val imageBase64: String,
     val title: String?,
     val body: String?,
+    val destinationType: String? = null,
+    val destinationCompanyId: String? = null,
+    val destinationPackageId: String? = null,
 )
 data class PromoAdStatusRequest(val enabled: Boolean)
 data class PromoAdReorderRequest(val orderedIds: List<String>)

@@ -35,6 +35,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import com.dalab.internet.data.Company
+import com.dalab.internet.data.PackageItem
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.PromoAdCreateRequest
 import com.dalab.internet.network.PromoAdResponse
@@ -66,8 +68,24 @@ fun PromoAdManagementScreen(onBack: () -> Unit) {
     var formMode by remember { mutableStateOf<PromoAdFormMode?>(null) }
     var deleteTarget by remember { mutableStateOf<PromoAdResponse?>(null) }
     var busyId by remember { mutableStateOf<String?>(null) }
+    // Fetched once here (not inside the form dialog) so both the list's own
+    // "-> <provider>" destination chip and the form's provider picker share
+    // the same data without a duplicate network call every time the New/Edit
+    // dialog opens.
+    var companies by remember { mutableStateOf<List<Company>>(emptyList()) }
 
     val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        try {
+            val response = ApiClient.service.getCompanies()
+            if (response.isSuccessful) companies = response.body().orEmpty()
+        } catch (_: Exception) {
+            // Silent -- the destination chip/picker just shows raw ids as a
+            // fallback (see PromoAdCard/PromoAdFormDialog below) rather than
+            // blocking the whole ad-management screen on this one fetch.
+        }
+    }
 
     fun refresh() {
         loading = true
@@ -201,6 +219,7 @@ fun PromoAdManagementScreen(onBack: () -> Unit) {
                         val index = ads.indexOfFirst { it.id == ad.id }
                         PromoAdCard(
                             ad = ad,
+                            companies = companies,
                             busy = busyId == ad.id,
                             canMoveUp = index > 0,
                             canMoveDown = index >= 0 && index < ads.size - 1,
@@ -221,6 +240,7 @@ fun PromoAdManagementScreen(onBack: () -> Unit) {
     formMode?.let { mode ->
         PromoAdFormDialog(
             mode = mode,
+            companies = companies,
             onDismiss = { formMode = null },
             onSaved = { formMode = null; refresh() },
         )
@@ -249,6 +269,7 @@ private sealed class PromoAdFormMode {
 @Composable
 private fun PromoAdCard(
     ad: PromoAdResponse,
+    companies: List<Company>,
     busy: Boolean,
     canMoveUp: Boolean,
     canMoveDown: Boolean,
@@ -285,6 +306,17 @@ private fun PromoAdCard(
                 }
                 Spacer(Modifier.width(10.dp))
                 Icon(Icons.Filled.ImageIcon, contentDescription = "Has image", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+            }
+            Spacer(Modifier.height(10.dp))
+            if (ad.destinationType != null) {
+                Spacer(Modifier.height(6.dp))
+                val companyName = companies.find { it.id == ad.destinationCompanyId }?.name ?: ad.destinationCompanyId ?: "?"
+                Text(
+                    if (ad.destinationType == "package") "→ $companyName (specific package)" else "→ $companyName packages",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold,
+                )
             }
             Spacer(Modifier.height(10.dp))
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -325,9 +357,12 @@ private data class PickedAdImage(val bytes: ByteArray, val mimeType: String) {
 private const val PROMO_AD_IMAGE_WIDTH = 1280
 private const val PROMO_AD_IMAGE_HEIGHT = 720
 
+private enum class PromoAdDestinationMode { NONE, COMPANY, PACKAGE }
+
 @Composable
 private fun PromoAdFormDialog(
     mode: PromoAdFormMode,
+    companies: List<Company>,
     onDismiss: () -> Unit,
     onSaved: () -> Unit,
 ) {
@@ -338,8 +373,44 @@ private fun PromoAdFormDialog(
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
+    // Tap destination -- see migration 110's header comment (admin-backend-ts)
+    // for why type/companyId/packageId are always saved together as one
+    // group. Pre-filled from the existing ad when editing.
+    var destinationMode by remember {
+        mutableStateOf(
+            when (existing?.destinationType) {
+                "company" -> PromoAdDestinationMode.COMPANY
+                "package" -> PromoAdDestinationMode.PACKAGE
+                else -> PromoAdDestinationMode.NONE
+            }
+        )
+    }
+    var selectedCompanyId by remember { mutableStateOf(existing?.destinationCompanyId) }
+    var selectedPackageId by remember { mutableStateOf(existing?.destinationPackageId) }
+    var packages by remember { mutableStateOf<List<PackageItem>>(emptyList()) }
+    var packagesLoading by remember { mutableStateOf(false) }
+
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+
+    // Only fetched when actually needed (specific-package mode with a
+    // provider chosen) -- companies is already available for free from the
+    // parent screen's own fetch, but packages are per-provider so there's no
+    // single list to preload once for every possible destination.
+    LaunchedEffect(destinationMode, selectedCompanyId) {
+        if (destinationMode == PromoAdDestinationMode.PACKAGE && selectedCompanyId != null) {
+            packagesLoading = true
+            try {
+                val response = ApiClient.service.getPackages(selectedCompanyId!!)
+                packages = if (response.isSuccessful) response.body().orEmpty() else emptyList()
+            } catch (_: Exception) {
+                packages = emptyList()
+            }
+            packagesLoading = false
+        } else {
+            packages = emptyList()
+        }
+    }
 
     val imagePickerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
@@ -378,6 +449,22 @@ private fun PromoAdFormDialog(
             error = "An image is required for a new ad."
             return
         }
+        if (destinationMode != PromoAdDestinationMode.NONE && selectedCompanyId == null) {
+            error = "Select a provider for the destination, or set it back to \"No destination\"."
+            return
+        }
+        if (destinationMode == PromoAdDestinationMode.PACKAGE && selectedPackageId == null) {
+            error = "Select a package for the destination, or switch to \"Provider's packages\"."
+            return
+        }
+        val destType = when (destinationMode) {
+            PromoAdDestinationMode.NONE -> null
+            PromoAdDestinationMode.COMPANY -> "company"
+            PromoAdDestinationMode.PACKAGE -> "package"
+        }
+        val destCompanyId = if (destinationMode != PromoAdDestinationMode.NONE) selectedCompanyId else null
+        val destPackageId = if (destinationMode == PromoAdDestinationMode.PACKAGE) selectedPackageId else null
+
         saving = true
         error = null
         scope.launch {
@@ -388,6 +475,9 @@ private fun PromoAdFormDialog(
                             imageBase64 = pickedImage!!.dataUri,
                             title = title.trim().ifBlank { null },
                             body = body.trim().ifBlank { null },
+                            destinationType = destType,
+                            destinationCompanyId = destCompanyId,
+                            destinationPackageId = destPackageId,
                         )
                     )
                 } else {
@@ -399,6 +489,16 @@ private fun PromoAdFormDialog(
                         // leaves the existing image untouched (there is no
                         // "remove the image" option here, unlike Nala Soco --
                         // a promo ad's image is never optional).
+
+                        // Always included (never omitted), including when
+                        // destType is null (clearing a previously-set
+                        // destination) -- the backend only touches these
+                        // three columns when destinationType is present in
+                        // the body at all, see promoAds.routes.ts's PUT
+                        // handler doc comment.
+                        if (destType != null) addProperty("destinationType", destType) else add("destinationType", JsonNull.INSTANCE)
+                        if (destCompanyId != null) addProperty("destinationCompanyId", destCompanyId) else add("destinationCompanyId", JsonNull.INSTANCE)
+                        if (destPackageId != null) addProperty("destinationPackageId", destPackageId) else add("destinationPackageId", JsonNull.INSTANCE)
                     }
                     ApiClient.service.updatePromoAd(existing.id, jsonBody)
                 }
@@ -458,6 +558,108 @@ private fun PromoAdFormDialog(
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Spacer(Modifier.height(16.dp))
+
+                Text("Tap destination", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "Where tapping the ad (not the X or Sii wad button) sends the customer. Leave as \"No destination\" for the current behavior -- tapping just closes the popup.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FilterChip(
+                        selected = destinationMode == PromoAdDestinationMode.NONE,
+                        onClick = {
+                            destinationMode = PromoAdDestinationMode.NONE
+                            selectedCompanyId = null
+                            selectedPackageId = null
+                        },
+                        label = { Text("No destination") },
+                    )
+                    FilterChip(
+                        selected = destinationMode == PromoAdDestinationMode.COMPANY,
+                        onClick = {
+                            destinationMode = PromoAdDestinationMode.COMPANY
+                            selectedPackageId = null
+                        },
+                        label = { Text("Provider") },
+                    )
+                    FilterChip(
+                        selected = destinationMode == PromoAdDestinationMode.PACKAGE,
+                        onClick = { destinationMode = PromoAdDestinationMode.PACKAGE },
+                        label = { Text("Specific package") },
+                    )
+                }
+
+                if (destinationMode != PromoAdDestinationMode.NONE) {
+                    Spacer(Modifier.height(10.dp))
+                    var companyMenuExpanded by remember { mutableStateOf(false) }
+                    val selectedCompanyName = companies.find { it.id == selectedCompanyId }?.name
+                    ExposedDropdownMenuBox(expanded = companyMenuExpanded, onExpandedChange = { companyMenuExpanded = it }) {
+                        OutlinedTextField(
+                            value = selectedCompanyName ?: "Select provider",
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Provider") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = companyMenuExpanded) },
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier.menuAnchor().fillMaxWidth(),
+                        )
+                        ExposedDropdownMenu(expanded = companyMenuExpanded, onDismissRequest = { companyMenuExpanded = false }) {
+                            if (companies.isEmpty()) {
+                                DropdownMenuItem(text = { Text("Loading providers...") }, onClick = {}, enabled = false)
+                            }
+                            companies.forEach { c ->
+                                DropdownMenuItem(
+                                    text = { Text(c.name) },
+                                    onClick = {
+                                        selectedCompanyId = c.id
+                                        selectedPackageId = null
+                                        companyMenuExpanded = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (destinationMode == PromoAdDestinationMode.PACKAGE && selectedCompanyId != null) {
+                    Spacer(Modifier.height(10.dp))
+                    var packageMenuExpanded by remember { mutableStateOf(false) }
+                    val selectedPackage = packages.find { it.id == selectedPackageId }
+                    ExposedDropdownMenuBox(expanded = packageMenuExpanded, onExpandedChange = { packageMenuExpanded = it }) {
+                        OutlinedTextField(
+                            value = when {
+                                selectedPackage != null -> "${selectedPackage.name} — $${selectedPackage.price}"
+                                packagesLoading -> "Loading packages..."
+                                selectedPackageId != null -> "Select package" // pre-filled id not in the loaded list yet
+                                else -> "Select package"
+                            },
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Package") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = packageMenuExpanded) },
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier.menuAnchor().fillMaxWidth(),
+                        )
+                        ExposedDropdownMenu(expanded = packageMenuExpanded, onDismissRequest = { packageMenuExpanded = false }) {
+                            if (!packagesLoading && packages.isEmpty()) {
+                                DropdownMenuItem(text = { Text("No active packages for this provider") }, onClick = {}, enabled = false)
+                            }
+                            packages.forEach { p ->
+                                DropdownMenuItem(
+                                    text = { Text("${p.name} — $${p.price}") },
+                                    onClick = {
+                                        selectedPackageId = p.id
+                                        packageMenuExpanded = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
                 Spacer(Modifier.height(12.dp))
 
                 if (error != null) {
