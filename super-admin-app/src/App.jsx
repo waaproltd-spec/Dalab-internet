@@ -2557,11 +2557,15 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
 // Admin-only Service Type for a service category -- decides which icon the
 // Customer App draws on the service's card. Customers never choose it.
 const SERVICE_TYPES = [
-  { value: "wifi", label: "📶 WiFi" },
-  { value: "wireless", label: "📡 Wireless" },
-  { value: "call", label: "📞 Call" },
+  { value: "wifi", emoji: "📶", name: "WiFi" },
+  { value: "wireless", emoji: "📡", name: "Wireless" },
+  { value: "call", emoji: "📞", name: "Call" },
 ];
-const serviceTypeLabel = (value) => SERVICE_TYPES.find((t) => t.value === value)?.label || "—";
+// A service can have one, two or all three types (backend serviceTypes);
+// falls back to the older single serviceType for rows saved before that.
+const serviceTypesOf = (c) => (c.serviceTypes?.length ? c.serviceTypes : c.serviceType ? [c.serviceType] : []);
+const serviceTypesLabel = (types) =>
+  types.length ? SERVICE_TYPES.filter((t) => types.includes(t.value)).map((t) => `${t.emoji} ${t.name}`).join(" + ") : "—";
 
 function Categories({ companies, admin }) {
   const [categories, setCategories] = useState([]);
@@ -2584,8 +2588,14 @@ function Categories({ companies, admin }) {
   useEffect(() => { fetchCategories(); }, [companyFilter]);
   useEffect(() => { if (!companyFilter && companies[0]) setCompanyFilter(companies[0].id); }, [companies]);
 
-  const openNew = () => { setForm({ name: "", companyId: companyFilter, serviceType: "" }); setEditing("new"); setError(""); };
-  const openEdit = (c) => { setForm({ ...c, iconBase64: null }); setEditing(c.id); setError(""); };
+  const openNew = () => { setForm({ name: "", companyId: companyFilter, serviceTypes: [] }); setEditing("new"); setError(""); };
+  const openEdit = (c) => { setForm({ ...c, serviceTypes: serviceTypesOf(c), iconBase64: null }); setEditing(c.id); setError(""); };
+  const toggleType = (value) =>
+    setForm((prev) => {
+      const current = prev.serviceTypes || [];
+      const next = current.includes(value) ? current.filter((t) => t !== value) : [...current, value];
+      return { ...prev, serviceTypes: SERVICE_TYPES.map((t) => t.value).filter((t) => next.includes(t)) };
+    });
 
   const onIconSelected = (e) => {
     const file = e.target.files?.[0];
@@ -2605,18 +2615,18 @@ function Categories({ companies, admin }) {
   const save = async () => {
     if (!form.name) return setError("Service name is required.");
     if (editing === "new" && !form.companyId) return setError("Select a company.");
-    if (!form.serviceType) return setError("Select a service type.");
+    if (!form.serviceTypes?.length) return setError("Select at least one service type.");
     setSaving(true);
     setError("");
     try {
       let id = editing;
       if (editing === "new") {
-        const created = await DalabAdminApi.createCategory({ companyId: form.companyId, name: form.name, serviceType: form.serviceType });
+        const created = await DalabAdminApi.createCategory({ companyId: form.companyId, name: form.name, serviceTypes: form.serviceTypes });
         id = created.id;
         // Show the company the new service was added to.
         if (form.companyId !== companyFilter) setCompanyFilter(form.companyId);
       } else {
-        await DalabAdminApi.updateCategory(editing, { name: form.name, serviceType: form.serviceType });
+        await DalabAdminApi.updateCategory(editing, { name: form.name, serviceTypes: form.serviceTypes });
       }
       if (form.iconBase64) await DalabAdminApi.updateCategoryIcon(id, form.iconBase64);
       await fetchCategories();
@@ -2704,7 +2714,7 @@ function Categories({ companies, admin }) {
                   </div>
                 </td>
                 <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{c.name}</td>
-                <td style={{ padding: "10px 14px", fontSize: 12.5, color: c.serviceType ? INK : MUTE, whiteSpace: "nowrap" }}>{serviceTypeLabel(c.serviceType)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: serviceTypesOf(c).length ? INK : MUTE, whiteSpace: "nowrap" }}>{serviceTypesLabel(serviceTypesOf(c))}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12, color: SLATE, fontFamily: "monospace" }}>{c.slug}</td>
                 <td style={{ padding: "10px 14px" }}><Badge tone={c.status === "enabled" ? "green" : "gray"}>{c.status === "enabled" ? "Enabled" : "Disabled"}</Badge></td>
                 <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
@@ -2750,17 +2760,29 @@ function Categories({ companies, admin }) {
             )}
           </Field>
 
-          <Field label="Service type (admin only — customers never choose this)">
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Field label="Service icons — select one, two or all three (admin only; customers never choose these)">
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
               {SERVICE_TYPES.map((t) => {
-                const selected = form.serviceType === t.value;
+                const selected = (form.serviceTypes || []).includes(t.value);
                 return (
-                  <button key={t.value} type="button" onClick={() => setForm({ ...form, serviceType: t.value })} style={{
-                    padding: "8px 14px", borderRadius: 10, fontSize: 13, fontWeight: 700, cursor: "pointer",
-                    border: `1.5px solid ${selected ? INDIGO : BORDER}`, background: selected ? INDIGO : "#fff", color: selected ? "#fff" : INK,
-                  }}>{t.label}</button>
+                  <button key={t.value} type="button" role="checkbox" aria-checked={selected} onClick={() => toggleType(t.value)} style={{
+                    position: "relative", padding: "12px 6px 10px", borderRadius: 12, cursor: "pointer",
+                    display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
+                    border: `2px solid ${selected ? INDIGO : BORDER}`, background: selected ? "#EEF3FA" : "#fff",
+                    boxShadow: selected ? "0 2px 8px rgba(0,49,82,0.15)" : "none",
+                  }}>
+                    <span style={{
+                      position: "absolute", top: 6, right: 6, width: 16, height: 16, borderRadius: 4, fontSize: 11, lineHeight: "14px", fontWeight: 900,
+                      border: `1.5px solid ${selected ? INDIGO : BORDER}`, background: selected ? INDIGO : "#fff", color: "#fff",
+                    }}>{selected ? "✓" : ""}</span>
+                    <span style={{ fontSize: 24, opacity: selected ? 1 : 0.45 }}>{t.emoji}</span>
+                    <span style={{ fontSize: 12.5, fontWeight: 800, color: selected ? INDIGO : SLATE }}>{t.name}</span>
+                  </button>
                 );
               })}
+            </div>
+            <div style={{ fontSize: 11.5, color: MUTE, marginTop: 6 }}>
+              Customers see: {serviceTypesLabel(form.serviceTypes || [])}
             </div>
           </Field>
 

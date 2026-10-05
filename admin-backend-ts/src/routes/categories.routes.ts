@@ -18,15 +18,40 @@ function slugify(name: string): string {
 // icon_data must never reach any client on the list routes below — same
 // "has_X boolean, raw bytes only through their own dedicated route" pattern
 // as companies.logo_data/has_logo and packages.image_data/has_image.
-const CATEGORY_COLUMNS = `id, company_id, slug, name, status, service_type, (icon_data IS NOT NULL) AS has_icon, created_at, updated_at`;
+const CATEGORY_COLUMNS = `id, company_id, slug, name, status, service_type, service_types, (icon_data IS NOT NULL) AS has_icon, created_at, updated_at`;
 
-// Admin-only Service Type (migration 111): which icon the Customer App draws
-// for the service. Customers never choose it.
+// Admin-only Service Types (migrations 111/112): which icons the Customer
+// App draws on the service -- one, two or all three. Customers never
+// choose them. service_types is the list; the older single service_type
+// column is kept in sync with the first selected type for older app builds.
 const SERVICE_TYPES = ["wifi", "wireless", "call"] as const;
+type ServiceType = (typeof SERVICE_TYPES)[number];
 
-function isServiceType(value: unknown): value is (typeof SERVICE_TYPES)[number] {
+function isServiceType(value: unknown): value is ServiceType {
   return typeof value === "string" && (SERVICE_TYPES as readonly string[]).includes(value);
 }
+
+/**
+ * Reads the requested types from a create/edit body: `serviceTypes` (a
+ * list), or the older single `serviceType`. Returns undefined when neither
+ * was sent, null when what was sent is invalid, otherwise the types
+ * de-duplicated in a fixed order (wifi, wireless, call).
+ */
+function readServiceTypes(body: Record<string, unknown>): ServiceType[] | null | undefined {
+  let raw: unknown[];
+  if (body.serviceTypes !== undefined) {
+    if (!Array.isArray(body.serviceTypes)) return null;
+    raw = body.serviceTypes;
+  } else if (body.serviceType !== undefined && body.serviceType !== null) {
+    raw = [body.serviceType];
+  } else {
+    return undefined;
+  }
+  if (!raw.every(isServiceType)) return null;
+  return SERVICE_TYPES.filter((t) => raw.includes(t));
+}
+
+const SERVICE_TYPES_ERROR = "serviceTypes must be a list of 'wifi', 'wireless' and/or 'call'";
 
 // Public: the Customer/Agent apps' package browsing already groups by the
 // free-text categoryId on packages; this exposes the managed name/status for
@@ -66,10 +91,12 @@ categoriesRouter.get("/admin/categories", requireStaff(), async (req, res) => {
 });
 
 categoriesRouter.post("/admin/categories", requirePermission("categories.manage"), async (req, res) => {
-  const { companyId, name, serviceType } = req.body;
+  const { companyId, name } = req.body;
   if (!companyId || !name) return sendJson(res, 400, { error: "companyId and name are required" });
-  if (!isServiceType(serviceType)) {
-    return sendJson(res, 400, { error: "serviceType must be 'wifi', 'wireless' or 'call'" });
+  const serviceTypes = readServiceTypes(req.body);
+  if (serviceTypes === null) return sendJson(res, 400, { error: SERVICE_TYPES_ERROR });
+  if (!serviceTypes || serviceTypes.length === 0) {
+    return sendJson(res, 400, { error: "Select at least one service type" });
   }
 
   const company = await queryOne(`SELECT id FROM companies WHERE id=$1`, [companyId]);
@@ -84,8 +111,8 @@ categoriesRouter.post("/admin/categories", requirePermission("categories.manage"
 
   const id = (
     await queryOne<{ id: string }>(
-      `INSERT INTO service_categories (company_id, slug, name, service_type) VALUES ($1,$2,$3,$4) RETURNING id`,
-      [companyId, slug, name, serviceType]
+      `INSERT INTO service_categories (company_id, slug, name, service_types, service_type) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+      [companyId, slug, name, serviceTypes, serviceTypes[0]]
     )
   )!.id;
   sendJson(res, 201, await queryOne(`SELECT ${CATEGORY_COLUMNS} FROM service_categories WHERE id=$1`, [id]));
@@ -100,16 +127,15 @@ categoriesRouter.put("/admin/categories/:id", requirePermission("categories.mana
   if (!["enabled", "disabled"].includes(status)) {
     return sendJson(res, 400, { error: "status must be 'enabled' or 'disabled'" });
   }
-  // Optional on edit: omitted keeps the current type (possibly still NULL
-  // for a category created before Service Types existed).
-  const serviceType = req.body.serviceType ?? existing.service_type;
-  if (serviceType != null && !isServiceType(serviceType)) {
-    return sendJson(res, 400, { error: "serviceType must be 'wifi', 'wireless' or 'call'" });
-  }
+  // Optional on edit: omitted keeps the current types; an empty list
+  // removes them all (the app then falls back to its own icon).
+  const requested = readServiceTypes(req.body);
+  if (requested === null) return sendJson(res, 400, { error: SERVICE_TYPES_ERROR });
+  const serviceTypes: string[] = requested ?? existing.service_types ?? [];
 
   await query(
-    `UPDATE service_categories SET name=$1, status=$2, service_type=$3, updated_at=now() WHERE id=$4`,
-    [name, status, serviceType, req.params.id]
+    `UPDATE service_categories SET name=$1, status=$2, service_types=$3, service_type=$4, updated_at=now() WHERE id=$5`,
+    [name, status, serviceTypes, serviceTypes[0] ?? null, req.params.id]
   );
   sendJson(res, 200, await queryOne(`SELECT ${CATEGORY_COLUMNS} FROM service_categories WHERE id=$1`, [req.params.id]));
 });
