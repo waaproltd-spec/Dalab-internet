@@ -37,7 +37,58 @@ const requireAgent = () => requireAuth("agent");
 // by the dedicated .../image route below, served raw rather than through
 // sendJson (which would otherwise try to camelCase-walk the Buffer). Same
 // pattern as promo_images/companies' own logo route.
-const PROMO_AD_COLUMNS = "id, mime_type, title, body, enabled, position, created_at, updated_at";
+const PROMO_AD_COLUMNS =
+  "id, mime_type, title, body, enabled, position, destination_type, destination_company_id, destination_package_id, created_at, updated_at";
+
+// Validates the (destinationType, destinationCompanyId, destinationPackageId)
+// triple as a whole -- see migration 110's header comment for why these
+// three are always written together rather than independently patched.
+// Returns an error string, or null when the combination is valid.
+// destinationCompanyId/destinationPackageId are returned via the `out`
+// param so the caller gets back the exact (possibly-null) values to write.
+interface PromoAdDestinationResult {
+  error: string | null;
+  type: string | null;
+  companyId: string | null;
+  packageId: string | null;
+}
+
+async function validatePromoAdDestination(
+  destinationType: unknown,
+  destinationCompanyId: unknown,
+  destinationPackageId: unknown
+): Promise<PromoAdDestinationResult> {
+  const type = destinationType == null || destinationType === "" ? null : String(destinationType);
+  if (type === null) {
+    return { error: null, type: null, companyId: null, packageId: null };
+  }
+  if (type !== "company" && type !== "package") {
+    return { error: "destinationType must be \"company\", \"package\", or omitted", type: null, companyId: null, packageId: null };
+  }
+  const companyId = destinationCompanyId != null ? String(destinationCompanyId) : "";
+  if (!companyId) {
+    return { error: "destinationCompanyId is required when destinationType is set", type: null, companyId: null, packageId: null };
+  }
+  const company = await queryOne(`SELECT id FROM companies WHERE id=$1 AND deleted_at IS NULL`, [companyId]);
+  if (!company) {
+    return { error: "destinationCompanyId does not match an active company", type: null, companyId: null, packageId: null };
+  }
+
+  if (type === "company") {
+    return { error: null, type, companyId, packageId: null };
+  }
+
+  // type === "package"
+  const packageId = destinationPackageId != null ? String(destinationPackageId) : "";
+  if (!packageId) {
+    return { error: "destinationPackageId is required when destinationType is \"package\"", type: null, companyId: null, packageId: null };
+  }
+  const pkg = await queryOne(`SELECT id FROM packages WHERE id=$1 AND company_id=$2 AND active=true`, [packageId, companyId]);
+  if (!pkg) {
+    return { error: "destinationPackageId does not match an active package for that company", type: null, companyId: null, packageId: null };
+  }
+  return { error: null, type, companyId, packageId };
+}
 
 // ---------------- Customer App (public) ----------------
 
@@ -79,17 +130,33 @@ promoAdsRouter.post("/agent/promo-ads", requireAgent(), async (req, res) => {
   const title = req.body.title != null ? String(req.body.title).trim() : null;
   const body = req.body.body != null ? String(req.body.body).trim() : null;
 
+  const destination = await validatePromoAdDestination(
+    req.body.destinationType,
+    req.body.destinationCompanyId,
+    req.body.destinationPackageId
+  );
+  if (destination.error) return sendJson(res, 400, { error: destination.error });
+
   const id = randomUUID();
   const maxPos = await queryOne<{ m: number }>(`SELECT COALESCE(MAX(position), -1) AS m FROM promo_ads`);
   await query(
-    `INSERT INTO promo_ads (id, image_data, mime_type, title, body, position) VALUES ($1,$2,$3,$4,$5,$6)`,
-    [id, parsed.data, parsed.mimeType, title || null, body || null, (maxPos?.m ?? -1) + 1]
+    `INSERT INTO promo_ads (id, image_data, mime_type, title, body, position, destination_type, destination_company_id, destination_package_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [id, parsed.data, parsed.mimeType, title || null, body || null, (maxPos?.m ?? -1) + 1, destination.type, destination.companyId, destination.packageId]
   );
   sendJson(res, 201, await queryOne(`SELECT ${PROMO_AD_COLUMNS} FROM promo_ads WHERE id=$1`, [id]));
 });
 
 // Image replacement is optional -- omitting imageBase64 keeps the existing
 // image, same as title/body being omitted keeps their existing values.
+// destinationType/destinationCompanyId/destinationPackageId are the one
+// exception to that "omit to keep" convention: they're always written as a
+// whole group (see validatePromoAdDestination's doc comment) whenever
+// `destinationType` is present in the body at all -- including explicitly
+// clearing a previously-set destination by sending destinationType: null
+// (or "") -- so the three fields can never end up inconsistent with each
+// other from a partial update. Omitting the key entirely leaves all three
+// untouched, same as any other field here.
 promoAdsRouter.put("/agent/promo-ads/:id", requireAgent(), async (req, res) => {
   const existing = await queryOne(`SELECT id FROM promo_ads WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Ad not found" });
@@ -107,15 +174,43 @@ promoAdsRouter.put("/agent/promo-ads/:id", requireAgent(), async (req, res) => {
     mimeType = parsed.mimeType;
   }
 
+  let destinationType: string | null | undefined;
+  let destinationCompanyId: string | null | undefined;
+  let destinationPackageId: string | null | undefined;
+  if (req.body.destinationType !== undefined) {
+    const destination = await validatePromoAdDestination(
+      req.body.destinationType,
+      req.body.destinationCompanyId,
+      req.body.destinationPackageId
+    );
+    if (destination.error) return sendJson(res, 400, { error: destination.error });
+    destinationType = destination.type;
+    destinationCompanyId = destination.companyId;
+    destinationPackageId = destination.packageId;
+  }
+
   await query(
     `UPDATE promo_ads SET
        title=COALESCE($1, title),
        body=COALESCE($2, body),
        image_data=COALESCE($3, image_data),
        mime_type=COALESCE($4, mime_type),
+       destination_type=CASE WHEN $6 THEN $5 ELSE destination_type END,
+       destination_company_id=CASE WHEN $6 THEN $7 ELSE destination_company_id END,
+       destination_package_id=CASE WHEN $6 THEN $8 ELSE destination_package_id END,
        updated_at=now()
-     WHERE id=$5`,
-    [title, body, imageData ?? null, mimeType ?? null, req.params.id]
+     WHERE id=$9`,
+    [
+      title,
+      body,
+      imageData ?? null,
+      mimeType ?? null,
+      destinationType ?? null,
+      req.body.destinationType !== undefined,
+      destinationCompanyId ?? null,
+      destinationPackageId ?? null,
+      req.params.id,
+    ]
   );
   sendJson(res, 200, await queryOne(`SELECT ${PROMO_AD_COLUMNS} FROM promo_ads WHERE id=$1`, [req.params.id]));
 });

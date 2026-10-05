@@ -509,6 +509,8 @@ const DalabAdminApi = {
   shopProductImageUrl: (productId, imageId) => `${DALAB_API_BASE_URL}/shop/products/${productId}/images/${imageId}`,
   getShopPaymentMethods: () => dalabAdminApiRequest("/admin/shop/payment-methods"),
   updateShopPaymentMethod: (method, body) => dalabAdminApiRequest(`/admin/shop/payment-methods/${method}`, { method: "PUT", body }),
+  getOfflinePaymentMethods: () => dalabAdminApiRequest("/admin/offline/payment-methods"),
+  updateOfflinePaymentMethod: (method, body) => dalabAdminApiRequest(`/admin/offline/payment-methods/${method}`, { method: "PUT", body }),
   getShopOrders: (status, search) => {
     const qs = new URLSearchParams({ ...(status ? { status } : {}), ...(search ? { search } : {}) }).toString();
     return dalabAdminApiRequest(`/admin/shop/orders${qs ? `?${qs}` : ""}`);
@@ -2552,6 +2554,15 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
   );
 }
 
+// Admin-only Service Type for a service category -- decides which icon the
+// Customer App draws on the service's card. Customers never choose it.
+const SERVICE_TYPES = [
+  { value: "wifi", label: "📶 WiFi" },
+  { value: "wireless", label: "📡 Wireless" },
+  { value: "call", label: "📞 Call" },
+];
+const serviceTypeLabel = (value) => SERVICE_TYPES.find((t) => t.value === value)?.label || "—";
+
 function Categories({ companies, admin }) {
   const [categories, setCategories] = useState([]);
   const [companyFilter, setCompanyFilter] = useState(companies[0]?.id || "");
@@ -2573,7 +2584,7 @@ function Categories({ companies, admin }) {
   useEffect(() => { fetchCategories(); }, [companyFilter]);
   useEffect(() => { if (!companyFilter && companies[0]) setCompanyFilter(companies[0].id); }, [companies]);
 
-  const openNew = () => { setForm({ name: "" }); setEditing("new"); setError(""); };
+  const openNew = () => { setForm({ name: "", companyId: companyFilter, serviceType: "" }); setEditing("new"); setError(""); };
   const openEdit = (c) => { setForm({ ...c, iconBase64: null }); setEditing(c.id); setError(""); };
 
   const onIconSelected = (e) => {
@@ -2592,16 +2603,20 @@ function Categories({ companies, admin }) {
   // "preview before saving" the dashboard spec asks for), against whichever
   // id the name/status save just produced.
   const save = async () => {
-    if (!form.name) return;
+    if (!form.name) return setError("Service name is required.");
+    if (editing === "new" && !form.companyId) return setError("Select a company.");
+    if (!form.serviceType) return setError("Select a service type.");
     setSaving(true);
     setError("");
     try {
       let id = editing;
       if (editing === "new") {
-        const created = await DalabAdminApi.createCategory({ companyId: companyFilter, name: form.name });
+        const created = await DalabAdminApi.createCategory({ companyId: form.companyId, name: form.name, serviceType: form.serviceType });
         id = created.id;
+        // Show the company the new service was added to.
+        if (form.companyId !== companyFilter) setCompanyFilter(form.companyId);
       } else {
-        await DalabAdminApi.updateCategory(editing, { name: form.name });
+        await DalabAdminApi.updateCategory(editing, { name: form.name, serviceType: form.serviceType });
       }
       if (form.iconBase64) await DalabAdminApi.updateCategoryIcon(id, form.iconBase64);
       await fetchCategories();
@@ -2653,7 +2668,7 @@ function Categories({ companies, admin }) {
           <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Service Categories</div>
           <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Groupings packages are organized under per provider (e.g. "Anfac Plus", "Unlimited Data & Voice").</div>
         </div>
-        {canManage && <Button icon={Plus} onClick={openNew}>Add category</Button>}
+        {canManage && <Button icon={Plus} onClick={openNew}>Add service</Button>}
       </div>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
@@ -2671,7 +2686,7 @@ function Categories({ companies, admin }) {
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: "#FAFBFF" }}>
-              {["Icon", "Name", "Slug", "Status", ""].map((h) => (
+              {["Icon", "Name", "Type", "Slug", "Status", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
             </tr>
@@ -2689,6 +2704,7 @@ function Categories({ companies, admin }) {
                   </div>
                 </td>
                 <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{c.name}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: c.serviceType ? INK : MUTE, whiteSpace: "nowrap" }}>{serviceTypeLabel(c.serviceType)}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12, color: SLATE, fontFamily: "monospace" }}>{c.slug}</td>
                 <td style={{ padding: "10px 14px" }}><Badge tone={c.status === "enabled" ? "green" : "gray"}>{c.status === "enabled" ? "Enabled" : "Disabled"}</Badge></td>
                 <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
@@ -2709,16 +2725,43 @@ function Categories({ companies, admin }) {
               </tr>
             ))}
             {categories.length === 0 && (
-              <tr><td colSpan={5} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No categories for this company yet.</td></tr>
+              <tr><td colSpan={6} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No categories for this company yet.</td></tr>
             )}
           </tbody>
         </table>
       </Card>
 
       {editing && (
-        <Modal title={editing === "new" ? "Add category" : "Edit category"} onClose={() => setEditing(null)} width={380}>
-          <Field label="Category name">
-            <input style={inputStyle} value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Anfac Plus" />
+        <Modal title={editing === "new" ? "Add service" : "Edit service"} onClose={() => setEditing(null)} width={380}>
+          <Field label="Service name">
+            <input style={inputStyle} value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. 5G Home" />
+          </Field>
+
+          <Field label="Company">
+            {editing === "new" ? (
+              <select style={inputStyle} value={form.companyId || ""} onChange={(e) => setForm({ ...form, companyId: e.target.value })}>
+                <option value="" disabled>Select a company</option>
+                {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            ) : (
+              <div style={{ fontSize: 13, color: INK, fontWeight: 700, padding: "8px 0" }}>
+                {companies.find((c) => c.id === form.companyId)?.name || form.companyId}
+              </div>
+            )}
+          </Field>
+
+          <Field label="Service type (admin only — customers never choose this)">
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {SERVICE_TYPES.map((t) => {
+                const selected = form.serviceType === t.value;
+                return (
+                  <button key={t.value} type="button" onClick={() => setForm({ ...form, serviceType: t.value })} style={{
+                    padding: "8px 14px", borderRadius: 10, fontSize: 13, fontWeight: 700, cursor: "pointer",
+                    border: `1.5px solid ${selected ? INDIGO : BORDER}`, background: selected ? INDIGO : "#fff", color: selected ? "#fff" : INK,
+                  }}>{t.label}</button>
+                );
+              })}
+            </div>
           </Field>
 
           <Field label="Category icon/logo (image)">
@@ -9146,6 +9189,7 @@ function OfflinePanel({ companies }) {
           { id: "orders", label: "Offline Orders" },
           { id: "customers", label: "Offline Customers" },
           { id: "transactions", label: "Payment Transactions" },
+          { id: "paymentMethods", label: "Payment Methods" },
         ].map((t) => (
           <button
             key={t.id}
@@ -9170,8 +9214,78 @@ function OfflinePanel({ companies }) {
       )}
       {tab === "customers" && <OfflineCustomersTab onViewOrders={goToOrders} />}
       {tab === "transactions" && <OfflinePaymentTransactionsTab companies={companies} onViewOrder={setOpenOrderId} />}
+      {tab === "paymentMethods" && <OfflinePaymentMethodsPanel />}
 
       {openOrderId && <OfflineOrderDetailDrawer orderId={openOrderId} onClose={() => setOpenOrderId(null)} />}
+    </div>
+  );
+}
+
+// The 3 numbers (EVC Plus/Jeeb/eDahab) the Customer App's Offline Orders
+// intro screen dials -- previously hard-coded in the app itself. Mirrors
+// ShopPaymentMethodsPanel's own "load one config object, edit label/
+// paymentNumber/ussdTemplate inline, save" shape exactly.
+function OfflinePaymentMethodsPanel() {
+  const [methods, setMethods] = useState([]);
+  const [edits, setEdits] = useState({});
+  const [saving, setSaving] = useState(null);
+  const [error, setError] = useState({});
+
+  const fetchMethods = async () => {
+    try { setMethods(await DalabAdminApi.getOfflinePaymentMethods()); }
+    catch (err) { console.error("getOfflinePaymentMethods failed:", err.message); }
+  };
+  useEffect(() => { fetchMethods(); }, []);
+
+  const save = async (row) => {
+    const draft = edits[row.method] || {};
+    const label = draft.label ?? row.label;
+    const paymentNumber = draft.paymentNumber ?? row.paymentNumber;
+    const ussdTemplate = draft.ussdTemplate ?? row.ussdTemplate;
+    setSaving(row.method);
+    setError((m) => ({ ...m, [row.method]: "" }));
+    try {
+      await DalabAdminApi.updateOfflinePaymentMethod(row.method, { label, paymentNumber, ussdTemplate });
+      setEdits((m) => ({ ...m, [row.method]: undefined }));
+      fetchMethods();
+    } catch (err) {
+      setError((m) => ({ ...m, [row.method]: err.message || "Could not save." }));
+    }
+    setSaving(null);
+  };
+
+  return (
+    <div>
+      <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 16 }}>
+        The numbers a customer dials themselves on the Offline Orders intro screen, before signing in — changing one here updates the Customer App automatically, no app release needed.
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {methods.map((row) => {
+          const draft = edits[row.method] || {};
+          return (
+            <Card key={row.method} style={{ padding: 16 }}>
+              <div style={{ fontWeight: 800, fontSize: 14, color: INK, marginBottom: 10 }}>{row.label}</div>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 140 }}>
+                  <Field label="Label">
+                    <input value={draft.label ?? row.label} onChange={(e) => setEdits((m) => ({ ...m, [row.method]: { ...draft, label: e.target.value } }))} style={inputStyle} />
+                  </Field>
+                </div>
+                <div style={{ flex: 1, minWidth: 140 }}>
+                  <Field label="Payment number">
+                    <input value={draft.paymentNumber ?? row.paymentNumber} onChange={(e) => setEdits((m) => ({ ...m, [row.method]: { ...draft, paymentNumber: e.target.value } }))} style={inputStyle} />
+                  </Field>
+                </div>
+              </div>
+              <Field label={'USSD template (must include "$" as the amount placeholder)'}>
+                <input value={draft.ussdTemplate ?? row.ussdTemplate} onChange={(e) => setEdits((m) => ({ ...m, [row.method]: { ...draft, ussdTemplate: e.target.value } }))} style={inputStyle} />
+              </Field>
+              {error[row.method] && <div style={{ color: "#C81E2C", fontSize: 12, marginBottom: 8 }}>{error[row.method]}</div>}
+              <Button onClick={() => save(row)} disabled={saving === row.method} spin={saving === row.method}>Save</Button>
+            </Card>
+          );
+        })}
+      </div>
     </div>
   );
 }
