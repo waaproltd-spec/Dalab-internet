@@ -50,18 +50,28 @@ import com.dalab.internet.data.ReportPriceExample
 import com.dalab.internet.data.ReportProfitBreakdown
 import com.dalab.internet.data.ReportStatusSplit
 import com.dalab.internet.network.ApiClient
+import com.dalab.internet.ui.theme.DalabBlue
+import com.dalab.internet.ui.theme.DalabDangerRed
+import com.dalab.internet.ui.theme.DalabInfoBlue
+import com.dalab.internet.ui.theme.DalabOutline
+import com.dalab.internet.ui.theme.DalabSoftBlue
+import com.dalab.internet.ui.theme.DalabSuccessGreen
+import com.dalab.internet.ui.theme.DalabSurfaceTint
+import com.dalab.internet.ui.theme.DalabWarningAmber
+import com.dalab.internet.ui.theme.DalabWhite
 import java.util.Locale
 
-// The Reports dashboard is dark by design (the rest of the app stays light).
-private val RBg = Color(0xFF0A0F0C)
-private val RCard = Color(0xFF151B17)
-private val RCardBorder = Color(0xFF232B26)
-private val RText = Color(0xFFF4F7F5)
-private val RMuted = Color(0xFF9AA59F)
-private val RGreen = Color(0xFF22C55E)
-private val RRed = Color(0xFFEF4444)
-private val RAmber = Color(0xFFF59E0B)
-private val RBlue = Color(0xFF3B82F6)
+// The Agent App's own colors (ui/theme/DalabColors.kt): white background,
+// DALAB dark blue for text and the brand, and the shared status colors.
+private val RBg = DalabWhite
+private val RCard = DalabSurfaceTint
+private val RCardBorder = DalabOutline.copy(alpha = 0.6f)
+private val RText = DalabBlue
+private val RMuted = DalabBlue.copy(alpha = 0.62f)
+private val RGreen = DalabSuccessGreen
+private val RRed = DalabDangerRed
+private val RAmber = DalabWarningAmber
+private val RBlue = DalabInfoBlue
 
 private data class ReportRange(val value: String, val label: String)
 
@@ -72,7 +82,7 @@ private val REPORT_RANGES = listOf(
     ReportRange("all", "All time"),
 )
 
-private fun usd(v: Double): String = "$" + String.format(Locale.US, "%.2f", v)
+private fun usd(v: Double): String = (if (v < 0) "-$" else "$") + String.format(Locale.US, "%.2f", kotlin.math.abs(v))
 private fun percent(v: Double): String = String.format(Locale.US, "%.1f%%", v)
 
 private fun parseColor(hex: String?, fallback: Color): Color = try {
@@ -162,7 +172,7 @@ fun ReportsScreen(onBack: () -> Unit) {
 private fun CompanyReportScreen(company: ReportCompanyCard, initialRange: String, onBack: () -> Unit) {
     var range by remember { mutableStateOf(initialRange) }
     val (report, loading, error) = rememberReport(range) { ApiClient.service.getCompanyReport(company.companyId, range) }
-    val brand = parseColor(company.colorHex, RGreen)
+    val brand = parseColor(company.colorHex, DalabBlue)
 
     Box(Modifier.fillMaxSize().background(RBg)) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 28.dp)) {
@@ -192,9 +202,9 @@ private fun CompanyReportScreen(company: ReportCompanyCard, initialRange: String
                     REPORT_RANGES.forEach { r ->
                         val selected = r.value == range
                         Surface(
-                            color = if (selected) RGreen.copy(alpha = 0.9f) else RCard,
+                            color = if (selected) DalabBlue else RCard,
                             shape = RoundedCornerShape(12.dp),
-                            border = BorderStroke(1.dp, if (selected) RGreen else RCardBorder),
+                            border = BorderStroke(1.dp, if (selected) DalabBlue else RCardBorder),
                             modifier = Modifier.weight(1f).clickable { range = r.value },
                         ) {
                             Text(
@@ -250,7 +260,7 @@ private fun BrandHeader(onBack: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(bottomStart = 26.dp, bottomEnd = 26.dp))
-            .background(Brush.linearGradient(listOf(Color(0xFF07130C), Color(0xFF0E3B22), Color(0xFF16A34A))))
+            .background(Brush.linearGradient(listOf(DalabBlue, DalabSoftBlue)))
             .statusBarsPadding()
             .padding(horizontal = 8.dp, vertical = 14.dp),
     ) {
@@ -262,8 +272,7 @@ private fun BrandHeader(onBack: () -> Unit) {
                 modifier = Modifier.size(34.dp).clip(RoundedCornerShape(8.dp)),
             )
             Spacer(Modifier.width(10.dp))
-            Text("DALAB ", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Black)
-            Text("AGENT", color = RAmber, fontSize = 22.sp, fontWeight = FontWeight.Black)
+            Text("DALAB AGENT", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Black)
         }
     }
 }
@@ -420,7 +429,7 @@ private fun CompanyLogo(companyId: String, brand: Color, size: androidx.compose.
 
 @Composable
 private fun CompanyCard(c: ReportCompanyCard, onClick: () -> Unit) {
-    val brand = parseColor(c.colorHex, RGreen)
+    val brand = parseColor(c.colorHex, DalabBlue)
     Surface(
         color = RCard,
         shape = RoundedCornerShape(18.dp),
@@ -505,20 +514,20 @@ private data class MoneyLine(val icon: ImageVector, val color: Color, val title:
 
 @Composable
 private fun MoneyLines(lines: List<MoneyLine>) {
-    Surface(color = Color(0xFFF4F7F5), shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+    Surface(color = DalabWhite, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
         Column {
             lines.forEachIndexed { i, line ->
-                if (i > 0) Divider(color = Color(0xFFE2E8E4))
+                if (i > 0) Divider(color = DalabSurfaceTint)
                 Row(Modifier.padding(horizontal = 12.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(line.icon, contentDescription = null, tint = line.color, modifier = Modifier.size(24.dp))
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(line.title, color = if (line.strong) line.color else Color(0xFF0B1240), fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                        Text(line.subtitle, color = Color(0xFF5B6470), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(line.title, color = if (line.strong) line.color else DalabBlue, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        Text(line.subtitle, color = RMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     Text(
                         line.value,
-                        color = if (line.strong) line.color else Color(0xFF0B1240),
+                        color = if (line.strong) line.color else DalabBlue,
                         fontSize = if (line.strong) 18.sp else 16.sp,
                         fontWeight = FontWeight.Black,
                     )
@@ -531,7 +540,7 @@ private fun MoneyLines(lines: List<MoneyLine>) {
 private fun moneyLines(companyCost: Double, markup: Double, selling: Double, discount: Double, final: Double, profit: Double) = listOf(
     MoneyLine(Icons.Filled.Business, RBlue, "Company Cost", "What the company is paid", usd(companyCost)),
     MoneyLine(Icons.Filled.TrendingUp, RGreen, "Markup", "Added on top of company cost", usd(markup)),
-    MoneyLine(Icons.Filled.Sell, Color(0xFF8B5CF6), "Selling Price", "Company cost + markup", usd(selling)),
+    MoneyLine(Icons.Filled.Sell, DalabBlue, "Selling Price", "Company cost + markup", usd(selling)),
     MoneyLine(Icons.Filled.Percent, RRed, "Discount Given", "Taken off the selling price", usd(discount)),
     MoneyLine(Icons.Filled.Paid, RAmber, "Final Price", "Selling price - discount (what was paid)", usd(final)),
     MoneyLine(Icons.Filled.BarChart, if (profit >= 0) RGreen else RRed, "Actual Profit", "Final price - company cost", usd(profit), strong = true),
@@ -551,7 +560,7 @@ private fun PriceExampleCard(companyId: String, brand: Color, ex: ReportPriceExa
     Surface(
         color = RCard,
         shape = RoundedCornerShape(18.dp),
-        border = BorderStroke(1.dp, RGreen.copy(alpha = 0.45f)),
+        border = BorderStroke(1.dp, DalabBlue.copy(alpha = 0.35f)),
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
     ) {
         Column(Modifier.padding(14.dp)) {
@@ -582,6 +591,6 @@ private fun Muted(message: String) {
 @Composable
 private fun LoadingOrEmpty(loading: Boolean) {
     Box(Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) {
-        if (loading) CircularProgressIndicator(color = RGreen) else Text("No data yet.", color = RMuted)
+        if (loading) CircularProgressIndicator(color = DalabBlue) else Text("No data yet.", color = RMuted)
     }
 }
