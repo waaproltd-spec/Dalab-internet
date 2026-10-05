@@ -100,6 +100,17 @@ test("a service can have one, two or all three types, stored in a fixed order", 
   assert.deepEqual(publicList.find((c) => c.name === "Anfac Plus").serviceTypes, ["wifi", "call"]);
 });
 
+test("Data (mobile data) is a fourth type, alone or with the others", async () => {
+  const data = await create({ name: "Data Bundle", serviceTypes: ["data"] });
+  assert.equal(data.status, 201);
+  const dataBody = (await data.json()) as any;
+  assert.deepEqual(dataBody.serviceTypes, ["data"]);
+  assert.equal(dataBody.serviceType, "data");
+
+  const four = await create({ name: "All Four", serviceTypes: ["data", "call", "wireless", "wifi"] });
+  assert.deepEqual(((await four.json()) as any).serviceTypes, ["wifi", "wireless", "call", "data"]);
+});
+
 test("editing can add and remove types, including removing them all", async () => {
   const cat = await queryOne<{ id: string }>(`SELECT id FROM service_categories WHERE company_id=$1 AND name='Anfac Plus'`, [COMPANY_ID]);
   const put = (body: Record<string, unknown>) =>

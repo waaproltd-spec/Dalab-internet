@@ -20,11 +20,11 @@ function slugify(name: string): string {
 // as companies.logo_data/has_logo and packages.image_data/has_image.
 const CATEGORY_COLUMNS = `id, company_id, slug, name, status, service_type, service_types, (icon_data IS NOT NULL) AS has_icon, created_at, updated_at`;
 
-// Admin-only Service Types (migrations 111/112): which icons the Customer
-// App draws on the service -- one, two or all three. Customers never
+// Admin-only Service Types (migrations 111-113): which icons the Customer
+// App draws on the service -- one or more. Customers never
 // choose them. service_types is the list; the older single service_type
 // column is kept in sync with the first selected type for older app builds.
-const SERVICE_TYPES = ["wifi", "wireless", "call"] as const;
+const SERVICE_TYPES = ["wifi", "wireless", "call", "data"] as const;
 type ServiceType = (typeof SERVICE_TYPES)[number];
 
 function isServiceType(value: unknown): value is ServiceType {
@@ -35,7 +35,7 @@ function isServiceType(value: unknown): value is ServiceType {
  * Reads the requested types from a create/edit body: `serviceTypes` (a
  * list), or the older single `serviceType`. Returns undefined when neither
  * was sent, null when what was sent is invalid, otherwise the types
- * de-duplicated in a fixed order (wifi, wireless, call).
+ * de-duplicated in a fixed order (wifi, wireless, call, data).
  */
 function readServiceTypes(body: Record<string, unknown>): ServiceType[] | null | undefined {
   let raw: unknown[];
@@ -51,7 +51,7 @@ function readServiceTypes(body: Record<string, unknown>): ServiceType[] | null |
   return SERVICE_TYPES.filter((t) => raw.includes(t));
 }
 
-const SERVICE_TYPES_ERROR = "serviceTypes must be a list of 'wifi', 'wireless' and/or 'call'";
+const SERVICE_TYPES_ERROR = "serviceTypes must be a list of 'wifi', 'wireless', 'call' and/or 'data'";
 
 // Public: the Customer/Agent apps' package browsing already groups by the
 // free-text categoryId on packages; this exposes the managed name/status for

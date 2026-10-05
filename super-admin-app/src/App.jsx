@@ -2560,8 +2560,9 @@ const SERVICE_TYPES = [
   { value: "wifi", emoji: "📶", name: "WiFi" },
   { value: "wireless", emoji: "📡", name: "Wireless" },
   { value: "call", emoji: "📞", name: "Call" },
+  { value: "data", emoji: "⇅", name: "Data" },
 ];
-// A service can have one, two or all three types (backend serviceTypes);
+// A service can have one or more types (backend serviceTypes);
 // falls back to the older single serviceType for rows saved before that.
 const serviceTypesOf = (c) => (c.serviceTypes?.length ? c.serviceTypes : c.serviceType ? [c.serviceType] : []);
 const serviceTypesLabel = (types) =>
@@ -2760,8 +2761,8 @@ function Categories({ companies, admin }) {
             )}
           </Field>
 
-          <Field label="Service icons — select one, two or all three (admin only; customers never choose these)">
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
+          <Field label="Service icons — select one or more (admin only; customers never choose these)">
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(84px, 1fr))", gap: 8 }}>
               {SERVICE_TYPES.map((t) => {
                 const selected = (form.serviceTypes || []).includes(t.value);
                 return (
@@ -2775,7 +2776,7 @@ function Categories({ companies, admin }) {
                       position: "absolute", top: 6, right: 6, width: 16, height: 16, borderRadius: 4, fontSize: 11, lineHeight: "14px", fontWeight: 900,
                       border: `1.5px solid ${selected ? INDIGO : BORDER}`, background: selected ? INDIGO : "#fff", color: "#fff",
                     }}>{selected ? "✓" : ""}</span>
-                    <span style={{ fontSize: 24, opacity: selected ? 1 : 0.45 }}>{t.emoji}</span>
+                    <span style={{ fontSize: 24, lineHeight: "30px", fontWeight: 900, color: "#111", opacity: selected ? 1 : 0.45 }}>{t.emoji}</span>
                     <span style={{ fontSize: 12.5, fontWeight: 800, color: selected ? INDIGO : SLATE }}>{t.name}</span>
                   </button>
                 );
