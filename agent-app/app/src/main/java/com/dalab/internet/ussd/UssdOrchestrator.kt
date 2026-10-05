@@ -2,6 +2,7 @@ package com.dalab.internet.ussd
 
 import android.content.Context
 import com.dalab.internet.auth.DeviceIdentity
+import com.dalab.internet.data.Order
 import com.dalab.internet.data.OrderStatus
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.network.ApiClient
@@ -118,7 +119,7 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
                 SimSlotResult.LoadFailed -> return DialResult(DialOutcome.NETWORK_UNAVAILABLE, "Could not load SIM routing (network) — will retry.")
             }
         }
-        return dialWithRetry(orderId, configuredSlot, ussdString)
+        return deliver(order, configuredSlot, ussdString)
     }
 
     /**
@@ -161,17 +162,88 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         }
         val ussdString = order.ussdGenerated
             ?: return DialResult(DialOutcome.FAILED, "No USSD template matched this order — check USSD Services in the dashboard.")
-        return dialWithRetry(orderId, forcedSimSlot, ussdString)
+        return deliver(order, forcedSimSlot, ussdString)
     }
 
-    private suspend fun dialWithRetry(orderId: String, simSlot: Int, ussdString: String): DialResult {
+    /**
+     * A normal order (sendCount 1) is dialed exactly as it always was. An
+     * Extra Package order (Admin > Add Extra Package) is dialed once per
+     * delivery it still owes -- resuming from the server's own count of
+     * confirmed deliveries, so a restart never re-sends one already done.
+     * Stricter than the single path on purpose: each attempt must be
+     * logged, and each success confirmed by the server, before the next
+     * delivery is dialed; anything unconfirmed stops the run rather than
+     * risk sending more than the Send Count.
+     */
+    private suspend fun deliver(order: Order, simSlot: Int, ussdString: String): DialResult {
+        val sendCount = order.sendCount ?: 1
+        if (sendCount <= 1) return dialWithRetry(order.id, simSlot, ussdString)
+
+        var done = order.deliveriesDone ?: 0
+        var nextAttempt = order.nextAttemptNumber ?: 1
+        while (done < sendCount) {
+            val run = dialWithRetryRun(order.id, simSlot, ussdString, attemptBase = nextAttempt - 1, strict = true)
+            nextAttempt += run.attemptsUsed
+            if (run.result.outcome != DialOutcome.SUCCESS || run.stoppedEarly) return run.result
+            if (!run.reportedOnline) {
+                DiagnosticsLog.record(
+                    "extra_package",
+                    "Order ${order.id}: delivery ${done + 1} of $sendCount sent, but the server hasn't confirmed it yet — stopping so nothing is sent twice.",
+                    isError = true,
+                )
+                return DialResult(
+                    DialOutcome.FAILED,
+                    "Delivery ${done + 1} of $sendCount was sent, but its result couldn't reach the server yet. Stopped so nothing is sent twice — reopen the order to continue once it syncs.",
+                )
+            }
+            done++
+            DiagnosticsLog.record("extra_package", "Order ${order.id}: delivery $done of $sendCount sent.", isError = false)
+            if (done < sendCount) delay(BETWEEN_DELIVERIES_MS)
+        }
+        return DialResult(DialOutcome.SUCCESS, "All $sendCount deliveries sent.")
+    }
+
+    private suspend fun dialWithRetry(orderId: String, simSlot: Int, ussdString: String): DialResult =
+        dialWithRetryRun(orderId, simSlot, ussdString, attemptBase = 0, strict = false).result
+
+    /** One delivery's dial with retries. [attemptBase] offsets the attempt
+     * numbers (0 for a normal order, which keeps its 1..maxAttempts). With
+     * [strict] (Extra Package deliveries), an attempt is only dialed once
+     * the server has logged it -- offline returns NETWORK_UNAVAILABLE so
+     * the whole order is retried later from the server's count, and a
+     * refusal (e.g. every delivery is already done) returns FAILED --
+     * instead of dialing anyway. */
+    private suspend fun dialWithRetryRun(
+        orderId: String,
+        simSlot: Int,
+        ussdString: String,
+        attemptBase: Int,
+        strict: Boolean,
+    ): DeliveryRun {
+        var attemptsUsed = 0
+        var reportedOnline = false
         // Retry on transient failure/timeout (not on
         // NO_SIM_CONFIGURED/NO_SIM_PRESENT/PERMISSION_DENIED — those need a
         // human to fix, retrying won't help and would just waste USSD
         // sessions with the carrier).
         var lastResult: DialResult = DialResult(DialOutcome.FAILED, "Not attempted")
         for (attempt in 1..maxAttempts) {
-            val attemptId = startDialAttemptLog(orderId, simSlot, ussdString, attempt)
+            val attemptNumber = attemptBase + attempt
+            val attemptId = if (strict) {
+                when (val started = startDialAttemptLogStrict(orderId, simSlot, ussdString, attemptNumber)) {
+                    is StrictStart.Started -> started.id
+                    is StrictStart.Offline -> return DeliveryRun(
+                        DialResult(DialOutcome.NETWORK_UNAVAILABLE, "Couldn't reach the server before sending — will retry."),
+                        attemptsUsed, reportedOnline = false, stoppedEarly = true,
+                    )
+                    is StrictStart.Refused -> return DeliveryRun(
+                        DialResult(DialOutcome.FAILED, started.message), attemptsUsed, reportedOnline = false, stoppedEarly = true,
+                    )
+                }
+            } else {
+                startDialAttemptLog(orderId, simSlot, ussdString, attemptNumber)
+            }
+            attemptsUsed = attempt
 
             // subscriptionId is resolved inside the loop (not before it) so
             // a missing SIM still produces exactly one logged dial-attempt
@@ -200,7 +272,7 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
                     // re-acquires, so a different request queued for this
                     // slot in between isn't blocked behind this order's own
                     // retry backoff.
-                    val ticket = UssdSimLock.acquire(simSlot, "internet_store:$orderId:attempt$attempt", System.currentTimeMillis())
+                    val ticket = UssdSimLock.acquire(simSlot, "internet_store:$orderId:attempt$attemptNumber", System.currentTimeMillis())
                     try {
                         // UssdDialer only catches SecurityException around the telephony
                         // call — other stack exceptions (e.g. IllegalStateException when
@@ -212,7 +284,7 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
                         try {
                             dialer.dial(lookup.subscriptionId, ussdString)
                         } catch (e: Exception) {
-                            DiagnosticsLog.record("ussd_dial", "Dial threw (order $orderId, attempt $attempt): ${e.message}", isError = true)
+                            DiagnosticsLog.record("ussd_dial", "Dial threw (order $orderId, attempt $attemptNumber): ${e.message}", isError = true)
                             DialResult(DialOutcome.FAILED, "Dial error: ${e.message}")
                         }
                     } finally {
@@ -230,11 +302,12 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
                 lastResult.outcome == DialOutcome.TIMEOUT ||
                 lastResult.outcome == DialOutcome.AMBIGUOUS
             val isFinalAttempt = !retryable || attempt == maxAttempts
-            reportDialResult(orderId, simSlot, ussdString, attempt, attemptId, lastResult, isFinalAttempt)
+            reportedOnline = reportDialResult(orderId, simSlot, ussdString, attemptNumber, attemptId, lastResult, isFinalAttempt, strict)
 
-            if (lastResult.outcome == DialOutcome.SUCCESS) return lastResult
+            if (lastResult.outcome == DialOutcome.SUCCESS) return DeliveryRun(lastResult, attemptsUsed, reportedOnline, stoppedEarly = false)
             if (!retryable) {
-                return lastResult // permission/config/no-SIM problems — don't retry blindly
+                // permission/config/no-SIM problems — don't retry blindly
+                return DeliveryRun(lastResult, attemptsUsed, reportedOnline, stoppedEarly = false)
             }
             if (attempt < maxAttempts) {
                 delay(2000L * attempt) // simple linear backoff between USSD retries
@@ -250,11 +323,46 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
                     false
                 }
                 if (alreadyCompleted) {
-                    return DialResult(DialOutcome.SUCCESS, "Order already completed — skipping remaining retries.")
+                    return DeliveryRun(
+                        DialResult(DialOutcome.SUCCESS, "Order already completed — skipping remaining retries."),
+                        attemptsUsed, reportedOnline, stoppedEarly = true,
+                    )
                 }
             }
         }
-        return lastResult
+        return DeliveryRun(lastResult, attemptsUsed, reportedOnline, stoppedEarly = false)
+    }
+
+    private data class DeliveryRun(
+        val result: DialResult,
+        val attemptsUsed: Int,
+        // Whether the last attempt's result was confirmed by the server
+        // (not just queued for a later replay).
+        val reportedOnline: Boolean,
+        // Stopped before finishing this delivery's own retries for a reason
+        // other than its outcome (order completed elsewhere, offline, refused).
+        val stoppedEarly: Boolean,
+    )
+
+    private sealed class StrictStart {
+        data class Started(val id: String) : StrictStart()
+        object Offline : StrictStart()
+        data class Refused(val message: String) : StrictStart()
+    }
+
+    private suspend fun startDialAttemptLogStrict(orderId: String, simSlot: Int, ussdString: String, attemptNumber: Int): StrictStart {
+        val response = try {
+            ApiClient.service.startDialAttempt(orderId, DialAttemptStartRequest(simSlot, ussdString, attemptNumber))
+        } catch (e: Exception) {
+            DiagnosticsLog.record("dial_attempt_log", "Start-log failed (order $orderId, attempt $attemptNumber): ${e.message} — not dialing.", isError = false)
+            return StrictStart.Offline
+        }
+        val id = response.body()?.id
+        if (response.isSuccessful && id != null) return StrictStart.Started(id)
+        if (response.code() >= 500) return StrictStart.Offline
+        val message = "Server refused this delivery (HTTP ${response.code()}) — nothing was sent."
+        DiagnosticsLog.record("dial_attempt_log", "Order $orderId, attempt $attemptNumber: $message", isError = true)
+        return StrictStart.Refused(message)
     }
 
     private suspend fun startDialAttemptLog(orderId: String, simSlot: Int, ussdString: String, attemptNumber: Int): String? {
@@ -269,10 +377,13 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         }
     }
 
+    /** Returns true when the result was reported online (false: queued
+     * for a later replay). With [strict], a non-2xx reply counts as not
+     * reported. */
     private suspend fun reportDialResult(
         orderId: String, simSlot: Int, ussdString: String, attemptNumber: Int,
-        attemptId: String?, result: DialResult, isFinalAttempt: Boolean,
-    ) {
+        attemptId: String?, result: DialResult, isFinalAttempt: Boolean, strict: Boolean = false,
+    ): Boolean {
         // "ambiguous" is reported as its own status, distinct from both
         // "success" and "failed" — the backend only ever completes an order
         // on "success" (see ussd.routes.ts), so a response that merely LOOKS
@@ -286,11 +397,13 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         }
         if (attemptId != null) {
             try {
-                ApiClient.service.reportDialResult(
+                val response = ApiClient.service.reportDialResult(
                     attemptId,
                     DialAttemptResultRequest(status, result.responseMessage, isFinalAttempt),
                 )
-                return // both logging calls succeeded online — nothing to queue
+                if (!strict || response.isSuccessful) {
+                    return true // both logging calls succeeded online — nothing to queue
+                }
             } catch (_: Exception) {
                 // fall through — queue a full start+report replay below
             }
@@ -305,9 +418,14 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
             type = PendingActionQueue.Type.DIAL_ATTEMPT_AUDIT,
             payload = DialAttemptAuditAction(orderId, simSlot, ussdString, attemptNumber, status, result.responseMessage, isFinalAttempt),
         )
+        return false
     }
 
     companion object {
+        // A short pause between an Extra Package's deliveries, so the
+        // carrier finishes one USSD session before the next starts.
+        private const val BETWEEN_DELIVERIES_MS = 3000L
+
         // Process-wide (not per-instance): OrderDetailScreen, OrdersListScreen,
         // SmsUploadFlow, and SelfHealSweeper each construct their own
         // UssdOrchestrator instance, so an instance-level lock would do

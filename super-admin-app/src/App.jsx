@@ -2235,9 +2235,12 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
       })
     : companyFiltered;
 
-  const openNew = () => {
+  // extra: Admin -> Add Extra Package -- the same package, plus a Send
+  // Count: the customer pays the selling price once and the package is
+  // delivered that many times (2, 3, 10 ...).
+  const openNew = (extra = false) => {
     const companyId = companyFilter !== "all" ? companyFilter : companies[0]?.id || "";
-    setForm({ companyId, categoryId: "", name: "", oldPrice: "", price: "", providerAmount: "", mb: "", minutes: "", sms: "", validity: "", active: true, ussdTemplateId: "" });
+    setForm({ companyId, categoryId: "", name: "", oldPrice: "", price: "", providerAmount: "", mb: "", minutes: "", sms: "", validity: "", active: true, ussdTemplateId: "", sendCount: extra ? 2 : 1 });
     setTemplateWarning("");
     setError("");
     setEditing("new");
@@ -2252,6 +2255,13 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
   const save = async () => {
     if (!form.name || form.price === "" || form.price == null) return;
     setError("");
+    if (form.sendCount !== undefined && form.sendCount !== 1) {
+      const n = Number(form.sendCount);
+      if (!Number.isInteger(n) || n < 2 || n > 50) {
+        setError("Send Count must be a whole number from 2 to 50.");
+        return;
+      }
+    }
     if (DALAB_API_ENABLED) {
       setSaving(true);
       let warning = "";
@@ -2344,7 +2354,12 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
         <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Packages & pricing</div>
-        {canManage && <Button icon={Plus} onClick={openNew}>Add package</Button>}
+        {canManage && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Button icon={Plus} onClick={() => openNew(false)}>Add package</Button>
+            <Button icon={Plus} variant="ghost" onClick={() => openNew(true)}>Add Extra Package</Button>
+          </div>
+        )}
       </div>
 
       {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
@@ -2397,6 +2412,11 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
                       <img src={DalabAdminApi.packageImageUrl(p.id)} alt="" style={{ width: 22, height: 22, borderRadius: 6, objectFit: "cover", flexShrink: 0 }} />
                     )}
                     <span>{p?.name || "Unnamed package"}</span>
+                    {Number(p.sendCount) > 1 && (
+                      <span title={`Extra Package: sent ${p.sendCount} times per purchase`} style={{ fontSize: 11, fontWeight: 800, color: "#fff", background: INDIGO, borderRadius: 10, padding: "2px 8px", whiteSpace: "nowrap" }}>
+                        Extra ×{p.sendCount}
+                      </span>
+                    )}
                   </div>
                 </td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{p.company || companies.find((c) => c.id === p.companyId)?.name}</td>
@@ -2431,7 +2451,11 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
       </Card>
 
       {editing && (
-        <Modal title={editing === "new" ? "Add package" : "Edit package"} onClose={() => setEditing(null)} width={460}>
+        <Modal
+          title={Number(form.sendCount) > 1 ? (editing === "new" ? "Add Extra Package" : "Edit Extra Package") : editing === "new" ? "Add package" : "Edit package"}
+          onClose={() => setEditing(null)}
+          width={460}
+        >
           <Field label="Company">
             <select style={inputStyle} value={form.companyId} onChange={(e) => setForm({ ...form, companyId: e.target.value })}>
               {companies.map((c) => <option key={c.id} value={c.id}>{c?.name || "Unnamed"}</option>)}
@@ -2489,6 +2513,34 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
             <Field label="SMS"><input style={inputStyle} value={form.sms ?? ""} onChange={(e) => setForm({ ...form, sms: e.target.value })} /></Field>
             <Field label="Validity"><input style={inputStyle} value={form.validity ?? ""} onChange={(e) => setForm({ ...form, validity: e.target.value })} placeholder="e.g. 1 month" /></Field>
           </div>
+          {Number(form.sendCount) > 1 && (
+            <Field label="Send Count — how many times this package is sent per purchase">
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                {[2, 3, 10].map((n) => {
+                  const selected = Number(form.sendCount) === n;
+                  return (
+                    <button key={n} type="button" onClick={() => setForm({ ...form, sendCount: n })} style={{
+                      padding: "8px 14px", borderRadius: 10, fontSize: 13, fontWeight: 800, cursor: "pointer",
+                      border: `2px solid ${selected ? INDIGO : BORDER}`, background: selected ? "#EEF3FA" : "#fff", color: selected ? INDIGO : SLATE,
+                    }}>{n} times</button>
+                  );
+                })}
+                <input
+                  type="number"
+                  min={2}
+                  max={50}
+                  style={{ ...inputStyle, width: 90 }}
+                  value={form.sendCount ?? ""}
+                  onChange={(e) => setForm({ ...form, sendCount: e.target.value === "" ? "" : Number(e.target.value) })}
+                  aria-label="Send Count"
+                />
+              </div>
+              <div style={{ fontSize: 11.5, color: MUTE, marginTop: 6 }}>
+                The customer pays the Discount price above once
+                {form.price !== "" && form.price != null ? ` ($${Number(form.price).toFixed(2)})` : ""}, and the package is sent {Number(form.sendCount) > 1 ? Number(form.sendCount) : "N"} times. Any number from 2 to 50.
+              </div>
+            </Field>
+          )}
           <Field label="Provider / USSD Amount ($) — optional">
             <input
               style={inputStyle}

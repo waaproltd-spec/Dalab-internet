@@ -36,6 +36,13 @@ data class Order(
     val ussdSimSlot: Int? = null,
     val createdAt: String,
     val completedAt: String? = null,
+    // Extra Packages (Admin > Add Extra Package): how many times this one
+    // paid order is delivered, how many deliveries the server has already
+    // confirmed, and the next unused dial attempt number. Null from older
+    // servers -- treated as a normal single delivery.
+    val sendCount: Int? = null,
+    val deliveriesDone: Int? = null,
+    val nextAttemptNumber: Int? = null,
 )
 
 enum class OrderStatus {
