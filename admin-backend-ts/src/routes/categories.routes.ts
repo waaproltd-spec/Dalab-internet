@@ -18,7 +18,15 @@ function slugify(name: string): string {
 // icon_data must never reach any client on the list routes below — same
 // "has_X boolean, raw bytes only through their own dedicated route" pattern
 // as companies.logo_data/has_logo and packages.image_data/has_image.
-const CATEGORY_COLUMNS = `id, company_id, slug, name, status, (icon_data IS NOT NULL) AS has_icon, created_at, updated_at`;
+const CATEGORY_COLUMNS = `id, company_id, slug, name, status, service_type, (icon_data IS NOT NULL) AS has_icon, created_at, updated_at`;
+
+// Admin-only Service Type (migration 111): which icon the Customer App draws
+// for the service. Customers never choose it.
+const SERVICE_TYPES = ["wifi", "wireless", "call"] as const;
+
+function isServiceType(value: unknown): value is (typeof SERVICE_TYPES)[number] {
+  return typeof value === "string" && (SERVICE_TYPES as readonly string[]).includes(value);
+}
 
 // Public: the Customer/Agent apps' package browsing already groups by the
 // free-text categoryId on packages; this exposes the managed name/status for
@@ -58,8 +66,11 @@ categoriesRouter.get("/admin/categories", requireStaff(), async (req, res) => {
 });
 
 categoriesRouter.post("/admin/categories", requirePermission("categories.manage"), async (req, res) => {
-  const { companyId, name } = req.body;
+  const { companyId, name, serviceType } = req.body;
   if (!companyId || !name) return sendJson(res, 400, { error: "companyId and name are required" });
+  if (!isServiceType(serviceType)) {
+    return sendJson(res, 400, { error: "serviceType must be 'wifi', 'wireless' or 'call'" });
+  }
 
   const company = await queryOne(`SELECT id FROM companies WHERE id=$1`, [companyId]);
   if (!company) return sendJson(res, 404, { error: "Company not found" });
@@ -73,8 +84,8 @@ categoriesRouter.post("/admin/categories", requirePermission("categories.manage"
 
   const id = (
     await queryOne<{ id: string }>(
-      `INSERT INTO service_categories (company_id, slug, name) VALUES ($1,$2,$3) RETURNING id`,
-      [companyId, slug, name]
+      `INSERT INTO service_categories (company_id, slug, name, service_type) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [companyId, slug, name, serviceType]
     )
   )!.id;
   sendJson(res, 201, await queryOne(`SELECT ${CATEGORY_COLUMNS} FROM service_categories WHERE id=$1`, [id]));
@@ -89,10 +100,16 @@ categoriesRouter.put("/admin/categories/:id", requirePermission("categories.mana
   if (!["enabled", "disabled"].includes(status)) {
     return sendJson(res, 400, { error: "status must be 'enabled' or 'disabled'" });
   }
+  // Optional on edit: omitted keeps the current type (possibly still NULL
+  // for a category created before Service Types existed).
+  const serviceType = req.body.serviceType ?? existing.service_type;
+  if (serviceType != null && !isServiceType(serviceType)) {
+    return sendJson(res, 400, { error: "serviceType must be 'wifi', 'wireless' or 'call'" });
+  }
 
   await query(
-    `UPDATE service_categories SET name=$1, status=$2, updated_at=now() WHERE id=$3`,
-    [name, status, req.params.id]
+    `UPDATE service_categories SET name=$1, status=$2, service_type=$3, updated_at=now() WHERE id=$4`,
+    [name, status, serviceType, req.params.id]
   );
   sendJson(res, 200, await queryOne(`SELECT ${CATEGORY_COLUMNS} FROM service_categories WHERE id=$1`, [req.params.id]));
 });
