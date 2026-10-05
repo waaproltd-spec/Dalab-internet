@@ -3,7 +3,8 @@ package com.dalab.internet.network
 import com.dalab.internet.data.AgentBalanceEntry
 import com.dalab.internet.data.AgentDevice
 import com.dalab.internet.data.AgentProfile
-import com.dalab.internet.data.AgentReport
+import com.dalab.internet.data.AgentReportDashboard
+import com.dalab.internet.data.CompanyReport
 import com.dalab.internet.data.Company
 import com.dalab.internet.data.CustomerDetail
 import com.dalab.internet.data.CustomerOrderHistoryEntry
@@ -587,8 +588,11 @@ interface ApiService {
 
     // ---------------- Reports ----------------
 
-    @GET("agent/reports")
-    suspend fun getReports(@Query("range") range: String? = null): Response<AgentReport>
+    @GET("agent/reports/dashboard")
+    suspend fun getReportDashboard(@Query("range") range: String): Response<AgentReportDashboard>
+
+    @GET("agent/reports/dashboard/companies/{id}")
+    suspend fun getCompanyReport(@Path("id") companyId: String, @Query("range") range: String): Response<CompanyReport>
 
     // ---------------- Money Exchange ----------------
     // Deliberately separate endpoints/models from Internet Store's orders
