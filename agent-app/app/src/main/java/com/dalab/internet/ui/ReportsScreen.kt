@@ -1,428 +1,587 @@
 package com.dalab.internet.ui
 
-import androidx.annotation.DrawableRes
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.BarChart
-import androidx.compose.material.icons.filled.Groups
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Receipt
-import androidx.compose.material.icons.filled.Savings
+import androidx.compose.material.icons.filled.Business
+import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.MonetizationOn
+import androidx.compose.material.icons.filled.Paid
+import androidx.compose.material.icons.filled.Percent
+import androidx.compose.material.icons.filled.Sell
+import androidx.compose.material.icons.filled.TrendingUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.dalab.internet.data.AgentReport
-import com.dalab.internet.data.ReportCompanyPerformance
-import com.dalab.internet.data.ReportTopCustomer
+import androidx.compose.ui.unit.sp
+import com.dalab.internet.R
+import com.dalab.internet.data.AgentReportDashboard
+import com.dalab.internet.data.CompanyReport
+import com.dalab.internet.data.ReportCompanyCard
+import com.dalab.internet.data.ReportPackageRow
+import com.dalab.internet.data.ReportPriceExample
+import com.dalab.internet.data.ReportProfitBreakdown
+import com.dalab.internet.data.ReportStatusSplit
 import com.dalab.internet.network.ApiClient
-import com.dalab.internet.ui.theme.DalabDangerRed
-import com.dalab.internet.ui.theme.DalabOutline
-import com.dalab.internet.ui.theme.DalabSurfaceTint
-import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Calendar
 import java.util.Locale
+
+// The Reports dashboard is dark by design (the rest of the app stays light).
+private val RBg = Color(0xFF0A0F0C)
+private val RCard = Color(0xFF151B17)
+private val RCardBorder = Color(0xFF232B26)
+private val RText = Color(0xFFF4F7F5)
+private val RMuted = Color(0xFF9AA59F)
+private val RGreen = Color(0xFF22C55E)
+private val RRed = Color(0xFFEF4444)
+private val RAmber = Color(0xFFF59E0B)
+private val RBlue = Color(0xFF3B82F6)
 
 private data class ReportRange(val value: String, val label: String)
 
 private val REPORT_RANGES = listOf(
     ReportRange("today", "Today"),
-    ReportRange("yesterday", "Yesterday"),
-    ReportRange("week", "Week"),
-    ReportRange("1month", "1 Month"),
-    ReportRange("3months", "3 Months"),
-    ReportRange("6months", "6 Months"),
-    ReportRange("1year", "1 Year"),
+    ReportRange("7days", "7 Days"),
+    ReportRange("30days", "30 Days"),
+    ReportRange("all", "All time"),
 )
 
-/** "My Reports" -- GET /agent/reports, scoped entirely to completed orders
- * this agent personally fulfilled. periodTotals/companies/topCustomers all
- * move together with [REPORT_RANGES]'s selected range; totals (the small
- * "All-time" line on the summary card) never does, per product decision --
- * see AgentReport's own doc comment. */
+private fun usd(v: Double): String = "$" + String.format(Locale.US, "%.2f", v)
+private fun percent(v: Double): String = String.format(Locale.US, "%.1f%%", v)
+
+private fun parseColor(hex: String?, fallback: Color): Color = try {
+    if (hex.isNullOrBlank()) fallback else Color(android.graphics.Color.parseColor(hex))
+} catch (_: Exception) {
+    fallback
+}
+
+/** A small generic loader for both report screens: (re)loads whenever
+ * [key] changes, keeping the last good result on screen while reloading. */
 @Composable
-fun ReportsScreen(onBack: () -> Unit) {
-    var range by remember { mutableStateOf("today") }
-    var report by remember { mutableStateOf<AgentReport?>(null) }
+private fun <T> rememberReport(key: Any, fetch: suspend () -> retrofit2.Response<T>): Triple<T?, Boolean, String?> {
+    var data by remember { mutableStateOf<T?>(null) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
-
-    fun load() {
+    LaunchedEffect(key) {
         loading = true
-        scope.launch {
-            try {
-                val response = ApiClient.service.getReports(range)
-                if (response.isSuccessful) {
-                    report = response.body()
-                    error = null
-                } else {
-                    error = "Couldn't load your report. Check your connection."
-                }
-            } catch (_: Exception) {
-                error = "Couldn't load your report. Check your connection."
+        try {
+            val response = fetch()
+            if (response.isSuccessful) {
+                data = response.body()
+                error = null
+            } else {
+                error = "Couldn't load the report. Check your connection."
             }
-            loading = false
+        } catch (_: Exception) {
+            error = "Couldn't load the report. Check your connection."
         }
+        loading = false
+    }
+    return Triple(data, loading, error)
+}
+
+/** The Agent App "Reports" dashboard -- GET /agent/reports/dashboard, all
+ * real figures for this agent's orders: summary cards, order status donut,
+ * each company on its own card (tap for its own report), and the profit
+ * breakdown (cost + markup = selling - discount = final - cost = profit). */
+@Composable
+fun ReportsScreen(onBack: () -> Unit) {
+    var range by remember { mutableStateOf("all") }
+    var openCompany by remember { mutableStateOf<ReportCompanyCard?>(null) }
+
+    val company = openCompany
+    if (company != null) {
+        BackHandler { openCompany = null }
+        CompanyReportScreen(company = company, initialRange = range, onBack = { openCompany = null })
+        return
     }
 
-    LaunchedEffect(range) { load() }
+    val (report, loading, error) = rememberReport(range) { ApiClient.service.getReportDashboard(range) }
 
-    Scaffold(containerColor = Color.White) { padding ->
-        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
-            ReportsHeader(onBack = onBack, range = range)
-
-            Row(
-                modifier = Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                REPORT_RANGES.forEach { r ->
-                    RangePill(label = r.label, selected = range == r.value, onClick = { range = r.value })
+    Box(Modifier.fillMaxSize().background(RBg)) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 28.dp)) {
+            item { BrandHeader(onBack = onBack) }
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Reports", color = RText, fontSize = 30.sp, fontWeight = FontWeight.Black)
+                        Text("A summary of your order activity.", color = RMuted, fontSize = 14.sp)
+                    }
+                    RangeDropdown(range = range, onChange = { range = it })
                 }
             }
-
-            Spacer(Modifier.height(4.dp))
-
-            if (error != null) {
-                Text(
-                    error!!,
-                    color = DalabDangerRed,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                    style = MaterialTheme.typography.bodyMedium,
-                )
+            if (error != null) item { ErrorLine(error) }
+            val current = report
+            if (current == null) {
+                item { LoadingOrEmpty(loading) }
+            } else {
+                item { SummaryGrid(current.totalOrders, current.successfulValue, current.totalProfit, current.totalDiscount) }
+                item { SectionTitle("Order Status") }
+                item { StatusCard(current.status, current.totalOrders) }
+                item { SectionTitle("By Network") }
+                val companies = current.companies.orEmpty()
+                if (companies.isEmpty()) item { Muted("No companies yet.") }
+                items(companies.size) { i -> CompanyCard(companies[i], onClick = { openCompany = companies[i] }) }
+                item { SectionTitle("Profit") }
+                item { ProfitCard(current.profitBreakdown) }
             }
+        }
+    }
+}
 
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                if (loading && report == null) {
-                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                } else {
-                    val current = report
-                    if (current == null) {
-                        Text(
-                            "No data yet.",
-                            modifier = Modifier.align(Alignment.Center),
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                    } else {
-                        ReportsContent(report = current)
+@Composable
+private fun CompanyReportScreen(company: ReportCompanyCard, initialRange: String, onBack: () -> Unit) {
+    var range by remember { mutableStateOf(initialRange) }
+    val (report, loading, error) = rememberReport(range) { ApiClient.service.getCompanyReport(company.companyId, range) }
+    val brand = parseColor(company.colorHex, RGreen)
+
+    Box(Modifier.fillMaxSize().background(RBg)) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 28.dp)) {
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 8.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = RText) }
+                    CompanyLogo(company.companyId, brand, 44.dp)
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        "${company.companyName} Reports",
+                        color = RText,
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Black,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    REPORT_RANGES.forEach { r ->
+                        val selected = r.value == range
+                        Surface(
+                            color = if (selected) RGreen.copy(alpha = 0.9f) else RCard,
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, if (selected) RGreen else RCardBorder),
+                            modifier = Modifier.weight(1f).clickable { range = r.value },
+                        ) {
+                            Text(
+                                r.label,
+                                color = if (selected) Color.White else RText,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                maxLines = 1,
+                                modifier = Modifier.padding(vertical = 10.dp).fillMaxWidth(),
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            )
+                        }
                     }
                 }
             }
+            if (error != null) item { ErrorLine(error) }
+            val current = report
+            if (current == null) {
+                item { LoadingOrEmpty(loading) }
+            } else {
+                item { Spacer(Modifier.height(6.dp)) }
+                item { SummaryGrid(current.totalOrders, current.successfulValue, current.totalProfit, current.totalDiscount) }
+                item { SectionTitle("Order Status", "(${company.companyName})") }
+                item { StatusCard(current.status, current.totalOrders) }
+                item { SectionTitle("Package Performance") }
+                val packages = current.packages.orEmpty()
+                if (packages.isEmpty()) {
+                    item { Muted("No orders for ${company.companyName} in this period.") }
+                } else {
+                    item {
+                        DarkCard(Modifier.padding(horizontal = 16.dp)) {
+                            packages.forEachIndexed { i, p ->
+                                if (i > 0) Divider(color = RCardBorder)
+                                PackageRow(p, brand)
+                            }
+                        }
+                    }
+                }
+                current.priceExample?.let { ex ->
+                    item { SectionTitle("Price Example", "(${company.companyName})") }
+                    item { PriceExampleCard(company.companyId, brand, ex) }
+                }
+                item { SectionTitle("Profit") }
+                item { ProfitCard(current.profitBreakdown) }
+            }
         }
     }
 }
 
 @Composable
-private fun ReportsHeader(onBack: () -> Unit, range: String) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
+private fun BrandHeader(onBack: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(bottomStart = 26.dp, bottomEnd = 26.dp))
+            .background(Brush.linearGradient(listOf(Color(0xFF07130C), Color(0xFF0E3B22), Color(0xFF16A34A))))
+            .statusBarsPadding()
+            .padding(horizontal = 8.dp, vertical = 14.dp),
     ) {
-        IconButton(onClick = onBack) {
-            Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = DalabIndigo)
-        }
-        Column(modifier = Modifier.weight(1f)) {
-            Text("My Reports", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = DalabIndigo)
-            Text(
-                "View your sales, orders and customer activity",
-                style = MaterialTheme.typography.bodySmall,
-                color = Color(0xFF6B7280),
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White) }
+            Image(
+                painter = painterResource(R.drawable.dalab_logo),
+                contentDescription = null,
+                modifier = Modifier.size(34.dp).clip(RoundedCornerShape(8.dp)),
             )
-        }
-        Surface(color = DalabSoftBlue.copy(alpha = 0.35f), shape = RoundedCornerShape(999.dp)) {
-            Text(
-                remember(range) { rangeDateLabel(range) },
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = DalabIndigo,
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-            )
+            Spacer(Modifier.width(10.dp))
+            Text("DALAB ", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Black)
+            Text("AGENT", color = RAmber, fontSize = 22.sp, fontWeight = FontWeight.Black)
         }
     }
-}
-
-// Mirrors AGENT_REPORT_RANGES' own boundaries (reports.routes.ts) so this
-// label never claims a date span the backend isn't actually filtering by --
-// previously this always showed today's date regardless of which pill was
-// selected, which read as "Sep 17" while "Yesterday"'s data (Sep 16) was on
-// screen.
-private fun rangeDateLabel(range: String): String {
-    val dayFormat = SimpleDateFormat("MMM d", Locale.US)
-    val dayYearFormat = SimpleDateFormat("MMM d, yyyy", Locale.US)
-    val today = Calendar.getInstance()
-    val from = today.clone() as Calendar
-    when (range) {
-        "today" -> return dayYearFormat.format(today.time)
-        "yesterday" -> {
-            from.add(Calendar.DAY_OF_YEAR, -1)
-            return dayYearFormat.format(from.time)
-        }
-        "week" -> from.add(Calendar.DAY_OF_YEAR, -7)
-        "1month" -> from.add(Calendar.MONTH, -1)
-        "3months" -> from.add(Calendar.MONTH, -3)
-        "6months" -> from.add(Calendar.MONTH, -6)
-        "1year" -> from.add(Calendar.YEAR, -1)
-        else -> return dayYearFormat.format(today.time)
-    }
-    return "${dayFormat.format(from.time)} – ${dayYearFormat.format(today.time)}"
 }
 
 @Composable
-private fun RangePill(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun RangeDropdown(range: String, onChange: (String) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        Surface(
+            color = RCard,
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, RCardBorder),
+            modifier = Modifier.clickable { open = true },
+        ) {
+            Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.CalendarMonth, contentDescription = null, tint = RText, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(REPORT_RANGES.first { it.value == range }.label, color = RText, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Icon(Icons.Filled.KeyboardArrowDown, contentDescription = null, tint = RText)
+            }
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            REPORT_RANGES.forEach { r ->
+                DropdownMenuItem(text = { Text(r.label) }, onClick = { open = false; onChange(r.value) })
+            }
+        }
+    }
+}
+
+@Composable
+private fun DarkCard(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
     Surface(
-        color = if (selected) DalabIndigo else Color.White,
-        contentColor = if (selected) Color.White else DalabIndigo,
-        shape = RoundedCornerShape(999.dp),
-        border = if (selected) null else BorderStroke(1.dp, DalabOutline),
-        modifier = Modifier.clickable(onClick = onClick),
+        color = RCard,
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, RCardBorder),
+        modifier = modifier.fillMaxWidth(),
     ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+        Column(Modifier.padding(14.dp), content = content)
+    }
+}
+
+@Composable
+private fun SummaryGrid(totalOrders: Int, successfulValue: Double, totalProfit: Double, totalDiscount: Double) {
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            StatTile(Icons.Filled.Description, RBlue, "$totalOrders", "Total Orders", Modifier.weight(1f))
+            StatTile(Icons.Filled.MonetizationOn, RGreen, usd(successfulValue), "Successful Value", Modifier.weight(1f))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            StatTile(Icons.Filled.BarChart, RAmber, usd(totalProfit), "Total Profit", Modifier.weight(1f))
+            StatTile(Icons.Filled.Percent, RRed, usd(totalDiscount), "Total Discount", Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun StatTile(icon: ImageVector, color: Color, value: String, label: String, modifier: Modifier) {
+    Surface(color = RCard, shape = RoundedCornerShape(18.dp), border = BorderStroke(1.dp, RCardBorder), modifier = modifier) {
+        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(44.dp).background(color, RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
+                Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(24.dp))
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(value, color = RText, fontSize = 20.sp, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(label, color = RMuted, fontSize = 12.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SectionTitle(title: String, suffix: String? = null) {
+    Row(Modifier.padding(start = 16.dp, end = 16.dp, top = 18.dp, bottom = 8.dp), verticalAlignment = Alignment.Bottom) {
+        Text(title, color = RText, fontSize = 20.sp, fontWeight = FontWeight.Black)
+        if (suffix != null) {
+            Spacer(Modifier.width(6.dp))
+            Text(suffix, color = RMuted, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+@Composable
+private fun StatusCard(status: ReportStatusSplit, total: Int) {
+    DarkCard(Modifier.padding(horizontal = 16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(132.dp), contentAlignment = Alignment.Center) {
+                Donut(
+                    listOf(status.sent.toFloat() to RGreen, status.failed.toFloat() to RRed, status.cancelled.toFloat() to RAmber),
+                    Modifier.fillMaxSize(),
+                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("$total", color = RText, fontSize = 28.sp, fontWeight = FontWeight.Black)
+                    Text("Total", color = RMuted, fontSize = 13.sp)
+                }
+            }
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                LegendRow(RGreen, "Sent successfully", status.sent, status.sentPercent)
+                LegendRow(RRed, "Failed", status.failed, status.failedPercent)
+                LegendRow(RAmber, "Cancelled", status.cancelled, status.cancelledPercent)
+            }
+        }
+    }
+}
+
+/** A donut of [slices] (value to color); an empty ring when all are 0. */
+@Composable
+private fun Donut(slices: List<Pair<Float, Color>>, modifier: Modifier) {
+    val total = slices.sumOf { it.first.toDouble() }.toFloat()
+    Canvas(modifier) {
+        val stroke = size.minDimension * 0.14f
+        val inset = stroke / 2
+        val arcSize = Size(size.width - stroke, size.height - stroke)
+        val topLeft = Offset(inset, inset)
+        drawArc(RCardBorder, 0f, 360f, false, topLeft, arcSize, style = Stroke(stroke))
+        if (total <= 0f) return@Canvas
+        var start = -90f
+        slices.forEach { (value, color) ->
+            if (value <= 0f) return@forEach
+            val sweep = 360f * value / total
+            drawArc(color, start, sweep, false, topLeft, arcSize, style = Stroke(stroke, cap = StrokeCap.Butt))
+            start += sweep
+        }
+    }
+}
+
+@Composable
+private fun LegendRow(color: Color, label: String, count: Int, pct: Double) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(11.dp).background(color, CircleShape))
+        Spacer(Modifier.width(8.dp))
+        Text(label, color = RText, fontSize = 14.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text("$count", color = RText, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        Text(" (${percent(pct)})", color = RMuted, fontSize = 13.sp)
+    }
+}
+
+@Composable
+private fun CompanyLogo(companyId: String, brand: Color, size: androidx.compose.ui.unit.Dp) {
+    val res = logoResFor(companyId)
+    Box(
+        Modifier.size(size).clip(RoundedCornerShape(12.dp)).background(if (res == R.drawable.dalab_logo) brand else Color.White),
+        contentAlignment = Alignment.Center,
+    ) {
+        Image(
+            painter = painterResource(res),
+            contentDescription = null,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.fillMaxSize().padding(4.dp),
         )
     }
 }
 
 @Composable
-private fun ReportsContent(report: AgentReport) {
-    val hasPeriodData = report.periodTotals.totalOrders > 0
-
-    LazyColumn(modifier = Modifier.fillMaxSize()) {
-        item {
-            SummaryRow(
-                totalSales = report.periodTotals.totalSales,
-                totalOrders = report.periodTotals.totalOrders,
-                totalCustomers = report.periodTotals.totalCustomers,
-                allTimeSales = report.totals.totalSales,
-                allTimeOrders = report.totals.totalOrders,
-            )
+private fun CompanyCard(c: ReportCompanyCard, onClick: () -> Unit) {
+    val brand = parseColor(c.colorHex, RGreen)
+    Surface(
+        color = RCard,
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, RCardBorder),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 5.dp).clickable(onClick = onClick),
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CompanyLogo(c.companyId, brand, 54.dp)
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(c.companyName, color = RText, fontSize = 17.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Metric("${c.totalOrders}", "Orders", Modifier.weight(1f))
+                        Metric(usd(c.successfulValue), "Value", Modifier.weight(1.2f))
+                        Metric(usd(c.totalProfit), "Profit", Modifier.weight(1.2f))
+                        Metric(usd(c.totalDiscount), "Discount", Modifier.weight(1.2f))
+                    }
+                }
+                Icon(Icons.Filled.ChevronRight, contentDescription = "Open ${c.companyName}", tint = RMuted)
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f).height(8.dp).clip(RoundedCornerShape(4.dp)).background(RCardBorder)) {
+                    Box(
+                        Modifier.fillMaxHeight()
+                            .fillMaxWidth((c.sharePercent / 100.0).coerceIn(0.0, 1.0).toFloat())
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(brand),
+                    )
+                }
+                Spacer(Modifier.width(10.dp))
+                Text(percent(c.sharePercent), color = RMuted, fontSize = 13.sp)
+            }
         }
+    }
+}
 
-        if (!hasPeriodData) {
-            item {
-                Surface(
-                    color = DalabSurfaceTint,
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-                ) {
+@Composable
+private fun Metric(value: String, label: String, modifier: Modifier = Modifier) {
+    Column(modifier) {
+        Text(value, color = RText, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(label, color = RMuted, fontSize = 11.5.sp, maxLines = 1)
+    }
+}
+
+@Composable
+private fun PackageRow(p: ReportPackageRow, brand: Color) {
+    Row(Modifier.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(46.dp).background(brand.copy(alpha = 0.18f), RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
+            Icon(Icons.Filled.Sell, contentDescription = null, tint = brand, modifier = Modifier.size(22.dp))
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(p.name, color = RText, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (!p.validity.isNullOrBlank()) Text(p.validity, color = RMuted, fontSize = 12.5.sp, maxLines = 1)
+        }
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.width(126.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row {
+                MiniMetric("Orders", "${p.totalOrders}", Modifier.weight(1f))
+                MiniMetric("Value", usd(p.successfulValue), Modifier.weight(1f))
+            }
+            Row {
+                MiniMetric("Profit", usd(p.totalProfit), Modifier.weight(1f))
+                MiniMetric("Discount", usd(p.totalDiscount), Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun MiniMetric(label: String, value: String, modifier: Modifier) {
+    Column(modifier) {
+        Text(label, color = RMuted, fontSize = 10.5.sp, maxLines = 1)
+        Text(value, color = RText, fontSize = 12.5.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+private data class MoneyLine(val icon: ImageVector, val color: Color, val title: String, val subtitle: String, val value: String, val strong: Boolean = false)
+
+@Composable
+private fun MoneyLines(lines: List<MoneyLine>) {
+    Surface(color = Color(0xFFF4F7F5), shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+        Column {
+            lines.forEachIndexed { i, line ->
+                if (i > 0) Divider(color = Color(0xFFE2E8E4))
+                Row(Modifier.padding(horizontal = 12.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(line.icon, contentDescription = null, tint = line.color, modifier = Modifier.size(24.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(line.title, color = if (line.strong) line.color else Color(0xFF0B1240), fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        Text(line.subtitle, color = Color(0xFF5B6470), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                     Text(
-                        "No completed sales in this range.",
-                        modifier = Modifier.padding(16.dp),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color(0xFF6B7280),
+                        line.value,
+                        color = if (line.strong) line.color else Color(0xFF0B1240),
+                        fontSize = if (line.strong) 18.sp else 16.sp,
+                        fontWeight = FontWeight.Black,
                     )
                 }
             }
         }
+    }
+}
 
-        item {
-            SectionHeader(icon = Icons.Filled.BarChart, title = "Company Performance", subtitle = "Sales and orders by company")
-        }
-        item {
-            Column(modifier = Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                // Lowest seller first, highest last -- a leaderboard read
-                // top-to-bottom, #1 always at the bottom regardless of what
-                // order the backend array happens to arrive in.
-                report.companies.sortedByDescending { it.rank }.forEach { company ->
-                    CompanyPerformanceRow(company)
-                }
-            }
-        }
+private fun moneyLines(companyCost: Double, markup: Double, selling: Double, discount: Double, final: Double, profit: Double) = listOf(
+    MoneyLine(Icons.Filled.Business, RBlue, "Company Cost", "What the company is paid", usd(companyCost)),
+    MoneyLine(Icons.Filled.TrendingUp, RGreen, "Markup", "Added on top of company cost", usd(markup)),
+    MoneyLine(Icons.Filled.Sell, Color(0xFF8B5CF6), "Selling Price", "Company cost + markup", usd(selling)),
+    MoneyLine(Icons.Filled.Percent, RRed, "Discount Given", "Taken off the selling price", usd(discount)),
+    MoneyLine(Icons.Filled.Paid, RAmber, "Final Price", "Selling price - discount (what was paid)", usd(final)),
+    MoneyLine(Icons.Filled.BarChart, if (profit >= 0) RGreen else RRed, "Actual Profit", "Final price - company cost", usd(profit), strong = true),
+)
 
-        item { Spacer(Modifier.height(22.dp)) }
-
-        item {
-            SectionHeader(icon = Icons.Filled.Groups, title = "Top 5 Customers", subtitle = "Customers with the most completed orders")
-        }
-        if (report.topCustomers.isEmpty()) {
-            item {
-                Text(
-                    "No customer activity in this range.",
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color(0xFF6B7280),
-                )
-            }
-        } else {
-            item {
-                Column(modifier = Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    report.topCustomers.forEach { customer ->
-                        TopCustomerRow(customer)
-                    }
-                }
-            }
-        }
-
-        item { Spacer(Modifier.height(24.dp)) }
+@Composable
+private fun ProfitCard(b: ReportProfitBreakdown) {
+    DarkCard(Modifier.padding(horizontal = 16.dp)) {
+        Text("From successfully sent orders in this period", color = RMuted, fontSize = 12.5.sp)
+        Spacer(Modifier.height(10.dp))
+        MoneyLines(moneyLines(b.companyCost, b.markup, b.sellingPrice, b.discount, b.finalPrice, b.actualProfit))
     }
 }
 
 @Composable
-private fun SummaryRow(
-    totalSales: Double,
-    totalOrders: Int,
-    totalCustomers: Int,
-    allTimeSales: Double,
-    allTimeOrders: Int,
-) {
-    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-            SummaryCard(icon = Icons.Filled.Savings, iconColor = DalabGreen, value = "$${"%.2f".format(totalSales)}", label = "Total Sales", modifier = Modifier.weight(1f))
-            SummaryCard(icon = Icons.Filled.Receipt, iconColor = DalabIndigo, value = "$totalOrders", label = "Total Orders", modifier = Modifier.weight(1f))
-            SummaryCard(icon = Icons.Filled.Groups, iconColor = DalabIndigo, value = "$totalCustomers", label = "Customers", modifier = Modifier.weight(1f))
-        }
-        Spacer(Modifier.height(8.dp))
-        Text(
-            "All-time: $${"%.2f".format(allTimeSales)} · $allTimeOrders orders",
-            style = MaterialTheme.typography.labelSmall,
-            color = Color(0xFF6B7280),
-            modifier = Modifier.padding(start = 4.dp),
-        )
-    }
-}
-
-@Composable
-private fun SummaryCard(icon: ImageVector, iconColor: Color, value: String, label: String, modifier: Modifier = Modifier) {
+private fun PriceExampleCard(companyId: String, brand: Color, ex: ReportPriceExample) {
     Surface(
-        color = Color.White,
-        shape = RoundedCornerShape(16.dp),
-        shadowElevation = 1.dp,
-        modifier = modifier,
+        color = RCard,
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, RGreen.copy(alpha = 0.45f)),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Box(
-                modifier = Modifier.size(34.dp).background(iconColor.copy(alpha = 0.12f), CircleShape),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(icon, contentDescription = null, tint = iconColor, modifier = Modifier.size(18.dp))
+        Column(Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CompanyLogo(companyId, brand, 34.dp)
+                Spacer(Modifier.width(10.dp))
+                Text(ex.packageName, color = RText, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                if (!ex.validity.isNullOrBlank()) {
+                    Text(" (${ex.validity})", color = RMuted, fontSize = 14.sp, maxLines = 1)
+                }
             }
             Spacer(Modifier.height(10.dp))
-            Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = DalabIndigo)
-            Text(label, style = MaterialTheme.typography.labelSmall, color = Color(0xFF6B7280))
+            MoneyLines(moneyLines(ex.companyCost, ex.markup, ex.sellingPrice, ex.discount, ex.finalPrice, ex.actualProfit))
         }
     }
 }
 
 @Composable
-private fun SectionHeader(icon: ImageVector, title: String, subtitle: String) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            modifier = Modifier.size(32.dp).background(DalabSoftBlue.copy(alpha = 0.4f), RoundedCornerShape(9.dp)),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(icon, contentDescription = null, tint = DalabIndigo, modifier = Modifier.size(17.dp))
-        }
-        Spacer(Modifier.width(10.dp))
-        Column {
-            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = DalabIndigo)
-            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = Color(0xFF6B7280))
-        }
-    }
-}
-
-// Rank 1 (the top performer) gets the solid brand-blue badge so it reads as
-// "the one to notice" at a glance; every other rank gets the same neutral
-// soft-blue tint the rest of this screen's accents use -- deliberately not
-// gold/silver/bronze, per the "no unrelated brand colors" instruction.
-@Composable
-private fun RankBadge(rank: Int) {
-    Surface(
-        color = if (rank == 1) DalabIndigo else DalabSoftBlue.copy(alpha = 0.35f),
-        contentColor = if (rank == 1) Color.White else DalabIndigo,
-        shape = RoundedCornerShape(10.dp),
-    ) {
-        Text(
-            "#$rank",
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-        )
-    }
-}
-
-@DrawableRes
-private fun companyLogoRes(companyId: String): Int = logoResFor(companyId)
-
-@Composable
-private fun CompanyPerformanceRow(company: ReportCompanyPerformance) {
-    val isTop = company.rank == 1
-    Surface(
-        color = if (isTop) DalabSoftBlue.copy(alpha = 0.18f) else Color.White,
-        shape = RoundedCornerShape(14.dp),
-        shadowElevation = if (isTop) 0.dp else 1.dp,
-        border = if (isTop) BorderStroke(1.dp, DalabSoftBlue) else null,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp).fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            RankBadge(company.rank)
-            Spacer(Modifier.width(12.dp))
-            Surface(color = Color.White, shape = RoundedCornerShape(8.dp), shadowElevation = 0.dp) {
-                Image(
-                    painter = painterResource(companyLogoRes(company.companyId)),
-                    contentDescription = company.companyName,
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.size(32.dp).padding(4.dp),
-                )
-            }
-            Spacer(Modifier.width(10.dp))
-            Text(company.companyName, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, color = DalabIndigo, modifier = Modifier.weight(1f))
-            Column(horizontalAlignment = Alignment.End) {
-                Text("$${"%.2f".format(company.totalSales)}", fontWeight = FontWeight.Bold, color = DalabGreen, style = MaterialTheme.typography.bodyLarge)
-                Text("${company.totalOrders} orders", style = MaterialTheme.typography.labelSmall, color = Color(0xFF6B7280))
-            }
-        }
-    }
+private fun ErrorLine(message: String) {
+    Text(message, color = RRed, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
 }
 
 @Composable
-private fun TopCustomerRow(customer: ReportTopCustomer) {
-    Surface(color = Color.White, shape = RoundedCornerShape(14.dp), shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp).fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            RankBadge(customer.rank)
-            Spacer(Modifier.width(12.dp))
-            Box(
-                modifier = Modifier.size(34.dp).background(DalabSoftBlue.copy(alpha = 0.4f), CircleShape),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(Icons.Filled.Person, contentDescription = null, tint = DalabIndigo, modifier = Modifier.size(18.dp))
-            }
-            Spacer(Modifier.width(10.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(customer.name ?: customer.phone, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, color = DalabIndigo)
-                Text(customer.phone, style = MaterialTheme.typography.bodySmall, color = Color(0xFF6B7280))
-            }
-            Column(horizontalAlignment = Alignment.End) {
-                Text("${customer.completedOrders} orders", fontWeight = FontWeight.Bold, color = DalabIndigo, style = MaterialTheme.typography.bodyMedium)
-                Text("$${"%.2f".format(customer.totalSpent)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF6B7280))
-            }
-        }
+private fun Muted(message: String) {
+    Text(message, color = RMuted, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+}
+
+@Composable
+private fun LoadingOrEmpty(loading: Boolean) {
+    Box(Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) {
+        if (loading) CircularProgressIndicator(color = RGreen) else Text("No data yet.", color = RMuted)
     }
 }

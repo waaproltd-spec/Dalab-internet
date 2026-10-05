@@ -292,52 +292,96 @@ data class CustomerOrderHistoryEntry(
     val completedAt: String? = null,
 )
 
-data class ReportTotals(
-    val totalSales: Double,
-    val totalOrders: Int,
+/** Sent successfully / failed / cancelled counts and their share of all
+ * finished orders, from the Reports dashboard endpoints. */
+data class ReportStatusSplit(
+    val sent: Int,
+    val failed: Int,
+    val cancelled: Int,
+    val sentPercent: Double,
+    val failedPercent: Double,
+    val cancelledPercent: Double,
 )
 
-/** [range]-scoped totals (unlike [ReportTotals], which is always all-time) --
- * totalCustomers is the distinct count of customers this agent completed at
- * least one order for during the selected period. */
-data class ReportPeriodTotals(
-    val totalSales: Double,
-    val totalOrders: Int,
-    val totalCustomers: Int,
+/** company cost + markup = selling price; selling price - discount = final
+ * price; final price - company cost = actual profit. */
+data class ReportProfitBreakdown(
+    val companyCost: Double,
+    val markup: Double,
+    val sellingPrice: Double,
+    val discount: Double,
+    val finalPrice: Double,
+    val actualProfit: Double,
 )
 
-/** One of the 4 fixed companies (Hormuud/Somnet/Somtel/Amtel) -- always
- * present even at 0 orders, see reports.routes.ts's AGENT_REPORT_COMPANIES.
- * [rank] is server-computed: 1 is always the highest seller in [range],
- * ties broken by original company order -- never a fixed/hardcoded rank. */
-data class ReportCompanyPerformance(
+/** One company's card on the Reports dashboard -- from that company's own
+ * orders only. [sharePercent] is its share of all the agent's orders. */
+data class ReportCompanyCard(
     val companyId: String,
     val companyName: String,
-    val totalSales: Double,
+    val colorHex: String?,
+    val hasLogo: Boolean,
     val totalOrders: Int,
-    val rank: Int,
+    val successfulValue: Double,
+    val totalProfit: Double,
+    val totalDiscount: Double,
+    val sharePercent: Double,
 )
 
-/** Up to 5 rows, highest completed-order-count first, from GET /agent/reports. */
-data class ReportTopCustomer(
-    val rank: Int,
-    val customerId: String,
-    val name: String?,
-    val phone: String,
-    val completedOrders: Int,
-    val totalSpent: Double,
-)
-
-/** Mirrors GET /agent/reports (reports.routes.ts) -- the Agent App's "My
- * Reports" screen. [totals] is all-time and stays accurate even when
- * [periodTotals]/[companies]/[topCustomers] (all scoped to [range]) are
- * empty for the selected period. */
-data class AgentReport(
+/** Mirrors GET /agent/reports/dashboard (reports.routes.ts). */
+data class AgentReportDashboard(
     val range: String,
-    val totals: ReportTotals,
-    val periodTotals: ReportPeriodTotals,
-    val companies: List<ReportCompanyPerformance>,
-    val topCustomers: List<ReportTopCustomer>,
+    val totalOrders: Int,
+    val successfulValue: Double,
+    val totalProfit: Double,
+    val totalDiscount: Double,
+    val status: ReportStatusSplit,
+    val profitBreakdown: ReportProfitBreakdown,
+    val companies: List<ReportCompanyCard>?,
+)
+
+data class ReportCompanyRef(
+    val companyId: String,
+    val companyName: String,
+    val colorHex: String?,
+    val hasLogo: Boolean,
+)
+
+data class ReportPackageRow(
+    val packageId: String,
+    val name: String,
+    val validity: String?,
+    val hasImage: Boolean,
+    val totalOrders: Int,
+    val successfulValue: Double,
+    val totalProfit: Double,
+    val totalDiscount: Double,
+)
+
+/** A worked example for one sale of the company's most-ordered package. */
+data class ReportPriceExample(
+    val packageName: String,
+    val validity: String?,
+    val companyCost: Double,
+    val markup: Double,
+    val sellingPrice: Double,
+    val discount: Double,
+    val finalPrice: Double,
+    val actualProfit: Double,
+)
+
+/** Mirrors GET /agent/reports/dashboard/companies/{id}. */
+data class CompanyReport(
+    val range: String,
+    val company: ReportCompanyRef,
+    val totalOrders: Int,
+    val successfulValue: Double,
+    val totalProfit: Double,
+    val totalDiscount: Double,
+    val status: ReportStatusSplit,
+    val profitBreakdown: ReportProfitBreakdown,
+    val packages: List<ReportPackageRow>?,
+    val priceExample: ReportPriceExample?,
 )
 
 /** Mirrors GET /agent/devices — the physical Agent App installs registered under this account. */
