@@ -125,6 +125,201 @@ reportsRouter.get("/agent/reports", requireAuth("agent"), async (req, res) => {
   sendJson(res, 200, { range, totals, periodTotals, companies, topCustomers });
 });
 
+// ---------------- Agent App Reports dashboard ----------------
+// The redesigned Agent App "Reports" screen (GET /agent/reports above stays
+// unchanged for older app builds). Everything is scoped to this agent's
+// orders (agent_id) created in the selected period, and every figure is
+// computed per company from that company's own orders -- never combined.
+//
+// Money, per successfully sent order (status completed, not reversed):
+//   company cost   = provider_amount x send_count (what the USSD actually
+//                    sends, once per delivery; falls back to amount)
+//   selling price  = list_price (the package's original/old price, saved on
+//                    the order when it was created -- migration 115)
+//   discount       = selling price - amount paid (never below 0)
+//   final price    = amount paid ("Successful Value")
+//   actual profit  = amount paid - company cost
+// start fragments come only from this fixed map, never from user input.
+const DASHBOARD_RANGES: Record<string, string | null> = {
+  today: "date_trunc('day', now())",
+  "7days": "now() - interval '7 days'",
+  "30days": "now() - interval '30 days'",
+  all: null,
+};
+
+const SENT = `o.status = 'completed' AND o.reversed_at IS NULL`;
+const COST = `COALESCE(o.provider_amount, o.amount) * COALESCE(o.send_count, 1)`;
+const SELLING = `GREATEST(COALESCE(o.list_price, o.amount), o.amount)`;
+// Per-group money/status aggregates over orders aliased "o".
+const DASHBOARD_AGGREGATES = `
+  COUNT(*) FILTER (WHERE ${SENT}) AS sent,
+  COUNT(*) FILTER (WHERE o.status = 'failed') AS failed,
+  COUNT(*) FILTER (WHERE o.status = 'cancelled') AS cancelled,
+  COALESCE(SUM(o.amount) FILTER (WHERE ${SENT}), 0) AS successful_value,
+  COALESCE(SUM(${COST}) FILTER (WHERE ${SENT}), 0) AS company_cost,
+  COALESCE(SUM(${SELLING}) FILTER (WHERE ${SENT}), 0) AS selling_value,
+  COALESCE(SUM(${SELLING} - o.amount) FILTER (WHERE ${SENT}), 0) AS discount`;
+
+type AggregateRow = {
+  sent: string | number; failed: string | number; cancelled: string | number;
+  successful_value: string | number; company_cost: string | number; selling_value: string | number; discount: string | number;
+};
+
+const money = (v: unknown) => Math.round(Number(v ?? 0) * 100) / 100;
+const pct = (part: number, whole: number) => (whole > 0 ? Math.round((part / whole) * 1000) / 10 : 0);
+
+function summarize(row: Partial<AggregateRow> | null | undefined) {
+  const sent = Number(row?.sent ?? 0);
+  const failed = Number(row?.failed ?? 0);
+  const cancelled = Number(row?.cancelled ?? 0);
+  const totalOrders = sent + failed + cancelled;
+  const successfulValue = money(row?.successful_value);
+  const companyCost = money(row?.company_cost);
+  const sellingValue = money(row?.selling_value);
+  const discount = money(row?.discount);
+  return {
+    total_orders: totalOrders,
+    successful_value: successfulValue,
+    total_profit: money(successfulValue - companyCost),
+    total_discount: discount,
+    status: {
+      sent, failed, cancelled,
+      sent_percent: pct(sent, totalOrders),
+      failed_percent: pct(failed, totalOrders),
+      cancelled_percent: pct(cancelled, totalOrders),
+    },
+    // The Profit section: cost + markup = selling; selling - discount =
+    // final; final - cost = actual profit.
+    profit_breakdown: {
+      company_cost: companyCost,
+      markup: money(sellingValue - companyCost),
+      selling_price: sellingValue,
+      discount,
+      final_price: successfulValue,
+      actual_profit: money(successfulValue - companyCost),
+    },
+  };
+}
+
+function dashboardRange(req: { query: Record<string, unknown> }) {
+  const requested = String(req.query.range ?? "all");
+  const range = requested in DASHBOARD_RANGES ? requested : "all";
+  const start = DASHBOARD_RANGES[range];
+  return { range, dateFilter: start ? `AND o.created_at >= ${start}` : "" };
+}
+
+reportsRouter.get("/agent/reports/dashboard", requireAuth("agent"), async (req, res) => {
+  const { range, dateFilter } = dashboardRange(req);
+  const agentId = req.auth!.sub;
+
+  const overall = await queryOne<AggregateRow>(
+    `SELECT ${DASHBOARD_AGGREGATES} FROM orders o WHERE o.agent_id = $1 ${dateFilter}`,
+    [agentId]
+  );
+  const summary = summarize(overall);
+
+  // Every live company (from the companies table, so a newly added
+  // provider appears automatically), each from its own orders only.
+  const companyRows = await query<AggregateRow & { id: string; name: string; color_hex: string | null; has_logo: boolean }>(
+    `SELECT c.id, c.name, c.color_hex, (c.logo_data IS NOT NULL) AS has_logo, ${DASHBOARD_AGGREGATES}
+     FROM companies c
+     LEFT JOIN orders o ON o.company_id = c.id AND o.agent_id = $1 ${dateFilter}
+     WHERE c.deleted_at IS NULL
+     GROUP BY c.id, c.name, c.color_hex, c.logo_data IS NOT NULL, c.sort_order
+     ORDER BY c.sort_order, c.name`,
+    [agentId]
+  );
+  const companies = companyRows.map((row) => {
+    const s = summarize(row);
+    return {
+      company_id: row.id,
+      company_name: row.name,
+      color_hex: row.color_hex,
+      has_logo: row.has_logo,
+      total_orders: s.total_orders,
+      successful_value: s.successful_value,
+      total_profit: s.total_profit,
+      total_discount: s.total_discount,
+      share_percent: pct(s.total_orders, summary.total_orders),
+    };
+  });
+
+  sendJson(res, 200, { range, ...summary, companies });
+});
+
+// One company's own report: its summary, status split, every package's
+// performance, and a worked price example from its most-ordered package.
+reportsRouter.get("/agent/reports/dashboard/companies/:companyId", requireAuth("agent"), async (req, res) => {
+  const { range, dateFilter } = dashboardRange(req);
+  const agentId = req.auth!.sub;
+  const company = await queryOne<{ id: string; name: string; color_hex: string | null; has_logo: boolean }>(
+    `SELECT id, name, color_hex, (logo_data IS NOT NULL) AS has_logo FROM companies WHERE id = $1`,
+    [req.params.companyId]
+  );
+  if (!company) return sendJson(res, 404, { error: "Company not found" });
+
+  const overall = await queryOne<AggregateRow>(
+    `SELECT ${DASHBOARD_AGGREGATES} FROM orders o WHERE o.agent_id = $1 AND o.company_id = $2 ${dateFilter}`,
+    [agentId, company.id]
+  );
+  const summary = summarize(overall);
+
+  const packageRows = await query<AggregateRow & { id: string; name: string; validity: string | null; has_image: boolean }>(
+    `SELECT p.id, p.name, p.validity, (p.image_data IS NOT NULL) AS has_image, ${DASHBOARD_AGGREGATES}
+     FROM orders o JOIN packages p ON p.id = o.package_id
+     WHERE o.agent_id = $1 AND o.company_id = $2 ${dateFilter}
+     GROUP BY p.id, p.name, p.validity, p.image_data IS NOT NULL
+     ORDER BY COUNT(*) DESC, p.name`,
+    [agentId, company.id]
+  );
+  const packages = packageRows.map((row) => {
+    const s = summarize(row);
+    return {
+      package_id: row.id,
+      name: row.name,
+      validity: row.validity,
+      has_image: row.has_image,
+      total_orders: s.total_orders,
+      successful_value: s.successful_value,
+      total_profit: s.total_profit,
+      total_discount: s.total_discount,
+    };
+  });
+
+  // Worked example for one sale of the most-ordered package, from that
+  // package's own current prices.
+  let priceExample = null;
+  if (packages.length > 0) {
+    const pkg = await queryOne<{ name: string; validity: string | null; price: string; old_price: string | null; provider_amount: string | null; send_count: number }>(
+      `SELECT name, validity, price, old_price, provider_amount, send_count FROM packages WHERE id = $1`,
+      [packages[0].package_id]
+    );
+    if (pkg) {
+      const finalPrice = money(pkg.price);
+      const companyCost = money(Number(pkg.provider_amount ?? pkg.price) * Number(pkg.send_count ?? 1));
+      const sellingPrice = money(Math.max(Number(pkg.old_price ?? pkg.price), finalPrice));
+      priceExample = {
+        package_name: pkg.name,
+        validity: pkg.validity,
+        company_cost: companyCost,
+        markup: money(sellingPrice - companyCost),
+        selling_price: sellingPrice,
+        discount: money(sellingPrice - finalPrice),
+        final_price: finalPrice,
+        actual_profit: money(finalPrice - companyCost),
+      };
+    }
+  }
+
+  sendJson(res, 200, {
+    range,
+    company: { company_id: company.id, company_name: company.name, color_hex: company.color_hex, has_logo: company.has_logo },
+    ...summary,
+    packages,
+    price_example: priceExample,
+  });
+});
+
 reportsRouter.get("/admin/reports", requireStaff(), async (req, res) => {
   const range = String(req.query.range ?? "weekly");
   const interval = RANGE_TO_INTERVAL[range] ?? RANGE_TO_INTERVAL.weekly;
