@@ -94,6 +94,29 @@ data class Transaction(
     val completedAt: String,
 )
 
+/** One row of GET /agent/transactions/history -- this agent's order with
+ * the customer's Payment Number (the number they paid from) and the
+ * Internet Destination Number (the number that received the data) kept as
+ * two separate fields. */
+data class TransactionHistoryEntry(
+    val orderId: String,
+    val customerName: String? = null,
+    val customerPhone: String? = null,
+    val companyId: String,
+    val companyName: String,
+    val colorHex: String? = null,
+    val packageName: String? = null,
+    val packageValidity: String? = null,
+    val paymentNumber: String? = null,
+    val destinationNumber: String? = null,
+    val amount: Double,
+    val status: String,
+    val paymentMethod: String? = null,
+    val createdAt: String? = null,
+    val completedAt: String? = null,
+    val reversedAt: String? = null,
+)
+
 /** GET /agent/wallet-balances — one row per SIM slot (1 and 2) on this
  * agent's own device, regardless of whether a real balance has been
  * recorded yet (providerName/phoneNumber/balance are null/0 until the
