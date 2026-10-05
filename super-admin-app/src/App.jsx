@@ -2175,6 +2175,9 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
   const [companyFilter, setCompanyFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState(null);
+  // Whether the open form is the Extra Package form -- kept apart from the
+  // Send Count itself so the field stays visible whatever number is typed.
+  const [extraMode, setExtraMode] = useState(false);
   const [form, setForm] = useState({});
   const [error, setError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
@@ -2240,13 +2243,16 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
   // delivered that many times (2, 3, 10 ...).
   const openNew = (extra = false) => {
     const companyId = companyFilter !== "all" ? companyFilter : companies[0]?.id || "";
-    setForm({ companyId, categoryId: "", name: "", oldPrice: "", price: "", providerAmount: "", mb: "", minutes: "", sms: "", validity: "", active: true, ussdTemplateId: "", sendCount: extra ? 2 : 1 });
+    // An Extra Package's Send Count starts empty: the Admin types the exact number.
+    setForm({ companyId, categoryId: "", name: "", oldPrice: "", price: "", providerAmount: "", mb: "", minutes: "", sms: "", validity: "", active: true, ussdTemplateId: "", sendCount: extra ? "" : 1 });
+    setExtraMode(extra);
     setTemplateWarning("");
     setError("");
     setEditing("new");
   };
   const openEdit = (p) => {
     setForm(DALAB_API_ENABLED ? p : { ...p, companyId: companies.find((c) => c.name === p.company)?.id, oldPrice: p.old, minutes: p.min });
+    setExtraMode(Number(p.sendCount) > 1);
     setTemplateWarning("");
     setError("");
     setEditing(p.id);
@@ -2255,10 +2261,10 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
   const save = async () => {
     if (!form.name || form.price === "" || form.price == null) return;
     setError("");
-    if (form.sendCount !== undefined && form.sendCount !== 1) {
+    if (extraMode) {
       const n = Number(form.sendCount);
-      if (!Number.isInteger(n) || n < 2 || n > 50) {
-        setError("Send Count must be a whole number from 2 to 50.");
+      if (form.sendCount === "" || form.sendCount == null || !Number.isInteger(n) || n < 1 || n > 50) {
+        setError("Send Count must be a whole number from 1 to 50.");
         return;
       }
     }
@@ -2452,7 +2458,7 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
 
       {editing && (
         <Modal
-          title={Number(form.sendCount) > 1 ? (editing === "new" ? "Add Extra Package" : "Edit Extra Package") : editing === "new" ? "Add package" : "Edit package"}
+          title={extraMode ? (editing === "new" ? "Add Extra Package" : "Edit Extra Package") : editing === "new" ? "Add package" : "Edit package"}
           onClose={() => setEditing(null)}
           width={460}
         >
@@ -2513,31 +2519,27 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
             <Field label="SMS"><input style={inputStyle} value={form.sms ?? ""} onChange={(e) => setForm({ ...form, sms: e.target.value })} /></Field>
             <Field label="Validity"><input style={inputStyle} value={form.validity ?? ""} onChange={(e) => setForm({ ...form, validity: e.target.value })} placeholder="e.g. 1 month" /></Field>
           </div>
-          {Number(form.sendCount) > 1 && (
+          {extraMode && (
             <Field label="Send Count — how many times this package is sent per purchase">
-              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                {[2, 3, 10].map((n) => {
-                  const selected = Number(form.sendCount) === n;
-                  return (
-                    <button key={n} type="button" onClick={() => setForm({ ...form, sendCount: n })} style={{
-                      padding: "8px 14px", borderRadius: 10, fontSize: 13, fontWeight: 800, cursor: "pointer",
-                      border: `2px solid ${selected ? INDIGO : BORDER}`, background: selected ? "#EEF3FA" : "#fff", color: selected ? INDIGO : SLATE,
-                    }}>{n} times</button>
-                  );
-                })}
-                <input
-                  type="number"
-                  min={2}
-                  max={50}
-                  style={{ ...inputStyle, width: 90 }}
-                  value={form.sendCount ?? ""}
-                  onChange={(e) => setForm({ ...form, sendCount: e.target.value === "" ? "" : Number(e.target.value) })}
-                  aria-label="Send Count"
-                />
-              </div>
+              <input
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={50}
+                step={1}
+                style={{ ...inputStyle, width: 140 }}
+                value={form.sendCount ?? ""}
+                placeholder="e.g. 23"
+                onChange={(e) => setForm({ ...form, sendCount: e.target.value === "" ? "" : Number(e.target.value) })}
+                aria-label="Send Count"
+              />
               <div style={{ fontSize: 11.5, color: MUTE, marginTop: 6 }}>
                 The customer pays the Discount price above once
-                {form.price !== "" && form.price != null ? ` ($${Number(form.price).toFixed(2)})` : ""}, and the package is sent {Number(form.sendCount) > 1 ? Number(form.sendCount) : "N"} times. Any number from 2 to 50.
+                {form.price !== "" && form.price != null ? ` ($${Number(form.price).toFixed(2)})` : ""}, and the package is sent{" "}
+                {Number.isInteger(Number(form.sendCount)) && Number(form.sendCount) >= 1 && form.sendCount !== ""
+                  ? `${Number(form.sendCount)} time${Number(form.sendCount) === 1 ? "" : "s"}`
+                  : "the number of times you enter"}
+                . Any whole number from 1 to 50.
               </div>
             </Field>
           )}
