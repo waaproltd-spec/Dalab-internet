@@ -2554,6 +2554,15 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
   );
 }
 
+// Admin-only Service Type for a service category -- decides which icon the
+// Customer App draws on the service's card. Customers never choose it.
+const SERVICE_TYPES = [
+  { value: "wifi", label: "📶 WiFi" },
+  { value: "wireless", label: "📡 Wireless" },
+  { value: "call", label: "📞 Call" },
+];
+const serviceTypeLabel = (value) => SERVICE_TYPES.find((t) => t.value === value)?.label || "—";
+
 function Categories({ companies, admin }) {
   const [categories, setCategories] = useState([]);
   const [companyFilter, setCompanyFilter] = useState(companies[0]?.id || "");
@@ -2575,7 +2584,7 @@ function Categories({ companies, admin }) {
   useEffect(() => { fetchCategories(); }, [companyFilter]);
   useEffect(() => { if (!companyFilter && companies[0]) setCompanyFilter(companies[0].id); }, [companies]);
 
-  const openNew = () => { setForm({ name: "" }); setEditing("new"); setError(""); };
+  const openNew = () => { setForm({ name: "", companyId: companyFilter, serviceType: "" }); setEditing("new"); setError(""); };
   const openEdit = (c) => { setForm({ ...c, iconBase64: null }); setEditing(c.id); setError(""); };
 
   const onIconSelected = (e) => {
@@ -2594,16 +2603,20 @@ function Categories({ companies, admin }) {
   // "preview before saving" the dashboard spec asks for), against whichever
   // id the name/status save just produced.
   const save = async () => {
-    if (!form.name) return;
+    if (!form.name) return setError("Service name is required.");
+    if (editing === "new" && !form.companyId) return setError("Select a company.");
+    if (!form.serviceType) return setError("Select a service type.");
     setSaving(true);
     setError("");
     try {
       let id = editing;
       if (editing === "new") {
-        const created = await DalabAdminApi.createCategory({ companyId: companyFilter, name: form.name });
+        const created = await DalabAdminApi.createCategory({ companyId: form.companyId, name: form.name, serviceType: form.serviceType });
         id = created.id;
+        // Show the company the new service was added to.
+        if (form.companyId !== companyFilter) setCompanyFilter(form.companyId);
       } else {
-        await DalabAdminApi.updateCategory(editing, { name: form.name });
+        await DalabAdminApi.updateCategory(editing, { name: form.name, serviceType: form.serviceType });
       }
       if (form.iconBase64) await DalabAdminApi.updateCategoryIcon(id, form.iconBase64);
       await fetchCategories();
@@ -2655,7 +2668,7 @@ function Categories({ companies, admin }) {
           <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Service Categories</div>
           <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Groupings packages are organized under per provider (e.g. "Anfac Plus", "Unlimited Data & Voice").</div>
         </div>
-        {canManage && <Button icon={Plus} onClick={openNew}>Add category</Button>}
+        {canManage && <Button icon={Plus} onClick={openNew}>Add service</Button>}
       </div>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
@@ -2673,7 +2686,7 @@ function Categories({ companies, admin }) {
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: "#FAFBFF" }}>
-              {["Icon", "Name", "Slug", "Status", ""].map((h) => (
+              {["Icon", "Name", "Type", "Slug", "Status", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
             </tr>
@@ -2691,6 +2704,7 @@ function Categories({ companies, admin }) {
                   </div>
                 </td>
                 <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{c.name}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: c.serviceType ? INK : MUTE, whiteSpace: "nowrap" }}>{serviceTypeLabel(c.serviceType)}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12, color: SLATE, fontFamily: "monospace" }}>{c.slug}</td>
                 <td style={{ padding: "10px 14px" }}><Badge tone={c.status === "enabled" ? "green" : "gray"}>{c.status === "enabled" ? "Enabled" : "Disabled"}</Badge></td>
                 <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
@@ -2711,16 +2725,43 @@ function Categories({ companies, admin }) {
               </tr>
             ))}
             {categories.length === 0 && (
-              <tr><td colSpan={5} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No categories for this company yet.</td></tr>
+              <tr><td colSpan={6} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No categories for this company yet.</td></tr>
             )}
           </tbody>
         </table>
       </Card>
 
       {editing && (
-        <Modal title={editing === "new" ? "Add category" : "Edit category"} onClose={() => setEditing(null)} width={380}>
-          <Field label="Category name">
-            <input style={inputStyle} value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Anfac Plus" />
+        <Modal title={editing === "new" ? "Add service" : "Edit service"} onClose={() => setEditing(null)} width={380}>
+          <Field label="Service name">
+            <input style={inputStyle} value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. 5G Home" />
+          </Field>
+
+          <Field label="Company">
+            {editing === "new" ? (
+              <select style={inputStyle} value={form.companyId || ""} onChange={(e) => setForm({ ...form, companyId: e.target.value })}>
+                <option value="" disabled>Select a company</option>
+                {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            ) : (
+              <div style={{ fontSize: 13, color: INK, fontWeight: 700, padding: "8px 0" }}>
+                {companies.find((c) => c.id === form.companyId)?.name || form.companyId}
+              </div>
+            )}
+          </Field>
+
+          <Field label="Service type (admin only — customers never choose this)">
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {SERVICE_TYPES.map((t) => {
+                const selected = form.serviceType === t.value;
+                return (
+                  <button key={t.value} type="button" onClick={() => setForm({ ...form, serviceType: t.value })} style={{
+                    padding: "8px 14px", borderRadius: 10, fontSize: 13, fontWeight: 700, cursor: "pointer",
+                    border: `1.5px solid ${selected ? INDIGO : BORDER}`, background: selected ? INDIGO : "#fff", color: selected ? "#fff" : INK,
+                  }}>{t.label}</button>
+                );
+              })}
+            </div>
           </Field>
 
           <Field label="Category icon/logo (image)">
