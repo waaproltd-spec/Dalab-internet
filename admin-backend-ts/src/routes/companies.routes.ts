@@ -23,8 +23,8 @@ const COMPANY_COLUMNS = `id, name, group_number, color_hex, logo_url, status, ga
 // pattern as COMPANY_COLUMNS/has_logo just above. One image (icon) per
 // package, not a gallery — mirrors companies.logo_data/logo_mime_type
 // exactly rather than shop_product_images' multi-image shape.
-const PACKAGE_COLUMNS = `id, company_id, category_id, name, old_price, price, mb, minutes, sms, validity, active, created_at, code, provider_amount, ussd_template_id, somlink_bundle_id, (image_data IS NOT NULL) AS has_image`;
-const PACKAGE_COLUMNS_P = `p.id, p.company_id, p.category_id, p.name, p.old_price, p.price, p.mb, p.minutes, p.sms, p.validity, p.active, p.created_at, p.code, p.provider_amount, p.ussd_template_id, p.somlink_bundle_id, (p.image_data IS NOT NULL) AS has_image`;
+const PACKAGE_COLUMNS = `id, company_id, category_id, name, old_price, price, mb, minutes, sms, validity, active, created_at, code, provider_amount, ussd_template_id, somlink_bundle_id, send_count, (image_data IS NOT NULL) AS has_image`;
+const PACKAGE_COLUMNS_P = `p.id, p.company_id, p.category_id, p.name, p.old_price, p.price, p.mb, p.minutes, p.sms, p.validity, p.active, p.created_at, p.code, p.provider_amount, p.ussd_template_id, p.somlink_bundle_id, p.send_count, (p.image_data IS NOT NULL) AS has_image`;
 
 // Also called by the Agent App (NewSaleScreen/PackagesScreen) for its own
 // unrelated "create a sale" flow, so the default (no ?audience=) stays
@@ -416,11 +416,24 @@ function numOrDefault(value: unknown, fallback: number | null): number | null {
   return value === "" || value == null ? fallback : (value as number);
 }
 
+// Extra Packages (migration 114): how many times one paid order delivers
+// the package. Optional -- absent means 1, today's single delivery.
+const MAX_SEND_COUNT = 50;
+function readSendCount(value: unknown): number | null | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1 || n > MAX_SEND_COUNT) return null;
+  return n;
+}
+const SEND_COUNT_ERROR = `sendCount must be a whole number from 1 to ${MAX_SEND_COUNT}`;
+
 packagesRouter.post("/admin/packages", requirePermission("packages.manage"), async (req, res) => {
   const { companyId, categoryId, name, oldPrice, price, providerAmount, mb, minutes, sms, validity, code, ussdTemplateId, somlinkBundleId } = req.body;
   if (!companyId || !categoryId || !name || price == null) {
     return sendJson(res, 400, { error: "companyId, categoryId, name, price are required" });
   }
+  const sendCount = readSendCount(req.body.sendCount);
+  if (sendCount === null) return sendJson(res, 400, { error: SEND_COUNT_ERROR });
   // categoryId is the category's slug, not its id — packages.category_id is
   // free text with no DB-level FK (a category rename must never risk
   // breaking existing packages), so this is the one place that actually
@@ -440,9 +453,9 @@ packagesRouter.post("/admin/packages", requirePermission("packages.manage"), asy
   const ussdTemplateIdValue = ussdTemplateId || null;
   const somlinkBundleIdValue = numOrDefault(somlinkBundleId, null);
   await query(
-    `INSERT INTO packages (id, company_id, category_id, name, old_price, price, provider_amount, mb, minutes, sms, validity, code, ussd_template_id, somlink_bundle_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-    [id, companyId, categoryId, name, numOrDefault(oldPrice, price), price, providerAmountValue, numOrDefault(mb, 0), numOrDefault(minutes, 0), numOrDefault(sms, 0), validity ?? "", code ?? null, ussdTemplateIdValue, somlinkBundleIdValue]
+    `INSERT INTO packages (id, company_id, category_id, name, old_price, price, provider_amount, mb, minutes, sms, validity, code, ussd_template_id, somlink_bundle_id, send_count)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+    [id, companyId, categoryId, name, numOrDefault(oldPrice, price), price, providerAmountValue, numOrDefault(mb, 0), numOrDefault(minutes, 0), numOrDefault(sms, 0), validity ?? "", code ?? null, ussdTemplateIdValue, somlinkBundleIdValue, sendCount ?? 1]
   );
   const created = await queryOne(`SELECT ${PACKAGE_COLUMNS} FROM packages WHERE id=$1`, [id]);
   await recordActivity({
@@ -484,6 +497,10 @@ packagesRouter.put("/admin/packages/:id", requirePermission("packages.manage"), 
   const ussdTemplateId = req.body.ussdTemplateId !== undefined ? (req.body.ussdTemplateId || null) : existing.ussd_template_id;
   const rawSomlinkBundleId = req.body.somlinkBundleId !== undefined ? req.body.somlinkBundleId : existing.somlink_bundle_id;
   const somlinkBundleId = numOrDefault(rawSomlinkBundleId, null);
+  const requestedSendCount = readSendCount(req.body.sendCount);
+  if (requestedSendCount === null) return sendJson(res, 400, { error: SEND_COUNT_ERROR });
+  // Absent keeps the current value; "" resets to a single delivery.
+  const sendCount = req.body.sendCount === undefined ? existing.send_count : requestedSendCount ?? 1;
   if (
     req.body.categoryId !== undefined &&
     !(await queryOne(`SELECT id FROM service_categories WHERE company_id=$1 AND slug=$2`, [existing.company_id, categoryId]))
@@ -495,8 +512,8 @@ packagesRouter.put("/admin/packages/:id", requirePermission("packages.manage"), 
     if (templateError) return sendJson(res, 400, { error: templateError });
   }
   await query(
-    `UPDATE packages SET name=$1, category_id=$2, old_price=$3, price=$4, provider_amount=$5, mb=$6, minutes=$7, sms=$8, validity=$9, active=$10, code=$11, ussd_template_id=$12, somlink_bundle_id=$13 WHERE id=$14`,
-    [name, categoryId, oldPrice, price, providerAmount, mb, minutes, sms, validity, Boolean(active), code ?? null, ussdTemplateId, somlinkBundleId, req.params.id]
+    `UPDATE packages SET name=$1, category_id=$2, old_price=$3, price=$4, provider_amount=$5, mb=$6, minutes=$7, sms=$8, validity=$9, active=$10, code=$11, ussd_template_id=$12, somlink_bundle_id=$13, send_count=$14 WHERE id=$15`,
+    [name, categoryId, oldPrice, price, providerAmount, mb, minutes, sms, validity, Boolean(active), code ?? null, ussdTemplateId, somlinkBundleId, sendCount, req.params.id]
   );
   const updated = await queryOne(`SELECT ${PACKAGE_COLUMNS} FROM packages WHERE id=$1`, [req.params.id]);
   await recordActivity({

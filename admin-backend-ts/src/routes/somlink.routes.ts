@@ -65,7 +65,7 @@ function toDataPhone(phone: string | null | undefined): string {
  * both the automatic and the manual-retry path without either one
  * accidentally completing an order out from under the other.
  */
-export async function deliverViaSomlink(order: any): Promise<{ ok: true } | { ok: false; reason: string }> {
+export async function deliverViaSomlink(order: any, deliveryIndex = 1): Promise<{ ok: true } | { ok: false; reason: string }> {
   const pkg = await queryOne<{ somlink_bundle_id: number | null }>(
     `SELECT somlink_bundle_id FROM packages WHERE id=$1`,
     [order.package_id]
@@ -96,9 +96,9 @@ export async function deliverViaSomlink(order: any): Promise<{ ok: true } | { ok
   const txId = randomUUID();
   try {
     await query(
-      `INSERT INTO somlink_transactions (id, order_id, bundle_id, wallet_phone, data_phone, amount, status)
-       VALUES ($1,$2,$3,$4,$5,$6,'pending')`,
-      [txId, order.id, pkg.somlink_bundle_id, walletPhone, dataPhone, amount]
+      `INSERT INTO somlink_transactions (id, order_id, bundle_id, wallet_phone, data_phone, amount, status, delivery_index)
+       VALUES ($1,$2,$3,$4,$5,$6,'pending',$7)`,
+      [txId, order.id, pkg.somlink_bundle_id, walletPhone, dataPhone, amount, deliveryIndex]
     );
   } catch (err: any) {
     if (err?.code === "23505") {
@@ -182,6 +182,28 @@ export async function deliverViaSomlink(order: any): Promise<{ ok: true } | { ok
   }
 }
 
+/**
+ * Delivers every SOMLINK bundle an order owes: one for a normal order, or
+ * the package's Send Count for an Extra Package (orders.send_count).
+ * Resumes from the first delivery that hasn't succeeded yet, so a retry
+ * never re-sends one already delivered; stops at the first one that
+ * doesn't succeed. ok only once all of them have succeeded.
+ */
+export async function deliverViaSomlinkAll(order: any): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const sendCount = Math.max(1, Number(order.send_count ?? 1));
+  const done = await query<{ delivery_index: number }>(
+    `SELECT delivery_index FROM somlink_transactions WHERE order_id=$1 AND status='success'`,
+    [order.id]
+  );
+  const delivered = new Set(done.map((r) => Number(r.delivery_index)));
+  for (let index = 1; index <= sendCount; index++) {
+    if (delivered.has(index)) continue;
+    const result = await deliverViaSomlink(order, index);
+    if (!result.ok) return result;
+  }
+  return { ok: true };
+}
+
 /** Extends orders.routes.ts's classifyStuckReason for a SOMLINK-fulfilled
  * order stuck in_progress — mirrors that function's own USSD-side reasons
  * (delivery_response_ambiguous, server_timeout, ...) with SOMLINK-specific
@@ -219,7 +241,7 @@ somlinkRouter.post("/admin/orders/:id/retry-somlink", requireStaff(), async (req
   if (company?.fulfillment_method !== "somlink") {
     return sendJson(res, 400, { error: "This order's provider is not SOMLINK-fulfilled" });
   }
-  const result = await deliverViaSomlink(order);
+  const result = await deliverViaSomlinkAll(order);
   await recordActivity({
     adminId: req.auth!.sub,
     action: "somlink_retry",

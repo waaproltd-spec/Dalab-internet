@@ -5,7 +5,7 @@ import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { generateUssdForOrder } from "./ussd.routes.js";
-import { deliverViaSomlink, classifySomlinkStuckReason } from "./somlink.routes.js";
+import { deliverViaSomlinkAll, classifySomlinkStuckReason } from "./somlink.routes.js";
 import { subscribe, broadcast } from "../realtime/orderEvents.js";
 import { recordActivity } from "../utils/activityLog.js";
 import { creditCommissionIfNeeded, reverseCommissionIfNeeded } from "../utils/commissions.js";
@@ -15,6 +15,7 @@ import { isAlreadyCompleted, createPaymentTransaction } from "../utils/paymentTr
 import { rateLimit } from "../auth/rateLimit.js";
 import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
 import { notifyCustomer } from "../services/customerNotify.js";
+import { allDeliveriesDone } from "../services/deliveries.js";
 import { validateMobileNumber, companyKeyFromLabel } from "../lib/phoneValidation.js";
 
 export const ordersRouter = Router();
@@ -41,8 +42,19 @@ const ORDER_LIST_SELECT = `
   JOIN packages p ON p.id = o.package_id
   LEFT JOIN service_categories sc ON sc.company_id = p.company_id AND sc.slug = p.category_id`;
 
+// Single-order loads also carry Extra Package delivery progress (migration
+// 114): how many of the order's send_count deliveries are confirmed, and
+// the next free dial attempt number, so the Agent App can resume an
+// interrupted multi-delivery order without reusing an attempt row.
 async function loadOrder(id: string) {
-  return queryOne(`${ORDER_LIST_SELECT} WHERE o.id=$1`, [id]);
+  return queryOne(
+    `SELECT x.*,
+       (SELECT COUNT(*) FROM ussd_dial_attempts a WHERE a.order_id = x.id AND a.status = 'success')
+       + (SELECT COUNT(*) FROM somlink_transactions t WHERE t.order_id = x.id AND t.status = 'success') AS deliveries_done,
+       (SELECT COALESCE(MAX(a.attempt_number), 0) + 1 FROM ussd_dial_attempts a WHERE a.order_id = x.id) AS next_attempt_number
+     FROM (${ORDER_LIST_SELECT} WHERE o.id=$1) x`,
+    [id]
+  );
 }
 
 // Admin/staff-only variant of ORDER_LIST_SELECT, adding the company's
@@ -558,7 +570,9 @@ export async function verifyOrderAndGenerateUssd(
     [order.company_id]
   );
   if (company?.fulfillment_method === "somlink") {
-    const result = await deliverViaSomlink(order);
+    // Every delivery the order owes (Extra Packages: send_count of them),
+    // completing only once all succeeded.
+    const result = await deliverViaSomlinkAll(order);
     if (result.ok) await completeOrderById(order.id);
     broadcast({ type: "order.updated", orderId: order.id });
     return { ok: true };
@@ -664,9 +678,20 @@ async function creditMacaashIfNeeded(order: any) {
  * crediting + activity log + broadcast path every other completion route
  * already goes through, rather than a parallel copy of it.
  */
-export async function completeOrderById(orderId: string): Promise<{ order: any; success: boolean; alreadyCompleted: boolean } | null> {
+export async function completeOrderById(
+  orderId: string,
+  { force = false }: { force?: boolean } = {}
+): Promise<{ order: any; success: boolean; alreadyCompleted: boolean } | null> {
   const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [orderId]);
   if (!order) return null;
+
+  // An Extra Package order (send_count > 1) is only complete once every
+  // delivery is confirmed -- e.g. the carrier's voucher SMS for the first
+  // of 3 deliveries must not complete it. A person's explicit "mark
+  // complete" (force) still can. Single-delivery orders are unaffected.
+  if (!force && order.status === "in_progress" && !(await allDeliveriesDone(order))) {
+    return { order, success: false, alreadyCompleted: false };
+  }
 
   const result = await query(
     `UPDATE orders SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1 AND status='in_progress' RETURNING id`,
@@ -714,7 +739,9 @@ export async function completeOrderById(orderId: string): Promise<{ order: any; 
 }
 
 ordersRouter.post("/agent/orders/:id/complete", requireAuth("agent"), async (req, res) => {
-  const result = await completeOrderById(req.params.id);
+  // The agent's own deliberate "mark complete" tap -- a person's decision,
+  // so it isn't held back by an Extra Package's remaining deliveries.
+  const result = await completeOrderById(req.params.id, { force: true });
   if (!result) return sendJson(res, 404, { error: "Order not found" });
   if (!result.success) {
     return sendJson(res, 409, { error: `Cannot complete an order in status '${result.order.status}'` });

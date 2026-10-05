@@ -15,6 +15,7 @@ import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
 import { normalizePhoneForUssd, formatUssdAmount, splitUssdAmount, formatUssdAmountSplit } from "../utils/ussdFormatting.js";
 import { notifyCustomer } from "../services/customerNotify.js";
 import { extractBalanceFromSms, applyBalanceUpdate } from "../utils/simBalances.js";
+import { deliveriesDone, allDeliveriesDone } from "../services/deliveries.js";
 
 export const ussdRouter = Router();
 
@@ -751,11 +752,24 @@ ussdRouter.post("/agent/devices/:id/heartbeat", requireAuth("agent"), async (req
 ussdRouter.post("/agent/orders/:id/dial-attempts", requireAuth("agent"), async (req, res) => {
   const { simSlot, ussdString, attemptNumber } = req.body;
   if (!ussdString) return sendJson(res, 400, { error: "ussdString is required" });
-  const order = await queryOne<{ id: string; ussd_generated: string | null; ussd_generated_masked: string | null }>(
-    `SELECT id, ussd_generated, ussd_generated_masked FROM orders WHERE id=$1`,
+  const order = await queryOne<{ id: string; status: string; send_count: number; ussd_generated: string | null; ussd_generated_masked: string | null }>(
+    `SELECT id, status, send_count, ussd_generated, ussd_generated_masked FROM orders WHERE id=$1`,
     [req.params.id]
   );
   if (!order) return sendJson(res, 404, { error: "Order not found" });
+
+  // Extra Package (send_count > 1): never start a dial past the Send Count.
+  // A retried log for an attempt that already exists is still answered
+  // below (it isn't a new dial). Single-delivery orders skip this entirely.
+  if (Number(order.send_count) > 1) {
+    const sameAttempt = await queryOne<{ id: string }>(
+      `SELECT id FROM ussd_dial_attempts WHERE order_id=$1 AND attempt_number=$2`,
+      [req.params.id, attemptNumber ?? 1]
+    );
+    if (!sameAttempt && (order.status === "completed" || (await deliveriesDone(order.id)) >= Number(order.send_count))) {
+      return sendJson(res, 409, { error: "Every delivery for this Extra Package order is already done -- nothing more to send." });
+    }
+  }
 
   // The Admin-configured template (via generateUssdForOrder) is the single
   // source of truth for what gets dialed — the Agent App never constructs
@@ -880,7 +894,13 @@ ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (r
       }
     }
 
-    if (order && order.status !== "completed") {
+    // Extra Package (send_count > 1): each successful dial is one delivery;
+    // the order completes (and the customer is notified) only with the
+    // last one. Until then it stays in_progress for the Agent App to send
+    // the next delivery. Single-delivery orders complete right here, as
+    // before.
+    const deliveriesComplete = !order || (await allDeliveriesDone(order));
+    if (order && order.status !== "completed" && deliveriesComplete) {
       const completed = await query(
         `UPDATE orders SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1 AND status != 'completed' RETURNING id`,
         [order.id]
@@ -944,7 +964,7 @@ ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (r
         );
       }
     }
-    await markPaymentFinal(attempt.order_id, "completed");
+    if (deliveriesComplete) await markPaymentFinal(attempt.order_id, "completed");
   } else {
     // Only mark the ORDER failed once this is genuinely the last attempt —
     // UssdOrchestrator reports every attempt as it happens (see
@@ -953,7 +973,26 @@ ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (r
     // customer "Failed" while a retry was still about to run seconds later;
     // now the order stays at its current status (still 'in_progress') until
     // either a retry succeeds or every attempt is exhausted.
-    if (finalAttempt) {
+    // An Extra Package order that already received some of its deliveries
+    // isn't "not sent" -- it stays in_progress (shown as stuck) so staff can
+    // resume the remaining deliveries, instead of telling the customer
+    // nothing was sent.
+    const partlyDelivered = finalAttempt && (await queryOne<{ partly: boolean }>(
+      `SELECT (o.send_count > 1 AND EXISTS (SELECT 1 FROM ussd_dial_attempts a WHERE a.order_id=o.id AND a.status='success')) AS partly
+       FROM orders o WHERE o.id=$1`,
+      [attempt.order_id]
+    ))?.partly === true;
+    if (partlyDelivered) {
+      await recordActivity({
+        adminId: undefined,
+        action: "extra_package_partly_delivered",
+        entityType: "order",
+        entityId: attempt.order_id,
+        oldValue: null,
+        newValue: { deliveriesDone: await deliveriesDone(attempt.order_id), lastResponse: responseMessage ?? null },
+      });
+    }
+    if (finalAttempt && !partlyDelivered) {
       // Excludes an order that's already 'failed', not just 'completed' —
       // a stray/duplicate exhausted-retries report for an order this same
       // check already failed once (e.g. a second independent dial round
