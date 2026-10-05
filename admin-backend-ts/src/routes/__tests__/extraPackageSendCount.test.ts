@@ -181,16 +181,16 @@ test("a USSD Extra Package order completes and notifies only after its last deli
   const orderId = await insertPendingOrder(await createPackage(3));
   const verified = (await (await call("POST", `/agent/orders/${orderId}/verify-payment`, agentToken, {})).json()) as any;
   assert.equal(verified.sendCount, 3);
-  assert.equal(Number(verified.deliveriesDone), 0);
-  assert.equal(Number(verified.nextAttemptNumber), 1);
+  assert.equal(verified.deliveriesDone, 0);
+  assert.equal(verified.nextAttemptNumber, 1);
 
   await deliver(orderId, 1);
   await deliver(orderId, 2);
   assert.equal(await orderStatus(orderId), "in_progress", "2 of 3 delivered: not complete yet");
   assert.equal(await successNotifications(), 0);
   const progress = (await (await call("GET", `/agent/orders/${orderId}`, agentToken)).json()) as any;
-  assert.equal(Number(progress.deliveriesDone), 2);
-  assert.equal(Number(progress.nextAttemptNumber), 3);
+  assert.equal(progress.deliveriesDone, 2);
+  assert.equal(progress.nextAttemptNumber, 3);
 
   await deliver(orderId, 3);
   assert.equal(await orderStatus(orderId), "completed");

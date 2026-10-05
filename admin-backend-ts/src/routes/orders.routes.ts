@@ -49,9 +49,9 @@ const ORDER_LIST_SELECT = `
 async function loadOrder(id: string) {
   return queryOne(
     `SELECT x.*,
-       (SELECT COUNT(*) FROM ussd_dial_attempts a WHERE a.order_id = x.id AND a.status = 'success')
-       + (SELECT COUNT(*) FROM somlink_transactions t WHERE t.order_id = x.id AND t.status = 'success') AS deliveries_done,
-       (SELECT COALESCE(MAX(a.attempt_number), 0) + 1 FROM ussd_dial_attempts a WHERE a.order_id = x.id) AS next_attempt_number
+       ((SELECT COUNT(*) FROM ussd_dial_attempts a WHERE a.order_id = x.id AND a.status = 'success')
+        + (SELECT COUNT(*) FROM somlink_transactions t WHERE t.order_id = x.id AND t.status = 'success'))::int AS deliveries_done,
+       (SELECT COALESCE(MAX(a.attempt_number), 0) + 1 FROM ussd_dial_attempts a WHERE a.order_id = x.id)::int AS next_attempt_number
      FROM (${ORDER_LIST_SELECT} WHERE o.id=$1) x`,
     [id]
   );
