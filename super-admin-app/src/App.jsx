@@ -2560,13 +2560,30 @@ const SERVICE_TYPES = [
   { value: "wifi", emoji: "📶", name: "WiFi" },
   { value: "wireless", emoji: "📡", name: "Wireless" },
   { value: "call", emoji: "📞", name: "Call" },
-  { value: "data", emoji: "⇅", name: "Data" },
+  { value: "data", emoji: "⇅", image: "/mobile_data.png", name: "Data" },
 ];
 // A service can have one or more types (backend serviceTypes);
 // falls back to the older single serviceType for rows saved before that.
 const serviceTypesOf = (c) => (c.serviceTypes?.length ? c.serviceTypes : c.serviceType ? [c.serviceType] : []);
-const serviceTypesLabel = (types) =>
-  types.length ? SERVICE_TYPES.filter((t) => types.includes(t.value)).map((t) => `${t.emoji} ${t.name}`).join(" + ") : "—";
+// A type's icon: its artwork when it has one (Data's phone + arrows, the
+// same image the Customer App shows), else its emoji.
+function ServiceTypeIcon({ type, size, style }) {
+  return type.image ? (
+    <img src={type.image} alt="" style={{ width: size, height: size, objectFit: "contain", verticalAlign: "middle", ...style }} />
+  ) : (
+    <span style={{ fontSize: size * 0.8, lineHeight: `${size}px`, verticalAlign: "middle", ...style }}>{type.emoji}</span>
+  );
+}
+function ServiceTypesLabel({ types }) {
+  const selected = SERVICE_TYPES.filter((t) => types.includes(t.value));
+  if (!selected.length) return "—";
+  return selected.map((t, i) => (
+    <span key={t.value} style={{ whiteSpace: "nowrap" }}>
+      {i > 0 && " + "}
+      <ServiceTypeIcon type={t} size={18} /> {t.name}
+    </span>
+  ));
+}
 
 function Categories({ companies, admin }) {
   const [categories, setCategories] = useState([]);
@@ -2715,7 +2732,7 @@ function Categories({ companies, admin }) {
                   </div>
                 </td>
                 <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{c.name}</td>
-                <td style={{ padding: "10px 14px", fontSize: 12.5, color: serviceTypesOf(c).length ? INK : MUTE, whiteSpace: "nowrap" }}>{serviceTypesLabel(serviceTypesOf(c))}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: serviceTypesOf(c).length ? INK : MUTE, whiteSpace: "nowrap" }}><ServiceTypesLabel types={serviceTypesOf(c)} /></td>
                 <td style={{ padding: "10px 14px", fontSize: 12, color: SLATE, fontFamily: "monospace" }}>{c.slug}</td>
                 <td style={{ padding: "10px 14px" }}><Badge tone={c.status === "enabled" ? "green" : "gray"}>{c.status === "enabled" ? "Enabled" : "Disabled"}</Badge></td>
                 <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
@@ -2776,14 +2793,14 @@ function Categories({ companies, admin }) {
                       position: "absolute", top: 6, right: 6, width: 16, height: 16, borderRadius: 4, fontSize: 11, lineHeight: "14px", fontWeight: 900,
                       border: `1.5px solid ${selected ? INDIGO : BORDER}`, background: selected ? INDIGO : "#fff", color: "#fff",
                     }}>{selected ? "✓" : ""}</span>
-                    <span style={{ fontSize: 24, lineHeight: "30px", fontWeight: 900, color: "#111", opacity: selected ? 1 : 0.45 }}>{t.emoji}</span>
+                    <ServiceTypeIcon type={t} size={30} style={{ opacity: selected ? 1 : 0.45 }} />
                     <span style={{ fontSize: 12.5, fontWeight: 800, color: selected ? INDIGO : SLATE }}>{t.name}</span>
                   </button>
                 );
               })}
             </div>
             <div style={{ fontSize: 11.5, color: MUTE, marginTop: 6 }}>
-              Customers see: {serviceTypesLabel(form.serviceTypes || [])}
+              Customers see: <ServiceTypesLabel types={form.serviceTypes || []} />
             </div>
           </Field>
 
