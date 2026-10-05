@@ -1,6 +1,7 @@
 package com.dalab.internet.network
 
 import com.dalab.internet.data.AgentBalanceEntry
+import com.dalab.internet.data.TransactionHistoryEntry
 import com.dalab.internet.data.AgentDevice
 import com.dalab.internet.data.AgentProfile
 import com.dalab.internet.data.AgentReportDashboard
@@ -380,6 +381,14 @@ interface ApiService {
 
     @GET("agent/transactions")
     suspend fun getTransactions(@Query("range") range: String? = null): Response<List<Transaction>>
+
+    @GET("agent/transactions/history")
+    suspend fun getTransactionHistory(
+        @Query("range") range: String?,
+        @Query("date") date: String?,
+        @Query("companyId") companyId: String?,
+        @Query("search") search: String?,
+    ): Response<List<TransactionHistoryEntry>>
 
     // ---------------- Wallet Balances dashboard ----------------
 

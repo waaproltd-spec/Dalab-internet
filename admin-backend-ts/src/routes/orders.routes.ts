@@ -813,6 +813,76 @@ ordersRouter.get("/agent/transactions", requireAuth("agent"), async (req, res) =
   sendJson(res, 200, rows);
 });
 
+// Agent App "Transaction History": this agent's orders (every status), each
+// with the customer's Payment Number (sender_phone) and the Internet
+// Destination Number (receiver_phone) kept as separate fields. Filters work
+// together: a date range (or one calendar day), one company, and a search
+// over customer name, either phone number and the reference. Phone search
+// matches on the digits, so 0612345678, 612345678 and +252612345678 all find
+// the same order. Read-only; /agent/transactions above is unchanged.
+const TX_HISTORY_RANGES: Record<string, string | null> = {
+  today: `o.created_at >= date_trunc('day', now())`,
+  yesterday: `o.created_at >= date_trunc('day', now()) - interval '1 day' AND o.created_at < date_trunc('day', now())`,
+  "1week": `o.created_at >= now() - interval '7 days'`,
+  "1month": `o.created_at >= now() - interval '1 month'`,
+  "3months": `o.created_at >= now() - interval '3 months'`,
+  "6months": `o.created_at >= now() - interval '6 months'`,
+  "1year": `o.created_at >= now() - interval '1 year'`,
+  all: null,
+};
+
+ordersRouter.get("/agent/transactions/history", requireAuth("agent"), async (req, res) => {
+  const { range, date, companyId, search } = req.query as Record<string, string | undefined>;
+  const args: unknown[] = [req.auth!.sub];
+  const where = [`o.agent_id=$1`];
+  if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    args.push(date);
+    where.push(`o.created_at >= $${args.length}::date AND o.created_at < $${args.length}::date + 1`);
+  } else {
+    const key = range && range in TX_HISTORY_RANGES ? range : "today";
+    const clause = TX_HISTORY_RANGES[key];
+    if (clause) where.push(clause);
+  }
+  if (companyId && companyId !== "all") {
+    args.push(companyId);
+    where.push(`o.company_id=$${args.length}`);
+  }
+  const term = (search ?? "").trim();
+  if (term) {
+    args.push(`%${term}%`);
+    const text = args.length;
+    const conds = [`o.id ILIKE $${text}`, `c.name ILIKE $${text}`];
+    // Local numbers start with 0 and stored ones may carry 252: compare
+    // without either prefix.
+    const digits = term.replace(/\D/g, "").replace(/^(252|0)/, "");
+    if (digits.length >= 3) {
+      args.push(`%${digits}%`);
+      const d = args.length;
+      conds.push(
+        `regexp_replace(COALESCE(o.sender_phone,''), '\\D', '', 'g') LIKE $${d}`,
+        `regexp_replace(COALESCE(o.receiver_phone,''), '\\D', '', 'g') LIKE $${d}`
+      );
+    }
+    where.push(`(${conds.join(" OR ")})`);
+  }
+  const rows = await query(
+    `SELECT o.id AS order_id, COALESCE(c.name, c.phone) AS customer_name, c.phone AS customer_phone,
+            o.company_id, co.name AS company_name, co.color_hex,
+            p.name AS package_name, p.validity AS package_validity,
+            o.sender_phone AS payment_number, o.receiver_phone AS destination_number,
+            o.amount, o.status, o.payment_method, o.created_at, o.completed_at, o.reversed_at
+     FROM orders o
+     JOIN customers c ON c.id=o.customer_id
+     JOIN companies co ON co.id=o.company_id
+     LEFT JOIN packages p ON p.id=o.package_id
+     WHERE ${where.join(" AND ")}
+     ORDER BY o.created_at DESC
+     LIMIT 500`,
+    args
+  );
+  sendJson(res, 200, rows);
+});
+
 // ---------------- Admin/Staff: Orders Management ----------------
 ordersRouter.get("/admin/orders", requireStaff(), async (req, res) => {
   const { status, companyId, search, dateFrom, dateTo } = req.query as Record<string, string | undefined>;
