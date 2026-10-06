@@ -167,6 +167,22 @@ test("the admin sets a package's Send Count; it defaults to 1 and is validated",
   assert.equal((await call("PUT", `/admin/packages/${extra.id}`, adminToken, { sendCount: 0 })).status, 400);
 });
 
+test("MB/Minutes/SMS with a word typed after the number save as the number; text alone is a 400, never a 500", async () => {
+  const base = { companyId: COMPANY_ID, categoryId: "data", name: "8 daqiiqo", price: 0.09, oldPrice: 0.1 };
+  const created = (await (await call("POST", "/admin/packages", adminToken, { ...base, minutes: "8 Daqiiq" })).json()) as any;
+  assert.equal(created.minutes, 8);
+  // The exact edit from the dashboard: Minutes "8  Daqiiq".
+  const edit = await call("PUT", `/admin/packages/${created.id}`, adminToken, { ...base, mb: "0", minutes: "8  Daqiiq", sms: "0", validity: "30 days" });
+  assert.equal(edit.status, 200);
+  assert.equal(((await edit.json()) as any).minutes, 8);
+  for (const bad of ["Daqiiq", "-5", "1.5"]) {
+    const res = await call("PUT", `/admin/packages/${created.id}`, adminToken, { minutes: bad });
+    assert.equal(res.status, 400, bad);
+    assert.match(((await res.json()) as any).error, /whole numbers/);
+  }
+  assert.equal((await call("POST", "/admin/packages", adminToken, { ...base, sms: "abc" })).status, 400);
+});
+
 test("an order copies its package's Send Count when created, and keeps it if the package changes later", async () => {
   const pkg = await createPackage(3);
   const orderId = await insertPendingOrder(pkg);

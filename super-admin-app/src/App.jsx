@@ -2514,9 +2514,9 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <Field label="Old price ($)"><input style={inputStyle} value={form.oldPrice ?? ""} onChange={(e) => setForm({ ...form, oldPrice: e.target.value })} /></Field>
             <Field label="Discount price ($)"><input style={inputStyle} value={form.price ?? ""} onChange={(e) => setForm({ ...form, price: e.target.value })} /></Field>
-            <Field label="MB"><input style={inputStyle} value={form.mb ?? ""} onChange={(e) => setForm({ ...form, mb: e.target.value })} /></Field>
-            <Field label="Minutes"><input style={inputStyle} value={form.minutes ?? ""} onChange={(e) => setForm({ ...form, minutes: e.target.value })} /></Field>
-            <Field label="SMS"><input style={inputStyle} value={form.sms ?? ""} onChange={(e) => setForm({ ...form, sms: e.target.value })} /></Field>
+            <Field label="MB"><input style={inputStyle} inputMode="numeric" placeholder="0" value={form.mb ?? ""} onChange={(e) => setForm({ ...form, mb: e.target.value.replace(/\D/g, "") })} /></Field>
+            <Field label="Minutes"><input style={inputStyle} inputMode="numeric" placeholder="0" value={form.minutes ?? ""} onChange={(e) => setForm({ ...form, minutes: e.target.value.replace(/\D/g, "") })} /></Field>
+            <Field label="SMS"><input style={inputStyle} inputMode="numeric" placeholder="0" value={form.sms ?? ""} onChange={(e) => setForm({ ...form, sms: e.target.value.replace(/\D/g, "") })} /></Field>
             <Field label="Validity"><input style={inputStyle} value={form.validity ?? ""} onChange={(e) => setForm({ ...form, validity: e.target.value })} placeholder="e.g. 1 month" /></Field>
           </div>
           {extraMode && (
