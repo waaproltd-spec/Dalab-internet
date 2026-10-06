@@ -416,6 +416,17 @@ function numOrDefault(value: unknown, fallback: number | null): number | null {
   return value === "" || value == null ? fallback : (value as number);
 }
 
+// MB / Minutes / SMS are whole-number columns. A label typed after the
+// number ("8 Daqiiq") keeps the number; text with no number is a 400 with
+// a clear message, never a database error (500).
+const COUNT_FIELD_ERROR = "MB, Minutes and SMS must be whole numbers (for example 8)";
+function readCount(value: unknown): number | null {
+  if (value === "" || value == null) return 0;
+  if (typeof value === "number") return Number.isInteger(value) && value >= 0 ? value : null;
+  const m = /^\s*(\d+)(?:\s*\D*)?$/.exec(String(value));
+  return m ? Number(m[1]) : null;
+}
+
 // Extra Packages (migration 114): how many times one paid order delivers
 // the package. Optional -- absent means 1, today's single delivery.
 const MAX_SEND_COUNT = 50;
@@ -452,10 +463,12 @@ packagesRouter.post("/admin/packages", requirePermission("packages.manage"), asy
   const providerAmountValue = providerAmount === "" || providerAmount == null ? null : providerAmount;
   const ussdTemplateIdValue = ussdTemplateId || null;
   const somlinkBundleIdValue = numOrDefault(somlinkBundleId, null);
+  const [mbValue, minutesValue, smsValue] = [readCount(mb), readCount(minutes), readCount(sms)];
+  if (mbValue === null || minutesValue === null || smsValue === null) return sendJson(res, 400, { error: COUNT_FIELD_ERROR });
   await query(
     `INSERT INTO packages (id, company_id, category_id, name, old_price, price, provider_amount, mb, minutes, sms, validity, code, ussd_template_id, somlink_bundle_id, send_count)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-    [id, companyId, categoryId, name, numOrDefault(oldPrice, price), price, providerAmountValue, numOrDefault(mb, 0), numOrDefault(minutes, 0), numOrDefault(sms, 0), validity ?? "", code ?? null, ussdTemplateIdValue, somlinkBundleIdValue, sendCount ?? 1]
+    [id, companyId, categoryId, name, numOrDefault(oldPrice, price), price, providerAmountValue, mbValue, minutesValue, smsValue, validity ?? "", code ?? null, ussdTemplateIdValue, somlinkBundleIdValue, sendCount ?? 1]
   );
   const created = await queryOne(`SELECT ${PACKAGE_COLUMNS} FROM packages WHERE id=$1`, [id]);
   await recordActivity({
@@ -486,9 +499,10 @@ packagesRouter.put("/admin/packages/:id", requirePermission("packages.manage"), 
   const categoryId = req.body.categoryId !== undefined ? req.body.categoryId : existing.category_id;
   const price = req.body.price !== undefined ? req.body.price : existing.price;
   const oldPrice = numOrDefault(req.body.oldPrice !== undefined ? req.body.oldPrice : existing.old_price, price);
-  const mb = numOrDefault(req.body.mb !== undefined ? req.body.mb : existing.mb, 0);
-  const minutes = numOrDefault(req.body.minutes !== undefined ? req.body.minutes : existing.minutes, 0);
-  const sms = numOrDefault(req.body.sms !== undefined ? req.body.sms : existing.sms, 0);
+  const mb = readCount(req.body.mb !== undefined ? req.body.mb : existing.mb);
+  const minutes = readCount(req.body.minutes !== undefined ? req.body.minutes : existing.minutes);
+  const sms = readCount(req.body.sms !== undefined ? req.body.sms : existing.sms);
+  if (mb === null || minutes === null || sms === null) return sendJson(res, 400, { error: COUNT_FIELD_ERROR });
   const validity = req.body.validity !== undefined ? req.body.validity : existing.validity;
   const active = req.body.active !== undefined ? req.body.active : existing.active;
   const code = req.body.code !== undefined ? req.body.code : existing.code;
