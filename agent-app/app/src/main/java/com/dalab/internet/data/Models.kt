@@ -262,6 +262,10 @@ data class PackageItem(
     val sms: Int = 0,
     val validity: String? = null,
     val active: Boolean = true,
+    // The package's picture (GET /packages/{id}/image) exists, and its
+    // service category's display name -- both already in the response.
+    val hasImage: Boolean = false,
+    val categoryName: String? = null,
 )
 
 /** Mirrors GET/POST /agent/customers -- same columns Admin's own customer
