@@ -97,7 +97,7 @@ fun OrdersListScreen(
         listeningActive = smsListeningActive()
         scope.launch {
             try {
-                val notifications = ApiClient.service.getNotifications().body().orEmpty()
+                val notifications = ApiClient.service.getNotifications().body().orEmpty().distinctBy { it.id }
                 AgentAlertsState.updateUnreadCount(notifications)
             } catch (_: Exception) {
                 // Badge just keeps its last known count on failure.
