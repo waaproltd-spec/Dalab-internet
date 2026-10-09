@@ -59,6 +59,8 @@ class DalabAgentApp : Application() {
         DiagnosticsLog.init(this)
         installCrashHandler()
 
+        initSafely("agent_settings_init") { com.dalab.internet.ui.theme.AgentSettings.init(this) }
+        initSafely("support_alerts_init") { com.dalab.internet.notifications.SupportAlerts.init(this) }
         initSafely("session_init") { SessionManager.init(this) }
         initSafely("device_identity_init") { DeviceIdentity.init(this) }
         initSafely("sms_listener_init") { SmsListenerState.init(this) }

@@ -30,6 +30,7 @@ import com.dalab.internet.network.HeartbeatFailure
 import com.dalab.internet.network.HeartbeatFailureClassifier
 import com.dalab.internet.network.HeartbeatRequest
 import com.dalab.internet.network.RealtimeClient
+import com.dalab.internet.notifications.SupportAlerts
 import com.dalab.internet.queue.QueueDrainer
 import com.dalab.internet.queue.RetryClassifier
 import com.dalab.internet.sms.SmsSenderIdRepository
@@ -87,8 +88,11 @@ class AgentBackgroundService : Service() {
         scope = newScope
 
         try {
-            realtimeClient = RealtimeClient(path = "agent/orders/stream") {
+            realtimeClient = RealtimeClient(path = "agent/orders/stream") { data ->
                 AgentEventBus.emitOrderEvent()
+                // New customer message / help request -> WhatsApp-style sound
+                // + notification (deduped against the FCM push for it).
+                SupportAlerts.onRealtimeEvent(data)
             }.also { it.connect() }
             newScope.launch {
                 try {

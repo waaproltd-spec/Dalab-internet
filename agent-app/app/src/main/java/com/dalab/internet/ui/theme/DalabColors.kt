@@ -1,6 +1,7 @@
 package com.dalab.internet.ui.theme
 
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 
 /**
  * DALAB AGENT's own two-color brand system -- Dark Blue + White, the exact
@@ -21,8 +22,13 @@ import androidx.compose.ui.graphics.Color
  * future rebrand only ever touches DalabBlue/DalabSoftBlue, never a status
  * color that happens to live in the same file.
  */
-val DalabBlue = Color(0xFF003152)
-val DalabSoftBlue = Color(0xFFADDFF1)
+// The brand color and its pale tint follow the agent's Theme color (More →
+// Appearance & Language). They're getters over Compose state, so every
+// screen that reads them redraws the moment the color changes. DALAB Navy,
+// the default, is exactly the original #003152 / #ADDFF1.
+val DalabBlue: Color get() = AgentSettings.accent.color
+val DalabSoftBlue: Color get() = AgentSettings.accent.let { if (it == AgentAccent.DALAB_NAVY) DalabNavySoft else lerp(it.color, Color.White, 0.65f) }
+private val DalabNavySoft = Color(0xFFADDFF1)
 val DalabWhite = Color(0xFFFFFFFF)
 
 // A pale, blue-tinted neutral for card/surface differentiation against a
@@ -40,3 +46,24 @@ val DalabWarningAmber = Color(0xFFF2C200)
 val DalabDangerRed = Color(0xFFC81E2C)
 val DalabDangerRedContainer = Color(0xFFFEE2E2)
 val DalabInfoBlue = Color(0xFF1D4ED8)
+
+/**
+ * The colors an agent can pick under More → Appearance & Language → Theme
+ * color: DALAB Navy (the default, the original look) plus the same 12
+ * accent colors the Customer App offers.
+ */
+enum class AgentAccent(val label: String, val color: Color) {
+    DALAB_NAVY("DALAB Navy", Color(0xFF003152)),
+    DALAB_BLUE("DALAB Blue", Color(0xFF0D72C4)),
+    ROYAL_BLUE("Royal Blue", Color(0xFF2563EB)),
+    VIOLET("Violet", Color(0xFF7C3AED)),
+    DEEP_PURPLE("Deep Purple", Color(0xFF673AB7)),
+    EMERALD_GREEN("Emerald Green", Color(0xFF047857)),
+    CYAN_BLUE("Cyan Blue", Color(0xFF0E7490)),
+    ORANGE("Orange", Color(0xFFC2410C)),
+    RED("Red", Color(0xFFDC2626)),
+    PINK("Pink", Color(0xFFDB2777)),
+    AMBER_GOLD("Amber Gold", Color(0xFFB45309)),
+    LIME_GREEN("Lime Green", Color(0xFF4D7C0F)),
+    INDIGO("Indigo", Color(0xFF4F46E5)),
+}

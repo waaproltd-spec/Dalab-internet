@@ -1,5 +1,6 @@
 package com.dalab.internet.ui
 
+import com.dalab.internet.ui.i18n.Text
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*

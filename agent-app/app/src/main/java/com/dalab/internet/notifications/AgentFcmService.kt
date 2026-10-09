@@ -70,6 +70,12 @@ class AgentFcmService : FirebaseMessagingService() {
         // even if the system-tray notification itself couldn't be shown.
         if (message.data["screen"] == "support_conversation") {
             SupportUnreadState.markUnread()
+            // Support alerts (new customer message / help request) get the
+            // WhatsApp-style handling: one sound per message, soft while that
+            // chat is open, silent if the agent turned sounds off, customer
+            // name + preview -- see SupportAlerts.
+            SupportAlerts.onPush(message.data, title, body)
+            return
         }
 
         // A payment-confirmed Shop/VIP order (shop.routes.ts/

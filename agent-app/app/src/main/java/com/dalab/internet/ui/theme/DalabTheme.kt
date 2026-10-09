@@ -23,7 +23,8 @@ import androidx.compose.runtime.Composable
  * functional status color, not brand decoration; a blue "something failed"
  * state would be confusing, not on-brand.
  */
-val DalabColorScheme = lightColorScheme(
+/** The scheme for the agent's current Theme color (see AgentSettings). */
+fun dalabColorScheme() = lightColorScheme(
     primary = DalabBlue,
     onPrimary = DalabWhite,
     primaryContainer = DalabSoftBlue,
@@ -56,5 +57,6 @@ val DalabColorScheme = lightColorScheme(
 
 @Composable
 fun DalabTheme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = DalabColorScheme, content = content)
+    // Reads AgentSettings.accent, so picking a Theme color recolors the app.
+    MaterialTheme(colorScheme = dalabColorScheme(), content = content)
 }
