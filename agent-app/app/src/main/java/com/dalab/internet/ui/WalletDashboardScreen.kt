@@ -237,7 +237,7 @@ private fun StatusBadge(status: String) {
         "failed" -> "Failed" to Color(0xFFC81E2C)
         "duplicate_blocked" -> "Duplicate" to Color(0xFF6B7280)
         else -> status to Color(0xFF6B7280)
-    }
+    }.let { (l, c) -> l to if (com.dalab.internet.ui.theme.isAgentDark) androidx.compose.ui.graphics.lerp(c, Color.White, 0.45f) else c }
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(20.dp))

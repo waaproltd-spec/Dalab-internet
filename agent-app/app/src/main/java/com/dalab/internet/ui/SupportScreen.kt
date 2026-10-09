@@ -78,7 +78,7 @@ import java.util.Locale
 // (see OrdersListScreen.kt's DalabIndigo), used as the fixed fill for the
 // agent's own outgoing bubbles so they read the same dark-navy regardless
 // of light/dark theme, same as the customer side.
-private val ChatIndigo: Color get() = com.dalab.internet.ui.theme.DalabBlue
+private val ChatIndigo: Color @androidx.compose.runtime.Composable @androidx.compose.runtime.ReadOnlyComposable get() = com.dalab.internet.ui.theme.DalabBrandFill
 
 /**
  * The Agent App's counterpart to the Admin Dashboard's "Agent Support" panel

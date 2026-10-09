@@ -43,6 +43,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.URL
+import com.dalab.internet.ui.theme.DalabWhite
 
 /**
  * Full Nala Soco management -- create, edit, add/change images,
@@ -356,7 +357,7 @@ private fun NalaSocoFormDialog(
     }
 
     Dialog(onDismissRequest = { if (!saving) onDismiss() }) {
-        Surface(shape = RoundedCornerShape(16.dp), color = Color.White) {
+        Surface(shape = RoundedCornerShape(16.dp), color = DalabWhite) {
             Column(
                 modifier = Modifier
                     .padding(20.dp)

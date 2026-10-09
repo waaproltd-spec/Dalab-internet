@@ -50,6 +50,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.URL
+import com.dalab.internet.ui.theme.DalabWhite
 
 /**
  * Full management of the Customer App's app-open promotional ad popup --
@@ -519,7 +520,7 @@ private fun PromoAdFormDialog(
     }
 
     Dialog(onDismissRequest = { if (!saving) onDismiss() }) {
-        Surface(shape = RoundedCornerShape(16.dp), color = Color.White) {
+        Surface(shape = RoundedCornerShape(16.dp), color = DalabWhite) {
             Column(
                 modifier = Modifier
                     .padding(20.dp)

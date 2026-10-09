@@ -30,6 +30,11 @@ import com.dalab.internet.network.ApiClient
 import com.dalab.internet.ui.theme.DalabDangerRed
 import com.dalab.internet.ui.theme.DalabSurfaceTint
 import kotlinx.coroutines.launch
+import com.dalab.internet.ui.theme.DalabBrandFill
+import com.dalab.internet.ui.theme.DalabMuted
+import com.dalab.internet.ui.theme.DalabFaint
+import com.dalab.internet.ui.theme.DalabOutline
+import com.dalab.internet.ui.theme.DalabWhite
 
 /**
  * First-run (and re-selectable from More > Device) picker for "which
@@ -69,7 +74,7 @@ fun DeviceSetupScreen(onDeviceSelected: () -> Unit) {
 
     LaunchedEffect(Unit) { load() }
 
-    Scaffold(containerColor = Color.White) { padding ->
+    Scaffold(containerColor = DalabWhite) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
             Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
                 Box(
@@ -84,7 +89,7 @@ fun DeviceSetupScreen(onDeviceSelected: () -> Unit) {
                 Text(
                     "Pick the device registered by your Super Admin for this physical phone. This controls which SIM routing and payment monitoring settings this phone uses.",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = Color(0xFF6B7280),
+                    color = DalabMuted,
                 )
             }
 
@@ -97,7 +102,7 @@ fun DeviceSetupScreen(onDeviceSelected: () -> Unit) {
                     ) {
                         Text(error!!, color = DalabDangerRed, style = MaterialTheme.typography.bodyMedium)
                         Spacer(Modifier.height(12.dp))
-                        Button(onClick = { load() }, colors = ButtonDefaults.buttonColors(containerColor = DalabIndigo)) { Text("Retry") }
+                        Button(onClick = { load() }, colors = ButtonDefaults.buttonColors(containerColor = DalabBrandFill)) { Text("Retry") }
                     }
                     devices.isEmpty() -> Text(
                         "No devices are registered yet. Ask your Super Admin to add this device in the Device & USSD Configuration section of the dashboard.",
@@ -140,7 +145,7 @@ fun DeviceSetupScreen(onDeviceSelected: () -> Unit) {
                         onDeviceSelected()
                     },
                     enabled = selectedId != null,
-                    colors = ButtonDefaults.buttonColors(containerColor = DalabIndigo),
+                    colors = ButtonDefaults.buttonColors(containerColor = DalabBrandFill),
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth().height(50.dp),
                 ) {
@@ -154,7 +159,7 @@ fun DeviceSetupScreen(onDeviceSelected: () -> Unit) {
 @Composable
 private fun DeviceCard(device: AgentDevice, selected: Boolean, onClick: () -> Unit) {
     Surface(
-        color = if (selected) DalabSoftBlue.copy(alpha = 0.15f) else Color.White,
+        color = if (selected) DalabSoftBlue.copy(alpha = 0.15f) else DalabWhite,
         shape = RoundedCornerShape(16.dp),
         shadowElevation = if (selected) 0.dp else 1.dp,
         border = BorderStroke(if (selected) 2.dp else 1.dp, if (selected) DalabIndigo else DalabSurfaceTint),
@@ -172,16 +177,16 @@ private fun DeviceCard(device: AgentDevice, selected: Boolean, onClick: () -> Un
                 Column(modifier = Modifier.weight(1f)) {
                     Text(device.name, fontWeight = FontWeight.Bold, color = DalabIndigo, style = MaterialTheme.typography.titleMedium)
                     device.description?.takeIf { it.isNotBlank() }?.let {
-                        Text(it, style = MaterialTheme.typography.bodySmall, color = Color(0xFF6B7280))
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = DalabMuted)
                     }
                     Spacer(Modifier.height(2.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(modifier = Modifier.size(6.dp).background(if (selected) DalabGreen else Color(0xFF9CA3AF), CircleShape))
+                        Box(modifier = Modifier.size(6.dp).background(if (selected) DalabGreen else DalabFaint, CircleShape))
                         Spacer(Modifier.width(5.dp))
                         Text(
                             if (selected) "Registered" else "Not selected",
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (selected) DalabGreen else Color(0xFF6B7280),
+                            color = if (selected) DalabGreen else DalabMuted,
                             fontWeight = FontWeight.SemiBold,
                         )
                     }
@@ -189,7 +194,7 @@ private fun DeviceCard(device: AgentDevice, selected: Boolean, onClick: () -> Un
                 Icon(
                     if (selected) Icons.Filled.RadioButtonChecked else Icons.Filled.RadioButtonUnchecked,
                     contentDescription = if (selected) "Selected" else "Not selected",
-                    tint = if (selected) DalabIndigo else Color(0xFFD1D5DB),
+                    tint = if (selected) DalabIndigo else DalabOutline,
                     modifier = Modifier.size(24.dp),
                 )
             }
@@ -209,10 +214,10 @@ private fun DeviceCard(device: AgentDevice, selected: Boolean, onClick: () -> Un
 private fun SimInfoChip(label: String, sim: DeviceSimInfo?, modifier: Modifier = Modifier) {
     Surface(color = DalabSurfaceTint, shape = RoundedCornerShape(10.dp), modifier = modifier) {
         Column(modifier = Modifier.padding(10.dp)) {
-            Text(label, style = MaterialTheme.typography.labelSmall, color = Color(0xFF6B7280), fontWeight = FontWeight.SemiBold)
+            Text(label, style = MaterialTheme.typography.labelSmall, color = DalabMuted, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(4.dp))
             if (sim == null) {
-                Text("Not routed", style = MaterialTheme.typography.labelSmall, color = Color(0xFF9CA3AF))
+                Text("Not routed", style = MaterialTheme.typography.labelSmall, color = DalabFaint)
             } else {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Image(
@@ -225,7 +230,7 @@ private fun SimInfoChip(label: String, sim: DeviceSimInfo?, modifier: Modifier =
                     Text(sim.companyName, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = DalabIndigo, maxLines = 1)
                 }
                 if (sim.phoneNumber != null) {
-                    Text(sim.phoneNumber, style = MaterialTheme.typography.labelSmall, color = Color(0xFF6B7280))
+                    Text(sim.phoneNumber, style = MaterialTheme.typography.labelSmall, color = DalabMuted)
                 }
             }
         }

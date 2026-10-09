@@ -42,7 +42,10 @@ fun AlertsScreen(onBack: () -> Unit) {
             try {
                 val response = ApiClient.service.getNotifications()
                 if (response.isSuccessful) {
-                    notifications = response.body().orEmpty()
+                    // One row per notification id: a repeated id (e.g. from a
+                    // retried or overlapping load) is never shown twice, while
+                    // two notices with the same text but different ids both are.
+                    notifications = response.body().orEmpty().distinctBy { it.id }
                     AgentAlertsState.markAllSeen(notifications)
                 } else {
                     error = "Couldn't load notifications."

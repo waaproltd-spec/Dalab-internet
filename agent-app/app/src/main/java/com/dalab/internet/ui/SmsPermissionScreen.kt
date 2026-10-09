@@ -34,6 +34,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.dalab.internet.R
 import com.dalab.internet.ui.theme.DalabDangerRed
+import com.dalab.internet.ui.theme.DalabBrandFill
+import com.dalab.internet.ui.theme.DalabMuted
+import com.dalab.internet.ui.theme.DalabFaint
+import com.dalab.internet.ui.theme.DalabWhite
 
 /**
  * Shown on first launch (or any time READ_SMS/RECEIVE_SMS aren't granted). Two
@@ -49,7 +53,7 @@ fun SmsPermissionScreen(
 ) {
     val context = LocalContext.current
 
-    Box(modifier = Modifier.fillMaxSize().background(Color.White)) {
+    Box(modifier = Modifier.fillMaxSize().background(DalabWhite)) {
         Column(
             modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 28.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -60,7 +64,7 @@ fun SmsPermissionScreen(
                 Image(
                     painter = painterResource(R.drawable.dalab_logo),
                     contentDescription = null,
-                    modifier = Modifier.size(44.dp).background(DalabIndigo, RoundedCornerShape(12.dp)).padding(4.dp),
+                    modifier = Modifier.size(44.dp).background(DalabBrandFill, RoundedCornerShape(12.dp)).padding(4.dp),
                 )
                 Spacer(Modifier.width(10.dp))
                 Column {
@@ -72,14 +76,14 @@ fun SmsPermissionScreen(
                 }
             }
             Spacer(Modifier.height(4.dp))
-            Text("Fudud • Degdeg • Amaan", style = MaterialTheme.typography.bodyMedium, color = Color(0xFF6B7280))
+            Text("Fudud • Degdeg • Amaan", style = MaterialTheme.typography.bodyMedium, color = DalabMuted)
 
             Spacer(Modifier.height(28.dp))
 
             Box(modifier = Modifier.size(120.dp), contentAlignment = Alignment.Center) {
                 Box(modifier = Modifier.size(120.dp).background(DalabSoftBlue.copy(alpha = 0.25f), CircleShape))
                 Box(
-                    modifier = Modifier.size(84.dp).background(DalabIndigo, RoundedCornerShape(22.dp)),
+                    modifier = Modifier.size(84.dp).background(DalabBrandFill, RoundedCornerShape(22.dp)),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(Icons.Filled.MarkEmailRead, contentDescription = null, tint = Color.White, modifier = Modifier.size(42.dp))
@@ -96,7 +100,7 @@ fun SmsPermissionScreen(
 
             Row {
                 Text("SMS ", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.ExtraBold, color = DalabIndigo)
-                Text("permission required", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.ExtraBold, color = Color(0xFF111827))
+                Text("permission required", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
             }
 
             Spacer(Modifier.height(14.dp))
@@ -107,7 +111,7 @@ fun SmsPermissionScreen(
                     "a customer's payment without leaving the app. It never reads or " +
                     "uploads any other message.",
                 style = MaterialTheme.typography.bodyMedium,
-                color = Color(0xFF374151),
+                color = MaterialTheme.colorScheme.onSurface,
                 textAlign = TextAlign.Center,
             )
 
@@ -148,7 +152,7 @@ fun SmsPermissionScreen(
                         }
                         context.startActivity(intent)
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = DalabIndigo),
+                    colors = ButtonDefaults.buttonColors(containerColor = DalabBrandFill),
                     shape = RoundedCornerShape(999.dp),
                     modifier = Modifier.fillMaxWidth().height(54.dp),
                 ) {
@@ -157,7 +161,7 @@ fun SmsPermissionScreen(
             } else {
                 Button(
                     onClick = onRequestPermissions,
-                    colors = ButtonDefaults.buttonColors(containerColor = DalabIndigo),
+                    colors = ButtonDefaults.buttonColors(containerColor = DalabBrandFill),
                     shape = RoundedCornerShape(999.dp),
                     modifier = Modifier.fillMaxWidth().height(54.dp),
                 ) {
@@ -170,18 +174,19 @@ fun SmsPermissionScreen(
             Spacer(Modifier.height(14.dp))
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.Lock, contentDescription = null, tint = Color(0xFF9CA3AF), modifier = Modifier.size(14.dp))
+                Icon(Icons.Filled.Lock, contentDescription = null, tint = DalabFaint, modifier = Modifier.size(14.dp))
                 Spacer(Modifier.width(6.dp))
                 Text(
                     "We never read or upload any other message.",
                     style = MaterialTheme.typography.labelSmall,
-                    color = Color(0xFF9CA3AF),
+                    color = DalabFaint,
                 )
             }
 
             Spacer(Modifier.height(28.dp))
         }
 
+        val waveColor = DalabBrandFill
         Canvas(modifier = Modifier.fillMaxWidth().height(70.dp).align(Alignment.BottomCenter)) {
             val path = Path().apply {
                 moveTo(0f, size.height * 0.55f)
@@ -191,14 +196,14 @@ fun SmsPermissionScreen(
                 lineTo(0f, size.height)
                 close()
             }
-            drawPath(path, color = DalabIndigo)
+            drawPath(path, color = waveColor)
         }
     }
 }
 
 @Composable
 private fun ProviderBadge(companyId: String, label: String, modifier: Modifier = Modifier) {
-    Surface(color = Color.White, shape = RoundedCornerShape(14.dp), shadowElevation = 1.dp, modifier = modifier) {
+    Surface(color = DalabWhite, shape = RoundedCornerShape(14.dp), shadowElevation = 1.dp, modifier = modifier) {
         Column(modifier = Modifier.padding(vertical = 12.dp, horizontal = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Image(
                 painter = painterResource(logoResFor(companyId)),
@@ -219,11 +224,15 @@ private fun FeaturePoint(icon: androidx.compose.ui.graphics.vector.ImageVector, 
             Icon(icon, contentDescription = null, tint = DalabIndigo, modifier = Modifier.size(18.dp))
         }
         Spacer(Modifier.height(6.dp))
-        Text(text, style = MaterialTheme.typography.labelSmall, color = Color(0xFF6B7280), textAlign = TextAlign.Center)
+        Text(text, style = MaterialTheme.typography.labelSmall, color = DalabMuted, textAlign = TextAlign.Center)
     }
 }
 
 // A slightly deeper blue for the "Agent" half of the wordmark, distinct
 // from DalabIndigo (the "DALAB" half + every button/accent on this screen)
 // -- purely typographic, not a new brand color introduced elsewhere.
-private val DalabSoftBlue2 = Color(0xFF2563A8)
+private val DalabSoftBlue2: Color get() = when {
+        com.dalab.internet.ui.theme.AgentSettings.accent != com.dalab.internet.ui.theme.AgentAccent.DALAB_NAVY -> com.dalab.internet.ui.theme.DalabBlue.copy(alpha = 0.75f)
+        com.dalab.internet.ui.theme.isAgentDark -> Color(0xFF7FB2E5)
+        else -> Color(0xFF2563A8)
+    }

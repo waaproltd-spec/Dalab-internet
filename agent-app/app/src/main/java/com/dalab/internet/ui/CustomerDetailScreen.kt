@@ -52,6 +52,10 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
+import com.dalab.internet.ui.theme.DalabBrandFill
+import com.dalab.internet.ui.theme.DalabMuted
+import com.dalab.internet.ui.theme.DalabFaint
+import com.dalab.internet.ui.theme.DalabWhite
 
 private enum class DetailView { MAIN, ORDER_HISTORY, RESET_PIN, RESET_PIN_SUCCESS, SUSPEND_CONFIRM, EDIT, WALLET }
 
@@ -260,7 +264,7 @@ private fun CustomerDetailMain(
     onEdit: () -> Unit,
     onWallet: () -> Unit,
 ) {
-    Scaffold(containerColor = Color.White) { padding ->
+    Scaffold(containerColor = DalabWhite) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
             DetailTopBar("Customer Details", onBack)
 
@@ -273,7 +277,7 @@ private fun CustomerDetailMain(
                     val suspended = detail.status == "blocked"
                     LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                         item {
-                            Surface(color = Color.White, shape = RoundedCornerShape(16.dp), shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+                            Surface(color = DalabWhite, shape = RoundedCornerShape(16.dp), shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
                                 Column(modifier = Modifier.padding(18.dp)) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         CustomerAvatar(name = detail.name, phone = detail.phone, size = 52)
@@ -284,11 +288,11 @@ private fun CustomerDetailMain(
                                                 Spacer(Modifier.width(8.dp))
                                                 StatusPill(label = if (suspended) "Suspended" else "Active", danger = suspended)
                                             }
-                                            Text(detail.phone, style = MaterialTheme.typography.bodyMedium, color = Color(0xFF6B7280))
+                                            Text(detail.phone, style = MaterialTheme.typography.bodyMedium, color = DalabMuted)
                                         }
                                     }
                                     Spacer(Modifier.height(6.dp))
-                                    Text("Customer since ${formatDate(detail.createdAt)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF9CA3AF))
+                                    Text("Customer since ${formatDate(detail.createdAt)}", style = MaterialTheme.typography.labelSmall, color = DalabFaint)
                                 }
                             }
                         }
@@ -337,7 +341,7 @@ private fun CustomerDetailMain(
 
                         item { SectionLabel("Customer Information") }
                         item {
-                            Surface(color = Color.White, shape = RoundedCornerShape(14.dp), shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+                            Surface(color = DalabWhite, shape = RoundedCornerShape(14.dp), shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
                                 Column(modifier = Modifier.padding(vertical = 4.dp)) {
                                     InfoRow(Icons.Filled.Person, "Name", detail.name?.takeIf { it.isNotBlank() } ?: "—")
                                     InfoRow(Icons.Filled.Phone, "Phone Number", detail.phone)
@@ -360,7 +364,7 @@ private fun CustomerDetailMain(
                         item { SectionLabel("Recent Orders") }
                         if (orders.isEmpty()) {
                             item {
-                                Text("No orders yet.", style = MaterialTheme.typography.bodyMedium, color = Color(0xFF6B7280), modifier = Modifier.padding(vertical = 8.dp))
+                                Text("No orders yet.", style = MaterialTheme.typography.bodyMedium, color = DalabMuted, modifier = Modifier.padding(vertical = 8.dp))
                             }
                         } else {
                             items(orders.take(3), key = { it.id }) { order -> RecentOrderRow(order) }
@@ -396,13 +400,13 @@ private fun SectionLabel(text: String) {
 private fun StatCard(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, value: String, modifier: Modifier = Modifier) {
     Surface(color = DalabSoftBlue.copy(alpha = 0.25f), shape = RoundedCornerShape(14.dp), modifier = modifier) {
         Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(modifier = Modifier.size(34.dp).background(Color.White, CircleShape), contentAlignment = Alignment.Center) {
+            Box(modifier = Modifier.size(34.dp).background(DalabWhite, CircleShape), contentAlignment = Alignment.Center) {
                 Icon(icon, contentDescription = null, tint = DalabIndigo, modifier = Modifier.size(17.dp))
             }
             Spacer(Modifier.width(10.dp))
             Column {
                 Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = DalabIndigo)
-                Text(label, style = MaterialTheme.typography.labelSmall, color = Color(0xFF6B7280))
+                Text(label, style = MaterialTheme.typography.labelSmall, color = DalabMuted)
             }
         }
     }
@@ -428,9 +432,9 @@ private fun ActionButton(icon: androidx.compose.ui.graphics.vector.ImageVector, 
 private fun InfoRow(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, value: String, showDivider: Boolean = true) {
     Column {
         Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(icon, contentDescription = null, tint = Color(0xFF9CA3AF), modifier = Modifier.size(16.dp))
+            Icon(icon, contentDescription = null, tint = DalabFaint, modifier = Modifier.size(16.dp))
             Spacer(Modifier.width(10.dp))
-            Text(label, style = MaterialTheme.typography.bodySmall, color = Color(0xFF6B7280), modifier = Modifier.weight(1f))
+            Text(label, style = MaterialTheme.typography.bodySmall, color = DalabMuted, modifier = Modifier.weight(1f))
             Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, color = DalabIndigo)
         }
         if (showDivider) Divider(color = DalabSurfaceTint)
@@ -439,11 +443,11 @@ private fun InfoRow(icon: androidx.compose.ui.graphics.vector.ImageVector, label
 
 @Composable
 private fun RecentOrderRow(order: CustomerOrderHistoryEntry) {
-    Surface(color = Color.White, shape = RoundedCornerShape(12.dp), shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+    Surface(color = DalabWhite, shape = RoundedCornerShape(12.dp), shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
         Row(modifier = Modifier.padding(14.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
                 Text("${order.companyName} · ${order.packageName}", fontWeight = FontWeight.SemiBold, color = DalabIndigo, style = MaterialTheme.typography.bodyMedium)
-                Text(formatDate(order.createdAt), style = MaterialTheme.typography.labelSmall, color = Color(0xFF9CA3AF))
+                Text(formatDate(order.createdAt), style = MaterialTheme.typography.labelSmall, color = DalabFaint)
             }
             Column(horizontalAlignment = Alignment.End) {
                 Text("$${"%.2f".format(order.amount)}", fontWeight = FontWeight.Bold, color = DalabGreen)
@@ -472,7 +476,7 @@ private fun OrderStatusPill(status: String) {
 
 @Composable
 private fun CustomerOrderHistoryScreen(customerName: String, orders: List<CustomerOrderHistoryEntry>, onBack: () -> Unit) {
-    Scaffold(containerColor = Color.White) { padding ->
+    Scaffold(containerColor = DalabWhite) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
             DetailTopBar("$customerName's Orders", onBack)
             if (orders.isEmpty()) {
@@ -512,7 +516,7 @@ private fun ResetCustomerPinScreen(
     val pinValid = pin.length in 4..8 && pin.all { it.isDigit() }
     val matches = pin == confirmPin
 
-    Scaffold(containerColor = Color.White) { padding ->
+    Scaffold(containerColor = DalabWhite) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState())) {
             DetailTopBar("Reset Customer PIN", onBack)
 
@@ -526,7 +530,7 @@ private fun ResetCustomerPinScreen(
                 Text(
                     "Create a new PIN for ${detail?.name?.takeIf { it.isNotBlank() } ?: detail?.phone ?: "this customer"}",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = Color(0xFF6B7280),
+                    color = DalabMuted,
                 )
 
                 Spacer(Modifier.height(24.dp))
@@ -588,7 +592,7 @@ private fun ResetCustomerPinScreen(
                         }
                     },
                     enabled = pinValid && matches && !saving,
-                    colors = ButtonDefaults.buttonColors(containerColor = DalabIndigo),
+                    colors = ButtonDefaults.buttonColors(containerColor = DalabBrandFill),
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth().height(48.dp),
                 ) {
@@ -648,7 +652,7 @@ private fun ResetCustomerPinScreen(
 @Composable
 private fun PinResetSuccessScreen(detail: CustomerDetail?, generatedPin: String?, onDone: () -> Unit) {
     val clipboard = LocalClipboardManager.current
-    Scaffold(containerColor = Color.White) { padding ->
+    Scaffold(containerColor = DalabWhite) { padding ->
         Column(
             modifier = Modifier.padding(padding).fillMaxSize().padding(horizontal = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -663,19 +667,19 @@ private fun PinResetSuccessScreen(detail: CustomerDetail?, generatedPin: String?
             Text(
                 "The customer's PIN has been updated successfully.",
                 style = MaterialTheme.typography.bodyMedium,
-                color = Color(0xFF6B7280),
+                color = DalabMuted,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,
             )
 
             Spacer(Modifier.height(24.dp))
 
-            Surface(color = Color.White, shape = RoundedCornerShape(14.dp), shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+            Surface(color = DalabWhite, shape = RoundedCornerShape(14.dp), shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
                 Row(modifier = Modifier.padding(14.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     CustomerAvatar(name = detail?.name, phone = detail?.phone ?: "")
                     Spacer(Modifier.width(12.dp))
                     Column {
                         Text(detail?.name?.takeIf { it.isNotBlank() } ?: "Customer", fontWeight = FontWeight.SemiBold, color = DalabIndigo)
-                        Text(detail?.phone ?: "", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6B7280))
+                        Text(detail?.phone ?: "", style = MaterialTheme.typography.bodySmall, color = DalabMuted)
                     }
                 }
             }
@@ -685,7 +689,7 @@ private fun PinResetSuccessScreen(detail: CustomerDetail?, generatedPin: String?
                 Surface(color = DalabSoftBlue.copy(alpha = 0.25f), shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
                     Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("New PIN", style = MaterialTheme.typography.labelSmall, color = Color(0xFF6B7280))
+                            Text("New PIN", style = MaterialTheme.typography.labelSmall, color = DalabMuted)
                             Text(generatedPin, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = DalabIndigo)
                         }
                         IconButton(onClick = { clipboard.setText(AnnotatedString(generatedPin)) }) {
@@ -697,7 +701,7 @@ private fun PinResetSuccessScreen(detail: CustomerDetail?, generatedPin: String?
                 Text(
                     "Relay this PIN to the customer now — it won't be shown again.",
                     style = MaterialTheme.typography.labelSmall,
-                    color = Color(0xFF9CA3AF),
+                    color = DalabFaint,
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 )
             }
@@ -716,7 +720,7 @@ private fun PinResetSuccessScreen(detail: CustomerDetail?, generatedPin: String?
 
             Button(
                 onClick = onDone,
-                colors = ButtonDefaults.buttonColors(containerColor = DalabIndigo),
+                colors = ButtonDefaults.buttonColors(containerColor = DalabBrandFill),
                 shape = RoundedCornerShape(12.dp),
                 modifier = Modifier.fillMaxWidth().height(48.dp),
             ) {
@@ -735,7 +739,7 @@ private fun SuspendCustomerScreen(detail: CustomerDetail?, onCancel: () -> Unit,
     var saving by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    Scaffold(containerColor = Color.White) { padding ->
+    Scaffold(containerColor = DalabWhite) { padding ->
         Column(
             modifier = Modifier.padding(padding).fillMaxSize().padding(horizontal = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -752,19 +756,19 @@ private fun SuspendCustomerScreen(detail: CustomerDetail?, onCancel: () -> Unit,
             Text(
                 "Are you sure you want to suspend this customer?",
                 style = MaterialTheme.typography.bodyMedium,
-                color = Color(0xFF6B7280),
+                color = DalabMuted,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,
             )
 
             Spacer(Modifier.height(20.dp))
 
-            Surface(color = Color.White, shape = RoundedCornerShape(14.dp), shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+            Surface(color = DalabWhite, shape = RoundedCornerShape(14.dp), shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
                 Row(modifier = Modifier.padding(14.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     CustomerAvatar(name = detail?.name, phone = detail?.phone ?: "")
                     Spacer(Modifier.width(12.dp))
                     Column {
                         Text(detail?.name?.takeIf { it.isNotBlank() } ?: "Customer", fontWeight = FontWeight.SemiBold, color = DalabIndigo)
-                        Text(detail?.phone ?: "", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6B7280))
+                        Text(detail?.phone ?: "", style = MaterialTheme.typography.bodySmall, color = DalabMuted)
                     }
                 }
             }
@@ -827,7 +831,7 @@ private fun EditCustomerScreen(detail: CustomerDetail?, onBack: () -> Unit, onSa
     var saving by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    Scaffold(containerColor = Color.White) { padding ->
+    Scaffold(containerColor = DalabWhite) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState())) {
             DetailTopBar("Edit Customer", onBack)
 
@@ -866,7 +870,7 @@ private fun EditCustomerScreen(detail: CustomerDetail?, onBack: () -> Unit, onSa
                         }
                     },
                     enabled = phone.isNotBlank() && !saving,
-                    colors = ButtonDefaults.buttonColors(containerColor = DalabIndigo),
+                    colors = ButtonDefaults.buttonColors(containerColor = DalabBrandFill),
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth().height(48.dp),
                 ) {
@@ -903,7 +907,7 @@ private fun WalletNumbersScreen(
     val evcValid = evcPlusName.isBlank() == evcPlusNumber.isBlank()
     val edahabValid = edahabName.isBlank() == edahabNumber.isBlank()
 
-    Scaffold(containerColor = Color.White) { padding ->
+    Scaffold(containerColor = DalabWhite) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState())) {
             DetailTopBar("Wallet Numbers", onBack)
 
@@ -975,7 +979,7 @@ private fun WalletNumbersScreen(
                         }
                     },
                     enabled = evcValid && edahabValid && !saving,
-                    colors = ButtonDefaults.buttonColors(containerColor = DalabIndigo),
+                    colors = ButtonDefaults.buttonColors(containerColor = DalabBrandFill),
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth().height(48.dp),
                 ) {

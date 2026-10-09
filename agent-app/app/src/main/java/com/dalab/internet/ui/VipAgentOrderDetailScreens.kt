@@ -31,6 +31,10 @@ import com.dalab.internet.data.VipPackageAgentOrder
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.util.formatApiDateTime
 import kotlinx.coroutines.launch
+import com.dalab.internet.ui.theme.DalabBrandFill
+import com.dalab.internet.ui.theme.DalabSurfaceTint
+import com.dalab.internet.ui.theme.DalabOutline
+import com.dalab.internet.ui.theme.DalabWhite
 
 /**
  * VIP Number and VIP Number Package order detail — the one place an agent
@@ -279,7 +283,7 @@ private fun VipOrderHeaderCard(number: String, company: String) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(
-                modifier = Modifier.size(48.dp).clip(CircleShape).background(DalabIndigo),
+                modifier = Modifier.size(48.dp).clip(CircleShape).background(DalabBrandFill),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(Icons.Filled.Phone, contentDescription = null, tint = Color.White, modifier = Modifier.size(22.dp))
@@ -307,7 +311,7 @@ private fun VipPackageHeaderCard(size: Int, items: List<com.dalab.internet.data.
         Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
-                    modifier = Modifier.size(48.dp).clip(CircleShape).background(DalabIndigo),
+                    modifier = Modifier.size(48.dp).clip(CircleShape).background(DalabBrandFill),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(Icons.Filled.ConfirmationNumber, contentDescription = null, tint = Color.White, modifier = Modifier.size(22.dp))
@@ -322,7 +326,7 @@ private fun VipPackageHeaderCard(size: Int, items: List<com.dalab.internet.data.
             }
             if (items.isNotEmpty()) {
                 Spacer(Modifier.height(12.dp))
-                Surface(color = Color.White, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+                Surface(color = DalabWhite, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(horizontal = 14.dp)) {
                         items.forEachIndexed { index, item ->
                             Row(
@@ -337,7 +341,7 @@ private fun VipPackageHeaderCard(size: Int, items: List<com.dalab.internet.data.
                                     color = Color.Gray,
                                 )
                             }
-                            if (index != items.lastIndex) HorizontalDivider(color = Color(0xFFF0F0F0))
+                            if (index != items.lastIndex) HorizontalDivider(color = DalabSurfaceTint)
                         }
                     }
                 }
@@ -357,7 +361,7 @@ private fun VipPackageHeaderCard(size: Int, items: List<com.dalab.internet.data.
 @Composable
 private fun VipCustomerInfoCard(fullName: String, motherName: String, location: String, district: String, phone: String? = null) {
     Surface(
-        color = DalabIndigo,
+        color = DalabBrandFill,
         shape = RoundedCornerShape(20.dp),
         modifier = Modifier.fillMaxWidth(),
     ) {
@@ -374,7 +378,7 @@ private fun VipCustomerInfoCard(fullName: String, motherName: String, location: 
             Spacer(Modifier.height(10.dp))
             Text("Customer Info", color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(16.dp))
-            Surface(color = Color.White, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+            Surface(color = DalabWhite, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(horizontal = 16.dp)) {
                     IconDetailRow(Icons.Filled.Person, "Full Name", fullName)
                     IconDetailRow(Icons.Filled.Groups, "Mother's Name", motherName)
@@ -409,7 +413,7 @@ private fun IconDetailRow(icon: ImageVector, label: String, value: String, showD
                 Text(value, fontWeight = FontWeight.Medium, style = MaterialTheme.typography.bodyMedium)
             }
         }
-        if (showDivider) HorizontalDivider(color = Color(0xFFF0F0F0))
+        if (showDivider) HorizontalDivider(color = DalabSurfaceTint)
     }
 }
 
@@ -417,9 +421,9 @@ private fun IconDetailRow(icon: ImageVector, label: String, value: String, showD
 @Composable
 private fun VipPaymentCard(paidFrom: String) {
     Surface(
-        color = Color(0xFFF7FAFC),
+        color = DalabSurfaceTint,
         shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.dp, Color(0xFFE5EEF2)),
+        border = BorderStroke(1.dp, DalabOutline),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Row(
@@ -445,9 +449,9 @@ private fun VipPaymentCard(paidFrom: String) {
 @Composable
 private fun VipOrderStatusCard(dateText: String) {
     Surface(
-        color = Color(0xFFF7FAFC),
+        color = DalabSurfaceTint,
         shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.dp, Color(0xFFE5EEF2)),
+        border = BorderStroke(1.dp, DalabOutline),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Row(
@@ -507,7 +511,7 @@ private fun VipWorkflowSection(
             onClick = onStart,
             enabled = !working,
             shape = RoundedCornerShape(50),
-            colors = ButtonDefaults.buttonColors(containerColor = DalabIndigo),
+            colors = ButtonDefaults.buttonColors(containerColor = DalabBrandFill),
             modifier = Modifier.fillMaxWidth().height(52.dp),
         ) {
             Text(if (working) "Starting..." else "Create", fontWeight = FontWeight.Bold)
@@ -516,7 +520,7 @@ private fun VipWorkflowSection(
             onClick = onComplete,
             enabled = !working,
             shape = RoundedCornerShape(50),
-            colors = ButtonDefaults.buttonColors(containerColor = DalabIndigo),
+            colors = ButtonDefaults.buttonColors(containerColor = DalabBrandFill),
             modifier = Modifier.fillMaxWidth().height(52.dp),
         ) {
             Text(if (working) "Completing..." else "Complete", fontWeight = FontWeight.Bold)
