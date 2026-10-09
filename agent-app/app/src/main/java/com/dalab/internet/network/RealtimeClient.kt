@@ -56,6 +56,7 @@ class RealtimeClient(private val path: String, private val onOrderEvent: (data: 
         val request = Request.Builder()
             .url("${ApiClient.BASE_URL}$path")
             .header("Authorization", "Bearer $token")
+            .header(com.dalab.internet.auth.DeviceInstall.HEADER, com.dalab.internet.auth.DeviceInstall.id())
             .header("Accept", "text/event-stream")
             .build()
 

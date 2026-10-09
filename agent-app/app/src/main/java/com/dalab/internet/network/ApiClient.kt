@@ -29,8 +29,15 @@ object ApiClient {
         val token = SessionManager.accessToken()
         val request = chain.request().newBuilder().apply {
             if (token != null) addHeader("Authorization", "Bearer $token")
+            // Device Activation: the backend only serves agent APIs to an
+            // admin-approved install (deviceActivation.routes.ts).
+            addHeader(com.dalab.internet.auth.DeviceInstall.HEADER, com.dalab.internet.auth.DeviceInstall.id())
         }.build()
-        chain.proceed(request)
+        val response = chain.proceed(request)
+        if (response.code == 403 && response.header("X-Device-Activation") == "required") {
+            com.dalab.internet.auth.DeviceActivationState.markNotActivated()
+        }
+        response
     }
 
     // A separate, plain client with no auth header and no authenticator —

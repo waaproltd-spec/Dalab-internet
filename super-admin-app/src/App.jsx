@@ -287,6 +287,12 @@ const DalabAdminApi = {
   deleteAgentDevice: (id) => dalabAdminApiRequest(`/admin/agent-devices/${id}`, { method: "DELETE" }),
   setCompanyAutoProcess: (companyId, enabled) => dalabAdminApiRequest(`/admin/companies/${companyId}/auto-process`, { method: "PUT", body: { enabled } }),
   getAgentsList: () => dalabAdminApiRequest("/admin/agents"),
+  // Device Activation (deviceActivation.routes.ts) -- agents.manage, checked on the server.
+  checkDeviceActivationCode: (code) => dalabAdminApiRequest("/admin/device-activations/check", { method: "POST", body: { code } }),
+  approveDeviceActivation: (id, code) => dalabAdminApiRequest(`/admin/device-activations/${id}/approve`, { method: "POST", body: { code } }),
+  rejectDeviceActivation: (id) => dalabAdminApiRequest(`/admin/device-activations/${id}/reject`, { method: "POST", body: {} }),
+  revokeDeviceActivation: (id) => dalabAdminApiRequest(`/admin/device-activations/${id}/revoke`, { method: "POST", body: {} }),
+  getDeviceActivations: (status) => dalabAdminApiRequest(`/admin/device-activations${status ? `?status=${status}` : ""}`),
   createAgent: (body) => dalabAdminApiRequest("/admin/agents", { method: "POST", body }),
   updateAgent: (id, body) => dalabAdminApiRequest(`/admin/agents/${id}`, { method: "PUT", body }),
   suspendAgent: (id) => dalabAdminApiRequest(`/admin/agents/${id}/suspend`, { method: "PUT" }),
@@ -930,6 +936,7 @@ const NAV = [
   { id: "offline", label: "Offline (Rukumo)", icon: WifiOff, permission: "orders.manage" },
   { id: "customers", label: "Customers", icon: Users, permission: "customers.manage" },
   { id: "agents", label: "Agents", icon: UserCog, permission: "agents.manage" },
+  { id: "device-activation", label: "Device Activation", icon: Smartphone, permission: "agents.manage" },
   { id: "notifications", label: "Notifications", icon: Bell, permission: "settings.manage" },
   { id: "feedback", label: "Feedback & Suggestions", icon: Lightbulb, permission: "feedback.manage" },
   { id: "support", label: "Agent Support", icon: MessageCircle, permission: "support.manage" },
@@ -4254,6 +4261,226 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
     </div>
   );
 }
+
+// ---------------- Device Activation ----------------
+// A new Agent App install shows a 4-character activation code; the admin
+// enters it here, checks whose device it is, and activates it. Everything is
+// verified on the server (deviceActivation.routes.ts): the code must be live,
+// unused and belong to that device, and approval needs agents.manage.
+const ACTIVATION_TONE = { pending: "amber", approved: "green", rejected: "red", revoked: "gray" };
+const ACTIVATION_LABEL = { pending: "Pending", approved: "Authorized", rejected: "Rejected", revoked: "Revoked" };
+
+function DeviceActivationSection({ admin }) {
+  const [code, setCode] = useState("");
+  const [checking, setChecking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [details, setDetails] = useState(null);
+  const [checkedCode, setCheckedCode] = useState("");
+  const [justActivated, setJustActivated] = useState(false);
+  const [recent, setRecent] = useState([]);
+  const [recentFilter, setRecentFilter] = useState("");
+  const canManage = hasPermission(admin, "agents.manage");
+
+  const loadRecent = async (status = recentFilter) => {
+    if (!DALAB_API_ENABLED) return;
+    try {
+      setRecent(await DalabAdminApi.getDeviceActivations(status || undefined));
+    } catch {
+      /* the list is secondary; the check flow still works */
+    }
+  };
+  useEffect(() => { loadRecent(); }, [recentFilter]);
+
+  const normalized = code.trim().toLowerCase();
+  const validFormat = /^[a-z0-9]{4}$/.test(normalized);
+
+  const check = async () => {
+    if (!validFormat || checking) return;
+    setChecking(true);
+    setError("");
+    setDetails(null);
+    setJustActivated(false);
+    try {
+      setDetails(await DalabAdminApi.checkDeviceActivationCode(normalized));
+      setCheckedCode(normalized);
+    } catch (err) {
+      setError(err.message || "Could not check this code.");
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const activate = async () => {
+    if (!details || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      setDetails(await DalabAdminApi.approveDeviceActivation(details.activationId, checkedCode));
+      setJustActivated(true);
+      loadRecent();
+    } catch (err) {
+      setError(err.message || "Could not activate this device.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reject = async () => {
+    if (!details || busy) return;
+    if (!window.confirm(`Reject device ${details.deviceNumber} for ${details.agentName}?`)) return;
+    setBusy(true);
+    try {
+      setDetails(await DalabAdminApi.rejectDeviceActivation(details.activationId));
+      loadRecent();
+    } catch (err) {
+      setError(err.message || "Could not reject this device.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revoke = async (row) => {
+    if (!window.confirm(`Remove access for device ${row.deviceNumber} (${row.agentName})? The phone will need a new activation code.`)) return;
+    try {
+      await DalabAdminApi.revokeDeviceActivation(row.activationId);
+      loadRecent();
+    } catch (err) {
+      alert(err.message || "Could not revoke this device.");
+    }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to activate devices.</div>;
+  }
+
+  const Row = ({ label, children }) => (
+    <div style={{ display: "flex", gap: 12, padding: "5px 0", fontSize: 13 }}>
+      <div style={{ width: 140, color: MUTE, flexShrink: 0 }}>{label}</div>
+      <div style={{ color: INK, fontWeight: 600, minWidth: 0, overflowWrap: "anywhere" }}>{children}</div>
+    </div>
+  );
+  const pending = details?.activationStatus === "pending";
+  const approved = details?.activationStatus === "approved";
+
+  return (
+    <div style={{ maxWidth: 760 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        <div style={{ width: 42, height: 42, borderRadius: 12, background: "#E5EBFF", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <Smartphone size={22} color="#1D4ED8" />
+        </div>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 18, color: INK }}>Device Activation</div>
+          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Enter the 4-character code shown on the agent's phone. · Geli 4-xaraf code ee Agent-ka si aad u hubiso.</div>
+        </div>
+      </div>
+
+      <Card style={{ padding: 18, marginBottom: 16 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: SLATE, marginBottom: 8 }}>Enter Activation Code</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <input
+            value={code}
+            onChange={(e) => setCode(e.target.value.replace(/[^a-zA-Z0-9]/g, "").slice(0, 4))}
+            onKeyDown={(e) => { if (e.key === "Enter") check(); }}
+            placeholder="44b1"
+            autoComplete="off"
+            spellCheck={false}
+            style={{ ...inputStyle, width: 160, fontSize: 22, fontWeight: 800, letterSpacing: 4, fontFamily: "monospace" }}
+          />
+          <Button icon={checking ? Loader2 : Search} spin={checking} disabled={!validFormat || checking} onClick={check}>
+            {checking ? "Checking…" : "Check Code"}
+          </Button>
+        </div>
+        {error && (
+          <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, color: "#C81E2C", fontSize: 13, fontWeight: 600 }}>
+            <XCircle size={16} /> {error}
+          </div>
+        )}
+      </Card>
+
+      {details && (
+        <Card style={{ padding: 18, marginBottom: 16, background: approved ? "#F2F8FF" : pending ? "#F3FBF5" : "#fff" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, fontWeight: 800, fontSize: 16, color: approved ? "#1D4ED8" : pending ? GREEN : "#C81E2C" }}>
+            {pending || approved ? <CheckCircle2 size={22} /> : <XCircle size={22} />}
+            {justActivated ? "Device activated! · Device waa la fasaxay!" : pending ? "Code is valid · Code waa sax!" : approved ? "Device is authorized" : `Device ${ACTIVATION_LABEL[details.activationStatus] || details.activationStatus}`}
+          </div>
+          <Row label="Agent Name">{details.agentName}</Row>
+          <Row label="Agent ID">{details.agentCode}</Row>
+          <Row label="Phone Number">{details.agentPhone}</Row>
+          <Row label="Device ID">{details.deviceNumber}{details.deviceModel ? ` · ${details.deviceModel}` : ""}</Row>
+          <Row label="Account Status"><Badge tone={details.accountStatus === "active" ? "green" : "red"}>{details.accountStatus === "active" ? "Active" : "Suspended"}</Badge></Row>
+          <Row label="Activation Status"><Badge tone={ACTIVATION_TONE[details.activationStatus] || "gray"}>{ACTIVATION_LABEL[details.activationStatus] || details.activationStatus}</Badge></Row>
+          {pending && details.codeExpiresAt && <Row label="Code Expires">{formatDateTime(details.codeExpiresAt)}</Row>}
+          {approved && <Row label="Authorized By">{details.approvedByEmail || "System (existing device)"}</Row>}
+          {approved && details.approvedAt && <Row label="Authorized At">{formatDateTime(details.approvedAt)}</Row>}
+
+          {pending && canManage && (
+            <div style={{ display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" }}>
+              <Button icon={busy ? Loader2 : CheckCircle2} spin={busy} disabled={busy} onClick={activate} style={{ background: "#16A34A", flex: 1, justifyContent: "center", padding: "12px 14px" }}>
+                Activate Device
+              </Button>
+              <Button variant="danger" icon={XCircle} disabled={busy} onClick={reject}>Reject</Button>
+            </div>
+          )}
+          {pending && !canManage && <div style={{ marginTop: 12, fontSize: 12.5, color: MUTE }}>You need the "Manage agents" permission to activate devices.</div>}
+        </Card>
+      )}
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 14px", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ fontWeight: 800, fontSize: 14, color: INK }}>Agent devices</div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <select value={recentFilter} onChange={(e) => setRecentFilter(e.target.value)} style={{ ...inputStyle, width: 150, padding: "7px 10px" }}>
+              <option value="">All</option>
+              <option value="pending">Pending</option>
+              <option value="approved">Authorized</option>
+              <option value="rejected">Rejected</option>
+              <option value="revoked">Revoked</option>
+            </select>
+            <Button variant="ghost" icon={RefreshCw} onClick={() => loadRecent()}>Refresh</Button>
+          </div>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: "#FAFBFF" }}>
+                {["Device ID", "Agent", "Status", "Authorized by", "Last seen", ""].map((h) => (
+                  <th key={h} style={{ textAlign: "left", padding: "9px 14px", fontSize: 11, color: MUTE, fontWeight: 700, whiteSpace: "nowrap" }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {recent.length === 0 && (
+                <tr><td colSpan={6} style={{ padding: 16, fontSize: 12.5, color: MUTE }}>No devices yet.</td></tr>
+              )}
+              {recent.map((r) => (
+                <tr key={r.activationId} style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <td style={{ padding: "9px 14px", fontSize: 12.5, fontWeight: 700, color: INK, whiteSpace: "nowrap" }}>{r.deviceNumber}<div style={{ fontWeight: 500, color: MUTE, fontSize: 11 }}>{r.deviceModel || ""}</div></td>
+                  <td style={{ padding: "9px 14px", fontSize: 12.5, color: INK }}>{r.agentName}<div style={{ color: MUTE, fontSize: 11 }}>{r.agentCode} · {r.agentPhone}</div></td>
+                  <td style={{ padding: "9px 14px" }}><Badge tone={ACTIVATION_TONE[r.activationStatus] || "gray"}>{ACTIVATION_LABEL[r.activationStatus] || r.activationStatus}</Badge></td>
+                  <td style={{ padding: "9px 14px", fontSize: 12, color: MUTE }}>
+                    {r.activationStatus === "approved" ? (r.approvedByEmail || (r.approvalNote ? "System (existing device)" : "—")) : "—"}
+                    {r.approvedAt && <div style={{ fontSize: 11 }}>{formatDateTime(r.approvedAt)}</div>}
+                  </td>
+                  <td style={{ padding: "9px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{r.lastSeenAt ? formatDateTime(r.lastSeenAt) : "—"}</td>
+                  <td style={{ padding: "9px 14px", textAlign: "right" }}>
+                    {canManage && (r.activationStatus === "approved" || r.activationStatus === "rejected") && (
+                      <Button variant="danger" onClick={() => revoke(r)} style={{ padding: "6px 10px", fontSize: 12 }}>
+                        {r.activationStatus === "approved" ? "Revoke" : "Reset"}
+                      </Button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+
 
 function AgentsSection({ companies, admin }) {
   const [agents, setAgents] = useState([]);
@@ -15615,6 +15842,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "offline" && <OfflinePanel companies={companies} />}
           {active === "customers" && <Customers customers={customers} setCustomers={setCustomers} refreshCustomers={refreshCustomers} admin={admin} />}
           {active === "agents" && <AgentsSection companies={companies} admin={admin} />}
+          {active === "device-activation" && <DeviceActivationSection admin={admin} />}
           {active === "notifications" && <Notifications />}
           {active === "promo-images" && <PromoImages />}
           {active === "nala-soco" && <NalaSoco />}

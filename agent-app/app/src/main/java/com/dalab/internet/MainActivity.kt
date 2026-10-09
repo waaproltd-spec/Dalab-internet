@@ -128,6 +128,8 @@ class MainActivity : ComponentActivity() {
         // normal case, but still guarded individually here too so a lingering
         // failure in one can't prevent the screen from ever rendering.
         safely("session_init") { SessionManager.init(this) }
+        safely("device_install_init") { com.dalab.internet.auth.DeviceInstall.init(this) }
+        safely("device_activation_init") { com.dalab.internet.auth.DeviceActivationState.init(this) }
         safely("reseller_session_init") { ResellerSessionManager.init(this) }
         safely("device_identity_init") { DeviceIdentity.init(this) }
         safely("sms_listener_init") { SmsListenerState.init(this) }
@@ -452,7 +454,24 @@ private fun AgentApp() {
         }
     )
 
-    when (screen) {
+    // Device Activation: once logged in, nothing opens until the backend
+    // says this install is approved. "Latched" keeps the screen up after an
+    // approval arrives so the agent sees "Device activated!" and taps
+    // Continue (a device that was already approved never sees it).
+    var activationLatched by remember { mutableStateOf(false) }
+    val activationStatus = com.dalab.internet.auth.DeviceActivationState.status
+    val activationGated = screen != Screen.PERMISSIONS && screen != Screen.DEVICE_SETUP && screen != Screen.AUTHENTICATING &&
+        SessionManager.isLoggedIn() &&
+        (activationStatus != com.dalab.internet.auth.DeviceActivationState.Status.APPROVED || activationLatched)
+    if (activationStatus == com.dalab.internet.auth.DeviceActivationState.Status.PENDING ||
+        activationStatus == com.dalab.internet.auth.DeviceActivationState.Status.REJECTED
+    ) {
+        SideEffect { if (activationGated) activationLatched = true }
+    }
+
+    if (activationGated) {
+        com.dalab.internet.ui.DeviceActivationScreen(onContinue = { activationLatched = false })
+    } else when (screen) {
         Screen.PERMISSIONS -> SmsPermissionScreen(
             permanentlyDenied = permanentlyDenied,
             onRequestPermissions = { permissionLauncher.launch(SMS_PERMISSIONS) },
@@ -464,6 +483,8 @@ private fun AgentApp() {
 
         Screen.AUTHENTICATING -> AutoLoginScreen(
             onSuccess = {
+                // A fresh login (maybe another agent): check this install's approval anew.
+                com.dalab.internet.auth.DeviceActivationState.reset()
                 AgentBackgroundService.start(context)
                 screen = if (batteryUnrestricted()) Screen.HOME else Screen.RELIABILITY_SETUP
             },

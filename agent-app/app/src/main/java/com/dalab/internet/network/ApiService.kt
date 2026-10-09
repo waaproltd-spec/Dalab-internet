@@ -194,6 +194,17 @@ data class PromoAdStatusRequest(val enabled: Boolean)
 data class PromoAdReorderRequest(val orderedIds: List<String>)
 
 data class DialAttemptStartRequest(val simSlot: Int?, val ussdString: String, val attemptNumber: Int)
+
+/** POST /agent/device-activation/status (deviceActivation.routes.ts). */
+data class DeviceActivationStatusRequest(val installId: String, val deviceModel: String?, val agentDeviceId: String?)
+data class DeviceActivationStatusResponse(
+    // "pending" | "approved" | "rejected" (a revoked device comes back as pending with a new code)
+    val status: String,
+    val required: Boolean = true,
+    val deviceNumber: String? = null,
+    val code: String? = null,
+    val codeExpiresAt: String? = null,
+)
 data class DialAttemptStartResponse(val id: String)
 // isFinalAttempt: true when this is the last outcome this order will get
 // (success, a non-retryable failure, or the last of maxAttempts retries) —
@@ -727,4 +738,7 @@ interface ApiService {
 
     @PUT("reseller/withdrawals/{id}/cancel")
     suspend fun cancelResellerWithdrawal(@Path("id") id: String): Response<ResponseBody>
+
+    @POST("agent/device-activation/status")
+    suspend fun getDeviceActivationStatus(@Body body: DeviceActivationStatusRequest): Response<DeviceActivationStatusResponse>
 }
