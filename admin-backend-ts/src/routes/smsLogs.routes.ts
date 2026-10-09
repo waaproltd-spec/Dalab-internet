@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { loadActiveFormats, parseWithFormats } from "../utils/smsFormats.js";
 import { randomUUID } from "node:crypto";
 import { query, queryOne, withTransaction } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
@@ -518,8 +519,24 @@ export type IngestSmsParams = {
  * verify endpoint).
  */
 export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestSmsResult> {
-  const { agentId, sender, body, parsedProvider, parsedAmount, parsedPhone, transactionRef, simSlot } = params;
+  const { agentId, sender, body, simSlot } = params;
+  let { parsedProvider, parsedAmount, parsedPhone, transactionRef } = params;
   const effectiveReceivedAt = params.receivedAt ?? new Date().toISOString();
+
+  // SMS Format Update: an SMS the Agent App couldn't read (an older app, or
+  // a provider wording change it doesn't know yet) is read here with the
+  // Super Admin's active formats -- only for that provider's own senders.
+  // This only fills in amount/phone/reference; matching and verification
+  // below are exactly the same as for any other payment SMS.
+  if ((parsedAmount == null || !parsedPhone) && sender && body) {
+    const read = parseWithFormats(await loadActiveFormats(), String(sender), String(body));
+    if (read) {
+      parsedProvider = read.parsedProvider;
+      parsedAmount = read.amount;
+      parsedPhone = read.senderPhone;
+      transactionRef = transactionRef || read.reference;
+    }
+  }
 
   // A telecom's own per-transaction reference code (e.g. Somtel eDahab's
   // "Aqanoosiga" field) is a stronger, authoritative duplicate-payment

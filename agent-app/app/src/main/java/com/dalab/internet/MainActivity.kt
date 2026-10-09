@@ -128,6 +128,7 @@ class MainActivity : ComponentActivity() {
         // normal case, but still guarded individually here too so a lingering
         // failure in one can't prevent the screen from ever rendering.
         safely("session_init") { SessionManager.init(this) }
+        safely("sms_formats_init") { com.dalab.internet.sms.DynamicSmsFormats.init(this) }
         safely("device_install_init") { com.dalab.internet.auth.DeviceInstall.init(this) }
         safely("device_activation_init") { com.dalab.internet.auth.DeviceActivationState.init(this) }
         safely("reseller_session_init") { ResellerSessionManager.init(this) }

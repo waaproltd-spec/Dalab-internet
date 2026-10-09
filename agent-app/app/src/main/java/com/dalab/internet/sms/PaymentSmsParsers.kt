@@ -188,6 +188,10 @@ object PaymentSmsParsers {
     // metadata about which SIM the broadcast arrived on, not something any
     // individual provider's text format has a say in.
     fun parse(sender: String, body: String, receivedAt: String, simSlot: Int? = null): SmsLogEntry? {
+        // The Super Admin's current format for this sender's provider (SMS
+        // Format Update) wins over the built-in one it replaces; with none
+        // active, this reads nothing and the built-ins below run as before.
+        DynamicSmsFormats.tryParse(sender, body, receivedAt)?.let { return it.copy(simSlot = simSlot) }
         for (parser in ALL) {
             parser.tryParse(sender, body, receivedAt)?.let { return it.copy(simSlot = simSlot) }
         }

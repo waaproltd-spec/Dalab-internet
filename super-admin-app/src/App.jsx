@@ -447,6 +447,12 @@ const DalabAdminApi = {
   createSmsSenderId: (body) => dalabAdminApiRequest("/admin/sms-sender-ids", { method: "POST", body }),
   setSmsSenderIdStatus: (id, enabled) => dalabAdminApiRequest(`/admin/sms-sender-ids/${id}/status`, { method: "PUT", body: { enabled } }),
   deleteSmsSenderId: (id) => dalabAdminApiRequest(`/admin/sms-sender-ids/${id}`, { method: "DELETE" }),
+  // SMS Format Update (smsFormats.routes.ts) -- Super Admin only, re-tested on the server before activation.
+  getSmsFormats: () => dalabAdminApiRequest("/admin/sms-formats"),
+  testSmsFormat: (body) => dalabAdminApiRequest("/admin/sms-formats/test", { method: "POST", body }),
+  saveSmsFormat: (body) => dalabAdminApiRequest("/admin/sms-formats", { method: "POST", body }),
+  activateSmsFormat: (id) => dalabAdminApiRequest(`/admin/sms-formats/${id}/activate`, { method: "POST" }),
+  deactivateSmsFormat: (provider) => dalabAdminApiRequest(`/admin/sms-formats/providers/${provider}/deactivate`, { method: "POST" }),
   // Resellers — wholesale users with an admin-issued ID + 8-digit PIN (no
   // self-registration) and a single overall wallet balance. Matches
   // admin-backend-ts/src/routes/resellers.routes.ts, resellerOrders.routes.ts,
@@ -951,6 +957,7 @@ const NAV = [
   { id: "shop", label: "Shop", icon: ShoppingBag, permission: "shop.manage" },
   { id: "vip-numbers", label: "VIP Numbers", icon: Award, permission: "vipNumbers.manage" },
   { id: "sms-sender-ids", label: "SMS Sender IDs", icon: MessageSquare, superAdminOnly: true },
+  { id: "sms-format-update", label: "SMS Format Update", icon: MessageSquare, superAdminOnly: true },
   { id: "referrals", label: "Referral Rewards", icon: Share2, permission: "referrals.manage" },
   { id: "pending-recovery", label: "Pending Recovery", icon: RotateCcw, permission: "orders.manage" },
   { id: "execution-logs", label: "Execution Logs", icon: Terminal, permission: "devices.manage" },
@@ -15150,6 +15157,423 @@ function PaymentWalletsPanel({ companies }) {
 // payout. Sender identity is a property of the telecom network itself, not
 // of any individual number/wallet, so this is intentionally a small global
 // table rather than a field on Payment Wallets / Provider Numbers.
+// ---------------- SMS Format Update ----------------
+// When a payment provider changes its SMS wording, the Super Admin pastes
+// one real SMS here, tests what the system reads from it, and activates it.
+// The server learns a reading rule from the SMS (smsFormats.routes.ts), the
+// Agent App downloads active rules without an app update, and every saved
+// version stays in history so an older one can be restored. Reading an SMS
+// never marks an order paid -- the normal matching/verification still does.
+const SMS_FORMAT_PROVIDERS = [
+  { key: "edahab", label: "eDahab" },
+  { key: "evc_plus", label: "EVC Plus" },
+  { key: "hormuud", label: "Hormuud" },
+  { key: "somtel", label: "Somtel" },
+  { key: "somnet", label: "Somnet" },
+  { key: "amtel", label: "Amtel" },
+];
+const SMS_FORMAT_ACTION_LABEL = { created: "Saved", activated: "Activated", restored: "Restored", deactivated: "Turned off" };
+
+const splitList = (text) => String(text || "").split(",").map((s) => s.trim()).filter(Boolean);
+
+function SmsFormatUpdatePanel() {
+  const [provider, setProvider] = useState("edahab");
+  const [sms, setSms] = useState("");
+  const [adjust, setAdjust] = useState(null); // null = let the server choose
+  const [advanced, setAdvanced] = useState(false);
+  const [result, setResult] = useState(null);
+  const [testedParams, setTestedParams] = useState(null);
+  const [dirty, setDirty] = useState(true);
+  const [testing, setTesting] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [note, setNote] = useState("");
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(null);
+  const [data, setData] = useState({ providers: [], rules: [], events: [] });
+  const [historyProvider, setHistoryProvider] = useState("edahab");
+  const [loading, setLoading] = useState(false);
+
+  const load = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setLoading(true);
+    try {
+      setData(await DalabAdminApi.getSmsFormats());
+    } catch (err) {
+      setError(err.message || "Could not load SMS formats.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { load(); }, []);
+
+  const resetTest = () => {
+    setResult(null);
+    setAdjust(null);
+    setAdvanced(false);
+    setDirty(true);
+    setSaved(null);
+    setError("");
+  };
+
+  const buildParams = () => {
+    const params = { provider, sms };
+    if (adjust) {
+      params.choice = adjust.choice;
+      params.keywords = splitList(adjust.keywords);
+      params.senders = splitList(adjust.senders);
+      if (advanced) {
+        params.pattern = adjust.pattern;
+        params.amountGroup = adjust.amountGroup === "" ? null : Number(adjust.amountGroup);
+        params.senderGroup = adjust.senderGroup === "" ? null : Number(adjust.senderGroup);
+        params.referenceGroup = adjust.referenceGroup === "" ? null : Number(adjust.referenceGroup);
+        params.recipientGroup = adjust.recipientGroup === "" ? null : Number(adjust.recipientGroup);
+      }
+    }
+    return params;
+  };
+
+  const runTest = async () => {
+    if (!sms.trim()) { setError("Paste the full SMS first."); return; }
+    setTesting(true);
+    setError("");
+    setSaved(null);
+    const params = buildParams();
+    try {
+      const res = await DalabAdminApi.testSmsFormat(params);
+      setResult(res);
+      setTestedParams({ ...params, choice: res.choice, keywords: res.rule.keywords, senders: res.rule.senders });
+      setAdjust({
+        choice: res.choice,
+        keywords: res.rule.keywords.join(", "),
+        senders: res.rule.senders.join(", "),
+        pattern: res.rule.pattern,
+        amountGroup: res.rule.amountGroup ?? "",
+        senderGroup: res.rule.senderGroup ?? "",
+        referenceGroup: res.rule.referenceGroup ?? "",
+        recipientGroup: res.rule.recipientGroup ?? "",
+      });
+      setDirty(false);
+    } catch (err) {
+      setResult(null);
+      setError(err.message || "The test could not be run.");
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const updateAdjust = (patch) => {
+    setAdjust((prev) => ({ ...prev, ...patch }));
+    setDirty(true);
+  };
+  const updateChoice = (patch) => updateAdjust({ choice: { ...adjust.choice, ...patch } });
+
+  const saveAndActivate = async () => {
+    if (!result?.ok || dirty || !testedParams) return;
+    const label = SMS_FORMAT_PROVIDERS.find((p) => p.key === provider)?.label;
+    if (!window.confirm(`Activate this SMS format for ${label}? The Agent App will use it to read ${label} payment SMS from now on.`)) return;
+    setSaving(true);
+    setError("");
+    try {
+      const res = await DalabAdminApi.saveSmsFormat({ ...testedParams, note: note.trim() || undefined });
+      setSaved(res);
+      setNote("");
+      setHistoryProvider(provider);
+      await load();
+    } catch (err) {
+      setError(err.message || "Could not save this format.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const restore = async (rule) => {
+    if (!window.confirm(`Restore ${providerLabel(rule.provider)} format version ${rule.version}? It replaces the currently active one.`)) return;
+    try {
+      await DalabAdminApi.activateSmsFormat(rule.id);
+      await load();
+    } catch (err) {
+      alert(err.message || "Could not restore this format.");
+    }
+  };
+
+  const turnOff = async (key) => {
+    if (!window.confirm(`Turn off the custom SMS format for ${providerLabel(key)}? The Agent App goes back to its built-in reading for this provider.`)) return;
+    try {
+      await DalabAdminApi.deactivateSmsFormat(key);
+      await load();
+    } catch (err) {
+      alert(err.message || "Could not turn this format off.");
+    }
+  };
+
+  const providerLabel = (key) => SMS_FORMAT_PROVIDERS.find((p) => p.key === key)?.label || key;
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage SMS formats.</div>;
+  }
+
+  const activeRules = data.rules.filter((r) => r.status === "active");
+  const history = data.rules.filter((r) => r.provider === historyProvider);
+  const events = data.events.filter((e) => e.provider === historyProvider);
+  const candidates = result?.candidates;
+  const extractedRows = result?.extracted
+    ? [
+        ["Amount", `$${result.extracted.amount}`],
+        ["Sender number", result.extracted.senderPhone],
+        ["Transaction reference", result.extracted.reference || "Not in this SMS"],
+        ["Recipient number", result.extracted.recipientPhone || "Not in this SMS"],
+        ["Recorded as provider", result.parsedProvider],
+      ]
+    : [];
+  const selectStyle = { ...inputStyle, padding: "8px 10px" };
+  const th = { textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 };
+  const td = { padding: "10px 14px", fontSize: 12.5, color: SLATE, verticalAlign: "top" };
+
+  return (
+    <div>
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>SMS Format Update</div>
+        <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2, maxWidth: 760 }}>
+          When a payment provider changes how its SMS is written, paste one real SMS here exactly as received, test it, and activate it.
+          The Agent App starts reading that provider's SMS with the new format within about a minute, without an app update.
+          Reading an SMS never marks an order as paid on its own; payments still go through the normal verification checks.
+        </div>
+      </div>
+
+      <Card style={{ padding: 18, marginBottom: 16 }}>
+        <Field label="Payment provider">
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {SMS_FORMAT_PROVIDERS.map((p) => (
+              <button
+                key={p.key}
+                onClick={() => { setProvider(p.key); resetTest(); }}
+                style={{
+                  padding: "8px 14px", borderRadius: 20, fontSize: 13, fontWeight: 700, cursor: "pointer",
+                  border: `1px solid ${provider === p.key ? INDIGO : BORDER}`,
+                  background: provider === p.key ? INDIGO : "#fff",
+                  color: provider === p.key ? "#fff" : INK,
+                }}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </Field>
+        <Field label="Original SMS (paste the whole message without changing anything)">
+          <textarea
+            value={sms}
+            onChange={(e) => { setSms(e.target.value); resetTest(); }}
+            rows={7}
+            spellCheck={false}
+            placeholder="0.09 Dollar Ayaad ka Heshay ... (620346060). Tix: PP261009.1511.117314. ..."
+            style={{ ...inputStyle, fontFamily: "monospace", fontSize: 13, resize: "vertical", lineHeight: 1.5 }}
+          />
+        </Field>
+        <Button icon={testing ? Loader2 : PlayCircle} spin={testing} onClick={runTest} disabled={testing || !sms.trim()}>
+          {result ? "Test again" : "Test SMS"}
+        </Button>
+        {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginTop: 12 }}>{error}</div>}
+      </Card>
+
+      {result && (
+        <Card style={{ padding: 18, marginBottom: 16 }}>
+          {result.ok ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, color: GREEN, fontWeight: 800, fontSize: 14, marginBottom: 12 }}>
+              <CheckCircle2 size={18} /> The SMS was read successfully
+            </div>
+          ) : (
+            <div style={{ background: "#FCE7E8", color: "#C81E2C", borderRadius: 10, padding: "10px 12px", fontSize: 13, marginBottom: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 800 }}><XCircle size={16} /> The SMS could not be used yet</div>
+              {result.error && <div style={{ marginTop: 6 }}>{result.error}</div>}
+              {result.conflicts.map((c) => <div key={c} style={{ marginTop: 6 }}>{c}</div>)}
+              <div style={{ marginTop: 6, color: SLATE }}>Adjust the fields below and test again.</div>
+            </div>
+          )}
+          {result.warnings.map((w) => (
+            <div key={w} style={{ display: "flex", gap: 8, background: "#FFF4D9", color: "#A9720A", borderRadius: 10, padding: "8px 12px", fontSize: 12.5, marginBottom: 8 }}>
+              <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} /> {w}
+            </div>
+          ))}
+
+          {extractedRows.length > 0 && (
+            <table style={{ width: "100%", borderCollapse: "collapse", margin: "6px 0 16px" }}>
+              <tbody>
+                {extractedRows.map(([label, value]) => (
+                  <tr key={label} style={{ borderTop: `1px solid ${BORDER}` }}>
+                    <td style={{ ...td, width: 200, color: MUTE }}>{label}</td>
+                    <td style={{ ...td, color: INK, fontWeight: 700, fontFamily: "monospace" }}>{value}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          {adjust && (
+            <div style={{ borderTop: `1px solid ${BORDER}`, paddingTop: 14 }}>
+              <div style={{ fontWeight: 800, fontSize: 13.5, color: INK, marginBottom: 10 }}>Adjust the format</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
+                <Field label="Amount">
+                  <select style={selectStyle} disabled={advanced} value={adjust.choice.amountIndex} onChange={(e) => updateChoice({ amountIndex: Number(e.target.value) })}>
+                    {candidates.amounts.length === 0 && <option value={-1}>None found</option>}
+                    {candidates.amounts.map((v, i) => <option key={i} value={i}>{v}</option>)}
+                  </select>
+                </Field>
+                <Field label="Sender number">
+                  <select style={selectStyle} disabled={advanced} value={adjust.choice.senderIndex} onChange={(e) => updateChoice({ senderIndex: Number(e.target.value) })}>
+                    {candidates.phones.length === 0 && <option value={-1}>None found</option>}
+                    {candidates.phones.map((v, i) => <option key={i} value={i}>{v}</option>)}
+                  </select>
+                </Field>
+                <Field label="Transaction reference">
+                  <select style={selectStyle} disabled={advanced} value={adjust.choice.referenceIndex} onChange={(e) => updateChoice({ referenceIndex: Number(e.target.value) })}>
+                    <option value={-1}>None</option>
+                    {candidates.references.map((v, i) => <option key={i} value={i}>{v}</option>)}
+                  </select>
+                </Field>
+                <Field label="Recipient number">
+                  <select style={selectStyle} disabled={advanced} value={adjust.choice.recipientIndex} onChange={(e) => updateChoice({ recipientIndex: Number(e.target.value) })}>
+                    <option value={-1}>None</option>
+                    {candidates.phones.map((v, i) => <option key={i} value={i}>{v}</option>)}
+                  </select>
+                </Field>
+              </div>
+              <Field label="Keywords every SMS of this format contains (comma separated)">
+                <input style={inputStyle} value={adjust.keywords} onChange={(e) => updateAdjust({ keywords: e.target.value })} />
+              </Field>
+              <Field label="SMS sender IDs this provider sends from (comma separated)">
+                <input style={{ ...inputStyle, fontFamily: "monospace" }} value={adjust.senders} onChange={(e) => updateAdjust({ senders: e.target.value })} />
+              </Field>
+              <button
+                onClick={() => { setAdvanced(!advanced); setDirty(true); }}
+                style={{ background: "none", border: "none", color: INDIGO, fontWeight: 700, fontSize: 12.5, cursor: "pointer", padding: 0, marginBottom: 10, display: "flex", alignItems: "center", gap: 4 }}
+              >
+                {advanced ? <ChevronDown size={14} /> : <ChevronRight size={14} />} Advanced: edit the reading pattern
+              </button>
+              {advanced && (
+                <div>
+                  <Field label="Pattern (regular expression, case-insensitive)">
+                    <textarea
+                      rows={3}
+                      spellCheck={false}
+                      style={{ ...inputStyle, fontFamily: "monospace", fontSize: 12.5 }}
+                      value={adjust.pattern}
+                      onChange={(e) => updateAdjust({ pattern: e.target.value })}
+                    />
+                  </Field>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12 }}>
+                    {[["amountGroup", "Amount group"], ["senderGroup", "Sender group"], ["referenceGroup", "Reference group"], ["recipientGroup", "Recipient group"]].map(([key, label]) => (
+                      <Field key={key} label={label}>
+                        <input style={inputStyle} inputMode="numeric" value={adjust[key]} onChange={(e) => updateAdjust({ [key]: e.target.value.replace(/\D/g, "") })} />
+                      </Field>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <Button variant="ghost" icon={testing ? Loader2 : PlayCircle} spin={testing} onClick={runTest} disabled={testing}>Test again</Button>
+                <input
+                  style={{ ...inputStyle, width: 260 }}
+                  placeholder="Note (optional), e.g. new wording from Oct 2026"
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                />
+                <Button icon={saving ? Loader2 : CheckCircle2} spin={saving} onClick={saveAndActivate} disabled={!result.ok || dirty || saving}>
+                  Save & Activate
+                </Button>
+                {dirty && <span style={{ fontSize: 12, color: MUTE }}>Test again to use your changes.</span>}
+              </div>
+            </div>
+          )}
+          {saved && (
+            <div style={{ background: "#E4F7EA", color: GREEN, borderRadius: 10, padding: "10px 12px", fontSize: 13, marginTop: 14, fontWeight: 700 }}>
+              Version {saved.version} is now active for {providerLabel(saved.provider)}. The Agent App picks it up within about a minute.
+              {saved.recentSmsRead > 0 && ` ${saved.recentSmsRead} recent SMS that couldn't be read before were read now and go through the normal payment checks.`}
+            </div>
+          )}
+        </Card>
+      )}
+
+      <Card style={{ padding: 0, overflow: "hidden", marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px" }}>
+          <div style={{ fontWeight: 800, fontSize: 14, color: INK }}>Active formats</div>
+          <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={load} disabled={loading}>Refresh</Button>
+        </div>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#FAFBFF" }}>
+              {["Provider", "Format", "Activated by", "Activated", ""].map((h) => <th key={h} style={th}>{h}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {SMS_FORMAT_PROVIDERS.map((p) => {
+              const rule = activeRules.find((r) => r.provider === p.key);
+              return (
+                <tr key={p.key} style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <td style={{ ...td, fontWeight: 700, color: INK }}>{p.label}</td>
+                  <td style={td}>{rule ? <Badge tone="green">Version {rule.version}</Badge> : <Badge tone="gray">Built-in</Badge>}</td>
+                  <td style={td}>{rule?.activatedByEmail || "—"}</td>
+                  <td style={td}>{rule?.activatedAt ? formatDateTime(rule.activatedAt) : "—"}</td>
+                  <td style={{ ...td, textAlign: "right" }}>
+                    {rule && <Button variant="danger" icon={Power} onClick={() => turnOff(p.key)}>Turn off</Button>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </Card>
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ fontWeight: 800, fontSize: 14, color: INK }}>History</div>
+          <select style={{ ...selectStyle, width: 180 }} value={historyProvider} onChange={(e) => setHistoryProvider(e.target.value)}>
+            {SMS_FORMAT_PROVIDERS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+          </select>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+            <thead>
+              <tr style={{ background: "#FAFBFF" }}>
+                {["Version", "Status", "Reads", "Sample SMS", "Saved by", "Saved", ""].map((h) => <th key={h} style={th}>{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {history.map((r) => (
+                <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <td style={{ ...td, fontWeight: 700, color: INK }}>v{r.version}{r.note && <div style={{ fontWeight: 400, color: MUTE, fontSize: 11.5 }}>{r.note}</div>}</td>
+                  <td style={td}><Badge tone={r.status === "active" ? "green" : "gray"}>{r.status === "active" ? "Active" : "Inactive"}</Badge></td>
+                  <td style={{ ...td, fontFamily: "monospace", fontSize: 11.5 }}>
+                    ${r.extracted?.amount} · {r.extracted?.senderPhone}{r.extracted?.reference ? ` · ${r.extracted.reference}` : ""}
+                  </td>
+                  <td style={{ ...td, fontFamily: "monospace", fontSize: 11.5, maxWidth: 320, wordBreak: "break-word" }}>{r.sampleSms}</td>
+                  <td style={td}>{r.createdByEmail || "—"}</td>
+                  <td style={td}>{formatDateTime(r.createdAt)}</td>
+                  <td style={{ ...td, textAlign: "right" }}>
+                    {r.status !== "active" && <Button variant="ghost" icon={RotateCcw} onClick={() => restore(r)}>Restore</Button>}
+                  </td>
+                </tr>
+              ))}
+              {history.length === 0 && (
+                <tr><td colSpan={7} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No saved formats for {providerLabel(historyProvider)} yet. The Agent App uses its built-in reading.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        {events.length > 0 && (
+          <div style={{ borderTop: `1px solid ${BORDER}`, padding: "12px 16px" }}>
+            <div style={{ fontWeight: 700, fontSize: 12, color: SLATE, marginBottom: 8 }}>Changes</div>
+            {events.map((e) => (
+              <div key={e.id} style={{ fontSize: 12.5, color: SLATE, padding: "4px 0" }}>
+                <span style={{ color: MUTE }}>{formatDateTime(e.createdAt)}</span> · {SMS_FORMAT_ACTION_LABEL[e.action] || e.action} v{e.version} · {e.adminEmail || "—"}
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 function SmsSenderIdsPanel() {
   const [senders, setSenders] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -15855,6 +16279,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "shop" && <ShopManagement />}
           {active === "vip-numbers" && <VipNumbersManagement companies={companies} />}
           {active === "sms-sender-ids" && <SmsSenderIdsPanel />}
+          {active === "sms-format-update" && <SmsFormatUpdatePanel />}
           {active === "feedback" && <FeedbackPanel admin={admin} />}
           {active === "support" && <SupportQueuePanel admin={admin} />}
           {active === "referrals" && <ReferralRewardsPanel admin={admin} />}
