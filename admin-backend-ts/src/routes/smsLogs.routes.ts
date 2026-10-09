@@ -529,7 +529,16 @@ export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestS
   // This only fills in amount/phone/reference; matching and verification
   // below are exactly the same as for any other payment SMS.
   if ((parsedAmount == null || !parsedPhone) && sender && body) {
-    const read = parseWithFormats(await loadActiveFormats(), String(sender), String(body));
+    // Best-effort: if the formats can't be loaded (e.g. their table isn't
+    // migrated yet), the SMS is still stored and processed unparsed exactly
+    // as before this feature existed -- never rejected.
+    let read: ReturnType<typeof parseWithFormats> = null;
+    try {
+      read = parseWithFormats(await loadActiveFormats(), String(sender), String(body));
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("SMS formats unavailable while reading an uploaded SMS:", (err as Error).message);
+    }
     if (read) {
       parsedProvider = read.parsedProvider;
       parsedAmount = read.amount;

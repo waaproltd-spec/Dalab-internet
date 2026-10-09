@@ -319,3 +319,22 @@ test("activating a format reads recent unread SMS once, and skips ones whose ref
   assert.equal(dup.parsed_amount, null, "an already-processed reference must not become a second payment");
   assert.match(dup.match_failure_reason, /Already processed/);
 });
+
+test("if the formats table is unavailable, an uploaded SMS is still stored instead of failing", async () => {
+  clearSmsFormatCache();
+  await query(`ALTER TABLE sms_format_rules RENAME TO sms_format_rules_hidden`);
+  try {
+    const result = await ingestPaymentSms({
+      agentId: AGENT_ID,
+      sender: "eDahab",
+      body: NEW_EDAHAB.replace("PP261009.1511.117314", "PP261011.0101.Z9").replace("0.09", "0.41"),
+      receivedAt: new Date().toISOString(),
+    });
+    assert.equal(result.status, 201);
+    const sms = await queryOne<any>(`SELECT parsed_amount FROM sms_logs WHERE id=$1`, [result.body.id]);
+    assert.equal(sms.parsed_amount, null, "stored unparsed, exactly as before the feature existed");
+  } finally {
+    await query(`ALTER TABLE sms_format_rules_hidden RENAME TO sms_format_rules`);
+    clearSmsFormatCache();
+  }
+});
