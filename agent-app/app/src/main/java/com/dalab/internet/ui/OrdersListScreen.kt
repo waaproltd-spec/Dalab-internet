@@ -1,5 +1,6 @@
 package com.dalab.internet.ui
 
+import com.dalab.internet.ui.i18n.Text
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.compose.animation.core.LinearEasing
@@ -59,12 +60,12 @@ import java.util.Locale
 // money-earned color (order-amount text further down), not brand, per the
 // shared two-color rule's own carve-out. Internal (not private) so other
 // Home-adjacent screens in this module can match the brand exactly.
-internal val DalabIndigo = com.dalab.internet.ui.theme.DalabBlue
-internal val DalabSoftBlue = com.dalab.internet.ui.theme.DalabSoftBlue
-internal val DalabGreen = com.dalab.internet.ui.theme.DalabSuccessGreen
-internal val DalabAmber = com.dalab.internet.ui.theme.DalabWarningAmber
-internal val DalabRed = com.dalab.internet.ui.theme.DalabDangerRed
-internal val DalabBrandBlue = com.dalab.internet.ui.theme.DalabInfoBlue
+internal val DalabIndigo get() = com.dalab.internet.ui.theme.DalabBlue
+internal val DalabSoftBlue get() = com.dalab.internet.ui.theme.DalabSoftBlue
+internal val DalabGreen get() = com.dalab.internet.ui.theme.DalabSuccessGreen
+internal val DalabAmber get() = com.dalab.internet.ui.theme.DalabWarningAmber
+internal val DalabRed get() = com.dalab.internet.ui.theme.DalabDangerRed
+internal val DalabBrandBlue get() = com.dalab.internet.ui.theme.DalabInfoBlue
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

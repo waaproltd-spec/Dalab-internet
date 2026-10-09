@@ -1,5 +1,7 @@
 package com.dalab.internet.ui
 
+import com.dalab.internet.ui.i18n.Text
+import com.dalab.internet.notifications.SupportAlerts
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.media.MediaPlayer
@@ -76,7 +78,7 @@ import java.util.Locale
 // (see OrdersListScreen.kt's DalabIndigo), used as the fixed fill for the
 // agent's own outgoing bubbles so they read the same dark-navy regardless
 // of light/dark theme, same as the customer side.
-private val ChatIndigo = Color(0xFF003152)
+private val ChatIndigo: Color get() = com.dalab.internet.ui.theme.DalabBlue
 
 /**
  * The Agent App's counterpart to the Admin Dashboard's "Agent Support" panel
@@ -160,6 +162,28 @@ fun SupportScreen(onBack: () -> Unit) {
     // stream AgentBackgroundService keeps connected for order events -- no
     // separate connection needed, just re-fetch on any signal.
     LaunchedEffect(Unit) { AgentEventBus.orderEvents.collect { refresh() } }
+
+    // Tell SupportAlerts which chat is actually on screen (only while this
+    // screen is resumed -- not when the app is in the background or the phone
+    // is locked), so a message in the open chat gets just a soft in-app sound
+    // instead of a full notification.
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    var screenResumed by remember {
+        mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED))
+    }
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { owner, _ ->
+            screenResumed = owner.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            SupportAlerts.setVisibleConversation(null)
+        }
+    }
+    LaunchedEffect(screenResumed, conversation?.id) {
+        SupportAlerts.setVisibleConversation(if (screenResumed) conversation?.id else null)
+    }
 
     fun toggleOnline(next: Boolean) {
         togglingOnline = true

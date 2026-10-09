@@ -1,5 +1,6 @@
 package com.dalab.internet.ui
 
+import com.dalab.internet.ui.i18n.Text
 import android.graphics.BitmapFactory
 import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult

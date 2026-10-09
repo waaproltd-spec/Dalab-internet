@@ -1,5 +1,6 @@
 package com.dalab.internet.ui
 
+import com.dalab.internet.ui.i18n.Text
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
@@ -61,8 +62,8 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
-private val TxMuted = DalabBlue.copy(alpha = 0.6f)
-private val TxBorder = DalabOutline.copy(alpha = 0.55f)
+private val TxMuted get() = DalabBlue.copy(alpha = 0.6f)
+private val TxBorder get() = DalabOutline.copy(alpha = 0.55f)
 
 private data class TxRange(val value: String, val label: String)
 

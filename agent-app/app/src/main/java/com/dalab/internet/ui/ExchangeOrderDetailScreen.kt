@@ -1,5 +1,6 @@
 package com.dalab.internet.ui
 
+import com.dalab.internet.ui.i18n.Text
 import android.content.ClipData
 import android.content.ClipboardManager
 import androidx.compose.foundation.layout.*

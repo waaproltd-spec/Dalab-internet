@@ -1,5 +1,6 @@
 package com.dalab.internet
 
+import com.dalab.internet.ui.i18n.Text
 import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -17,6 +18,8 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -28,6 +31,9 @@ import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Campaign
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.CurrencyExchange
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
@@ -103,6 +109,9 @@ import com.dalab.internet.ui.TransactionHistoryScreen
 import com.dalab.internet.ui.VipNumberAgentOrderDetailScreen
 import com.dalab.internet.ui.VipPackageAgentOrderDetailScreen
 import com.dalab.internet.ui.WalletDashboardScreen
+import com.dalab.internet.ui.theme.AgentAccent
+import com.dalab.internet.ui.theme.AgentLanguage
+import com.dalab.internet.ui.theme.AgentSettings
 import com.dalab.internet.ui.theme.DalabTheme
 import kotlinx.coroutines.launch
 
@@ -843,6 +852,36 @@ private fun MoreScreen(
         // to make room for Support Agent and Broadcast -- kept first and
         // together here since they're still core, frequently-used agent
         // work, not just occasional setup/diagnostics.
+        MoreSection(title = "Appearance & Language") {
+            AccentPickerRow()
+            HorizontalDivider()
+            SettingChoiceRow(
+                title = "Language",
+                icon = Icons.Filled.Language,
+                options = listOf(
+                    AgentLanguage.ENGLISH to "English",
+                    AgentLanguage.SOMALI to "Soomaali",
+                ),
+                selected = AgentSettings.language,
+                onSelect = { AgentSettings.updateLanguage(it) },
+            )
+        }
+        MoreSection(title = "Notifications") {
+            ListItem(
+                headlineContent = { Text("Agent Support sounds") },
+                supportingContent = { Text("Play a short tone for new customer messages and help requests") },
+                leadingContent = { Icon(Icons.Filled.Notifications, contentDescription = null) },
+                trailingContent = {
+                    Switch(
+                        checked = AgentSettings.supportSounds,
+                        onCheckedChange = { AgentSettings.updateSupportSounds(it) },
+                    )
+                },
+                modifier = Modifier.clickable { AgentSettings.updateSupportSounds(!AgentSettings.supportSounds) },
+            )
+            HorizontalDivider()
+            NotificationHealthRows()
+        }
         MoreSection(title = "My Work") {
             MoreItem(
                 title = "Sales",
@@ -970,6 +1009,151 @@ private fun MoreSection(title: String, content: @Composable ColumnScope.() -> Un
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
     ) {
         Column(content = content)
+    }
+}
+
+/**
+ * Theme color: DALAB Navy (default) plus the Customer App's 12 accents. The
+ * pick recolors every screen at once (see DalabColors.kt) and is saved.
+ */
+@Composable
+private fun AccentPickerRow() {
+    val selected = AgentSettings.accent
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.Palette, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.width(16.dp))
+            Text("Theme color", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f))
+            Text(selected.label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+        }
+        Spacer(Modifier.height(12.dp))
+        AgentAccent.entries.chunked(7).forEach { rowItems ->
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                rowItems.forEach { accent ->
+                    val isSelected = accent == selected
+                    Box(
+                        modifier = Modifier
+                            .size(32.dp)
+                            .border(
+                                width = if (isSelected) 2.dp else 0.dp,
+                                color = if (isSelected) MaterialTheme.colorScheme.onSurface else Color.Transparent,
+                                shape = CircleShape,
+                            )
+                            .padding(3.dp)
+                            .background(accent.color, CircleShape)
+                            .clickable { AgentSettings.updateAccent(accent) },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (isSelected) {
+                            Icon(Icons.Filled.Check, contentDescription = accent.label, tint = Color.White, modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * What actually decides whether a support alert reaches this phone, shown
+ * plainly: Android notification permission, and whether Firebase push
+ * (needed while the app is fully closed) is set up in this build. "Test
+ * alert" posts a real alert through the same channel/tone a customer
+ * request uses.
+ */
+@Composable
+private fun NotificationHealthRows() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    var refreshKey by remember { mutableIntStateOf(0) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) refreshKey++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    val notificationsOn = remember(refreshKey) { androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled() }
+    val pushReady = remember(refreshKey) { com.google.firebase.FirebaseApp.getApps(context).isNotEmpty() }
+    ListItem(
+        headlineContent = { Text("Notifications allowed") },
+        supportingContent = {
+            Text(if (notificationsOn) "Yes" else "No — tap to allow notifications for DALAB Agent")
+        },
+        leadingContent = { Icon(Icons.Filled.Notifications, contentDescription = null) },
+        modifier = Modifier.clickable {
+            val intent = Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            try { context.startActivity(intent) } catch (_: Exception) {}
+        },
+    )
+    ListItem(
+        headlineContent = { Text("Alerts when the app is closed") },
+        supportingContent = {
+            Text(
+                if (pushReady) "Ready (Firebase push is set up)"
+                else "Not set up — Firebase isn't configured in this build. Alerts work while the app runs in the background; ask your admin to add the Firebase config.",
+            )
+        },
+        leadingContent = { Icon(Icons.Filled.Security, contentDescription = null) },
+    )
+    ListItem(
+        headlineContent = { Text("Test alert") },
+        supportingContent = { Text("Shows a sample customer request with the DALAB alert sound") },
+        leadingContent = { Icon(Icons.Filled.Campaign, contentDescription = null) },
+        modifier = Modifier.clickable { com.dalab.internet.notifications.SupportAlerts.sendTestAlert() },
+    )
+}
+
+/** One row of segmented choices (language) in the More screen. */
+@Composable
+private fun <T> SettingChoiceRow(
+    title: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    options: List<Pair<T, String>>,
+    selected: T,
+    onSelect: (T) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.width(16.dp))
+            Text(title, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            options.forEach { (value, label) ->
+                val isSelected = value == selected
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .background(
+                            if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                            RoundedCornerShape(10.dp),
+                        )
+                        .clickable { onSelect(value) }
+                        .padding(vertical = 10.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                        color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
     }
 }
 

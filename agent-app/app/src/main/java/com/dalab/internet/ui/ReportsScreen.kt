@@ -1,5 +1,6 @@
 package com.dalab.internet.ui
 
+import com.dalab.internet.ui.i18n.Text
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -63,15 +64,15 @@ import java.util.Locale
 
 // The Agent App's own colors (ui/theme/DalabColors.kt): white background,
 // DALAB dark blue for text and the brand, and the shared status colors.
-private val RBg = DalabWhite
-private val RCard = DalabSurfaceTint
-private val RCardBorder = DalabOutline.copy(alpha = 0.6f)
-private val RText = DalabBlue
-private val RMuted = DalabBlue.copy(alpha = 0.62f)
-private val RGreen = DalabSuccessGreen
-private val RRed = DalabDangerRed
-private val RAmber = DalabWarningAmber
-private val RBlue = DalabInfoBlue
+private val RBg get() = DalabWhite
+private val RCard get() = DalabSurfaceTint
+private val RCardBorder get() = DalabOutline.copy(alpha = 0.6f)
+private val RText get() = DalabBlue
+private val RMuted get() = DalabBlue.copy(alpha = 0.62f)
+private val RGreen get() = DalabSuccessGreen
+private val RRed get() = DalabDangerRed
+private val RAmber get() = DalabWarningAmber
+private val RBlue get() = DalabInfoBlue
 
 private data class ReportRange(val value: String, val label: String)
 

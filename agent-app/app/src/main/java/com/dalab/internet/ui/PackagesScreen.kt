@@ -1,5 +1,6 @@
 package com.dalab.internet.ui
 
+import com.dalab.internet.ui.i18n.Text
 import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
@@ -55,8 +56,8 @@ import kotlinx.coroutines.withContext
 import java.net.URL
 import java.util.Locale
 
-private val PkMuted = DalabBlue.copy(alpha = 0.6f)
-private val PkBorder = DalabOutline.copy(alpha = 0.55f)
+private val PkMuted get() = DalabBlue.copy(alpha = 0.6f)
+private val PkBorder get() = DalabOutline.copy(alpha = 0.55f)
 
 private fun pkUsd(v: Double) = "$" + String.format(Locale.US, "%.2f", v)
 

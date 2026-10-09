@@ -31,7 +31,7 @@ enum class ConnectionState { CONNECTING, CONNECTED, DISCONNECTED }
  * signals the caller to re-fetch its own list/order rather than trusting the
  * event payload, same philosophy the old client used.
  */
-class RealtimeClient(private val path: String, private val onOrderEvent: () -> Unit) {
+class RealtimeClient(private val path: String, private val onOrderEvent: (data: String) -> Unit) {
 
     private val client = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS) // SSE connections stay open indefinitely
@@ -68,7 +68,7 @@ class RealtimeClient(private val path: String, private val onOrderEvent: () -> U
                 }
 
                 override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
-                    onOrderEvent()
+                    onOrderEvent(data)
                 }
 
                 override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {

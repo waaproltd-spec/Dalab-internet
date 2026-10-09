@@ -1,5 +1,6 @@
 package com.dalab.internet.ui
 
+import com.dalab.internet.ui.i18n.Text
 import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.ComponentName
