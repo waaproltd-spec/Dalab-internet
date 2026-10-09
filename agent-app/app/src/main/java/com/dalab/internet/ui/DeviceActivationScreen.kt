@@ -80,14 +80,22 @@ fun DeviceActivationScreen(onContinue: () -> Unit) {
         }
     }
 
-    // First load, then a quiet poll so approval opens the app by itself.
+    // First load, then a quiet poll for as long as this screen is shown, so
+    // approval opens the app by itself. The poll never stops early: the
+    // screen can stay up after an approval (waiting for Continue) and then
+    // be sent back to "not activated" by the server, and it must fetch a
+    // code again by itself instead of sitting there without one.
     LaunchedEffect(Unit) {
         DeviceActivationState.refresh()
         while (true) {
             delay(10_000)
-            if (DeviceActivationState.status == Status.APPROVED || DeviceActivationState.status == Status.REJECTED) break
-            DeviceActivationState.refresh()
+            if (DeviceActivationState.status != Status.APPROVED) DeviceActivationState.refresh()
         }
+    }
+    // Sent back to "not activated" without a code (the server refused a
+    // request): ask for this device's code straight away.
+    LaunchedEffect(status, code) {
+        if (status == Status.PENDING && code == null) DeviceActivationState.refresh()
     }
     LaunchedEffect(copiedCode) { if (copiedCode) { delay(2000); copiedCode = false } }
     LaunchedEffect(copiedId) { if (copiedId) { delay(2000); copiedId = false } }
