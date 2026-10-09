@@ -1,62 +1,90 @@
 package com.dalab.internet.ui.theme
 
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 
 /**
- * The single Material3 ColorScheme the whole app renders through --
+ * The Material3 color schemes the whole app renders through --
  * MainActivity's one DalabTheme { AgentApp() } call is the only place this
- * is wired in. Every stock Material3 component (Button, Switch, Checkbox,
- * TextField, NavigationBar, Dialog, FilterChip, ...) reads its color from
- * these same roles automatically, with zero per-screen overrides needed --
- * this is what makes "Blue + White everywhere, controlled from one place"
- * actually true for the ~30 screens in this app that call plain
- * Button()/TextField()/etc. without their own color overrides (previously
- * these all fell back to Material3's own default lavender/purple scheme,
- * since the app never supplied a colorScheme at all).
- *
- * Deliberately a single fixed scheme, not light/dark-mode-aware -- the app
- * never branched on isSystemInDarkTheme() before this, so this preserves
- * that exact behavior rather than introducing dark mode as unrequested
- * scope. error/errorContainer stay a real red (not blue) -- that's a
- * functional status color, not brand decoration; a blue "something failed"
- * state would be confusing, not on-brand.
+ * is wired in. Every stock Material3 component (Button, Switch, TextField,
+ * NavigationBar, Dialog, ...) reads its colors from these roles, and the
+ * Dalab* colors in DalabColors.kt follow the same Light/Dark and Theme
+ * color choice. error stays a real red in both: it's a status color, not
+ * brand decoration.
  */
-/** The scheme for the agent's current Theme color (see AgentSettings). */
-fun dalabColorScheme() = lightColorScheme(
-    primary = DalabBlue,
-    onPrimary = DalabWhite,
-    primaryContainer = DalabSoftBlue,
-    onPrimaryContainer = DalabBlue,
-    secondary = DalabBlue,
-    onSecondary = DalabWhite,
-    secondaryContainer = DalabSoftBlue,
-    onSecondaryContainer = DalabBlue,
-    tertiary = DalabBlue,
-    onTertiary = DalabWhite,
-    tertiaryContainer = DalabSoftBlue,
-    onTertiaryContainer = DalabBlue,
-    background = DalabWhite,
-    onBackground = DalabBlue,
-    surface = DalabWhite,
-    onSurface = DalabBlue,
-    surfaceVariant = DalabSurfaceTint,
-    onSurfaceVariant = DalabBlue,
-    surfaceTint = DalabBlue,
-    inverseSurface = DalabBlue,
-    inverseOnSurface = DalabWhite,
-    inversePrimary = DalabSoftBlue,
-    outline = DalabOutline,
-    outlineVariant = DalabSurfaceTint,
-    error = DalabDangerRed,
-    onError = DalabWhite,
-    errorContainer = DalabDangerRedContainer,
-    onErrorContainer = DalabDangerRed,
-)
+fun dalabColorScheme(p: AgentPalette = currentAgentPalette): ColorScheme {
+    val onBrandFill = AgentLightPalette.white
+    return if (!p.dark) {
+        lightColorScheme(
+            primary = p.brandFill,
+            onPrimary = onBrandFill,
+            primaryContainer = p.softBlue,
+            onPrimaryContainer = p.blue,
+            secondary = p.brandFill,
+            onSecondary = onBrandFill,
+            secondaryContainer = p.softBlue,
+            onSecondaryContainer = p.blue,
+            tertiary = p.brandFill,
+            onTertiary = onBrandFill,
+            tertiaryContainer = p.softBlue,
+            onTertiaryContainer = p.blue,
+            background = p.white,
+            onBackground = p.blue,
+            surface = p.white,
+            onSurface = p.blue,
+            surfaceVariant = p.surfaceTint,
+            onSurfaceVariant = p.blue,
+            surfaceTint = p.brandFill,
+            inverseSurface = p.brandFill,
+            inverseOnSurface = onBrandFill,
+            inversePrimary = p.softBlue,
+            outline = p.outline,
+            outlineVariant = p.surfaceTint,
+            error = p.danger,
+            onError = onBrandFill,
+            errorContainer = p.dangerContainer,
+            onErrorContainer = p.danger,
+        )
+    } else {
+        darkColorScheme(
+            primary = p.brandFillLight,
+            onPrimary = onBrandFill,
+            primaryContainer = p.softBlue,
+            onPrimaryContainer = p.blue,
+            secondary = p.brandFillLight,
+            onSecondary = onBrandFill,
+            secondaryContainer = p.softBlue,
+            onSecondaryContainer = p.blue,
+            tertiary = p.brandFillLight,
+            onTertiary = onBrandFill,
+            tertiaryContainer = p.softBlue,
+            onTertiaryContainer = p.blue,
+            background = p.white,
+            onBackground = p.blue,
+            surface = p.white,
+            onSurface = p.blue,
+            surfaceVariant = p.surfaceTint,
+            onSurfaceVariant = p.blue,
+            surfaceTint = p.brandFillLight,
+            inverseSurface = p.blue,
+            inverseOnSurface = p.white,
+            inversePrimary = p.brandFill,
+            outline = p.outline,
+            outlineVariant = p.surfaceTint,
+            error = p.danger,
+            onError = p.white,
+            errorContainer = p.dangerContainer,
+            onErrorContainer = p.danger,
+        )
+    }
+}
 
 @Composable
 fun DalabTheme(content: @Composable () -> Unit) {
-    // Reads AgentSettings.accent, so picking a Theme color recolors the app.
+    // Reads AgentSettings (theme mode, phone setting, Theme color), so any
+    // change recolors the app at once.
     MaterialTheme(colorScheme = dalabColorScheme(), content = content)
 }

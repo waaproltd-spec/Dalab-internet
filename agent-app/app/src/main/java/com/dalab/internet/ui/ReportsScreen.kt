@@ -61,6 +61,8 @@ import com.dalab.internet.ui.theme.DalabSurfaceTint
 import com.dalab.internet.ui.theme.DalabWarningAmber
 import com.dalab.internet.ui.theme.DalabWhite
 import java.util.Locale
+import com.dalab.internet.ui.theme.DalabBrandFill
+import com.dalab.internet.ui.theme.DalabBrandFillLight
 
 // The Agent App's own colors (ui/theme/DalabColors.kt): white background,
 // DALAB dark blue for text and the brand, and the shared status colors.
@@ -203,7 +205,7 @@ private fun CompanyReportScreen(company: ReportCompanyCard, initialRange: String
                     REPORT_RANGES.forEach { r ->
                         val selected = r.value == range
                         Surface(
-                            color = if (selected) DalabBlue else RCard,
+                            color = if (selected) DalabBrandFill else RCard,
                             shape = RoundedCornerShape(12.dp),
                             border = BorderStroke(1.dp, if (selected) DalabBlue else RCardBorder),
                             modifier = Modifier.weight(1f).clickable { range = r.value },
@@ -261,7 +263,7 @@ private fun BrandHeader(onBack: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(bottomStart = 26.dp, bottomEnd = 26.dp))
-            .background(Brush.linearGradient(listOf(DalabBlue, DalabSoftBlue)))
+            .background(Brush.linearGradient(listOf(DalabBrandFill, DalabBrandFillLight)))
             .statusBarsPadding()
             .padding(horizontal = 8.dp, vertical = 14.dp),
     ) {

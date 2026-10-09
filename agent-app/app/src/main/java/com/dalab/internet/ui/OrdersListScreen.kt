@@ -51,6 +51,11 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import com.dalab.internet.ui.theme.DalabBrandFill
+import com.dalab.internet.ui.theme.DalabBrandFillLight
+import com.dalab.internet.ui.theme.DalabMuted
+import com.dalab.internet.ui.theme.DalabSurfaceTint
+import com.dalab.internet.ui.theme.DalabWhite
 
 // DALAB brand — Dark Azure + Soft Blue, shared with the Customer App and
 // Admin Dashboard. Re-exported here (under the names this module's screens
@@ -60,12 +65,12 @@ import java.util.Locale
 // money-earned color (order-amount text further down), not brand, per the
 // shared two-color rule's own carve-out. Internal (not private) so other
 // Home-adjacent screens in this module can match the brand exactly.
-internal val DalabIndigo get() = com.dalab.internet.ui.theme.DalabBlue
-internal val DalabSoftBlue get() = com.dalab.internet.ui.theme.DalabSoftBlue
-internal val DalabGreen get() = com.dalab.internet.ui.theme.DalabSuccessGreen
-internal val DalabAmber get() = com.dalab.internet.ui.theme.DalabWarningAmber
-internal val DalabRed get() = com.dalab.internet.ui.theme.DalabDangerRed
-internal val DalabBrandBlue get() = com.dalab.internet.ui.theme.DalabInfoBlue
+internal val DalabIndigo: Color @Composable @ReadOnlyComposable get() = com.dalab.internet.ui.theme.DalabBlue
+internal val DalabSoftBlue: Color @Composable @ReadOnlyComposable get() = com.dalab.internet.ui.theme.DalabSoftBlue
+internal val DalabGreen: Color @Composable @ReadOnlyComposable get() = com.dalab.internet.ui.theme.DalabSuccessGreen
+internal val DalabAmber: Color @Composable @ReadOnlyComposable get() = com.dalab.internet.ui.theme.DalabWarningAmber
+internal val DalabRed: Color @Composable @ReadOnlyComposable get() = com.dalab.internet.ui.theme.DalabDangerRed
+internal val DalabBrandBlue: Color @Composable @ReadOnlyComposable get() = com.dalab.internet.ui.theme.DalabInfoBlue
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -188,7 +193,7 @@ private fun AgentHomeHeader(
         modifier = Modifier
             .fillMaxWidth()
             .background(
-                Brush.linearGradient(listOf(DalabIndigo, DalabSoftBlue)),
+                Brush.linearGradient(listOf(DalabBrandFill, DalabBrandFillLight)),
                 shape = RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp),
             )
             .padding(20.dp),
@@ -313,7 +318,7 @@ private fun AgentBalanceSection(balances: List<AgentBalanceEntry>, loading: Bool
         }
 
         Spacer(Modifier.height(20.dp))
-        HorizontalDivider(color = Color(0xFFE5E7EB))
+        HorizontalDivider(color = DalabSurfaceTint)
         Spacer(Modifier.height(20.dp))
 
         BalanceGroupHeader(
@@ -355,7 +360,7 @@ private fun BalanceGroupHeader(title: String, totalBalance: Double, loading: Boo
             }
             Spacer(Modifier.width(8.dp))
             Column(horizontalAlignment = Alignment.End) {
-                Text("Total Balance", style = MaterialTheme.typography.labelSmall, color = Color(0xFF6B7280))
+                Text("Total Balance", style = MaterialTheme.typography.labelSmall, color = DalabMuted)
                 Text(
                     if (loading) "…" else "$ ${"%.2f".format(totalBalance)}",
                     style = MaterialTheme.typography.titleMedium,
@@ -383,17 +388,23 @@ internal fun logoResFor(providerKey: String): Int = when (providerKey) {
     else -> R.drawable.dalab_logo
 }
 
-/** Each provider's brand color for the balance cards below -- reused from
- * the app's existing functional-color set (DalabColors.kt) rather than
- * introducing new one-off hex values, and matching the same hues the
- * Customer App already uses for these same providers. */
+/** Each provider's brand color for the balance cards below. Fixed brand
+ * colors on purpose -- NOT the theme-dependent Dalab* colors: a provider's
+ * card must look the same (and keep readable white/navy text) in Light and
+ * Dark mode and with any Theme color. Same hues the Customer App uses. */
 private fun providerBrandColor(providerKey: String): Color = when (providerKey) {
-    "evc_plus", "hormuud" -> DalabGreen
-    "edahab", "somtel" -> DalabAmber
-    "somnet" -> DalabBrandBlue
-    "amtel" -> DalabRed
-    else -> DalabIndigo
+    "evc_plus", "hormuud" -> ProviderGreen
+    "edahab", "somtel" -> ProviderYellow
+    "somnet" -> ProviderBlue
+    "amtel" -> ProviderRed
+    else -> ProviderNavy
 }
+
+private val ProviderGreen = Color(0xFF16A34A)
+private val ProviderYellow = Color(0xFFF2C200)
+private val ProviderBlue = Color(0xFF1D4ED8)
+private val ProviderRed = Color(0xFFC81E2C)
+private val ProviderNavy = Color(0xFF0A3B63)
 
 // Payment Method card (EVC Plus/eDahab): white card with a soft brand-color
 // wash behind the logo and a colored balance figure -- these are the
@@ -402,7 +413,7 @@ private fun providerBrandColor(providerKey: String): Color = when (providerKey) 
 @Composable
 private fun PaymentMethodCard(entry: AgentBalanceEntry, loading: Boolean, modifier: Modifier = Modifier) {
     val accent = providerBrandColor(entry.providerKey)
-    Surface(color = Color.White, shape = RoundedCornerShape(18.dp), shadowElevation = 1.dp, modifier = modifier) {
+    Surface(color = DalabWhite, shape = RoundedCornerShape(18.dp), shadowElevation = 1.dp, modifier = modifier) {
         Box {
             Box(
                 modifier = Modifier
@@ -427,7 +438,9 @@ private fun PaymentMethodCard(entry: AgentBalanceEntry, loading: Boolean, modifi
                     if (loading) "…" else "$ ${"%.2f".format(entry.balance)}",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
-                    color = accent,
+                    // eDahab's yellow is too light to read as text on a white
+                    // card -- a deeper gold keeps the same hue, readable.
+                    color = if (accent == ProviderYellow) Color(0xFFB8860B) else accent,
                 )
             }
             Box(
@@ -436,7 +449,7 @@ private fun PaymentMethodCard(entry: AgentBalanceEntry, loading: Boolean, modifi
                     .padding(end = 10.dp)
                     .size(28.dp)
                     .clip(CircleShape)
-                    .background(Color(0xFFF3F4F6)),
+                    .background(DalabSurfaceTint),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = DalabIndigo, modifier = Modifier.size(18.dp))
@@ -458,7 +471,8 @@ private fun PaymentCompanyCard(entry: AgentBalanceEntry, loading: Boolean, modif
     // Somtel's brand color is a bright yellow -- white text on it reads
     // poorly, so it's the one company card using dark text instead of
     // white, matching the reference design's own contrast choice.
-    val onBrand = if (entry.providerKey == "somtel") DalabIndigo else Color.White
+    // Fixed navy (not the theme's text color, which turns light in Dark mode).
+    val onBrand = if (entry.providerKey == "somtel") ProviderNavy else Color.White
     Surface(color = brand, shape = RoundedCornerShape(18.dp), shadowElevation = 1.dp, modifier = modifier) {
         Box {
             Box(

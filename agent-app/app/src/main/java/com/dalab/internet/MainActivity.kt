@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.CurrencyExchange
@@ -112,6 +113,7 @@ import com.dalab.internet.ui.WalletDashboardScreen
 import com.dalab.internet.ui.theme.AgentAccent
 import com.dalab.internet.ui.theme.AgentLanguage
 import com.dalab.internet.ui.theme.AgentSettings
+import com.dalab.internet.ui.theme.AgentThemeMode
 import com.dalab.internet.ui.theme.DalabTheme
 import kotlinx.coroutines.launch
 
@@ -135,6 +137,13 @@ class MainActivity : ComponentActivity() {
         safely("agent_alerts_init") { AgentAlertsState.init(this) }
         safely("notification_channel_init") { createNotificationChannel() }
         safely("support_deep_link_init") { handleIntent(intent) }
+        safely("agent_settings_init") {
+            AgentSettings.init(this)
+            // For Theme → System: the phone's own dark setting (the Activity
+            // is recreated whenever the phone switches it).
+            val night = resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK
+            AgentSettings.updateSystemDark(night == android.content.res.Configuration.UI_MODE_NIGHT_YES)
+        }
 
         val loggedIn = try { SessionManager.isLoggedIn() } catch (e: Exception) {
             DiagnosticsLog.record("session_check", "isLoggedIn() failed: ${e.message}"); false
@@ -853,6 +862,18 @@ private fun MoreScreen(
         // together here since they're still core, frequently-used agent
         // work, not just occasional setup/diagnostics.
         MoreSection(title = "Appearance & Language") {
+            SettingChoiceRow(
+                title = "Theme",
+                icon = Icons.Filled.DarkMode,
+                options = listOf(
+                    AgentThemeMode.LIGHT to "Light",
+                    AgentThemeMode.DARK to "Dark",
+                    AgentThemeMode.SYSTEM to "System",
+                ),
+                selected = AgentSettings.themeMode,
+                onSelect = { AgentSettings.updateThemeMode(it) },
+            )
+            HorizontalDivider()
             AccentPickerRow()
             HorizontalDivider()
             SettingChoiceRow(
@@ -1109,7 +1130,7 @@ private fun NotificationHealthRows() {
     )
 }
 
-/** One row of segmented choices (language) in the More screen. */
+/** One row of segmented choices (theme mode / language) in the More screen. */
 @Composable
 private fun <T> SettingChoiceRow(
     title: String,

@@ -34,6 +34,12 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
 import java.util.TimeZone
+import com.dalab.internet.ui.theme.DalabBrandFill
+import com.dalab.internet.ui.theme.DalabBrandFillLight
+import com.dalab.internet.ui.theme.DalabWhite
+import com.dalab.internet.ui.theme.DalabMuted
+import com.dalab.internet.ui.theme.DalabFaint
+import com.dalab.internet.ui.theme.DalabOutline
 
 private enum class CustomerFilterTab(val label: String) {
     ALL("All"),
@@ -127,7 +133,7 @@ fun CustomersScreen(onBack: () -> Unit, onOpenCustomer: (String) -> Unit) {
         if (sortAscending) list.reversed() else list
     }
 
-    Scaffold(containerColor = Color.White) { padding ->
+    Scaffold(containerColor = DalabWhite) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
             CustomersHeader(onBack = onBack, onAddCustomer = { showAddDialog = true })
 
@@ -184,7 +190,7 @@ fun CustomersScreen(onBack: () -> Unit, onOpenCustomer: (String) -> Unit) {
                         if (query.isBlank()) "No customers found." else "No customers match \"$query\".",
                         modifier = Modifier.align(Alignment.Center),
                         style = MaterialTheme.typography.bodyMedium,
-                        color = Color(0xFF6B7280),
+                        color = DalabMuted,
                     )
                 } else {
                     LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -212,7 +218,7 @@ private fun CustomersHeader(onBack: () -> Unit, onAddCustomer: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .background(
-                Brush.linearGradient(listOf(DalabIndigo, DalabSoftBlue)),
+                Brush.linearGradient(listOf(DalabBrandFill, DalabBrandFillLight)),
                 shape = RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp),
             )
             .padding(horizontal = 8.dp, vertical = 14.dp),
@@ -227,7 +233,7 @@ private fun CustomersHeader(onBack: () -> Unit, onAddCustomer: () -> Unit) {
         }
         Surface(color = Color.White, shape = CircleShape, modifier = Modifier.clickable(onClick = onAddCustomer)) {
             Box(modifier = Modifier.size(44.dp), contentAlignment = Alignment.Center) {
-                Icon(Icons.Filled.PersonAdd, contentDescription = "Add customer", tint = DalabIndigo, modifier = Modifier.size(20.dp))
+                Icon(Icons.Filled.PersonAdd, contentDescription = "Add customer", tint = DalabBrandFill, modifier = Modifier.size(20.dp))
             }
         }
         Spacer(Modifier.width(4.dp))
@@ -248,10 +254,10 @@ private fun CustomerStatCard(label: String, value: String, color: Color, modifie
 @Composable
 private fun FilterPill(label: String, selected: Boolean, onClick: () -> Unit) {
     Surface(
-        color = if (selected) DalabIndigo else Color.White,
+        color = if (selected) DalabBrandFill else DalabWhite,
         contentColor = if (selected) Color.White else DalabIndigo,
         shape = RoundedCornerShape(999.dp),
-        border = if (selected) null else BorderStroke(1.dp, Color(0xFFE5E7EB)),
+        border = if (selected) null else BorderStroke(1.dp, DalabOutline),
         modifier = Modifier.clickable(onClick = onClick),
     ) {
         Text(
@@ -265,7 +271,7 @@ private fun FilterPill(label: String, selected: Boolean, onClick: () -> Unit) {
 
 @Composable
 private fun CustomerRow(customer: CustomerSummary, onClick: () -> Unit) {
-    Surface(color = Color.White, shape = RoundedCornerShape(14.dp), shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
+    Surface(color = DalabWhite, shape = RoundedCornerShape(14.dp), shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Row(
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp).fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -274,14 +280,14 @@ private fun CustomerRow(customer: CustomerSummary, onClick: () -> Unit) {
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(customer.name?.takeIf { it.isNotBlank() } ?: "Unnamed customer", fontWeight = FontWeight.SemiBold, color = DalabIndigo, style = MaterialTheme.typography.bodyLarge)
-                Text(formatSomaliPhone(customer.phone), style = MaterialTheme.typography.bodySmall, color = Color(0xFF6B7280))
+                Text(formatSomaliPhone(customer.phone), style = MaterialTheme.typography.bodySmall, color = DalabMuted)
             }
             if (customer.status == "blocked") {
                 Spacer(Modifier.width(8.dp))
                 StatusPill(label = "Suspended", danger = true)
                 Spacer(Modifier.width(8.dp))
             }
-            Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = Color(0xFF9CA3AF))
+            Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = DalabFaint)
         }
     }
 }
@@ -317,7 +323,7 @@ private fun AddCustomerDialog(onDismiss: () -> Unit, onSaved: () -> Unit) {
     val scope = rememberCoroutineScope()
 
     Dialog(onDismissRequest = onDismiss) {
-        Surface(shape = RoundedCornerShape(16.dp), color = Color.White) {
+        Surface(shape = RoundedCornerShape(16.dp), color = DalabWhite) {
             Column(modifier = Modifier.padding(20.dp)) {
                 Text("New customer", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = DalabIndigo)
                 Spacer(Modifier.height(16.dp))

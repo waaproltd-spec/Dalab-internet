@@ -22,30 +22,120 @@ import androidx.compose.ui.graphics.lerp
  * future rebrand only ever touches DalabBlue/DalabSoftBlue, never a status
  * color that happens to live in the same file.
  */
-// The brand color and its pale tint follow the agent's Theme color (More →
-// Appearance & Language). They're getters over Compose state, so every
-// screen that reads them redraws the moment the color changes. DALAB Navy,
-// the default, is exactly the original #003152 / #ADDFF1.
-val DalabBlue: Color get() = AgentSettings.accent.color
-val DalabSoftBlue: Color get() = AgentSettings.accent.let { if (it == AgentAccent.DALAB_NAVY) DalabNavySoft else lerp(it.color, Color.White, 0.65f) }
-private val DalabNavySoft = Color(0xFFADDFF1)
-val DalabWhite = Color(0xFFFFFFFF)
+/**
+ * The palette every Dalab* color reads: Light or Dark mode (More →
+ * Appearance & Language → Theme) and the Theme color. The Dalab* names are
+ * getters over Compose state, so a screen that reads them redraws the
+ * moment either setting changes -- and they work anywhere, not only inside
+ * a @Composable.
+ *
+ *  - [DalabBlue]: the brand color for TEXT and ICONS on the page (navy in
+ *    Light, a light blue in Dark, so it stays readable);
+ *  - [DalabBrandFill]: the brand color as a FILL with white text/icons on
+ *    it (buttons, headers, selected chips) -- deep in both modes;
+ *  - [DalabWhite] / [DalabSurfaceTint]: page and card backgrounds;
+ *  - [DalabSoftBlue]: pale brand tint behind icons and highlights;
+ *  - [DalabMuted] / [DalabFaint]: grey secondary text and hints.
+ * Status colors (success/warning/danger/info) keep their meaning in both
+ * modes, a little lighter in Dark.
+ */
+data class AgentPalette(
+    val blue: Color,
+    val brandFill: Color,
+    val brandFillLight: Color,
+    val softBlue: Color,
+    val white: Color,
+    val surfaceTint: Color,
+    val outline: Color,
+    val success: Color,
+    val warning: Color,
+    val danger: Color,
+    val dangerContainer: Color,
+    val info: Color,
+    val muted: Color,
+    val faint: Color,
+    val dark: Boolean = false,
+)
 
-// A pale, blue-tinted neutral for card/surface differentiation against a
-// pure-white background, and a matching mid-tone for borders/dividers --
-// both derived from DalabSoftBlue rather than introducing a new hue.
-val DalabSurfaceTint = Color(0xFFF3F8FB)
-val DalabOutline = Color(0xFFB9CBD6)
+/** DALAB Navy in Light mode -- exactly the original colors. */
+val AgentLightPalette = AgentPalette(
+    blue = Color(0xFF003152),
+    brandFill = Color(0xFF003152),
+    brandFillLight = Color(0xFFADDFF1),
+    softBlue = Color(0xFFADDFF1),
+    white = Color(0xFFFFFFFF),
+    surfaceTint = Color(0xFFF3F8FB),
+    outline = Color(0xFFB9CBD6),
+    success = Color(0xFF16A34A),
+    warning = Color(0xFFF2C200),
+    danger = Color(0xFFC81E2C),
+    dangerContainer = Color(0xFFFEE2E2),
+    info = Color(0xFF1D4ED8),
+    muted = Color(0xFF6B7280),
+    faint = Color(0xFF9CA3AF),
+)
 
-// Functional status colors -- see this file's header comment for why these
-// are excluded from the brand palette proper. Matches the exact hex values
-// already used for the same purpose elsewhere in this app (OrderCard's
-// status pills, balance low-threshold warnings, etc.).
-val DalabSuccessGreen = Color(0xFF16A34A)
-val DalabWarningAmber = Color(0xFFF2C200)
-val DalabDangerRed = Color(0xFFC81E2C)
-val DalabDangerRedContainer = Color(0xFFFEE2E2)
-val DalabInfoBlue = Color(0xFF1D4ED8)
+/** DALAB Navy in Dark mode. */
+val AgentDarkPalette = AgentPalette(
+    blue = Color(0xFFCFE3F7),
+    brandFill = Color(0xFF1B5A93),
+    brandFillLight = Color(0xFF2E78B8),
+    softBlue = Color(0xFF2A4A6E),
+    white = Color(0xFF0F1626),
+    surfaceTint = Color(0xFF18233A),
+    outline = Color(0xFF3A4A66),
+    success = Color(0xFF34D399),
+    warning = Color(0xFFF2C200),
+    danger = Color(0xFFF87171),
+    dangerContainer = Color(0xFF3B1219),
+    info = Color(0xFF60A5FA),
+    muted = Color(0xFFA3ACBE),
+    faint = Color(0xFF7C879C),
+    dark = true,
+)
+
+/**
+ * The palette for [accent] in Light or Dark mode. DALAB Navy is the
+ * hand-tuned pair above; every other color swaps only the brand roles and
+ * keeps the neutral and status colors, so white text stays readable on
+ * every fill.
+ */
+fun agentPalette(accent: AgentAccent, dark: Boolean): AgentPalette {
+    val base = if (dark) AgentDarkPalette else AgentLightPalette
+    if (accent == AgentAccent.DALAB_NAVY) return base
+    val c = accent.color
+    return if (!dark) {
+        base.copy(blue = c, brandFill = c, brandFillLight = lerp(c, Color.White, 0.55f), softBlue = lerp(c, Color.White, 0.65f))
+    } else {
+        base.copy(
+            blue = lerp(c, Color.White, 0.7f),
+            brandFill = c,
+            brandFillLight = lerp(c, Color.White, 0.12f),
+            softBlue = lerp(c, base.white, 0.55f),
+        )
+    }
+}
+
+/** The palette for the agent's current settings. */
+val currentAgentPalette: AgentPalette get() = agentPalette(AgentSettings.accent, AgentSettings.isDark)
+
+val DalabBlue: Color get() = currentAgentPalette.blue
+val DalabBrandFill: Color get() = currentAgentPalette.brandFill
+val DalabBrandFillLight: Color get() = currentAgentPalette.brandFillLight
+val DalabSoftBlue: Color get() = currentAgentPalette.softBlue
+val DalabWhite: Color get() = currentAgentPalette.white
+val DalabSurfaceTint: Color get() = currentAgentPalette.surfaceTint
+val DalabOutline: Color get() = currentAgentPalette.outline
+val DalabSuccessGreen: Color get() = currentAgentPalette.success
+val DalabWarningAmber: Color get() = currentAgentPalette.warning
+val DalabDangerRed: Color get() = currentAgentPalette.danger
+val DalabDangerRedContainer: Color get() = currentAgentPalette.dangerContainer
+val DalabInfoBlue: Color get() = currentAgentPalette.info
+val DalabMuted: Color get() = currentAgentPalette.muted
+val DalabFaint: Color get() = currentAgentPalette.faint
+
+/** True while Dark mode is on. */
+val isAgentDark: Boolean get() = AgentSettings.isDark
 
 /**
  * The colors an agent can pick under More → Appearance & Language → Theme
