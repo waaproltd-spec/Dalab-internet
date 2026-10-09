@@ -82,6 +82,21 @@ class PaymentSmsParsersTest {
     }
 
     @Test
+    fun `Somtel eDahab newer format with the payer number in brackets parses amount, phone and Tix reference`() {
+        val entry = PaymentSmsParsers.parse(
+            sender = "eDahab",
+            body = "0.09 Dollar Ayaad ka Heshay Yaasiin Maxamed Aadan  (620346060). Tix: PP261009.1511.117314. " +
+                "HHaraagaagu waa: 0.77 Dollar. Tar: 09-10-2026 15:11 PM [eDahab Service-Dollar] " +
+                "La soo dag App-ka DahabPlus https://onelink.to/dahabpluss",
+            receivedAt = "2026-10-09T15:11:00+03:00",
+        )
+        assertEquals("Somtel", entry?.parsedProvider)
+        assertEquals(0.09, entry?.parsedAmount)
+        assertEquals("620346060", entry?.parsedPhone)
+        assertEquals("PP261009.1511.117314", entry?.transactionRef)
+    }
+
+    @Test
     fun `Somtel eDahab still parses correctly when the reference field is missing`() {
         val entry = PaymentSmsParsers.parse(
             sender = "eDahab",

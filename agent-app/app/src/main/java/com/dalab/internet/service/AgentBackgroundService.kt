@@ -120,6 +120,7 @@ class AgentBackgroundService : Service() {
         newScope.launch { SimRoutingRepository.refresh() }
         newScope.launch { ResellerWithdrawalSimRoutingRepository.refresh() }
         newScope.launch { SmsSenderIdRepository.refresh() }
+        newScope.launch { com.dalab.internet.sms.DynamicSmsFormats.refresh() }
         newScope.launch {
             if (!SessionManager.isLoggedIn()) return@launch
             try {
@@ -427,6 +428,7 @@ class AgentBackgroundService : Service() {
                     SimRoutingRepository.refresh()
                     ResellerWithdrawalSimRoutingRepository.refresh()
                     SmsSenderIdRepository.refresh()
+                    com.dalab.internet.sms.DynamicSmsFormats.refresh()
                 }
             } catch (e: Exception) {
                 DiagnosticsLog.record("sim_routing_loop", "Tick failed: ${e.stackTraceToString().take(2000)}")

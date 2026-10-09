@@ -95,8 +95,12 @@ object SomtelEdahabParser : PaymentSmsParser {
     override val senders: List<String>
         get() = SmsSenderIdRepository.sendersFor("somtel_edahab", listOf("eDahab"))
 
+    // Two live templates: the older "...Heshay <name>.Lambarka :620346060 ..."
+    // and the newer "...Heshay <name>  (620346060). Tix: PP261009.1511.117314.
+    // HHaraagaagu waa: 0.77 Dollar. Tar: 09-10-2026 15:11 PM [eDahab Service-Dollar]"
+    // where the payer's number sits in brackets after the name.
     private val pattern = Regex(
-        """$AMOUNT_PATTERN\s*Dollar\s+Ayaad\s+Ka\s+Heshay[\s\S]*?Lambarka\s*:\s*(\d{6,15})""",
+        """$AMOUNT_PATTERN\s*Dollar\s+Ayaad\s+Ka\s+Heshay[\s\S]*?(?:Lambarka\s*:\s*|\(\s*)(\d{6,15})""",
         RegexOption.IGNORE_CASE
     )
 
@@ -105,14 +109,15 @@ object SomtelEdahabParser : PaymentSmsParser {
     // separately from `pattern` above (rather than folded into one regex) so
     // a missing/reformatted reference field never breaks basic amount+phone
     // parsing — it's a bonus dedup signal, not a requirement for a match.
-    private val referencePattern = Regex("""Aqanoosiga\s*:\s*(\S+)""", RegexOption.IGNORE_CASE)
+    // The newer template calls it "Tix" (tixraac) and ends it with a period.
+    private val referencePattern = Regex("""(?:Aqanoosiga|Tix)\s*:\s*(\S+)""", RegexOption.IGNORE_CASE)
 
     override fun tryParse(sender: String, body: String, receivedAt: String): SmsLogEntry? {
         if (senders.none { it.equals(sender.trim(), ignoreCase = true) }) return null
         if (!body.contains("eDahab", ignoreCase = true)) return null
         val match = pattern.find(body) ?: return null
         val (amount, phone) = match.destructured
-        val reference = referencePattern.find(body)?.groupValues?.get(1)
+        val reference = referencePattern.find(body)?.groupValues?.get(1)?.trimEnd('.')?.takeIf { it.isNotEmpty() }
         return SmsLogEntry(
             sender = sender,
             body = body,
@@ -183,6 +188,10 @@ object PaymentSmsParsers {
     // metadata about which SIM the broadcast arrived on, not something any
     // individual provider's text format has a say in.
     fun parse(sender: String, body: String, receivedAt: String, simSlot: Int? = null): SmsLogEntry? {
+        // The Super Admin's current format for this sender's provider (SMS
+        // Format Update) wins over the built-in one it replaces; with none
+        // active, this reads nothing and the built-ins below run as before.
+        DynamicSmsFormats.tryParse(sender, body, receivedAt)?.let { return it.copy(simSlot = simSlot) }
         for (parser in ALL) {
             parser.tryParse(sender, body, receivedAt)?.let { return it.copy(simSlot = simSlot) }
         }

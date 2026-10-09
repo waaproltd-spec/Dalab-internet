@@ -194,6 +194,32 @@ data class PromoAdStatusRequest(val enabled: Boolean)
 data class PromoAdReorderRequest(val orderedIds: List<String>)
 
 data class DialAttemptStartRequest(val simSlot: Int?, val ussdString: String, val attemptNumber: Int)
+
+/** GET /agent/sms-formats (smsFormats.routes.ts) -- see sms/DynamicSmsFormats.kt. */
+data class SmsFormatDto(
+    val id: String,
+    val provider: String,
+    val parsedProvider: String?,
+    val version: Int,
+    val pattern: String,
+    val amountGroup: Int,
+    val senderGroup: Int,
+    val referenceGroup: Int? = null,
+    val recipientGroup: Int? = null,
+    val keywords: List<String> = emptyList(),
+    val senders: List<String> = emptyList(),
+)
+
+/** POST /agent/device-activation/status (deviceActivation.routes.ts). */
+data class DeviceActivationStatusRequest(val installId: String, val deviceModel: String?, val agentDeviceId: String?)
+data class DeviceActivationStatusResponse(
+    // "pending" | "approved" | "rejected" (a revoked device comes back as pending with a new code)
+    val status: String,
+    val required: Boolean = true,
+    val deviceNumber: String? = null,
+    val code: String? = null,
+    val codeExpiresAt: String? = null,
+)
 data class DialAttemptStartResponse(val id: String)
 // isFinalAttempt: true when this is the last outcome this order will get
 // (success, a non-retryable failure, or the last of maxAttempts retries) —
@@ -727,4 +753,10 @@ interface ApiService {
 
     @PUT("reseller/withdrawals/{id}/cancel")
     suspend fun cancelResellerWithdrawal(@Path("id") id: String): Response<ResponseBody>
+
+    @GET("agent/sms-formats")
+    suspend fun getSmsFormats(): Response<List<SmsFormatDto>>
+
+    @POST("agent/device-activation/status")
+    suspend fun getDeviceActivationStatus(@Body body: DeviceActivationStatusRequest): Response<DeviceActivationStatusResponse>
 }

@@ -51,6 +51,8 @@ import { pool, queryOne } from "./db/pool.js";
 import { seedAll } from "./db/seed.js";
 import { sendJson } from "./utils/camelCase.js";
 import { customerSuspensionMiddleware } from "./auth/middleware.js";
+import { deviceActivationRouter, agentDeviceActivationMiddleware } from "./routes/deviceActivation.routes.js";
+import { smsFormatsRouter } from "./routes/smsFormats.routes.js";
 
 // Express 4 route handlers here are plain `async (req, res) => {...}` with no
 // wrapper — a promise rejection inside one (e.g. an uncaught DB error) never
@@ -263,8 +265,12 @@ app.use(async (req: Request, res: Response, next: NextFunction) => {
 });
 
 app.use(customerSuspensionMiddleware);
+// Device Activation: every agent API call must come from an approved app install.
+app.use(agentDeviceActivationMiddleware);
 
 app.use(authRouter);
+app.use(deviceActivationRouter);
+app.use(smsFormatsRouter);
 app.use(usersRouter);
 app.use(companiesRouter);
 app.use(companyPaymentMethodsRouter);
