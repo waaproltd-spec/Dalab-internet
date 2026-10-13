@@ -193,7 +193,28 @@ data class PromoAdCreateRequest(
 data class PromoAdStatusRequest(val enabled: Boolean)
 data class PromoAdReorderRequest(val orderedIds: List<String>)
 
-data class DialAttemptStartRequest(val simSlot: Int?, val ussdString: String, val attemptNumber: Int)
+// confirmUnknownBalance: the agent saw the "SIM balance unknown/outdated"
+// warning and chose to dial anyway (null = not confirmed; never overrides an
+// insufficient balance -- see ussd.routes.ts dial-attempts).
+data class DialAttemptStartRequest(val simSlot: Int?, val ussdString: String, val attemptNumber: Int, val confirmUnknownBalance: Boolean? = null)
+
+/** GET /agent/orders/:id/sim-balance-check (utils/simBalanceCheck.ts). */
+data class SimBalanceCheck(
+    // "sufficient" | "insufficient" | "unknown" | "outdated"
+    val status: String,
+    val ok: Boolean,
+    val orderId: String,
+    val customerName: String,
+    val companyId: String,
+    val companyName: String,
+    val requestedAmount: Double,
+    val availableBalance: Double? = null,
+    val missingAmount: Double? = null,
+    val balanceUpdatedAt: String? = null,
+    val deviceId: String? = null,
+    val simSlot: Int? = null,
+    val message: String? = null,
+)
 
 /** GET /agent/sms-formats (smsFormats.routes.ts) -- see sms/DynamicSmsFormats.kt. */
 data class SmsFormatDto(
@@ -756,6 +777,9 @@ interface ApiService {
 
     @GET("agent/sms-formats")
     suspend fun getSmsFormats(): Response<List<SmsFormatDto>>
+
+    @GET("agent/orders/{id}/sim-balance-check")
+    suspend fun getSimBalanceCheck(@Path("id") id: String, @Query("simSlot") simSlot: Int? = null): Response<SimBalanceCheck>
 
     @POST("agent/device-activation/status")
     suspend fun getDeviceActivationStatus(@Body body: DeviceActivationStatusRequest): Response<DeviceActivationStatusResponse>

@@ -28,6 +28,10 @@ import { packagesRouter } from "../companies.routes.js";
 import { somlinkRouter } from "../somlink.routes.js";
 import { __setCachedTokenForTests } from "../../services/somlink.js";
 
+// These tests are about other behaviour, not SIM balances: an unknown balance
+// only warns here (simBalanceCheck.test.ts covers the blocking itself).
+process.env.SIM_BALANCE_UNVERIFIED_POLICY ??= "warn";
+
 const COMPANY_ID = "test-extra-co";
 const SOMLINK_COMPANY_ID = "test-extra-somlink-co";
 const CUSTOMER_PHONE = "252619991400";

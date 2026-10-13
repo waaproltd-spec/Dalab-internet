@@ -214,6 +214,9 @@ object SmsUploadFlow {
             DialOutcome.NETWORK_UNAVAILABLE -> "Order $orderId — \$${amount ?: "?"}" to "Waiting for connectivity to verify payment — will retry automatically."
             DialOutcome.FAILED -> "Order $orderId — \$${amount ?: "?"}" to (detail ?: "USSD dial failed after retries.")
             DialOutcome.DUPLICATE_SKIPPED -> "Order $orderId — \$${amount ?: "?"}" to "Duplicate dial attempt skipped (already being processed)."
+            // Already notified with the full details by SimBalanceAlerts
+            // (UssdOrchestrator) -- don't post a second notification.
+            DialOutcome.INSUFFICIENT_SIM_BALANCE, DialOutcome.SIM_BALANCE_UNVERIFIED -> return
         }
         val notification = NotificationCompat.Builder(context, "payment_channel")
             .setSmallIcon(R.drawable.ic_notification)

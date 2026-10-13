@@ -24,6 +24,10 @@ import { ussdRouter } from "../ussd.routes.js";
 import { offlineAdminRouter } from "../offlineAdmin.routes.js";
 import { ingestPaymentSms } from "../smsLogs.routes.js";
 
+// These tests are about other behaviour, not SIM balances: an unknown balance
+// only warns here (simBalanceCheck.test.ts covers the blocking itself).
+process.env.SIM_BALANCE_UNVERIFIED_POLICY ??= "warn";
+
 const COMPANY_ID = "test-offadmin-hormuud";
 const CATEGORY_ID = randomUUID();
 const DEVICE_ID = "test-offadmin-device";

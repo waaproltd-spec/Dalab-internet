@@ -49,6 +49,7 @@ data class DialAttemptAuditAction(
  */
 class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
     private val dialer = UssdDialer(context)
+    private val appContext: Context = context.applicationContext
 
     suspend fun processMatchedOrder(orderId: String, smsLogId: String?): DialResult {
         if (!claimOrder(orderId)) {
@@ -132,7 +133,16 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
      * the only difference is the caller supplies `forcedSimSlot` instead of
      * this resolving it from SimRoutingRepository/the template override.
      */
-    suspend fun executeManually(orderId: String, forcedSimSlot: Int): DialResult {
+    suspend fun executeManually(
+        orderId: String,
+        forcedSimSlot: Int,
+        // The agent saw an "unknown/outdated SIM balance" warning and chose
+        // to dial anyway (never overrides an insufficient balance).
+        confirmUnknownBalance: Boolean = false,
+        // Started by the agent on the Order screen, which shows the balance
+        // warning itself -- no extra system notification needed then.
+        fromUi: Boolean = false,
+    ): DialResult {
         if (!claimOrder(orderId)) {
             DiagnosticsLog.record(
                 "duplicate_dial_guard",
@@ -142,13 +152,13 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
             return DialResult(DialOutcome.DUPLICATE_SKIPPED, "Already being processed — skipped to avoid a duplicate recharge.")
         }
         try {
-            return executeManuallyLocked(orderId, forcedSimSlot)
+            return executeManuallyLocked(orderId, forcedSimSlot, confirmUnknownBalance, fromUi)
         } finally {
             releaseOrder(orderId)
         }
     }
 
-    private suspend fun executeManuallyLocked(orderId: String, forcedSimSlot: Int): DialResult {
+    private suspend fun executeManuallyLocked(orderId: String, forcedSimSlot: Int, confirmUnknownBalance: Boolean, fromUi: Boolean): DialResult {
         val verifyResponse = try {
             RetryClassifier.requireSuccessful(ApiClient.service.verifyPayment(orderId, VerifyPaymentRequest(null)))
         } catch (e: Exception) {
@@ -162,7 +172,7 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         }
         val ussdString = order.ussdGenerated
             ?: return DialResult(DialOutcome.FAILED, "No USSD template matched this order — check USSD Services in the dashboard.")
-        return deliver(order, forcedSimSlot, ussdString)
+        return deliver(order, forcedSimSlot, ussdString, confirmUnknownBalance, notifyBalanceBlock = !fromUi)
     }
 
     /**
@@ -175,14 +185,32 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
      * delivery is dialed; anything unconfirmed stops the run rather than
      * risk sending more than the Send Count.
      */
-    private suspend fun deliver(order: Order, simSlot: Int, ussdString: String): DialResult {
+    private suspend fun deliver(
+        order: Order,
+        simSlot: Int,
+        ussdString: String,
+        confirmUnknownBalance: Boolean = false,
+        notifyBalanceBlock: Boolean = true,
+    ): DialResult {
+        val result = deliverInner(order, simSlot, ussdString, confirmUnknownBalance)
+        if (result.outcome == DialOutcome.INSUFFICIENT_SIM_BALANCE || result.outcome == DialOutcome.SIM_BALANCE_UNVERIFIED) {
+            if (notifyBalanceBlock) SimBalanceAlerts.notifyBlocked(appContext, order.id, result)
+        } else {
+            // Got past the balance gate (recharged, or confirmed): a later
+            // refusal for this order is a new problem and alerts again.
+            SimBalanceAlerts.clear(order.id)
+        }
+        return result
+    }
+
+    private suspend fun deliverInner(order: Order, simSlot: Int, ussdString: String, confirmUnknownBalance: Boolean): DialResult {
         val sendCount = order.sendCount ?: 1
-        if (sendCount <= 1) return dialWithRetry(order.id, simSlot, ussdString)
+        if (sendCount <= 1) return dialWithRetry(order.id, simSlot, ussdString, confirmUnknownBalance)
 
         var done = order.deliveriesDone ?: 0
         var nextAttempt = order.nextAttemptNumber ?: 1
         while (done < sendCount) {
-            val run = dialWithRetryRun(order.id, simSlot, ussdString, attemptBase = nextAttempt - 1, strict = true)
+            val run = dialWithRetryRun(order.id, simSlot, ussdString, attemptBase = nextAttempt - 1, strict = true, confirmUnknownBalance = confirmUnknownBalance)
             nextAttempt += run.attemptsUsed
             if (run.result.outcome != DialOutcome.SUCCESS || run.stoppedEarly) return run.result
             if (!run.reportedOnline) {
@@ -203,8 +231,8 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         return DialResult(DialOutcome.SUCCESS, "All $sendCount deliveries sent.")
     }
 
-    private suspend fun dialWithRetry(orderId: String, simSlot: Int, ussdString: String): DialResult =
-        dialWithRetryRun(orderId, simSlot, ussdString, attemptBase = 0, strict = false).result
+    private suspend fun dialWithRetry(orderId: String, simSlot: Int, ussdString: String, confirmUnknownBalance: Boolean = false): DialResult =
+        dialWithRetryRun(orderId, simSlot, ussdString, attemptBase = 0, strict = false, confirmUnknownBalance = confirmUnknownBalance).result
 
     /** One delivery's dial with retries. [attemptBase] offsets the attempt
      * numbers (0 for a normal order, which keeps its 1..maxAttempts). With
@@ -219,6 +247,7 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         ussdString: String,
         attemptBase: Int,
         strict: Boolean,
+        confirmUnknownBalance: Boolean = false,
     ): DeliveryRun {
         var attemptsUsed = 0
         var reportedOnline = false
@@ -230,8 +259,9 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         for (attempt in 1..maxAttempts) {
             val attemptNumber = attemptBase + attempt
             val attemptId = if (strict) {
-                when (val started = startDialAttemptLogStrict(orderId, simSlot, ussdString, attemptNumber)) {
+                when (val started = startDialAttemptLogStrict(orderId, simSlot, ussdString, attemptNumber, confirmUnknownBalance)) {
                     is StrictStart.Started -> started.id
+                    is StrictStart.BalanceBlocked -> return DeliveryRun(started.result, attemptsUsed, reportedOnline = false, stoppedEarly = true)
                     is StrictStart.Offline -> return DeliveryRun(
                         DialResult(DialOutcome.NETWORK_UNAVAILABLE, "Couldn't reach the server before sending — will retry."),
                         attemptsUsed, reportedOnline = false, stoppedEarly = true,
@@ -241,7 +271,14 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
                     )
                 }
             } else {
-                startDialAttemptLog(orderId, simSlot, ussdString, attemptNumber)
+                // A normal order still dials when the start-log merely fails
+                // (offline), as before -- but never when the server refused
+                // it for SIM balance: that's the backend's enforcement and
+                // must not be bypassed by dialing anyway.
+                when (val log = startDialAttemptLog(orderId, simSlot, ussdString, attemptNumber, confirmUnknownBalance)) {
+                    is StartLog.BalanceBlocked -> return DeliveryRun(log.result, attemptsUsed, reportedOnline = false, stoppedEarly = true)
+                    is StartLog.Logged -> log.id
+                }
             }
             attemptsUsed = attempt
 
@@ -346,34 +383,48 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
 
     private sealed class StrictStart {
         data class Started(val id: String) : StrictStart()
+        data class BalanceBlocked(val result: DialResult) : StrictStart()
         object Offline : StrictStart()
         data class Refused(val message: String) : StrictStart()
     }
 
-    private suspend fun startDialAttemptLogStrict(orderId: String, simSlot: Int, ussdString: String, attemptNumber: Int): StrictStart {
+    private sealed class StartLog {
+        data class Logged(val id: String?) : StartLog()
+        data class BalanceBlocked(val result: DialResult) : StartLog()
+    }
+
+    private fun startRequest(simSlot: Int, ussdString: String, attemptNumber: Int, confirmUnknownBalance: Boolean) =
+        DialAttemptStartRequest(simSlot, ussdString, attemptNumber, confirmUnknownBalance.takeIf { it })
+
+    private suspend fun startDialAttemptLogStrict(orderId: String, simSlot: Int, ussdString: String, attemptNumber: Int, confirmUnknownBalance: Boolean): StrictStart {
         val response = try {
-            ApiClient.service.startDialAttempt(orderId, DialAttemptStartRequest(simSlot, ussdString, attemptNumber))
+            ApiClient.service.startDialAttempt(orderId, startRequest(simSlot, ussdString, attemptNumber, confirmUnknownBalance))
         } catch (e: Exception) {
             DiagnosticsLog.record("dial_attempt_log", "Start-log failed (order $orderId, attempt $attemptNumber): ${e.message} — not dialing.", isError = false)
             return StrictStart.Offline
         }
         val id = response.body()?.id
         if (response.isSuccessful && id != null) return StrictStart.Started(id)
+        SimBalanceAlerts.refusalFrom(response)?.let { return StrictStart.BalanceBlocked(it) }
         if (response.code() >= 500) return StrictStart.Offline
         val message = "Server refused this delivery (HTTP ${response.code()}) — nothing was sent."
         DiagnosticsLog.record("dial_attempt_log", "Order $orderId, attempt $attemptNumber: $message", isError = true)
         return StrictStart.Refused(message)
     }
 
-    private suspend fun startDialAttemptLog(orderId: String, simSlot: Int, ussdString: String, attemptNumber: Int): String? {
+    private suspend fun startDialAttemptLog(orderId: String, simSlot: Int, ussdString: String, attemptNumber: Int, confirmUnknownBalance: Boolean): StartLog {
         return try {
-            val response = ApiClient.service.startDialAttempt(orderId, DialAttemptStartRequest(simSlot, ussdString, attemptNumber))
-            response.body()?.id
+            val response = ApiClient.service.startDialAttempt(orderId, startRequest(simSlot, ussdString, attemptNumber, confirmUnknownBalance))
+            SimBalanceAlerts.refusalFrom(response)?.let {
+                DiagnosticsLog.record("sim_balance", "Order $orderId: ${it.responseMessage}", isError = true)
+                return StartLog.BalanceBlocked(it)
+            }
+            StartLog.Logged(response.body()?.id)
         } catch (e: Exception) {
             // Dial isn't blocked; reportDialResult below queues a full replay
             // covering both steps once the (already-known) outcome is in.
             DiagnosticsLog.record("dial_attempt_log", "Start-log failed (order $orderId, attempt $attemptNumber): ${e.message}", isError = false)
-            null
+            StartLog.Logged(null)
         }
     }
 

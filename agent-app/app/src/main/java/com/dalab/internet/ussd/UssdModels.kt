@@ -33,7 +33,11 @@ data class DeviceSimSlot(
 // an error message"; both look identical at the Android API level. Treated
 // like FAILED/TIMEOUT for retry purposes, but kept as its own outcome so the
 // backend never silently completes an order on it (see reportDialResult).
-enum class DialOutcome { SUCCESS, AMBIGUOUS, FAILED, TIMEOUT, NO_SIM_CONFIGURED, NO_SIM_PRESENT, PERMISSION_DENIED, NETWORK_UNAVAILABLE, DUPLICATE_SKIPPED }
+// INSUFFICIENT_SIM_BALANCE / SIM_BALANCE_UNVERIFIED: the backend refused to
+// start the dial because the company SIM doesn't have enough balance (or its
+// balance is unknown/outdated and the agent hasn't confirmed) -- nothing was
+// dialed; see SimBalanceCheck. Not retried: the SIM has to be recharged.
+enum class DialOutcome { SUCCESS, AMBIGUOUS, FAILED, TIMEOUT, NO_SIM_CONFIGURED, NO_SIM_PRESENT, PERMISSION_DENIED, NETWORK_UNAVAILABLE, DUPLICATE_SKIPPED, INSUFFICIENT_SIM_BALANCE, SIM_BALANCE_UNVERIFIED }
 
 data class DialResult(
     val outcome: DialOutcome,
