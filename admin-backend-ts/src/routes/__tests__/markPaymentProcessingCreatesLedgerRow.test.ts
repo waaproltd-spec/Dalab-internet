@@ -27,6 +27,10 @@ import { query, queryOne, pool } from "../../db/pool.js";
 import { signAccessToken } from "../../auth/crypto.js";
 import { ussdRouter } from "../ussd.routes.js";
 
+// These tests are about other behaviour, not SIM balances: an unknown balance
+// only warns here (simBalanceCheck.test.ts covers the blocking itself).
+process.env.SIM_BALANCE_UNVERIFIED_POLICY ??= "warn";
+
 const COMPANY_ID = "test-mpp-ledger-co";
 const CATEGORY_ID = randomUUID();
 const CUSTOMER_ID = randomUUID();

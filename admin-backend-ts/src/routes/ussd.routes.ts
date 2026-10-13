@@ -13,6 +13,7 @@ import { creditReferralBonusIfNeeded } from "../utils/referrals.js";
 import { refundRedeemedPointsIfNeeded } from "../utils/loyaltyPoints.js";
 import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
 import { normalizePhoneForUssd, formatUssdAmount, splitUssdAmount, formatUssdAmountSplit } from "../utils/ussdFormatting.js";
+import { checkSimBalanceForOrder, unverifiedBalancePolicy } from "../utils/simBalanceCheck.js";
 import { notifyCustomer } from "../services/customerNotify.js";
 import { extractBalanceFromSms, applyBalanceUpdate } from "../utils/simBalances.js";
 import { deliveriesDone, allDeliveriesDone } from "../services/deliveries.js";
@@ -749,6 +750,20 @@ ussdRouter.post("/agent/devices/:id/heartbeat", requireAuth("agent"), async (req
 
 // ---------------- Dial attempts (audit trail + retry tracking) ----------------
 
+// The Agent App asks this before showing the Dial buttons, so the agent sees
+// an Insufficient / Unknown / Outdated SIM Balance warning up front. simSlot
+// (optional) = the SIM the agent is about to dial from on their own device.
+ussdRouter.get("/agent/orders/:id/sim-balance-check", requireAuth("agent"), async (req, res) => {
+  const agent = await queryOne<{ device_id: string | null }>(`SELECT device_id FROM agents WHERE id=$1`, [req.auth!.sub]);
+  const slot = Number(req.query.simSlot);
+  const check = await checkSimBalanceForOrder(req.params.id, {
+    deviceId: agent?.device_id ?? null,
+    simSlot: slot === 1 || slot === 2 ? slot : null,
+  });
+  if (!check) return sendJson(res, 404, { error: "Order not found" });
+  sendJson(res, 200, check);
+});
+
 ussdRouter.post("/agent/orders/:id/dial-attempts", requireAuth("agent"), async (req, res) => {
   const { simSlot, ussdString, attemptNumber } = req.body;
   if (!ussdString) return sendJson(res, 400, { error: "ussdString is required" });
@@ -758,14 +773,16 @@ ussdRouter.post("/agent/orders/:id/dial-attempts", requireAuth("agent"), async (
   );
   if (!order) return sendJson(res, 404, { error: "Order not found" });
 
+  // A resubmitted log for an attempt that already exists isn't a new dial:
+  // it's answered idempotently below, never blocked by the checks here.
+  const sameAttempt = await queryOne<{ id: string }>(
+    `SELECT id FROM ussd_dial_attempts WHERE order_id=$1 AND attempt_number=$2`,
+    [req.params.id, attemptNumber ?? 1]
+  );
+
   // Extra Package (send_count > 1): never start a dial past the Send Count.
-  // A retried log for an attempt that already exists is still answered
-  // below (it isn't a new dial). Single-delivery orders skip this entirely.
+  // Single-delivery orders skip this entirely.
   if (Number(order.send_count) > 1) {
-    const sameAttempt = await queryOne<{ id: string }>(
-      `SELECT id FROM ussd_dial_attempts WHERE order_id=$1 AND attempt_number=$2`,
-      [req.params.id, attemptNumber ?? 1]
-    );
     if (!sameAttempt && (order.status === "completed" || (await deliveriesDone(order.id)) >= Number(order.send_count))) {
       return sendJson(res, 409, { error: "Every delivery for this Extra Package order is already done -- nothing more to send." });
     }
@@ -795,6 +812,32 @@ ussdRouter.post("/agent/orders/:id/dial-attempts", requireAuth("agent"), async (
     const device = await queryOne<{ enabled: boolean }>(`SELECT enabled FROM agent_devices WHERE id=$1`, [agent.device_id]);
     if (device && !device.enabled) {
       return sendJson(res, 403, { error: "Your assigned device has been disabled by an admin." });
+    }
+  }
+
+  // Insufficient SIM Balance: never START a new dial when the company SIM
+  // doesn't have enough for this order -- the real carrier send would fail
+  // or partially go through. Enforced here because every dial (manual,
+  // SMS-matched auto-dial, self-heal sweep) goes through this route. An
+  // unknown/outdated balance is never assumed to be enough: it's refused
+  // too unless the agent has seen the warning and explicitly confirmed
+  // (confirmUnknownBalance). Nothing is changed on the order, so once the
+  // SIM is recharged and its balance updated, the same order dials normally.
+  if (!sameAttempt) {
+    const balanceCheck = await checkSimBalanceForOrder(req.params.id, {
+      deviceId: agent?.device_id ?? null,
+      simSlot: simSlot ? Number(simSlot) : null,
+    });
+    if (balanceCheck && balanceCheck.status === "insufficient") {
+      return sendJson(res, 409, { error: balanceCheck.message, code: "insufficient_sim_balance", balanceCheck });
+    }
+    if (
+      balanceCheck &&
+      (balanceCheck.status === "unknown" || balanceCheck.status === "outdated") &&
+      req.body.confirmUnknownBalance !== true &&
+      unverifiedBalancePolicy() === "confirm"
+    ) {
+      return sendJson(res, 409, { error: balanceCheck.message, code: "sim_balance_unverified", balanceCheck });
     }
   }
 
