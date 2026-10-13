@@ -409,6 +409,11 @@ const DalabAdminApi = {
     const qs = new URLSearchParams(Object.fromEntries(Object.entries({ from, to }).filter(([, v]) => v))).toString();
     return dalabAdminApiRequest(`/admin/finance/overview${qs ? `?${qs}` : ""}`);
   },
+  // Shirkadda Xisaab: one company's books for a period (finance.routes.ts).
+  getCompanyAccounts: (params = {}) => {
+    const qs = new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== ""))).toString();
+    return dalabAdminApiRequest(`/admin/finance/company-accounts${qs ? `?${qs}` : ""}`);
+  },
   getFinanceExpenses: (filters = {}) => {
     const qs = new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([, v]) => v))).toString();
     return dalabAdminApiRequest(`/admin/finance/expenses${qs ? `?${qs}` : ""}`);
@@ -931,6 +936,7 @@ const orderBreakdown = [
 const NAV = [
   { id: "overview", label: "Overview", icon: LayoutGrid },
   { id: "financial-overview", label: "Financial Overview", icon: PiggyBank, superAdminOnly: true },
+  { id: "company-accounts", label: "Shirkadda Xisaab", icon: Building2, permission: "finance.manage" },
   { id: "balance-dashboard", label: "Balance Dashboard", icon: DollarSign, permission: "devices.manage" },
   { id: "companies", label: "Companies", icon: Building2, permission: "companies.manage" },
   { id: "payment-numbers", label: "Payment Numbers", icon: Wallet, permission: "companies.manage" },
@@ -15574,6 +15580,386 @@ function SmsFormatUpdatePanel() {
   );
 }
 
+// ---------------- Shirkadda Xisaab (per-company accounts) ----------------
+// Each telecom company's books for a period, from GET
+// /admin/finance/company-accounts: company money (what DALAB pays the
+// company), sales (what customers paid), discount off the list price,
+// commission and profit = sales - company money + commission. Money counts
+// completed, non-reversed orders only; the order list shows every status.
+const ACCOUNT_PERIODS = [
+  { key: "today", label: "Today" },
+  { key: "yesterday", label: "Yesterday" },
+  { key: "1m", label: "1 Month" },
+  { key: "3m", label: "3 Months" },
+  { key: "6m", label: "6 Months" },
+  { key: "1y", label: "1 Year" },
+  { key: "custom", label: "Custom Date" },
+];
+const ACCOUNT_STATUS_OPTIONS = [
+  { value: "", label: "All Status" },
+  { value: "completed", label: "Completed" },
+  { value: "pending", label: "Pending" },
+  { value: "in_progress", label: "In progress" },
+  { value: "failed", label: "Failed" },
+  { value: "cancelled", label: "Cancelled" },
+];
+const ACCOUNT_STATUS_TONE = { completed: "green", pending: "amber", in_progress: "blue", failed: "red", cancelled: "gray", reversed: "gray" };
+const SOMALIA_OFFSET_MS = 3 * 3600_000; // Africa/Mogadishu is UTC+3 all year
+
+// Start of a Somalia calendar day, as a real instant.
+function somaliaDayStart(date) {
+  const shifted = new Date(date.getTime() + SOMALIA_OFFSET_MS);
+  return new Date(Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate()) - SOMALIA_OFFSET_MS);
+}
+
+function accountRange(period, customFrom, customTo) {
+  const now = new Date();
+  const today = somaliaDayStart(now);
+  const monthsAgo = (m) => {
+    const d = new Date(now);
+    d.setMonth(d.getMonth() - m);
+    return somaliaDayStart(d);
+  };
+  switch (period) {
+    case "today": return { from: today, to: now };
+    case "yesterday": return { from: new Date(today.getTime() - 86400_000), to: new Date(today.getTime() - 1) };
+    case "1m": return { from: monthsAgo(1), to: now };
+    case "3m": return { from: monthsAgo(3), to: now };
+    case "6m": return { from: monthsAgo(6), to: now };
+    case "1y": return { from: monthsAgo(12), to: now };
+    default: {
+      if (!customFrom) return null;
+      const from = new Date(Date.parse(`${customFrom}T00:00:00Z`) - SOMALIA_OFFSET_MS);
+      const to = new Date(Date.parse(`${customTo || customFrom}T00:00:00Z`) - SOMALIA_OFFSET_MS + 86400_000 - 1);
+      return { from, to };
+    }
+  }
+}
+
+const usd = (v) => {
+  const n = Number(v ?? 0);
+  return `${n < 0 ? "-" : ""}$${Math.abs(n).toFixed(2)}`;
+};
+const profitColor = (v) => (Number(v) < 0 ? "#C81E2C" : GREEN);
+
+function CompanyAccountsSection() {
+  const [period, setPeriod] = useState("today");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const [companyId, setCompanyId] = useState("");
+  const [status, setStatus] = useState("");
+  const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [data, setData] = useState(null);
+  const [extraOrders, setExtraOrders] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [error, setError] = useState("");
+
+  const range = accountRange(period, customFrom, customTo);
+
+  const request = (extra = {}) => {
+    const r = accountRange(period, customFrom, customTo);
+    return DalabAdminApi.getCompanyAccounts({
+      from: r?.from.toISOString(),
+      to: r?.to.toISOString(),
+      companyId: companyId || undefined,
+      status: status || undefined,
+      q: search || undefined,
+      ...extra,
+    });
+  };
+
+  const load = async () => {
+    if (!DALAB_API_ENABLED || (period === "custom" && !customFrom)) return;
+    setLoading(true);
+    setError("");
+    try {
+      const res = await request();
+      setData(res);
+      setExtraOrders([]);
+      if (!companyId && res.company) setCompanyId(res.company.id);
+    } catch (err) {
+      setError(err.message || "Could not load the company accounts.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  // Re-fetch when the period (to the minute, for "today"), company, status or search changes.
+  useEffect(() => { load(); }, [period, customFrom, customTo, companyId, status, search]);
+
+  useEffect(() => {
+    const t = setTimeout(() => setSearch(searchInput.trim()), 400);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+
+  const loadMore = async () => {
+    if (!data) return;
+    try {
+      const res = await request({ offset: data.orders.length + extraOrders.length, limit: 50 });
+      setExtraOrders((prev) => [...prev, ...res.orders]);
+    } catch (err) {
+      setError(err.message || "Could not load more orders.");
+    }
+  };
+
+  const exportCsv = async () => {
+    if (!data?.company) return;
+    setExporting(true);
+    try {
+      const res = await request({ limit: 5000, offset: 0 });
+      const label = ACCOUNT_PERIODS.find((p) => p.key === period)?.label || period;
+      exportToCsv(
+        `shirkadda-xisaab-${res.company.name}-${label.replace(/\s+/g, "-").toLowerCase()}.csv`,
+        [
+          { label: "Taariikh", value: (o) => formatDateTime(o.createdAt) },
+          { label: "Order ID", value: (o) => o.id },
+          { label: "Adeegga", value: (o) => o.category },
+          { label: "Package", value: (o) => o.packageName },
+          { label: "Qiimaha Shirkadda", value: (o) => o.companyAmount.toFixed(2) },
+          { label: "Qiimaha Iibka", value: (o) => o.saleAmount.toFixed(2) },
+          { label: "Qiimo-dhimis", value: (o) => o.discount.toFixed(2) },
+          { label: "Komishan", value: (o) => o.commission.toFixed(2) },
+          { label: "Faa'iido / Khasaaro", value: (o) => o.profit.toFixed(2) },
+          { label: "Status", value: (o) => o.status },
+        ],
+        res.orders
+      );
+    } catch (err) {
+      alert(err.message || "Could not export.");
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to see company accounts.</div>;
+  }
+
+  const company = data?.company;
+  const companies = data?.companies || [];
+  const orders = [...(data?.orders || []), ...extraOrders];
+  const categories = data?.categories || [];
+  const periodText = period === "custom"
+    ? (customFrom ? `${customFrom}${customTo && customTo !== customFrom ? ` → ${customTo}` : ""}` : "Dooro taariikh")
+    : `${ACCOUNT_PERIODS.find((p) => p.key === period)?.label}${range ? ` · ${range.from.toLocaleDateString(undefined, { timeZone: SOMALIA_TIME_ZONE, day: "2-digit", month: "short", year: "numeric" })}` : ""}`;
+  const chip = (active) => ({
+    padding: "9px 16px", borderRadius: 10, fontSize: 13, fontWeight: 700, cursor: "pointer",
+    border: `1px solid ${active ? INDIGO : BORDER}`, background: active ? INDIGO : "#fff", color: active ? "#fff" : INK,
+  });
+  const th = { textAlign: "left", padding: "9px 10px", fontSize: 11, color: MUTE, fontWeight: 700, whiteSpace: "nowrap" };
+  const td = { padding: "9px 10px", fontSize: 12.5, color: INK, whiteSpace: "nowrap" };
+  const stats = company ? [
+    { label: "Orders La Dhammeeyay", value: company.orders, sub: "Total orders", color: "#1D4ED8", bg: "#EEF3FF" },
+    { label: "Lacagta Shirkadda", value: usd(company.companyAmount), sub: "Shirkadda ku iibisay", color: GREEN, bg: "#EEF9F1" },
+    { label: "Lacagta Iibka", value: usd(company.saleAmount), sub: "Macaamiisha laga helay", color: "#C81E2C", bg: "#FDEFF0" },
+    { label: "Qiimo-dhimista", value: usd(company.discount), sub: "Kaa baxday", color: "#A9720A", bg: "#FFF6E3" },
+    { label: "Komishanka", value: usd(company.commission), sub: "Haddii uu jiro", color: "#6D28D9", bg: "#F3EEFF" },
+    { label: "Faa'iidada / Khasaaraha", value: usd(company.profit), sub: Number(company.profit) < 0 ? "Khasaaro" : "Faa'iido", color: profitColor(company.profit), bg: Number(company.profit) < 0 ? "#FDEFF0" : "#EEF9F1" },
+  ] : [];
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 14 }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Shirkadda Xisaab</div>
+          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Order walbo si gaar ah ayaa loo xisaabiyaa. Adeeg walbo, shirkad walbo, qiimo walbo.</div>
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Button variant="ghost" icon={exporting ? Loader2 : Download} spin={exporting} onClick={exportCsv} disabled={!company || exporting}>Export</Button>
+          <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={load} disabled={loading}>Refresh</Button>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14, alignItems: "center" }}>
+        {ACCOUNT_PERIODS.map((p) => (
+          <button key={p.key} style={chip(period === p.key)} onClick={() => setPeriod(p.key)}>{p.label}</button>
+        ))}
+        {period === "custom" && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input type="date" style={{ ...inputStyle, width: 160, padding: "8px 10px" }} value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />
+            <span style={{ color: MUTE, fontSize: 12.5 }}>→</span>
+            <input type="date" style={{ ...inputStyle, width: 160, padding: "8px 10px" }} value={customTo} min={customFrom || undefined} onChange={(e) => setCustomTo(e.target.value)} />
+          </div>
+        )}
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 14 }}>
+        {companies.map((c) => {
+          const active = company?.id === c.id;
+          return (
+            <button
+              key={c.id}
+              onClick={() => setCompanyId(c.id)}
+              style={{
+                padding: "12px 14px", borderRadius: 12, fontSize: 15, fontWeight: 800, cursor: "pointer", color: "#fff",
+                background: c.colorHex || INDIGO, border: active ? `3px solid ${INK}` : "3px solid transparent",
+                boxShadow: active ? "0 4px 14px rgba(11,18,64,0.25)" : "none",
+              }}
+            >
+              {c.name}
+            </button>
+          );
+        })}
+      </div>
+
+      {company && (
+        <Card style={{ padding: 18, marginBottom: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ width: 44, height: 44, borderRadius: 22, background: company.colorHex || INDIGO, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 18 }}>
+                {company.name.slice(0, 1)}
+              </div>
+              <div>
+                <div style={{ fontWeight: 800, fontSize: 17, color: company.colorHex || INK }}>{company.name}</div>
+                <div style={{ fontSize: 12, color: MUTE }}>Xogta Maaliyadeed ee Adeegyada {company.name}</div>
+              </div>
+            </div>
+            <div style={{ fontSize: 12.5, color: SLATE, border: `1px solid ${BORDER}`, borderRadius: 10, padding: "8px 12px" }}>{periodText}</div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
+            {stats.map((s) => (
+              <div key={s.label} style={{ background: s.bg, borderRadius: 12, padding: "12px 14px" }}>
+                <div style={{ fontSize: 11.5, fontWeight: 700, color: SLATE }}>{s.label}</div>
+                <div style={{ fontSize: 24, fontWeight: 800, color: s.color, marginTop: 4 }}>{s.value}</div>
+                <div style={{ fontSize: 11, color: MUTE, marginTop: 2 }}>{s.sub}</div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {company && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginBottom: 14, alignItems: "flex-start" }}>
+          <Card style={{ padding: 0, overflow: "hidden", flex: "3 1 600px", minWidth: 0 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "12px 14px", flexWrap: "wrap" }}>
+              <div style={{ fontWeight: 800, fontSize: 14, color: INK }}>Orders – {company.name} ({data.totalOrders})</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <div style={{ position: "relative" }}>
+                  <Search size={14} color={MUTE} style={{ position: "absolute", left: 10, top: 11 }} />
+                  <input style={{ ...inputStyle, width: 220, padding: "8px 10px 8px 30px" }} placeholder="Raadi Order ID, Package, Number..." value={searchInput} onChange={(e) => setSearchInput(e.target.value)} />
+                </div>
+                <select style={{ ...inputStyle, width: 140, padding: "8px 10px" }} value={status} onChange={(e) => setStatus(e.target.value)}>
+                  {ACCOUNT_STATUS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+            </div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ background: "#FAFBFF" }}>
+                    {["#", "Taariikh", "Order ID", "Adeegga / Package", "Qiimaha Shirkadda", "Qiimaha Iibka", "Qiimo-dhimis", "Faa'iido / Khasaaro", "Status"].map((h) => <th key={h} style={th}>{h}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {orders.map((o, i) => (
+                    <tr key={o.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                      <td style={{ ...td, color: MUTE }}>{i + 1}</td>
+                      <td style={td}>{period === "today" || period === "yesterday" ? new Date(o.createdAt).toLocaleTimeString(undefined, { timeZone: SOMALIA_TIME_ZONE, hour: "2-digit", minute: "2-digit" }) : formatDateTime(o.createdAt)}</td>
+                      <td style={{ ...td, fontFamily: "monospace" }}>{o.id}</td>
+                      <td style={td}>{o.packageName}<div style={{ fontSize: 11, color: MUTE }}>{o.category}</div></td>
+                      <td style={{ ...td, color: "#1D4ED8", fontWeight: 700 }}>{usd(o.companyAmount)}</td>
+                      <td style={{ ...td, color: GREEN, fontWeight: 700 }}>{usd(o.saleAmount)}</td>
+                      <td style={{ ...td, color: "#C81E2C" }}>{usd(o.discount)}</td>
+                      <td style={{ ...td, color: profitColor(o.profit), fontWeight: 700 }}>{usd(o.profit)}</td>
+                      <td style={td}><Badge tone={ACCOUNT_STATUS_TONE[o.status] || "gray"}>{o.status}</Badge></td>
+                    </tr>
+                  ))}
+                  {orders.length === 0 && !loading && (
+                    <tr><td colSpan={9} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>Orders ma jiraan muddadan.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            {orders.length < (data?.totalOrders || 0) && (
+              <div style={{ padding: 12, textAlign: "center", borderTop: `1px solid ${BORDER}` }}>
+                <Button variant="ghost" onClick={loadMore}>Load more ({data.totalOrders - orders.length})</Button>
+              </div>
+            )}
+          </Card>
+
+          <Card style={{ padding: 0, overflow: "hidden", flex: "2 1 380px", minWidth: 0 }}>
+            <div style={{ padding: "12px 14px", fontWeight: 800, fontSize: 14, color: INK }}>Adeegyada {company.name}</div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ background: "#FAFBFF" }}>
+                    {["Adeegga", "Orders", "Shirkadda", "Iibka", "Qiimo-dhimis", "Faa'iido / Khasaaro"].map((h) => <th key={h} style={th}>{h}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {categories.map((c) => (
+                    <tr key={c.name} style={{ borderTop: `1px solid ${BORDER}` }}>
+                      <td style={{ ...td, fontWeight: 700 }}>{c.name}</td>
+                      <td style={td}>{c.orders}</td>
+                      <td style={{ ...td, color: "#1D4ED8" }}>{usd(c.companyAmount)}</td>
+                      <td style={{ ...td, color: GREEN }}>{usd(c.saleAmount)}</td>
+                      <td style={{ ...td, color: "#C81E2C" }}>{usd(c.discount)}</td>
+                      <td style={{ ...td, color: profitColor(c.profit), fontWeight: 700 }}>{usd(c.profit)}</td>
+                    </tr>
+                  ))}
+                  {categories.length > 0 && (
+                    <tr style={{ borderTop: `2px solid ${BORDER}`, background: "#FAFBFF" }}>
+                      <td style={{ ...td, fontWeight: 800 }}>Total</td>
+                      <td style={{ ...td, fontWeight: 800 }}>{company.orders}</td>
+                      <td style={{ ...td, color: "#1D4ED8", fontWeight: 800 }}>{usd(company.companyAmount)}</td>
+                      <td style={{ ...td, color: GREEN, fontWeight: 800 }}>{usd(company.saleAmount)}</td>
+                      <td style={{ ...td, color: "#C81E2C", fontWeight: 800 }}>{usd(company.discount)}</td>
+                      <td style={{ ...td, color: profitColor(company.profit), fontWeight: 800 }}>{usd(company.profit)}</td>
+                    </tr>
+                  )}
+                  {categories.length === 0 && !loading && (
+                    <tr><td colSpan={6} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>Orders la dhammeeyay ma jiraan muddadan.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+        {companies.map((c) => {
+          const pct = Math.min(Math.abs(Number(c.profitPercent) || 0), 100);
+          return (
+            <Card key={c.id} style={{ padding: 0, overflow: "hidden", cursor: "pointer" }}>
+              <div onClick={() => setCompanyId(c.id)}>
+                <div style={{ background: c.colorHex || INDIGO, color: "#fff", padding: "10px 14px", fontWeight: 800, display: "flex", justifyContent: "space-between" }}>
+                  <span>{c.name}</span><ChevronRight size={16} />
+                </div>
+                <div style={{ padding: "10px 14px", fontSize: 12.5 }}>
+                  {[
+                    ["Orders", c.orders, INK],
+                    ["Shirkadda", usd(c.companyAmount), "#1D4ED8"],
+                    ["Iibka", usd(c.saleAmount), GREEN],
+                    ["Qiimo-dhimis", usd(c.discount), "#C81E2C"],
+                    ["Faa'iido / Khasaaro", usd(c.profit), profitColor(c.profit)],
+                  ].map(([label, value, color]) => (
+                    <div key={label} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}>
+                      <span style={{ color: SLATE }}>{label}:</span><span style={{ fontWeight: 800, color }}>{value}</span>
+                    </div>
+                  ))}
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+                    <div style={{ flex: 1, height: 6, borderRadius: 3, background: "#EEF0F6", overflow: "hidden" }}>
+                      <div style={{ width: `${pct}%`, height: "100%", background: profitColor(c.profit) }} />
+                    </div>
+                    <span style={{ fontSize: 11.5, fontWeight: 700, color: profitColor(c.profit) }}>{Number(c.profitPercent).toFixed(2)}%</span>
+                  </div>
+                </div>
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+      <div style={{ fontSize: 11.5, color: MUTE, marginTop: 12 }}>
+        Faa'iido = Lacagta Iibka − Lacagta Shirkadda + Komishan. Lacagta waxaa lagu xisaabiyaa orders la dhammeeyay oo aan la celin (reversed) oo kaliya.
+      </div>
+    </div>
+  );
+}
+
 function SmsSenderIdsPanel() {
   const [senders, setSenders] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -16255,6 +16641,7 @@ function AdminDashboardShell({ admin, onLogout }) {
         <div style={{ padding: 22 }}>
           {active === "overview" && <Overview companies={companies} orders={orders} />}
           {active === "financial-overview" && <FinancialOverview admin={admin} />}
+          {active === "company-accounts" && <CompanyAccountsSection />}
           {active === "balance-dashboard" && <BalanceDashboard admin={admin} />}
           {active === "companies" && <Companies companies={companies} setCompanies={setCompanies} refreshCompanies={refreshCompanies} admin={admin} />}
           {active === "payment-numbers" && <PaymentNumbers companies={companies} setCompanies={setCompanies} refreshCompanies={refreshCompanies} admin={admin} />}
