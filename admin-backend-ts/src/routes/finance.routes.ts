@@ -223,3 +223,129 @@ financeRouter.delete("/admin/finance/expenses/:id", requirePermission("finance.m
   });
   sendJson(res, 200, { ok: true });
 });
+
+// ---------------- Shirkadda Xisaab (per-company accounts) ----------------
+// One telecom company's books for a period: what DALAB paid the company
+// (provider_amount, falling back to amount for orders without a separate
+// provider cost), what customers paid (amount), the discount given off the
+// package's list price, commission earned, and profit = sales - company
+// money + commission. Money only counts real orders (completed, not
+// reversed); the order list itself can show every status.
+const ORDER_STATUSES = ["pending", "in_progress", "completed", "failed", "cancelled"];
+const COMPANY_MONEY = `COALESCE(o.provider_amount, o.amount)`;
+const ORDER_DISCOUNT = `GREATEST(COALESCE(o.list_price, o.amount) - o.amount, 0)`;
+const ORDER_COMMISSION = `COALESCE((SELECT SUM(CASE WHEN cr.kind = 'earned' THEN cr.commission_amount ELSE -cr.commission_amount END)
+                                    FROM commission_records cr WHERE cr.order_id = o.id), 0)`;
+const MONEY_AGGREGATES = `
+  COUNT(o.id) FILTER (WHERE ${REAL_ORDER_FILTER}) AS orders,
+  COALESCE(SUM(${COMPANY_MONEY}) FILTER (WHERE ${REAL_ORDER_FILTER}), 0) AS company_amount,
+  COALESCE(SUM(o.amount) FILTER (WHERE ${REAL_ORDER_FILTER}), 0) AS sale_amount,
+  COALESCE(SUM(${ORDER_DISCOUNT}) FILTER (WHERE ${REAL_ORDER_FILTER}), 0) AS discount,
+  COALESCE(SUM(${ORDER_COMMISSION}) FILTER (WHERE ${REAL_ORDER_FILTER}), 0) AS commission`;
+
+type MoneyRow = { orders: string; company_amount: string; sale_amount: string; discount: string; commission: string };
+
+function money(row: MoneyRow) {
+  const round = (n: number) => Number(n.toFixed(2));
+  const companyAmount = round(Number(row.company_amount));
+  const saleAmount = round(Number(row.sale_amount));
+  const commission = round(Number(row.commission));
+  const profit = round(saleAmount - companyAmount + commission);
+  return {
+    orders: Number(row.orders),
+    companyAmount,
+    saleAmount,
+    discount: round(Number(row.discount)),
+    commission,
+    profit,
+    profitPercent: companyAmount > 0 ? round((profit / companyAmount) * 100) : 0,
+  };
+}
+
+financeRouter.get("/admin/finance/company-accounts", requirePermission("finance.manage"), async (req, res) => {
+  const from = parseRangeParam(req.query.from);
+  const to = parseRangeParam(req.query.to);
+  const range = `($1::timestamptz IS NULL OR o.created_at >= $1) AND ($2::timestamptz IS NULL OR o.created_at <= $2)`;
+
+  const companyRows = await query<MoneyRow & { id: string; name: string; color_hex: string }>(
+    `SELECT co.id, co.name, co.color_hex, ${MONEY_AGGREGATES}
+       FROM companies co
+       LEFT JOIN orders o ON o.company_id = co.id AND ${range}
+      WHERE co.deleted_at IS NULL
+      GROUP BY co.id, co.name, co.color_hex, co.sort_order
+      ORDER BY co.sort_order, co.name`,
+    [from, to]
+  );
+  const companies = companyRows.map((r) => ({ id: r.id, name: r.name, colorHex: r.color_hex, ...money(r) }));
+
+  const requested = typeof req.query.companyId === "string" ? req.query.companyId : "";
+  const company = companies.find((c) => c.id === requested) ?? companies[0] ?? null;
+  if (!company) return sendJson(res, 200, { range: { from, to }, companies, company: null, categories: [], orders: [], totalOrders: 0 });
+
+  const categoryRows = await query<MoneyRow & { name: string }>(
+    `SELECT COALESCE(sc.name, 'Other') AS name, ${MONEY_AGGREGATES}
+       FROM orders o
+       JOIN packages p ON p.id = o.package_id
+       LEFT JOIN service_categories sc ON sc.company_id = p.company_id AND sc.slug = p.category_id
+      WHERE o.company_id = $3 AND ${range}
+      GROUP BY COALESCE(sc.name, 'Other')
+     HAVING COUNT(o.id) FILTER (WHERE ${REAL_ORDER_FILTER}) > 0
+      ORDER BY 3 DESC, 1`,
+    [from, to, company.id]
+  );
+
+  const status = typeof req.query.status === "string" && ORDER_STATUSES.includes(req.query.status) ? req.query.status : null;
+  const search = typeof req.query.q === "string" && req.query.q.trim() ? `%${req.query.q.trim()}%` : null;
+  const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 5000);
+  const offset = Math.max(Number(req.query.offset) || 0, 0);
+  const orderFilter = `o.company_id = $3 AND ${range}
+    AND ($4::text IS NULL OR o.status = $4)
+    AND ($5::text IS NULL OR o.id ILIKE $5 OR p.name ILIKE $5 OR o.receiver_phone ILIKE $5 OR o.sender_phone ILIKE $5)`;
+  const params = [from, to, company.id, status, search];
+
+  const [orderRows, countRow] = await Promise.all([
+    query<any>(
+      `SELECT o.id, o.created_at, o.status, o.reversed_at, o.receiver_phone, p.name AS package_name, sc.name AS category,
+              ${COMPANY_MONEY} AS company_amount, o.amount AS sale_amount, ${ORDER_DISCOUNT} AS discount, ${ORDER_COMMISSION} AS commission
+         FROM orders o
+         JOIN packages p ON p.id = o.package_id
+         LEFT JOIN service_categories sc ON sc.company_id = p.company_id AND sc.slug = p.category_id
+        WHERE ${orderFilter}
+        ORDER BY o.created_at DESC
+        LIMIT ${limit} OFFSET ${offset}`,
+      params
+    ),
+    queryOne<{ total: string }>(
+      `SELECT COUNT(*) AS total FROM orders o JOIN packages p ON p.id = o.package_id WHERE ${orderFilter}`,
+      params
+    ),
+  ]);
+
+  const orders = orderRows.map((r) => {
+    const companyAmount = Number(r.company_amount);
+    const saleAmount = Number(r.sale_amount);
+    const commission = Number(r.commission);
+    return {
+      id: r.id,
+      createdAt: r.created_at,
+      status: r.reversed_at ? "reversed" : r.status,
+      receiverPhone: r.receiver_phone,
+      packageName: r.package_name,
+      category: r.category ?? "Other",
+      companyAmount,
+      saleAmount,
+      discount: Number(r.discount),
+      commission,
+      profit: Number((saleAmount - companyAmount + commission).toFixed(2)),
+    };
+  });
+
+  sendJson(res, 200, {
+    range: { from, to },
+    companies,
+    company,
+    categories: categoryRows.map((r) => ({ name: r.name, ...money(r) })),
+    orders,
+    totalOrders: Number(countRow?.total ?? 0),
+  });
+});
