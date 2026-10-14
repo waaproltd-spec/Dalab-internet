@@ -34,6 +34,10 @@ export const SMS_FORMAT_PROVIDERS: SmsFormatProvider[] = [
   { key: "somtel", label: "Somtel", parsedProvider: "Somtel", senderKey: "somtel_edahab", defaultSenders: ["eDahab"] },
   { key: "somnet", label: "Somnet", parsedProvider: "Somnet", senderKey: "somnet_evc_plus", defaultSenders: ["192"] },
   { key: "amtel", label: "Amtel", parsedProvider: "Amtel", senderKey: "amtel", defaultSenders: [] },
+  // Somnet's Jeeb wallet (a Customer App payment method of its own). Its SMS
+  // come from Jeeb's sender "801" -- the same somnet_jeeb sender key the
+  // Agent App's Jeeb top-up parser already uses -- not Somnet's EVC "192".
+  { key: "jeeb", label: "Jeeb", parsedProvider: "Somnet", senderKey: "somnet_jeeb", defaultSenders: ["801"] },
 ];
 
 export function providerByKey(key: unknown): SmsFormatProvider | undefined {
