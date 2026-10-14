@@ -17,6 +17,10 @@ import com.dalab.internet.data.Order
 import com.dalab.internet.data.OrderStatus
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.ussd.SimRoutingRepository
+import com.dalab.internet.ussd.AssignedSim
+import com.dalab.internet.ussd.SimSlotResult
+import com.dalab.internet.ussd.resolveAssignedSim
+import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.ussd.UssdOrchestrator
 import com.dalab.internet.network.SimBalanceCheck
 import com.dalab.internet.network.balanceName
@@ -37,7 +41,19 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val orchestrator = remember { UssdOrchestrator(context) }
-    val recommendedSlot = remember(current.companyId) { SimRoutingRepository.cachedSlotFor(current.companyId) }
+    // The ONE SIM this order may be dialed on (its template pin, else this
+    // phone's primary SIM Routing). No other SIM is offered: an order that
+    // belongs to another phone, or whose SIM has a problem, waits for it.
+    val assigned = remember(current.id, current.companyId, current.ussdDeviceId, current.ussdSimSlot) {
+        resolveAssignedSim(
+            current.ussdDeviceId,
+            current.ussdSimSlot,
+            DeviceIdentity.deviceId(),
+            SimRoutingRepository.cachedSlotFor(current.companyId)?.let { SimSlotResult.Slot(it) } ?: SimSlotResult.NotConfigured,
+        )
+    }
+    val recommendedSlot = (assigned as? AssignedSim.ThisPhone)?.slot
+    val dialSlots = listOfNotNull(recommendedSlot)
 
     // Insufficient SIM Balance alert: the backend's check for each SIM slot
     // (GET .../sim-balance-check), fetched before the agent can dial. The
@@ -192,13 +208,10 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
                     "Verifying payment also generates and dials the USSD code — pick the SIM this order's provider is routed to.",
                     style = MaterialTheme.typography.labelSmall,
                 )
-                if (recommendedSlot != null) {
-                    Spacer(Modifier.height(4.dp))
-                    Text("Recommended: SIM $recommendedSlot", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                }
+                AssignedSimNote(assigned)
                 Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    listOf(1, 2).forEach { slot ->
+                    dialSlots.forEach { slot ->
                         val isRecommended = recommendedSlot == slot
                         OutlinedButton(
                             onClick = { onDialTapped(slot) },
@@ -219,9 +232,10 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
                 // verify, or a dial that exhausted its retries) — same
                 // executeManually call as above, safe to re-run.
                 Text("No confirmation the USSD was dialed yet? Retry it here.", style = MaterialTheme.typography.labelSmall)
+                AssignedSimNote(assigned)
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    listOf(1, 2).forEach { slot ->
+                    dialSlots.forEach { slot ->
                         val isRecommended = recommendedSlot == slot
                         OutlinedButton(
                             onClick = { onDialTapped(slot) },
@@ -322,4 +336,17 @@ private fun SimBalanceWarningCard(check: SimBalanceCheck) {
             }
         }
     }
+}
+
+/** Which SIM dials this order, and why no button shows when it isn't here. */
+@Composable
+private fun AssignedSimNote(assigned: AssignedSim) {
+    val text = when (assigned) {
+        is AssignedSim.ThisPhone -> "Assigned SIM: SIM ${assigned.slot} on this phone (Admin → SIM Routing)."
+        is AssignedSim.OtherPhone -> "Assigned to ${assigned.deviceId ?: "another phone"} · SIM ${assigned.slot ?: "?"} — only that SIM dials it."
+        AssignedSim.NotConfigured -> "This provider isn't routed to this phone — the phone assigned in SIM Routing dials it."
+        AssignedSim.LoadFailed -> "SIM Routing hasn't loaded yet — try again in a moment."
+    }
+    Spacer(Modifier.height(4.dp))
+    Text(text, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
 }

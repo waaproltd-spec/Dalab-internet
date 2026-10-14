@@ -104,32 +104,42 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         val ussdString = order.ussdGenerated
             ?: return DialResult(DialOutcome.FAILED, "No USSD template matched this order — check USSD Services in the dashboard.")
 
-        // Step 2: resolve which physical SIM to dial on. A USSD template can
-        // pin an order to a specific device+slot (Admin > USSD Templates),
-        // which only means anything if *this* device is the one it named —
-        // dialing still requires physically holding that SIM, so an override
-        // naming a different device is ignored in favor of this device's own
-        // per-company routing (logged for visibility, not treated as an error).
-        val configuredSlot: Int = if (order.ussdDeviceId != null && order.ussdDeviceId == DeviceIdentity.deviceId() && order.ussdSimSlot != null) {
-            order.ussdSimSlot
-        } else {
-            if (order.ussdDeviceId != null && order.ussdDeviceId != DeviceIdentity.deviceId()) {
-                DiagnosticsLog.record(
-                    "sim_routing",
-                    "Order $orderId's template is assigned to a different device — falling back to this device's own routing for ${order.companyName}.",
-                    isError = false,
-                )
-            }
-            when (val result = SimRoutingRepository.simSlotFor(order.companyId)) {
-                is SimSlotResult.Slot -> result.slot
-                SimSlotResult.NotConfigured -> return DialResult(DialOutcome.NO_SIM_CONFIGURED, "No SIM routing configured for ${order.companyName}.")
-                // A cold-start refresh failure, not a real "not configured" —
-                // keep this in NETWORK_UNAVAILABLE so SmsUploadFlow preserves
-                // the durable retry-queue entry instead of dropping it terminal.
-                SimSlotResult.LoadFailed -> return DialResult(DialOutcome.NETWORK_UNAVAILABLE, "Could not load SIM routing (network) — will retry.")
-            }
+        // Step 2: the SIM the Admin assigned to this order (template pin, else
+        // this phone's primary SIM Routing). An order assigned to another
+        // phone is left for that phone -- its self-heal sweep picks it up --
+        // and is never dialed here on this phone's own SIM.
+        val configuredSlot: Int = when (val assigned = assignedSimFor(order)) {
+            is AssignedSim.ThisPhone -> assigned.slot
+            is AssignedSim.OtherPhone -> return assignedElsewhere(order, assigned)
+            AssignedSim.NotConfigured -> return DialResult(
+                DialOutcome.ASSIGNED_TO_OTHER_SIM,
+                "${order.companyName} isn't routed to this phone — the phone assigned in SIM Routing dials it.",
+            )
+            // A cold-start refresh failure, not a real "not configured" —
+            // keep this in NETWORK_UNAVAILABLE so SmsUploadFlow preserves
+            // the durable retry-queue entry instead of dropping it terminal.
+            AssignedSim.LoadFailed -> return DialResult(DialOutcome.NETWORK_UNAVAILABLE, "Could not load SIM routing (network) — will retry.")
         }
         return deliver(order, configuredSlot, ussdString)
+    }
+
+    private suspend fun assignedSimFor(order: Order): AssignedSim {
+        val pinned = order.ussdDeviceId != null && order.ussdSimSlot != null
+        return resolveAssignedSim(
+            order.ussdDeviceId,
+            order.ussdSimSlot,
+            DeviceIdentity.deviceId(),
+            if (pinned) SimSlotResult.NotConfigured else SimRoutingRepository.simSlotFor(order.companyId),
+        )
+    }
+
+    private fun assignedElsewhere(order: Order, assigned: AssignedSim.OtherPhone): DialResult {
+        DiagnosticsLog.record(
+            "sim_routing",
+            "Order ${order.id} is assigned to ${assigned.deviceId} · SIM ${assigned.slot} — not dialed on this phone.",
+            isError = false,
+        )
+        return DialResult(DialOutcome.ASSIGNED_TO_OTHER_SIM, "Assigned to ${assigned.deviceId} · SIM ${assigned.slot} — that phone dials it.")
     }
 
     /**
@@ -182,6 +192,19 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         }
         val ussdString = order.ussdGenerated
             ?: return DialResult(DialOutcome.FAILED, "No USSD template matched this order — check USSD Services in the dashboard.")
+        // Even a manual dial uses only the assigned SIM -- the server
+        // refuses any other one too (not_assigned_sim).
+        when (val assigned = assignedSimFor(order)) {
+            is AssignedSim.ThisPhone -> if (assigned.slot != forcedSimSlot) {
+                return DialResult(DialOutcome.ASSIGNED_TO_OTHER_SIM, "This order is assigned to SIM ${assigned.slot} — SIM $forcedSimSlot doesn't dial it.")
+            }
+            is AssignedSim.OtherPhone -> return assignedElsewhere(order, assigned)
+            // This phone's routing cache may simply not have caught up with
+            // an Admin change yet (the self-heal sweep passes the server's
+            // own assignment): the server decides, and refuses any SIM that
+            // isn't the assigned one.
+            AssignedSim.NotConfigured, AssignedSim.LoadFailed -> Unit
+        }
         return deliver(order, forcedSimSlot, ussdString, confirmUnknownBalance, notifyBalanceBlock = !fromUi)
     }
 
@@ -465,7 +488,11 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         DiagnosticsLog.record("dial_attempt_log", "Order $orderId, attempt $attemptNumber: $message", isError = true)
         // An earlier dial's result is unknown or another phone is dialing it:
         // not a failure of this order, just "already being handled".
-        val outcome = if (code != null && code in REFUSAL_ALREADY_HANDLED) DialOutcome.DUPLICATE_SKIPPED else DialOutcome.FAILED
+        val outcome = when {
+            code == "not_assigned_sim" -> DialOutcome.ASSIGNED_TO_OTHER_SIM
+            code != null && code in REFUSAL_ALREADY_HANDLED -> DialOutcome.DUPLICATE_SKIPPED
+            else -> DialOutcome.FAILED
+        }
         return StrictStart.Refused(message, outcome)
     }
 
@@ -531,11 +558,9 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         // like a response (as opposed to a genuine carrier confirmation)
         // can never silently complete an order, while still being clearly
         // recorded (with its raw text) instead of collapsed into "failed".
-        val status = when (result.outcome) {
-            DialOutcome.SUCCESS -> "success"
-            DialOutcome.AMBIGUOUS -> "ambiguous"
-            else -> "failed"
-        }
+        // A plain timeout is "result unknown", never "failed": the money may
+        // have gone out with only the reply lost (Amtel DLB780359065).
+        val status = reportedDialStatus(result)
         if (attemptId != null) {
             try {
                 val response = ApiClient.service.reportDialResult(

@@ -1,3 +1,4 @@
+import { assignedRouteFor } from "./orderRouting.js";
 import { queryOne } from "../db/pool.js";
 import { deliveriesDone } from "../services/deliveries.js";
 
@@ -189,16 +190,12 @@ export async function checkSimBalanceForOrder(
   let deviceId = sim.deviceId ?? null;
   let simSlot = sim.simSlot ?? null;
   if (!deviceId || !simSlot) {
-    if (order.ussd_device_id && order.ussd_sim_slot) {
-      deviceId = deviceId ?? order.ussd_device_id;
-      simSlot = simSlot ?? order.ussd_sim_slot;
-    } else {
-      const route = await queryOne<{ device_id: string; sim_slot: number }>(
-        `SELECT device_id, sim_slot FROM sim_routing WHERE company_id=$1 ${deviceId ? "AND device_id=$2" : ""} ORDER BY priority ASC LIMIT 1`,
-        deviceId ? [order.company_id, deviceId] : [order.company_id]
-      );
-      deviceId = deviceId ?? route?.device_id ?? null;
-      simSlot = simSlot ?? route?.sim_slot ?? null;
+    // The order's assigned SIM (utils/orderRouting.ts) -- never another
+    // device's slot mixed with this one, never a backup route.
+    const route = await assignedRouteFor(order);
+    if (route && (!deviceId || deviceId === route.deviceId)) {
+      deviceId = route.deviceId;
+      simSlot = simSlot ?? route.simSlot;
     }
   }
 

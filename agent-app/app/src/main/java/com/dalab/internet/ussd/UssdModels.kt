@@ -37,7 +37,9 @@ data class DeviceSimSlot(
 // start the dial because the company SIM doesn't have enough balance (or its
 // balance is unknown/outdated and the agent hasn't confirmed) -- nothing was
 // dialed; see SimBalanceCheck. Not retried: the SIM has to be recharged.
-enum class DialOutcome { SUCCESS, AMBIGUOUS, FAILED, TIMEOUT, NO_SIM_CONFIGURED, NO_SIM_PRESENT, PERMISSION_DENIED, NETWORK_UNAVAILABLE, DUPLICATE_SKIPPED, INSUFFICIENT_SIM_BALANCE, SIM_BALANCE_UNVERIFIED }
+// ASSIGNED_TO_OTHER_SIM: the Admin assigned this order to another phone (or
+// another SIM): nothing was dialed here, and that phone dials it.
+enum class DialOutcome { SUCCESS, AMBIGUOUS, FAILED, TIMEOUT, NO_SIM_CONFIGURED, NO_SIM_PRESENT, PERMISSION_DENIED, NETWORK_UNAVAILABLE, DUPLICATE_SKIPPED, INSUFFICIENT_SIM_BALANCE, SIM_BALANCE_UNVERIFIED, ASSIGNED_TO_OTHER_SIM }
 
 data class DialResult(
     val outcome: DialOutcome,
@@ -47,7 +49,52 @@ data class DialResult(
     // PIN was already sent and the result is unclear (a retry could charge
     // twice), or the menu didn't match the plan (retrying can't help).
     val noRetry: Boolean = false,
+    // A TIMEOUT that provably sent nothing (a menu step before the PIN).
+    // Any other timeout is reported to the server as "result unknown":
+    // the carrier may have sent the money and only the reply was lost.
+    val moneyNotSent: Boolean = false,
 )
+
+/**
+ * Which SIM on THIS phone dials an order -- the same rule as the server's
+ * utils/orderRouting.ts. The order's template pin (device + SIM) wins;
+ * otherwise this phone's SIM Routing entry, which the server only sends
+ * when this phone is the company's primary. Never another phone's order,
+ * never the other SIM, never a backup: an order whose SIM is offline,
+ * out of balance or erroring waits for that SIM.
+ */
+sealed class AssignedSim {
+    data class ThisPhone(val slot: Int) : AssignedSim()
+    data class OtherPhone(val deviceId: String?, val slot: Int?) : AssignedSim()
+    object NotConfigured : AssignedSim()
+    object LoadFailed : AssignedSim()
+}
+
+fun resolveAssignedSim(
+    pinnedDeviceId: String?,
+    pinnedSlot: Int?,
+    thisDeviceId: String?,
+    routedHere: SimSlotResult,
+): AssignedSim {
+    if (pinnedDeviceId != null && pinnedSlot != null) {
+        return if (thisDeviceId != null && pinnedDeviceId == thisDeviceId) AssignedSim.ThisPhone(pinnedSlot)
+        else AssignedSim.OtherPhone(pinnedDeviceId, pinnedSlot)
+    }
+    return when (routedHere) {
+        is SimSlotResult.Slot -> AssignedSim.ThisPhone(routedHere.slot)
+        // Not this phone's company (another phone is primary), or none at all.
+        SimSlotResult.NotConfigured -> AssignedSim.NotConfigured
+        SimSlotResult.LoadFailed -> AssignedSim.LoadFailed
+    }
+}
+
+/** How a dial outcome is reported to the server. */
+fun reportedDialStatus(result: DialResult): String = when (result.outcome) {
+    DialOutcome.SUCCESS -> "success"
+    DialOutcome.AMBIGUOUS -> "ambiguous"
+    DialOutcome.TIMEOUT -> if (result.moneyNotSent) "failed" else "ambiguous"
+    else -> "failed"
+}
 
 /**
  * Distinguishes "this company genuinely has no SIM routing configured" from

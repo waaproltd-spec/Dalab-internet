@@ -290,6 +290,9 @@ object SmsUploadFlow {
             // Already notified with the full details by SimBalanceAlerts
             // (UssdOrchestrator) -- don't post a second notification.
             DialOutcome.INSUFFICIENT_SIM_BALANCE, DialOutcome.SIM_BALANCE_UNVERIFIED -> return
+            // Another phone/SIM is assigned and dials it: nothing for this
+            // phone's agent to do.
+            DialOutcome.ASSIGNED_TO_OTHER_SIM -> return
         }
         val notification = NotificationCompat.Builder(context, "payment_channel")
             .setSmallIcon(R.drawable.ic_notification)

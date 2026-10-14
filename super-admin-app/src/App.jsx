@@ -1112,6 +1112,13 @@ function displayOrderTone(order) {
 // to the caller's default text) while the status hasn't loaded yet.
 function waitingForDeviceMessage(deliveryStatus) {
   if (!deliveryStatus) return null;
+  // Newer servers explain it from the ASSIGNED SIM's own state (an order is
+  // never moved to another phone or SIM).
+  if (deliveryStatus.waitingReason) return deliveryStatus.waitingReason;
+  if (deliveryStatus.assigned) {
+    const a = deliveryStatus.assigned;
+    return `Verified and USSD generated — waiting on ${a.deviceName || a.deviceId} · SIM ${a.simSlot} to dial it. This should happen automatically within a few minutes.`;
+  }
   if (!deliveryStatus.hasRouting) return "No device is configured to handle payments for this provider.";
   if (deliveryStatus.device?.stale) {
     const seen = deliveryStatus.device.lastHeartbeatAt ? formatDateTime(deliveryStatus.device.lastHeartbeatAt) : "never";
@@ -2932,6 +2939,56 @@ function Categories({ companies, admin }) {
 // Drawer close animation duration — kept in one place so the CSS transition
 // and the setTimeout that defers the actual unmount stay in sync.
 const DRAWER_TRANSITION_MS = 220;
+// Which phone + SIM is responsible for an order, its live state, and the
+// last dial -- from GET /admin/orders/:id/delivery-status. The order only
+// ever moves to another SIM when an Admin changes SIM Routing.
+function AssignedSimPanel({ ds, order }) {
+  const a = ds.assigned;
+  const balanceTone = { sufficient: "green", insufficient: "red", unknown: "amber", outdated: "amber" };
+  const last = ds.lastAttempt;
+  const line = (label, value) => (
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12, padding: "3px 0" }}>
+      <span style={{ color: MUTE }}>{label}</span>
+      <span style={{ color: INK, fontWeight: 600, textAlign: "right" }}>{value}</span>
+    </div>
+  );
+  return (
+    <>
+      <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>ASSIGNED SIM</div>
+      <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 8, border: `1px solid ${BORDER}` }}>
+        {line("Provider", order.companyName || order.companyId || "—")}
+        {a ? (
+          <>
+            {line("Mobile device", a.deviceName || a.deviceId)}
+            {line("SIM slot", `SIM ${a.simSlot}${a.source === "template" ? " (USSD template)" : " (SIM Routing primary)"}`)}
+            {line("Device status", <Badge tone={a.online ? "green" : "red"}>{a.online ? "Online" : "Offline"}</Badge>)}
+            {a.simPresent === false && line("SIM", <Badge tone="red">Not detected</Badge>)}
+            {line(
+              "SIM balance",
+              ds.balance ? (
+                <Badge tone={balanceTone[ds.balance.status] || "gray"}>
+                  {ds.balance.status}
+                  {ds.balance.availableBalance != null ? ` · $${Number(ds.balance.availableBalance).toFixed(2)}` : ""}
+                </Badge>
+              ) : "—"
+            )}
+          </>
+        ) : (
+          line("Mobile device", <Badge tone="red">No SIM assigned</Badge>)
+        )}
+        {line("Order status", ds.orderStatus || order.status)}
+        {line(
+          "Last dial",
+          last ? `#${last.attemptNumber} · ${last.status}${last.deviceName ? ` · ${last.deviceName}` : ""} · SIM ${last.simSlot ?? "—"} · ${formatDateTime(last.createdAt)}` : "None yet"
+        )}
+        {last?.responseMessage && line("Carrier reply", last.responseMessage)}
+        {ds.waitingReason && (
+          <div style={{ marginTop: 6, fontSize: 12, fontWeight: 700, color: "#B45309" }}>{ds.waitingReason}</div>
+        )}
+      </div>
+    </>
+  );
+}
 
 function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
   const [attempts, setAttempts] = useState([]);
@@ -2985,15 +3042,14 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
       .catch((err) => setPaymentTxError(err.message || "Could not load payment transaction history."));
   }, [order?.id]);
 
-  // Only worth checking when we're in the specific ambiguous state: verified,
-  // USSD generated, no attempts yet, and generation itself didn't fail — the
-  // one case a bare "no dial attempts" leaves unexplained.
+  // The order's assigned phone + SIM and why it's waiting (if it is) --
+  // shown for every USSD order, so staff always see which SIM is
+  // responsible instead of guessing.
   useEffect(() => {
     setDeliveryStatus(null);
-    if (!order || !DALAB_API_ENABLED) return;
-    if (attempts.length > 0 || !order.ussdGenerated || order.ussdGenerationFailedReason) return;
+    if (!order || !DALAB_API_ENABLED || isSomlink) return;
     DalabAdminApi.getOrderDeliveryStatus(order.id).then(setDeliveryStatus).catch(() => {});
-  }, [order?.id, attempts.length, order?.ussdGenerated, order?.ussdGenerationFailedReason]);
+  }, [order?.id, order?.status, attempts.length, isSomlink]);
 
   // SOMLINK-fulfilled orders have no USSD dial history — this is their
   // equivalent panel, sourced from somlink_transactions instead.
@@ -3230,6 +3286,8 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
         <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>DATE & TIME</div>
         {row("Created", formatDateTime(order.createdAt), true)}
         {order.completedAt && row("Completed", formatDateTime(order.completedAt), true)}
+
+        {!isSomlink && deliveryStatus && <AssignedSimPanel ds={deliveryStatus} order={order} />}
 
         {!isSomlink && (
           <>
@@ -8397,7 +8455,7 @@ function SimRoutingPanel({ companies, canManage }) {
                   const key = `${r.companyId}:${r.deviceId}`;
                   return (
                     <div key={r.deviceId} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, border: `1px solid ${BORDER}` }}>
-                      <Badge tone={idx === 0 ? "blue" : "gray"}>{idx === 0 ? "Primary" : `Backup ${idx}`}</Badge>
+                      <Badge tone={idx === 0 ? "blue" : "gray"} title={idx === 0 ? "Dials every order for this provider" : "Not used automatically — an order never moves here unless you make this the primary"}>{idx === 0 ? "Primary" : `Backup ${idx} (manual)`}</Badge>
                       <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: INK }}>{r.deviceName || "Unknown device"}</span>
                       {device && (device.enabled === false || isHeartbeatStale(device.lastHeartbeatAt)) && (
                         <Badge tone="amber"><AlertTriangle size={11} style={{ marginRight: 4, verticalAlign: -1 }} />{device.enabled === false ? "Disabled" : "No recent heartbeat"}</Badge>
@@ -12465,7 +12523,7 @@ function ResellerWithdrawSimRoutingTab({ companies, canManage }) {
                   const key = `${r.companyId}:${r.deviceId}`;
                   return (
                     <div key={r.deviceId} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, border: `1px solid ${BORDER}` }}>
-                      <Badge tone={idx === 0 ? "blue" : "gray"}>{idx === 0 ? "Primary" : `Backup ${idx}`}</Badge>
+                      <Badge tone={idx === 0 ? "blue" : "gray"} title={idx === 0 ? "Dials every order for this provider" : "Not used automatically — an order never moves here unless you make this the primary"}>{idx === 0 ? "Primary" : `Backup ${idx} (manual)`}</Badge>
                       <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: INK }}>{r.deviceName || "Unknown device"}</span>
                       {device && (device.enabled === false || isHeartbeatStale(device.lastHeartbeatAt)) && (
                         <Badge tone="amber"><AlertTriangle size={11} style={{ marginRight: 4, verticalAlign: -1 }} />{device.enabled === false ? "Disabled" : "No recent heartbeat"}</Badge>
