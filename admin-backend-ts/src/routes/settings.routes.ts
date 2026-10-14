@@ -41,7 +41,7 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   social_tiktok_enabled: "true",
   social_email: "",
   social_email_enabled: "true",
-  social_play_store_url: "https://play.google.com/store/apps/details?id=com.dalab.internet.customer",
+  social_play_store_url: "https://play.google.com/store/apps/details?id=com.dalab.internet",
   social_play_store_enabled: "true",
   social_telegram_url: "",
   social_telegram_enabled: "true",
