@@ -19,7 +19,7 @@ import com.dalab.internet.service.AgentBackgroundService
  */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
+        if (intent.action !in RESTART_ACTIONS) return
         try {
             DiagnosticsLog.init(context)
             SmsListenerState.init(context)
@@ -37,3 +37,10 @@ class BootReceiver : BroadcastReceiver() {
         }
     }
 }
+
+private val RESTART_ACTIONS = setOf(
+    Intent.ACTION_BOOT_COMPLETED,
+    Intent.ACTION_MY_PACKAGE_REPLACED,
+    "android.intent.action.QUICKBOOT_POWERON",
+    "com.htc.intent.action.QUICKBOOT_POWERON",
+)

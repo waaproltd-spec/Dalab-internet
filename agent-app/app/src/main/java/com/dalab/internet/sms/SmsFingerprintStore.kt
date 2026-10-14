@@ -15,6 +15,7 @@ import com.google.gson.reflect.TypeToken
 object SmsFingerprintStore {
     private const val PREFS = "dalab_agent_sms_ledger"
     private const val KEY = "entries"
+    private const val KEY_LAST_ACK_AT = "last_ack_at"
 
     private val gson = Gson()
     private val type = object : TypeToken<MutableMap<String, SmsIntakeLedger.Entry>>() {}.type
@@ -59,7 +60,13 @@ object SmsFingerprintStore {
     @Synchronized
     fun markAcked(fingerprint: String) {
         val ledger = load()
-        ledger.markAcked(fingerprint, System.currentTimeMillis())
+        val now = System.currentTimeMillis()
+        ledger.markAcked(fingerprint, now)
         save(ledger)
+        prefs?.edit()?.putLong(KEY_LAST_ACK_AT, now)?.apply()
     }
+
+    /** When the server last acknowledged an SMS upload (0 = never), for
+     * the device heartbeat. */
+    fun lastAckAt(): Long = prefs?.getLong(KEY_LAST_ACK_AT, 0L) ?: 0L
 }

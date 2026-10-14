@@ -47,6 +47,13 @@ data class DialAttemptAuditAction(
  * see SmsReceiver.kt's notifyAgent() path, which this replaces/extends with
  * the actual automatic dial rather than only a notification.
  */
+/** Whether a dial may be retried automatically: only a CONFIRMED failure
+ * (the carrier/OS refused it or replied with a known failure). A timeout or
+ * an unrecognised reply may mean the money already went out, so it is never
+ * re-dialed automatically. Unit-tested in DialRetryPolicyTest. */
+internal fun isAutomaticallyRetryable(result: DialResult): Boolean =
+    !result.noRetry && result.outcome == DialOutcome.FAILED
+
 class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
     private val dialer = UssdDialer(context)
     private val packageMenuRunner = PackageInteractiveUssdRunner(context)
@@ -69,6 +76,7 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
     }
 
     private suspend fun processMatchedOrderLocked(orderId: String, smsLogId: String?): DialResult {
+        interruptedDialResult(orderId)?.let { return it }
         // Step 1: verify payment (pending -> in_progress), which also triggers
         // the backend's own USSD string generation (see dalab-backend.zip,
         // routes/orders.js -> generateUssdForOrder).
@@ -160,6 +168,7 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
     }
 
     private suspend fun executeManuallyLocked(orderId: String, forcedSimSlot: Int, confirmUnknownBalance: Boolean, fromUi: Boolean): DialResult {
+        interruptedDialResult(orderId)?.let { return it }
         val verifyResponse = try {
             RetryClassifier.requireSuccessful(ApiClient.service.verifyPayment(orderId, VerifyPaymentRequest(null)))
         } catch (e: Exception) {
@@ -213,7 +222,16 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
             null
         }
         val sendCount = order.sendCount ?: 1
-        if (sendCount <= 1) return dialWithRetryRun(order.id, simSlot, ussdString, attemptBase = 0, strict = false, confirmUnknownBalance = confirmUnknownBalance, plan = plan).result
+        // Every order is strict: a dial only starts once the server has
+        // logged its attempt (offline -> retried later, never dialed blind),
+        // numbered after the order's existing attempts so a later round never
+        // reuses an already-resolved attempt row (its result would be lost).
+        if (sendCount <= 1) {
+            return dialWithRetryRun(
+                order.id, simSlot, ussdString, attemptBase = (order.nextAttemptNumber ?: 1) - 1,
+                strict = true, confirmUnknownBalance = confirmUnknownBalance, plan = plan,
+            ).result
+        }
 
         var done = order.deliveriesDone ?: 0
         var nextAttempt = order.nextAttemptNumber ?: 1
@@ -274,7 +292,7 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
                         attemptsUsed, reportedOnline = false, stoppedEarly = true,
                     )
                     is StrictStart.Refused -> return DeliveryRun(
-                        DialResult(DialOutcome.FAILED, started.message), attemptsUsed, reportedOnline = false, stoppedEarly = true,
+                        DialResult(started.outcome, started.message, noRetry = true), attemptsUsed, reportedOnline = false, stoppedEarly = true,
                     )
                 }
             } else {
@@ -317,6 +335,10 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
                     // slot in between isn't blocked behind this order's own
                     // retry backoff.
                     val ticket = UssdSimLock.acquire(simSlot, "internet_store:$orderId:attempt$attemptNumber", System.currentTimeMillis())
+                    // On disk before the carrier is contacted: if the app
+                    // dies from here on, the next run reports this dial as
+                    // outcome-unknown instead of dialing again.
+                    DialJournal.begin(appContext, DialJournal.Entry(orderId, attemptId, attemptNumber, simSlot, System.currentTimeMillis()))
                     try {
                         // UssdDialer only catches SecurityException around the telephony
                         // call — other stack exceptions (e.g. IllegalStateException when
@@ -346,13 +368,18 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
             // maxAttempts is reached. Computed before reporting so the
             // backend never marks the order 'failed' on attempt 1 of 3 while
             // a retry is still about to run — see PUT /agent/dial-attempts.
-            val retryable = !lastResult.noRetry && (
-                lastResult.outcome == DialOutcome.FAILED ||
-                    lastResult.outcome == DialOutcome.TIMEOUT ||
-                    lastResult.outcome == DialOutcome.AMBIGUOUS
-                )
+            // Only a CONFIRMED failure is retried (the carrier/OS refused the
+            // request, or replied with a known failure). A timeout or an
+            // unrecognised reply may mean the money already went out -- the
+            // PIN is inside a one-shot dial string -- so it is reported as
+            // outcome-unknown and never re-dialed automatically; the server
+            // then refuses further attempts until a person checks it. A real
+            // payment was once sent 3 times this way (Amtel, see UssdDialer).
+            val retryable = isAutomaticallyRetryable(lastResult)
             val isFinalAttempt = !retryable || attempt == maxAttempts
             reportedOnline = reportDialResult(orderId, simSlot, ussdString, attemptNumber, attemptId, lastResult, isFinalAttempt, strict)
+            // The result is now reported online or saved for replay.
+            DialJournal.clear(appContext, orderId)
 
             if (lastResult.outcome == DialOutcome.SUCCESS) return DeliveryRun(lastResult, attemptsUsed, reportedOnline, stoppedEarly = false)
             if (!retryable) {
@@ -408,7 +435,7 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         data class Started(val id: String) : StrictStart()
         data class BalanceBlocked(val result: DialResult) : StrictStart()
         object Offline : StrictStart()
-        data class Refused(val message: String) : StrictStart()
+        data class Refused(val message: String, val outcome: DialOutcome = DialOutcome.FAILED) : StrictStart()
     }
 
     private sealed class StartLog {
@@ -428,11 +455,51 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         }
         val id = response.body()?.id
         if (response.isSuccessful && id != null) return StrictStart.Started(id)
-        SimBalanceAlerts.refusalFrom(response)?.let { return StrictStart.BalanceBlocked(it) }
         if (response.code() >= 500) return StrictStart.Offline
-        val message = "Server refused this delivery (HTTP ${response.code()}) — nothing was sent."
+        // The error body can be read only once: parse it here for both the
+        // SIM-balance refusal and the other refusal codes.
+        val (code, serverMessage) = errorCodeAndMessage(response)
+        if (response.code() == 409) SimBalanceAlerts.refusalFromJson(code, serverMessage)?.let { return StrictStart.BalanceBlocked(it) }
+        val message = "Server refused this dial (HTTP ${response.code()}${code?.let { ", $it" } ?: ""}) — nothing was sent." +
+            (serverMessage?.let { " $it" } ?: "")
         DiagnosticsLog.record("dial_attempt_log", "Order $orderId, attempt $attemptNumber: $message", isError = true)
-        return StrictStart.Refused(message)
+        // An earlier dial's result is unknown or another phone is dialing it:
+        // not a failure of this order, just "already being handled".
+        val outcome = if (code != null && code in REFUSAL_ALREADY_HANDLED) DialOutcome.DUPLICATE_SKIPPED else DialOutcome.FAILED
+        return StrictStart.Refused(message, outcome)
+    }
+
+    private fun errorCodeAndMessage(response: retrofit2.Response<*>): Pair<String?, String?> = try {
+        val json = response.errorBody()?.string()?.let { org.json.JSONObject(it) }
+        Pair(json?.optString("code")?.takeIf { it.isNotBlank() }, json?.optString("error")?.takeIf { it.isNotBlank() })
+    } catch (_: Exception) {
+        Pair(null, null)
+    }
+
+    /**
+     * A dial for [orderId] started on this phone and its result was never
+     * recorded (the app died mid-dial). Reports it as outcome-unknown and
+     * returns a result that stops this run -- nothing is dialed again until
+     * a person checks whether the money went out. Null when there's nothing
+     * interrupted.
+     */
+    private suspend fun interruptedDialResult(orderId: String): DialResult? {
+        val entry = DialJournal.get(appContext, orderId) ?: return null
+        val message = "The app stopped while dial attempt #${entry.attemptNumber} (SIM ${entry.simSlot}) was running, so the carrier's result is unknown. " +
+            "Check whether the customer received it before sending again."
+        DiagnosticsLog.record("dial_interrupted", "Order $orderId: $message", isError = true)
+        if (entry.attemptId != null) {
+            val reported = try {
+                ApiClient.service.reportDialResult(entry.attemptId, DialAttemptResultRequest("ambiguous", message, true)).isSuccessful
+            } catch (_: Exception) {
+                false
+            }
+            // Not reported yet: keep the journal entry and retry later (the
+            // caller keeps its queued retry on NETWORK_UNAVAILABLE). Still no dial.
+            if (!reported) return DialResult(DialOutcome.NETWORK_UNAVAILABLE, "$message Will report this once the server is reachable.", noRetry = true)
+        }
+        DialJournal.clear(appContext, orderId)
+        return DialResult(DialOutcome.AMBIGUOUS, message, noRetry = true)
     }
 
     private suspend fun startDialAttemptLog(orderId: String, simSlot: Int, ussdString: String, attemptNumber: Int, confirmUnknownBalance: Boolean): StartLog {
@@ -499,6 +566,10 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         // A short pause between an Extra Package's deliveries, so the
         // carrier finishes one USSD session before the next starts.
         private const val BETWEEN_DELIVERIES_MS = 3000L
+
+        // Server refusal codes (POST /agent/orders/:id/dial-attempts) that
+        // mean "this order is already being handled", not a failure.
+        private val REFUSAL_ALREADY_HANDLED = setOf("previous_attempt_unresolved", "attempt_in_progress_elsewhere", "attempt_already_resolved", "order_not_dialable")
 
         // Process-wide (not per-instance): OrderDetailScreen, OrdersListScreen,
         // SmsUploadFlow, and SelfHealSweeper each construct their own

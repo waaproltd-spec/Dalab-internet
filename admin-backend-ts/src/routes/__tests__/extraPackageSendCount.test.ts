@@ -217,7 +217,9 @@ test("a USSD Extra Package order completes and notifies only after its last deli
   assert.equal(await successNotifications(), 1, "exactly one success notification");
 
   assert.equal((await startAttempt(orderId, 4)).status, 409, "no 4th delivery");
-  assert.equal((await startAttempt(orderId, 3)).status, 200, "a retried log of an existing attempt still answers");
+  // A finished attempt is never handed back as "go ahead and dial" (its
+  // result would be lost); a queued replay of it just stops.
+  assert.equal((await startAttempt(orderId, 3)).status, 409, "a retried log of an already-finished attempt is refused");
 });
 
 test("a failed attempt retried within one delivery still counts as one delivery", async () => {

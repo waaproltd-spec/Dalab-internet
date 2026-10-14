@@ -12,6 +12,7 @@ import { creditCommissionIfNeeded } from "../utils/commissions.js";
 import { creditReferralBonusIfNeeded } from "../utils/referrals.js";
 import { refundRedeemedPointsIfNeeded } from "../utils/loyaltyPoints.js";
 import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
+import { deviceHealthIssues } from "../utils/deviceHealth.js";
 import { normalizePhoneForUssd, formatUssdAmount, splitUssdAmount, formatUssdAmountSplit } from "../utils/ussdFormatting.js";
 import { checkSimBalanceForOrder, unverifiedBalancePolicy } from "../utils/simBalanceCheck.js";
 import { notifyCustomer } from "../services/customerNotify.js";
@@ -535,6 +536,19 @@ ussdRouter.post("/admin/orders/:id/generate-ussd", requireAuth("super_admin"), a
 
 // ---------------- Multi-Device Configuration ----------------
 
+/** Badge: enabled agent phones that can't work on their own right now. */
+ussdRouter.get("/admin/agent-devices/health-issues", requireStaff(), async (_req, res) => {
+  const devices = await query<any>(`SELECT * FROM agent_devices WHERE enabled ORDER BY name`);
+  const withIssues = devices
+    .map((d) => ({ id: d.id, name: d.name, issues: deviceHealthIssues(d) }))
+    .filter((d) => d.issues.length > 0);
+  sendJson(res, 200, {
+    errorCount: withIssues.filter((d) => d.issues.some((i) => i.severity === "error")).length,
+    warningCount: withIssues.filter((d) => d.issues.every((i) => i.severity === "warning")).length,
+    devices: withIssues,
+  });
+});
+
 ussdRouter.get("/admin/agent-devices", requireStaff(), async (_req, res) => {
   const devices = await query(`SELECT d.*, ${DEVICE_ONLINE_SQL} AS online FROM agent_devices d ORDER BY d.name`);
   const routing = await query(
@@ -542,6 +556,7 @@ ussdRouter.get("/admin/agent-devices", requireStaff(), async (_req, res) => {
   );
   const withSims = devices.map((d: any) => ({
     ...d,
+    healthIssues: deviceHealthIssues(d),
     sims: routing.filter((r: any) => r.device_id === d.id).sort((a: any, b: any) => a.sim_slot - b.sim_slot),
   }));
   sendJson(res, 200, withSims);
@@ -759,6 +774,18 @@ ussdRouter.post("/agent/devices/:id/heartbeat", requireAuth("agent"), async (req
     `UPDATE agent_devices SET battery_percent=$1, network_online=$2, sim1_present=$3, sim2_present=$4, last_heartbeat_at=now() WHERE id=$5 RETURNING id`,
     [batteryPercent ?? null, networkOnline !== false, sim1Present ?? null, sim2Present ?? null, req.params.id]
   );
+  // Automation health (migration 119). Only written when the app sent it,
+  // so an older app never wipes values to NULL; each value is type-checked.
+  const health = readDeviceHealth(req.body);
+  if (health.length > 0) {
+    await query(
+      `UPDATE agent_devices SET ${health.map(([col], i) => `${col}=$${i + 1}`).join(", ")} WHERE id=$${health.length + 1}`,
+      [...health.map(([, v]) => v), req.params.id]
+    ).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.error("Failed to store device health:", (err as Error).message);
+    });
+  }
   if (result.length === 0) return sendJson(res, 404, { error: "Device not found" });
 
   // Reliability Dashboard: diagnostics upload piggybacks on the heartbeat
@@ -785,6 +812,33 @@ ussdRouter.post("/agent/devices/:id/heartbeat", requireAuth("agent"), async (req
 
   sendJson(res, 200, { received: true });
 });
+
+/** Typed automation-health fields from a heartbeat body -> [column, value]. */
+function readDeviceHealth(body: any): Array<[string, unknown]> {
+  const out: Array<[string, unknown]> = [];
+  const bool = (key: string, col: string) => { if (typeof body?.[key] === "boolean") out.push([col, body[key]]); };
+  const int = (key: string, col: string) => {
+    const v = body?.[key];
+    if (typeof v === "number" && Number.isFinite(v) && v >= 0) out.push([col, Math.min(Math.floor(v), 2_000_000_000)]);
+  };
+  const time = (key: string, col: string) => {
+    const v = body?.[key];
+    if (typeof v === "number" && Number.isFinite(v) && v > 0) out.push([col, new Date(v)]);
+  };
+  bool("smsPermission", "sms_permission");
+  int("pendingSmsCount", "pending_sms_count");
+  int("oldestPendingSmsAgeSec", "oldest_pending_sms_age_sec");
+  int("pendingActionCount", "pending_action_count");
+  time("lastSmsUploadAt", "last_sms_upload_at");
+  bool("accessibilityResellerEnabled", "accessibility_reseller_enabled");
+  bool("accessibilityExchangeEnabled", "accessibility_exchange_enabled");
+  bool("batteryOptimizationIgnored", "battery_optimization_ignored");
+  bool("notificationsEnabled", "notifications_enabled");
+  bool("phonePermission", "phone_permission");
+  time("serviceStartedAt", "service_started_at");
+  if (typeof body?.appVersion === "string" && body.appVersion.length <= 40) out.push(["app_version", body.appVersion]);
+  return out;
+}
 
 // ---------------- Dial attempts (audit trail + retry tracking) ----------------
 
@@ -841,6 +895,41 @@ ussdRouter.post("/agent/orders/:id/dial-attempts", requireAuth("agent"), async (
     `SELECT id FROM ussd_dial_attempts WHERE order_id=$1 AND attempt_number=$2`,
     [req.params.id, attemptNumber ?? 1]
   );
+
+  // One real payment must never be sent twice. A dial whose result is
+  // unknown (still 'pending' -- the app may have died mid-dial -- or
+  // 'ambiguous': the carrier replied with text that isn't a known success
+  // or failure) may already have moved the money: no new dial for this
+  // order until a person resolves it (POST /admin/dial-attempts/:id/resolve).
+  // Re-sending an attempt that already exists is only allowed for the
+  // same agent while it is still pending (a start call whose reply was
+  // lost); one already resolved, or held by another phone, is refused so
+  // its id is never handed back as "go ahead and dial".
+  const priorAttempts = await query<{ id: string; attempt_number: number; status: string; agent_id: string | null }>(
+    `SELECT id, attempt_number, status, agent_id FROM ussd_dial_attempts WHERE order_id=$1 ORDER BY attempt_number`,
+    [req.params.id]
+  );
+  const existingAttempt = priorAttempts.find((a) => Number(a.attempt_number) === Number(attemptNumber ?? 1));
+  if (existingAttempt) {
+    if (existingAttempt.status !== "pending") {
+      return sendJson(res, 409, { code: "attempt_already_resolved", error: `Dial attempt #${existingAttempt.attempt_number} for this order is already recorded as '${existingAttempt.status}' — it is not dialed again.`, attemptId: existingAttempt.id });
+    }
+    if (existingAttempt.agent_id && existingAttempt.agent_id !== req.auth!.sub) {
+      return sendJson(res, 409, { code: "attempt_in_progress_elsewhere", error: "Another agent phone is already dialing this order — not dialed here.", attemptId: existingAttempt.id });
+    }
+  } else {
+    if (order.status !== "in_progress") {
+      return sendJson(res, 409, { code: "order_not_dialable", error: `This order is '${order.status}' — only an order in progress can be dialed.` });
+    }
+    const unresolved = priorAttempts.find((a) => a.status === "pending" || a.status === "ambiguous");
+    if (unresolved) {
+      return sendJson(res, 409, {
+        code: "previous_attempt_unresolved",
+        error: `Dial attempt #${unresolved.attempt_number}'s result is ${unresolved.status === "pending" ? "still unknown (no result reported)" : "unclear (ambiguous carrier reply)"} — the money may already have been sent. Check it and resolve it in the dashboard before dialing again.`,
+        attemptId: unresolved.id,
+      });
+    }
+  }
 
   // Extra Package (send_count > 1): never start a dial past the Send Count.
   // Single-delivery orders skip this entirely.
@@ -1010,7 +1099,9 @@ ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (r
     const deliveriesComplete = !order || (await allDeliveriesDone(order));
     if (order && order.status !== "completed" && deliveriesComplete) {
       const completed = await query(
-        `UPDATE orders SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1 AND status != 'completed' RETURNING id`,
+        // in_progress, or 'failed' when a late carrier confirmation proves it
+        // was delivered after all -- never a cancelled/reversed order.
+        `UPDATE orders SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1 AND status IN ('in_progress','failed') RETURNING id`,
         [order.id]
       );
       if (completed.length > 0 && order.macaash_earned > 0) {
@@ -1073,6 +1164,19 @@ ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (r
       }
     }
     if (deliveriesComplete) await markPaymentFinal(attempt.order_id, "completed");
+  } else if (status === "ambiguous") {
+    // Outcome unknown: the money may have gone out. Never fail the order
+    // or tell the customer "not sent" -- it stays in progress, flagged for
+    // a person to check (Pending Recovery / stuck orders), and no further
+    // dial is allowed until it's resolved (see POST dial-attempts above).
+    await recordActivity({
+      adminId: undefined,
+      action: "dial_outcome_unknown",
+      entityType: "order",
+      entityId: attempt.order_id,
+      oldValue: null,
+      newValue: { attemptId: req.params.attemptId, response: responseMessage ?? null },
+    });
   } else {
     // Only mark the ORDER failed once this is genuinely the last attempt —
     // UssdOrchestrator reports every attempt as it happens (see

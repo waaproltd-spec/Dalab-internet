@@ -224,6 +224,10 @@ internal val FAILURE_RESPONSE_KEYWORDS = listOf(
     //     template's "guulaysatay" (see SUCCESS_RESPONSE_KEYWORDS_RECHARGE
     //     below); the two verb forms never collide.
     "unrecognized", "not valid", "not allowed", "kumaad guulaysan",
+    // Negated forms of the success words below must never read as success:
+    // "has not been transferred" contains "transferred", and Somtel's
+    // "kumaad guuleysan" is the -ey- spelling of the negated form above.
+    "not transferred", "not been transferred", "kumaad guuleysan",
 )
 
 fun looksLikeFailureResponse(text: String): Boolean {
@@ -273,7 +277,11 @@ fun looksLikeFailureResponse(text: String): Boolean {
  *     classifyResellerWithdrawalUssdResponse's own SUCCESS_RESPONSE_KEYWORDS
  *     below — this was simply never carried over to this sibling list.
  */
-private val SUCCESS_RESPONSE_KEYWORDS_RECHARGE = listOf("guulaysatay", "ugu shubtay", "transferred")
+// "guuleysatay"/"ugu shubto": Somtel's own receipt wording ("Macmiil,
+// waxaad ku guuleysatay inaad = Daily 24 Hrs ugu shubto 6203...") -- the
+// -ey- spelling wasn't recognised, so a real Somtel success read as
+// AMBIGUOUS.
+private val SUCCESS_RESPONSE_KEYWORDS_RECHARGE = listOf("guulaysatay", "guuleysatay", "ugu shubtay", "ugu shubto", "transferred")
 
 fun classifyRechargeUssdResponse(text: String): DialOutcome {
     val trimmed = text.trim()

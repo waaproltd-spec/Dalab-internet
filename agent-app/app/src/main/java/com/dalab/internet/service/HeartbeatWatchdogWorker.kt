@@ -29,12 +29,8 @@ import java.util.concurrent.TimeUnit
  * identical to a healthy device from this worker's old perspective: service
  * alive, so nothing to do, while heartbeats had actually stopped forever.
  * Now also checks heartbeat freshness via [shouldRestartAgentService] and,
- * if stale, stops and restarts the service (see
- * [AgentBackgroundService.restart]) rather than merely calling
- * [AgentBackgroundService.start] on the already-running instance, which
- * would only re-deliver onStartCommand() and do nothing -- a service
- * already reporting alive needs a genuinely fresh instance/onCreate() to
- * get a new heartbeatLoop coroutine, not another onStartCommand() delivery.
+ * if stale on a running service, restarts only the loop(s) that died
+ * ([AgentBackgroundService.recoverStalledLoops]) -- never stops the service.
  */
 class HeartbeatWatchdogWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
@@ -43,11 +39,22 @@ class HeartbeatWatchdogWorker(context: Context, params: WorkerParameters) : Coro
                 val running = AgentBackgroundService.isRunning
                 if (shouldRestartAgentService(running, HeartbeatStats.lastSuccessAt(), System.currentTimeMillis(), HEARTBEAT_STALE_THRESHOLD_MS)) {
                     if (running) {
+                        // Never stop a running service to "fix" a stale
+                        // heartbeat: that aborts a USSD dial in progress,
+                        // and on Android 12+ a background start can then be
+                        // refused, leaving it dead until someone opens the
+                        // app. Bring back only a loop that actually died; if
+                        // they're all alive, the cause is the network or the
+                        // server, which a restart can't fix.
+                        val restarted = AgentBackgroundService.recoverStalledLoops()
                         DiagnosticsLog.record(
                             "watchdog_worker",
-                            "Service reports running but heartbeat is stale (over ${HEARTBEAT_STALE_THRESHOLD_MS / 60_000}m) — restarting to recover a dead heartbeat loop.",
+                            if (restarted.isEmpty()) {
+                                "Heartbeat stale (over ${HEARTBEAT_STALE_THRESHOLD_MS / 60_000}m) but every background loop is alive — network/server problem; not restarting."
+                            } else {
+                                "Heartbeat stale — restarted stopped loop(s): ${restarted.joinToString()}."
+                            },
                         )
-                        AgentBackgroundService.restart(applicationContext)
                     } else {
                         DiagnosticsLog.record("watchdog_worker", "Foreground service not running — restarting.")
                         AgentBackgroundService.start(applicationContext)

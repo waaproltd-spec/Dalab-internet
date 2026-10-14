@@ -54,6 +54,19 @@ data class HeartbeatRequest(
     // endpoint/round-trip — best-effort, omitted (null/empty) when there's
     // nothing new to report.
     val recentDiagnostics: List<DiagnosticsEntryDto>? = null,
+    // Automation health (DeviceHealthSnapshot): null = unknown / older app.
+    val smsPermission: Boolean? = null,
+    val pendingSmsCount: Int? = null,
+    val oldestPendingSmsAgeSec: Long? = null,
+    val pendingActionCount: Int? = null,
+    val lastSmsUploadAt: Long? = null,
+    val accessibilityResellerEnabled: Boolean? = null,
+    val accessibilityExchangeEnabled: Boolean? = null,
+    val batteryOptimizationIgnored: Boolean? = null,
+    val notificationsEnabled: Boolean? = null,
+    val phonePermission: Boolean? = null,
+    val serviceStartedAt: Long? = null,
+    val appVersion: String? = null,
 )
 data class LoginResponse(val accessToken: String, val refreshToken: String, val agent: AgentProfile)
 data class RegisterDeviceTokenRequest(val fcmToken: String)
