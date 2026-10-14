@@ -82,7 +82,7 @@ class SmsRecoveryLogicTest {
 
     // --- retry backoff ------------------------------------------------------
 
-    @Test fun `a failed upload backs off 30s, 1m, 2m ... and never stops retrying`() {
+    @Test fun `a failed upload backs off 30s then 1m then 2m and never stops retrying`() {
         assertEquals(0L, SmsRecoveryLogic.backoffMs(0))
         assertEquals(30_000L, SmsRecoveryLogic.backoffMs(1))
         assertEquals(60_000L, SmsRecoveryLogic.backoffMs(2))
@@ -101,7 +101,7 @@ class SmsRecoveryLogicTest {
 
     // --- ledger (survives restarts via SmsFingerprintStore) -----------------
 
-    @Test fun `received, queued, acknowledged: an acknowledged SMS is never put back to queued`() {
+    @Test fun `received then queued then acknowledged - an acknowledged SMS is never put back to queued`() {
         val ledger = SmsIntakeLedger()
         val fp = SmsRecoveryLogic.fingerprint("192", evcBody)
         assertNull(ledger.state(fp))
@@ -112,7 +112,7 @@ class SmsRecoveryLogicTest {
         assertEquals(SmsIntakeLedger.State.ACKED, ledger.state(fp))
     }
 
-    @Test fun `lost acknowledgement: the SMS stays queued and goes up again; the server's dedup answers duplicate`() {
+    @Test fun `lost acknowledgement - the SMS stays queued and goes up again and the server dedup answers duplicate`() {
         // Upload reached the server but the reply was lost -> still QUEUED,
         // so it's retried (not dropped). The backend recognises the same SMS
         // (transaction ref / sender+body+minute) and answers "duplicate";
