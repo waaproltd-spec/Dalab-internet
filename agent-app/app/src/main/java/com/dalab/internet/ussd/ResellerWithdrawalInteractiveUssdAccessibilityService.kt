@@ -88,6 +88,17 @@ class ResellerWithdrawalInteractiveUssdAccessibilityService : AccessibilityServi
                 return
             }
 
+            if (bridge.consumeCancelRequest()) {
+                val negativeButton = findNegativeButton(root)
+                if (negativeButton != null) {
+                    negativeButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    bridge.emit(UssdDialogEvent.DialogCancelled)
+                } else {
+                    bridge.restoreCancelRequest()
+                }
+                return
+            }
+
             val pendingReply = bridge.consumePendingReplyToInject()
             if (pendingReply != null) {
                 if (inputNode == null) {
@@ -120,7 +131,7 @@ class ResellerWithdrawalInteractiveUssdAccessibilityService : AccessibilityServi
                 if (confirmButton != null) {
                     if (bridge.shouldAutoConfirm(messageText)) {
                         confirmButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                        bridge.emit(UssdDialogEvent.ConfirmationAdvanced(ConfirmationStage.PRE_PIN))
+                        bridge.emit(UssdDialogEvent.ConfirmationAdvanced(ConfirmationStage.PRE_PIN, messageText))
                     }
                     return
                 }
@@ -253,6 +264,23 @@ class ResellerWithdrawalInteractiveUssdAccessibilityService : AccessibilityServi
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
             val found = findEditableNode(child)
+            if (found != null) return found
+            @Suppress("DEPRECATION")
+            child.recycle()
+        }
+        return null
+    }
+
+    /** Cancel/No button -- text match only, never a guess (a wrong guess
+     * could press Send). Same rule as ExchangeUssdAccessibilityService. */
+    private fun findNegativeButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        if (node.isClickable && node.className?.contains("Button") == true) {
+            val text = node.text?.toString()?.lowercase()
+            if (text != null && (text.contains("cancel") || text == "no")) return node
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findNegativeButton(child)
             if (found != null) return found
             @Suppress("DEPRECATION")
             child.recycle()

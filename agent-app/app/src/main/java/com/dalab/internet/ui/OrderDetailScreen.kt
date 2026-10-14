@@ -19,6 +19,7 @@ import com.dalab.internet.network.ApiClient
 import com.dalab.internet.ussd.SimRoutingRepository
 import com.dalab.internet.ussd.UssdOrchestrator
 import com.dalab.internet.network.SimBalanceCheck
+import com.dalab.internet.network.balanceName
 import com.dalab.internet.ui.theme.DalabDangerRed
 import com.dalab.internet.ui.theme.DalabWarningAmber
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -100,13 +101,16 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
         val check = balanceChecks[slot]
         AlertDialog(
             onDismissRequest = { confirmSlot = null },
-            title = { Text(if (check?.status == "outdated") "SIM Balance Outdated" else "SIM Balance Unknown") },
+            title = { Text("${check?.balanceName ?: "SIM"} Balance " + if (check?.status == "outdated") "Outdated" else "Unknown") },
             text = { Text(check?.message ?: "The SIM balance couldn't be confirmed.") },
             confirmButton = {
                 TextButton(onClick = {
                     confirmSlot = null
                     dial(slot, confirmUnknownBalance = true)
-                }) { Text("I checked the SIM — dial anyway") }
+                }) {
+                    val name = check?.balanceName ?: "SIM"
+                    Text("I checked ${if (name == "SIM") "the SIM" else name} — dial anyway")
+                }
             },
             dismissButton = { TextButton(onClick = { confirmSlot = null }) { Text("Cancel") } },
         )
@@ -287,10 +291,11 @@ private fun DetailRow(label: String, value: String) {
 private fun SimBalanceWarningCard(check: SimBalanceCheck) {
     val insufficient = check.status == "insufficient"
     val accent = if (insufficient) DalabDangerRed else DalabWarningAmber
+    val name = check.balanceName
     val title = when (check.status) {
-        "insufficient" -> "Insufficient SIM Balance!"
-        "outdated" -> "SIM Balance Outdated"
-        else -> "SIM Balance Unknown"
+        "insufficient" -> "Insufficient $name Balance!"
+        "outdated" -> "$name Balance Outdated"
+        else -> "$name Balance Unknown"
     }
     fun usd(v: Double?) = v?.let { "$" + "%.2f".format(it) } ?: "Unknown"
     Surface(
@@ -309,7 +314,7 @@ private fun SimBalanceWarningCard(check: SimBalanceCheck) {
             DetailRow("Customer name", check.customerName)
             DetailRow("Company", check.companyName + (check.simSlot?.let { " (SIM $it)" } ?: ""))
             DetailRow("Requested amount", usd(check.requestedAmount))
-            DetailRow("Available SIM balance", usd(check.availableBalance))
+            DetailRow("Available $name balance", usd(check.availableBalance))
             if (insufficient) DetailRow("Missing amount", usd(check.missingAmount))
             check.message?.let {
                 Spacer(Modifier.height(8.dp))

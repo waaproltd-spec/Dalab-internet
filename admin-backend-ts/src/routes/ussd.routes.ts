@@ -17,6 +17,7 @@ import { checkSimBalanceForOrder, unverifiedBalancePolicy } from "../utils/simBa
 import { notifyCustomer } from "../services/customerNotify.js";
 import { extractBalanceFromSms, applyBalanceUpdate } from "../utils/simBalances.js";
 import { deliveriesDone, allDeliveriesDone } from "../services/deliveries.js";
+import { renderUssdPlan, summarizeUssdPlan, validateInteractiveTemplate, isValidPackageOption } from "../utils/interactiveUssd.js";
 
 export const ussdRouter = Router();
 
@@ -183,8 +184,15 @@ ussdRouter.post("/admin/ussd-templates", requireAuth("super_admin"), async (req,
 ussdRouter.put("/admin/ussd-templates/:id", requireAuth("super_admin"), async (req, res) => {
   const existing = await queryOne(`SELECT * FROM ussd_templates WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Template not found" });
+  // A menu (interactive) template is edited through its own validated
+  // screen (PUT /admin/interactive-services/:id) -- its first dial is a bare
+  // code like *101#, which the one-shot placeholder rules below would
+  // rightly reject.
+  if (existing.dial_mode === "interactive" && (req.body.ussdCode !== undefined)) {
+    return sendJson(res, 400, { error: "This is a menu USSD service — edit its USSD settings in the Dhameys Plus / menu services section." });
+  }
   const merged = { ...existing, ...req.body };
-  if (merged.ussd_code && !hasRequiredPlaceholders(merged.ussd_code)) {
+  if (existing.dial_mode !== "interactive" && merged.ussd_code && !hasRequiredPlaceholders(merged.ussd_code)) {
     return sendJson(res, 400, { error: "ussdCode must contain {number}, {pin}, and an amount placeholder ({amount}, {amountSplit}, or both {amountWhole} and {amountCents})" });
   }
   if (merged.status && !["enabled", "disabled"].includes(merged.status)) {
@@ -365,6 +373,36 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
         ? "This package's linked USSD template is disabled — check USSD Services in the dashboard."
         : "No enabled USSD template matches this order's package or provider.",
     };
+  }
+
+  // Interactive (menu) template -- see utils/interactiveUssd.ts. The plan
+  // is rendered here and stored on the order WITHOUT the PIN (its PIN step
+  // is the literal "{pin}"); the Agent App asks for the PIN only when it
+  // reaches that step (POST /agent/orders/:id/ussd-pin), so it is never
+  // written to the database or any log.
+  if (template.dial_mode === "interactive") {
+    const packageCode = String(orderWithPackage?.package_code ?? "").trim();
+    const usesPackageOption = (template.reply_steps ?? []).some((s: any) => String(s?.reply ?? "").trim() === "{packageCode}");
+    if (usesPackageOption && !isValidPackageOption(packageCode)) {
+      return { error: "This package has no valid menu option set — set its Menu option in the dashboard." };
+    }
+    const configError = validateInteractiveTemplate(template.ussd_code, template.reply_steps, template.success_keywords);
+    if (configError) return { error: `This package's menu USSD settings are invalid: ${configError}` };
+    const plan = renderUssdPlan(template, {
+      number: normalizePhoneForUssd(order.receiver_phone ?? order.sender_phone ?? ""),
+      packageCode,
+      amount: order.provider_amount ?? order.amount,
+    });
+    const summary = summarizeUssdPlan(plan);
+    await query(
+      `UPDATE orders SET ussd_generated=$1, ussd_generated_masked=$1, ussd_dial_mode='interactive', ussd_plan=$2, ussd_device_id=$3, ussd_sim_slot=$4, ussd_balance_source=$6 WHERE id=$5`,
+      [summary, JSON.stringify(plan), template.device_id ?? null, template.sim_slot ?? null, order.id, template.balance_source ?? null]
+    );
+    await query(
+      `INSERT INTO ussd_logs (id, order_id, template_id, company_id, admin_id, generated_string, generated_string_masked) VALUES ($1,$2,$3,$4,$5,$6,$6)`,
+      [randomUUID(), order.id, template.id, order.company_id, adminId ?? null, summary]
+    );
+    return { ussd: summary, maskedUssd: summary, templateId: template.id };
   }
 
   const pin = decrypt(company.pin_encrypted);
@@ -764,6 +802,30 @@ ussdRouter.get("/agent/orders/:id/sim-balance-check", requireAuth("agent"), asyn
   sendJson(res, 200, check);
 });
 
+// Interactive (menu) package orders: the Agent App asks for the provider
+// PIN only at the PIN step, so it is never stored on the order, in the
+// dial plan, or in any log. Only for an order that is being dialed right
+// now -- in progress, interactive, with a dial attempt started in the last
+// 10 minutes and not yet finished. The response is never cached.
+ussdRouter.post("/agent/orders/:id/ussd-pin", requireAuth("agent"), async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  const order = await queryOne<{ id: string; status: string; company_id: string; ussd_dial_mode: string | null }>(
+    `SELECT id, status, company_id, ussd_dial_mode FROM orders WHERE id=$1`,
+    [req.params.id]
+  );
+  if (!order) return sendJson(res, 404, { error: "Order not found" });
+  if (order.ussd_dial_mode !== "interactive") return sendJson(res, 409, { error: "This order is not a menu USSD order." });
+  if (order.status !== "in_progress") return sendJson(res, 409, { error: "This order is not being processed right now." });
+  const liveAttempt = await queryOne(
+    `SELECT id FROM ussd_dial_attempts WHERE order_id=$1 AND status='pending' AND created_at > now() - interval '10 minutes' LIMIT 1`,
+    [order.id]
+  );
+  if (!liveAttempt) return sendJson(res, 409, { error: "No dial is in progress for this order." });
+  const company = await queryOne<{ pin_encrypted: string | null }>(`SELECT pin_encrypted FROM companies WHERE id=$1`, [order.company_id]);
+  if (!company?.pin_encrypted) return sendJson(res, 409, { error: "No PIN has been set for this provider yet." });
+  sendJson(res, 200, { pin: decrypt(company.pin_encrypted) });
+});
+
 ussdRouter.post("/agent/orders/:id/dial-attempts", requireAuth("agent"), async (req, res) => {
   const { simSlot, ussdString, attemptNumber } = req.body;
   if (!ussdString) return sendJson(res, 400, { error: "ussdString is required" });
@@ -929,7 +991,10 @@ ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (r
             simSlot: attempt.sim_slot,
             newBalance: extracted.balance,
             companyId: order.company_id,
-            providerKey: company.name.trim().toLowerCase(),
+            // A dial paid from the SIM's eDahab/EVC Plus wallet (e.g.
+            // Dhameys Plus) reports that wallet's balance, never the
+            // company's Send Data balance.
+            providerKey: order.ussd_balance_source ?? company.name.trim().toLowerCase(),
             orderId: order.id,
             source: "ussd_dial",
           });

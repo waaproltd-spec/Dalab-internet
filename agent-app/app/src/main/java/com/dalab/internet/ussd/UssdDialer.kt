@@ -187,7 +187,7 @@ class UssdDialer(private val context: Context) {
  * response matching none of these AND none of a classifier's own positive
  * SUCCESS list is AMBIGUOUS, never SUCCESS by default).
  */
-private val FAILURE_RESPONSE_KEYWORDS = listOf(
+internal val FAILURE_RESPONSE_KEYWORDS = listOf(
     "error", "fail", "timeout", "timed out", "invalid", "incorrect",
     "insufficient", "try again", "unable", "sorry", "declined", "cancelled",
     "canceled", "expired", "denied", "not available", "busy", "khalad",

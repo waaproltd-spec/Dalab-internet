@@ -43,6 +43,12 @@ data class Order(
     val sendCount: Int? = null,
     val deliveriesDone: Int? = null,
     val nextAttemptNumber: Int? = null,
+    // Menu (interactive) packages such as Somtel Dhameys Plus: "interactive"
+    // plus the PIN-free plan the backend rendered for this order (see
+    // ussd/PackageInteractiveUssd.kt). Null for every one-shot order and
+    // from older servers -- dialed exactly as before.
+    val ussdDialMode: String? = null,
+    val ussdPlan: com.dalab.internet.ussd.UssdPlan? = null,
 )
 
 enum class OrderStatus {
@@ -266,6 +272,10 @@ data class PackageItem(
     // service category's display name -- both already in the response.
     val hasImage: Boolean = false,
     val categoryName: String? = null,
+    // Admin > Dhameys Plus / Packages: false = listed but temporarily
+    // unavailable (new orders are refused by the server either way).
+    val ordersEnabled: Boolean = true,
+    val description: String? = null,
 )
 
 /** Mirrors GET/POST /agent/customers -- same columns Admin's own customer

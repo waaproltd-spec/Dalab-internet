@@ -49,6 +49,7 @@ data class DialAttemptAuditAction(
  */
 class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
     private val dialer = UssdDialer(context)
+    private val packageMenuRunner = PackageInteractiveUssdRunner(context)
     private val appContext: Context = context.applicationContext
 
     suspend fun processMatchedOrder(orderId: String, smsLogId: String?): DialResult {
@@ -204,13 +205,20 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
     }
 
     private suspend fun deliverInner(order: Order, simSlot: Int, ussdString: String, confirmUnknownBalance: Boolean): DialResult {
+        // Menu (interactive) package, e.g. Somtel Dhameys Plus -- driven by
+        // PackageInteractiveUssdRunner instead of a one-shot dial.
+        val plan = if (order.ussdDialMode == "interactive") {
+            order.ussdPlan ?: return DialResult(DialOutcome.FAILED, "This menu USSD order has no dial plan — nothing was dialed.")
+        } else {
+            null
+        }
         val sendCount = order.sendCount ?: 1
-        if (sendCount <= 1) return dialWithRetry(order.id, simSlot, ussdString, confirmUnknownBalance)
+        if (sendCount <= 1) return dialWithRetryRun(order.id, simSlot, ussdString, attemptBase = 0, strict = false, confirmUnknownBalance = confirmUnknownBalance, plan = plan).result
 
         var done = order.deliveriesDone ?: 0
         var nextAttempt = order.nextAttemptNumber ?: 1
         while (done < sendCount) {
-            val run = dialWithRetryRun(order.id, simSlot, ussdString, attemptBase = nextAttempt - 1, strict = true, confirmUnknownBalance = confirmUnknownBalance)
+            val run = dialWithRetryRun(order.id, simSlot, ussdString, attemptBase = nextAttempt - 1, strict = true, confirmUnknownBalance = confirmUnknownBalance, plan = plan)
             nextAttempt += run.attemptsUsed
             if (run.result.outcome != DialOutcome.SUCCESS || run.stoppedEarly) return run.result
             if (!run.reportedOnline) {
@@ -231,8 +239,6 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         return DialResult(DialOutcome.SUCCESS, "All $sendCount deliveries sent.")
     }
 
-    private suspend fun dialWithRetry(orderId: String, simSlot: Int, ussdString: String, confirmUnknownBalance: Boolean = false): DialResult =
-        dialWithRetryRun(orderId, simSlot, ussdString, attemptBase = 0, strict = false, confirmUnknownBalance = confirmUnknownBalance).result
 
     /** One delivery's dial with retries. [attemptBase] offsets the attempt
      * numbers (0 for a normal order, which keeps its 1..maxAttempts). With
@@ -248,6 +254,7 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         attemptBase: Int,
         strict: Boolean,
         confirmUnknownBalance: Boolean = false,
+        plan: UssdPlan? = null,
     ): DeliveryRun {
         var attemptsUsed = 0
         var reportedOnline = false
@@ -319,7 +326,11 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
                         // converts it into a normal FAILED outcome, which this same retry
                         // loop already knows how to handle.
                         try {
-                            dialer.dial(lookup.subscriptionId, ussdString)
+                            if (plan != null) {
+                                packageMenuRunner.execute(orderId, plan, lookup.subscriptionId) { fetchUssdPin(orderId) }
+                            } else {
+                                dialer.dial(lookup.subscriptionId, ussdString)
+                            }
                         } catch (e: Exception) {
                             DiagnosticsLog.record("ussd_dial", "Dial threw (order $orderId, attempt $attemptNumber): ${e.message}", isError = true)
                             DialResult(DialOutcome.FAILED, "Dial error: ${e.message}")
@@ -335,9 +346,11 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
             // maxAttempts is reached. Computed before reporting so the
             // backend never marks the order 'failed' on attempt 1 of 3 while
             // a retry is still about to run — see PUT /agent/dial-attempts.
-            val retryable = lastResult.outcome == DialOutcome.FAILED ||
-                lastResult.outcome == DialOutcome.TIMEOUT ||
-                lastResult.outcome == DialOutcome.AMBIGUOUS
+            val retryable = !lastResult.noRetry && (
+                lastResult.outcome == DialOutcome.FAILED ||
+                    lastResult.outcome == DialOutcome.TIMEOUT ||
+                    lastResult.outcome == DialOutcome.AMBIGUOUS
+                )
             val isFinalAttempt = !retryable || attempt == maxAttempts
             reportedOnline = reportDialResult(orderId, simSlot, ussdString, attemptNumber, attemptId, lastResult, isFinalAttempt, strict)
 
@@ -368,6 +381,16 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
             }
         }
         return DeliveryRun(lastResult, attemptsUsed, reportedOnline, stoppedEarly = false)
+    }
+
+    /** The provider PIN for a menu order's PIN step -- only while that
+     * order is being dialed (the server checks). Null on any failure, in
+     * which case the runner cancels before paying. Never logged. */
+    private suspend fun fetchUssdPin(orderId: String): String? = try {
+        val response = ApiClient.service.getUssdPin(orderId)
+        if (response.isSuccessful) response.body()?.pin?.takeIf { it.isNotBlank() } else null
+    } catch (_: Exception) {
+        null
     }
 
     private data class DeliveryRun(

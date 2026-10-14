@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { query, queryOne, withTransaction } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
+import { packageUnavailableReason } from "../utils/packageAvailability.js";
 import { sendJson } from "../utils/camelCase.js";
 import { generateUssdForOrder } from "./ussd.routes.js";
 import { deliverViaSomlinkAll, classifySomlinkStuckReason } from "./somlink.routes.js";
@@ -89,6 +90,10 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
   if (!pkg) return sendJson(res, 404, { error: "Package not found" });
   if (pkg.company_id !== companyId) {
     return sendJson(res, 400, { error: "Package does not belong to the selected company" });
+  }
+  {
+    const unavailable = await packageUnavailableReason(pkg, "customer");
+    if (unavailable) return sendJson(res, 409, { error: unavailable, code: "package_unavailable" });
   }
 
   // When the customer picked one of this company's configured payment
@@ -286,6 +291,10 @@ ordersRouter.post("/guest/orders", rateLimit("guest-order-create", 20, 15 * 60 *
   if (pkg.company_id !== companyId) {
     return sendJson(res, 400, { error: "Package does not belong to the selected company" });
   }
+  {
+    const unavailable = await packageUnavailableReason(pkg, "customer");
+    if (unavailable) return sendJson(res, 409, { error: unavailable, code: "package_unavailable" });
+  }
 
   let selectedMethod: { id: string; label: string; payment_number: string | null; ussd_template: string | null } | null = null;
   if (paymentMethodId) {
@@ -429,6 +438,10 @@ ordersRouter.post("/agent/orders", requireAuth("agent"), async (req, res) => {
   if (!pkg) return sendJson(res, 404, { error: "Package not found" });
   if (pkg.company_id !== companyId) {
     return sendJson(res, 400, { error: "Package does not belong to the selected company" });
+  }
+  {
+    const unavailable = await packageUnavailableReason(pkg, "agent");
+    if (unavailable) return sendJson(res, 409, { error: unavailable, code: "package_unavailable" });
   }
 
   // receiverPhone (who actually gets the package, if different from the

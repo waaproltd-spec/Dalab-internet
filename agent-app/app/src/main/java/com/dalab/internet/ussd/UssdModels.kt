@@ -42,6 +42,11 @@ enum class DialOutcome { SUCCESS, AMBIGUOUS, FAILED, TIMEOUT, NO_SIM_CONFIGURED,
 data class DialResult(
     val outcome: DialOutcome,
     val responseMessage: String? = null,
+    // Set by a menu (interactive) package dial when another automatic try
+    // must NOT happen even though the outcome is normally retryable: the
+    // PIN was already sent and the result is unclear (a retry could charge
+    // twice), or the menu didn't match the plan (retrying can't help).
+    val noRetry: Boolean = false,
 )
 
 /**

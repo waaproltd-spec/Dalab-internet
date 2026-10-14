@@ -157,6 +157,14 @@ export async function resolveBalanceProvider(
         candidates.push({ companyId: routedCompanyId, providerIdentity: "hormuud_evoucher" });
       }
       candidates.push({ companyId: routedCompanyId, providerIdentity: baseIdentity });
+      // A Somtel SIM also holds its own eDahab wallet -- the one Dhameys
+      // Plus is paid from with the SIM's eDahab PIN -- so an eDahab balance
+      // SMS (sender exactly "edahab") on a Somtel-routed slot is that
+      // wallet's balance, even if the slot isn't registered as an eDahab
+      // collection method. Kept apart from Somtel's own Send Data balance.
+      if (baseIdentity === "somtel" && !candidates.some((c) => c.providerIdentity === "edahab")) {
+        candidates.push({ companyId: routedCompanyId, providerIdentity: "edahab" });
+      }
     }
   }
 

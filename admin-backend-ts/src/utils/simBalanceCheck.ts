@@ -37,7 +37,16 @@ export interface SimBalanceCheck {
   simSlot: number | null;
   /** Ready-to-show warning text (null when sufficient). */
   message: string | null;
+  /** Which balance on that SIM pays for this order: the company's own
+   * send balance (its provider_key, e.g. "somtel") or a mobile-money
+   * wallet ("edahab" / "evc_plus") for a template paid with that PIN. */
+  balanceSource: string;
+  /** Display name of that balance ("Somtel", "eDahab", "EVC Plus"). */
+  balanceLabel: string;
 }
+
+/** Wallets a template can be paid from (ussd_templates.balance_source). */
+export const WALLET_BALANCE_SOURCES: Record<string, string> = { edahab: "eDahab", evc_plus: "EVC Plus" };
 
 /**
  * What happens to a dial when the SIM balance is unknown or outdated:
@@ -79,11 +88,15 @@ export function evaluateSimBalance(input: {
   availableBalance: number | null | undefined;
   balanceUpdatedAt: Date | string | null | undefined;
   companyName: string;
+  /** Set when the order is paid from a wallet on the SIM ("eDahab"):
+   * the warnings then name that wallet, not the company's SIM balance. */
+  walletLabel?: string | null;
   now?: Date;
   maxAgeMs?: number;
 }): Pick<SimBalanceCheck, "status" | "ok" | "requestedAmount" | "availableBalance" | "missingAmount" | "message"> {
   const requested = cents(Math.max(0, Number(input.requestedAmount) || 0));
   const company = input.companyName || "company";
+  const wallet = input.walletLabel?.trim() || null;
   const balance = input.availableBalance == null || !Number.isFinite(Number(input.availableBalance)) ? null : cents(Number(input.availableBalance));
 
   if (balance == null) {
@@ -93,7 +106,9 @@ export function evaluateSimBalance(input: {
       requestedAmount: requested,
       availableBalance: null,
       missingAmount: null,
-      message: `SIM Balance Unknown — ${company}. The ${company} SIM balance has not been recorded yet, so it can't be confirmed that it covers the customer's ${money(requested)}. Check the ${company} SIM balance before processing this order.`,
+      message: wallet
+        ? `${wallet} Balance Unknown — ${company}. This order is paid from the ${company} SIM's ${wallet} balance, which has not been recorded yet, so it can't be confirmed that it covers the customer's ${money(requested)}. Check the ${wallet} balance on this SIM before processing this order.`
+        : `SIM Balance Unknown — ${company}. The ${company} SIM balance has not been recorded yet, so it can't be confirmed that it covers the customer's ${money(requested)}. Check the ${company} SIM balance before processing this order.`,
     };
   }
 
@@ -107,7 +122,9 @@ export function evaluateSimBalance(input: {
       requestedAmount: requested,
       availableBalance: balance,
       missingAmount: balance < requested ? cents(requested - balance) : 0,
-      message: `SIM Balance Outdated — ${company}. The ${company} SIM showed ${money(balance)} at its last update, which may no longer be correct. Check the ${company} SIM balance before processing this ${money(requested)} order.`,
+      message: wallet
+        ? `${wallet} Balance Outdated — ${company}. The ${company} SIM's ${wallet} balance showed ${money(balance)} at its last update, which may no longer be correct. Check the ${wallet} balance on this SIM before processing this ${money(requested)} order.`
+        : `SIM Balance Outdated — ${company}. The ${company} SIM showed ${money(balance)} at its last update, which may no longer be correct. Check the ${company} SIM balance before processing this ${money(requested)} order.`,
     };
   }
 
@@ -119,7 +136,9 @@ export function evaluateSimBalance(input: {
       requestedAmount: requested,
       availableBalance: balance,
       missingAmount: missing,
-      message: `Insufficient SIM Balance — ${company}. The customer requested ${money(requested)}, but the available SIM balance is only ${money(balance)}. The remaining amount needed is ${money(missing)}. Please recharge the ${company} SIM and try again.`,
+      message: wallet
+        ? `Insufficient ${wallet} Balance — ${company}. The customer requested ${money(requested)}, but the ${wallet} balance on the ${company} SIM is only ${money(balance)}. The remaining amount needed is ${money(missing)}. Please top up ${wallet} on this SIM and try again.`
+        : `Insufficient SIM Balance — ${company}. The customer requested ${money(requested)}, but the available SIM balance is only ${money(balance)}. The remaining amount needed is ${money(missing)}. Please recharge the ${company} SIM and try again.`,
     };
   }
 
@@ -147,9 +166,10 @@ export async function checkSimBalanceForOrder(
     send_count: number | null;
     ussd_device_id: string | null;
     ussd_sim_slot: number | null;
+    ussd_balance_source: string | null;
   }>(
     `SELECT o.id, o.company_id, c.name AS company_name, cu.name AS customer_name, cu.phone AS customer_phone,
-            o.amount, o.provider_amount, o.send_count, o.ussd_device_id, o.ussd_sim_slot
+            o.amount, o.provider_amount, o.send_count, o.ussd_device_id, o.ussd_sim_slot, o.ussd_balance_source
      FROM orders o
      LEFT JOIN companies c ON c.id = o.company_id
      LEFT JOIN customers cu ON cu.id = o.customer_id
@@ -183,26 +203,40 @@ export async function checkSimBalanceForOrder(
   }
 
   const companyName = order.company_name?.trim() || order.company_id;
-  // The company's own data-sending balance on that SIM: provider_key is the
-  // company name lowercased (applyBalanceUpdate); a row never touched by
-  // the provider gate falls back to its company_id. Other balances that can
-  // live on the same SIM (evc_plus, hormuud_evoucher, ...) are excluded.
-  const balanceRow =
-    deviceId && simSlot
+  // A template paid from a wallet on the dialing SIM (Dhameys Plus: the
+  // eDahab PIN) is checked against THAT wallet's balance on the same SIM,
+  // and only that one: the company's Send Data balance doesn't pay for it,
+  // and neither does the same wallet on another SIM. No row is "unknown",
+  // never zero and never borrowed from another balance.
+  const walletLabel = order.ussd_balance_source ? WALLET_BALANCE_SOURCES[order.ussd_balance_source] ?? order.ussd_balance_source : null;
+  const balanceRow = !(deviceId && simSlot)
+    ? null
+    : walletLabel
       ? await queryOne<{ balance: string | null; updated_at: string | null }>(
+          `SELECT balance, updated_at FROM sim_balances
+           WHERE device_id=$1 AND sim_slot=$2 AND provider_key = $3
+           ORDER BY updated_at DESC LIMIT 1`,
+          [deviceId, simSlot, order.ussd_balance_source]
+        )
+      : // The company's own data-sending balance on that SIM: provider_key
+        // is the company name lowercased (applyBalanceUpdate); a row never
+        // touched by the provider gate falls back to its company_id. Other
+        // balances that can live on the same SIM (evc_plus, edahab,
+        // hormuud_evoucher, ...) are excluded.
+        await queryOne<{ balance: string | null; updated_at: string | null }>(
           `SELECT balance, updated_at FROM sim_balances
            WHERE device_id=$1 AND sim_slot=$2
              AND (provider_key = LOWER(TRIM($3)) OR (provider_key IS NULL AND company_id = $4))
            ORDER BY updated_at DESC LIMIT 1`,
           [deviceId, simSlot, companyName, order.company_id]
-        )
-      : null;
+        );
 
   const verdict = evaluateSimBalance({
     requestedAmount,
     availableBalance: balanceRow?.balance == null ? null : Number(balanceRow.balance),
     balanceUpdatedAt: balanceRow?.updated_at ?? null,
     companyName,
+    walletLabel,
   });
 
   return {
@@ -214,5 +248,7 @@ export async function checkSimBalanceForOrder(
     balanceUpdatedAt: balanceRow?.updated_at ? new Date(balanceRow.updated_at).toISOString() : null,
     deviceId,
     simSlot,
+    balanceSource: walletLabel ? order.ussd_balance_source! : companyName.toLowerCase(),
+    balanceLabel: walletLabel ?? companyName,
   };
 }
