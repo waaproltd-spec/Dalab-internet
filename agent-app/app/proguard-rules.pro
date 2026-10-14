@@ -43,3 +43,31 @@
 # i.e. an unconditional crash on every launch of the release build.
 -keep,allowobfuscation,allowshrinking class com.google.gson.reflect.TypeToken
 -keep,allowobfuscation,allowshrinking class * extends com.google.gson.reflect.TypeToken
+
+# Classes Gson creates or reads back by reflection that live OUTSIDE the
+# data/network packages kept above. R8 renames their fields and can turn a
+# class that is only ever created by Gson into an abstract class, so Gson
+# fails at runtime ("Abstract classes can't be instantiated! ... S1.c1") --
+# this broke verify-payment for the first Dhameys Plus menu order
+# (UssdPlan). Saved queue/journal/ledger entries also need stable field
+# and enum names so they still read back after an app update.
+# ReflectionKeepRulesTest checks every such class is listed here.
+-keep class com.dalab.internet.ussd.UssdPlan { *; }
+-keep class com.dalab.internet.ussd.UssdPlanStep { *; }
+-keep class com.dalab.internet.ussd.UssdMenuOption { *; }
+-keep class com.dalab.internet.ussd.DialJournal$Entry { *; }
+-keep class com.dalab.internet.ussd.DialAttemptAuditAction { *; }
+-keep class com.dalab.internet.ussd.ExchangeDialStepReportAction { *; }
+-keep class com.dalab.internet.ussd.ResellerWithdrawalDialAttemptAuditAction { *; }
+-keep class com.dalab.internet.sms.SmsUploadAction { *; }
+-keep class com.dalab.internet.sms.VerifyPaymentAction { *; }
+-keep class com.dalab.internet.sms.VoucherConfirmationAction { *; }
+-keep class com.dalab.internet.sms.ExchangePayoutConfirmationAction { *; }
+-keep class com.dalab.internet.sms.VoucherSentEntry { *; }
+-keep class com.dalab.internet.sms.ExchangePayoutConfirmedEntry { *; }
+-keep class com.dalab.internet.sms.SmsSenderIdEntry { *; }
+-keep class com.dalab.internet.sms.SmsIntakeLedger$Entry { *; }
+-keep class com.dalab.internet.queue.PendingActionQueue$PendingAction { *; }
+-keep class com.dalab.internet.queue.SaleCreateAction { *; }
+-keep class com.dalab.internet.diagnostics.DiagnosticsLog$Entry { *; }
+-keepclassmembers enum com.dalab.internet.** { *; }
