@@ -15249,6 +15249,7 @@ const SMS_FORMAT_PROVIDERS = [
   { key: "somtel", label: "Somtel" },
   { key: "somnet", label: "Somnet" },
   { key: "amtel", label: "Amtel" },
+  { key: "jeeb", label: "Jeeb" },
 ];
 const SMS_FORMAT_ACTION_LABEL = { created: "Saved", activated: "Activated", restored: "Restored", deactivated: "Turned off" };
 
