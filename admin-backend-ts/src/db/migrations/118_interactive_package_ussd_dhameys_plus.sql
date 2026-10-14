@@ -34,6 +34,19 @@ ALTER TABLE ussd_templates ADD COLUMN IF NOT EXISTS reply_steps JSONB NOT NULL D
 -- Words in the carrier's final message that confirm success (in addition
 -- to the Agent App's built-in list). Unknown text is never success.
 ALTER TABLE ussd_templates ADD COLUMN IF NOT EXISTS success_keywords TEXT[] NOT NULL DEFAULT '{}';
+-- Which balance pays for a dial from this template, for the Insufficient
+-- SIM Balance check (utils/simBalanceCheck.ts): NULL = the company's own
+-- send balance on the dialing SIM (every one-shot template, as before);
+-- 'edahab' / 'evc_plus' = that mobile-money wallet on the dialing SIM
+-- (Dhameys Plus is paid with the SIM's eDahab PIN, not its Send Data
+-- balance). Never another SIM's wallet.
+ALTER TABLE ussd_templates ADD COLUMN IF NOT EXISTS balance_source TEXT;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ussd_templates_balance_source_check') THEN
+    ALTER TABLE ussd_templates ADD CONSTRAINT ussd_templates_balance_source_check CHECK (balance_source IS NULL OR balance_source IN ('edahab', 'evc_plus'));
+  END IF;
+END $$;
 
 -- 2. Packages ----------------------------------------------------------------
 
@@ -63,6 +76,10 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS ussd_dial_mode TEXT;
 -- checks. The PIN is NEVER stored here -- the PIN reply is the literal
 -- "{pin}" token; the Agent App fetches the PIN only at that step.
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS ussd_plan JSONB;
+-- The template's balance_source when the order's dial was generated, so
+-- the balance check keeps reading the same wallet even if the template
+-- changes while the order is in flight. NULL = the company's own balance.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS ussd_balance_source TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS package_name_snapshot TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS package_validity_snapshot TEXT;
 
@@ -105,7 +122,7 @@ BEGIN
    LIMIT 1;
   IF tpl_id IS NULL THEN
     tpl_id := gen_random_uuid();
-    INSERT INTO ussd_templates (id, company_id, service_name, ussd_code, status, notes, dial_mode, reply_steps, success_keywords)
+    INSERT INTO ussd_templates (id, company_id, service_name, ussd_code, status, notes, dial_mode, reply_steps, success_keywords, balance_source)
     VALUES (
       tpl_id, 'somtel', 'Dhameys Plus', '*101#', 'enabled',
       'Somtel menu: *101# > 4 Dhameys Plus > package > 2 Ugu Shub Qof Kale > number > eDahab PIN',
@@ -117,7 +134,8 @@ BEGIN
         {"reply": "{number}", "expect": ["lambarka"]},
         {"reply": "{pin}", "expect": ["PIN"], "checkAmount": true, "checkNumber": true}
       ]'::jsonb,
-      ARRAY['guuleysatay', 'guulaysatay', 'ugu shubto']
+      ARRAY['guuleysatay', 'guulaysatay', 'ugu shubto'],
+      'edahab'
     );
   END IF;
 

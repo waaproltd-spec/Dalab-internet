@@ -15724,6 +15724,7 @@ function MenuUssdServicesSection({ admin }) {
         initialDial: res.ussdCode,
         replySteps: (res.replySteps || []).map((s) => ({ ...s, expectText: (s.expect || []).join(", ") })),
         successText: (res.successKeywords || []).join(", "),
+        balanceSource: res.balanceSource || "",
       });
     } catch (err) {
       setError(err.message || "Could not load this service.");
@@ -15842,6 +15843,7 @@ function MenuUssdServicesSection({ admin }) {
         initialDial: settings.initialDial,
         replySteps,
         successKeywords: settings.successText.split(",").map((t) => t.trim()).filter(Boolean),
+        balanceSource: settings.balanceSource || null,
       });
       flash("USSD settings saved.");
       loadService();
@@ -15997,6 +15999,13 @@ function MenuUssdServicesSection({ admin }) {
             <Field label="Service name"><input style={{ ...inputStyle, width: 220 }} value={settings.serviceName} disabled={!isSuper} onChange={(e) => setSettings({ ...settings, serviceName: e.target.value })} /></Field>
             <Field label="First USSD code"><input style={{ ...inputStyle, width: 140, fontFamily: "monospace" }} value={settings.initialDial} disabled={!isSuper} onChange={(e) => setSettings({ ...settings, initialDial: e.target.value })} /></Field>
             <Field label="Success words (comma separated)"><input style={{ ...inputStyle, width: 320 }} value={settings.successText} disabled={!isSuper} onChange={(e) => setSettings({ ...settings, successText: e.target.value })} /></Field>
+            <Field label="Paid from (balance checked before each dial)">
+              <select style={{ ...inputStyle, width: 240 }} value={settings.balanceSource} disabled={!isSuper} onChange={(e) => setSettings({ ...settings, balanceSource: e.target.value })}>
+                <option value="">Company SIM balance (Send Data)</option>
+                <option value="edahab">eDahab wallet on the dialing SIM</option>
+                <option value="evc_plus">EVC Plus wallet on the dialing SIM</option>
+              </select>
+            </Field>
           </div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>

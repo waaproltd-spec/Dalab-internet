@@ -395,8 +395,8 @@ export async function generateUssdForOrder(order: any, adminId?: string): Promis
     });
     const summary = summarizeUssdPlan(plan);
     await query(
-      `UPDATE orders SET ussd_generated=$1, ussd_generated_masked=$1, ussd_dial_mode='interactive', ussd_plan=$2, ussd_device_id=$3, ussd_sim_slot=$4 WHERE id=$5`,
-      [summary, JSON.stringify(plan), template.device_id ?? null, template.sim_slot ?? null, order.id]
+      `UPDATE orders SET ussd_generated=$1, ussd_generated_masked=$1, ussd_dial_mode='interactive', ussd_plan=$2, ussd_device_id=$3, ussd_sim_slot=$4, ussd_balance_source=$6 WHERE id=$5`,
+      [summary, JSON.stringify(plan), template.device_id ?? null, template.sim_slot ?? null, order.id, template.balance_source ?? null]
     );
     await query(
       `INSERT INTO ussd_logs (id, order_id, template_id, company_id, admin_id, generated_string, generated_string_masked) VALUES ($1,$2,$3,$4,$5,$6,$6)`,
@@ -991,7 +991,10 @@ ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (r
             simSlot: attempt.sim_slot,
             newBalance: extracted.balance,
             companyId: order.company_id,
-            providerKey: company.name.trim().toLowerCase(),
+            // A dial paid from the SIM's eDahab/EVC Plus wallet (e.g.
+            // Dhameys Plus) reports that wallet's balance, never the
+            // company's Send Data balance.
+            providerKey: order.ussd_balance_source ?? company.name.trim().toLowerCase(),
             orderId: order.id,
             source: "ussd_dial",
           });

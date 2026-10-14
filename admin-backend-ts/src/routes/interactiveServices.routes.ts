@@ -6,6 +6,7 @@ import { sendJson } from "../utils/camelCase.js";
 import { recordActivity } from "../utils/activityLog.js";
 import { broadcast } from "../realtime/orderEvents.js";
 import { validateInteractiveTemplate } from "../utils/interactiveUssd.js";
+import { WALLET_BALANCE_SOURCES } from "../utils/simBalanceCheck.js";
 
 /**
  * Menu (interactive) USSD services such as Somtel Dhameys Plus -- one
@@ -21,7 +22,7 @@ import { validateInteractiveTemplate } from "../utils/interactiveUssd.js";
  */
 export const interactiveServicesRouter = Router();
 
-const TEMPLATE_COLUMNS = `t.id, t.company_id, t.service_name, t.ussd_code, t.status, t.notes, t.dial_mode, t.reply_steps, t.success_keywords, t.device_id, t.sim_slot, t.created_at, t.updated_at`;
+const TEMPLATE_COLUMNS = `t.id, t.company_id, t.service_name, t.ussd_code, t.status, t.notes, t.dial_mode, t.reply_steps, t.success_keywords, t.balance_source, t.device_id, t.sim_slot, t.created_at, t.updated_at`;
 
 const PACKAGE_COLUMNS = `id, company_id, category_id, name, description, old_price, price, provider_amount, validity, active, code, ussd_template_id,
   sort_order, visible_customer_app, visible_agent_app, orders_enabled, send_count, created_at, updated_at,
@@ -73,6 +74,12 @@ interactiveServicesRouter.put("/admin/interactive-services/:id", requireAuth("su
   const successKeywords = req.body.successKeywords !== undefined ? req.body.successKeywords : existing.success_keywords;
   const serviceName = req.body.serviceName !== undefined ? String(req.body.serviceName).trim() : existing.service_name;
   const notes = req.body.notes !== undefined ? String(req.body.notes ?? "") : existing.notes;
+  // Which balance on the dialing SIM pays (checked before every dial):
+  // null = the company's own Send Data balance, or a wallet's key.
+  const balanceSource = req.body.balanceSource !== undefined ? (req.body.balanceSource || null) : existing.balance_source;
+  if (balanceSource !== null && !Object.hasOwn(WALLET_BALANCE_SOURCES, balanceSource)) {
+    return sendJson(res, 400, { error: `Paid from must be the company's own SIM balance or one of: ${Object.keys(WALLET_BALANCE_SOURCES).join(", ")}` });
+  }
   if (!serviceName || serviceName.length > 80) return sendJson(res, 400, { error: "Service name must be 1 to 80 characters" });
   const error = validateInteractiveTemplate(initialDial, replySteps, successKeywords);
   if (error) return sendJson(res, 400, { error });
@@ -85,8 +92,8 @@ interactiveServicesRouter.put("/admin/interactive-services/:id", requireAuth("su
   }));
   const cleanKeywords = (successKeywords as string[]).map((k) => k.trim()).filter(Boolean);
   await query(
-    `UPDATE ussd_templates SET service_name=$1, ussd_code=$2, reply_steps=$3, success_keywords=$4, notes=$5, updated_at=now() WHERE id=$6`,
-    [serviceName, initialDial, JSON.stringify(cleanSteps), cleanKeywords, notes, req.params.id]
+    `UPDATE ussd_templates SET service_name=$1, ussd_code=$2, reply_steps=$3, success_keywords=$4, notes=$5, balance_source=$7, updated_at=now() WHERE id=$6`,
+    [serviceName, initialDial, JSON.stringify(cleanSteps), cleanKeywords, notes, req.params.id, balanceSource]
   );
   const updated = await queryOne(`SELECT * FROM ussd_templates WHERE id=$1`, [req.params.id]);
   await recordActivity({
@@ -94,8 +101,8 @@ interactiveServicesRouter.put("/admin/interactive-services/:id", requireAuth("su
     action: "update_menu_ussd_settings",
     entityType: "ussd_template",
     entityId: req.params.id,
-    oldValue: { serviceName: existing.service_name, initialDial: existing.ussd_code, replySteps: existing.reply_steps, successKeywords: existing.success_keywords },
-    newValue: { serviceName, initialDial, replySteps: cleanSteps, successKeywords: cleanKeywords },
+    oldValue: { serviceName: existing.service_name, initialDial: existing.ussd_code, replySteps: existing.reply_steps, successKeywords: existing.success_keywords, balanceSource: existing.balance_source },
+    newValue: { serviceName, initialDial, replySteps: cleanSteps, successKeywords: cleanKeywords, balanceSource },
   });
   sendJson(res, 200, updated);
 });

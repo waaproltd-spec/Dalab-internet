@@ -22,6 +22,8 @@ import { companiesRouter, packagesRouter } from "../companies.routes.js";
 import { ordersRouter } from "../orders.routes.js";
 import { ussdRouter, generateUssdForOrder } from "../ussd.routes.js";
 import { interactiveServicesRouter } from "../interactiveServices.routes.js";
+import { ingestPaymentSms } from "../smsLogs.routes.js";
+import { evaluateSimBalance } from "../../utils/simBalanceCheck.js";
 import { validateInteractiveTemplate, renderUssdPlan, summarizeUssdPlan } from "../../utils/interactiveUssd.js";
 
 const MIGRATION = readFileSync(fileURLToPath(new URL("../../db/migrations/118_interactive_package_ussd_dhameys_plus.sql", import.meta.url).href), "utf8");
@@ -260,7 +262,7 @@ test("an interactive order gets a PIN-free menu plan with the screen checks; the
   // No dial in progress yet -> no PIN.
   assert.equal((await call("POST", `/agent/orders/${orderId}/ussd-pin`, agentToken)).status, 409);
   // The existing SIM balance gate applies to menu orders too: with no
-  // recorded Somtel balance the dial is refused until the agent confirms.
+  // recorded eDahab balance the dial is refused until the agent confirms.
   const blocked = await call("POST", `/agent/orders/${orderId}/dial-attempts`, agentToken, { simSlot: 2, ussdString: result.ussd, attemptNumber: 1 });
   assert.equal(blocked.status, 409);
   assert.equal(blocked.body.code, "sim_balance_unverified");
@@ -316,4 +318,215 @@ test("existing one-shot templates and other companies are unaffected", async () 
   assert.deepEqual(plan.steps[0].menuOption, { option: "7", amount: "15.00" });
   const oneShot = await queryOne<any>(`SELECT COUNT(*)::int AS n FROM ussd_templates WHERE dial_mode <> 'interactive' AND dial_mode <> 'one_shot'`);
   assert.equal(oneShot.n, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Insufficient balance check. Dhameys Plus is paid with the dialing SIM's
+// eDahab PIN, so the check reads THAT SIM's eDahab wallet balance
+// (sim_balances.provider_key='edahab'), never the Somtel Send Data balance
+// and never another SIM's wallet. No balance is "unknown" (the agent must
+// confirm), never zero; not enough is always refused. These run last: they
+// switch the packages on and use an agent bound to a device.
+
+const BAL_AGENT_ID = randomUUID();
+const DEVICE_ID = randomUUID();
+const OTHER_DEVICE_ID = randomUUID();
+const SLOT = 2;
+let balAgentToken: string;
+let phoneSeq = 0;
+
+async function menuOrder(code: string) {
+  const pkg = await queryOne<any>(`SELECT * FROM packages WHERE company_id='somtel' AND category_id='dhameys-plus' AND code=$1`, [code]);
+  const phone = `25262${String(4100000 + ++phoneSeq)}`;
+  const created = await call("POST", "/agent/orders", balAgentToken, { customerPhone: phone, companyId: "somtel", packageId: pkg.id });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  await query(`UPDATE orders SET status='in_progress' WHERE id=$1`, [created.body.id]);
+  const order = await queryOne<any>(`SELECT * FROM orders WHERE id=$1`, [created.body.id]);
+  const generated = await generateUssdForOrder(order);
+  assert.equal(generated.error, undefined);
+  return { id: created.body.id as string, ussd: generated.ussd as string };
+}
+
+async function setBalance(providerKey: string, balance: number, updatedAt = new Date(), deviceId = DEVICE_ID) {
+  await query(
+    `INSERT INTO sim_balances (device_id, sim_slot, company_id, provider_key, balance, updated_at, last_source)
+     VALUES ($1, $2, 'somtel', $3, $4, $5, 'manual')`,
+    [deviceId, SLOT, providerKey, balance, updatedAt]
+  );
+}
+
+async function clearBalances() {
+  await query(`DELETE FROM sim_balance_history WHERE sim_balance_id IN (SELECT id FROM sim_balances WHERE device_id IN ($1,$2))`, [DEVICE_ID, OTHER_DEVICE_ID]);
+  await query(`DELETE FROM sim_balances WHERE device_id IN ($1,$2)`, [DEVICE_ID, OTHER_DEVICE_ID]);
+}
+
+async function balanceOf(providerKey: string) {
+  const row = await queryOne<{ balance: string }>(`SELECT balance FROM sim_balances WHERE device_id=$1 AND sim_slot=$2 AND provider_key=$3`, [DEVICE_ID, SLOT, providerKey]);
+  return row ? Number(row.balance) : null;
+}
+
+const check = (orderId: string) => call("GET", `/agent/orders/${orderId}/sim-balance-check?simSlot=${SLOT}`, balAgentToken);
+const dial = (order: { id: string; ussd: string }, extra: Record<string, unknown> = {}) =>
+  call("POST", `/agent/orders/${order.id}/dial-attempts`, balAgentToken, { simSlot: SLOT, ussdString: order.ussd, attemptNumber: 1, ...extra });
+
+test("balance check setup: a device-bound agent on the Somtel SIM, packages on sale", async () => {
+  await query(`INSERT INTO agent_devices (id, name, enabled) VALUES ($1,'Dhameys Balance Device',true), ($2,'Other Device',true)`, [DEVICE_ID, OTHER_DEVICE_ID]);
+  await query(`INSERT INTO agents (id, phone, name, password_hash, device_id) VALUES ($1,$2,'DP Balance Agent','x',$3)`, [BAL_AGENT_ID, `25261${String(Date.now() + 7).slice(-7)}`, DEVICE_ID]);
+  await query(`INSERT INTO sim_routing (company_id, device_id, sim_slot, priority) VALUES ('somtel',$1,$2,1)`, [DEVICE_ID, SLOT]);
+  await query(`UPDATE packages SET active=true, orders_enabled=true, visible_agent_app=true WHERE company_id='somtel' AND category_id='dhameys-plus'`);
+  await query(`UPDATE service_categories SET status='enabled' WHERE company_id='somtel' AND slug='dhameys-plus'`);
+  balAgentToken = signAccessToken(BAL_AGENT_ID, "agent");
+});
+
+test("the Dhameys Plus template is paid from eDahab, and each order keeps that source", async () => {
+  const tpl = await queryOne<any>(`SELECT balance_source FROM ussd_templates WHERE id=$1`, [templateId]);
+  assert.equal(tpl.balance_source, "edahab");
+  const order = await menuOrder("3");
+  assert.equal((await queryOne<any>(`SELECT ussd_balance_source FROM orders WHERE id=$1`, [order.id])).ussd_balance_source, "edahab");
+});
+
+test("available: enough eDahab on the dialing SIM dials straight away, even with NO Somtel SIM balance recorded", async () => {
+  await clearBalances();
+  await setBalance("edahab", 10);
+  const order = await menuOrder("3"); // $0.50
+  const res = await check(order.id);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.status, "sufficient");
+  assert.equal(res.body.balanceSource, "edahab");
+  assert.equal(res.body.balanceLabel, "eDahab");
+  assert.equal(res.body.availableBalance, 10);
+  assert.equal(res.body.requestedAmount, 0.5);
+  const attempt = await dial(order);
+  assert.equal(attempt.status, 201, "no confirmation needed: the paying balance is known and enough");
+});
+
+test("insufficient: not enough eDahab is refused even when the Somtel SIM balance is high, and even if the agent 'confirms'", async () => {
+  await clearBalances();
+  await setBalance("edahab", 3);
+  await setBalance("somtel", 50);
+  const order = await menuOrder("5"); // Weekly $3.40
+  const res = await check(order.id);
+  assert.equal(res.body.status, "insufficient");
+  assert.equal(res.body.availableBalance, 3);
+  assert.equal(res.body.missingAmount, 0.4);
+  assert.match(res.body.message, /Insufficient eDahab Balance/);
+  const refused = await dial(order, { confirmUnknownBalance: true });
+  assert.equal(refused.status, 409);
+  assert.equal(refused.body.code, "insufficient_sim_balance");
+  assert.equal(Number((await queryOne<any>(`SELECT COUNT(*) FROM ussd_dial_attempts WHERE order_id=$1`, [order.id])).count), 0, "nothing was dialed");
+});
+
+test("unknown: no eDahab balance recorded is 'unknown' (never zero, never the Somtel balance) and needs the agent's confirmation", async () => {
+  await clearBalances();
+  await setBalance("somtel", 50); // Send Data doesn't pay for Dhameys Plus
+  await setBalance("edahab", 10, new Date(), OTHER_DEVICE_ID); // another SIM's wallet doesn't either
+  const order = await menuOrder("3");
+  const res = await check(order.id);
+  assert.equal(res.body.status, "unknown");
+  assert.equal(res.body.availableBalance, null, "unknown, not $0");
+  assert.equal(res.body.missingAmount, null);
+  assert.match(res.body.message, /eDahab Balance Unknown/);
+  const blocked = await dial(order);
+  assert.equal(blocked.status, 409);
+  assert.equal(blocked.body.code, "sim_balance_unverified");
+  const confirmed = await dial(order, { confirmUnknownBalance: true });
+  assert.equal(confirmed.status, 201);
+});
+
+test("outdated: an old eDahab reading needs the agent's confirmation", async () => {
+  await clearBalances();
+  await setBalance("edahab", 10, new Date(Date.now() - 3 * 24 * 60 * 60 * 1000));
+  const order = await menuOrder("3");
+  const res = await check(order.id);
+  assert.equal(res.body.status, "outdated");
+  const blocked = await dial(order);
+  assert.equal(blocked.body.code, "sim_balance_unverified");
+});
+
+test("an order without a wallet source still checks the company's own SIM balance, as before", async () => {
+  await clearBalances();
+  await setBalance("edahab", 100);
+  await setBalance("somtel", 0.2);
+  const order = await menuOrder("3");
+  await query(`UPDATE orders SET ussd_balance_source=NULL WHERE id=$1`, [order.id]);
+  const res = await check(order.id);
+  assert.equal(res.body.status, "insufficient");
+  assert.equal(res.body.balanceSource, "somtel");
+  assert.equal(res.body.availableBalance, 0.2);
+  assert.match(res.body.message, /Insufficient SIM Balance — Somtel/);
+});
+
+test("only Somtel's confirmed success completes the order; a balance in the reply updates the eDahab wallet, not Somtel's", async () => {
+  await clearBalances();
+  await setBalance("edahab", 10);
+  await setBalance("somtel", 50);
+  const order = await menuOrder("3");
+  const attempt = await dial(order);
+  assert.equal(attempt.status, 201);
+  const unclear = await call("PUT", `/agent/dial-attempts/${attempt.body.id}`, balAgentToken, {
+    status: "ambiguous",
+    responseMessage: "Connection problem or invalid MMI code.",
+    isFinalAttempt: false,
+  });
+  assert.equal(unclear.status, 200);
+  assert.notEqual((await queryOne<any>(`SELECT status FROM orders WHERE id=$1`, [order.id])).status, "completed", "an unclear reply never completes the order");
+
+  const second = await dial({ ...order }, { attemptNumber: 2 });
+  assert.equal(second.status, 201);
+  const done = await call("PUT", `/agent/dial-attempts/${second.body.id}`, balAgentToken, {
+    status: "success",
+    responseMessage: "Macmiil, waxaad ku guuleysatay inaad = Daily 24 Hrs ugu shubto 620346060. Haraagaaga Cusubi Waa: 9.50 Dollar",
+    isFinalAttempt: true,
+  });
+  assert.equal(done.status, 200, JSON.stringify(done.body));
+  assert.equal((await queryOne<any>(`SELECT status FROM orders WHERE id=$1`, [order.id])).status, "completed");
+  assert.equal(await balanceOf("edahab"), 9.5);
+  assert.equal(await balanceOf("somtel"), 50, "Somtel's Send Data balance is untouched");
+});
+
+test("an eDahab balance SMS on the Somtel dialing SIM is recorded as that SIM's eDahab balance; Somtel's own SMS stays separate", async () => {
+  await clearBalances();
+  await ingestPaymentSms({
+    agentId: BAL_AGENT_ID,
+    sender: "edahab",
+    body: "1 Dollar Ayaad Ka Heshay Yaasiin Maxamed Aadan.Code-ka:NA.Lambarka :620346060Aqanoosiga : PP260825.1816.F72842  Haraagaaga Cusubi Waa: 31.34 Dollar..Tariikh:25-08-2026[-eDahab-Service-]",
+    simSlot: SLOT,
+  });
+  assert.equal(await balanceOf("edahab"), 31.34);
+  assert.equal(await balanceOf("somtel"), null);
+  // A near-miss sender is still refused.
+  await ingestPaymentSms({
+    agentId: BAL_AGENT_ID,
+    sender: "edahabsms",
+    body: "1 Dollar Ayaad Ka Heshay Cali.Code-ka:NA.Lambarka :620346061Aqanoosiga : PP260825.1816.F72843  Haraagaaga Cusubi Waa: 1.00 Dollar..Tariikh:25-08-2026[-eDahab-Service-]",
+    simSlot: SLOT,
+  });
+  assert.equal(await balanceOf("edahab"), 31.34);
+});
+
+test("the paying balance is a Super Admin setting, validated and audited", async () => {
+  const bad = await call("PUT", `/admin/interactive-services/${templateId}`, superToken, { balanceSource: "zaad" });
+  assert.equal(bad.status, 400);
+  const ok = await call("PUT", `/admin/interactive-services/${templateId}`, superToken, { balanceSource: "evc_plus" });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(ok.body.balanceSource, "evc_plus");
+  const log = await queryOne<any>(
+    `SELECT old_value, new_value FROM admin_activity_log WHERE entity_id=$1 AND action='update_menu_ussd_settings' ORDER BY created_at DESC LIMIT 1`,
+    [templateId]
+  );
+  assert.equal(log.old_value.balanceSource, "edahab");
+  assert.equal(log.new_value.balanceSource, "evc_plus");
+  await call("PUT", `/admin/interactive-services/${templateId}`, superToken, { balanceSource: "edahab" });
+});
+
+test("the decision itself: available, insufficient (to the cent) and unknown for a wallet", () => {
+  const base = { companyName: "Somtel", walletLabel: "eDahab", balanceUpdatedAt: new Date() };
+  assert.equal(evaluateSimBalance({ ...base, requestedAmount: 0.5, availableBalance: 0.5 }).status, "sufficient");
+  const short = evaluateSimBalance({ ...base, requestedAmount: 0.35, availableBalance: 0.34 });
+  assert.equal(short.status, "insufficient");
+  assert.equal(short.missingAmount, 0.01);
+  const unknown = evaluateSimBalance({ ...base, requestedAmount: 0.2, availableBalance: null });
+  assert.equal(unknown.status, "unknown");
+  assert.equal(unknown.ok, false);
+  assert.equal(evaluateSimBalance({ ...base, requestedAmount: 0.2, availableBalance: 0 }).status, "insufficient", "a recorded $0 is insufficient, not unknown");
 });

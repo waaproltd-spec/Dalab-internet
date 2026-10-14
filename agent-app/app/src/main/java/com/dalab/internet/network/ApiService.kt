@@ -217,7 +217,16 @@ data class SimBalanceCheck(
     val deviceId: String? = null,
     val simSlot: Int? = null,
     val message: String? = null,
+    // Which balance on the SIM pays for this order: the company's own
+    // ("somtel") or a wallet ("edahab" for Dhameys Plus). Older backends
+    // don't send these, which means the company's own SIM balance.
+    val balanceSource: String? = null,
+    val balanceLabel: String? = null,
 )
+
+/** "SIM" for the company's own balance, else the wallet's name ("eDahab"). */
+val SimBalanceCheck.balanceName: String
+    get() = if (balanceSource == null || balanceSource == companyName.lowercase()) "SIM" else (balanceLabel ?: "SIM")
 
 /** GET /agent/sms-formats (smsFormats.routes.ts) -- see sms/DynamicSmsFormats.kt. */
 data class SmsFormatDto(
