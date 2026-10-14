@@ -24,7 +24,12 @@ import { broadcast } from "../realtime/orderEvents.js";
 const BALANCE_VALUE_PATTERNS: Array<{ regex: RegExp; kind?: string }> = [
   // eDahab/Somtel: "Haraagaaga Cusubi Waa: 31.34 Dollar" — its "Cusubi"/
   // "Dollar" wording never collides with the generic pattern below.
-  { regex: /Haraagaaga\s+Cusubi\s+Waa\s*:?\s*([\d,]+(?:\.\d+)?)\s*Dollar/i },
+  // Also its airtime/top-up purchase confirmation ("0.5 Dollar Ayaad u
+  // Dirtay Somtel End Used TopUp (629908877)... Hadhaagaagu Cusubi waa:
+  // 0.18 Dollar.") -- the same balance with the "dh" spelling and a "-gu"
+  // ending; confirmed live on a Dhameys Plus purchase, where missing it
+  // left the dashboard showing the pre-purchase eDahab balance.
+  { regex: /Ha(?:r|dh)aag(?:a?a)g[au]\s+Cusubi\s+Waa\s*:?\s*([\d,]+(?:\.\d+)?)\s*Dollar/i },
   // eDahab's OUTGOING-transfer confirmation ("21 Dollar ayad u warejisay
   // <name>...Haraaga: 0.34 Dollar Kharashyada Adeegga:0 Dollar...") reports
   // the same eDahab wallet balance as the "Cusubi Waa" pattern above, just
