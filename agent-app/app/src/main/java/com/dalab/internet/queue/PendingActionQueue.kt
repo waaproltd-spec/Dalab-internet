@@ -33,6 +33,9 @@ object PendingActionQueue {
         val createdAt: Long,
         val attemptCount: Int = 0,
         val lastError: String? = null,
+        // When the last failed attempt happened, for retry backoff (0 on
+        // entries saved before this field existed: retried right away).
+        val lastAttemptAt: Long = 0L,
     )
 
     private lateinit var prefs: SharedPreferences
@@ -108,7 +111,7 @@ object PendingActionQueue {
     @Synchronized
     fun markAttempt(id: String, error: String?) {
         writeAll(readAll().map {
-            if (it.id == id) it.copy(attemptCount = it.attemptCount + 1, lastError = error) else it
+            if (it.id == id) it.copy(attemptCount = it.attemptCount + 1, lastError = error, lastAttemptAt = System.currentTimeMillis()) else it
         })
     }
 

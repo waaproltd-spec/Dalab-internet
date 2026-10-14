@@ -456,7 +456,7 @@ test("an order without a wallet source still checks the company's own SIM balanc
   assert.match(res.body.message, /Insufficient SIM Balance — Somtel/);
 });
 
-test("only Somtel's confirmed success completes the order; a balance in the reply updates the eDahab wallet, not Somtel's", async () => {
+test("an unclear reply never completes or fails the order and blocks re-dialing until staff resolve it; then only a confirmed success completes it", async () => {
   await clearBalances();
   await setBalance("edahab", 10);
   await setBalance("somtel", 50);
@@ -466,13 +466,27 @@ test("only Somtel's confirmed success completes the order; a balance in the repl
   const unclear = await call("PUT", `/agent/dial-attempts/${attempt.body.id}`, balAgentToken, {
     status: "ambiguous",
     responseMessage: "Connection problem or invalid MMI code.",
-    isFinalAttempt: false,
+    isFinalAttempt: true,
   });
   assert.equal(unclear.status, 200);
-  assert.notEqual((await queryOne<any>(`SELECT status FROM orders WHERE id=$1`, [order.id])).status, "completed", "an unclear reply never completes the order");
+  const afterUnclear = await queryOne<any>(`SELECT status FROM orders WHERE id=$1`, [order.id]);
+  assert.equal(afterUnclear.status, "in_progress", "an unclear reply is neither completed nor failed (the money may have gone out)");
+  const flagged = await queryOne<any>(`SELECT 1 AS x FROM admin_activity_log WHERE entity_id=$1 AND action='dial_outcome_unknown'`, [order.id]);
+  assert.ok(flagged, "flagged for a person to check");
 
-  const second = await dial({ ...order }, { attemptNumber: 2 });
-  assert.equal(second.status, 201);
+  // No automatic second dial while the first one's result is unknown.
+  const blocked = await dial(order, { attemptNumber: 2 });
+  assert.equal(blocked.status, 409);
+  assert.equal(blocked.body.code, "previous_attempt_unresolved");
+
+  // Staff checked: not delivered -> the order may be dialed again.
+  assert.equal((await call("POST", `/admin/dial-attempts/${attempt.body.id}/resolve`, viewerToken, { delivered: false })).status, 403, "needs orders.manage");
+  const resolved = await call("POST", `/admin/dial-attempts/${attempt.body.id}/resolve`, superToken, { delivered: false, note: "Customer confirmed nothing arrived" });
+  assert.equal(resolved.status, 200, JSON.stringify(resolved.body));
+  assert.equal((await call("POST", `/admin/dial-attempts/${attempt.body.id}/resolve`, superToken, { delivered: true })).status, 409, "only once");
+
+  const second = await dial(order, { attemptNumber: 2 });
+  assert.equal(second.status, 201, JSON.stringify(second.body));
   const done = await call("PUT", `/agent/dial-attempts/${second.body.id}`, balAgentToken, {
     status: "success",
     responseMessage: "Macmiil, waxaad ku guuleysatay inaad = Daily 24 Hrs ugu shubto 620346060. Haraagaaga Cusubi Waa: 9.50 Dollar",
@@ -482,6 +496,45 @@ test("only Somtel's confirmed success completes the order; a balance in the repl
   assert.equal((await queryOne<any>(`SELECT status FROM orders WHERE id=$1`, [order.id])).status, "completed");
   assert.equal(await balanceOf("edahab"), 9.5);
   assert.equal(await balanceOf("somtel"), 50, "Somtel's Send Data balance is untouched");
+
+  // A finished attempt is never handed back as "go ahead and dial", and a
+  // completed order can't start a new dial.
+  const replay = await dial(order, { attemptNumber: 2 });
+  assert.equal(replay.status, 409);
+  assert.equal(replay.body.code, "attempt_already_resolved");
+  const third = await dial(order, { attemptNumber: 3 });
+  assert.equal(third.status, 409);
+  assert.equal(third.body.code, "order_not_dialable");
+});
+
+test("a dial with no reported result (app died mid-dial) blocks every new dial, another phone can't take it over, and staff can confirm it was delivered", async () => {
+  await clearBalances();
+  await setBalance("edahab", 10);
+  const order = await menuOrder("3");
+  const attempt = await dial(order);
+  assert.equal(attempt.status, 201);
+  // The same phone re-sending the start of its own pending attempt (a lost
+  // reply) gets the same attempt back.
+  const replay = await dial(order);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.id, attempt.body.id);
+  // A second phone can't dial the same attempt...
+  const otherAgent = randomUUID();
+  await query(`INSERT INTO agents (id, phone, name, password_hash, device_id) VALUES ($1,$2,'DP Other Agent','x',$3)`, [otherAgent, `25261${String(Date.now() + 11).slice(-7)}`, OTHER_DEVICE_ID]);
+  const otherToken = signAccessToken(otherAgent, "agent");
+  const elsewhere = await call("POST", `/agent/orders/${order.id}/dial-attempts`, otherToken, { simSlot: SLOT, ussdString: order.ussd, attemptNumber: 1, confirmUnknownBalance: true });
+  assert.equal(elsewhere.status, 409);
+  assert.equal(elsewhere.body.code, "attempt_in_progress_elsewhere");
+  // ...nor start a new one.
+  const next = await dial(order, { attemptNumber: 2 });
+  assert.equal(next.body.code, "previous_attempt_unresolved");
+
+  const resolved = await call("POST", `/admin/dial-attempts/${attempt.body.id}/resolve`, superToken, { delivered: true, note: "Customer has the package" });
+  assert.equal(resolved.status, 200, JSON.stringify(resolved.body));
+  assert.equal((await queryOne<any>(`SELECT status FROM orders WHERE id=$1`, [order.id])).status, "completed");
+  assert.equal((await queryOne<any>(`SELECT status FROM ussd_dial_attempts WHERE id=$1`, [attempt.body.id])).status, "success");
+  const log = await queryOne<any>(`SELECT new_value FROM admin_activity_log WHERE entity_id=$1 AND action='dial_attempt_resolved'`, [order.id]);
+  assert.equal(log.new_value.delivered, true);
 });
 
 test("an eDahab balance SMS on the Somtel dialing SIM is recorded as that SIM's eDahab balance; Somtel's own SMS stays separate", async () => {

@@ -4,6 +4,8 @@ import android.content.Context
 import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.sms.SmsUploadAction
+import com.dalab.internet.sms.SmsFingerprintStore
+import com.dalab.internet.sms.SmsRecoveryLogic
 import com.dalab.internet.sms.SmsUploadFlow
 import com.dalab.internet.sms.UploadOutcome
 import com.dalab.internet.sms.VerifyPaymentAction
@@ -15,7 +17,6 @@ import com.dalab.internet.ussd.ExchangeUssdOrchestrator
 import com.dalab.internet.ussd.ResellerWithdrawalDialAttemptAuditAction
 import com.dalab.internet.ussd.ResellerWithdrawalUssdOrchestrator
 import com.dalab.internet.ussd.UssdOrchestrator
-import java.util.UUID
 
 /**
  * Replays queued [PendingActionQueue] items against the backend — invoked
@@ -31,13 +32,21 @@ import java.util.UUID
  */
 object QueueDrainer {
 
-    suspend fun drainAll(context: Context) {
+    /** [force]: connectivity just came back -- retry every queued SMS now
+     * instead of waiting out its backoff. */
+    suspend fun drainAll(context: Context, force: Boolean = false) {
         val hadPendingSales = PendingActionQueue.all().any { it.type == PendingActionQueue.Type.SALE_CREATE }
         if (hadPendingSales) PendingSalesSyncStatus.markSyncing()
 
         // Snapshot at the start of this pass — anything enqueued mid-drain
         // (e.g. a fresh SMS arriving right now) is picked up on the next pass.
+        val now = System.currentTimeMillis()
         for (action in PendingActionQueue.all()) {
+            // One failing SMS never blocks the rest: each is tried on its own
+            // schedule, and a failure only pushes back that one item.
+            if (action.type == PendingActionQueue.Type.SMS_UPLOAD &&
+                !SmsRecoveryLogic.isDueForRetry(action.attemptCount, action.lastAttemptAt, now, force)
+            ) continue
             drainOne(context, action)
         }
 
@@ -86,25 +95,20 @@ object QueueDrainer {
 
     private suspend fun drainSmsUpload(context: Context, action: PendingActionQueue.PendingAction) {
         val payload = PendingActionQueue.payloadOf<SmsUploadAction>(action)
-        when (val outcome = SmsUploadFlow.uploadAndProcess(context, payload.entry)) {
-            is UploadOutcome.Success -> PendingActionQueue.remove(action.id)
-            is UploadOutcome.RetryableUpload -> PendingActionQueue.markAttempt(action.id, outcome.reason)
-            is UploadOutcome.RetryableVerify -> {
-                // The upload itself succeeded this time — swap this queued item
-                // for a VERIFY_PAYMENT one instead of re-uploading the same SMS
-                // again next pass (the SMS is already durably recorded server-side).
-                PendingActionQueue.remove(action.id)
-                PendingActionQueue.enqueue(
-                    id = UUID.randomUUID().toString(),
-                    type = PendingActionQueue.Type.VERIFY_PAYMENT,
-                    payload = VerifyPaymentAction(outcome.orderId, outcome.smsLogId, payload.entry.parsedAmount),
-                )
-            }
-            is UploadOutcome.Terminal -> {
-                DiagnosticsLog.record("queue_drain", "Dropped SMS_UPLOAD (terminal): ${outcome.reason}")
-                PendingActionQueue.remove(action.id) // rejected — will never succeed
-            }
+        val entry = payload.entry
+        val fingerprint = SmsRecoveryLogic.fingerprint(entry.sender, entry.body)
+        val label = "from ${entry.sender}, amount=${entry.parsedAmount ?: "?"}, via retry #${action.attemptCount + 1}, id=${fingerprint.take(10)}"
+        if (SmsFingerprintStore.isAcked(fingerprint)) {
+            // Acknowledged through another path (e.g. its live upload went
+            // through after all) -- nothing left to send.
+            PendingActionQueue.remove(action.id)
+            return
         }
+        val outcome = SmsUploadFlow.uploadGuarded(context, entry, fingerprint)
+        // The SMS itself is acknowledged on RetryableVerify too; its verify
+        // step is already durably queued as verify_<orderId> by
+        // SmsUploadFlow.processMatched, so nothing else is enqueued here.
+        SmsUploadFlow.settle(action.id, fingerprint, outcome, label)
     }
 
     private suspend fun drainVerifyPayment(context: Context, action: PendingActionQueue.PendingAction) {

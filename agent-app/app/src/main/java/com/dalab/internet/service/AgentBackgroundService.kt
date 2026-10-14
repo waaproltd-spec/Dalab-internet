@@ -13,6 +13,7 @@ import android.net.NetworkCapabilities
 import android.os.BatteryManager
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.dalab.internet.MainActivity
@@ -33,6 +34,7 @@ import com.dalab.internet.network.RealtimeClient
 import com.dalab.internet.notifications.SupportAlerts
 import com.dalab.internet.queue.QueueDrainer
 import com.dalab.internet.queue.RetryClassifier
+import com.dalab.internet.sms.SmsInboxScanner
 import com.dalab.internet.sms.SmsSenderIdRepository
 import com.dalab.internet.ussd.ExchangeSelfHealSweeper
 import com.dalab.internet.ussd.ResellerWithdrawalSelfHealSweeper
@@ -41,7 +43,9 @@ import com.dalab.internet.ussd.WalletLookupSelfHealSweeper
 import com.dalab.internet.ussd.SimRoutingRepository
 import com.dalab.internet.ussd.ResellerWithdrawalSimRoutingRepository
 import com.dalab.internet.ussd.UssdDialer
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -68,13 +72,23 @@ class AgentBackgroundService : Service() {
     private var scope: CoroutineScope? = null
     private var realtimeClient: RealtimeClient? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    // The long-running loops by name, so the watchdog can bring back one
+    // that died without tearing down the whole service (which would also
+    // abort a USSD dial in progress and drop the order stream).
+    private val loops = java.util.concurrent.ConcurrentHashMap<String, Pair<Job, suspend () -> Unit>>()
+    @Volatile private var inForeground = false
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
         super.onCreate()
         isRunning = true
+        serviceStartedAt = System.currentTimeMillis()
 
+        instance = this
+        acquireOrRenewWakeLock()
         try {
             startForeground(NOTIFICATION_ID, buildNotification())
+            inForeground = true
         } catch (e: Exception) {
             // Real crash class on Android 12+: ForegroundServiceStartNotAllowedException
             // if the OS decides this isn't a valid moment to promote to foreground, or a
@@ -84,7 +98,12 @@ class AgentBackgroundService : Service() {
             DiagnosticsLog.record("background_service_foreground", "startForeground failed: ${e.stackTraceToString().take(2000)}")
         }
 
-        val newScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        // An exception escaping any one coroutine is logged, never allowed to
+        // crash the whole process (SupervisorJob alone doesn't stop that).
+        val crashGuard = CoroutineExceptionHandler { _, e ->
+            DiagnosticsLog.record("background_service_uncaught", "Uncaught in a background task: ${e.stackTraceToString().take(2000)}")
+        }
+        val newScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + crashGuard)
         scope = newScope
 
         try {
@@ -197,13 +216,16 @@ class AgentBackgroundService : Service() {
             }
         }
 
-        newScope.launch { heartbeatLoop() }
-        newScope.launch { simRoutingRefreshLoop() }
-        newScope.launch { queueDrainLoop() }
-        newScope.launch { selfHealSweepLoop() }
-        newScope.launch { exchangeSelfHealSweepLoop() }
-        newScope.launch { resellerWithdrawalSelfHealSweepLoop() }
-        newScope.launch { walletLookupSelfHealSweepLoop() }
+        launchLoop(newScope, "heartbeat") { heartbeatLoop() }
+        launchLoop(newScope, "sim_routing") { simRoutingRefreshLoop() }
+        launchLoop(newScope, "queue_drain") { queueDrainLoop() }
+        // Missed-SMS recovery: once now (covers boot / process restart, when
+        // the agent never opens the app) and every few minutes after.
+        launchLoop(newScope, "sms_recovery") { smsRecoveryLoop() }
+        launchLoop(newScope, "self_heal") { selfHealSweepLoop() }
+        launchLoop(newScope, "exchange_self_heal") { exchangeSelfHealSweepLoop() }
+        launchLoop(newScope, "reseller_self_heal") { resellerWithdrawalSelfHealSweepLoop() }
+        launchLoop(newScope, "wallet_lookup_self_heal") { walletLookupSelfHealSweepLoop() }
         newScope.launch {
             // There's no login screen to send the agent to anymore, so a dead
             // session first tries to silently re-authenticate itself the same
@@ -238,7 +260,66 @@ class AgentBackgroundService : Service() {
         }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Every startForegroundService() call must be answered with
+        // startForeground() within seconds, or Android crashes the app. If
+        // the promotion failed in onCreate (e.g. a background start Android
+        // refused), later start() calls only reach here -- so promote here
+        // too, and stop cleanly rather than crash if it still isn't allowed
+        // (the watchdog / next app open starts it again).
+        if (!inForeground) {
+            try {
+                startForeground(NOTIFICATION_ID, buildNotification())
+                inForeground = true
+            } catch (e: Exception) {
+                DiagnosticsLog.record(
+                    "background_service_foreground",
+                    "Couldn't run as a foreground service (${e.javaClass.simpleName}); stopping cleanly so Android doesn't crash the app. " +
+                        "If this repeats, set DALAB Agent's battery use to Unrestricted.",
+                )
+                stopSelf()
+                return START_NOT_STICKY
+            }
+        }
+        return START_STICKY
+    }
+
+    private fun launchLoop(scope: CoroutineScope, name: String, body: suspend () -> Unit) {
+        loops[name] = Pair(scope.launch { body() }, body)
+    }
+
+    /** Relaunches any loop whose coroutine has ended; returns their names. */
+    private fun relaunchDeadLoops(): List<String> {
+        val currentScope = scope ?: return emptyList()
+        val dead = loops.filterValues { !it.first.isActive }.keys.toList()
+        for (name in dead) {
+            val body = loops[name]!!.second
+            DiagnosticsLog.record("background_service_loop_restarted", "Loop '$name' had stopped — restarted it.")
+            launchLoop(currentScope, name, body)
+        }
+        return dead
+    }
+
+    /**
+     * Keeps the CPU awake for the background loops while the screen is off
+     * (they're driven by delay(), which doesn't advance while the CPU
+     * sleeps -- heartbeats and queue retries then only ran when something
+     * else woke the phone). Partial (screen stays off), not reference
+     * counted, and always with a timeout: the heartbeat loop renews it every
+     * tick, so if the loops ever stop it lapses on its own within minutes
+     * instead of draining the battery.
+     */
+    private fun acquireOrRenewWakeLock() {
+        try {
+            val lock = wakeLock ?: (getSystemService(Context.POWER_SERVICE) as? PowerManager)
+                ?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "dalab:agent_background")
+                ?.apply { setReferenceCounted(false) }
+                ?.also { wakeLock = it }
+            lock?.acquire(WAKE_LOCK_TIMEOUT_MS)
+        } catch (e: Exception) {
+            DiagnosticsLog.record("background_service_wakelock", "Couldn't hold the wake lock: ${e.message}", isError = false)
+        }
+    }
 
     // Several OEM ROMs (MIUI, ColorOS, FuntouchOS, etc.) kill every background
     // process of an app the instant its task is swiped from Recents,
@@ -276,7 +357,15 @@ class AgentBackgroundService : Service() {
         realtimeClient = null
         scope?.cancel()
         scope = null
+        loops.clear()
         isRunning = false
+        inForeground = false
+        if (instance === this) instance = null
+        try {
+            wakeLock?.takeIf { it.isHeld }?.release()
+        } catch (_: Exception) {
+        }
+        wakeLock = null
         super.onDestroy()
     }
 
@@ -298,7 +387,10 @@ class AgentBackgroundService : Service() {
             override fun onAvailable(network: Network) {
                 scope.launch {
                     if (!SessionManager.isLoggedIn()) return@launch
-                    QueueDrainer.drainAll(applicationContext)
+                    // Pick up anything missed while offline, then send every
+                    // queued SMS right away (no backoff wait).
+                    SmsInboxScanner.recover(applicationContext, "network_restored", force = true)
+                    QueueDrainer.drainAll(applicationContext, force = true)
                 }
                 scope.launch { realtimeClient?.connect() }
                 scope.launch {
@@ -344,6 +436,7 @@ class AgentBackgroundService : Service() {
     private suspend fun heartbeatLoop() {
         val currentScope = scope ?: return
         while (currentScope.isActive) {
+            acquireOrRenewWakeLock()
             // Mirrors simRoutingRefreshLoop/queueDrainLoop's own per-tick
             // try/catch below -- this loop previously had none, so any
             // unexpected exception in a single tick (e.g. a diagnostics-
@@ -440,6 +533,17 @@ class AgentBackgroundService : Service() {
     // a flap that doesn't cleanly fire onAvailable) — short enough that a
     // queued payment doesn't sit for long, but well above heartbeat's cadence
     // since this is a fallback, not the primary trigger.
+    private suspend fun smsRecoveryLoop() {
+        val currentScope = scope ?: return
+        var first = true
+        while (currentScope.isActive) {
+            if (!first) delay(SMS_RECOVERY_INTERVAL_MS)
+            first = false
+            if (!SessionManager.isLoggedIn()) continue
+            SmsInboxScanner.recover(applicationContext, "background_service")
+        }
+    }
+
     private suspend fun queueDrainLoop() {
         val currentScope = scope ?: return
         while (currentScope.isActive) {
@@ -528,6 +632,7 @@ class AgentBackgroundService : Service() {
         val sims = UssdDialer(this).listActiveSims()
         val sim1Present = sims.any { it.simSlotIndex == 0 }
         val sim2Present = sims.any { it.simSlotIndex == 1 }
+        val health = com.dalab.internet.diagnostics.DeviceHealthSnapshot.read(this)
         return HeartbeatRequest(
             batteryPercent = battery,
             networkOnline = online,
@@ -536,6 +641,18 @@ class AgentBackgroundService : Service() {
             recentDiagnostics = pendingDiagnostics.takeIf { it.isNotEmpty() }?.map {
                 DiagnosticsEntryDto(tag = it.tag, message = it.message, isError = it.isError, occurredAt = it.timestamp)
             },
+            smsPermission = health.smsPermission,
+            pendingSmsCount = health.pendingSmsCount,
+            oldestPendingSmsAgeSec = health.oldestPendingSmsAgeSec,
+            pendingActionCount = health.pendingActionCount,
+            lastSmsUploadAt = health.lastSmsUploadAt,
+            accessibilityResellerEnabled = health.accessibilityResellerEnabled,
+            accessibilityExchangeEnabled = health.accessibilityExchangeEnabled,
+            batteryOptimizationIgnored = health.batteryOptimizationIgnored,
+            notificationsEnabled = health.notificationsEnabled,
+            phonePermission = health.phonePermission,
+            serviceStartedAt = serviceStartedAt.takeIf { it > 0L },
+            appVersion = health.appVersion,
         )
     }
 
@@ -618,6 +735,10 @@ class AgentBackgroundService : Service() {
         // synchronous upload->match->verify->dial path, which already has
         // zero artificial delay in it.
         private const val QUEUE_DRAIN_INTERVAL_MS = 45_000L
+        // Renewed by every heartbeat tick (60s); lapses on its own if the loops stop.
+        private const val WAKE_LOCK_TIMEOUT_MS = 10 * 60_000L
+        // Missed-SMS backstop; the live receiver handles SMS immediately.
+        private const val SMS_RECOVERY_INTERVAL_MS = 5 * 60_000L
         private const val SELF_HEAL_SWEEP_INTERVAL_MS = 60_000L
 
         /** Read from PermissionsStatusScreen to show "Foreground Service: Active/Inactive". */
@@ -625,12 +746,40 @@ class AgentBackgroundService : Service() {
         var isRunning: Boolean = false
             private set
 
+        /** When this service instance started (heartbeat: a recent value
+         * after a long uptime means the OS or the watchdog restarted it). */
+        @Volatile
+        var serviceStartedAt: Long = 0L
+            private set
+
+        @Volatile
+        private var instance: AgentBackgroundService? = null
+
+        /**
+         * Watchdog recovery for a running service whose heartbeat went
+         * stale: brings back any loop that stopped, leaving everything else
+         * (a USSD dial in progress, the order stream) untouched. Returns the
+         * loops it restarted -- empty means they're all alive and the stale
+         * heartbeat is a network/server problem a restart wouldn't fix.
+         */
+        fun recoverStalledLoops(): List<String> = instance?.relaunchDeadLoops() ?: emptyList()
+
         fun start(context: Context) {
             val intent = Intent(context, AgentBackgroundService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                // Android 12+ refuses a foreground-service start from the
+                // background unless the app is exempt from battery
+                // optimisation (or it's a boot/update broadcast).
+                DiagnosticsLog.record(
+                    "background_service_start_blocked",
+                    "Android refused to start the background service (${e.javaClass.simpleName}). Set DALAB Agent's battery use to Unrestricted so it can restart itself.",
+                )
             }
             // Single choke point: every call site that starts this service
             // (MainActivity on cold start, AutoLoginScreen on success,
@@ -642,18 +791,5 @@ class AgentBackgroundService : Service() {
             context.stopService(Intent(context, AgentBackgroundService::class.java))
         }
 
-        /** Used by HeartbeatWatchdogWorker to recover a service instance that
-         * reports [isRunning] but whose heartbeatLoop coroutine has silently
-         * died (the bug this class's own doc comment now documents) --
-         * calling [start] alone on an already-running instance only re-
-         * delivers onStartCommand() to the SAME instance and does nothing,
-         * since onCreate() (where every coroutine, including heartbeatLoop,
-         * is launched) only ever runs once per instance. Stopping first
-         * forces a genuinely fresh instance and a fresh onCreate() on the
-         * next start(). */
-        fun restart(context: Context) {
-            stop(context)
-            start(context)
-        }
     }
 }

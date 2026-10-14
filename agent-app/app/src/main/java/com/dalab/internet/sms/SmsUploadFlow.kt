@@ -15,6 +15,7 @@ import com.dalab.internet.queue.RetryClassifier
 import com.dalab.internet.ussd.DialOutcome
 import com.dalab.internet.ussd.UssdOrchestrator
 import retrofit2.HttpException
+import java.util.concurrent.ConcurrentHashMap
 
 /** Gson-serialized payloads for the action types this flow can enqueue. */
 data class SmsUploadAction(val entry: SmsLogEntry)
@@ -41,6 +42,78 @@ sealed class UploadOutcome {
  * inline, without duplicating it.
  */
 object SmsUploadFlow {
+
+    /** Fingerprints of SMS being uploaded right now, so the live receiver,
+     * an inbox recovery pass and the queue drainer never upload the same SMS
+     * at the same moment. */
+    private val inFlight: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    private const val IN_FLIGHT = "already uploading"
+
+    /** Queue id of an SMS's durable upload entry: one per SMS, whoever
+     * found it first (receiver or recovery). */
+    fun queueIdFor(fingerprint: String) = "sms_$fingerprint"
+
+    /**
+     * Durable intake for one SMS (live receiver and inbox recovery both use
+     * this): saved to the upload queue BEFORE any network call, uploaded, and
+     * only removed from the queue once the server has acknowledged it. A
+     * failed upload stays queued and QueueDrainer retries it with backoff,
+     * immediately when connectivity returns. An SMS the server already
+     * acknowledged is not uploaded again.
+     */
+    suspend fun intake(context: Context, entry: SmsLogEntry, source: String): UploadOutcome {
+        val fp = SmsRecoveryLogic.fingerprint(entry.sender, entry.body)
+        val label = describe(entry, fp, source)
+        if (SmsFingerprintStore.isAcked(fp)) {
+            DiagnosticsLog.record("sms_duplicate_rejected", "Already acknowledged by the server — not uploaded again ($label).", isError = false)
+            return UploadOutcome.Success
+        }
+        val queueId = queueIdFor(fp)
+        PendingActionQueue.enqueueIfAbsent(queueId, PendingActionQueue.Type.SMS_UPLOAD, SmsUploadAction(entry))
+        SmsFingerprintStore.markQueued(fp)
+        DiagnosticsLog.record("sms_queued_for_upload", "Saved for upload ($label).", isError = false)
+        val outcome = uploadGuarded(context, entry, fp)
+        settle(queueId, fp, outcome, label)
+        return outcome
+    }
+
+    /** One upload of a queued SMS, never two at once for the same SMS. */
+    suspend fun uploadGuarded(context: Context, entry: SmsLogEntry, fingerprint: String): UploadOutcome {
+        if (!inFlight.add(fingerprint)) return UploadOutcome.RetryableUpload(IN_FLIGHT)
+        return try {
+            uploadAndProcess(context, entry)
+        } finally {
+            inFlight.remove(fingerprint)
+        }
+    }
+
+    /** Queue/ledger bookkeeping after an upload attempt of [queueId]. Any
+     * answer from the server (stored, matched, duplicate, rejected) is an
+     * acknowledgement; only "no answer" keeps it queued. */
+    fun settle(queueId: String, fingerprint: String, outcome: UploadOutcome, label: String) {
+        when (outcome) {
+            is UploadOutcome.RetryableUpload -> {
+                if (outcome.reason == IN_FLIGHT) return // the other upload settles it
+                PendingActionQueue.markAttempt(queueId, outcome.reason)
+                DiagnosticsLog.record("sms_upload_failed", "Upload failed, kept for automatic retry ($label): ${outcome.reason}")
+            }
+            is UploadOutcome.Terminal -> {
+                PendingActionQueue.remove(queueId)
+                SmsFingerprintStore.markAcked(fingerprint)
+                DiagnosticsLog.record("sms_upload_failed", "Server rejected the upload, not retried ($label): ${outcome.reason}")
+            }
+            is UploadOutcome.RetryableVerify, UploadOutcome.Success -> {
+                // RetryableVerify: the SMS itself is stored server-side; its
+                // verify step is already durably queued as verify_<orderId>.
+                PendingActionQueue.remove(queueId)
+                SmsFingerprintStore.markAcked(fingerprint)
+                DiagnosticsLog.record("sms_upload_succeeded", "Server acknowledged ($label).", isError = false)
+            }
+        }
+    }
+
+    private fun describe(entry: SmsLogEntry, fingerprint: String, source: String): String =
+        "from ${entry.sender}, amount=${entry.parsedAmount ?: "?"}, sim=${entry.simSlot ?: "?"}, via $source, id=${fingerprint.take(10)}"
 
     suspend fun uploadAndProcess(context: Context, parsed: SmsLogEntry): UploadOutcome {
         val uploadResponse = try {

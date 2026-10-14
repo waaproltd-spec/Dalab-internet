@@ -67,6 +67,7 @@ class DalabAgentApp : Application() {
         initSafely("device_activation_init") { com.dalab.internet.auth.DeviceActivationState.init(this) }
         initSafely("device_identity_init") { DeviceIdentity.init(this) }
         initSafely("sms_listener_init") { SmsListenerState.init(this) }
+        initSafely("sms_ledger_init") { com.dalab.internet.sms.SmsFingerprintStore.init(this) }
         initSafely("pending_queue_init") { PendingActionQueue.init(this) }
         initSafely("agent_alerts_init") { AgentAlertsState.init(this) }
         // Previously only initialized from MainActivity.kt, which never runs

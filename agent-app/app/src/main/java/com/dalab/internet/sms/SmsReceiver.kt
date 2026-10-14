@@ -19,9 +19,12 @@ import java.util.*
 
 /**
  * Fires on every incoming SMS (that's how Android SMS broadcasts work — the receiver
- * can't be scoped to "only payment SMS" at the OS level). [SmsListenerState.isListening]
- * gates whether we act on it; unmatched senders/formats are ignored by
- * [PaymentSmsParsers] regardless, so a personal text never gets uploaded.
+ * can't be scoped to "only payment SMS" at the OS level). Unmatched
+ * senders/formats are ignored by [PaymentSmsParsers], so a personal text
+ * never gets uploaded. Every payment SMS goes through [SmsUploadFlow.intake]:
+ * saved to the upload queue first, then uploaded, so a dropped connection or
+ * a killed process can't lose it ([SmsInboxScanner] also re-reads the inbox
+ * for anything this receiver never saw).
  *
  * Full automatic flow (matches the spec): SMS -> parse -> upload -> matched
  * order -> UssdOrchestrator verifies payment, resolves the configured SIM,
@@ -38,20 +41,11 @@ class SmsReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
-        if (!SmsListenerState.isListening.value) {
-            // Previously a silent return — if listening gets disabled (or
-            // never actually re-enabled after an app/process restart), every
-            // subsequent payment SMS vanished with zero trace anywhere, making
-            // "it worked once then stopped" impossible to tell apart from "the
-            // OS never even ran the receiver again". Logging every ignored SMS
-            // here means Diagnostics can now distinguish the two.
-            DiagnosticsLog.record(
-                "sms_receiver_ignored",
-                "SMS ignored — listening is disabled (More > Permissions to re-check/re-enable).",
-                isError = false,
-            )
-            return
-        }
+        // Android only delivers this broadcast while RECEIVE_SMS is granted,
+        // so this is a re-check (and logs a change), not a second switch --
+        // the old saved "listening" flag could get stuck off with the
+        // permission granted and drop every payment SMS (see SmsListenerState).
+        if (!SmsListenerState.refresh(context)) return
 
         // Everything from here runs on the main thread, on every single incoming
         // SMS (spam, OTPs, personal texts — not just payment messages), with no
@@ -103,6 +97,7 @@ class SmsReceiver : BroadcastReceiver() {
             // already explains it as unmatched — giving staff a real captured
             // sample to write a correct parser from, instead of guessing.
             if (looksLikePaymentSms(body)) {
+                DiagnosticsLog.record("sms_received", "Payment-looking SMS received from '$sender' (no parser matched).", isError = false)
                 DiagnosticsLog.record(
                     "sms_receiver_unrecognized",
                     "Payment-looking SMS from '$sender' matched no parser — uploading unparsed for visibility: ${body.take(160)}",
@@ -113,13 +108,7 @@ class SmsReceiver : BroadcastReceiver() {
                 val appContext = context.applicationContext
                 CoroutineScope(Dispatchers.IO).launch {
                     try {
-                        if (SmsUploadFlow.uploadAndProcess(appContext, unparsedEntry) is UploadOutcome.RetryableUpload) {
-                            PendingActionQueue.enqueue(
-                                id = UUID.randomUUID().toString(),
-                                type = PendingActionQueue.Type.SMS_UPLOAD,
-                                payload = SmsUploadAction(unparsedEntry),
-                            )
-                        }
+                        SmsUploadFlow.intake(appContext, unparsedEntry, "receiver")
                     } catch (e: Exception) {
                         DiagnosticsLog.record("sms_receiver_process", "Failed uploading unparsed payment SMS: ${e.stackTraceToString().take(2000)}")
                     } finally {
@@ -129,6 +118,12 @@ class SmsReceiver : BroadcastReceiver() {
             }
             return
         }
+
+        DiagnosticsLog.record(
+            "sms_received",
+            "Payment SMS received from '$sender' (sim=${resolvedSimSlot ?: "?"}, amount=${parsed?.parsedAmount ?: voucherSent?.amount ?: exchangePayoutSent?.amount ?: "?"}).",
+            isError = false,
+        )
 
         // BroadcastReceivers must finish quickly; goAsync() extends that window just
         // long enough for the network call + USSD dial below to complete or time out.
@@ -185,13 +180,7 @@ class SmsReceiver : BroadcastReceiver() {
                         receivedAt = receivedAt,
                         simSlot = resolvedSimSlot,
                     )
-                    if (SmsUploadFlow.uploadAndProcess(appContext, voucherUploadEntry) is UploadOutcome.RetryableUpload) {
-                        PendingActionQueue.enqueue(
-                            id = UUID.randomUUID().toString(),
-                            type = PendingActionQueue.Type.SMS_UPLOAD,
-                            payload = SmsUploadAction(voucherUploadEntry),
-                        )
-                    }
+                    SmsUploadFlow.intake(appContext, voucherUploadEntry, "receiver")
                     return@launch
                 }
                 if (exchangePayoutSent != null) {
@@ -231,36 +220,15 @@ class SmsReceiver : BroadcastReceiver() {
                         receivedAt = receivedAt,
                         simSlot = resolvedSimSlot,
                     )
-                    if (SmsUploadFlow.uploadAndProcess(appContext, withdrawalPayoutEntry) is UploadOutcome.RetryableUpload) {
-                        PendingActionQueue.enqueue(
-                            id = UUID.randomUUID().toString(),
-                            type = PendingActionQueue.Type.SMS_UPLOAD,
-                            payload = SmsUploadAction(withdrawalPayoutEntry),
-                        )
-                    }
+                    SmsUploadFlow.intake(appContext, withdrawalPayoutEntry, "receiver")
                     return@launch
                 }
                 val entry = parsed!!
                 SmsListenerState.recordLog(entry)
-                when (val outcome = SmsUploadFlow.uploadAndProcess(appContext, entry)) {
-                    is UploadOutcome.RetryableUpload -> PendingActionQueue.enqueue(
-                        id = UUID.randomUUID().toString(),
-                        type = PendingActionQueue.Type.SMS_UPLOAD,
-                        payload = SmsUploadAction(entry),
-                    )
-                    is UploadOutcome.RetryableVerify -> {
-                        // Already durably queued by SmsUploadFlow.processMatched
-                        // itself (a deterministic "verify_$orderId" id) before it
-                        // even attempted the verify+dial chain — enqueuing here
-                        // too would create a second, differently-keyed duplicate
-                        // entry for the same order.
-                    }
-                    is UploadOutcome.Terminal, UploadOutcome.Success -> {
-                        // Terminal: the server rejected this SMS upload outright (a
-                        // real 4xx) — resending it unchanged would never succeed, so
-                        // it's not queued. Success: nothing further to do.
-                    }
-                }
+                // Saved, uploaded, and settled (kept for retry, or cleared once
+                // the server acknowledges it); a matched order's verify step is
+                // durably queued by SmsUploadFlow.processMatched itself.
+                SmsUploadFlow.intake(appContext, entry, "receiver")
             } catch (e: Exception) {
                 // Previously only a `finally` here — any exception from the upload/
                 // match/dial pipeline propagated straight up and crashed the app
@@ -305,8 +273,20 @@ private fun resolveSimSlot(context: Context, intent: Intent): Int? {
 private const val SIM_SLOT_RETRY_DELAY_MS = 300L
 
 private fun resolveSimSlotOnce(context: Context, intent: Intent): Int? {
+    val subscriptionId = try {
+        intent.extras?.getInt("subscription", -1) ?: -1
+    } catch (_: Exception) {
+        -1
+    }
+    return simSlotForSubscription(context, subscriptionId)
+}
+
+/** 1-based SIM slot of a subscription id (an SMS's "subscription" extra, or
+ * the inbox's sub_id column), or null when it can't be resolved. Never
+ * throws, never guesses. Shared by the live receiver and inbox recovery so a
+ * recovered SMS carries the same slot the live one would have. */
+internal fun simSlotForSubscription(context: Context, subscriptionId: Int): Int? {
     return try {
-        val subscriptionId = intent.extras?.getInt("subscription", -1) ?: -1
         if (subscriptionId <= 0) return null
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
             return null
@@ -338,7 +318,7 @@ private val PAYMENT_LOOKING_KEYWORDS = listOf(
     "evcplus", "evc plus", "somnet", "haraagagu", "haraagaaga", "haraagaagu", "amtel",
 )
 
-private fun looksLikePaymentSms(body: String): Boolean {
+internal fun looksLikePaymentSms(body: String): Boolean {
     val lower = body.lowercase()
     return lower.contains("$") || PAYMENT_LOOKING_KEYWORDS.any { lower.contains(it) }
 }

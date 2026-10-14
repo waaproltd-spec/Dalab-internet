@@ -153,6 +153,14 @@ test("a second dial attempt for the same order never creates a duplicate ledger 
 
   const first = await startDialAttempt(orderId);
   assert.equal(first.status, 201);
+  // A retry only follows a confirmed failure (a dial whose result is still
+  // unknown blocks any new attempt -- it may already have sent the money).
+  const firstId = ((await first.json()) as { id: string }).id;
+  await fetch(`${baseUrl}/agent/dial-attempts/${firstId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ status: "failed", responseMessage: "USSD failure code: -1", isFinalAttempt: false }),
+  });
   const second = await fetch(`${baseUrl}/agent/orders/${orderId}/dial-attempts`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },

@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import java.util.concurrent.Executors
 
 /**
  * Local, persisted record of recent failures across the automatic pipeline
@@ -31,6 +32,15 @@ object DiagnosticsLog {
     private val gson = Gson()
     private val listType = object : TypeToken<MutableList<Entry>>() {}.type
 
+    // Parsed once, then kept in memory: record() is called from the main
+    // thread too (the accessibility services, Activity callbacks), and
+    // re-parsing and re-serialising up to 200 entries on every call there
+    // was a real contributor to "DALAB Agent isn't responding". The JSON
+    // write happens on one background thread, coalesced.
+    private var cache: MutableList<Entry>? = null
+    private val writer = Executors.newSingleThreadExecutor { r -> Thread(r, "dalab-diagnostics-writer").apply { isDaemon = true } }
+    @Volatile private var writeScheduled = false
+
     @Synchronized
     fun init(context: Context) {
         if (::prefs.isInitialized) return
@@ -39,9 +49,23 @@ object DiagnosticsLog {
 
     @Synchronized
     fun record(tag: String, message: String, isError: Boolean = true) {
+        if (!::prefs.isInitialized) return
         val entries = readAll()
         entries.add(0, Entry(System.currentTimeMillis(), tag, message, isError))
-        writeAll(entries.take(MAX_ENTRIES))
+        while (entries.size > MAX_ENTRIES) entries.removeAt(entries.size - 1)
+        scheduleWrite()
+    }
+
+    private fun scheduleWrite() {
+        if (writeScheduled) return
+        writeScheduled = true
+        writer.execute {
+            val snapshot = synchronized(this) {
+                writeScheduled = false
+                cache?.toList()
+            } ?: return@execute
+            prefs.edit().putString(KEY_ENTRIES, gson.toJson(snapshot)).apply()
+        }
     }
 
     /**
@@ -60,15 +84,17 @@ object DiagnosticsLog {
         val trace = throwable.stackTraceToString().take(4000)
         val entries = readAll()
         entries.add(0, Entry(System.currentTimeMillis(), "FATAL CRASH", "Thread '$threadName': $trace", true))
-        val json = gson.toJson(entries.take(MAX_ENTRIES))
+        while (entries.size > MAX_ENTRIES) entries.removeAt(entries.size - 1)
+        val json = gson.toJson(entries)
         prefs.edit().putString(KEY_ENTRIES, json).commit()
     }
 
     @Synchronized
-    fun all(): List<Entry> = readAll()
+    fun all(): List<Entry> = readAll().toList()
 
     @Synchronized
     fun clear() {
+        cache = mutableListOf()
         prefs.edit().remove(KEY_ENTRIES).apply()
     }
 
@@ -94,16 +120,17 @@ object DiagnosticsLog {
         if (timestamp > current) prefs.edit().putLong(KEY_SYNCED_UP_TO, timestamp).apply()
     }
 
+    /** The in-memory list (loaded from disk on first use). Callers hold
+     * this object's lock. */
     private fun readAll(): MutableList<Entry> {
-        val json = prefs.getString(KEY_ENTRIES, null) ?: return mutableListOf()
-        return try {
-            gson.fromJson(json, listType) ?: mutableListOf()
+        cache?.let { return it }
+        val json = prefs.getString(KEY_ENTRIES, null)
+        val loaded: MutableList<Entry> = if (json == null) mutableListOf() else try {
+            gson.fromJson<MutableList<Entry>>(json, listType) ?: mutableListOf()
         } catch (_: Exception) {
             mutableListOf()
         }
-    }
-
-    private fun writeAll(entries: List<Entry>) {
-        prefs.edit().putString(KEY_ENTRIES, gson.toJson(entries)).apply()
+        cache = loaded
+        return loaded
     }
 }

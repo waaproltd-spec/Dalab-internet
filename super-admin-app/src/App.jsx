@@ -349,6 +349,10 @@ const DalabAdminApi = {
   },
   getPaymentTransactionTimeline: (id) => dalabAdminApiRequest(`/admin/payment-transactions/${id}/timeline`),
   getStuckPaymentCount: (minutes) => dalabAdminApiRequest(`/admin/payment-transactions/stuck-count${minutes ? `?minutes=${minutes}` : ""}`),
+  getUnmatchedPaymentSmsCount: () => dalabAdminApiRequest("/admin/sms-logs/unmatched-payment-count"),
+  getDeviceHealthIssues: () => dalabAdminApiRequest("/admin/agent-devices/health-issues"),
+  resolveDialAttempt: (attemptId, delivered, note) =>
+    dalabAdminApiRequest(`/admin/dial-attempts/${attemptId}/resolve`, { method: "POST", body: JSON.stringify({ delivered, note }) }),
   getDuplicateBlockedCount: (minutes) => dalabAdminApiRequest(`/admin/payment-transactions/duplicate-count${minutes ? `?minutes=${minutes}` : ""}`),
   // Commission Management — the cut the company/Super Admin earns from a
   // completed order, calculated automatically server-side; this dashboard
@@ -7851,6 +7855,24 @@ function DevicesPanel({ canManage }) {
                 <Badge tone="amber"><AlertTriangle size={11} style={{ marginRight: 4, verticalAlign: -1 }} />No heartbeat in over 5 minutes</Badge>
               </div>
             )}
+            {/* What stops this phone from working on its own (from its heartbeat). */}
+            {(d.healthIssues || []).filter((i) => i.code !== "offline").length > 0 && (
+              <div style={{ marginTop: 8, display: "grid", gap: 4 }}>
+                {(d.healthIssues || []).filter((i) => i.code !== "offline").map((i) => (
+                  <div key={i.code} style={{ fontSize: 11.5, color: i.severity === "error" ? "#C81E2C" : "#92400E", display: "flex", gap: 4 }}>
+                    <AlertTriangle size={12} style={{ flexShrink: 0, marginTop: 1 }} />
+                    <span>{i.message}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {(d.appVersion || d.pendingSmsCount != null || d.lastSmsUploadAt) && (
+              <div style={{ marginTop: 6, fontSize: 11, color: MUTE }}>
+                {d.appVersion ? `App ${d.appVersion}` : ""}
+                {d.pendingSmsCount != null ? ` · ${d.pendingSmsCount} SMS waiting to upload` : ""}
+                {d.lastSmsUploadAt ? ` · last SMS upload ${minutesAgoLabel(d.lastSmsUploadAt)}` : ""}
+              </div>
+            )}
 
             <div style={{ marginTop: 10, fontSize: 11.5, color: MUTE }}>
               {(d.sims || []).length > 0
@@ -9434,11 +9456,14 @@ function PaymentTransactionsPanel({ companies }) {
                   </div>
                 )}
                 {timeline.dialAttempts.map((a) => (
-                  <div key={a.id} style={{ fontSize: 12.5, color: INK, marginTop: 4, display: "flex", gap: 8, alignItems: "center" }}>
-                    <Badge tone={a.status === "success" ? "green" : a.status === "failed" ? "red" : "amber"}>Attempt {a.attemptNumber}</Badge>
-                    <span>SIM {a.simSlot ?? "?"}</span>
-                    <span style={{ color: MUTE }}>{formatDateTime(a.createdAt)}</span>
-                    {a.responseMessage && <span style={{ color: MUTE }}>— {a.responseMessage}</span>}
+                  <div key={a.id} style={{ marginTop: 4 }}>
+                    <div style={{ fontSize: 12.5, color: INK, display: "flex", gap: 8, alignItems: "center" }}>
+                      <Badge tone={a.status === "success" ? "green" : a.status === "failed" ? "red" : "amber"}>Attempt {a.attemptNumber}</Badge>
+                      <span>SIM {a.simSlot ?? "?"}</span>
+                      <span style={{ color: MUTE }}>{formatDateTime(a.createdAt)}</span>
+                      {a.responseMessage && <span style={{ color: MUTE }}>— {a.responseMessage}</span>}
+                    </div>
+                    <ResolveDialAttempt attempt={a} onResolved={() => openTimeline(selectedTxId)} />
                   </div>
                 ))}
               </div>
@@ -9988,10 +10013,50 @@ function OfflinePaymentTransactionsTab({ companies, onViewOrder }) {
 // Transaction, and a real timeline assembled from the actual timestamps
 // each piece already carries — never a separately-invented "timeline"
 // data source.
+/**
+ * A dial whose result is unknown ('pending' with no report, or an unclear
+ * 'ambiguous' carrier reply) blocks every new dial for its order, because the
+ * money may already have gone out. After checking with the customer/carrier,
+ * staff record what happened here: Delivered completes the order; Not
+ * delivered lets the Agent App dial it again automatically.
+ */
+function ResolveDialAttempt({ attempt, onResolved }) {
+  const [busy, setBusy] = useState(false);
+  if (!attempt || !["pending", "ambiguous"].includes(attempt.status)) return null;
+  const resolve = async (delivered) => {
+    const question = delivered
+      ? "Confirm the customer RECEIVED this package? The order will be completed."
+      : "Confirm the customer did NOT receive it and no money left the SIM for it? The order will be dialed again.";
+    if (!window.confirm(question)) return;
+    const note = window.prompt("Optional note (who you checked with):", "") ?? "";
+    setBusy(true);
+    try {
+      await DalabAdminApi.resolveDialAttempt(attempt.id, delivered, note);
+      onResolved?.();
+    } catch (err) {
+      window.alert(err.message || "Could not save the decision.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div style={{ marginTop: 6, padding: "6px 8px", borderRadius: 8, background: "rgba(245,158,11,0.10)", fontSize: 11.5 }}>
+      <div style={{ color: "#92400E", fontWeight: 600 }}>
+        Result unknown — the money may already have been sent. Automation won't dial this order again until you decide.
+      </div>
+      <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+        <button disabled={busy} onClick={() => resolve(true)} style={{ padding: "4px 10px", borderRadius: 6, border: "none", background: GREEN, color: "#fff", cursor: "pointer", fontSize: 11.5 }}>Delivered</button>
+        <button disabled={busy} onClick={() => resolve(false)} style={{ padding: "4px 10px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", cursor: "pointer", fontSize: 11.5 }}>Not delivered — dial again</button>
+      </div>
+    </div>
+  );
+}
+
 function OfflineOrderDetailDrawer({ orderId, onClose }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -10003,7 +10068,7 @@ function OfflineOrderDetailDrawer({ orderId, onClose }) {
       .catch((err) => { if (!cancelled) setError(err.message || "Could not load this Offline order."); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [orderId]);
+  }, [orderId, reloadKey]);
 
   const row = (label, value, mono) => (
     <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderTop: `1px solid ${BORDER}`, gap: 12 }}>
@@ -10129,6 +10194,7 @@ function OfflineOrderDetailDrawer({ orderId, onClose }) {
                 {a.ussdString && <div style={{ color: SLATE, fontFamily: "monospace", marginTop: 3, wordBreak: "break-all" }}>{a.ussdString}</div>}
                 {a.responseMessage && <div style={{ color: MUTE, marginTop: 3 }}>Network response: {a.responseMessage}</div>}
                 {explainFailure(a.responseMessage) && <div style={{ color: "#C81E2C", fontWeight: 600, marginTop: 3 }}>{explainFailure(a.responseMessage)}</div>}
+                <ResolveDialAttempt attempt={a} onResolved={() => setReloadKey((k) => k + 1)} />
               </div>
             ))}
 
@@ -16798,6 +16864,8 @@ function AdminDashboardShell({ admin, onLogout }) {
   const [orders, setOrders] = useState(initialOrders);
   const [customers, setCustomers] = useState(initialCustomers);
   const [stuckCount, setStuckCount] = useState(0);
+  const [unmatchedPaymentSmsCount, setUnmatchedPaymentSmsCount] = useState(0);
+  const [deviceErrorCount, setDeviceErrorCount] = useState(0);
   const [stalledProcessingCount, setStalledProcessingCount] = useState(0);
   const [duplicateBlockedCount, setDuplicateBlockedCount] = useState(0);
   const [lowBalanceCount, setLowBalanceCount] = useState(0);
@@ -16838,6 +16906,10 @@ function AdminDashboardShell({ admin, onLogout }) {
   // already subscribes to, so it's genuinely real-time, not a new poll loop.
   const refreshStuckCount = async () => {
     if (!DALAB_API_ENABLED) return;
+    // Payment SMS that matched no order, and phones that can't work on their
+    // own -- both silent failures without these badges.
+    DalabAdminApi.getUnmatchedPaymentSmsCount().then((r) => setUnmatchedPaymentSmsCount(r.count ?? 0)).catch(() => {});
+    DalabAdminApi.getDeviceHealthIssues().then((r) => setDeviceErrorCount(r.errorCount ?? 0)).catch(() => {});
     try {
       const res = await DalabAdminApi.getStuckPaymentCount();
       setStuckCount(res.count);
@@ -17017,15 +17089,25 @@ function AdminDashboardShell({ admin, onLogout }) {
               >
                 <Icon size={17} />
                 {!collapsed && n.label}
-                {!collapsed && n.id === "payment-transactions" && (stuckCount > 0 || stalledProcessingCount > 0 || duplicateBlockedCount > 0) && (
+                {!collapsed && n.id === "devices" && deviceErrorCount > 0 && (
+                  <span style={{ marginLeft: "auto" }} title="Agent phones that can't work on their own right now (open Device & USSD)">
+                    <Badge tone="red">{deviceErrorCount}</Badge>
+                  </span>
+                )}
+                {!collapsed && n.id === "payment-transactions" && (stuckCount > 0 || stalledProcessingCount > 0 || duplicateBlockedCount > 0 || unmatchedPaymentSmsCount > 0) && (
                   <span style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+                    {unmatchedPaymentSmsCount > 0 && (
+                      <span title="Payment SMS received that matched no order (last 7 days) — check SMS Monitor">
+                        <Badge tone="amber">{unmatchedPaymentSmsCount}</Badge>
+                      </span>
+                    )}
                     {stuckCount > 0 && (
                       <span title="Verified but never dialed">
                         <Badge tone="red">{stuckCount}</Badge>
                       </span>
                     )}
                     {stalledProcessingCount > 0 && (
-                      <span title="Dialed, but no result ever reported — check manually before retrying">
+                      <span title="Dial result unknown (no report, or an unclear carrier reply) — resolve it in the order before anything is dialed again">
                         <Badge tone="red">{stalledProcessingCount}</Badge>
                       </span>
                     )}
