@@ -105,6 +105,12 @@ object ResellerWithdrawalInteractiveUssdBridge {
     @Volatile
     private var windowSearchMissLogged: Boolean = false
 
+    /** When the locked carrier window was first found missing (null while
+     * it's on screen). Between two carrier screens the dialog is briefly
+     * absent; only a sustained absence counts as lost -- see [isWindowLost]. */
+    @Volatile
+    private var windowMissingSince: Long? = null
+
     @Volatile
     private var recoveryAttemptCount: Int = 0
 
@@ -158,6 +164,7 @@ object ResellerWithdrawalInteractiveUssdBridge {
         lockedWindowId = null
         lastLoggedMismatchPackage = null
         windowSearchMissLogged = false
+        windowMissingSince = null
         pinFieldMissLogged = false
         recoveryAttemptCount = 0
         recoveryInProgress = false
@@ -173,6 +180,7 @@ object ResellerWithdrawalInteractiveUssdBridge {
         lockedWindowId = null
         lastLoggedMismatchPackage = null
         windowSearchMissLogged = false
+        windowMissingSince = null
         pinFieldMissLogged = false
         recoveryAttemptCount = 0
         recoveryInProgress = false
@@ -212,7 +220,9 @@ object ResellerWithdrawalInteractiveUssdBridge {
         val runnable = object : Runnable {
             override fun run() {
                 if (!armed || (pendingReplyToInject == null && !cancelRequested)) return
-                ResellerWithdrawalInteractiveUssdAccessibilityService.instance?.scanAndAct()
+                // Only asks for a scan: the scan itself runs on the
+                // service's own worker thread, never on the main thread.
+                ResellerWithdrawalInteractiveUssdAccessibilityService.instance?.requestScan()
                 if (armed && (pendingReplyToInject != null || cancelRequested)) {
                     mainHandler.postDelayed(this, REPLY_POLL_INTERVAL_MS)
                 }
@@ -265,6 +275,17 @@ object ResellerWithdrawalInteractiveUssdBridge {
         if (packageName != null && packageName == locked) return true
         val lockedId = lockedWindowId
         return lockedId != null && windowId != null && windowId == lockedId
+    }
+
+    internal fun noteWindowFound() {
+        windowMissingSince = null
+    }
+
+    /** Records that the locked window wasn't on screen at [nowMs]; returns
+     * whether it now counts as lost (see [isWindowLost]). */
+    internal fun noteWindowMissing(nowMs: Long): Boolean {
+        val since = windowMissingSince ?: nowMs.also { windowMissingSince = it }
+        return isWindowLost(since, nowMs, currentStage(), totalReplies)
     }
 
     internal fun shouldLogWindowSearchMiss(): Boolean {
@@ -365,3 +386,18 @@ object ResellerWithdrawalInteractiveUssdBridge {
  * blind-tapped. */
 internal fun isConfirmTapEligible(stage: Int, totalReplies: Int, alreadyTappedThisStage: Boolean): Boolean =
     stage >= totalReplies && !alreadyTappedThisStage
+
+
+/** How long the locked carrier window may be absent before it counts as
+ * lost. Between two carrier screens (after a reply is sent, before the next
+ * menu is drawn) the dialog is legitimately gone for a moment; treating that
+ * as "lost" pulled the agent app over the USSD flow and raised a false
+ * "Action needed" alert on every step. */
+internal const val WINDOW_LOST_GRACE_MS = 3_000L
+
+/** Pure rule behind [ResellerWithdrawalInteractiveUssdBridge.noteWindowMissing]:
+ * lost only after [WINDOW_LOST_GRACE_MS] of continuous absence, and never once
+ * every reply (PIN included) has been sent -- the dialog closing after the
+ * final receipt is the normal end of the flow, not something to recover. */
+internal fun isWindowLost(missingSinceMs: Long?, nowMs: Long, stage: Int, totalReplies: Int): Boolean =
+    missingSinceMs != null && stage < totalReplies && nowMs - missingSinceMs >= WINDOW_LOST_GRACE_MS

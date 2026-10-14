@@ -6,7 +6,8 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
-import android.os.Looper
+import android.os.HandlerThread
+import android.os.SystemClock
 import android.os.PowerManager
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
@@ -41,6 +42,16 @@ import com.dalab.internet.diagnostics.DiagnosticsLog
  */
 class ResellerWithdrawalInteractiveUssdAccessibilityService : AccessibilityService() {
 
+    /** Every window search and node-tree walk runs here, never on the main
+     * thread: this service lives in the agent app's own process, and walking
+     * the screen on every content-change event (status bar, clock, the app's
+     * own UI) on the main thread is what froze the app ("DALAB Agent isn't
+     * responding") during a Dhameys Plus dial. */
+    private val worker = HandlerThread("dalab-ussd-a11y").apply { start() }
+    private val workerHandler = Handler(worker.looper)
+    @Volatile private var scanPending = false
+    @Volatile private var lastScanAt = 0L
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
@@ -55,10 +66,26 @@ class ResellerWithdrawalInteractiveUssdAccessibilityService : AccessibilityServi
         ) {
             return
         }
-        scanAndAct()
+        // The carrier dialog never belongs to this app; its own UI redraws
+        // must not trigger scans.
+        if (event.packageName?.toString() == packageName) return
+        requestScan()
     }
 
-    internal fun scanAndAct() {
+    /** Schedules one scan on [worker], at most one every [MIN_SCAN_GAP_MS];
+     * a burst of events collapses into a single scan. Safe from any thread. */
+    internal fun requestScan() {
+        if (scanPending) return
+        scanPending = true
+        val wait = (MIN_SCAN_GAP_MS - (SystemClock.uptimeMillis() - lastScanAt)).coerceAtLeast(0L)
+        workerHandler.postDelayed({
+            scanPending = false
+            lastScanAt = SystemClock.uptimeMillis()
+            scanAndAct()
+        }, wait)
+    }
+
+    private fun scanAndAct() {
         val bridge = ResellerWithdrawalInteractiveUssdBridge
         if (!bridge.armed) return
         val root = findRelevantRoot() ?: return
@@ -166,7 +193,9 @@ class ResellerWithdrawalInteractiveUssdAccessibilityService : AccessibilityServi
             @Suppress("DEPRECATION")
             window.recycle()
         }
-        if (found == null) {
+        if (found != null) {
+            bridge.noteWindowFound()
+        } else if (bridge.noteWindowMissing(System.currentTimeMillis())) {
             if (bridge.shouldLogWindowSearchMiss()) {
                 DiagnosticsLog.record(
                     "reseller_withdrawal_interactive_window_search_miss",
@@ -200,7 +229,7 @@ class ResellerWithdrawalInteractiveUssdAccessibilityService : AccessibilityServi
             bridge.recoveryAttemptFinished()
             return
         }
-        Handler(Looper.getMainLooper()).postDelayed({
+        workerHandler.postDelayed({
             if (!bridge.armed) {
                 bridge.recoveryAttemptFinished()
                 return@postDelayed
@@ -336,12 +365,14 @@ class ResellerWithdrawalInteractiveUssdAccessibilityService : AccessibilityServi
     override fun onDestroy() {
         super.onDestroy()
         if (instance === this) instance = null
+        worker.quitSafely()
         ResellerWithdrawalInteractiveUssdBridge.serviceConnected = false
     }
 
     companion object {
         private const val TAG = "RsWdInteractiveA11y"
         private const val WINDOW_LOST_NOTIFICATION_ID = 2002
+        private const val MIN_SCAN_GAP_MS = 150L
 
         @Volatile
         var instance: ResellerWithdrawalInteractiveUssdAccessibilityService? = null
