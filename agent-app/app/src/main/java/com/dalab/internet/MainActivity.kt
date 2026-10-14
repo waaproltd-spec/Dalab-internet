@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import androidx.lifecycle.lifecycleScope
 import android.os.PowerManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -121,6 +122,16 @@ private val SMS_PERMISSIONS = arrayOf(Manifest.permission.RECEIVE_SMS, Manifest.
 
 class MainActivity : ComponentActivity() {
 
+    // Coming back to the foreground is a moment an SMS may have been missed
+    // (e.g. the permission was just granted in Android Settings): re-check
+    // the SMS permission and run a missed-SMS recovery pass.
+    override fun onResume() {
+        super.onResume()
+        lifecycleScope.launch {
+            com.dalab.internet.sms.SmsInboxScanner.recover(applicationContext, "app_foreground")
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // DalabAgentApp.onCreate() already ran all of these once, each isolated
@@ -134,6 +145,7 @@ class MainActivity : ComponentActivity() {
         safely("reseller_session_init") { ResellerSessionManager.init(this) }
         safely("device_identity_init") { DeviceIdentity.init(this) }
         safely("sms_listener_init") { SmsListenerState.init(this) }
+        safely("sms_ledger_init") { com.dalab.internet.sms.SmsFingerprintStore.init(this) }
         safely("pending_queue_init") { PendingActionQueue.init(this) }
         safely("diagnostics_init") { DiagnosticsLog.init(this) }
         safely("heartbeat_stats_init") { HeartbeatStats.init(this) }
@@ -442,7 +454,7 @@ private fun AgentApp() {
             hasSmsPermission = grantedMap.values.all { it }
             if (hasSmsPermission) {
                 SmsListenerState.setListening(true)
-                scope.launch { SmsInboxScanner.scanRecentInboxOnce(context) }
+                scope.launch { SmsInboxScanner.recover(context, "permission_granted", force = true) }
                 screen = nextScreen()
             } else {
                 // If the user denied without checking "don't ask again", Android will

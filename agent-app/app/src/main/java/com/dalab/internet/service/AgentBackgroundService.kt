@@ -33,6 +33,7 @@ import com.dalab.internet.network.RealtimeClient
 import com.dalab.internet.notifications.SupportAlerts
 import com.dalab.internet.queue.QueueDrainer
 import com.dalab.internet.queue.RetryClassifier
+import com.dalab.internet.sms.SmsInboxScanner
 import com.dalab.internet.sms.SmsSenderIdRepository
 import com.dalab.internet.ussd.ExchangeSelfHealSweeper
 import com.dalab.internet.ussd.ResellerWithdrawalSelfHealSweeper
@@ -200,6 +201,9 @@ class AgentBackgroundService : Service() {
         newScope.launch { heartbeatLoop() }
         newScope.launch { simRoutingRefreshLoop() }
         newScope.launch { queueDrainLoop() }
+        // Missed-SMS recovery: once now (covers boot / process restart, when
+        // the agent never opens the app) and every few minutes after.
+        newScope.launch { smsRecoveryLoop() }
         newScope.launch { selfHealSweepLoop() }
         newScope.launch { exchangeSelfHealSweepLoop() }
         newScope.launch { resellerWithdrawalSelfHealSweepLoop() }
@@ -298,7 +302,10 @@ class AgentBackgroundService : Service() {
             override fun onAvailable(network: Network) {
                 scope.launch {
                     if (!SessionManager.isLoggedIn()) return@launch
-                    QueueDrainer.drainAll(applicationContext)
+                    // Pick up anything missed while offline, then send every
+                    // queued SMS right away (no backoff wait).
+                    SmsInboxScanner.recover(applicationContext, "network_restored", force = true)
+                    QueueDrainer.drainAll(applicationContext, force = true)
                 }
                 scope.launch { realtimeClient?.connect() }
                 scope.launch {
@@ -440,6 +447,17 @@ class AgentBackgroundService : Service() {
     // a flap that doesn't cleanly fire onAvailable) — short enough that a
     // queued payment doesn't sit for long, but well above heartbeat's cadence
     // since this is a fallback, not the primary trigger.
+    private suspend fun smsRecoveryLoop() {
+        val currentScope = scope ?: return
+        var first = true
+        while (currentScope.isActive) {
+            if (!first) delay(SMS_RECOVERY_INTERVAL_MS)
+            first = false
+            if (!SessionManager.isLoggedIn()) continue
+            SmsInboxScanner.recover(applicationContext, "background_service")
+        }
+    }
+
     private suspend fun queueDrainLoop() {
         val currentScope = scope ?: return
         while (currentScope.isActive) {
@@ -618,6 +636,8 @@ class AgentBackgroundService : Service() {
         // synchronous upload->match->verify->dial path, which already has
         // zero artificial delay in it.
         private const val QUEUE_DRAIN_INTERVAL_MS = 45_000L
+        // Missed-SMS backstop; the live receiver handles SMS immediately.
+        private const val SMS_RECOVERY_INTERVAL_MS = 5 * 60_000L
         private const val SELF_HEAL_SWEEP_INTERVAL_MS = 60_000L
 
         /** Read from PermissionsStatusScreen to show "Foreground Service: Active/Inactive". */
