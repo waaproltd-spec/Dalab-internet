@@ -199,6 +199,9 @@ data class PromoAdReorderRequest(val orderedIds: List<String>)
 data class DialAttemptStartRequest(val simSlot: Int?, val ussdString: String, val attemptNumber: Int, val confirmUnknownBalance: Boolean? = null)
 
 /** GET /agent/orders/:id/sim-balance-check (utils/simBalanceCheck.ts). */
+/** POST /agent/orders/{id}/ussd-pin -- held in memory for one reply only. */
+data class UssdPinResponse(val pin: String)
+
 data class SimBalanceCheck(
     // "sufficient" | "insufficient" | "unknown" | "outdated"
     val status: String,
@@ -634,8 +637,9 @@ interface ApiService {
     @GET("companies")
     suspend fun getCompanies(): Response<List<Company>>
 
+    // audience=agent: leaves out packages the admin hid from the Agent App.
     @GET("companies/{id}/packages")
-    suspend fun getPackages(@Path("id") companyId: String): Response<List<PackageItem>>
+    suspend fun getPackages(@Path("id") companyId: String, @Query("audience") audience: String = "agent"): Response<List<PackageItem>>
 
     // ---------------- Sales ----------------
 
@@ -777,6 +781,11 @@ interface ApiService {
 
     @GET("agent/sms-formats")
     suspend fun getSmsFormats(): Response<List<SmsFormatDto>>
+
+    // Menu (interactive) package orders: the provider PIN, fetched only at
+    // the PIN step of a dial in progress. Never stored or logged.
+    @POST("agent/orders/{id}/ussd-pin")
+    suspend fun getUssdPin(@Path("id") id: String): Response<UssdPinResponse>
 
     @GET("agent/orders/{id}/sim-balance-check")
     suspend fun getSimBalanceCheck(@Path("id") id: String, @Query("simSlot") simSlot: Int? = null): Response<SimBalanceCheck>

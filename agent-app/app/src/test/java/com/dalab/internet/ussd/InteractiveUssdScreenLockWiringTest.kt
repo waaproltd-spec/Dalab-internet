@@ -39,6 +39,7 @@ class InteractiveUssdScreenLockWiringTest {
             "ExchangeUssdOrchestrator.kt",                      // Money Exchange/eBadal payout
             "WalletLookupUssdOrchestrator.kt",                  // Wallet Name Lookup, read-only
             "ResellerWithdrawalInteractiveUssdOrchestrator.kt", // Reseller Withdraw, interactive
+            "PackageInteractiveUssd.kt",                        // Menu packages (Somtel Dhameys Plus)
         )
         for (fileName in interactiveOrchestrators) {
             val source = readSource(fileName)

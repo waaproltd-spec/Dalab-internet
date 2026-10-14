@@ -47,7 +47,15 @@ sealed class UssdDialogEvent {
      * submitted (Step 3) — before this, it was silently treated the same
      * as the pre-PIN case, sharing its dedup tracking and producing no
      * diagnostics of its own. */
-    data class ConfirmationAdvanced(val stage: ConfirmationStage) : UssdDialogEvent()
+    data class ConfirmationAdvanced(
+        val stage: ConfirmationStage,
+        // The text of the screen that was auto-tapped, when the emitter has
+        // it. A carrier's final receipt ("...waxaad ku guuleysatay...") is
+        // an OK-only screen that gets auto-tapped, so a flow that must
+        // classify that receipt (PackageInteractiveUssdRunner) reads it
+        // here. Empty by default -- every existing emitter is unchanged.
+        val text: String = "",
+    ) : UssdDialogEvent()
 }
 
 /** Which real step a [UssdDialogEvent.ConfirmationAdvanced] screen belongs

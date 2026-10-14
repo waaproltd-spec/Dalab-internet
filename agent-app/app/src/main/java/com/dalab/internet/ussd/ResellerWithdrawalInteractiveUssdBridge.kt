@@ -67,6 +67,13 @@ object ResellerWithdrawalInteractiveUssdBridge {
     @Volatile
     private var pendingReplyToInject: String? = null
 
+    /** Set by [armDialogCancellation]: tap the current dialog's Cancel
+     * button (never a positive one). Used by PackageInteractiveUssdRunner
+     * to back out of a menu that doesn't match what it expects, before the
+     * PIN is ever entered. Never set by Reseller Withdraw itself. */
+    @Volatile
+    private var cancelRequested: Boolean = false
+
     /** How many replies have been successfully submitted so far this
      * attempt — the generalized stage discriminator [shouldAutoConfirm]
      * uses to dedupe an auto-tapped confirm screen, replacing Exchange's
@@ -142,6 +149,7 @@ object ResellerWithdrawalInteractiveUssdBridge {
     fun arm(replyCount: Int) {
         events = Channel(capacity = Channel.CONFLATED)
         pendingReplyToInject = null
+        cancelRequested = false
         repliesSubmittedCount = 0
         totalReplies = replyCount
         lastAutoConfirmTextByStage.clear()
@@ -160,6 +168,7 @@ object ResellerWithdrawalInteractiveUssdBridge {
     fun disarm() {
         armed = false
         pendingReplyToInject = null
+        cancelRequested = false
         lockedPackageName = null
         lockedWindowId = null
         lastLoggedMismatchPackage = null
@@ -181,13 +190,30 @@ object ResellerWithdrawalInteractiveUssdBridge {
         startReplyPolling()
     }
 
+    /** Asks the service to tap the current dialog's Cancel button (emits
+     * [UssdDialogEvent.DialogCancelled] once done). */
+    fun armDialogCancellation() {
+        cancelRequested = true
+        startReplyPolling()
+    }
+
+    internal fun consumeCancelRequest(): Boolean {
+        val requested = cancelRequested
+        cancelRequested = false
+        return requested
+    }
+
+    internal fun restoreCancelRequest() {
+        cancelRequested = true
+    }
+
     private fun startReplyPolling() {
         stopReplyPolling()
         val runnable = object : Runnable {
             override fun run() {
-                if (!armed || pendingReplyToInject == null) return
+                if (!armed || (pendingReplyToInject == null && !cancelRequested)) return
                 ResellerWithdrawalInteractiveUssdAccessibilityService.instance?.scanAndAct()
-                if (armed && pendingReplyToInject != null) {
+                if (armed && (pendingReplyToInject != null || cancelRequested)) {
                     mainHandler.postDelayed(this, REPLY_POLL_INTERVAL_MS)
                 }
             }

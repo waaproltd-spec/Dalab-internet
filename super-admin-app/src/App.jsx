@@ -166,6 +166,11 @@ const DalabAdminApi = {
   createPackage: (body) => dalabAdminApiRequest("/admin/packages", { method: "POST", body }),
   updatePackage: (id, body) => dalabAdminApiRequest(`/admin/packages/${id}`, { method: "PUT", body }),
   deletePackage: (id) => dalabAdminApiRequest(`/admin/packages/${id}`, { method: "DELETE" }),
+  deletePackagePermanent: (id) => dalabAdminApiRequest(`/admin/packages/${id}/permanent`, { method: "DELETE" }),
+  listInteractiveServices: () => dalabAdminApiRequest("/admin/interactive-services"),
+  getInteractiveService: (id) => dalabAdminApiRequest(`/admin/interactive-services/${id}`),
+  updateInteractiveService: (id, body) => dalabAdminApiRequest(`/admin/interactive-services/${id}`, { method: "PUT", body }),
+  setInteractiveServiceActive: (id, active) => dalabAdminApiRequest(`/admin/interactive-services/${id}/active`, { method: "PUT", body: { active } }),
   getPackagesMissingTemplate: () => dalabAdminApiRequest("/admin/packages/missing-template"),
   // One icon per package, shown in the Customer App's package list --
   // uploaded as a data URI (base64), same as Promo Images/Shop products.
@@ -943,6 +948,7 @@ const NAV = [
   { id: "provider-numbers", label: "Provider Numbers", icon: Radio, permission: "companies.manage" },
   { id: "payment-wallets", label: "Payment Wallets", icon: CreditCard, superAdminOnly: true },
   { id: "packages", label: "Packages & Pricing", icon: Package, permission: "packages.manage" },
+  { id: "dhameys-plus", label: "Dhameys Plus", icon: Radio, permission: "packages.manage" },
   { id: "categories", label: "Categories", icon: Tags, permission: "categories.manage" },
   { id: "orders", label: "Orders", icon: ShoppingCart, permission: "orders.manage" },
   { id: "offline", label: "Offline (Rukumo)", icon: WifiOff, permission: "orders.manage" },
@@ -15642,6 +15648,448 @@ const usd = (v) => {
 };
 const profitColor = (v) => (Number(v) < 0 ? "#C81E2C" : GREEN);
 
+// ---------------- Dhameys Plus (menu USSD services) ----------------
+// A menu-driven USSD service (Somtel Dhameys Plus: *101# > 4 > package >
+// 2 > number > PIN) and its packages. Packages are managed here with the
+// normal package routes (packages.manage); the USSD menu settings are
+// Super-Admin-only, like every USSD template (backend: interactiveServices
+// .routes.ts). The backend validates everything again on save.
+
+const MENU_STEP_REPLIES = [
+  { value: "{packageCode}", label: "Package option" },
+  { value: "{number}", label: "Receiver number" },
+  { value: "{pin}", label: "Provider PIN" },
+];
+
+const PACKAGE_FILTERS = [
+  { value: "all", label: "All packages" },
+  { value: "active", label: "Active" },
+  { value: "inactive", label: "Inactive" },
+  { value: "unavailable", label: "Temporarily unavailable" },
+  { value: "hidden", label: "Hidden from an app" },
+];
+
+const PACKAGE_SORTS = [
+  { value: "order", label: "Display order" },
+  { value: "price", label: "Price" },
+  { value: "name", label: "Name" },
+  { value: "updated", label: "Last modified" },
+];
+
+function emptyMenuPackage(service) {
+  return {
+    name: "", description: "", price: "", validity: "", code: "",
+    sortOrder: (service?.packages?.length || 0) + 1,
+    visibleCustomerApp: true, visibleAgentApp: true, ordersEnabled: true, active: true,
+  };
+}
+
+function MenuUssdServicesSection({ admin }) {
+  const isSuper = admin?.role === "super_admin";
+  const canManage = hasPermission(admin, "packages.manage");
+  const [services, setServices] = useState([]);
+  const [serviceId, setServiceId] = useState("");
+  const [service, setService] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [sort, setSort] = useState("order");
+  const [editing, setEditing] = useState(null); // { id|null, form }
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState("");
+  const [settings, setSettings] = useState(null); // editable copy of the USSD settings
+  const [settingsError, setSettingsError] = useState("");
+
+  const loadServices = async () => {
+    if (!DALAB_API_ENABLED) return;
+    try {
+      const list = await DalabAdminApi.listInteractiveServices();
+      setServices(list);
+      if (!serviceId && list.length) setServiceId(list[0].id);
+    } catch (err) {
+      setError(err.message || "Could not load the menu USSD services.");
+    }
+  };
+  const loadService = async (id = serviceId) => {
+    if (!DALAB_API_ENABLED || !id) return;
+    setLoading(true);
+    setError("");
+    try {
+      const res = await DalabAdminApi.getInteractiveService(id);
+      setService(res);
+      setSettings({
+        serviceName: res.serviceName,
+        initialDial: res.ussdCode,
+        replySteps: (res.replySteps || []).map((s) => ({ ...s, expectText: (s.expect || []).join(", ") })),
+        successText: (res.successKeywords || []).join(", "),
+      });
+    } catch (err) {
+      setError(err.message || "Could not load this service.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { loadServices(); }, []);
+  useEffect(() => { loadService(serviceId); }, [serviceId]);
+
+  const flash = (msg) => { setNotice(msg); setTimeout(() => setNotice(""), 3500); };
+
+  const packages = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    let list = (service?.packages || []).filter((p) => {
+      if (q && !`${p.name} ${p.description || ""} ${p.validity || ""} ${p.code || ""}`.toLowerCase().includes(q)) return false;
+      if (filter === "active") return p.active;
+      if (filter === "inactive") return !p.active;
+      if (filter === "unavailable") return p.active && !p.ordersEnabled;
+      if (filter === "hidden") return !p.visibleCustomerApp || !p.visibleAgentApp;
+      return true;
+    });
+    const by = {
+      order: (a, b) => (a.sortOrder - b.sortOrder) || (Number(a.price) - Number(b.price)),
+      price: (a, b) => Number(a.price) - Number(b.price),
+      name: (a, b) => a.name.localeCompare(b.name),
+      updated: (a, b) => new Date(b.updatedAt) - new Date(a.updatedAt),
+    }[sort];
+    return [...list].sort(by);
+  }, [service, search, filter, sort]);
+
+  const serviceActive = service?.category?.status === "enabled";
+  const toggleService = async () => {
+    if (!service) return;
+    const next = !serviceActive;
+    if (!next && !window.confirm(`Turn off ${service.serviceName}? Customers and agents can't order any of its packages until you turn it back on. Existing orders are not affected.`)) return;
+    try {
+      await DalabAdminApi.setInteractiveServiceActive(service.id, next);
+      flash(next ? "Service turned on." : "Service turned off.");
+      loadService();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const savePackage = async () => {
+    const f = editing.form;
+    setFormError("");
+    if (!f.name.trim()) return setFormError("Enter the package name.");
+    if (!(Number(f.price) > 0)) return setFormError("Enter a price greater than 0.");
+    if (!/^[0-9]{1,2}$/.test(String(f.code).trim())) return setFormError("Menu option must be the package's number on the Somtel menu (for example 3).");
+    const body = {
+      name: f.name.trim(), description: f.description, price: Number(f.price), providerAmount: Number(f.price),
+      validity: f.validity, code: String(f.code).trim(), sortOrder: Number(f.sortOrder) || 0,
+      visibleCustomerApp: f.visibleCustomerApp, visibleAgentApp: f.visibleAgentApp, ordersEnabled: f.ordersEnabled, active: f.active,
+    };
+    setSaving(true);
+    try {
+      if (editing.id) {
+        await DalabAdminApi.updatePackage(editing.id, body);
+      } else {
+        await DalabAdminApi.createPackage({
+          ...body, companyId: service.companyId, categoryId: service.category?.slug, ussdTemplateId: service.id, mb: 0, minutes: 0, sms: 0,
+        });
+      }
+      setEditing(null);
+      flash(editing.id ? "Package saved." : "Package added.");
+      loadService();
+    } catch (err) {
+      setFormError(err.message || "Could not save the package.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const setActive = async (p, active) => {
+    try {
+      if (active) await DalabAdminApi.updatePackage(p.id, { active: true });
+      else await DalabAdminApi.deletePackage(p.id); // soft deactivate
+      flash(active ? `${p.name} restored.` : `${p.name} deactivated.`);
+      loadService();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const deleteForGood = async (p) => {
+    if (!window.confirm(`Delete "${p.name}" permanently? This is only allowed because it was never ordered.`)) return;
+    try {
+      await DalabAdminApi.deletePackagePermanent(p.id);
+      flash(`${p.name} deleted.`);
+      loadService();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const updateStep = (i, patch) => setSettings((s) => ({ ...s, replySteps: s.replySteps.map((st, j) => (j === i ? { ...st, ...patch } : st)) }));
+  const moveStep = (i, dir) => setSettings((s) => {
+    const steps = [...s.replySteps];
+    const j = i + dir;
+    if (j < 0 || j >= steps.length) return s;
+    [steps[i], steps[j]] = [steps[j], steps[i]];
+    return { ...s, replySteps: steps };
+  });
+  const saveSettings = async () => {
+    setSettingsError("");
+    const replySteps = settings.replySteps.map((s) => ({
+      reply: String(s.reply || "").trim(),
+      expect: String(s.expectText || "").split(",").map((t) => t.trim()).filter(Boolean),
+      checkMenuPrice: Boolean(s.checkMenuPrice), checkAmount: Boolean(s.checkAmount), checkNumber: Boolean(s.checkNumber),
+    }));
+    try {
+      await DalabAdminApi.updateInteractiveService(service.id, {
+        serviceName: settings.serviceName,
+        initialDial: settings.initialDial,
+        replySteps,
+        successKeywords: settings.successText.split(",").map((t) => t.trim()).filter(Boolean),
+      });
+      flash("USSD settings saved.");
+      loadService();
+    } catch (err) {
+      setSettingsError(err.message || "Could not save the USSD settings.");
+    }
+  };
+
+  const th = { textAlign: "left", padding: "9px 10px", fontSize: 11, color: MUTE, fontWeight: 700, whiteSpace: "nowrap" };
+  const td = { padding: "9px 10px", fontSize: 12.5, color: INK, verticalAlign: "top" };
+  const check = (label, value, onChange, disabled) => (
+    <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: INK, cursor: disabled ? "default" : "pointer" }}>
+      <input type="checkbox" checked={Boolean(value)} disabled={disabled} onChange={(e) => onChange(e.target.checked)} /> {label}
+    </label>
+  );
+
+  if (!DALAB_API_ENABLED) return <Card style={{ padding: 18 }}>Connect the dashboard to the backend to manage Dhameys Plus.</Card>;
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 14 }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>{service?.serviceName || "Dhameys Plus"}</div>
+          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>
+            {service ? `${service.companyName} · menu USSD ${service.ussdCode}` : "Menu USSD services and their packages"}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          {services.length > 1 && (
+            <select style={{ ...inputStyle, width: 220, padding: "8px 10px" }} value={serviceId} onChange={(e) => setServiceId(e.target.value)}>
+              {services.map((s) => <option key={s.id} value={s.id}>{s.companyName} · {s.serviceName}</option>)}
+            </select>
+          )}
+          {service && <Badge tone={serviceActive ? "green" : "red"}>{serviceActive ? "Service on" : "Service off"}</Badge>}
+          {service && canManage && (
+            <Button variant={serviceActive ? "danger" : "primary"} icon={Power} onClick={toggleService}>{serviceActive ? "Turn off" : "Turn on"}</Button>
+          )}
+          <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={() => loadService()} disabled={loading}>Refresh</Button>
+        </div>
+      </div>
+
+      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+      {notice && <div style={{ color: GREEN, fontSize: 12.5, marginBottom: 12, fontWeight: 700 }}>{notice}</div>}
+      {!loading && services.length === 0 && !error && (
+        <Card style={{ padding: 18 }}>No menu USSD service exists yet. It is created by the backend update (migration 118) when the Somtel company exists.</Card>
+      )}
+
+      {service && !service.pinIsSet && (
+        <Card style={{ padding: 14, marginBottom: 14, background: "#FFF6E3", border: "1px solid #F5DFB0" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5, color: "#7A5200" }}>
+            <AlertTriangle size={16} /> {service.companyName} has no PIN set yet — orders can't be delivered. Set it in Device &amp; USSD.
+          </div>
+        </Card>
+      )}
+      {service && (
+        <Card style={{ padding: 14, marginBottom: 14, background: "#EEF3FF", border: "1px solid #D6E0FF" }}>
+          <div style={{ fontSize: 12.5, color: SLATE, lineHeight: 1.5 }}>
+            Packages are delivered by the Agent App stepping through the Somtel menu. Before turning packages on, make sure every agent phone that
+            handles {service.companyName} runs the latest Agent App and has <b>Dalab Agent</b> enabled under Settings &gt; Accessibility.
+            The Agent App checks each menu screen (the package price, then the amount and number on the confirmation) and cancels before the PIN if anything doesn't match.
+          </div>
+        </Card>
+      )}
+
+      {service && (
+        <Card style={{ padding: 0, overflow: "hidden", marginBottom: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "12px 14px", flexWrap: "wrap" }}>
+            <div style={{ fontWeight: 800, fontSize: 14, color: INK }}>Packages ({packages.length} of {service.packages.length})</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <div style={{ position: "relative" }}>
+                <Search size={14} color={MUTE} style={{ position: "absolute", left: 10, top: 11 }} />
+                <input style={{ ...inputStyle, width: 200, padding: "8px 10px 8px 30px" }} placeholder="Search packages..." value={search} onChange={(e) => setSearch(e.target.value)} />
+              </div>
+              <select style={{ ...inputStyle, width: 190, padding: "8px 10px" }} value={filter} onChange={(e) => setFilter(e.target.value)}>
+                {PACKAGE_FILTERS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+              <select style={{ ...inputStyle, width: 150, padding: "8px 10px" }} value={sort} onChange={(e) => setSort(e.target.value)}>
+                {PACKAGE_SORTS.map((o) => <option key={o.value} value={o.value}>Sort: {o.label}</option>)}
+              </select>
+              {canManage && (
+                <Button icon={Plus} onClick={() => { setFormError(""); setEditing({ id: null, form: emptyMenuPackage(service) }); }} disabled={!service.category}>Add package</Button>
+              )}
+            </div>
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ background: "#FAFBFF" }}>
+                  {["Order", "Package", "Menu option", "Price", "Validity", "Status", "Orders", "Created", "Last modified", ""].map((h) => <th key={h} style={th}>{h}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {packages.map((p) => (
+                  <tr key={p.id} style={{ borderTop: `1px solid ${BORDER}`, opacity: p.active ? 1 : 0.6 }}>
+                    <td style={{ ...td, color: MUTE }}>{p.sortOrder}</td>
+                    <td style={td}>
+                      <div style={{ fontWeight: 700 }}>{p.name}</div>
+                      {p.description && <div style={{ fontSize: 11, color: MUTE }}>{p.description}</div>}
+                    </td>
+                    <td style={{ ...td, fontFamily: "monospace" }}>{p.code || "—"}</td>
+                    <td style={{ ...td, fontWeight: 700, color: GREEN }}>{usd(p.price)}</td>
+                    <td style={td}>{p.validity || "—"}</td>
+                    <td style={td}>
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        <Badge tone={p.active ? "green" : "gray"}>{p.active ? "Active" : "Inactive"}</Badge>
+                        {p.active && !p.ordersEnabled && <Badge tone="amber">Unavailable</Badge>}
+                        {!p.visibleCustomerApp && <Badge tone="blue">Hidden: Customer App</Badge>}
+                        {!p.visibleAgentApp && <Badge tone="blue">Hidden: Agent App</Badge>}
+                      </div>
+                    </td>
+                    <td style={td}>{p.orderCount}</td>
+                    <td style={{ ...td, whiteSpace: "nowrap", color: SLATE }}>{formatDateTime(p.createdAt)}</td>
+                    <td style={{ ...td, whiteSpace: "nowrap", color: SLATE }}>{formatDateTime(p.updatedAt)}</td>
+                    <td style={{ ...td, whiteSpace: "nowrap" }}>
+                      {canManage && (
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <Button variant="ghost" icon={Pencil} onClick={() => {
+                            setFormError("");
+                            setEditing({ id: p.id, form: {
+                              name: p.name, description: p.description || "", price: p.price, validity: p.validity || "", code: p.code || "",
+                              sortOrder: p.sortOrder, visibleCustomerApp: p.visibleCustomerApp, visibleAgentApp: p.visibleAgentApp, ordersEnabled: p.ordersEnabled, active: p.active,
+                            } });
+                          }}>Edit</Button>
+                          {p.active
+                            ? <Button variant="danger" icon={Power} onClick={() => setActive(p, false)}>Deactivate</Button>
+                            : <Button variant="subtle" icon={RotateCcw} onClick={() => setActive(p, true)}>Restore</Button>}
+                          {p.orderCount === 0 && <Button variant="danger" icon={Trash2} onClick={() => deleteForGood(p)}>Delete</Button>}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {packages.length === 0 && (
+                  <tr><td colSpan={10} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No packages match.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {service && settings && (
+        <Card style={{ padding: 18 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 6 }}>
+            <div style={{ fontWeight: 800, fontSize: 14, color: INK }}>USSD menu settings</div>
+            {!isSuper && <Badge tone="gray">Super Admin only</Badge>}
+          </div>
+          <div style={{ fontSize: 12, color: MUTE, marginBottom: 14 }}>
+            The first code is dialed, then each step's reply is sent in order. "Screen must show" words are checked on the carrier's screen before that reply.
+            The PIN must be the last step and must check the amount and number; the package step must check the menu price.
+          </div>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+            <Field label="Service name"><input style={{ ...inputStyle, width: 220 }} value={settings.serviceName} disabled={!isSuper} onChange={(e) => setSettings({ ...settings, serviceName: e.target.value })} /></Field>
+            <Field label="First USSD code"><input style={{ ...inputStyle, width: 140, fontFamily: "monospace" }} value={settings.initialDial} disabled={!isSuper} onChange={(e) => setSettings({ ...settings, initialDial: e.target.value })} /></Field>
+            <Field label="Success words (comma separated)"><input style={{ ...inputStyle, width: 320 }} value={settings.successText} disabled={!isSuper} onChange={(e) => setSettings({ ...settings, successText: e.target.value })} /></Field>
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ background: "#FAFBFF" }}>
+                  {["Step", "Reply", "Screen must show", "Checks", ""].map((h) => <th key={h} style={th}>{h}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {settings.replySteps.map((s, i) => {
+                  const isToken = MENU_STEP_REPLIES.some((r) => r.value === s.reply);
+                  return (
+                    <tr key={i} style={{ borderTop: `1px solid ${BORDER}` }}>
+                      <td style={{ ...td, color: MUTE }}>{i + 1}</td>
+                      <td style={td}>
+                        <select style={{ ...inputStyle, width: 170, padding: "6px 8px" }} disabled={!isSuper} value={isToken ? s.reply : "menu"} onChange={(e) => updateStep(i, { reply: e.target.value === "menu" ? "1" : e.target.value })}>
+                          <option value="menu">Menu number</option>
+                          {MENU_STEP_REPLIES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+                        </select>
+                        {!isToken && <input style={{ ...inputStyle, width: 60, padding: "6px 8px", marginLeft: 6 }} disabled={!isSuper} value={s.reply} onChange={(e) => updateStep(i, { reply: e.target.value })} />}
+                      </td>
+                      <td style={td}><input style={{ ...inputStyle, width: 200, padding: "6px 8px" }} disabled={!isSuper} value={s.expectText} placeholder="e.g. Dhameys" onChange={(e) => updateStep(i, { expectText: e.target.value })} /></td>
+                      <td style={td}>
+                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                          {s.reply === "{packageCode}" && check("Menu price", s.checkMenuPrice, (v) => updateStep(i, { checkMenuPrice: v }), !isSuper)}
+                          {check("Amount", s.checkAmount, (v) => updateStep(i, { checkAmount: v }), !isSuper)}
+                          {check("Number", s.checkNumber, (v) => updateStep(i, { checkNumber: v }), !isSuper)}
+                        </div>
+                      </td>
+                      <td style={{ ...td, whiteSpace: "nowrap" }}>
+                        {isSuper && (
+                          <div style={{ display: "flex", gap: 4 }}>
+                            <Button variant="ghost" onClick={() => moveStep(i, -1)} disabled={i === 0}>↑</Button>
+                            <Button variant="ghost" onClick={() => moveStep(i, 1)} disabled={i === settings.replySteps.length - 1}>↓</Button>
+                            <Button variant="danger" icon={Trash2} onClick={() => setSettings((st) => ({ ...st, replySteps: st.replySteps.filter((_, j) => j !== i) }))} />
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {settingsError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginTop: 10 }}>{settingsError}</div>}
+          {isSuper && (
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <Button variant="ghost" icon={Plus} onClick={() => setSettings((st) => ({ ...st, replySteps: [...st.replySteps, { reply: "1", expectText: "" }] }))}>Add step</Button>
+              <Button icon={Check} onClick={saveSettings}>Save USSD settings</Button>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {editing && (
+        <Modal title={editing.id ? "Edit package" : `Add ${service?.serviceName || ""} package`} onClose={() => setEditing(null)} width={520}>
+          {(() => {
+            const f = editing.form;
+            const set = (patch) => setEditing((e) => ({ ...e, form: { ...e.form, ...patch } }));
+            return (
+              <div style={{ display: "grid", gap: 12 }}>
+                <Field label="Package name"><input style={inputStyle} value={f.name} onChange={(e) => set({ name: e.target.value })} placeholder="Dhameys Plus — Daily" /></Field>
+                <Field label="Description"><input style={inputStyle} value={f.description} onChange={(e) => set({ description: e.target.value })} placeholder="Unlimited data & calls for 24 hours" /></Field>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <Field label="Price ($)"><input style={inputStyle} type="number" step="0.01" min="0" value={f.price} onChange={(e) => set({ price: e.target.value })} /></Field>
+                  <Field label="Validity"><input style={inputStyle} value={f.validity} onChange={(e) => set({ validity: e.target.value })} placeholder="24 hours" /></Field>
+                  <Field label="Menu option (number on the Somtel menu)"><input style={{ ...inputStyle, fontFamily: "monospace" }} value={f.code} onChange={(e) => set({ code: e.target.value })} placeholder="3" /></Field>
+                  <Field label="Display order"><input style={inputStyle} type="number" min="0" value={f.sortOrder} onChange={(e) => set({ sortOrder: e.target.value })} /></Field>
+                </div>
+                <div style={{ display: "grid", gap: 8 }}>
+                  {check("Show in the Customer App", f.visibleCustomerApp, (v) => set({ visibleCustomerApp: v }))}
+                  {check("Show in the Agent App", f.visibleAgentApp, (v) => set({ visibleAgentApp: v }))}
+                  {check("Accept new orders (off = temporarily unavailable)", f.ordersEnabled, (v) => set({ ordersEnabled: v }))}
+                  {check("Active", f.active, (v) => set({ active: v }))}
+                </div>
+                <div style={{ fontSize: 11.5, color: MUTE }}>
+                  The price is what customers pay and what the Agent App expects to see on the Somtel menu and confirmation — keep it equal to Somtel's own price.
+                  Changing it never changes orders already placed.
+                </div>
+                {formError && <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{formError}</div>}
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                  <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
+                  <Button icon={saving ? Loader2 : Check} spin={saving} onClick={savePackage} disabled={saving}>{editing.id ? "Save" : "Add package"}</Button>
+                </div>
+              </div>
+            );
+          })()}
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 function CompanyAccountsSection() {
   const [period, setPeriod] = useState("today");
   const [customFrom, setCustomFrom] = useState("");
@@ -16642,6 +17090,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "overview" && <Overview companies={companies} orders={orders} />}
           {active === "financial-overview" && <FinancialOverview admin={admin} />}
           {active === "company-accounts" && <CompanyAccountsSection />}
+          {active === "dhameys-plus" && <MenuUssdServicesSection admin={admin} />}
           {active === "balance-dashboard" && <BalanceDashboard admin={admin} />}
           {active === "companies" && <Companies companies={companies} setCompanies={setCompanies} refreshCompanies={refreshCompanies} admin={admin} />}
           {active === "payment-numbers" && <PaymentNumbers companies={companies} setCompanies={setCompanies} refreshCompanies={refreshCompanies} admin={admin} />}

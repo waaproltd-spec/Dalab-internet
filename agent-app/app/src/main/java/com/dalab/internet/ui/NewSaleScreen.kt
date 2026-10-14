@@ -71,7 +71,8 @@ fun NewSaleScreen(onBack: () -> Unit) {
         paymentMethod = company?.gateway ?: ""
         if (company != null) {
             try {
-                packages = ApiClient.service.getPackages(company.id).body().orEmpty()
+                // Temporarily unavailable packages can't be sold (the server refuses them too).
+                packages = ApiClient.service.getPackages(company.id).body().orEmpty().filter { it.ordersEnabled }
             } catch (_: Exception) {
                 packages = emptyList()
             }

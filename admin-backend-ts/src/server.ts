@@ -53,6 +53,7 @@ import { sendJson } from "./utils/camelCase.js";
 import { customerSuspensionMiddleware } from "./auth/middleware.js";
 import { deviceActivationRouter, agentDeviceActivationMiddleware } from "./routes/deviceActivation.routes.js";
 import { smsFormatsRouter } from "./routes/smsFormats.routes.js";
+import { interactiveServicesRouter } from "./routes/interactiveServices.routes.js";
 
 // Express 4 route handlers here are plain `async (req, res) => {...}` with no
 // wrapper — a promise rejection inside one (e.g. an uncaught DB error) never
@@ -275,6 +276,7 @@ app.use(usersRouter);
 app.use(companiesRouter);
 app.use(companyPaymentMethodsRouter);
 app.use(packagesRouter);
+app.use(interactiveServicesRouter);
 app.use(categoriesRouter);
 app.use(ordersRouter);
 app.use(customersRouter);
