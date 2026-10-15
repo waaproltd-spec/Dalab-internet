@@ -453,6 +453,7 @@ const DalabAdminApi = {
   verifyExchangeOrder: (id) => dalabAdminApiRequest(`/admin/exchange/orders/${id}/verify`, { method: "POST" }),
   reverseExchangeOrder: (id) => dalabAdminApiRequest(`/admin/exchange/orders/${id}/reverse`, { method: "POST" }),
   retryExchangePayout: (id) => dalabAdminApiRequest(`/admin/exchange/orders/${id}/retry-payout`, { method: "POST" }),
+  markExchangePaid: (id) => dalabAdminApiRequest(`/admin/exchange/orders/${id}/mark-paid`, { method: "POST" }),
   // Which real SMS sender ID(s) each provider network (Hormuud EVC Plus,
   // Somtel eDahab, Somnet EVC Plus, ...) is allowed to send from — the Agent
   // App's PaymentSmsParsers/ExchangePayoutSentParsers fetch and cache this
@@ -10924,7 +10925,14 @@ function MoneyExchangePanel({ admin }) {
   // go through) must never be a dead end — retryExchangePayout puts it back
   // in_progress so the agent can safely dial again, and reverseExchangeOrder
   // (below) is the alternative when the admin decides to refund instead.
+  // An attempt that got past step 1 had the PIN entered: the money may
+  // already be with the customer even though the phone couldn't confirm it.
+  const payoutReachedPin = (d) => (d?.dialAttempts || []).some((a) => a.completedAt || a.status === "step1_success");
   const retryPayout = async () => {
+    if (payoutReachedPin(detail) && !window.confirm(
+      "The PIN was already entered on an earlier attempt, so this money may already have been sent.\n\n" +
+      "Check the payout SIM's SMS first. If it shows the transfer, use \"Money was sent\" instead — retrying would pay the customer twice.\n\nRetry the payout anyway?"
+    )) return;
     setDetailActing(true);
     setDetailActionError("");
     try {
@@ -10937,6 +10945,23 @@ function MoneyExchangePanel({ admin }) {
       fetchOrders();
     } catch (err) {
       setDetailActionError(err.message || "Could not retry this payout.");
+    } finally {
+      setDetailActing(false);
+    }
+  };
+  const markPaid = async () => {
+    if (!window.confirm(
+      `Only do this if the payout SIM's SMS shows $${Number(detail.amountReceived).toFixed(2)} was sent to ${detail.receiverPhone}.\n\nMark this exchange Completed?`
+    )) return;
+    setDetailActing(true);
+    setDetailActionError("");
+    try {
+      await DalabAdminApi.markExchangePaid(detailId);
+      setDetail(await DalabAdminApi.getExchangeOrder(detailId));
+      fetchPending();
+      fetchOrders();
+    } catch (err) {
+      setDetailActionError(err.message || "Could not mark this exchange as paid.");
     } finally {
       setDetailActing(false);
     }
@@ -11340,8 +11365,22 @@ function MoneyExchangePanel({ admin }) {
                 ))}
               </div>
               <div style={{ fontSize: 11, color: MUTE, fontStyle: "italic" }}>The payout PIN is never shown here or anywhere in the dashboard.</div>
+              {detail.status === "failed" && payoutReachedPin(detail) && (
+                <div style={{ display: "flex", gap: 8, alignItems: "flex-start", background: "var(--c-fff4d9)", color: "var(--c-92400e)", borderRadius: 10, padding: "10px 12px", fontSize: 12.5, lineHeight: 1.45 }}>
+                  <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+                  <div>
+                    <b>Check before retrying.</b> The PIN was entered, so the money may already have been sent. Look at the payout SIM's SMS for a
+                    ${Number(detail.amountReceived).toFixed(2)} transfer to {detail.receiverPhone}. If it's there, press <b>Money was sent</b>; Retry would pay twice.
+                  </div>
+                </div>
+              )}
               {canManage && ["pending", "in_progress", "failed"].includes(detail.status) && (
-                <div style={{ display: "flex", gap: 8, paddingTop: 10, borderTop: `1px solid ${BORDER}` }}>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 10, borderTop: `1px solid ${BORDER}` }}>
+                  {detail.status === "failed" && payoutReachedPin(detail) && (
+                    <Button icon={CheckCircle2} onClick={markPaid} disabled={detailActing} style={{ background: GREEN }}>
+                      Money was sent
+                    </Button>
+                  )}
                   {detail.status === "failed" && (
                     <Button icon={RotateCcw} onClick={retryPayout} disabled={detailActing}>
                       {detailActing ? "Retrying…" : "Retry Payout"}
@@ -17334,7 +17373,11 @@ function AdminDashboardShell({ admin, onLogout }) {
   // Phones and tablets: the sidebar is a drawer behind the menu button and
   // never covers the page until opened. Laptops and up: a fixed sidebar that
   // can be collapsed to icons (remembered in this browser).
-  const isMobile = useIsMobile(900);
+  // A touch screen under 1200px also gets the drawer: a phone browser in
+  // "Desktop site" mode reports a ~980px window but is still a phone.
+  const isNarrow = useIsMobile(900);
+  const isTouchTablet = useIsMobile(1200) && typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches;
+  const isMobile = isNarrow || isTouchTablet;
   const [drawerOpen, setDrawerOpen] = useState(false);
   const showLabels = isMobile || !collapsed;
   const lang = useLang();
