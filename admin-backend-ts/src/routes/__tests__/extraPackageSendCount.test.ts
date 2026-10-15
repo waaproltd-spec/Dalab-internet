@@ -96,7 +96,10 @@ async function deliver(orderId: string, attemptNumber: number, status = "success
   const started = await startAttempt(orderId, attemptNumber);
   assert.ok(started.status === 201 || started.status === 200, `start attempt ${attemptNumber}: ${started.status}`);
   const { id } = (await started.json()) as { id: string };
-  const reported = await call("PUT", `/agent/dial-attempts/${id}`, agentToken, { status, isFinalAttempt });
+  // A real carrier failure carries its text; a bare "failed" is recorded as
+  // result-unknown (effectiveDialStatus in ussd.routes.ts).
+  const responseMessage = status === "failed" ? "USSD failure code: -1" : null;
+  const reported = await call("PUT", `/agent/dial-attempts/${id}`, agentToken, { status, isFinalAttempt, responseMessage });
   assert.equal(reported.status, 200);
 }
 

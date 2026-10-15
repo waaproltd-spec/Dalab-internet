@@ -114,6 +114,7 @@ before(async () => {
   await query(`DELETE FROM service_categories WHERE id=$1`, [CATEGORY_ID]);
   await query(`DELETE FROM companies WHERE id=$1`, [COMPANY_ID]);
   await query(`DELETE FROM customers WHERE id=$1 OR phone=$2`, [CUSTOMER_ID, "252619999129"]);
+  await query(`DELETE FROM sim_routing WHERE company_id=$1`, [COMPANY_ID]);
   await query(`DELETE FROM agents WHERE id=$1 OR device_id=$2`, [AGENT_ID, DEVICE_ID]);
   await query(`DELETE FROM agent_devices WHERE id=$1`, [DEVICE_ID]);
   await query(`DELETE FROM admin_users WHERE id=$1 OR email=$2`, [ADMIN_ID, "verify-ledger-test-admin@example.com"]);
@@ -142,6 +143,9 @@ before(async () => {
     AGENT_ID,
     DEVICE_ID,
   ]);
+  // This phone is the company's assigned (primary) SIM: self-heal candidates
+  // are offered only to the phone each order is assigned to.
+  await query(`INSERT INTO sim_routing (company_id, device_id, sim_slot, priority) VALUES ($1,$2,1,1)`, [COMPANY_ID, DEVICE_ID]);
   await query(`INSERT INTO admin_users (id, email, password_hash, role) VALUES ($1,'verify-ledger-test-admin@example.com','x','super_admin')`, [
     ADMIN_ID,
   ]);
@@ -170,6 +174,7 @@ after(async () => {
   await query(`DELETE FROM service_categories WHERE id=$1`, [CATEGORY_ID]);
   await query(`DELETE FROM companies WHERE id=$1`, [COMPANY_ID]);
   await query(`DELETE FROM customers WHERE id=$1 OR phone=$2`, [CUSTOMER_ID, "252619999129"]);
+  await query(`DELETE FROM sim_routing WHERE company_id=$1`, [COMPANY_ID]);
   await query(`DELETE FROM agents WHERE id=$1`, [AGENT_ID]);
   await query(`DELETE FROM agent_devices WHERE id=$1`, [DEVICE_ID]);
   await query(`DELETE FROM admin_users WHERE id=$1`, [ADMIN_ID]);
