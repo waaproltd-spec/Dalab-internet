@@ -1421,29 +1421,62 @@ ordersRouter.post("/agent/orders/:id/reverse", requireAuth("agent"), async (req,
 });
 
 ordersRouter.get("/admin/dashboard/stats", requireStaff(), async (_req, res) => {
-  const totals = await queryOne<{
-    total_sales: string;
-    pending_orders: string;
-    successful_orders: string;
-    failed_orders: string;
-  }>(
+  // Sales = completed, never-reversed orders (same rule as Financial
+  // Overview's REAL_ORDER_FILTER). Day/week/month/year buckets use the
+  // session TimeZone (Africa/Mogadishu, db/pool.ts), so "today" is Somalia's
+  // today. "Week" is the last 7 days including today.
+  const REAL = `status='completed' AND reversed_at IS NULL`;
+  const totals = await queryOne<Record<string, string>>(
     `SELECT
-       COALESCE(SUM(amount) FILTER (WHERE status='completed'), 0) AS total_sales,
+       COALESCE(SUM(amount) FILTER (WHERE ${REAL}), 0) AS total_sales,
+       COALESCE(SUM(amount) FILTER (WHERE ${REAL} AND created_at >= date_trunc('day', now())), 0) AS daily_sales,
+       COALESCE(SUM(amount) FILTER (WHERE ${REAL} AND created_at >= date_trunc('day', now()) - interval '6 days'), 0) AS weekly_sales,
+       COALESCE(SUM(amount) FILTER (WHERE ${REAL} AND created_at >= date_trunc('month', now())), 0) AS monthly_sales,
+       COALESCE(SUM(amount) FILTER (WHERE ${REAL} AND created_at >= date_trunc('year', now())), 0) AS yearly_sales,
+       COALESCE(SUM(provider_amount) FILTER (WHERE ${REAL}), 0) AS data_cost,
        COUNT(*) FILTER (WHERE status='pending') AS pending_orders,
        COUNT(*) FILTER (WHERE status='completed') AS successful_orders,
        COUNT(*) FILTER (WHERE status='failed') AS failed_orders
      FROM orders`
   );
+  const expenses = await queryOne<{ total: string }>(`SELECT COALESCE(SUM(amount), 0) AS total FROM finance_expenses`);
   const activeCustomers = await queryOne<{ n: string }>(`SELECT COUNT(*) AS n FROM customers WHERE status='active'`);
+  const week = await query<{ day: string; sales: string; orders: string }>(
+    `SELECT to_char(d, 'YYYY-MM-DD') AS day,
+            COALESCE(SUM(o.amount), 0) AS sales,
+            COUNT(o.id) AS orders
+       FROM generate_series(date_trunc('day', now()) - interval '6 days', date_trunc('day', now()), interval '1 day') d
+       LEFT JOIN orders o ON o.status='completed' AND o.reversed_at IS NULL
+                         AND o.created_at >= d AND o.created_at < d + interval '1 day'
+      GROUP BY d ORDER BY d`
+  );
+  const byCompany = await query<{ company_id: string; name: string; orders: string }>(
+    `SELECT c.id AS company_id, c.name, COUNT(o.id) AS orders
+       FROM companies c
+       LEFT JOIN orders o ON o.company_id = c.id AND o.status='completed' AND o.reversed_at IS NULL
+      WHERE c.deleted_at IS NULL
+      GROUP BY c.id, c.name, c.group_number, c.sort_order
+      ORDER BY c.group_number, c.sort_order, c.name`
+  );
+  const n = (k: string) => Number(totals?.[k] ?? 0);
   // Postgres returns numeric/count columns as strings via node-postgres (to avoid
   // precision loss on bigint) — the dashboard expects real numbers (it calls
   // .toFixed()/.toLocaleString() on these), and camelCase keys, not the raw
   // snake_case column names, or it crashes right after this resolves.
   sendJson(res, 200, {
-    totalSales: Number(totals?.total_sales ?? 0),
-    pendingOrders: Number(totals?.pending_orders ?? 0),
-    successfulOrders: Number(totals?.successful_orders ?? 0),
-    failedOrders: Number(totals?.failed_orders ?? 0),
+    totalSales: n("total_sales"),
+    dailySales: n("daily_sales"),
+    weeklySales: n("weekly_sales"),
+    monthlySales: n("monthly_sales"),
+    yearlySales: n("yearly_sales"),
+    // Same as Financial Overview's all-time Profit: money received minus
+    // data cost (provider_amount) minus recorded other expenses.
+    profit: n("total_sales") - n("data_cost") - Number(expenses?.total ?? 0),
+    pendingOrders: n("pending_orders"),
+    successfulOrders: n("successful_orders"),
+    failedOrders: n("failed_orders"),
     activeCustomers: Number(activeCustomers?.n ?? 0),
+    salesLast7Days: week.map((w) => ({ day: w.day, sales: Number(w.sales), orders: Number(w.orders) })),
+    completedOrdersByCompany: byCompany.map((c) => ({ companyId: c.company_id, name: c.name, orders: Number(c.orders) })),
   });
 });
