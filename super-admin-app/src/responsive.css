@@ -1,0 +1,99 @@
+/*
+ * Layout rules for every screen size, from 320px phones up. App.jsx styles
+ * are inline, so the phone rules below override them with !important, only
+ * inside the dashboard content (.dl-content) and only at small widths.
+ */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; max-width: 100%; overflow-x: hidden; }
+body {
+  background: var(--c-f5f6fb);
+  color: var(--c-0b1240);
+  -webkit-text-size-adjust: 100%;
+}
+img, video, canvas { max-width: 100%; }
+input, select, textarea, button { font: inherit; max-width: 100%; }
+input, select, textarea { color: inherit; }
+:root[data-theme="dark"] input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="range"]),
+:root[data-theme="dark"] select,
+:root[data-theme="dark"] textarea {
+  background-color: var(--c-fafbff);
+  color: var(--c-0b1240);
+}
+::placeholder { color: var(--c-8791b5); opacity: 1; }
+.recharts-default-tooltip {
+  background: var(--c-surface) !important;
+  border-color: var(--c-e7eaf6) !important;
+  color: var(--c-0b1240) !important;
+}
+.recharts-cartesian-axis-tick-value { fill: var(--c-8791b5); }
+
+/* Long words, IDs and links wrap instead of pushing the page sideways. */
+.dl-content { overflow-wrap: anywhere; min-width: 0; }
+.dl-content table { overflow-wrap: normal; }
+.dl-content pre, .dl-content code { white-space: pre-wrap; word-break: break-word; }
+
+/* Tables keep their columns and scroll inside their card on small screens. */
+.dl-content div:has(> table) { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
+
+/* Sidebar drawer (phones and tablets). */
+.dl-backdrop {
+  position: fixed; inset: 0; background: rgba(5, 9, 30, 0.5); z-index: 79;
+  animation: dl-fade .15s ease-out;
+}
+@keyframes dl-fade { from { opacity: 0; } to { opacity: 1; } }
+
+.dl-icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 40px; min-height: 40px; border-radius: 10px; cursor: pointer;
+  background: transparent; border: 1px solid var(--c-e7eaf6); color: var(--c-5b6389);
+}
+.dl-icon-btn:hover { background: var(--c-eef0fb); }
+.dl-icon-btn:focus-visible, .dl-nav-btn:focus-visible { outline: 2px solid var(--c-003152); outline-offset: 2px; }
+.dl-nav-btn:hover { background: rgba(255, 255, 255, 0.06) !important; }
+
+@media (max-width: 899px) {
+  .dl-content { padding: 12px !important; }
+  /* Multi-column grids become as many ~150px columns as fit (2 on most
+     phones, 1 on the smallest), so cards never squash or overflow. */
+  .dl-content [style*="grid-template-columns"]:where(:not([style*="auto-fit"]):not([style*="auto-fill"])) {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)) !important;
+  }
+  /* Charts and tables need the full width. */
+  .dl-content [style*="grid-template-columns"]:has(> * .recharts-responsive-container),
+  .dl-content [style*="grid-template-columns"]:has(> * table) {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  /* Fixed-width boxes can't be wider than the screen. */
+  .dl-content [style*="width"]:not(svg):not(svg *):not(table):not(th):not(td) { max-width: 100%; }
+  .dl-content [style*="min-width"]:not(table):not(th):not(td) { min-width: 0 !important; }
+  .dl-content [style*="display: flex"] { flex-wrap: wrap; }
+  .dl-content table [style*="display: flex"] { flex-wrap: nowrap; }
+  .dl-content [style*="display: flex"] > * { max-width: 100%; }
+  /* Comfortable touch targets. */
+  .dl-content button, .dl-content select,
+  .dl-content input:not([type="checkbox"]):not([type="radio"]):not([type="color"]) { min-height: 44px; }
+  .dl-content table button { min-height: 36px; min-width: 36px; }
+  .dl-content input, .dl-content select, .dl-content textarea { font-size: 16px !important; } /* no iOS zoom */
+  .dl-content table { font-size: 12.5px; }
+  .dl-content th, .dl-content td { white-space: nowrap; }
+}
+@media (max-width: 520px) {
+  /* Wide auto-sized grids (cards of 200px+) are one column on phones. */
+  .dl-content [style*="minmax(200px"], .dl-content [style*="minmax(220px"], .dl-content [style*="minmax(240px"],
+  .dl-content [style*="minmax(260px"], .dl-content [style*="minmax(300px"] {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+}
+@media (max-width: 420px) {
+  .dl-content [style*="grid-template-columns"]:where(:not([style*="auto-fit"]):not([style*="auto-fill"])) {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 135px), 1fr)) !important;
+  }
+  .dl-hide-xs { display: none !important; }
+}
+
+/* Live-status strip: one row that scrolls sideways on phones. */
+@media (max-width: 899px) {
+  .dl-statusbar { flex-wrap: nowrap !important; overflow-x: auto; scrollbar-width: none; padding: 6px 0 !important; }
+  .dl-statusbar::-webkit-scrollbar { display: none; }
+  .dl-statusbar > div { flex-shrink: 0; padding: 0 12px !important; white-space: nowrap; }
+}

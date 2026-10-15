@@ -9,8 +9,9 @@ import {
   WifiOff, BatteryFull, BatteryMedium, BatteryLow, BatteryWarning,
   Image as ImageIcon, Upload, MessageSquare, Database, Activity, History, CreditCard, PlayCircle, Percent,
   MessageCircle, Lightbulb, Share2, KeyRound, ExternalLink, PiggyBank, Landmark, Trash, ArrowLeftRight,
-  ShoppingBag, Boxes, Award
+  ShoppingBag, Boxes, Award, Sun, Moon, Languages
 } from "lucide-react";
+import { useTheme, useLang, setTheme, setLang } from "./prefs.js";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 
 // ---- DALAB INTERNET / Admin design tokens ----
@@ -19,14 +20,14 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, 
 // value as the Customer App's kDarkAzure and the Agent App's colors.xml.
 // GREEN/amber/red/blue below stay separate: functional status colors, not
 // brand.
-const INK = "#0B1240";
-const INDIGO = "#003152";
-const INDIGO_SOFT = "#EEF0FB";
-const GREEN = "#16A34A";
-const SLATE = "#5B6389";
-const MUTE = "#8791B5";
-const BORDER = "#E7EAF6";
-const BG = "#F5F6FB";
+const INK = "var(--c-0b1240)";
+const INDIGO = "var(--c-003152)";
+const INDIGO_SOFT = "var(--c-eef0fb)";
+const GREEN = "var(--c-16a34a)";
+const SLATE = "var(--c-5b6389)";
+const MUTE = "var(--c-8791b5)";
+const BORDER = "var(--c-e7eaf6)";
+const BG = "var(--c-f5f6fb)";
 
 // ---- Mock data ----
 const LOGOS = {
@@ -833,9 +834,9 @@ function ConnectionStatusBar() {
 
   if (!DALAB_API_ENABLED) return null;
 
-  const sseTone = sseState === "connected" ? GREEN : sseState === "connecting" ? "#A9720A" : "#C81E2C";
+  const sseTone = sseState === "connected" ? GREEN : sseState === "connecting" ? "var(--c-a9720a)" : "var(--c-c81e2c)";
   const sseLabel = sseState === "connected" ? "Connected" : sseState === "connecting" ? "Reconnecting…" : "Disconnected";
-  const dbTone = dbState === "connected" ? GREEN : dbState === "checking" ? "#A9720A" : "#C81E2C";
+  const dbTone = dbState === "connected" ? GREEN : dbState === "checking" ? "var(--c-a9720a)" : "var(--c-c81e2c)";
   const dbLabel = dbState === "connected" ? "Session active" : dbState === "checking" ? "Checking…" : "Unreachable";
   const overallLive = sseState === "connected" && dbState === "connected";
 
@@ -850,14 +851,14 @@ function ConnectionStatusBar() {
   );
 
   return (
-    <div style={{
-      display: "flex", alignItems: "stretch", flexWrap: "wrap", background: "#fff", borderBottom: `1px solid ${BORDER}`,
+    <div className="dl-statusbar" style={{
+      display: "flex", alignItems: "stretch", flexWrap: "wrap", background: "var(--c-surface)", borderBottom: `1px solid ${BORDER}`,
       padding: "8px 10px 8px 0",
     }}>
       <Item icon={Radio} label="SSE LIVE STREAM" value={sseLabel} tone={sseTone} />
       <Item icon={Database} label="DATABASE SESSION" value={dbLabel} tone={dbTone} />
       <Item icon={Activity} label="SYNC STATUS" value={`${eventCount} update${eventCount === 1 ? "" : "s"} received`} tone={overallLive ? GREEN : undefined} />
-      <Item icon={overallLive ? Wifi : WifiOff} label="LIVE UPDATES" value={overallLive ? "Receiving" : "Paused"} tone={overallLive ? GREEN : "#A9720A"} />
+      <Item icon={overallLive ? Wifi : WifiOff} label="LIVE UPDATES" value={overallLive ? "Receiving" : "Paused"} tone={overallLive ? GREEN : "var(--c-a9720a)"} />
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 16px" }}>
         <Clock3 size={14} color={MUTE} />
         <div>
@@ -870,10 +871,10 @@ function ConnectionStatusBar() {
 }
 
 const initialCompanies = [
-  { id: "hormuud", name: "Hormuud", group: 1, color: "#16A34A", status: "enabled", payNumber: "610338686", gateway: "EVC Plus" },
-  { id: "somnet", name: "Somnet", group: 1, color: "#1D4ED8", status: "enabled", payNumber: "685115555", gateway: "JEEB" },
-  { id: "somtel", name: "Somtel", group: 2, color: "#F2C200", status: "enabled", payNumber: "620338686", gateway: "eDahab" },
-  { id: "amtel", name: "Amtel", group: 2, color: "#C81E2C", status: "disabled", payNumber: "252-68-XXXXXXX", gateway: "Manual" },
+  { id: "hormuud", name: "Hormuud", group: 1, color: "var(--c-16a34a)", status: "enabled", payNumber: "610338686", gateway: "EVC Plus" },
+  { id: "somnet", name: "Somnet", group: 1, color: "var(--c-1d4ed8)", status: "enabled", payNumber: "685115555", gateway: "JEEB" },
+  { id: "somtel", name: "Somtel", group: 2, color: "var(--c-f2c200)", status: "enabled", payNumber: "620338686", gateway: "eDahab" },
+  { id: "amtel", name: "Amtel", group: 2, color: "var(--c-c81e2c)", status: "disabled", payNumber: "252-68-XXXXXXX", gateway: "Manual" },
 ];
 
 const initialPackages = [
@@ -886,32 +887,32 @@ const initialPackages = [
 ];
 
 const initialOrders = [
-  { id: "DLB284739201", customerName: "Yaaain Ahmed", senderPhone: "252611234567", receiverPhone: "252611234567", companyName: "Hormuud", companyColor: "#16A34A", packageName: "Anfac Plus 2GB", amount: 0.89, status: "completed", paymentMethod: "EVC Plus", createdAt: "2026-07-22 14:32:07", completedAt: "2026-07-22 14:41:02", macaashEarned: 8 },
-  { id: "DLB284739844", customerName: "Faarax Nur", senderPhone: "252639812201", receiverPhone: "252639812201", companyName: "Somtel", companyColor: "#F2C200", packageName: "eDahab Max 6GB", amount: 2.1, status: "pending", paymentMethod: "eDahab", createdAt: "2026-07-24 09:14:52", completedAt: null, macaashEarned: 0 },
-  { id: "DLB284712093", customerName: "Hodan Ali", senderPhone: "252657714402", receiverPhone: "252657714402", companyName: "Somnet", companyColor: "#1D4ED8", packageName: "Qanciye Plus 1.2GB", amount: 0.99, status: "failed", paymentMethod: "Jeeb", createdAt: "2026-07-24 18:47:21", completedAt: null, macaashEarned: 0 },
-  { id: "DLB284798821", customerName: "Cabdi Rashiid", senderPhone: "252685529910", receiverPhone: "252611009988", companyName: "Amtel", companyColor: "#C81E2C", packageName: "Amtel Family 4GB", amount: 1.5, status: "cancelled", paymentMethod: "Manual", createdAt: "2026-07-23 11:02:15", completedAt: null, macaashEarned: 0 },
-  { id: "DLB284755102", customerName: "Ifrah Warsame", senderPhone: "252619001122", receiverPhone: "252619001122", companyName: "Hormuud", companyColor: "#16A34A", packageName: "Anfac Plus 5GB", amount: 1.78, status: "in_progress", paymentMethod: "EVC Plus", createdAt: "2026-07-25 07:58:44", completedAt: null, macaashEarned: 17 },
+  { id: "DLB284739201", customerName: "Yaaain Ahmed", senderPhone: "252611234567", receiverPhone: "252611234567", companyName: "Hormuud", companyColor: "var(--c-16a34a)", packageName: "Anfac Plus 2GB", amount: 0.89, status: "completed", paymentMethod: "EVC Plus", createdAt: "2026-07-22 14:32:07", completedAt: "2026-07-22 14:41:02", macaashEarned: 8 },
+  { id: "DLB284739844", customerName: "Faarax Nur", senderPhone: "252639812201", receiverPhone: "252639812201", companyName: "Somtel", companyColor: "var(--c-f2c200)", packageName: "eDahab Max 6GB", amount: 2.1, status: "pending", paymentMethod: "eDahab", createdAt: "2026-07-24 09:14:52", completedAt: null, macaashEarned: 0 },
+  { id: "DLB284712093", customerName: "Hodan Ali", senderPhone: "252657714402", receiverPhone: "252657714402", companyName: "Somnet", companyColor: "var(--c-1d4ed8)", packageName: "Qanciye Plus 1.2GB", amount: 0.99, status: "failed", paymentMethod: "Jeeb", createdAt: "2026-07-24 18:47:21", completedAt: null, macaashEarned: 0 },
+  { id: "DLB284798821", customerName: "Cabdi Rashiid", senderPhone: "252685529910", receiverPhone: "252611009988", companyName: "Amtel", companyColor: "var(--c-c81e2c)", packageName: "Amtel Family 4GB", amount: 1.5, status: "cancelled", paymentMethod: "Manual", createdAt: "2026-07-23 11:02:15", completedAt: null, macaashEarned: 0 },
+  { id: "DLB284755102", customerName: "Ifrah Warsame", senderPhone: "252619001122", receiverPhone: "252619001122", companyName: "Hormuud", companyColor: "var(--c-16a34a)", packageName: "Anfac Plus 5GB", amount: 1.78, status: "in_progress", paymentMethod: "EVC Plus", createdAt: "2026-07-25 07:58:44", completedAt: null, macaashEarned: 17 },
 ];
 
 const initialUssdTemplates = [
-  { id: "t1", companyId: "amtel", companyName: "Amtel", companyColor: "#C81E2C", serviceName: "Tanaad GB", ussdCode: "*914*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t2", companyId: "amtel", companyName: "Amtel", companyColor: "#C81E2C", serviceName: "Bulaal Unlimited Data", ussdCode: "*918*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t3", companyId: "somnet", companyName: "Somnet", companyColor: "#1D4ED8", serviceName: "Kaafi Unlimited Data & Voice", ussdCode: "*834*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t4", companyId: "somnet", companyName: "Somnet", companyColor: "#1D4ED8", serviceName: "Kaafi Voice", ussdCode: "*829*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t5", companyId: "somnet", companyName: "Somnet", companyColor: "#1D4ED8", serviceName: "Qanciye Plus", ussdCode: "*830*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t6", companyId: "somnet", companyName: "Somnet", companyColor: "#1D4ED8", serviceName: "Unlimited Data & Voice", ussdCode: "*834*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t7", companyId: "somnet", companyName: "Somnet", companyColor: "#1D4ED8", serviceName: "5G", ussdCode: "*827*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t8", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "Anfac", ussdCode: "*737*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t9", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "Anfac Plus", ussdCode: "*738*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t10", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "Unlimited Data & Voice", ussdCode: "*729*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t11", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "Unlimited Calls", ussdCode: "*741*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t12", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "5G Plus", ussdCode: "*727*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t13", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "ADSL Plus", ussdCode: "*729*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t14", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "Kaar Kuhadal", ussdCode: "*727*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t15", companyId: "somtel", companyName: "Somtel", companyColor: "#F2C200", serviceName: "Unlimited Data & Voice", ussdCode: "*831*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t16", companyId: "somtel", companyName: "Somtel", companyColor: "#F2C200", serviceName: "No Expire", ussdCode: "*830*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t17", companyId: "somtel", companyName: "Somtel", companyColor: "#F2C200", serviceName: "Unlimited Calls", ussdCode: "*834*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t18", companyId: "somtel", companyName: "Somtel", companyColor: "#F2C200", serviceName: "Voice", ussdCode: "*832*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t1", companyId: "amtel", companyName: "Amtel", companyColor: "var(--c-c81e2c)", serviceName: "Tanaad GB", ussdCode: "*914*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t2", companyId: "amtel", companyName: "Amtel", companyColor: "var(--c-c81e2c)", serviceName: "Bulaal Unlimited Data", ussdCode: "*918*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t3", companyId: "somnet", companyName: "Somnet", companyColor: "var(--c-1d4ed8)", serviceName: "Kaafi Unlimited Data & Voice", ussdCode: "*834*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t4", companyId: "somnet", companyName: "Somnet", companyColor: "var(--c-1d4ed8)", serviceName: "Kaafi Voice", ussdCode: "*829*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t5", companyId: "somnet", companyName: "Somnet", companyColor: "var(--c-1d4ed8)", serviceName: "Qanciye Plus", ussdCode: "*830*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t6", companyId: "somnet", companyName: "Somnet", companyColor: "var(--c-1d4ed8)", serviceName: "Unlimited Data & Voice", ussdCode: "*834*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t7", companyId: "somnet", companyName: "Somnet", companyColor: "var(--c-1d4ed8)", serviceName: "5G", ussdCode: "*827*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t8", companyId: "hormuud", companyName: "Hormuud", companyColor: "var(--c-16a34a)", serviceName: "Anfac", ussdCode: "*737*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t9", companyId: "hormuud", companyName: "Hormuud", companyColor: "var(--c-16a34a)", serviceName: "Anfac Plus", ussdCode: "*738*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t10", companyId: "hormuud", companyName: "Hormuud", companyColor: "var(--c-16a34a)", serviceName: "Unlimited Data & Voice", ussdCode: "*729*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t11", companyId: "hormuud", companyName: "Hormuud", companyColor: "var(--c-16a34a)", serviceName: "Unlimited Calls", ussdCode: "*741*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t12", companyId: "hormuud", companyName: "Hormuud", companyColor: "var(--c-16a34a)", serviceName: "5G Plus", ussdCode: "*727*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t13", companyId: "hormuud", companyName: "Hormuud", companyColor: "var(--c-16a34a)", serviceName: "ADSL Plus", ussdCode: "*729*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t14", companyId: "hormuud", companyName: "Hormuud", companyColor: "var(--c-16a34a)", serviceName: "Kaar Kuhadal", ussdCode: "*727*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t15", companyId: "somtel", companyName: "Somtel", companyColor: "var(--c-f2c200)", serviceName: "Unlimited Data & Voice", ussdCode: "*831*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t16", companyId: "somtel", companyName: "Somtel", companyColor: "var(--c-f2c200)", serviceName: "No Expire", ussdCode: "*830*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t17", companyId: "somtel", companyName: "Somtel", companyColor: "var(--c-f2c200)", serviceName: "Unlimited Calls", ussdCode: "*834*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t18", companyId: "somtel", companyName: "Somtel", companyColor: "var(--c-f2c200)", serviceName: "Voice", ussdCode: "*832*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
 ];
 
 const initialCustomers = [
@@ -1001,12 +1002,12 @@ function Logo({ size = 34 }) {
 
 function Badge({ children, tone = "neutral" }) {
   const tones = {
-    neutral: { bg: "#EEF0FB", fg: INDIGO },
-    green: { bg: "#E4F7EA", fg: GREEN },
-    amber: { bg: "#FFF4D9", fg: "#A9720A" },
-    red: { bg: "#FCE7E8", fg: "#C81E2C" },
-    blue: { bg: "#E5EBFF", fg: "#1D4ED8" },
-    gray: { bg: "#F0F1F5", fg: "#5B6389" },
+    neutral: { bg: "var(--c-eef0fb)", fg: INDIGO },
+    green: { bg: "var(--c-e4f7ea)", fg: GREEN },
+    amber: { bg: "var(--c-fff4d9)", fg: "var(--c-a9720a)" },
+    red: { bg: "var(--c-fce7e8)", fg: "var(--c-c81e2c)" },
+    blue: { bg: "var(--c-e5ebff)", fg: "var(--c-1d4ed8)" },
+    gray: { bg: "var(--c-f0f1f5)", fg: "var(--c-5b6389)" },
   };
   const t = tones[tone];
   return (
@@ -1133,7 +1134,7 @@ function waitingForDeviceMessage(deliveryStatus) {
 
 function Card({ children, style }) {
   return (
-    <div style={{ background: "#fff", borderRadius: 16, border: `1px solid ${BORDER}`, boxShadow: "0 2px 10px rgba(20,30,90,0.04)", ...style }}>
+    <div style={{ background: "var(--c-surface)", borderRadius: 16, border: `1px solid ${BORDER}`, boxShadow: "0 2px 10px rgba(20,30,90,0.04)", ...style }}>
       {children}
     </div>
   );
@@ -1141,9 +1142,9 @@ function Card({ children, style }) {
 
 function Button({ children, onClick, variant = "primary", icon: Icon, style, disabled, spin }) {
   const variants = {
-    primary: { background: `linear-gradient(90deg,${INDIGO},#2A3FC0)`, color: "#fff", border: "none" },
-    ghost: { background: "#fff", color: INDIGO, border: `1px solid ${BORDER}` },
-    danger: { background: "#fff", color: "#C81E2C", border: "1px solid #F3D3D6" },
+    primary: { background: `linear-gradient(90deg,${INDIGO},var(--c-2a3fc0))`, color: "#fff", border: "none" },
+    ghost: { background: "var(--c-surface)", color: INDIGO, border: `1px solid ${BORDER}` },
+    danger: { background: "var(--c-surface)", color: "var(--c-c81e2c)", border: "1px solid var(--c-f3d3d6)" },
     subtle: { background: INDIGO_SOFT, color: INDIGO, border: "none" },
   };
   return (
@@ -1165,7 +1166,7 @@ function Button({ children, onClick, variant = "primary", icon: Icon, style, dis
 function Modal({ title, onClose, children, width = 420 }) {
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(11,18,64,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 16 }}>
-      <div style={{ background: "#fff", borderRadius: 18, width, maxWidth: "100%", maxHeight: "88vh", overflowY: "auto", padding: 22 }}>
+      <div style={{ background: "var(--c-surface)", borderRadius: 18, width, maxWidth: "100%", maxHeight: "88vh", overflowY: "auto", padding: 22 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
           <div style={{ fontWeight: 800, fontSize: 16, color: INK }}>{title}</div>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer" }}>
@@ -1259,7 +1260,7 @@ function Overview({ companies, orders }) {
           <div style={{ fontWeight: 800, color: INK, fontSize: 14, marginBottom: 8 }}>Sales this week</div>
           <ResponsiveContainer width="100%" height={220}>
             <LineChart data={salesTrend}>
-              <CartesianGrid stroke="#EEF0FB" vertical={false} />
+              <CartesianGrid stroke="var(--c-eef0fb)" vertical={false} />
               <XAxis dataKey="day" tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
               <Tooltip />
@@ -1271,7 +1272,7 @@ function Overview({ companies, orders }) {
           <div style={{ fontWeight: 800, color: INK, fontSize: 14, marginBottom: 8 }}>Orders by company</div>
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={orderBreakdown}>
-              <CartesianGrid stroke="#EEF0FB" vertical={false} />
+              <CartesianGrid stroke="var(--c-eef0fb)" vertical={false} />
               <XAxis dataKey="name" tick={{ fontSize: 11.5, fill: MUTE }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
               <Tooltip />
@@ -1452,12 +1453,12 @@ function BalanceDashboard({ admin }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
         <SummaryMetricCard icon={DollarSign} label="Overall System Balance" value={`$${Number(summary?.totalBalance ?? 0).toFixed(2)}`} color={INDIGO} />
         <SummaryMetricCard icon={ArrowDown} label="Received Today" value={`$${Number(summary?.totalReceivedToday ?? 0).toFixed(2)}`} color={GREEN} />
-        <SummaryMetricCard icon={ArrowUp} label="Spent Today" value={`$${Number(summary?.totalSpentToday ?? 0).toFixed(2)}`} color="#C81E2C" />
+        <SummaryMetricCard icon={ArrowUp} label="Spent Today" value={`$${Number(summary?.totalSpentToday ?? 0).toFixed(2)}`} color="var(--c-c81e2c)" />
         <SummaryMetricCard
           icon={AlertTriangle}
           label="Low-Balance SIMs"
           value={rows.filter((r) => r.balance != null && Number(r.balance) < Number(r.lowBalanceThreshold)).length}
-          color="#A9720A"
+          color="var(--c-a9720a)"
           hint="Below their configured threshold"
         />
       </div>
@@ -1516,7 +1517,7 @@ function BalanceDashboard({ admin }) {
                         <td style={{ padding: "8px" }}>{r.phoneNumber || "—"}</td>
                         <td style={{ padding: "8px" }}>{r.deviceName}</td>
                         <td style={{ padding: "8px" }}>SIM {r.simSlot}</td>
-                        <td style={{ padding: "8px", fontWeight: 800, color: low ? "#C81E2C" : hasBalance ? INK : MUTE, background: low ? "#FCE7E8" : "transparent" }}>
+                        <td style={{ padding: "8px", fontWeight: 800, color: low ? "var(--c-c81e2c)" : hasBalance ? INK : MUTE, background: low ? "var(--c-fce7e8)" : "transparent" }}>
                           {hasBalance ? `$${Number(r.balance).toFixed(2)}${low ? " ⚠" : ""}` : "No recent balance"}
                           {hasBalance && r.lastSource && (
                             <span style={{ marginLeft: 6, fontWeight: 700, fontSize: 10.5, color: MUTE }}>
@@ -1561,7 +1562,7 @@ function BalanceDashboard({ admin }) {
               ))}
             </select>
           </Field>
-          {editError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{editError}</div>}
+          {editError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{editError}</div>}
           <Button onClick={saveEdit} disabled={saving} style={{ width: "100%", justifyContent: "center" }}>{saving ? "Saving..." : "Save"}</Button>
         </Modal>
       )}
@@ -1583,7 +1584,7 @@ function BalanceDashboard({ admin }) {
                   <div style={{ marginTop: 6 }}>
                     ${Number(h.previousBalance ?? 0).toFixed(2)} → <strong>${Number(h.newBalance).toFixed(2)}</strong>
                     {h.changeAmount != null && (
-                      <span style={{ color: Number(h.changeAmount) < 0 ? "#C81E2C" : GREEN, marginLeft: 8 }}>
+                      <span style={{ color: Number(h.changeAmount) < 0 ? "var(--c-c81e2c)" : GREEN, marginLeft: 8 }}>
                         ({Number(h.changeAmount) >= 0 ? "+" : ""}{Number(h.changeAmount).toFixed(2)})
                       </span>
                     )}
@@ -1707,11 +1708,11 @@ function FinancialOverview({ admin }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
         <SummaryMetricCard icon={Landmark} label="Total Money Available" value={money(overview?.totalMoneyAvailable)} color={INDIGO} hint={walletCoverageHint(overview, "Sum of all SIM wallet balances")} />
         <SummaryMetricCard icon={ArrowDown} label="Total Money Received" value={money(overview?.moneyReceived)} color={GREEN} hint="From completed customer payments" />
-        <SummaryMetricCard icon={ArrowUp} label="Total Money Out" value={money(overview?.totalMoneyOut)} color="#C81E2C" hint="Data cost + other expenses" />
-        <SummaryMetricCard icon={Wifi} label="Total Data Cost" value={money(overview?.totalDataCost)} color="#A9720A" hint="Paid to providers via USSD" />
+        <SummaryMetricCard icon={ArrowUp} label="Total Money Out" value={money(overview?.totalMoneyOut)} color="var(--c-c81e2c)" hint="Data cost + other expenses" />
+        <SummaryMetricCard icon={Wifi} label="Total Data Cost" value={money(overview?.totalDataCost)} color="var(--c-a9720a)" hint="Paid to providers via USSD" />
         <SummaryMetricCard icon={Wallet} label="Current Wallet Balance" value={money(overview?.currentWalletBalance)} color={INDIGO} hint={walletCoverageHint(overview, "Real, carrier-reported SIM balance")} />
-        <SummaryMetricCard icon={PiggyBank} label="Remaining Balance" value={money(overview?.remainingBalance)} color={overview?.remainingBalance < 0 ? "#C81E2C" : GREEN} hint="Received minus total money out" />
-        <SummaryMetricCard icon={TrendingUp} label="Profit / Earnings" value={money(overview?.profit)} color={overview?.profit < 0 ? "#C81E2C" : GREEN} hint="Received minus total money out" />
+        <SummaryMetricCard icon={PiggyBank} label="Remaining Balance" value={money(overview?.remainingBalance)} color={overview?.remainingBalance < 0 ? "var(--c-c81e2c)" : GREEN} hint="Received minus total money out" />
+        <SummaryMetricCard icon={TrendingUp} label="Profit / Earnings" value={money(overview?.profit)} color={overview?.profit < 0 ? "var(--c-c81e2c)" : GREEN} hint="Received minus total money out" />
       </div>
 
       <Card style={{ padding: 18, marginTop: 14 }}>
@@ -1719,12 +1720,12 @@ function FinancialOverview({ admin }) {
         <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
           {[
             { label: "Customer Payments", value: overview?.moneyReceived, color: GREEN },
-            { label: "Data Cost", value: -(overview?.totalDataCost ?? 0), color: "#A9720A" },
-            { label: "Other Expenses", value: -(overview?.otherMoneyOut ?? 0), color: "#C81E2C" },
+            { label: "Data Cost", value: -(overview?.totalDataCost ?? 0), color: "var(--c-a9720a)" },
+            { label: "Other Expenses", value: -(overview?.otherMoneyOut ?? 0), color: "var(--c-c81e2c)" },
             { label: "Remaining Balance", value: overview?.remainingBalance, color: INDIGO },
           ].map((step, i, arr) => (
             <React.Fragment key={step.label}>
-              <div style={{ background: "#FAFBFF", border: `1px solid ${BORDER}`, borderRadius: 12, padding: "10px 14px", minWidth: 150 }}>
+              <div style={{ background: "var(--c-fafbff)", border: `1px solid ${BORDER}`, borderRadius: 12, padding: "10px 14px", minWidth: 150 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: MUTE }}>{step.label}</div>
                 <div style={{ fontSize: 15, fontWeight: 800, color: step.color, marginTop: 2 }}>
                   {step.value < 0 ? "-" : ""}{money(Math.abs(step.value ?? 0))}
@@ -1744,10 +1745,10 @@ function FinancialOverview({ admin }) {
               <span>Received</span><span style={{ color: GREEN, fontWeight: 700 }}>{money(data?.moneyReceived)}</span>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: SLATE, marginBottom: 6 }}>
-              <span>Data Cost</span><span style={{ color: "#A9720A", fontWeight: 700 }}>{money(data?.dataCost)}</span>
+              <span>Data Cost</span><span style={{ color: "var(--c-a9720a)", fontWeight: 700 }}>{money(data?.dataCost)}</span>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: SLATE, marginBottom: 6 }}>
-              <span>Other Money Out</span><span style={{ color: "#C81E2C", fontWeight: 700 }}>{money(data?.otherMoneyOut)}</span>
+              <span>Other Money Out</span><span style={{ color: "var(--c-c81e2c)", fontWeight: 700 }}>{money(data?.otherMoneyOut)}</span>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: INK, fontWeight: 800, paddingTop: 6, borderTop: `1px solid ${BORDER}` }}>
               <span>Remaining</span><span>{money(data?.remainingBalance)}</span>
@@ -1764,7 +1765,7 @@ function FinancialOverview({ admin }) {
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
-              <tr style={{ background: "#FAFBFF" }}>
+              <tr style={{ background: "var(--c-fafbff)" }}>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Category</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Amount</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Note</th>
@@ -1777,7 +1778,7 @@ function FinancialOverview({ admin }) {
               {expenses.map((e) => (
                 <tr key={e.id} style={{ borderTop: `1px solid ${BORDER}` }}>
                   <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontWeight: 600 }}>{e.category}</td>
-                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: "#C81E2C", fontWeight: 700 }}>{money(e.amount)}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: "var(--c-c81e2c)", fontWeight: 700 }}>{money(e.amount)}</td>
                   <td style={{ padding: "10px 14px", fontSize: 12, color: SLATE }}>{e.note || "—"}</td>
                   <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE }}>{e.createdByEmail || "—"}</td>
                   <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(e.createdAt)}</td>
@@ -1809,7 +1810,7 @@ function FinancialOverview({ admin }) {
           <Field label="Note (optional)">
             <input value={addForm.note} onChange={(e) => setAddForm({ ...addForm, note: e.target.value })} style={inputStyle} placeholder="Details for this expense" />
           </Field>
-          {addError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{addError}</div>}
+          {addError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{addError}</div>}
           <Button onClick={saveExpense} disabled={saving} style={{ width: "100%", justifyContent: "center" }}>{saving ? "Saving…" : "Save Expense"}</Button>
         </Modal>
       )}
@@ -1946,7 +1947,7 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
         {canManage && <Button icon={Plus} onClick={openNew}>Add company</Button>}
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 14 }}>
         {[1, 2].map((g) => (
@@ -1971,7 +1972,7 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
                 <Badge tone={c.status === "enabled" ? "green" : "red"}>{c.status === "enabled" ? "Enabled" : "Disabled"}</Badge>
                 {canManageStatus && (
                   <button onClick={() => toggle(c)} title="Enable / disable" style={{ background: "none", border: "none", cursor: "pointer" }}>
-                    <Power size={16} color={c.status === "enabled" ? GREEN : "#C81E2C"} />
+                    <Power size={16} color={c.status === "enabled" ? GREEN : "var(--c-c81e2c)"} />
                   </button>
                 )}
                 {canManage && (
@@ -1983,7 +1984,7 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
                       <Pencil size={15} color={INDIGO} />
                     </button>
                     <button onClick={() => remove(c)} style={{ background: "none", border: "none", cursor: "pointer" }}>
-                      <Trash2 size={15} color="#C81E2C" />
+                      <Trash2 size={15} color="var(--c-c81e2c)" />
                     </button>
                   </>
                 )}
@@ -2006,7 +2007,7 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
 
           <Field label="Provider logo (image)">
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{ width: 44, height: 44, borderRadius: 10, background: form.color || "#003152", display: "flex", alignItems: "center", justifyContent: "center", padding: 6, overflow: "hidden", flexShrink: 0 }}>
+              <div style={{ width: 44, height: 44, borderRadius: 10, background: form.color || "var(--c-003152)", display: "flex", alignItems: "center", justifyContent: "center", padding: 6, overflow: "hidden", flexShrink: 0 }}>
                 {form.logoBase64 ? (
                   <img src={form.logoBase64} alt="Logo preview" style={{ maxHeight: "100%", maxWidth: "100%", objectFit: "contain" }} />
                 ) : editing !== "new" && form.hasLogo ? (
@@ -2141,11 +2142,11 @@ function PaymentNumbers({ companies, setCompanies, refreshCompanies, admin }) {
         The Agent App stores the payment numbers used by customers to send funds. Customers dial these USSD templates. Changes apply instantly — no app update required.
         {!canManage && " Only a Super Admin can add, edit, enable, or disable these settings — you can view them here."}
       </div>
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Provider", "Wallet Type", "Payment Phone Number", "USSD Code Template", "Status", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "12px 16px", fontSize: 11.5, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -2171,10 +2172,10 @@ function PaymentNumbers({ companies, setCompanies, refreshCompanies, admin }) {
                     style={{
                       display: "flex", alignItems: "center", gap: 6, border: "none", background: "none",
                       cursor: canManage ? "pointer" : "default", fontSize: 12, fontWeight: 700,
-                      color: c.status === "enabled" ? GREEN : "#A9720A", opacity: togglingId === c.id ? 0.5 : 1,
+                      color: c.status === "enabled" ? GREEN : "var(--c-a9720a)", opacity: togglingId === c.id ? 0.5 : 1,
                     }}
                   >
-                    {c.status === "enabled" ? <Power size={14} color={GREEN} /> : <Power size={14} color="#A9720A" />}
+                    {c.status === "enabled" ? <Power size={14} color={GREEN} /> : <Power size={14} color="var(--c-a9720a)" />}
                     {c.status === "enabled" ? "Active" : "Inactive"}
                   </button>
                 </td>
@@ -2198,7 +2199,7 @@ function PaymentNumbers({ companies, setCompanies, refreshCompanies, admin }) {
           <div style={{ fontSize: 11.5, color: MUTE, marginTop: -8, marginBottom: 12 }}>
             This is the exact code the Customer App opens the dialer with — it should embed the payment number above (not a placeholder), with only {"{amount}"} filled in dynamically per order. Update it together with the payment number so they never go out of sync.
           </div>
-          {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+          {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
           <div style={{ display: "flex", gap: 10 }}>
             <Button onClick={save} icon={Check} disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
             <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
@@ -2409,18 +2410,18 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
         )}
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
       {successMessage && <div style={{ color: GREEN, fontSize: 12.5, marginBottom: 14, fontWeight: 600 }}>{successMessage}</div>}
 
       <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
         <button onClick={() => setCompanyFilter("all")} style={{
           padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
-          border: `1px solid ${companyFilter === "all" ? INDIGO : BORDER}`, background: companyFilter === "all" ? INDIGO : "#fff", color: companyFilter === "all" ? "#fff" : SLATE,
+          border: `1px solid ${companyFilter === "all" ? INDIGO : BORDER}`, background: companyFilter === "all" ? INDIGO : "var(--c-surface)", color: companyFilter === "all" ? "#fff" : SLATE,
         }}>All</button>
         {companies.map((c) => (
           <button key={c.id} onClick={() => setCompanyFilter(c.id)} style={{
             padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
-            border: `1px solid ${companyFilter === c.id ? INDIGO : BORDER}`, background: companyFilter === c.id ? INDIGO : "#fff", color: companyFilter === c.id ? "#fff" : SLATE,
+            border: `1px solid ${companyFilter === c.id ? INDIGO : BORDER}`, background: companyFilter === c.id ? INDIGO : "var(--c-surface)", color: companyFilter === c.id ? "#fff" : SLATE,
           }}>{c.name}</button>
         ))}
       </div>
@@ -2444,7 +2445,7 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
         <div style={{ overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Package", "Company", "Old price", "Price", "Provider Amt", "MB", "Min", "SMS", "Validity", ...(DALAB_API_ENABLED ? ["Status"] : []), ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700, whiteSpace: "nowrap" }}>{h}</th>
               ))}
@@ -2483,7 +2484,7 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
                   {canManage && (
                     <>
                       <button onClick={() => openEdit(p)} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}><Pencil size={14} color={INDIGO} /></button>
-                      <button onClick={() => remove(p)} style={{ background: "none", border: "none", cursor: "pointer" }}><Trash2 size={14} color="#C81E2C" /></button>
+                      <button onClick={() => remove(p)} style={{ background: "none", border: "none", cursor: "pointer" }}><Trash2 size={14} color="var(--c-c81e2c)" /></button>
                     </>
                   )}
                 </td>
@@ -2545,7 +2546,7 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
                   </Button>
                   {form.hasImage && (
                     <button onClick={removePackageImage} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 8, cursor: "pointer" }}>
-                      <Trash2 size={13} color="#C81E2C" />
+                      <Trash2 size={13} color="var(--c-c81e2c)" />
                     </button>
                   )}
                 </div>
@@ -2628,7 +2629,7 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
             </Field>
           )}
           {templateWarning && (
-            <div style={{ background: "#FFF6E5", border: "1px solid #F5C451", borderRadius: 8, padding: "10px 12px", fontSize: 12.5, color: "#8A6100", marginBottom: 14 }}>
+            <div style={{ background: "var(--c-fff6e5)", border: "1px solid var(--c-f5c451)", borderRadius: 8, padding: "10px 12px", fontSize: 12.5, color: "var(--c-8a6100)", marginBottom: 14 }}>
               {templateWarning}
             </div>
           )}
@@ -2638,7 +2639,7 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
               Available for purchase (active)
             </label>
           )}
-          {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+          {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
           <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
             <Button onClick={save} icon={Check} disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
             <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
@@ -2808,17 +2809,17 @@ function Categories({ companies, admin }) {
         {companies.map((c) => (
           <button key={c.id} onClick={() => setCompanyFilter(c.id)} style={{
             padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
-            border: `1px solid ${companyFilter === c.id ? c.color : BORDER}`, background: companyFilter === c.id ? c.color : "#fff", color: companyFilter === c.id ? "#fff" : SLATE,
+            border: `1px solid ${companyFilter === c.id ? c.color : BORDER}`, background: companyFilter === c.id ? c.color : "var(--c-surface)", color: companyFilter === c.id ? "#fff" : SLATE,
           }}>{c.name}</button>
         ))}
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Icon", "Name", "Type", "Slug", "Status", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -2828,7 +2829,7 @@ function Categories({ companies, admin }) {
             {categories.map((c) => (
               <tr key={c.id} style={{ borderTop: `1px solid ${BORDER}` }}>
                 <td style={{ padding: "10px 14px" }}>
-                  <div style={{ width: 34, height: 34, borderRadius: 8, border: `1px solid ${BORDER}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", background: "#FAFBFF" }}>
+                  <div style={{ width: 34, height: 34, borderRadius: 8, border: `1px solid ${BORDER}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", background: "var(--c-fafbff)" }}>
                     {c.hasIcon ? (
                       <img src={DalabAdminApi.categoryIconUrl(c.id)} alt={c.name} style={{ maxHeight: "100%", maxWidth: "100%", objectFit: "contain" }} />
                     ) : (
@@ -2844,13 +2845,13 @@ function Categories({ companies, admin }) {
                   {canManage && (
                     <>
                       <button onClick={() => toggleStatus(c)} title={c.status === "enabled" ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
-                        <Power size={14} color={c.status === "enabled" ? GREEN : "#C81E2C"} />
+                        <Power size={14} color={c.status === "enabled" ? GREEN : "var(--c-c81e2c)"} />
                       </button>
                       <button onClick={() => openEdit(c)} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
                         <Pencil size={14} color={INDIGO} />
                       </button>
                       <button onClick={() => remove(c)} style={{ background: "none", border: "none", cursor: "pointer" }}>
-                        <Trash2 size={14} color="#C81E2C" />
+                        <Trash2 size={14} color="var(--c-c81e2c)" />
                       </button>
                     </>
                   )}
@@ -2891,12 +2892,12 @@ function Categories({ companies, admin }) {
                   <button key={t.value} type="button" role="checkbox" aria-checked={selected} onClick={() => toggleType(t.value)} style={{
                     position: "relative", padding: "12px 6px 10px", borderRadius: 12, cursor: "pointer",
                     display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
-                    border: `2px solid ${selected ? INDIGO : BORDER}`, background: selected ? "#EEF3FA" : "#fff",
+                    border: `2px solid ${selected ? INDIGO : BORDER}`, background: selected ? "var(--c-eef3fa)" : "var(--c-surface)",
                     boxShadow: selected ? "0 2px 8px rgba(0,49,82,0.15)" : "none",
                   }}>
                     <span style={{
                       position: "absolute", top: 6, right: 6, width: 16, height: 16, borderRadius: 4, fontSize: 11, lineHeight: "14px", fontWeight: 900,
-                      border: `1.5px solid ${selected ? INDIGO : BORDER}`, background: selected ? INDIGO : "#fff", color: "#fff",
+                      border: `1.5px solid ${selected ? INDIGO : BORDER}`, background: selected ? INDIGO : "var(--c-surface)", color: "#fff",
                     }}>{selected ? "✓" : ""}</span>
                     <ServiceTypeIcon type={t} size={30} style={{ opacity: selected ? 1 : 0.45 }} company={formCompany} />
                     <span style={{ fontSize: 12.5, fontWeight: 800, color: selected ? INDIGO : SLATE }}>{t.name}</span>
@@ -2911,7 +2912,7 @@ function Categories({ companies, admin }) {
 
           <Field label="Category icon/logo (image)">
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{ width: 44, height: 44, borderRadius: 10, border: `1px solid ${BORDER}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", flexShrink: 0, background: "#FAFBFF" }}>
+              <div style={{ width: 44, height: 44, borderRadius: 10, border: `1px solid ${BORDER}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", flexShrink: 0, background: "var(--c-fafbff)" }}>
                 {form.iconBase64 ? (
                   <img src={form.iconBase64} alt="Icon preview" style={{ maxHeight: "100%", maxWidth: "100%", objectFit: "contain" }} />
                 ) : editing !== "new" && form.hasIcon ? (
@@ -2929,7 +2930,7 @@ function Categories({ companies, admin }) {
             <div style={{ fontSize: 11, color: MUTE, marginTop: 6 }}>Shown on this category's card in the Customer/Agent apps. Uploads apply when you press Save; existing categories keep their current icon until you change it here.</div>
           </Field>
 
-          {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+          {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
           <div style={{ display: "flex", gap: 10 }}>
             <Button onClick={save} icon={Check} disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
             <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
@@ -2987,7 +2988,7 @@ function AssignedSimPanel({ ds, order }) {
         )}
         {last?.responseMessage && line("Carrier reply", last.responseMessage)}
         {ds.waitingReason && (
-          <div style={{ marginTop: 6, fontSize: 12, fontWeight: 700, color: "#B45309" }}>{ds.waitingReason}</div>
+          <div style={{ marginTop: 6, fontSize: 12, fontWeight: 700, color: "var(--c-b45309)" }}>{ds.waitingReason}</div>
         )}
       </div>
     </>
@@ -3131,7 +3132,7 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
-          width: 420, maxWidth: "100%", background: "#fff", height: "100%", overflowY: "auto", padding: 24,
+          width: 420, maxWidth: "100%", background: "var(--c-surface)", height: "100%", overflowY: "auto", padding: 24,
           transform: visible ? "translateX(0)" : "translateX(100%)",
           transition: `transform ${DRAWER_TRANSITION_MS}ms ease-out`,
           boxShadow: "-8px 0 24px rgba(11,18,64,0.18)",
@@ -3158,7 +3159,7 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
           <div style={{ marginLeft: "auto" }}><Badge tone={displayOrderTone(localOrder)}>{displayOrderStatus(localOrder)}</Badge></div>
         </div>
         {localOrder.reversedAt && (
-          <div style={{ marginTop: 10, fontSize: 11.5, color: "#A9720A", background: "#FFF8E8", border: "1px solid #F4E3B0", borderRadius: 8, padding: "6px 10px" }}>
+          <div style={{ marginTop: 10, fontSize: 11.5, color: "var(--c-a9720a)", background: "var(--c-fff8e8)", border: "1px solid var(--c-f4e3b0)", borderRadius: 8, padding: "6px 10px" }}>
             Reversed {formatDateTime(localOrder.reversedAt)} — internal bookkeeping only, no real money moved.
           </div>
         )}
@@ -3194,7 +3195,7 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
 
         <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>PAYMENT TRANSACTION HISTORY</div>
         {paymentTxError ? (
-          <div style={{ marginTop: 8, fontSize: 12, color: "#C81E2C" }}>{paymentTxError}</div>
+          <div style={{ marginTop: 8, fontSize: 12, color: "var(--c-c81e2c)" }}>{paymentTxError}</div>
         ) : paymentTx.length === 0 ? (
           <div style={{ marginTop: 8, fontSize: 12, color: MUTE }}>No payment transaction recorded for this order yet.</div>
         ) : (
@@ -3202,7 +3203,7 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
             {paymentTx.map((t) => {
               const meta = PAYMENT_TX_STATUS_META[t.status] || { label: t.status, tone: "neutral" };
               return (
-                <div key={t.id} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${t.status === "duplicate_blocked" ? "#F4E3B0" : BORDER}`, background: t.status === "duplicate_blocked" ? "#FFFBEF" : "transparent" }}>
+                <div key={t.id} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${t.status === "duplicate_blocked" ? "var(--c-f4e3b0)" : BORDER}`, background: t.status === "duplicate_blocked" ? "var(--c-fffbef)" : "transparent" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11.5 }}>
                     <Badge tone={meta.tone}>{meta.label}</Badge>
                     <span style={{ color: MUTE, fontFamily: "monospace" }}>{t.transactionRef || "no ref"}</span>
@@ -3222,7 +3223,7 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
           <>
             <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>SOMLINK ORDER STATUS</div>
             {somlinkStatusError ? (
-              <div style={{ marginTop: 8, fontSize: 12, color: "#C81E2C" }}>{somlinkStatusError}</div>
+              <div style={{ marginTop: 8, fontSize: 12, color: "var(--c-c81e2c)" }}>{somlinkStatusError}</div>
             ) : !somlinkStatus?.transaction ? (
               <div style={{ marginTop: 8, fontSize: 12, color: MUTE }}>No SOMLINK delivery attempt recorded for this order yet.</div>
             ) : (
@@ -3247,11 +3248,11 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
                 )}
               </div>
             )}
-            {retrySomlinkError && <div style={{ color: "#C81E2C", fontSize: 12, marginTop: 8 }}>{retrySomlinkError}</div>}
+            {retrySomlinkError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12, marginTop: 8 }}>{retrySomlinkError}</div>}
             {localOrder.status === "in_progress" && ["failed", "ambiguous"].includes(somlinkStatus?.transaction?.status) && (
               <div style={{ marginTop: 10 }}>
                 {somlinkStatus.transaction.status === "ambiguous" && (
-                  <div style={{ fontSize: 11, color: "#A9720A", marginBottom: 6 }}>
+                  <div style={{ fontSize: 11, color: "var(--c-a9720a)", marginBottom: 6 }}>
                     The outcome of the last attempt is unknown — confirm via SOMLINK's own dashboard that it did NOT go through before retrying, to avoid a duplicate charge.
                   </div>
                 )}
@@ -3265,18 +3266,18 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
           <>
             <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>USSD DIALER</div>
             {order.ussdGenerated ? (
-              <div style={{ background: "#0B1240", borderRadius: 10, padding: 12, marginTop: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-                <span style={{ color: "#22B24C", fontFamily: "monospace", fontSize: 13.5, fontWeight: 700, wordBreak: "break-all" }}>{order.ussdGenerated}</span>
+              <div style={{ background: "var(--c-0b1240)", borderRadius: 10, padding: 12, marginTop: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                <span style={{ color: "var(--c-22b24c)", fontFamily: "monospace", fontSize: 13.5, fontWeight: 700, wordBreak: "break-all" }}>{order.ussdGenerated}</span>
                 <button
                   onClick={() => navigator.clipboard?.writeText(order.ussdGenerated)}
                   title="Copy"
                   style={{ background: "none", border: "none", cursor: "pointer", flexShrink: 0 }}
                 >
-                  <Copy size={15} color="#9AA1D4" />
+                  <Copy size={15} color="var(--c-9aa1d4)" />
                 </button>
               </div>
             ) : order.ussdGenerationFailedReason ? (
-              <div style={{ marginTop: 8, fontSize: 12.5, color: "#C81E2C", fontWeight: 600 }}>
+              <div style={{ marginTop: 8, fontSize: 12.5, color: "var(--c-c81e2c)", fontWeight: 600 }}>
                 USSD generation failed: {order.ussdGenerationFailedReason}
               </div>
             ) : (
@@ -3297,7 +3298,7 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
           <>
             <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>USSD EXECUTION HISTORY</div>
             {attemptsError ? (
-              <div style={{ marginTop: 8, fontSize: 12, color: "#C81E2C" }}>{attemptsError}</div>
+              <div style={{ marginTop: 8, fontSize: 12, color: "var(--c-c81e2c)" }}>{attemptsError}</div>
             ) : attempts.length === 0 ? (
               <div style={{ marginTop: 8, fontSize: 12, color: MUTE }}>
                 {waitingForDeviceMessage(deliveryStatus) || "No dial attempts recorded for this order yet."}
@@ -3317,7 +3318,7 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
           </>
         )}
 
-        {reverseError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginTop: 14 }}>{reverseError}</div>}
+        {reverseError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginTop: 14 }}>{reverseError}</div>}
 
         {(nextActions[localOrder.status]?.length > 0 || canReverse) && (
           <div style={{ display: "flex", gap: 10, marginTop: 22, flexWrap: "wrap" }}>
@@ -3338,14 +3339,14 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
 
 function StatusCountTile({ label, count, tone, active, onClick }) {
   const tones = {
-    amber: "#A9720A", blue: "#1D4ED8", green: "#16A34A", red: "#C81E2C", gray: "#5B6389", neutral: INDIGO,
+    amber: "var(--c-a9720a)", blue: "var(--c-1d4ed8)", green: "var(--c-16a34a)", red: "var(--c-c81e2c)", gray: "var(--c-5b6389)", neutral: INDIGO,
   };
   return (
     <button
       onClick={onClick}
       style={{
         flex: "1 1 110px", minWidth: 110, textAlign: "left", padding: "12px 14px", borderRadius: 12, cursor: "pointer",
-        border: `1.5px solid ${active ? tones[tone] : BORDER}`, background: active ? `${tones[tone]}12` : "#fff",
+        border: `1.5px solid ${active ? tones[tone] : BORDER}`, background: active ? `color-mix(in srgb, ${tones[tone]} 8%, var(--c-surface))` : "var(--c-surface)",
       }}
     >
       <div style={{ fontSize: 20, fontWeight: 800, color: tones[tone] }}>{count}</div>
@@ -3357,7 +3358,7 @@ function StatusCountTile({ label, count, tone, active, onClick }) {
 function SummaryMetricCard({ icon: Icon, label, value, color, hint }) {
   return (
     <Card style={{ padding: 16, display: "flex", alignItems: "center", gap: 12 }}>
-      <div style={{ width: 40, height: 40, borderRadius: 10, background: `${color}18`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+      <div style={{ width: 40, height: 40, borderRadius: 10, background: `color-mix(in srgb, ${color} 10%, transparent)`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
         <Icon size={19} color={color} />
       </div>
       <div style={{ minWidth: 0 }}>
@@ -3512,7 +3513,7 @@ function Orders({ orders, setOrders, companies, admin }) {
   ];
 
   const quickActions = {
-    pending: { label: "Start", status: "in_progress", color: "#1D4ED8" },
+    pending: { label: "Start", status: "in_progress", color: "var(--c-1d4ed8)" },
     in_progress: { label: "Complete", status: "completed", color: GREEN },
   };
 
@@ -3580,7 +3581,7 @@ function Orders({ orders, setOrders, companies, admin }) {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
           {DALAB_API_ENABLED && (
-            <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 700, color: live ? GREEN : "#A9720A" }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 700, color: live ? GREEN : "var(--c-a9720a)" }}>
               <Radio size={12} /> {live ? "Live" : `Polling every ${ORDERS_POLL_INTERVAL_MS / 1000}s`}
             </span>
           )}
@@ -3595,7 +3596,7 @@ function Orders({ orders, setOrders, companies, admin }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 16 }}>
         <SummaryMetricCard icon={ShoppingCart} label="Total Orders" value={summary.totalOrders.toLocaleString()} color={INDIGO} />
         <SummaryMetricCard icon={DollarSign} label="Daily Revenue" value={`$${summary.dailyRevenue.toFixed(2)}`} color={GREEN} hint="Orders created today" />
-        <SummaryMetricCard icon={TrendingUp} label="Average Transaction Value" value={`$${summary.avgTransactionValue.toFixed(2)}`} color="#1D4ED8" />
+        <SummaryMetricCard icon={TrendingUp} label="Average Transaction Value" value={`$${summary.avgTransactionValue.toFixed(2)}`} color="var(--c-1d4ed8)" />
       </div>
 
       {/* Status count tiles — always reflect true totals regardless of the active filter */}
@@ -4030,7 +4031,7 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
         </div>
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       {isMobile ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -4040,7 +4041,7 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontWeight: 800, color: INK, fontSize: 14, display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
                     {c?.name || "Not provided"}
-                    {c.hasHigherExchangeLimit && <CheckCircle2 size={14} color="#1D4ED8" title="Approved for a higher exchange limit" />}
+                    {c.hasHigherExchangeLimit && <CheckCircle2 size={14} color="var(--c-1d4ed8)" title="Approved for a higher exchange limit" />}
                   </div>
                   <div style={{ fontSize: 12, color: SLATE, fontFamily: "monospace", marginTop: 3 }}>{c?.phone || "—"}</div>
                 </div>
@@ -4099,7 +4100,7 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Customer", "Phone", "Orders", "Macaash points", "Joined", "Status", ...(canManagePin ? ["PIN"] : []), ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -4111,7 +4112,7 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
                 <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
                     {c?.name || "Not provided"}
-                    {c.hasHigherExchangeLimit && <CheckCircle2 size={14} color="#1D4ED8" title="Approved for a higher exchange limit" />}
+                    {c.hasHigherExchangeLimit && <CheckCircle2 size={14} color="var(--c-1d4ed8)" title="Approved for a higher exchange limit" />}
                   </span>
                 </td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE, fontFamily: "monospace" }}>{c?.phone || "—"}</td>
@@ -4141,7 +4142,7 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
                         <Pencil size={14} color={INDIGO} />
                       </button>
                       <button onClick={() => remove(c)} style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
-                        <Trash2 size={14} color="#C81E2C" />
+                        <Trash2 size={14} color="var(--c-c81e2c)" />
                       </button>
                       <button onClick={() => openWallet(c)} title="eBadal wallet info (EVC Plus / eDahab)" style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
                         <Wallet size={14} color={INDIGO} />
@@ -4180,7 +4181,7 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
           <Field label="Phone">
             <input style={inputStyle} value={form.phone || ""} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
           </Field>
-          {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+          {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
           <div style={{ display: "flex", gap: 10 }}>
             <Button onClick={saveEdit} icon={Check}>Save</Button>
             <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
@@ -4197,7 +4198,7 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
           <Field label="Recovery PIN status">
             <Badge tone={pinTarget.pinSet ? "green" : "amber"}>{pinTarget.pinSet ? "Set" : "Not set"}</Badge>
           </Field>
-          <div style={{ marginBottom: 16, padding: 12, borderRadius: 10, background: "#FAFBFF", border: "1px solid #E5E8F4" }}>
+          <div style={{ marginBottom: 16, padding: 12, borderRadius: 10, background: "var(--c-fafbff)", border: "1px solid var(--c-e5e8f4)" }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: INK, marginBottom: 4 }}>Reset Recovery PIN</div>
             <div style={{ fontSize: 12, color: MUTE, marginBottom: 10 }}>
               Generates a brand-new 4-digit Recovery PIN and immediately invalidates the old one. Shown once, here, for you to relay to the customer yourself (call, WhatsApp, etc.).
@@ -4214,7 +4215,7 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
               onChange={(e) => setPinDraft(e.target.value.replace(/\D/g, ""))}
             />
           </Field>
-          {pinError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{pinError}</div>}
+          {pinError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{pinError}</div>}
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <Button variant="ghost" onClick={savePin} icon={pinSaving ? Loader2 : Check} spin={pinSaving} disabled={pinSaving || !pinDraft}>
               {pinTarget.pinSet ? "Change PIN" : "Create PIN"}
@@ -4312,7 +4313,7 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
             </label>
           )}
 
-          {walletError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{walletError}</div>}
+          {walletError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{walletError}</div>}
           <div style={{ display: "flex", gap: 10 }}>
             <Button onClick={saveWallet} icon={walletSaving ? Loader2 : Check} spin={walletSaving} disabled={walletSaving}>Save</Button>
             <Button variant="ghost" onClick={() => setWalletTarget(null)} disabled={walletSaving}>Cancel</Button>
@@ -4335,7 +4336,7 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
           <Field label="Yearly limit ($)">
             <input style={inputStyle} type="number" min="0" placeholder="2000 (default)" value={limitsDraft.yearlyLimit} onChange={(e) => setLimitsDraft({ ...limitsDraft, yearlyLimit: e.target.value })} />
           </Field>
-          {limitsError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{limitsError}</div>}
+          {limitsError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{limitsError}</div>}
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <Button onClick={saveLimits} icon={limitsSaving ? Loader2 : Check} spin={limitsSaving} disabled={limitsSaving}>Save</Button>
             <Button variant="ghost" onClick={resetLimitsDraft} disabled={limitsSaving}>Reset to defaults</Button>
@@ -4451,8 +4452,8 @@ function DeviceActivationSection({ admin }) {
   return (
     <div style={{ maxWidth: 760 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-        <div style={{ width: 42, height: 42, borderRadius: 12, background: "#E5EBFF", display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <Smartphone size={22} color="#1D4ED8" />
+        <div style={{ width: 42, height: 42, borderRadius: 12, background: "var(--c-e5ebff)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <Smartphone size={22} color="var(--c-1d4ed8)" />
         </div>
         <div>
           <div style={{ fontWeight: 800, fontSize: 18, color: INK }}>Device Activation</div>
@@ -4477,15 +4478,15 @@ function DeviceActivationSection({ admin }) {
           </Button>
         </div>
         {error && (
-          <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, color: "#C81E2C", fontSize: 13, fontWeight: 600 }}>
+          <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, color: "var(--c-c81e2c)", fontSize: 13, fontWeight: 600 }}>
             <XCircle size={16} /> {error}
           </div>
         )}
       </Card>
 
       {details && (
-        <Card style={{ padding: 18, marginBottom: 16, background: approved ? "#F2F8FF" : pending ? "#F3FBF5" : "#fff" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, fontWeight: 800, fontSize: 16, color: approved ? "#1D4ED8" : pending ? GREEN : "#C81E2C" }}>
+        <Card style={{ padding: 18, marginBottom: 16, background: approved ? "var(--c-f2f8ff)" : pending ? "var(--c-f3fbf5)" : "var(--c-surface)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, fontWeight: 800, fontSize: 16, color: approved ? "var(--c-1d4ed8)" : pending ? GREEN : "var(--c-c81e2c)" }}>
             {pending || approved ? <CheckCircle2 size={22} /> : <XCircle size={22} />}
             {justActivated ? "Device activated! · Device waa la fasaxay!" : pending ? "Code is valid · Code waa sax!" : approved ? "Device is authorized" : `Device ${ACTIVATION_LABEL[details.activationStatus] || details.activationStatus}`}
           </div>
@@ -4501,7 +4502,7 @@ function DeviceActivationSection({ admin }) {
 
           {pending && canManage && (
             <div style={{ display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" }}>
-              <Button icon={busy ? Loader2 : CheckCircle2} spin={busy} disabled={busy} onClick={activate} style={{ background: "#16A34A", flex: 1, justifyContent: "center", padding: "12px 14px" }}>
+              <Button icon={busy ? Loader2 : CheckCircle2} spin={busy} disabled={busy} onClick={activate} style={{ background: "var(--c-16a34a)", flex: 1, justifyContent: "center", padding: "12px 14px" }}>
                 Activate Device
               </Button>
               <Button variant="danger" icon={XCircle} disabled={busy} onClick={reject}>Reject</Button>
@@ -4528,7 +4529,7 @@ function DeviceActivationSection({ admin }) {
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
-              <tr style={{ background: "#FAFBFF" }}>
+              <tr style={{ background: "var(--c-fafbff)" }}>
                 {["Device ID", "Agent", "Status", "Authorized by", "Last seen", ""].map((h) => (
                   <th key={h} style={{ textAlign: "left", padding: "9px 14px", fontSize: 11, color: MUTE, fontWeight: 700, whiteSpace: "nowrap" }}>{h}</th>
                 ))}
@@ -4666,12 +4667,12 @@ function AgentsSection({ companies, admin }) {
         {canManage && <Button icon={Plus} onClick={openNew}>Add agent</Button>}
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Name", "Phone", "Status", "Last login", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -4689,13 +4690,13 @@ function AgentsSection({ companies, admin }) {
                     <>
                       <Button variant="ghost" onClick={() => openAssign(a)}>Companies</Button>
                       <button onClick={() => toggleSuspend(a)} disabled={suspendTogglingId === a.id} title={a.status === "active" ? "Suspend" : "Activate"} style={{ background: "none", border: "none", cursor: suspendTogglingId === a.id ? "default" : "pointer", opacity: suspendTogglingId === a.id ? 0.5 : 1, marginLeft: 8 }}>
-                        <Power size={14} color={a.status === "active" ? GREEN : "#C81E2C"} />
+                        <Power size={14} color={a.status === "active" ? GREEN : "var(--c-c81e2c)"} />
                       </button>
                       <button onClick={() => openEdit(a)} style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
                         <Pencil size={14} color={INDIGO} />
                       </button>
                       <button onClick={() => remove(a)} style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
-                        <Trash2 size={14} color="#C81E2C" />
+                        <Trash2 size={14} color="var(--c-c81e2c)" />
                       </button>
                     </>
                   )}
@@ -4856,7 +4857,7 @@ function PromoImages() {
         </div>
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 14 }}>
         {ordered.map((img, i) => (
@@ -4882,7 +4883,7 @@ function PromoImages() {
                 {img.active ? <EyeOff size={13} color={SLATE} /> : <Eye size={13} color={GREEN} />}
               </button>
               <button onClick={() => remove(img)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer", marginLeft: "auto" }}>
-                <Trash2 size={13} color="#C81E2C" />
+                <Trash2 size={13} color="var(--c-c81e2c)" />
               </button>
             </div>
           </Card>
@@ -4967,7 +4968,7 @@ function NalaSocoPostForm({ initial, onSave, onCancel }) {
           Published (visible on the Customer App feed)
         </label>
       </Field>
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
         <Button variant="secondary" onClick={onCancel} disabled={saving}>Cancel</Button>
         <Button onClick={submit} disabled={saving} spin={saving}>{saving ? "Saving..." : "Save"}</Button>
@@ -5038,7 +5039,7 @@ function NalaSoco() {
         <Button icon={Plus} onClick={() => setEditing({})}>New post</Button>
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14 }}>
         {posts.map((post) => (
@@ -5060,7 +5061,7 @@ function NalaSoco() {
                   <Pencil size={13} color={INDIGO} />
                 </button>
                 <button onClick={() => remove(post)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
-                  <Trash2 size={13} color="#C81E2C" />
+                  <Trash2 size={13} color="var(--c-c81e2c)" />
                 </button>
               </div>
             </div>
@@ -5314,7 +5315,7 @@ function VipNumberSettingsPanel() {
                 style={{
                   padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer",
                   border: `1px solid ${draft.workingDays.includes(d) ? INDIGO : BORDER}`,
-                  background: draft.workingDays.includes(d) ? INDIGO : "#fff",
+                  background: draft.workingDays.includes(d) ? INDIGO : "var(--c-surface)",
                   color: draft.workingDays.includes(d) ? "#fff" : MUTE,
                 }}
               >
@@ -5337,7 +5338,7 @@ function VipNumberSettingsPanel() {
           </div>
         </div>
 
-        {error && <div style={{ color: "#C81E2C", fontSize: 12, marginTop: 4, marginBottom: 8 }}>{error}</div>}
+        {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12, marginTop: 4, marginBottom: 8 }}>{error}</div>}
         <div style={{ marginTop: 10 }}>
           <Button onClick={save} disabled={saving} spin={saving}>Save</Button>
         </div>
@@ -5404,7 +5405,7 @@ function VipNumbersInventoryPanel({ companies }) {
         <Button icon={Plus} onClick={() => setEditing({})}>Add VIP number</Button>
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 14 }}>
         {numbers.map((n) => (
@@ -5416,7 +5417,7 @@ function VipNumbersInventoryPanel({ companies }) {
                   <Pencil size={15} color={INDIGO} />
                 </button>
                 <button onClick={(e) => { e.stopPropagation(); remove(n); }} title="Delete" style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}>
-                  <Trash2 size={15} color="#C81E2C" />
+                  <Trash2 size={15} color="var(--c-c81e2c)" />
                 </button>
               </div>
             </div>
@@ -5527,7 +5528,7 @@ function VipNumberModal({ number, companies, onClose, onSaved, onDelete }) {
         <input type="number" min="0" step="0.01" value={form.price} onChange={(e) => setForm((f) => ({ ...f, price: e.target.value }))} style={inputStyle} />
       </Field>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         {onDelete && number.status === "available" ? (
@@ -5592,7 +5593,7 @@ function VipNumberPackagesPanel({ companies }) {
         <Button icon={Plus} onClick={() => setEditing({})}>Add package</Button>
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14 }}>
         {packages.map((p) => (
@@ -5605,7 +5606,7 @@ function VipNumberPackagesPanel({ companies }) {
                   <Pencil size={15} color={INDIGO} />
                 </button>
                 <button onClick={(e) => { e.stopPropagation(); remove(p); }} title="Delete" style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}>
-                  <Trash2 size={15} color="#C81E2C" />
+                  <Trash2 size={15} color="var(--c-c81e2c)" />
                 </button>
               </div>
             </div>
@@ -5785,7 +5786,7 @@ function VipNumberPackageModal({ pkg, companies, onClose, onSaved, onDelete }) {
         </div>
       )}
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, margin: "12px 0" }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, margin: "12px 0" }}>{error}</div>}
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 14 }}>
         {onDelete ? <Button variant="danger" icon={Trash2} onClick={onDelete}>Delete</Button> : <div />}
@@ -5824,7 +5825,7 @@ function VipNumberPackageOrdersPanel() {
         <input placeholder="Search order id, name, phone..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 200, width: "auto" }} />
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {orders.map((o) => (
@@ -5909,7 +5910,7 @@ function VipNumberPackageOrderDetailModal({ orderId, onClose, onChanged }) {
   if (!order) {
     return (
       <Modal title="Order" onClose={onClose}>
-        {error ? <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div> : <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>}
+        {error ? <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5 }}>{error}</div> : <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>}
       </Modal>
     );
   }
@@ -5969,7 +5970,7 @@ function VipNumberPackageOrderDetailModal({ orderId, onClose, onChanged }) {
         </div>
       )}
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5 }}>{error}</div>}
     </Modal>
   );
 }
@@ -6001,7 +6002,7 @@ function VipNumbersOrdersPanel() {
         <input placeholder="Search order id, name, phone..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 200, width: "auto" }} />
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {orders.map((o) => (
@@ -6090,7 +6091,7 @@ function VipNumberOrderDetailModal({ orderId, onClose, onChanged }) {
   if (!order) {
     return (
       <Modal title="Order" onClose={onClose}>
-        {error ? <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div> : <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>}
+        {error ? <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5 }}>{error}</div> : <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>}
       </Modal>
     );
   }
@@ -6152,7 +6153,7 @@ function VipNumberOrderDetailModal({ orderId, onClose, onChanged }) {
         </div>
       )}
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5 }}>{error}</div>}
     </Modal>
   );
 }
@@ -6303,7 +6304,7 @@ function ShopCategoriesPanel() {
         <div style={{ fontSize: 11.5, color: MUTE, marginTop: 8 }}>An image can be added after the category is created. The emoji is always shown as a fallback where no image is set.</div>
       </Card>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <input ref={fileInputRef} type="file" accept="image/*" onChange={onImageSelected} style={{ display: "none" }} />
 
@@ -6329,7 +6330,7 @@ function ShopCategoriesPanel() {
                   </button>
                   {cat.hasImage && (
                     <button title="Remove image" onClick={() => removeImage(cat)} disabled={busy} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: busy ? "default" : "pointer" }}>
-                      <X size={13} color="#C81E2C" />
+                      <X size={13} color="var(--c-c81e2c)" />
                     </button>
                   )}
                 </div>
@@ -6371,7 +6372,7 @@ function ShopCategoriesPanel() {
                     {cat.active ? <EyeOff size={13} color={SLATE} /> : <Eye size={13} color={GREEN} />}
                   </button>
                   <button onClick={() => remove(cat)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
-                    <Trash2 size={13} color="#C81E2C" />
+                    <Trash2 size={13} color="var(--c-c81e2c)" />
                   </button>
                 </div>
               </div>
@@ -6447,7 +6448,7 @@ function ShopSubcategoriesModal({ category, onClose }) {
         <input placeholder="e.g. Phone Covers" value={name} onChange={(e) => setName(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
         <Button onClick={add} disabled={saving || !name.trim()} icon={Plus} spin={saving}>Add</Button>
       </div>
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {subcategories.map((sub) => (
           <div key={sub.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "8px 12px" }}>
@@ -6458,7 +6459,7 @@ function ShopSubcategoriesModal({ category, onClose }) {
                 {sub.active ? <EyeOff size={12} color={SLATE} /> : <Eye size={12} color={GREEN} />}
               </button>
               <button onClick={() => remove(sub)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 5, cursor: "pointer" }}>
-                <Trash2 size={12} color="#C81E2C" />
+                <Trash2 size={12} color="var(--c-c81e2c)" />
               </button>
             </div>
           </div>
@@ -6517,7 +6518,7 @@ function ShopProductsPanel() {
         <Button icon={Plus} onClick={() => setEditing({})}>Add product</Button>
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 14 }}>
         {products.map((p) => (
@@ -6561,7 +6562,7 @@ function ShopProductsPanel() {
                   onClick={(e) => { e.stopPropagation(); remove(p); }}
                   style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}
                 >
-                  <Trash2 size={13} color="#C81E2C" />
+                  <Trash2 size={13} color="var(--c-c81e2c)" />
                 </button>
               </div>
             </div>
@@ -6853,7 +6854,7 @@ function ShopProductModal({ product, categories, onClose, onSaved, onDelete }) {
                 ? pendingImages.map((img) => (
                     <div key={img.tempId} style={{ position: "relative", width: 64, height: 64 }}>
                       <img src={img.dataUrl} alt="" style={{ width: 64, height: 64, borderRadius: 8, objectFit: "cover", border: `1px solid ${BORDER}` }} />
-                      <button onClick={() => removePendingImage(img.tempId)} style={{ position: "absolute", top: -6, right: -6, background: "#C81E2C", border: "none", borderRadius: "50%", width: 18, height: 18, color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <button onClick={() => removePendingImage(img.tempId)} style={{ position: "absolute", top: -6, right: -6, background: "var(--c-c81e2c)", border: "none", borderRadius: "50%", width: 18, height: 18, color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
                         <X size={11} />
                       </button>
                     </div>
@@ -6862,7 +6863,7 @@ function ShopProductModal({ product, categories, onClose, onSaved, onDelete }) {
                     <div key={img.id} style={{ position: "relative", width: 64, height: 64 }}>
                       <img src={DalabAdminApi.shopProductImageUrl(product.id, img.id)} alt="" style={{ width: 64, height: 64, borderRadius: 8, objectFit: "cover", border: `1px solid ${BORDER}` }} />
                       {images.length > MIN_SHOP_PRODUCT_IMAGES && (
-                        <button onClick={() => removeImage(img.id)} style={{ position: "absolute", top: -6, right: -6, background: "#C81E2C", border: "none", borderRadius: "50%", width: 18, height: 18, color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <button onClick={() => removeImage(img.id)} style={{ position: "absolute", top: -6, right: -6, background: "var(--c-c81e2c)", border: "none", borderRadius: "50%", width: 18, height: 18, color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
                           <X size={11} />
                         </button>
                       )}
@@ -6870,7 +6871,7 @@ function ShopProductModal({ product, categories, onClose, onSaved, onDelete }) {
                   ))}
             </div>
             {count < MIN_SHOP_PRODUCT_IMAGES && (
-              <div style={{ fontSize: 11.5, color: "#C81E2C", marginBottom: 8 }}>
+              <div style={{ fontSize: 11.5, color: "var(--c-c81e2c)", marginBottom: 8 }}>
                 Add {MIN_SHOP_PRODUCT_IMAGES - count} more image{MIN_SHOP_PRODUCT_IMAGES - count > 1 ? "s" : ""} — {MIN_SHOP_PRODUCT_IMAGES} minimum, customers see this product's photo gallery.
               </div>
             )}
@@ -6911,7 +6912,7 @@ function ShopProductModal({ product, categories, onClose, onSaved, onDelete }) {
                       </button>
                     )}
                     <button onClick={() => removeVariant(v)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
-                      <Trash2 size={13} color="#C81E2C" />
+                      <Trash2 size={13} color="var(--c-c81e2c)" />
                     </button>
                   </div>
                 );
@@ -6929,11 +6930,11 @@ function ShopProductModal({ product, categories, onClose, onSaved, onDelete }) {
         </Field>
       )}
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
 
       <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
         {onDelete ? (
-          <Button variant="secondary" icon={Trash2} onClick={onDelete} style={{ color: "#C81E2C" }}>Delete</Button>
+          <Button variant="secondary" icon={Trash2} onClick={onDelete} style={{ color: "var(--c-c81e2c)" }}>Delete</Button>
         ) : <div />}
         <div style={{ display: "flex", gap: 10 }}>
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
@@ -6971,7 +6972,7 @@ function ShopOrdersPanel() {
         <input placeholder="Search order id, customer, phone..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 200, width: "auto" }} />
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {orders.map((o) => (
@@ -7064,7 +7065,7 @@ function ShopOrderDetailModal({ orderId, onClose, onChanged }) {
   if (!order) {
     return (
       <Modal title="Order" onClose={onClose}>
-        {error ? <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div> : <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>}
+        {error ? <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5 }}>{error}</div> : <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>}
       </Modal>
     );
   }
@@ -7129,7 +7130,7 @@ function ShopOrderDetailModal({ orderId, onClose, onChanged }) {
         </div>
       )}
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5 }}>{error}</div>}
     </Modal>
   );
 }
@@ -7229,7 +7230,7 @@ function ShopFlashSalesPanel() {
         </div>
       </Card>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {sales.map((sale) => {
@@ -7247,7 +7248,7 @@ function ShopFlashSalesPanel() {
                     {sale.active ? <EyeOff size={13} color={SLATE} /> : <Eye size={13} color={GREEN} />}
                   </button>
                   <button onClick={() => remove(sale)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
-                    <Trash2 size={13} color="#C81E2C" />
+                    <Trash2 size={13} color="var(--c-c81e2c)" />
                   </button>
                 </div>
               </div>
@@ -7361,7 +7362,7 @@ function ShopBundlesPanel() {
         </div>
       </Card>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 14 }}>
         {bundles.map((bundle) => {
@@ -7388,7 +7389,7 @@ function ShopBundlesPanel() {
                     {bundle.active ? <EyeOff size={13} color={SLATE} /> : <Eye size={13} color={GREEN} />}
                   </button>
                   <button onClick={() => remove(bundle)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
-                    <Trash2 size={13} color="#C81E2C" />
+                    <Trash2 size={13} color="var(--c-c81e2c)" />
                   </button>
                 </div>
               </div>
@@ -7474,7 +7475,7 @@ function ShopDeliveryZonesPanel() {
         </div>
       </Card>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {zones.map((zone) => (
@@ -7497,7 +7498,7 @@ function ShopDeliveryZonesPanel() {
                 {zone.active ? <EyeOff size={13} color={SLATE} /> : <Eye size={13} color={GREEN} />}
               </button>
               <button onClick={() => remove(zone)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
-                <Trash2 size={13} color="#C81E2C" />
+                <Trash2 size={13} color="var(--c-c81e2c)" />
               </button>
             </div>
           </Card>
@@ -7539,7 +7540,7 @@ function ShopLowStockPanel() {
       <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 16 }}>
         Active products at or below their own low-stock threshold (set per-product when editing a product — defaults to 5).
       </div>
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
       {products === null ? (
         <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>
       ) : (
@@ -7577,7 +7578,7 @@ function ShopAnalyticsPanel() {
     DalabAdminApi.getShopAnalytics().then(setData).catch((err) => setError(err.message || "Could not load analytics."));
   }, []);
 
-  if (error) return <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div>;
+  if (error) return <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5 }}>{error}</div>;
   if (!data) return <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>;
 
   const revenueSeries = (data.dailyRevenue || []).map((d) => ({
@@ -7609,7 +7610,7 @@ function ShopAnalyticsPanel() {
         <div style={{ fontWeight: 800, color: INK, fontSize: 14, marginBottom: 8 }}>Revenue, last 30 days (paid orders)</div>
         <ResponsiveContainer width="100%" height={220}>
           <LineChart data={revenueSeries}>
-            <CartesianGrid stroke="#EEF0FB" vertical={false} />
+            <CartesianGrid stroke="var(--c-eef0fb)" vertical={false} />
             <XAxis dataKey="day" tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
             <YAxis tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
             <Tooltip />
@@ -7703,7 +7704,7 @@ function ShopPaymentMethodsPanel() {
               <Field label="USSD template (must include {amount})">
                 <input value={draft.ussdTemplate ?? row.ussdTemplate} onChange={(e) => setEdits((m) => ({ ...m, [row.method]: { ...draft, ussdTemplate: e.target.value } }))} style={inputStyle} />
               </Field>
-              {error[row.method] && <div style={{ color: "#C81E2C", fontSize: 12, marginBottom: 8 }}>{error[row.method]}</div>}
+              {error[row.method] && <div style={{ color: "var(--c-c81e2c)", fontSize: 12, marginBottom: 8 }}>{error[row.method]}</div>}
               <Button onClick={() => save(row)} disabled={saving === row.method} spin={saving === row.method}>Save</Button>
             </Card>
           );
@@ -7788,8 +7789,8 @@ function isHeartbeatStale(iso) {
 
 function BatteryIcon({ percent, size = 14, color }) {
   if (percent == null) return <BatteryWarning size={size} color={color || MUTE} />;
-  if (percent <= 15) return <BatteryLow size={size} color={color || "#C81E2C"} />;
-  if (percent <= 50) return <BatteryMedium size={size} color={color || "#A9720A"} />;
+  if (percent <= 15) return <BatteryLow size={size} color={color || "var(--c-c81e2c)"} />;
+  if (percent <= 50) return <BatteryMedium size={size} color={color || "var(--c-a9720a)"} />;
   return <BatteryFull size={size} color={color || GREEN} />;
 }
 
@@ -7880,15 +7881,15 @@ function DevicesPanel({ canManage }) {
         {canManage && <Button icon={Plus} onClick={openNew}>Add device</Button>}
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 14, marginBottom: 24 }}>
         {devices.map((d) => (
           <Card key={d.id} style={{ padding: 16 }}>
             <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <div style={{ width: 34, height: 34, borderRadius: 10, background: d.enabled ? INDIGO_SOFT : "#F5E6E6", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  <Smartphone size={16} color={d.enabled ? INDIGO : "#C81E2C"} />
+                <div style={{ width: 34, height: 34, borderRadius: 10, background: d.enabled ? INDIGO_SOFT : "var(--c-f5e6e6)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <Smartphone size={16} color={d.enabled ? INDIGO : "var(--c-c81e2c)"} />
                 </div>
                 <div>
                   <div style={{ fontWeight: 700, fontSize: 13.5, color: INK }}>{d.name}</div>
@@ -7904,7 +7905,7 @@ function DevicesPanel({ canManage }) {
                 <span style={{ fontSize: 11.5, color: MUTE }}>{d.batteryPercent != null ? `${d.batteryPercent}%` : "No data"}</span>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                {d.networkOnline ? <Wifi size={13} color={GREEN} /> : <WifiOff size={13} color="#C81E2C" />}
+                {d.networkOnline ? <Wifi size={13} color={GREEN} /> : <WifiOff size={13} color="var(--c-c81e2c)" />}
                 <span style={{ fontSize: 11.5, color: MUTE }}>{d.networkOnline ? "Online" : "Offline"}</span>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -7921,7 +7922,7 @@ function DevicesPanel({ canManage }) {
             {(d.healthIssues || []).filter((i) => i.code !== "offline").length > 0 && (
               <div style={{ marginTop: 8, display: "grid", gap: 4 }}>
                 {(d.healthIssues || []).filter((i) => i.code !== "offline").map((i) => (
-                  <div key={i.code} style={{ fontSize: 11.5, color: i.severity === "error" ? "#C81E2C" : "#92400E", display: "flex", gap: 4 }}>
+                  <div key={i.code} style={{ fontSize: 11.5, color: i.severity === "error" ? "var(--c-c81e2c)" : "var(--c-92400e)", display: "flex", gap: 4 }}>
                     <AlertTriangle size={12} style={{ flexShrink: 0, marginTop: 1 }} />
                     <span>{i.message}</span>
                   </div>
@@ -7944,13 +7945,13 @@ function DevicesPanel({ canManage }) {
             {canManage && (
               <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
                 <button onClick={() => toggleEnabled(d)} title={d.enabled ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer" }}>
-                  <Power size={14} color={d.enabled ? GREEN : "#C81E2C"} />
+                  <Power size={14} color={d.enabled ? GREEN : "var(--c-c81e2c)"} />
                 </button>
                 <button onClick={() => openEdit(d)} style={{ background: "none", border: "none", cursor: "pointer" }}>
                   <Pencil size={14} color={INDIGO} />
                 </button>
                 <button onClick={() => remove(d)} style={{ background: "none", border: "none", cursor: "pointer" }}>
-                  <Trash2 size={14} color="#C81E2C" />
+                  <Trash2 size={14} color="var(--c-c81e2c)" />
                 </button>
               </div>
             )}
@@ -7965,7 +7966,7 @@ function DevicesPanel({ canManage }) {
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Agent", "Phone", "Assigned device", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -8217,12 +8218,12 @@ function UssdTemplatesPanel({ companies, canManage, onPackagesChanged }) {
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
         <button onClick={() => setCompanyFilter("all")} style={{
           padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
-          border: `1px solid ${companyFilter === "all" ? INDIGO : BORDER}`, background: companyFilter === "all" ? INDIGO : "#fff", color: companyFilter === "all" ? "#fff" : SLATE,
+          border: `1px solid ${companyFilter === "all" ? INDIGO : BORDER}`, background: companyFilter === "all" ? INDIGO : "var(--c-surface)", color: companyFilter === "all" ? "#fff" : SLATE,
         }}>All providers</button>
         {companies.map((c) => (
           <button key={c.id} onClick={() => setCompanyFilter(c.id)} style={{
             padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
-            border: `1px solid ${companyFilter === c.id ? c.color : BORDER}`, background: companyFilter === c.id ? c.color : "#fff", color: companyFilter === c.id ? "#fff" : SLATE,
+            border: `1px solid ${companyFilter === c.id ? c.color : BORDER}`, background: companyFilter === c.id ? c.color : "var(--c-surface)", color: companyFilter === c.id ? "#fff" : SLATE,
           }}>{c.name}</button>
         ))}
       </div>
@@ -8236,7 +8237,7 @@ function UssdTemplatesPanel({ companies, canManage, onPackagesChanged }) {
           <Card style={{ padding: 0, overflow: "hidden" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
-                <tr style={{ background: "#FAFBFF" }}>
+                <tr style={{ background: "var(--c-fafbff)" }}>
                   {["Service Name", "USSD Code", "Device & SIM", "Status", "Notes", "Created", "Last Updated", ""].map((h) => (
                     <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
                   ))}
@@ -8258,7 +8259,7 @@ function UssdTemplatesPanel({ companies, canManage, onPackagesChanged }) {
                       {canManage && (
                         <>
                           <button onClick={() => toggleStatus(t)} title={t.status === "enabled" ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
-                            <Power size={14} color={t.status === "enabled" ? GREEN : "#C81E2C"} />
+                            <Power size={14} color={t.status === "enabled" ? GREEN : "var(--c-c81e2c)"} />
                           </button>
                           <button onClick={() => openEdit(t)} title="Edit" style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
                             <Pencil size={14} color={INDIGO} />
@@ -8267,7 +8268,7 @@ function UssdTemplatesPanel({ companies, canManage, onPackagesChanged }) {
                             <Copy size={14} color={SLATE} />
                           </button>
                           <button onClick={() => remove(t)} title="Delete" style={{ background: "none", border: "none", cursor: "pointer" }}>
-                            <Trash2 size={14} color="#C81E2C" />
+                            <Trash2 size={14} color="var(--c-c81e2c)" />
                           </button>
                         </>
                       )}
@@ -8426,11 +8427,11 @@ function SimRoutingPanel({ companies, canManage }) {
         additional devices act as a backup if you've physically provisioned a second SIM for that provider. Each route also picks which physical SIM slot (1 or 2) on that device to use.
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       {unassigned.length > 0 && (
-        <Card style={{ padding: 16, marginBottom: 16, background: "#FFF8E8", border: "1px solid #F4E3B0" }}>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#A9720A", marginBottom: 8 }}>Not yet routed — no Agent App device can auto-dial for these until assigned:</div>
+        <Card style={{ padding: 16, marginBottom: 16, background: "var(--c-fff8e8)", border: "1px solid var(--c-f4e3b0)" }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--c-a9720a)", marginBottom: 8 }}>Not yet routed — no Agent App device can auto-dial for these until assigned:</div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {unassigned.map((c) => (
               <Badge key={c.id} tone="amber">{c.name}</Badge>
@@ -8479,7 +8480,7 @@ function SimRoutingPanel({ companies, canManage }) {
                       {savingKey === key && <Loader2 size={13} className="animate-spin" color={MUTE} />}
                       {canManage && (
                         <button onClick={() => remove(r.companyId, r.deviceId)} style={{ background: "none", border: "none", cursor: "pointer" }}>
-                          <Trash2 size={14} color="#C81E2C" />
+                          <Trash2 size={14} color="var(--c-c81e2c)" />
                         </button>
                       )}
                     </div>
@@ -8579,13 +8580,13 @@ function ProviderPinsPanel({ companies, canManage }) {
         <br />
         <b>This must be the provider's real secret PIN — not any fixed digits that already appear in that provider's USSD Template pattern</b> (e.g. a service short-code). If a template looks like <code>*737*{"{receiverNumber}"}*{"{amount}"}*{"{pin}"}#</code>, the PIN you set here fills in <code>{"{pin}"}</code> only.
       </div>
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
       {message && <div style={{ color: GREEN, fontSize: 12.5, marginBottom: 14 }}>{message}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden", marginBottom: 16 }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Provider", "PIN status", "New PIN", "Auto-processing"].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -8619,10 +8620,10 @@ function ProviderPinsPanel({ companies, canManage }) {
                     style={{
                       display: "flex", alignItems: "center", gap: 6, border: "none", background: "none",
                       cursor: canManage ? "pointer" : "default", fontSize: 12, fontWeight: 700,
-                      color: autoProcess[c.id] ? GREEN : "#A9720A",
+                      color: autoProcess[c.id] ? GREEN : "var(--c-a9720a)",
                     }}
                   >
-                    {autoProcess[c.id] ? <Power size={14} color={GREEN} /> : <AlertTriangle size={14} color="#A9720A" />}
+                    {autoProcess[c.id] ? <Power size={14} color={GREEN} /> : <AlertTriangle size={14} color="var(--c-a9720a)" />}
                     {autoProcess[c.id] ? "Automatic" : "Manual approval"}
                   </button>
                 </td>
@@ -8912,7 +8913,7 @@ function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged
         </div>
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
       {message && <div style={{ color: GREEN, fontSize: 12.5, marginBottom: 14 }}>{message}</div>}
       {!canManageSecrets && <Badge tone="amber">View only — Payment Number, Provider Number, USSD PIN, Sender Number/SIM Slot, and USSD Templates are Super Admin only</Badge>}
 
@@ -9010,7 +9011,7 @@ function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged
                     )}
                   </div>
                 ) : (
-                  <div style={{ fontSize: 12.5, color: "#A9720A", display: "flex", alignItems: "center", gap: 6 }}>
+                  <div style={{ fontSize: 12.5, color: "var(--c-a9720a)", display: "flex", alignItems: "center", gap: 6 }}>
                     <AlertTriangle size={13} />
                     No device routed yet — the Agent App can't auto-dial for {c.name} until one is assigned.
                   </div>
@@ -9056,13 +9057,13 @@ function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged
                       {canManageSecrets && (
                         <>
                           <button onClick={() => toggleMethodStatus(c.id, m)} title={m.enabled ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer" }}>
-                            <Power size={14} color={m.enabled ? GREEN : "#C81E2C"} />
+                            <Power size={14} color={m.enabled ? GREEN : "var(--c-c81e2c)"} />
                           </button>
                           <button onClick={() => openEditMethod(c.id, m)} title="Edit" style={{ background: "none", border: "none", cursor: "pointer" }}>
                             <Pencil size={14} color={INDIGO} />
                           </button>
                           <button onClick={() => removeMethod(c.id, m)} title="Delete" style={{ background: "none", border: "none", cursor: "pointer" }}>
-                            <Trash2 size={14} color="#C81E2C" />
+                            <Trash2 size={14} color="var(--c-c81e2c)" />
                           </button>
                         </>
                       )}
@@ -9088,13 +9089,13 @@ function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged
                       {canManageSecrets && (
                         <>
                           <button onClick={() => toggleTemplateStatus(t)} title={t.status === "enabled" ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer" }}>
-                            <Power size={14} color={t.status === "enabled" ? GREEN : "#C81E2C"} />
+                            <Power size={14} color={t.status === "enabled" ? GREEN : "var(--c-c81e2c)"} />
                           </button>
                           <button onClick={() => openEditTemplate(t)} title="Edit" style={{ background: "none", border: "none", cursor: "pointer" }}>
                             <Pencil size={14} color={INDIGO} />
                           </button>
                           <button onClick={() => removeTemplate(t)} title="Delete" style={{ background: "none", border: "none", cursor: "pointer" }}>
-                            <Trash2 size={14} color="#C81E2C" />
+                            <Trash2 size={14} color="var(--c-c81e2c)" />
                           </button>
                         </>
                       )}
@@ -9410,12 +9411,12 @@ function PaymentTransactionsPanel({ companies }) {
         <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ ...inputStyle, width: 150 }} title="To date" />
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <SortHeader label="Order ID" sortKeyName="orderId" />
               <SortHeader label="Customer Phone" sortKeyName="customerPhone" />
               <SortHeader label="Amount" sortKeyName="amount" />
@@ -9434,7 +9435,7 @@ function PaymentTransactionsPanel({ companies }) {
                 <tr key={`skeleton-${i}`} style={{ borderTop: `1px solid ${BORDER}` }}>
                   {Array.from({ length: 8 }).map((__, j) => (
                     <td key={j} style={{ padding: "12px 14px" }}>
-                      <div style={{ height: 12, borderRadius: 4, background: "#EEF0FB", width: j === 0 ? 90 : "70%" }} />
+                      <div style={{ height: 12, borderRadius: 4, background: "var(--c-eef0fb)", width: j === 0 ? 90 : "70%" }} />
                     </td>
                   ))}
                 </tr>
@@ -9472,7 +9473,7 @@ function PaymentTransactionsPanel({ companies }) {
       {selectedTxId && (
         <Modal title="Payment history" onClose={() => setSelectedTxId(null)} width={560}>
           {timelineLoading && <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>}
-          {timelineError && <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{timelineError}</div>}
+          {timelineError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5 }}>{timelineError}</div>}
           {timeline && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               <div>
@@ -9497,7 +9498,7 @@ function PaymentTransactionsPanel({ companies }) {
                   <div style={{ fontSize: 12.5, color: MUTE, marginTop: 4 }}>
                     No linked order.
                     {timeline.smsLog?.matchFailureReason && (
-                      <div style={{ color: "#C81E2C", fontWeight: 600, marginTop: 4 }}>
+                      <div style={{ color: "var(--c-c81e2c)", fontWeight: 600, marginTop: 4 }}>
                         {timeline.smsLog.matchFailureReason}
                       </div>
                     )}
@@ -9513,7 +9514,7 @@ function PaymentTransactionsPanel({ companies }) {
                   </div>
                 )}
                 {timeline.dialAttempts.length === 0 && timeline.order?.ussdGenerationFailedReason && (
-                  <div style={{ fontSize: 12.5, color: "#C81E2C", marginTop: 4, fontWeight: 600 }}>
+                  <div style={{ fontSize: 12.5, color: "var(--c-c81e2c)", marginTop: 4, fontWeight: 600 }}>
                     USSD generation failed: {timeline.order.ussdGenerationFailedReason}
                   </div>
                 )}
@@ -9717,7 +9718,7 @@ function OfflinePaymentMethodsPanel() {
               <Field label={'USSD template (must include "$" as the amount placeholder)'}>
                 <input value={draft.ussdTemplate ?? row.ussdTemplate} onChange={(e) => setEdits((m) => ({ ...m, [row.method]: { ...draft, ussdTemplate: e.target.value } }))} style={inputStyle} />
               </Field>
-              {error[row.method] && <div style={{ color: "#C81E2C", fontSize: 12, marginBottom: 8 }}>{error[row.method]}</div>}
+              {error[row.method] && <div style={{ color: "var(--c-c81e2c)", fontSize: 12, marginBottom: 8 }}>{error[row.method]}</div>}
               <Button onClick={() => save(row)} disabled={saving === row.method} spin={saving === row.method}>Save</Button>
             </Card>
           );
@@ -9834,16 +9835,16 @@ function OfflineOrdersTab({ companies, initialSearch, onOpenOrder }) {
       </div>
 
       {statusFilter === "SYNC_PENDING" && (
-        <div style={{ fontSize: 12, color: MUTE, marginBottom: 12, background: "#FAFBFF", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "8px 12px" }}>
+        <div style={{ fontSize: 12, color: MUTE, marginBottom: 12, background: "var(--c-fafbff)", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "8px 12px" }}>
           Sync Pending describes a result still sitting on an Agent device's own local queue, not yet uploaded — the backend has no visibility into that by design, so this is always empty here. Check the device's own Diagnostics screen for anything queued locally.
         </div>
       )}
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Order ID", "Customer", "Operator", "Package", "Amount", "Status", "Agent / Device", "SIM", "Dial Attempts", "Created", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -9925,12 +9926,12 @@ function OfflineCustomersTab({ onViewOrders }) {
         </div>
         <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={fetchRows} disabled={loading}>Refresh</Button>
       </div>
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Customer", "Number", "Sender / Payment #", "Operator", "Package", "Payment Method", "Profile Since", "Orders", "Last Payment", "Status", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -10027,12 +10028,12 @@ function OfflinePaymentTransactionsTab({ companies, onViewOrder }) {
         <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ ...inputStyle, width: 150 }} title="To date" />
         <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={fetchRows} disabled={loading}>Refresh</Button>
       </div>
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Transaction Ref", "Customer #", "Amount", "Operator", "Payment Method", "SMS Received", "Status", "Matched Order", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -10103,12 +10104,12 @@ function ResolveDialAttempt({ attempt, onResolved }) {
   };
   return (
     <div style={{ marginTop: 6, padding: "6px 8px", borderRadius: 8, background: "rgba(245,158,11,0.10)", fontSize: 11.5 }}>
-      <div style={{ color: "#92400E", fontWeight: 600 }}>
+      <div style={{ color: "var(--c-92400e)", fontWeight: 600 }}>
         Result unknown — the money may already have been sent. Automation won't dial this order again until you decide.
       </div>
       <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
         <button disabled={busy} onClick={() => resolve(true)} style={{ padding: "4px 10px", borderRadius: 6, border: "none", background: GREEN, color: "#fff", cursor: "pointer", fontSize: 11.5 }}>Delivered</button>
-        <button disabled={busy} onClick={() => resolve(false)} style={{ padding: "4px 10px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", cursor: "pointer", fontSize: 11.5 }}>Not delivered — dial again</button>
+        <button disabled={busy} onClick={() => resolve(false)} style={{ padding: "4px 10px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "var(--c-surface)", cursor: "pointer", fontSize: 11.5 }}>Not delivered — dial again</button>
       </div>
     </div>
   );
@@ -10169,7 +10170,7 @@ function OfflineOrderDetailDrawer({ orderId, onClose }) {
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        style={{ width: 460, maxWidth: "100%", background: "#fff", height: "100%", overflowY: "auto", padding: 24 }}
+        style={{ width: 460, maxWidth: "100%", background: "var(--c-surface)", height: "100%", overflowY: "auto", padding: 24 }}
       >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div>
@@ -10182,7 +10183,7 @@ function OfflineOrderDetailDrawer({ orderId, onClose }) {
         </div>
 
         {loading && <div style={{ padding: 20, fontSize: 12.5, color: MUTE }}>Loading…</div>}
-        {error && <div style={{ padding: 20, fontSize: 12.5, color: "#C81E2C" }}>{error}</div>}
+        {error && <div style={{ padding: 20, fontSize: 12.5, color: "var(--c-c81e2c)" }}>{error}</div>}
 
         {data && (
           <>
@@ -10203,7 +10204,7 @@ function OfflineOrderDetailDrawer({ orderId, onClose }) {
             {row("Created", formatDateTime(data.order.createdAt), true)}
             {data.order.completedAt && row("Completed", formatDateTime(data.order.completedAt), true)}
             {data.order.ussdGenerationFailedReason && (
-              <div style={{ fontSize: 12.5, color: "#C81E2C", fontWeight: 600, marginTop: 6 }}>
+              <div style={{ fontSize: 12.5, color: "var(--c-c81e2c)", fontWeight: 600, marginTop: 6 }}>
                 USSD generation failed: {data.order.ussdGenerationFailedReason}
               </div>
             )}
@@ -10211,7 +10212,7 @@ function OfflineOrderDetailDrawer({ orderId, onClose }) {
             {section("PAYMENT TRANSACTIONS")}
             {data.paymentTransactions.length === 0 && <div style={{ fontSize: 12, color: MUTE, marginTop: 6 }}>No payment transaction linked yet.</div>}
             {data.paymentTransactions.map((t) => (
-              <div key={t.id} style={{ padding: "8px 10px", marginTop: 6, borderRadius: 8, border: `1px solid ${t.status === "duplicate_blocked" ? "#F4E3B0" : BORDER}`, background: t.status === "duplicate_blocked" ? "#FFFBEF" : "transparent" }}>
+              <div key={t.id} style={{ padding: "8px 10px", marginTop: 6, borderRadius: 8, border: `1px solid ${t.status === "duplicate_blocked" ? "var(--c-f4e3b0)" : BORDER}`, background: t.status === "duplicate_blocked" ? "var(--c-fffbef)" : "transparent" }}>
                 <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 11.5 }}>
                   <Badge tone={{ pending: "amber", processing: "blue", completed: "green", failed: "red", duplicate_blocked: "red" }[t.status] || "neutral"}>{t.status}</Badge>
                   <span style={{ color: MUTE, fontFamily: "monospace" }}>{t.transactionRef || "no ref"}</span>
@@ -10255,7 +10256,7 @@ function OfflineOrderDetailDrawer({ orderId, onClose }) {
                 <div style={{ color: MUTE, marginTop: 3 }}>Agent: {a.agentName || "—"} · Device: {a.deviceName || "—"} · SIM {a.simSlot ?? "—"}</div>
                 {a.ussdString && <div style={{ color: SLATE, fontFamily: "monospace", marginTop: 3, wordBreak: "break-all" }}>{a.ussdString}</div>}
                 {a.responseMessage && <div style={{ color: MUTE, marginTop: 3 }}>Network response: {a.responseMessage}</div>}
-                {explainFailure(a.responseMessage) && <div style={{ color: "#C81E2C", fontWeight: 600, marginTop: 3 }}>{explainFailure(a.responseMessage)}</div>}
+                {explainFailure(a.responseMessage) && <div style={{ color: "var(--c-c81e2c)", fontWeight: 600, marginTop: 3 }}>{explainFailure(a.responseMessage)}</div>}
                 <ResolveDialAttempt attempt={a} onResolved={() => setReloadKey((k) => k + 1)} />
               </div>
             ))}
@@ -10477,7 +10478,7 @@ function CommissionsPanel({ companies, packages, admin }) {
       <Card style={{ padding: 0, overflow: "hidden", marginBottom: 22 }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Name</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Scope</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Type / Value</th>
@@ -10505,7 +10506,7 @@ function CommissionsPanel({ companies, packages, admin }) {
                       <Pencil size={15} color={SLATE} />
                     </button>
                     <button onClick={() => toggleRuleStatus(r)} style={{ background: "none", border: "none", cursor: "pointer" }} title={r.enabled ? "Disable" : "Enable"}>
-                      <Power size={15} color={r.enabled ? "#C81E2C" : GREEN} />
+                      <Power size={15} color={r.enabled ? "var(--c-c81e2c)" : GREEN} />
                     </button>
                   </td>
                 )}
@@ -10571,7 +10572,7 @@ function CommissionsPanel({ companies, packages, admin }) {
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
-              <tr style={{ background: "#FAFBFF" }}>
+              <tr style={{ background: "var(--c-fafbff)" }}>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Order ID</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Provider</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Package</th>
@@ -10587,7 +10588,7 @@ function CommissionsPanel({ companies, packages, admin }) {
                   <tr key={`skeleton-${i}`} style={{ borderTop: `1px solid ${BORDER}` }}>
                     {Array.from({ length: 7 }).map((__, j) => (
                       <td key={j} style={{ padding: "12px 14px" }}>
-                        <div style={{ height: 12, borderRadius: 4, background: "#EEF0FB", width: j === 0 ? 90 : "70%" }} />
+                        <div style={{ height: 12, borderRadius: 4, background: "var(--c-eef0fb)", width: j === 0 ? 90 : "70%" }} />
                       </td>
                     ))}
                   </tr>
@@ -10599,7 +10600,7 @@ function CommissionsPanel({ companies, packages, admin }) {
                   <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{r.companyName || "—"}</td>
                   <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{r.packageName || "—"}</td>
                   <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>${Number(r.orderAmount).toFixed(2)}</td>
-                  <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: Number(r.commissionAmount) < 0 ? "#C81E2C" : GREEN }}>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: Number(r.commissionAmount) < 0 ? "var(--c-c81e2c)" : GREEN }}>
                     ${Number(r.commissionAmount).toFixed(2)}
                   </td>
                   <td style={{ padding: "10px 14px" }}>
@@ -10664,7 +10665,7 @@ function CommissionsPanel({ companies, packages, admin }) {
               onChange={(e) => setRuleForm({ ...ruleForm, value: e.target.value })}
             />
           </Field>
-          {ruleError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{ruleError}</div>}
+          {ruleError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{ruleError}</div>}
           <Button onClick={saveRule} disabled={ruleSaving} style={{ width: "100%", justifyContent: "center" }}>
             {ruleSaving ? "Saving…" : "Save Rule"}
           </Button>
@@ -11010,7 +11011,7 @@ function MoneyExchangePanel({ admin }) {
       <Card style={{ padding: 0, overflow: "hidden", marginBottom: 22 }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Wallet</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Phone Number</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Device / SIM</th>
@@ -11057,7 +11058,7 @@ function MoneyExchangePanel({ admin }) {
       <Card style={{ padding: 0, overflow: "hidden", marginBottom: 22 }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>From</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>To</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Rate</th>
@@ -11088,7 +11089,7 @@ function MoneyExchangePanel({ admin }) {
                       <Pencil size={15} color={SLATE} />
                     </button>
                     <button onClick={() => toggleCorridor(c)} style={{ background: "none", border: "none", cursor: "pointer" }} title={c.enabled ? "Disable" : "Enable"}>
-                      <Power size={15} color={c.enabled ? "#C81E2C" : GREEN} />
+                      <Power size={15} color={c.enabled ? "var(--c-c81e2c)" : GREEN} />
                     </button>
                   </td>
                 )}
@@ -11112,7 +11113,7 @@ function MoneyExchangePanel({ admin }) {
       <Card style={{ padding: 0, overflow: "hidden", marginBottom: 22 }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Order</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Corridor</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Sent / Received</th>
@@ -11130,7 +11131,7 @@ function MoneyExchangePanel({ admin }) {
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontFamily: "monospace" }}>{o.receiverPhone}</td>
                 <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(o.createdAt)}</td>
                 <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
-                  {actionError[o.id] && <div style={{ color: "#C81E2C", fontSize: 11, marginBottom: 4 }}>{actionError[o.id]}</div>}
+                  {actionError[o.id] && <div style={{ color: "var(--c-c81e2c)", fontSize: 11, marginBottom: 4 }}>{actionError[o.id]}</div>}
                   {canManage && (
                     <Button variant="primary" disabled={actingId === o.id} onClick={() => verifyOrder(o)}>
                       {actingId === o.id ? "Verifying…" : "Verify Payment"}
@@ -11164,7 +11165,7 @@ function MoneyExchangePanel({ admin }) {
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
-              <tr style={{ background: "#FAFBFF" }}>
+              <tr style={{ background: "var(--c-fafbff)" }}>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Order</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Corridor</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Sent / Received</th>
@@ -11221,7 +11222,7 @@ function MoneyExchangePanel({ admin }) {
               <option value="2">SIM 2</option>
             </select>
           </Field>
-          {payoutWalletError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{payoutWalletError}</div>}
+          {payoutWalletError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{payoutWalletError}</div>}
           <Button onClick={savePayoutWallet} disabled={payoutWalletSaving} style={{ width: "100%", justifyContent: "center" }}>
             {payoutWalletSaving ? "Saving…" : "Save"}
           </Button>
@@ -11237,7 +11238,7 @@ function MoneyExchangePanel({ admin }) {
           <Field label="New PIN (4-8 digits)">
             <input type="password" inputMode="numeric" style={inputStyle} value={pinValue} onChange={(e) => setPinValue(e.target.value)} maxLength={8} />
           </Field>
-          {pinError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{pinError}</div>}
+          {pinError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{pinError}</div>}
           <Button onClick={savePin} disabled={pinSaving} style={{ width: "100%", justifyContent: "center" }}>
             {pinSaving ? "Saving…" : "Save PIN"}
           </Button>
@@ -11290,7 +11291,7 @@ function MoneyExchangePanel({ admin }) {
               ))}
             </select>
             {corridorForm.toWalletId && payoutWallets.every((w) => w.walletId !== corridorForm.toWalletId) && (
-              <div style={{ color: "#A9720A", fontSize: 12, marginTop: 4 }}>
+              <div style={{ color: "var(--c-a9720a)", fontSize: 12, marginTop: 4 }}>
                 No payout wallet configured for this "To" currency yet — add one above first.
               </div>
             )}
@@ -11301,7 +11302,7 @@ function MoneyExchangePanel({ admin }) {
           <Field label="Max amount (optional)">
             <input type="number" min="0" step="0.01" style={inputStyle} value={corridorForm.maxAmount} onChange={(e) => setCorridorForm({ ...corridorForm, maxAmount: e.target.value })} />
           </Field>
-          {corridorError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{corridorError}</div>}
+          {corridorError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{corridorError}</div>}
           <Button onClick={saveCorridor} disabled={corridorSaving} style={{ width: "100%", justifyContent: "center" }}>
             {corridorSaving ? "Saving…" : "Save Corridor"}
           </Button>
@@ -11351,7 +11352,7 @@ function MoneyExchangePanel({ admin }) {
                   </Button>
                 </div>
               )}
-              {detailActionError && <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{detailActionError}</div>}
+              {detailActionError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5 }}>{detailActionError}</div>}
             </div>
           )}
         </Modal>
@@ -11369,9 +11370,9 @@ function MoneyExchangePanel({ admin }) {
           <Field label="Amount sent">
             <input type="number" min="0" step="0.01" style={inputStyle} value={createForm.amount} onChange={(e) => setCreateForm({ ...createForm, amount: e.target.value })} />
           </Field>
-          {createQuoteError && <div style={{ color: "#C81E2C", fontSize: 12, marginBottom: 10 }}>{createQuoteError}</div>}
+          {createQuoteError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12, marginBottom: 10 }}>{createQuoteError}</div>}
           {createQuote && (
-            <div style={{ background: "#FAFBFF", border: `1px solid ${BORDER}`, borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 12.5 }}>
+            <div style={{ background: "var(--c-fafbff)", border: `1px solid ${BORDER}`, borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 12.5 }}>
               <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ color: MUTE }}>Rate</span><span>{createQuote.rate}</span></div>
               <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ color: MUTE }}>Fee</span><span>${Number(createQuote.fee).toFixed(2)}</span></div>
               <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, color: GREEN }}><span>Amount received</span><span>${Number(createQuote.amountReceived).toFixed(2)}</span></div>
@@ -11386,7 +11387,7 @@ function MoneyExchangePanel({ admin }) {
           <Field label="Customer phone (optional — links this to a customer account)">
             <input style={inputStyle} value={createForm.customerPhone} onChange={(e) => setCreateForm({ ...createForm, customerPhone: e.target.value })} />
           </Field>
-          {createError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{createError}</div>}
+          {createError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{createError}</div>}
           <Button onClick={saveCreate} disabled={createSaving} style={{ width: "100%", justifyContent: "center" }}>
             {createSaving ? "Saving…" : "Log Exchange"}
           </Button>
@@ -11458,7 +11459,7 @@ function ResellerManagement({ admin, companies }) {
             style={{
               padding: "8px 14px", borderRadius: 10, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
               border: `1px solid ${tab === t.id ? INDIGO : BORDER}`,
-              background: tab === t.id ? INDIGO_SOFT : "#fff",
+              background: tab === t.id ? INDIGO_SOFT : "var(--c-surface)",
               color: tab === t.id ? INDIGO : SLATE,
             }}
           >
@@ -11563,7 +11564,7 @@ function ResellersTab({ canManage, isSuperAdmin }) {
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Reseller ID</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Name</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Wallet Balance</th>
@@ -11603,7 +11604,7 @@ function ResellersTab({ canManage, isSuperAdmin }) {
           <Field label="Name"><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
           <Field label="Phone (optional)"><input style={inputStyle} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></Field>
           <Field label="Notes (optional)"><input style={inputStyle} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></Field>
-          {formError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{formError}</div>}
+          {formError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{formError}</div>}
           <Button onClick={saveCreate} disabled={saving} style={{ width: "100%", justifyContent: "center" }}>
             {saving ? "Creating…" : "Create Reseller"}
           </Button>
@@ -11626,7 +11627,7 @@ function ResellersTab({ canManage, isSuperAdmin }) {
           <Field label="Amount (negative to debit)">
             <input type="number" step="0.01" style={inputStyle} value={adjustAmount} onChange={(e) => setAdjustAmount(e.target.value)} />
           </Field>
-          {adjustError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{adjustError}</div>}
+          {adjustError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{adjustError}</div>}
           <Button onClick={saveAdjust} disabled={saving} style={{ width: "100%", justifyContent: "center" }}>
             {saving ? "Saving…" : "Apply Adjustment"}
           </Button>
@@ -11696,7 +11697,7 @@ function ResellerNumbersTab({ canManage, companies }) {
         <Card style={{ padding: 0, overflow: "hidden" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
-              <tr style={{ background: "#FAFBFF" }}>
+              <tr style={{ background: "var(--c-fafbff)" }}>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Role</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Number</th>
@@ -11745,7 +11746,7 @@ function ResellerNumbersTab({ canManage, companies }) {
           </Field>
           <Field label="Payment Number"><input style={inputStyle} value={form.paymentNumber} onChange={(e) => setForm({ ...form, paymentNumber: e.target.value })} /></Field>
           <Field label="Label (optional)"><input style={inputStyle} value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} /></Field>
-          {formError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{formError}</div>}
+          {formError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{formError}</div>}
           <Button onClick={saveCreate} disabled={saving} style={{ width: "100%", justifyContent: "center" }}>
             {saving ? "Saving…" : "Register Number"}
           </Button>
@@ -11917,7 +11918,7 @@ function ResellerPaymentTab({ canManage, isSuperAdmin, companies }) {
       <Card style={{ padding: 0, overflow: "hidden", marginBottom: 24 }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Method</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Label</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payment Number</th>
@@ -11947,7 +11948,7 @@ function ResellerPaymentTab({ canManage, isSuperAdmin, companies }) {
                       <Button variant="subtle" disabled={savingMethod === row.method} onClick={() => saveMethod(row)}>
                         {savingMethod === row.method ? "Saving…" : "Save"}
                       </Button>
-                      {methodError[row.method] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{methodError[row.method]}</div>}
+                      {methodError[row.method] && <div style={{ color: "var(--c-c81e2c)", fontSize: 11.5, marginTop: 4 }}>{methodError[row.method]}</div>}
                     </td>
                   </>
                 ) : (
@@ -11970,7 +11971,7 @@ function ResellerPaymentTab({ canManage, isSuperAdmin, companies }) {
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payout USSD Template</th>
               {canManage && <th style={{ padding: "10px 14px" }} />}
@@ -11997,7 +11998,7 @@ function ResellerPaymentTab({ canManage, isSuperAdmin, companies }) {
                     <Button variant="subtle" disabled={savingPayout === c.id} onClick={() => savePayout(c)}>
                       {savingPayout === c.id ? "Saving…" : "Save"}
                     </Button>
-                    {payoutError[c.id] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{payoutError[c.id]}</div>}
+                    {payoutError[c.id] && <div style={{ color: "var(--c-c81e2c)", fontSize: 11.5, marginTop: 4 }}>{payoutError[c.id]}</div>}
                   </td>
                 )}
               </tr>
@@ -12013,7 +12014,7 @@ function ResellerPaymentTab({ canManage, isSuperAdmin, companies }) {
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Initial Dial</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Reply Steps (PIN sent last unless a {"{pin}"} step is included)</th>
@@ -12049,7 +12050,7 @@ function ResellerPaymentTab({ canManage, isSuperAdmin, companies }) {
                             {savingSteps === c.id ? "Saving…" : "Save Steps"}
                           </Button>
                         </div>
-                        {stepsError[c.id] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{stepsError[c.id]}</div>}
+                        {stepsError[c.id] && <div style={{ color: "var(--c-c81e2c)", fontSize: 11.5, marginTop: 4 }}>{stepsError[c.id]}</div>}
                       </td>
                     </>
                   ) : (
@@ -12072,7 +12073,7 @@ function ResellerPaymentTab({ canManage, isSuperAdmin, companies }) {
                             {savingPin === c.id ? "Saving…" : "Save PIN"}
                           </Button>
                         </div>
-                        {pinError[c.id] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{pinError[c.id]}</div>}
+                        {pinError[c.id] && <div style={{ color: "var(--c-c81e2c)", fontSize: 11.5, marginTop: 4 }}>{pinError[c.id]}</div>}
                       </div>
                     ) : (
                       <span style={{ fontSize: 12, color: MUTE }}>
@@ -12095,7 +12096,7 @@ function ResellerPaymentTab({ canManage, isSuperAdmin, companies }) {
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Commission %</th>
               {canManage && <th style={{ padding: "10px 14px" }} />}
@@ -12123,7 +12124,7 @@ function ResellerPaymentTab({ canManage, isSuperAdmin, companies }) {
                     <Button variant="subtle" disabled={savingCommission === row.companyId} onClick={() => saveCommission(row)}>
                       {savingCommission === row.companyId ? "Saving…" : "Save"}
                     </Button>
-                    {commissionError[row.companyId] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{commissionError[row.companyId]}</div>}
+                    {commissionError[row.companyId] && <div style={{ color: "var(--c-c81e2c)", fontSize: 11.5, marginTop: 4 }}>{commissionError[row.companyId]}</div>}
                   </td>
                 )}
               </tr>
@@ -12167,7 +12168,7 @@ function ResellerOrdersTab({ canManage }) {
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Order #</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Reseller</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
@@ -12199,7 +12200,7 @@ function ResellerOrdersTab({ canManage }) {
                     {(o.status === "pending" || o.status === "payment_sent") && (
                       <Button variant="danger" style={{ marginLeft: 6 }} disabled={actingId === o.id} onClick={() => act(o, DalabAdminApi.cancelResellerOrder, "cancel")}>Cancel</Button>
                     )}
-                    {actionError[o.id] && <div style={{ color: "#C81E2C", fontSize: 11, marginTop: 4 }}>{actionError[o.id]}</div>}
+                    {actionError[o.id] && <div style={{ color: "var(--c-c81e2c)", fontSize: 11, marginTop: 4 }}>{actionError[o.id]}</div>}
                   </td>
                 )}
               </tr>
@@ -12249,7 +12250,7 @@ function ResellerDepositsTab({ canManage }) {
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Ref #</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Reseller</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payment Method</th>
@@ -12288,7 +12289,7 @@ function ResellerDepositsTab({ canManage }) {
                     {d.status === "verified" && (
                       <Button variant="subtle" disabled={actingId === d.id} onClick={() => act(d, DalabAdminApi.completeResellerDeposit, "complete")}>Complete</Button>
                     )}
-                    {actionError[d.id] && <div style={{ color: "#C81E2C", fontSize: 11, marginTop: 4 }}>{actionError[d.id]}</div>}
+                    {actionError[d.id] && <div style={{ color: "var(--c-c81e2c)", fontSize: 11, marginTop: 4 }}>{actionError[d.id]}</div>}
                   </td>
                 )}
               </tr>
@@ -12341,7 +12342,7 @@ function ResellerWithdrawalsTab({ canManage }) {
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Ref #</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Reseller</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payout Company</th>
@@ -12400,7 +12401,7 @@ function ResellerWithdrawalsTab({ canManage }) {
                         <Button variant="danger" style={{ marginLeft: 6 }} disabled={actingId === w.id} onClick={() => act(w, DalabAdminApi.failResellerWithdrawal, "fail")}>Fail</Button>
                       </>
                     )}
-                    {actionError[w.id] && <div style={{ color: "#C81E2C", fontSize: 11, marginTop: 4 }}>{actionError[w.id]}</div>}
+                    {actionError[w.id] && <div style={{ color: "var(--c-c81e2c)", fontSize: 11, marginTop: 4 }}>{actionError[w.id]}</div>}
                   </td>
                 )}
               </tr>
@@ -12494,11 +12495,11 @@ function ResellerWithdrawSimRoutingTab({ companies, canManage }) {
         The mobile number is a label you enter for your own records — it isn't read from the SIM itself, so keep it matched to whatever card is actually inserted in that slot.
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       {unassigned.length > 0 && (
-        <Card style={{ padding: 16, marginBottom: 16, background: "#FFF8E8", border: "1px solid #F4E3B0" }}>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#A9720A", marginBottom: 8 }}>No withdrawal payout SIM routed yet — that company's Reseller Withdraw requests will stay unpaid until assigned:</div>
+        <Card style={{ padding: 16, marginBottom: 16, background: "var(--c-fff8e8)", border: "1px solid var(--c-f4e3b0)" }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--c-a9720a)", marginBottom: 8 }}>No withdrawal payout SIM routed yet — that company's Reseller Withdraw requests will stay unpaid until assigned:</div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {unassigned.map((c) => (
               <Badge key={c.id} tone="amber">{c.name}</Badge>
@@ -12563,7 +12564,7 @@ function ResellerWithdrawSimRoutingTab({ companies, canManage }) {
                       {savingKey === key && <Loader2 size={13} className="animate-spin" color={MUTE} />}
                       {canManage && (
                         <button onClick={() => remove(r.companyId, r.deviceId)} style={{ background: "none", border: "none", cursor: "pointer" }}>
-                          <Trash2 size={14} color="#C81E2C" />
+                          <Trash2 size={14} color="var(--c-c81e2c)" />
                         </button>
                       )}
                     </div>
@@ -12762,7 +12763,7 @@ function FeedbackPanel({ admin }) {
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
-              <tr style={{ background: "#FAFBFF" }}>
+              <tr style={{ background: "var(--c-fafbff)" }}>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Submitted</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Category</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Customer</th>
@@ -12778,7 +12779,7 @@ function FeedbackPanel({ admin }) {
                   <tr key={`skeleton-${i}`} style={{ borderTop: `1px solid ${BORDER}` }}>
                     {Array.from({ length: 7 }).map((__, j) => (
                       <td key={j} style={{ padding: "12px 14px" }}>
-                        <div style={{ height: 12, borderRadius: 4, background: "#EEF0FB", width: j === 0 ? 90 : "70%" }} />
+                        <div style={{ height: 12, borderRadius: 4, background: "var(--c-eef0fb)", width: j === 0 ? 90 : "70%" }} />
                       </td>
                     ))}
                   </tr>
@@ -12819,7 +12820,7 @@ function FeedbackPanel({ admin }) {
             {editing.customerName || "Unknown customer"} {editing.customerPhone ? `— ${editing.customerPhone}` : ""}
           </div>
           {editing.deviceInfo && <div style={{ fontSize: 11.5, color: MUTE, marginBottom: 10 }}>Device: {editing.deviceInfo}</div>}
-          <div style={{ fontSize: 13, color: INK, background: "#FAFBFF", border: `1px solid ${BORDER}`, borderRadius: 10, padding: 12, marginBottom: 14, whiteSpace: "pre-wrap" }}>
+          <div style={{ fontSize: 13, color: INK, background: "var(--c-fafbff)", border: `1px solid ${BORDER}`, borderRadius: 10, padding: 12, marginBottom: 14, whiteSpace: "pre-wrap" }}>
             {editing.message}
           </div>
           <Field label="Status">
@@ -12839,7 +12840,7 @@ function FeedbackPanel({ admin }) {
               disabled={!canManage}
             />
           </Field>
-          {saveError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{saveError}</div>}
+          {saveError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{saveError}</div>}
           {canManage ? (
             <Button onClick={saveItem} disabled={saving} style={{ width: "100%", justifyContent: "center" }}>
               {saving ? "Saving…" : "Save"}
@@ -13038,7 +13039,7 @@ function SupportQueuePanel({ admin }) {
       </div>
 
       {actionError && (
-        <div style={{ background: "#FEF2F2", border: "1px solid #FCA5A5", color: "#C81E2C", borderRadius: 10, padding: "10px 14px", fontSize: 12.5, marginBottom: 14 }}>
+        <div style={{ background: "var(--c-fef2f2)", border: "1px solid var(--c-fca5a5)", color: "var(--c-c81e2c)", borderRadius: 10, padding: "10px 14px", fontSize: 12.5, marginBottom: 14 }}>
           {actionError}
         </div>
       )}
@@ -13258,7 +13259,7 @@ function ReferralRewardsPanel({ admin }) {
           <input type="checkbox" checked={draft.enabled} onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })} disabled={!canManage} />
           Enabled — new referral purchases earn points
         </label>
-        {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginTop: 10 }}>{error}</div>}
+        {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginTop: 10 }}>{error}</div>}
         {canManage ? (
           <Button onClick={saveRule} disabled={saving} style={{ marginTop: 14 }}>{saving ? "Saving…" : "Save Rule"}</Button>
         ) : (
@@ -13274,7 +13275,7 @@ function ReferralRewardsPanel({ admin }) {
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
-              <tr style={{ background: "#FAFBFF" }}>
+              <tr style={{ background: "var(--c-fafbff)" }}>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Referrer</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Total Referrals</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Converted (Purchased)</th>
@@ -13414,13 +13415,13 @@ function PendingRecoveryPanel() {
         <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={fetchRows} disabled={loading}>Refresh</Button>
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
-              <tr style={{ background: "#FAFBFF" }}>
+              <tr style={{ background: "var(--c-fafbff)" }}>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Order ID</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Customer</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Package</th>
@@ -13445,7 +13446,7 @@ function PendingRecoveryPanel() {
                     <td style={{ padding: "10px 14px" }}><Badge tone={meta.tone}>{meta.label}</Badge></td>
                     <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(o.createdAt)}</td>
                     <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
-                      {actionError[o.id] && <div style={{ color: "#C81E2C", fontSize: 11, marginBottom: 4 }}>{actionError[o.id]}</div>}
+                      {actionError[o.id] && <div style={{ color: "var(--c-c81e2c)", fontSize: 11, marginBottom: 4 }}>{actionError[o.id]}</div>}
                       {o.companyFulfillmentMethod === "somlink" ? (
                         <Button variant="primary" disabled={actingId === o.id} onClick={() => retrySomlink(o)}>
                           {actingId === o.id ? "Retrying..." : "Retry SOMLINK"}
@@ -13603,12 +13604,12 @@ function ExecutionLogs({ companies }) {
         </select>
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Transaction ID", "Customer Phone", "Provider", "Service/Package", "USSD Code", "Device / SIM", "Start Time", "End Time", "Duration", "Status", "Attempts", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -13636,7 +13637,7 @@ function ExecutionLogs({ companies }) {
                         {latest.status === "success" ? "Success" : latest.status === "failed" ? "Failed (not final — may retry)" : "Pending"}
                       </Badge>
                       {latest.status === "failed" && latest.responseMessage && (
-                        <div style={{ fontSize: 10.5, color: "#C81E2C", marginTop: 3, maxWidth: 180 }}>
+                        <div style={{ fontSize: 10.5, color: "var(--c-c81e2c)", marginTop: 3, maxWidth: 180 }}>
                           {explainFailure(latest.responseMessage) || latest.responseMessage}
                         </div>
                       )}
@@ -13645,14 +13646,14 @@ function ExecutionLogs({ companies }) {
                     <td style={{ padding: "10px 14px" }}>{isOpen ? <ChevronDown size={15} color={MUTE} /> : <ChevronRight size={15} color={MUTE} />}</td>
                   </tr>
                   {isOpen && attempts.map((a) => (
-                    <tr key={a.id} style={{ background: "#FAFBFF" }}>
+                    <tr key={a.id} style={{ background: "var(--c-fafbff)" }}>
                       <td colSpan={12} style={{ padding: "8px 14px 8px 34px" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 14, fontSize: 11.5, flexWrap: "wrap" }}>
                           <Badge tone={a.status === "success" ? "green" : a.status === "failed" ? "red" : "amber"}>{a.status}</Badge>
                           <span style={{ color: MUTE }}>attempt #{a.attemptNumber}</span>
                           <span style={{ color: MUTE }}>{a.deviceName ? `${a.deviceName} — SIM ${a.simSlot ?? "?"}` : `SIM ${a.simSlot ?? "—"}`}</span>
                           <span style={{ color: SLATE, fontFamily: "monospace" }}>{a.ussdString}</span>
-                          {a.responseMessage && <span style={{ color: "#C81E2C" }}>{explainFailure(a.responseMessage) || a.responseMessage}</span>}
+                          {a.responseMessage && <span style={{ color: "var(--c-c81e2c)" }}>{explainFailure(a.responseMessage) || a.responseMessage}</span>}
                           <span style={{ color: MUTE }}>{formatDateTime(a.createdAt)} → {a.completedAt ? formatDateTime(a.completedAt) : "—"}</span>
                           <span style={{ color: MUTE, marginLeft: "auto" }}>{formatDurationMs(a.completedAt ? new Date(a.completedAt) - new Date(a.createdAt) : null)}</span>
                         </div>
@@ -13735,7 +13736,7 @@ function AgentAppReleasePanel() {
   const ready = latest && latest.downloadVerified === true;
   const btn = (primary) => ({
     display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, padding: primary ? "12px 18px" : "10px 14px",
-    borderRadius: 10, border: primary ? "none" : `1px solid ${BORDER}`, background: primary ? INDIGO : "#fff",
+    borderRadius: 10, border: primary ? "none" : `1px solid ${BORDER}`, background: primary ? INDIGO : "var(--c-surface)",
     color: primary ? "#fff" : INK, fontWeight: 700, fontSize: primary ? 14 : 13, cursor: "pointer", textDecoration: "none",
   });
 
@@ -13748,7 +13749,7 @@ function AgentAppReleasePanel() {
         </div>
       </div>
 
-      {error && <Card style={{ padding: 14, color: "#C81E2C", fontSize: 13 }}>{error}</Card>}
+      {error && <Card style={{ padding: 14, color: "var(--c-c81e2c)", fontSize: 13 }}>{error}</Card>}
 
       <Card style={{ padding: 18 }}>
         {loading && !data ? (
@@ -13766,7 +13767,7 @@ function AgentAppReleasePanel() {
                 <span>File size: <b style={{ color: INK }}>{formatBytes(latest.sizeBytes)}</b></span>
                 <span>Signature verified in CI{latest.downloadCheckedAt ? ` · link checked ${formatDateTime(latest.downloadCheckedAt)}` : ""}</span>
               </div>
-              {latest.downloadError && <div style={{ fontSize: 12.5, color: "#C81E2C", marginTop: 6, fontWeight: 600 }}>{latest.downloadError}</div>}
+              {latest.downloadError && <div style={{ fontSize: 12.5, color: "var(--c-c81e2c)", marginTop: 6, fontWeight: 600 }}>{latest.downloadError}</div>}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 220 }}>
               {ready ? (
@@ -13774,7 +13775,7 @@ function AgentAppReleasePanel() {
                   <Download size={18} /> Download Latest Release APK
                 </a>
               ) : (
-                <div style={{ fontSize: 12.5, color: "#A9720A", fontWeight: 600 }}>
+                <div style={{ fontSize: 12.5, color: "var(--c-a9720a)", fontWeight: 600 }}>
                   The download link hasn't been confirmed — tap Check for New Release to re-check it.
                 </div>
               )}
@@ -13785,7 +13786,7 @@ function AgentAppReleasePanel() {
           </div>
         ) : data ? (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
-            <div style={{ fontSize: 13.5, color: "#A9720A", fontWeight: 600 }}>{data.message || "No verified Agent App release is available yet."}</div>
+            <div style={{ fontSize: 13.5, color: "var(--c-a9720a)", fontWeight: 600 }}>{data.message || "No verified Agent App release is available yet."}</div>
             <button type="button" onClick={check} disabled={checking} style={btn(false)}>
               <RefreshCw size={15} /> {checking ? "Checking…" : "Check for New Release"}
             </button>
@@ -13802,7 +13803,7 @@ function AgentAppReleasePanel() {
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
               <thead>
-                <tr style={{ background: "#F7F8FC", color: MUTE, textAlign: "left" }}>
+                <tr style={{ background: "var(--c-f7f8fc)", color: MUTE, textAlign: "left" }}>
                   {["Version", "Build", "Released", "Size", "Status", ""].map((h) => <th key={h} style={{ padding: "8px 12px", fontWeight: 700 }}>{h}</th>)}
                 </tr>
               </thead>
@@ -13837,7 +13838,7 @@ function AgentAppReleasePanel() {
         </Card>
       )}
 
-      <Card style={{ padding: 14, display: "flex", gap: 10, alignItems: "flex-start", background: "#F2FBF5" }}>
+      <Card style={{ padding: 14, display: "flex", gap: 10, alignItems: "flex-start", background: "var(--c-f2fbf5)" }}>
         <ShieldCheck size={18} color={GREEN} />
         <div style={{ fontSize: 12.5, color: INK }}>
           This is the official release-signed Agent App, the same key as earlier release builds, so it installs over them as an update.
@@ -14010,7 +14011,7 @@ function SmsLogs({ companies }) {
           {[{ id: "all", label: "All" }, { id: "true", label: "Matched" }, { id: "false", label: "Unmatched" }].map((f) => (
             <button key={f.id} onClick={() => setMatchedFilter(f.id)} style={{
               padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
-              border: `1px solid ${matchedFilter === f.id ? INDIGO : BORDER}`, background: matchedFilter === f.id ? INDIGO : "#fff", color: matchedFilter === f.id ? "#fff" : SLATE,
+              border: `1px solid ${matchedFilter === f.id ? INDIGO : BORDER}`, background: matchedFilter === f.id ? INDIGO : "var(--c-surface)", color: matchedFilter === f.id ? "#fff" : SLATE,
             }}>{f.label}</button>
           ))}
         </div>
@@ -14022,12 +14023,12 @@ function SmsLogs({ companies }) {
         <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ ...inputStyle, width: 150 }} title="To date" />
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <SortHeader label="Received" sortKeyName="receivedAt" />
               <SortHeader label="Sender" sortKeyName="sender" />
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Body</th>
@@ -14044,7 +14045,7 @@ function SmsLogs({ companies }) {
                 <tr key={`skeleton-${i}`} style={{ borderTop: `1px solid ${BORDER}` }}>
                   {Array.from({ length: 8 }).map((__, j) => (
                     <td key={j} style={{ padding: "12px 14px" }}>
-                      <div style={{ height: 12, borderRadius: 4, background: "#EEF0FB", width: j === 0 ? 90 : "70%" }} />
+                      <div style={{ height: 12, borderRadius: 4, background: "var(--c-eef0fb)", width: j === 0 ? 90 : "70%" }} />
                     </td>
                   ))}
                 </tr>
@@ -14079,7 +14080,7 @@ function SmsLogs({ companies }) {
                         </Button>
                       )}
                       {linkState[r.id].sendError && (
-                        <span style={{ fontSize: 11, color: "#C81E2C", maxWidth: 200 }}>{linkState[r.id].sendError}</span>
+                        <span style={{ fontSize: 11, color: "var(--c-c81e2c)", maxWidth: 200 }}>{linkState[r.id].sendError}</span>
                       )}
                     </div>
                   ) : (
@@ -14101,7 +14102,7 @@ function SmsLogs({ companies }) {
                         </Button>
                       </div>
                       {linkState[r.id]?.error && (
-                        <span style={{ fontSize: 11, color: "#C81E2C", maxWidth: 200 }}>{linkState[r.id].error}</span>
+                        <span style={{ fontSize: 11, color: "var(--c-c81e2c)", maxWidth: 200 }}>{linkState[r.id].error}</span>
                       )}
                     </div>
                   )}
@@ -14217,9 +14218,9 @@ function Notifications() {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1.3fr", gap: 14, alignItems: "start" }}>
         <Card style={{ padding: 18 }}>
           <div style={{ fontWeight: 700, fontSize: 13, color: INK, marginBottom: 10 }}>Compose</div>
-          {sendError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{sendError}</div>}
+          {sendError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{sendError}</div>}
           {sendResult && (
-            <div style={{ background: "#E4F7EA", color: "#137A3B", fontSize: 12.5, fontWeight: 600, padding: "10px 12px", borderRadius: 10, marginBottom: 12 }}>
+            <div style={{ background: "var(--c-e4f7ea)", color: "var(--c-137a3b)", fontSize: 12.5, fontWeight: 600, padding: "10px 12px", borderRadius: 10, marginBottom: 12 }}>
               Sent to {sendResult.recipientCount} customer{sendResult.recipientCount === 1 ? "" : "s"} — {sendResult.deliveredCount} delivered, {sendResult.failedCount} failed (no registered device or push disabled).
             </div>
           )}
@@ -14238,7 +14239,7 @@ function Notifications() {
                   style={{
                     padding: "7px 12px", borderRadius: 20, fontSize: 12, fontWeight: 700, cursor: "pointer",
                     border: `1px solid ${targetType === value ? INDIGO : BORDER}`,
-                    background: targetType === value ? INDIGO : "#fff", color: targetType === value ? "#fff" : SLATE,
+                    background: targetType === value ? INDIGO : "var(--c-surface)", color: targetType === value ? "#fff" : SLATE,
                   }}
                 >
                   {label}
@@ -14278,7 +14279,7 @@ function Notifications() {
                         <div
                           key={c.id}
                           onClick={() => toggleCustomer(c)}
-                          style={{ padding: "8px 10px", fontSize: 12.5, cursor: "pointer", display: "flex", justifyContent: "space-between", background: checked ? INDIGO_SOFT : "#fff", borderBottom: `1px solid ${BORDER}` }}
+                          style={{ padding: "8px 10px", fontSize: 12.5, cursor: "pointer", display: "flex", justifyContent: "space-between", background: checked ? INDIGO_SOFT : "var(--c-surface)", borderBottom: `1px solid ${BORDER}` }}
                         >
                           <span style={{ color: INK, fontWeight: 600 }}>{c.name || "—"} <span style={{ color: MUTE, fontWeight: 400 }}>{c.phone}</span></span>
                           {checked && <Check size={14} color={INDIGO} />}
@@ -14314,7 +14315,7 @@ function Notifications() {
           {!DALAB_API_ENABLED ? (
             <div style={{ padding: 16, fontSize: 12.5, color: MUTE }}>Connect DALAB_API_BASE_URL to a deployed backend to view sent history.</div>
           ) : historyError ? (
-            <div style={{ padding: 16, color: "#C81E2C", fontSize: 12.5 }}>{historyError}</div>
+            <div style={{ padding: 16, color: "var(--c-c81e2c)", fontSize: 12.5 }}>{historyError}</div>
           ) : loadingHistory ? (
             <div style={{ padding: 16, fontSize: 12.5, color: MUTE }}>Loading…</div>
           ) : campaigns.length === 0 ? (
@@ -14405,7 +14406,7 @@ function Reports() {
         {["Daily", "Weekly", "Monthly", "Yearly"].map((r) => (
           <button key={r} onClick={() => setRange(r)} style={{
             padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
-            border: `1px solid ${range === r ? INDIGO : BORDER}`, background: range === r ? INDIGO : "#fff", color: range === r ? "#fff" : SLATE,
+            border: `1px solid ${range === r ? INDIGO : BORDER}`, background: range === r ? INDIGO : "var(--c-surface)", color: range === r ? "#fff" : SLATE,
           }}>{r}</button>
         ))}
       </div>
@@ -14414,7 +14415,7 @@ function Reports() {
         {!DALAB_API_ENABLED ? (
           <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to load real report data.</div>
         ) : error ? (
-          <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div>
+          <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5 }}>{error}</div>
         ) : loading ? (
           <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Loading…</div>
         ) : series.length === 0 ? (
@@ -14422,7 +14423,7 @@ function Reports() {
         ) : (
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={series}>
-              <CartesianGrid stroke="#EEF0FB" vertical={false} />
+              <CartesianGrid stroke="var(--c-eef0fb)" vertical={false} />
               <XAxis dataKey="day" tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
               <Tooltip />
@@ -14562,7 +14563,7 @@ function SocialMediaLinksPanel() {
       <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 16 }}>
         These power the "Follow us" section and support buttons in the Customer App's Profile screen. A link left blank, or switched off here, is hidden from customers automatically — no app update needed. Every change here is recorded in the Activity Log.
       </div>
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
       {loading && !loaded ? (
         <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>
       ) : (
@@ -14575,13 +14576,13 @@ function SocialMediaLinksPanel() {
             <div key={def.key} style={{ marginBottom: 16, paddingBottom: 16, borderBottom: i < SOCIAL_LINK_DEFS.length - 1 ? `1px solid ${BORDER}` : "none" }}>
               <Field label={def.label}>
                 <input
-                  style={{ ...inputStyle, ...(fieldError ? { borderColor: "#C81E2C" } : {}) }}
+                  style={{ ...inputStyle, ...(fieldError ? { borderColor: "var(--c-c81e2c)" } : {}) }}
                   placeholder={def.placeholder}
                   value={value}
                   onChange={(e) => setDrafts((d) => ({ ...d, [def.valueKey]: e.target.value }))}
                 />
               </Field>
-              {fieldError && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: -8, marginBottom: 10 }}>{fieldError}</div>}
+              {fieldError && <div style={{ color: "var(--c-c81e2c)", fontSize: 11.5, marginTop: -8, marginBottom: 10 }}>{fieldError}</div>}
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
                 <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: SLATE, cursor: "pointer" }}>
                   <input
@@ -14692,7 +14693,7 @@ function GeneralSettingsPanel() {
 
   return (
     <Card style={{ padding: 18, maxWidth: 480 }}>
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
       <Field label="App name">
         <input style={inputStyle} value={drafts.app_name} onChange={(e) => setDrafts((d) => ({ ...d, app_name: e.target.value }))} />
       </Field>
@@ -14788,7 +14789,7 @@ function OtpSettingsPanel() {
 
   return (
     <Card style={{ padding: 18, maxWidth: 480 }}>
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
       <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 16 }}>
         No SMS gateway is connected yet, so the Customer App currently shows the OTP code directly for testing. These settings still control the real code length and expiry once a gateway is wired up.
       </div>
@@ -14891,7 +14892,7 @@ function ServiceVisibilityPanel() {
 
   return (
     <Card style={{ padding: 18, maxWidth: 480 }}>
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
       <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 16 }}>
         Controls which service cards the Customer App shows on its home screen. Turning a service off only hides it from customers -- it never deletes or disables anything in the backend, and every other service keeps working normally.
       </div>
@@ -14937,7 +14938,7 @@ function SettingsPanel() {
         ].map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)} style={{
             padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
-            border: `1px solid ${tab === t.id ? INDIGO : BORDER}`, background: tab === t.id ? INDIGO : "#fff", color: tab === t.id ? "#fff" : SLATE,
+            border: `1px solid ${tab === t.id ? INDIGO : BORDER}`, background: tab === t.id ? INDIGO : "var(--c-surface)", color: tab === t.id ? "#fff" : SLATE,
           }}>{t.label}</button>
         ))}
       </div>
@@ -15047,12 +15048,12 @@ function RolesPermissions({ admin }) {
         <Button icon={Plus} onClick={openNew}>Add admin</Button>
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Email", "Role", "Permissions", "Last login", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -15073,7 +15074,7 @@ function RolesPermissions({ admin }) {
                     <ShieldCheck size={14} color={u.role === "super_admin" ? GREEN : MUTE} />
                   </button>
                   <button onClick={() => remove(u)} style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
-                    <Trash2 size={14} color="#C81E2C" />
+                    <Trash2 size={14} color="var(--c-c81e2c)" />
                   </button>
                 </td>
               </tr>
@@ -15211,17 +15212,17 @@ function ActivityLogPanel() {
         ].map((f) => (
           <button key={f.id} onClick={() => setEntityFilter(f.id)} style={{
             padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
-            border: `1px solid ${entityFilter === f.id ? INDIGO : BORDER}`, background: entityFilter === f.id ? INDIGO : "#fff", color: entityFilter === f.id ? "#fff" : SLATE,
+            border: `1px solid ${entityFilter === f.id ? INDIGO : BORDER}`, background: entityFilter === f.id ? INDIGO : "var(--c-surface)", color: entityFilter === f.id ? "#fff" : SLATE,
           }}>{f.label}</button>
         ))}
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Time", "Admin", "Action", "Entity", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -15253,18 +15254,18 @@ function ActivityLogPanel() {
                     <td style={{ padding: "10px 14px", verticalAlign: "top" }}>{isOpen ? <ChevronDown size={15} color={MUTE} /> : <ChevronRight size={15} color={MUTE} />}</td>
                   </tr>
                   {isOpen && (
-                    <tr style={{ background: "#FAFBFF" }}>
+                    <tr style={{ background: "var(--c-fafbff)" }}>
                       <td colSpan={5} style={{ padding: "10px 14px 14px 14px" }}>
                         <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
                           <div style={{ flex: "1 1 240px" }}>
                             <div style={{ fontSize: 11, fontWeight: 700, color: MUTE, marginBottom: 4 }}>BEFORE</div>
-                            <pre style={{ fontSize: 11, background: "#fff", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 10, overflowX: "auto", margin: 0 }}>
+                            <pre style={{ fontSize: 11, background: "var(--c-surface)", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 10, overflowX: "auto", margin: 0 }}>
                               {JSON.stringify(r.oldValue, null, 2) ?? "—"}
                             </pre>
                           </div>
                           <div style={{ flex: "1 1 240px" }}>
                             <div style={{ fontSize: 11, fontWeight: 700, color: MUTE, marginBottom: 4 }}>AFTER</div>
-                            <pre style={{ fontSize: 11, background: "#fff", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 10, overflowX: "auto", margin: 0 }}>
+                            <pre style={{ fontSize: 11, background: "var(--c-surface)", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 10, overflowX: "auto", margin: 0 }}>
                               {JSON.stringify(r.newValue, null, 2) ?? "—"}
                             </pre>
                           </div>
@@ -15369,12 +15370,12 @@ function PaymentWalletsPanel({ companies }) {
         </div>
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Wallet", "Provider", "Dial Prefix", "Logo Key", "Color", "Status", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -15384,7 +15385,7 @@ function PaymentWalletsPanel({ companies }) {
             {wallets.map((w) => (
               <tr key={w.id} style={{ borderTop: `1px solid ${BORDER}` }}>
                 <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{w.name}</td>
-                <td style={{ padding: "10px 14px", fontSize: 12.5, color: w.companyId ? SLATE : "#C81E2C" }}>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: w.companyId ? SLATE : "var(--c-c81e2c)" }}>
                   {w.companyId ? (companies.find((c) => c.id === w.companyId)?.name || w.companyId) : (w.providerLabel ? `${w.providerLabel} (unlinked!)` : "— unlinked —")}
                 </td>
                 <td style={{ padding: "10px 14px", fontSize: 12, color: SLATE, fontFamily: "monospace" }}>{w.dialPrefix}</td>
@@ -15398,13 +15399,13 @@ function PaymentWalletsPanel({ companies }) {
                 <td style={{ padding: "10px 14px" }}><Badge tone={w.enabled ? "green" : "gray"}>{w.enabled ? "Enabled" : "Disabled"}</Badge></td>
                 <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
                   <button onClick={() => toggleStatus(w)} title={w.enabled ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
-                    <Power size={14} color={w.enabled ? GREEN : "#C81E2C"} />
+                    <Power size={14} color={w.enabled ? GREEN : "var(--c-c81e2c)"} />
                   </button>
                   <button onClick={() => openEdit(w)} title="Edit" style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
                     <Pencil size={14} color={INDIGO} />
                   </button>
                   <button onClick={() => remove(w)} title="Delete" style={{ background: "none", border: "none", cursor: "pointer" }}>
-                    <Trash2 size={14} color="#C81E2C" />
+                    <Trash2 size={14} color="var(--c-c81e2c)" />
                   </button>
                 </td>
               </tr>
@@ -15663,7 +15664,7 @@ function SmsFormatUpdatePanel() {
                 style={{
                   padding: "8px 14px", borderRadius: 20, fontSize: 13, fontWeight: 700, cursor: "pointer",
                   border: `1px solid ${provider === p.key ? INDIGO : BORDER}`,
-                  background: provider === p.key ? INDIGO : "#fff",
+                  background: provider === p.key ? INDIGO : "var(--c-surface)",
                   color: provider === p.key ? "#fff" : INK,
                 }}
               >
@@ -15685,7 +15686,7 @@ function SmsFormatUpdatePanel() {
         <Button icon={testing ? Loader2 : PlayCircle} spin={testing} onClick={runTest} disabled={testing || !sms.trim()}>
           {result ? "Test again" : "Test SMS"}
         </Button>
-        {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginTop: 12 }}>{error}</div>}
+        {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginTop: 12 }}>{error}</div>}
       </Card>
 
       {result && (
@@ -15695,7 +15696,7 @@ function SmsFormatUpdatePanel() {
               <CheckCircle2 size={18} /> The SMS was read successfully
             </div>
           ) : (
-            <div style={{ background: "#FCE7E8", color: "#C81E2C", borderRadius: 10, padding: "10px 12px", fontSize: 13, marginBottom: 12 }}>
+            <div style={{ background: "var(--c-fce7e8)", color: "var(--c-c81e2c)", borderRadius: 10, padding: "10px 12px", fontSize: 13, marginBottom: 12 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 800 }}><XCircle size={16} /> The SMS could not be used yet</div>
               {result.error && <div style={{ marginTop: 6 }}>{result.error}</div>}
               {result.conflicts.map((c) => <div key={c} style={{ marginTop: 6 }}>{c}</div>)}
@@ -15703,7 +15704,7 @@ function SmsFormatUpdatePanel() {
             </div>
           )}
           {result.warnings.map((w) => (
-            <div key={w} style={{ display: "flex", gap: 8, background: "#FFF4D9", color: "#A9720A", borderRadius: 10, padding: "8px 12px", fontSize: 12.5, marginBottom: 8 }}>
+            <div key={w} style={{ display: "flex", gap: 8, background: "var(--c-fff4d9)", color: "var(--c-a9720a)", borderRadius: 10, padding: "8px 12px", fontSize: 12.5, marginBottom: 8 }}>
               <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} /> {w}
             </div>
           ))}
@@ -15798,7 +15799,7 @@ function SmsFormatUpdatePanel() {
             </div>
           )}
           {saved && (
-            <div style={{ background: "#E4F7EA", color: GREEN, borderRadius: 10, padding: "10px 12px", fontSize: 13, marginTop: 14, fontWeight: 700 }}>
+            <div style={{ background: "var(--c-e4f7ea)", color: GREEN, borderRadius: 10, padding: "10px 12px", fontSize: 13, marginTop: 14, fontWeight: 700 }}>
               Version {saved.version} is now active for {providerLabel(saved.provider)}. The Agent App picks it up within about a minute.
               {saved.recentSmsRead > 0 && ` ${saved.recentSmsRead} recent SMS that couldn't be read before were read now and go through the normal payment checks.`}
             </div>
@@ -15813,7 +15814,7 @@ function SmsFormatUpdatePanel() {
         </div>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Provider", "Format", "Activated by", "Activated", ""].map((h) => <th key={h} style={th}>{h}</th>)}
             </tr>
           </thead>
@@ -15846,7 +15847,7 @@ function SmsFormatUpdatePanel() {
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
             <thead>
-              <tr style={{ background: "#FAFBFF" }}>
+              <tr style={{ background: "var(--c-fafbff)" }}>
                 {["Version", "Status", "Reads", "Sample SMS", "Saved by", "Saved", ""].map((h) => <th key={h} style={th}>{h}</th>)}
               </tr>
             </thead>
@@ -15947,7 +15948,7 @@ const usd = (v) => {
   const n = Number(v ?? 0);
   return `${n < 0 ? "-" : ""}$${Math.abs(n).toFixed(2)}`;
 };
-const profitColor = (v) => (Number(v) < 0 ? "#C81E2C" : GREEN);
+const profitColor = (v) => (Number(v) < 0 ? "var(--c-c81e2c)" : GREEN);
 
 // ---------------- Dhameys Plus (menu USSD services) ----------------
 // A menu-driven USSD service (Somtel Dhameys Plus: *101# > 4 > package >
@@ -16186,21 +16187,21 @@ function MenuUssdServicesSection({ admin }) {
         </div>
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
       {notice && <div style={{ color: GREEN, fontSize: 12.5, marginBottom: 12, fontWeight: 700 }}>{notice}</div>}
       {!loading && services.length === 0 && !error && (
         <Card style={{ padding: 18 }}>No menu USSD service exists yet. It is created by the backend update (migration 118) when the Somtel company exists.</Card>
       )}
 
       {service && !service.pinIsSet && (
-        <Card style={{ padding: 14, marginBottom: 14, background: "#FFF6E3", border: "1px solid #F5DFB0" }}>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5, color: "#7A5200" }}>
+        <Card style={{ padding: 14, marginBottom: 14, background: "var(--c-fff6e3)", border: "1px solid var(--c-f5dfb0)" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5, color: "var(--c-7a5200)" }}>
             <AlertTriangle size={16} /> {service.companyName} has no PIN set yet — orders can't be delivered. Set it in Device &amp; USSD.
           </div>
         </Card>
       )}
       {service && (
-        <Card style={{ padding: 14, marginBottom: 14, background: "#EEF3FF", border: "1px solid #D6E0FF" }}>
+        <Card style={{ padding: 14, marginBottom: 14, background: "var(--c-eef3ff)", border: "1px solid var(--c-d6e0ff)" }}>
           <div style={{ fontSize: 12.5, color: SLATE, lineHeight: 1.5 }}>
             Packages are delivered by the Agent App stepping through the Somtel menu. Before turning packages on, make sure every agent phone that
             handles {service.companyName} runs the latest Agent App and has <b>Dalab Agent</b> enabled under Settings &gt; Accessibility.
@@ -16232,7 +16233,7 @@ function MenuUssdServicesSection({ admin }) {
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
-                <tr style={{ background: "#FAFBFF" }}>
+                <tr style={{ background: "var(--c-fafbff)" }}>
                   {["Order", "Package", "Menu option", "Price", "Validity", "Status", "Orders", "Created", "Last modified", ""].map((h) => <th key={h} style={th}>{h}</th>)}
                 </tr>
               </thead>
@@ -16311,7 +16312,7 @@ function MenuUssdServicesSection({ admin }) {
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
-                <tr style={{ background: "#FAFBFF" }}>
+                <tr style={{ background: "var(--c-fafbff)" }}>
                   {["Step", "Reply", "Screen must show", "Checks", ""].map((h) => <th key={h} style={th}>{h}</th>)}
                 </tr>
               </thead>
@@ -16351,7 +16352,7 @@ function MenuUssdServicesSection({ admin }) {
               </tbody>
             </table>
           </div>
-          {settingsError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginTop: 10 }}>{settingsError}</div>}
+          {settingsError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginTop: 10 }}>{settingsError}</div>}
           {isSuper && (
             <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
               <Button variant="ghost" icon={Plus} onClick={() => setSettings((st) => ({ ...st, replySteps: [...st.replySteps, { reply: "1", expectText: "" }] }))}>Add step</Button>
@@ -16386,7 +16387,7 @@ function MenuUssdServicesSection({ admin }) {
                   The price is what customers pay and what the Agent App expects to see on the Somtel menu and confirmation — keep it equal to Somtel's own price.
                   Changing it never changes orders already placed.
                 </div>
-                {formError && <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{formError}</div>}
+                {formError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5 }}>{formError}</div>}
                 <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
                   <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
                   <Button icon={saving ? Loader2 : Check} spin={saving} onClick={savePackage} disabled={saving}>{editing.id ? "Save" : "Add package"}</Button>
@@ -16503,17 +16504,17 @@ function CompanyAccountsSection() {
     : `${ACCOUNT_PERIODS.find((p) => p.key === period)?.label}${range ? ` · ${range.from.toLocaleDateString(undefined, { timeZone: SOMALIA_TIME_ZONE, day: "2-digit", month: "short", year: "numeric" })}` : ""}`;
   const chip = (active) => ({
     padding: "9px 16px", borderRadius: 10, fontSize: 13, fontWeight: 700, cursor: "pointer",
-    border: `1px solid ${active ? INDIGO : BORDER}`, background: active ? INDIGO : "#fff", color: active ? "#fff" : INK,
+    border: `1px solid ${active ? INDIGO : BORDER}`, background: active ? INDIGO : "var(--c-surface)", color: active ? "#fff" : INK,
   });
   const th = { textAlign: "left", padding: "9px 10px", fontSize: 11, color: MUTE, fontWeight: 700, whiteSpace: "nowrap" };
   const td = { padding: "9px 10px", fontSize: 12.5, color: INK, whiteSpace: "nowrap" };
   const stats = company ? [
-    { label: "Orders La Dhammeeyay", value: company.orders, sub: "Total orders", color: "#1D4ED8", bg: "#EEF3FF" },
-    { label: "Lacagta Shirkadda", value: usd(company.companyAmount), sub: "Shirkadda ku iibisay", color: GREEN, bg: "#EEF9F1" },
-    { label: "Lacagta Iibka", value: usd(company.saleAmount), sub: "Macaamiisha laga helay", color: "#C81E2C", bg: "#FDEFF0" },
-    { label: "Qiimo-dhimista", value: usd(company.discount), sub: "Kaa baxday", color: "#A9720A", bg: "#FFF6E3" },
-    { label: "Komishanka", value: usd(company.commission), sub: "Haddii uu jiro", color: "#6D28D9", bg: "#F3EEFF" },
-    { label: "Faa'iidada / Khasaaraha", value: usd(company.profit), sub: Number(company.profit) < 0 ? "Khasaaro" : "Faa'iido", color: profitColor(company.profit), bg: Number(company.profit) < 0 ? "#FDEFF0" : "#EEF9F1" },
+    { label: "Orders La Dhammeeyay", value: company.orders, sub: "Total orders", color: "var(--c-1d4ed8)", bg: "var(--c-eef3ff)" },
+    { label: "Lacagta Shirkadda", value: usd(company.companyAmount), sub: "Shirkadda ku iibisay", color: GREEN, bg: "var(--c-eef9f1)" },
+    { label: "Lacagta Iibka", value: usd(company.saleAmount), sub: "Macaamiisha laga helay", color: "var(--c-c81e2c)", bg: "var(--c-fdeff0)" },
+    { label: "Qiimo-dhimista", value: usd(company.discount), sub: "Kaa baxday", color: "var(--c-a9720a)", bg: "var(--c-fff6e3)" },
+    { label: "Komishanka", value: usd(company.commission), sub: "Haddii uu jiro", color: "var(--c-6d28d9)", bg: "var(--c-f3eeff)" },
+    { label: "Faa'iidada / Khasaaraha", value: usd(company.profit), sub: Number(company.profit) < 0 ? "Khasaaro" : "Faa'iido", color: profitColor(company.profit), bg: Number(company.profit) < 0 ? "var(--c-fdeff0)" : "var(--c-eef9f1)" },
   ] : [];
 
   return (
@@ -16542,7 +16543,7 @@ function CompanyAccountsSection() {
         )}
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 14 }}>
         {companies.map((c) => {
@@ -16607,7 +16608,7 @@ function CompanyAccountsSection() {
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead>
-                  <tr style={{ background: "#FAFBFF" }}>
+                  <tr style={{ background: "var(--c-fafbff)" }}>
                     {["#", "Taariikh", "Order ID", "Adeegga / Package", "Qiimaha Shirkadda", "Qiimaha Iibka", "Qiimo-dhimis", "Faa'iido / Khasaaro", "Status"].map((h) => <th key={h} style={th}>{h}</th>)}
                   </tr>
                 </thead>
@@ -16618,9 +16619,9 @@ function CompanyAccountsSection() {
                       <td style={td}>{period === "today" || period === "yesterday" ? new Date(o.createdAt).toLocaleTimeString(undefined, { timeZone: SOMALIA_TIME_ZONE, hour: "2-digit", minute: "2-digit" }) : formatDateTime(o.createdAt)}</td>
                       <td style={{ ...td, fontFamily: "monospace" }}>{o.id}</td>
                       <td style={td}>{o.packageName}<div style={{ fontSize: 11, color: MUTE }}>{o.category}</div></td>
-                      <td style={{ ...td, color: "#1D4ED8", fontWeight: 700 }}>{usd(o.companyAmount)}</td>
+                      <td style={{ ...td, color: "var(--c-1d4ed8)", fontWeight: 700 }}>{usd(o.companyAmount)}</td>
                       <td style={{ ...td, color: GREEN, fontWeight: 700 }}>{usd(o.saleAmount)}</td>
-                      <td style={{ ...td, color: "#C81E2C" }}>{usd(o.discount)}</td>
+                      <td style={{ ...td, color: "var(--c-c81e2c)" }}>{usd(o.discount)}</td>
                       <td style={{ ...td, color: profitColor(o.profit), fontWeight: 700 }}>{usd(o.profit)}</td>
                       <td style={td}><Badge tone={ACCOUNT_STATUS_TONE[o.status] || "gray"}>{o.status}</Badge></td>
                     </tr>
@@ -16643,7 +16644,7 @@ function CompanyAccountsSection() {
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead>
-                  <tr style={{ background: "#FAFBFF" }}>
+                  <tr style={{ background: "var(--c-fafbff)" }}>
                     {["Adeegga", "Orders", "Shirkadda", "Iibka", "Qiimo-dhimis", "Faa'iido / Khasaaro"].map((h) => <th key={h} style={th}>{h}</th>)}
                   </tr>
                 </thead>
@@ -16652,19 +16653,19 @@ function CompanyAccountsSection() {
                     <tr key={c.name} style={{ borderTop: `1px solid ${BORDER}` }}>
                       <td style={{ ...td, fontWeight: 700 }}>{c.name}</td>
                       <td style={td}>{c.orders}</td>
-                      <td style={{ ...td, color: "#1D4ED8" }}>{usd(c.companyAmount)}</td>
+                      <td style={{ ...td, color: "var(--c-1d4ed8)" }}>{usd(c.companyAmount)}</td>
                       <td style={{ ...td, color: GREEN }}>{usd(c.saleAmount)}</td>
-                      <td style={{ ...td, color: "#C81E2C" }}>{usd(c.discount)}</td>
+                      <td style={{ ...td, color: "var(--c-c81e2c)" }}>{usd(c.discount)}</td>
                       <td style={{ ...td, color: profitColor(c.profit), fontWeight: 700 }}>{usd(c.profit)}</td>
                     </tr>
                   ))}
                   {categories.length > 0 && (
-                    <tr style={{ borderTop: `2px solid ${BORDER}`, background: "#FAFBFF" }}>
+                    <tr style={{ borderTop: `2px solid ${BORDER}`, background: "var(--c-fafbff)" }}>
                       <td style={{ ...td, fontWeight: 800 }}>Total</td>
                       <td style={{ ...td, fontWeight: 800 }}>{company.orders}</td>
-                      <td style={{ ...td, color: "#1D4ED8", fontWeight: 800 }}>{usd(company.companyAmount)}</td>
+                      <td style={{ ...td, color: "var(--c-1d4ed8)", fontWeight: 800 }}>{usd(company.companyAmount)}</td>
                       <td style={{ ...td, color: GREEN, fontWeight: 800 }}>{usd(company.saleAmount)}</td>
-                      <td style={{ ...td, color: "#C81E2C", fontWeight: 800 }}>{usd(company.discount)}</td>
+                      <td style={{ ...td, color: "var(--c-c81e2c)", fontWeight: 800 }}>{usd(company.discount)}</td>
                       <td style={{ ...td, color: profitColor(company.profit), fontWeight: 800 }}>{usd(company.profit)}</td>
                     </tr>
                   )}
@@ -16690,9 +16691,9 @@ function CompanyAccountsSection() {
                 <div style={{ padding: "10px 14px", fontSize: 12.5 }}>
                   {[
                     ["Orders", c.orders, INK],
-                    ["Shirkadda", usd(c.companyAmount), "#1D4ED8"],
+                    ["Shirkadda", usd(c.companyAmount), "var(--c-1d4ed8)"],
                     ["Iibka", usd(c.saleAmount), GREEN],
-                    ["Qiimo-dhimis", usd(c.discount), "#C81E2C"],
+                    ["Qiimo-dhimis", usd(c.discount), "var(--c-c81e2c)"],
                     ["Faa'iido / Khasaaro", usd(c.profit), profitColor(c.profit)],
                   ].map(([label, value, color]) => (
                     <div key={label} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}>
@@ -16700,7 +16701,7 @@ function CompanyAccountsSection() {
                     </div>
                   ))}
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
-                    <div style={{ flex: 1, height: 6, borderRadius: 3, background: "#EEF0F6", overflow: "hidden" }}>
+                    <div style={{ flex: 1, height: 6, borderRadius: 3, background: "var(--c-eef0f6)", overflow: "hidden" }}>
                       <div style={{ width: `${pct}%`, height: "100%", background: profitColor(c.profit) }} />
                     </div>
                     <span style={{ fontSize: 11.5, fontWeight: 700, color: profitColor(c.profit) }}>{Number(c.profitPercent).toFixed(2)}%</span>
@@ -16794,12 +16795,12 @@ function SmsSenderIdsPanel() {
         </div>
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Provider Key", "Sender", "Label", "Status", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -16814,10 +16815,10 @@ function SmsSenderIdsPanel() {
                 <td style={{ padding: "10px 14px" }}><Badge tone={s.enabled ? "green" : "gray"}>{s.enabled ? "Enabled" : "Disabled"}</Badge></td>
                 <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
                   <button onClick={() => toggleStatus(s)} title={s.enabled ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
-                    <Power size={14} color={s.enabled ? GREEN : "#C81E2C"} />
+                    <Power size={14} color={s.enabled ? GREEN : "var(--c-c81e2c)"} />
                   </button>
                   <button onClick={() => remove(s)} title="Delete" style={{ background: "none", border: "none", cursor: "pointer" }}>
-                    <Trash2 size={14} color="#C81E2C" />
+                    <Trash2 size={14} color="var(--c-c81e2c)" />
                   </button>
                 </td>
               </tr>
@@ -16906,7 +16907,7 @@ function ChangePasswordCard() {
       <Field label="Confirm new password">
         <input type="password" style={inputStyle} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} placeholder="••••••••" autoComplete="new-password" />
       </Field>
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
       {success && <div style={{ color: GREEN, fontSize: 12.5, marginBottom: 12 }}>{success}</div>}
       <Button icon={Check} onClick={submit} disabled={saving}>{saving ? "Updating..." : "Update password"}</Button>
     </Card>
@@ -16969,14 +16970,15 @@ function AdminLoginScreen({ onLoggedIn }) {
   };
 
   return (
-    <div style={{ minHeight: "100vh", background: INK, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter','Segoe UI',system-ui,-apple-system,sans-serif", padding: 20 }}>
+    <div style={{ minHeight: "100vh", background: "var(--sidebar-bg)", position: "relative", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter','Segoe UI',system-ui,-apple-system,sans-serif", padding: "72px 20px 20px" }}>
+      <div style={{ position: "absolute", top: 12, right: 12 }}><PrefsControls onDark /></div>
       <div style={{ width: "100%", maxWidth: 400 }}>
         <div style={{ textAlign: "center", marginBottom: 22 }}>
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,0.06)", padding: "6px 14px", borderRadius: 20, marginBottom: 18 }}>
-            <Lock size={13} color="#7C86C4" />
-            <span style={{ color: "#7C86C4", fontSize: 11.5, fontWeight: 700, letterSpacing: 1 }}>RESTRICTED PORTAL</span>
+            <Lock size={13} color="var(--c-7c86c4)" />
+            <span style={{ color: "var(--c-7c86c4)", fontSize: 11.5, fontWeight: 700, letterSpacing: 1 }}>RESTRICTED PORTAL</span>
           </div>
-          <Logo size={56} />
+          <div><Logo size={56} /></div>
         </div>
 
         <Card style={{ padding: 30 }}>
@@ -17034,7 +17036,7 @@ function AdminLoginScreen({ onLoggedIn }) {
                 </button>
               </div>
 
-              {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14, textAlign: "center" }}>{error}</div>}
+              {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14, textAlign: "center" }}>{error}</div>}
 
               <Button onClick={submitLogin} disabled={loading} style={{ width: "100%", justifyContent: "center" }}>
                 {loading ? "Signing in..." : "Sign in"}
@@ -17057,7 +17059,7 @@ function AdminLoginScreen({ onLoggedIn }) {
               </div>
 
               {forgotSent ? (
-                <div style={{ background: "#E4F7EA", border: "1px solid #CFEEDA", borderRadius: 12, padding: 16, fontSize: 13, color: "#0B1240" }}>
+                <div style={{ background: "var(--c-e4f7ea)", border: "1px solid var(--c-cfeeda)", borderRadius: 12, padding: 16, fontSize: 13, color: "var(--c-0b1240)" }}>
                   If that email has an account, a reset link has been sent. Check your inbox.
                 </div>
               ) : (
@@ -17075,7 +17077,7 @@ function AdminLoginScreen({ onLoggedIn }) {
                       />
                     </div>
                   </Field>
-                  {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+                  {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
                   <Button onClick={submitForgot} disabled={loading} style={{ width: "100%", justifyContent: "center" }}>
                     {loading ? "Sending..." : "Send reset link"}
                   </Button>
@@ -17091,9 +17093,52 @@ function AdminLoginScreen({ onLoggedIn }) {
 
 // ---------------- Shell ----------------
 
+// Light/dark and English/Somali switches (top bar and login screen). Both are
+// saved in this browser and apply to every page.
+function PrefsControls({ onDark = false }) {
+  const theme = useTheme();
+  const lang = useLang();
+  const isDark = theme === "dark";
+  const btn = {
+    display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6,
+    minWidth: 44, minHeight: 44, padding: "0 10px", borderRadius: 10, cursor: "pointer", fontSize: 12.5, fontWeight: 700,
+    background: onDark ? "rgba(255,255,255,0.08)" : "transparent",
+    border: onDark ? "1px solid rgba(255,255,255,0.18)" : `1px solid ${BORDER}`,
+    color: onDark ? "#E6E9F5" : SLATE,
+  };
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <button
+        type="button"
+        className="dl-theme-toggle"
+        onClick={() => setTheme(isDark ? "light" : "dark")}
+        style={btn}
+        aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
+        title={isDark ? "Light mode" : "Dark mode"}
+      >
+        {isDark ? <Sun size={17} /> : <Moon size={17} />}
+      </button>
+      <button
+        type="button"
+        className="dl-lang-toggle"
+        onClick={() => setLang(lang === "so" ? "en" : "so")}
+        style={btn}
+        aria-label="Language: English / Soomaali"
+        title={lang === "so" ? "English" : "Soomaali"}
+        translate="no"
+      >
+        <Languages size={16} />
+        <span>{lang === "so" ? "SO" : "EN"}</span>
+      </button>
+    </div>
+  );
+}
+
 function AdminDashboardShell({ admin, onLogout }) {
   const [active, setActive] = useState("overview");
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return window.localStorage.getItem("dalab-admin-sidebar-collapsed") === "1"; } catch { return false; }
+  });
   const [companies, setCompanies] = useState(initialCompanies);
   const [packages, setPackages] = useState(initialPackages);
   const [orders, setOrders] = useState(initialOrders);
@@ -17286,18 +17331,64 @@ function AdminDashboardShell({ admin, onLogout }) {
   }, []);
 
   const activeLabel = NAV.find((n) => n.id === active)?.label;
+  // Phones and tablets: the sidebar is a drawer behind the menu button and
+  // never covers the page until opened. Laptops and up: a fixed sidebar that
+  // can be collapsed to icons (remembered in this browser).
+  const isMobile = useIsMobile(900);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const showLabels = isMobile || !collapsed;
+  const lang = useLang();
+  useEffect(() => { if (!isMobile) setDrawerOpen(false); }, [isMobile]);
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const onKey = (e) => { if (e.key === "Escape") setDrawerOpen(false); };
+    window.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { window.removeEventListener("keydown", onKey); document.body.style.overflow = prevOverflow; };
+  }, [drawerOpen]);
+  const toggleCollapsed = () => {
+    setCollapsed((c) => {
+      try { window.localStorage.setItem("dalab-admin-sidebar-collapsed", c ? "0" : "1"); } catch { /* ignore */ }
+      return !c;
+    });
+  };
+  const pick = (id) => {
+    setActive(id);
+    setDrawerOpen(false);
+    window.scrollTo?.(0, 0);
+  };
+  const today = new Date().toLocaleDateString(lang === "so" ? "so-SO" : "en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
 
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: BG, fontFamily: "'Inter','Segoe UI',system-ui,-apple-system,sans-serif" }}>
+      {isMobile && drawerOpen && <div className="dl-backdrop" onClick={() => setDrawerOpen(false)} aria-hidden="true" />}
       {/* Sidebar */}
-      <div style={{ width: collapsed ? 74 : 240, background: INK, transition: "width .2s", flexShrink: 0, display: "flex", flexDirection: "column" }}>
+      <nav
+        aria-label="Main menu"
+        id="dl-sidebar"
+        style={isMobile ? {
+          position: "fixed", top: 0, bottom: 0, left: 0, width: 272, maxWidth: "86vw", zIndex: 80,
+          background: "var(--sidebar-bg)", display: "flex", flexDirection: "column",
+          transform: drawerOpen ? "translateX(0)" : "translateX(-100%)", transition: "transform .2s ease-out",
+          boxShadow: drawerOpen ? "8px 0 24px rgba(0,0,0,0.3)" : "none", visibility: drawerOpen ? "visible" : "hidden",
+        } : {
+          width: collapsed ? 74 : 240, background: "var(--sidebar-bg)", transition: "width .2s", flexShrink: 0, display: "flex", flexDirection: "column",
+          position: "sticky", top: 0, height: "100vh",
+        }}
+      >
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "20px 18px" }}>
           <Logo />
-          {!collapsed && (
-            <div>
+          {showLabels && (
+            <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ color: "#fff", fontWeight: 800, fontSize: 14, letterSpacing: 0.5 }}>DALAB INTERNET</div>
-              <div style={{ color: "#7C86C4", fontSize: 10.5, fontWeight: 600 }}>SUPER ADMIN</div>
+              <div style={{ color: "var(--c-7c86c4)", fontSize: 10.5, fontWeight: 600 }}>SUPER ADMIN</div>
             </div>
+          )}
+          {isMobile && (
+            <button onClick={() => setDrawerOpen(false)} aria-label="Close menu" style={{ background: "none", border: "none", color: "#C9CEEA", cursor: "pointer", minWidth: 44, minHeight: 44, display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <X size={20} />
+            </button>
           )}
         </div>
         <div style={{ flex: 1, padding: "8px 10px", overflowY: "auto" }}>
@@ -17313,23 +17404,26 @@ function AdminDashboardShell({ admin, onLogout }) {
             return (
               <button
                 key={n.id}
-                onClick={() => setActive(n.id)}
+                onClick={() => pick(n.id)}
+                className="dl-nav-btn"
+                title={showLabels ? undefined : n.label}
+                aria-current={isActive ? "page" : undefined}
                 style={{
-                  width: "100%", display: "flex", alignItems: "center", gap: 12,
+                  width: "100%", display: "flex", alignItems: "center", gap: 12, textAlign: "left", minHeight: 44,
                   padding: "10px 12px", borderRadius: 10, marginBottom: 4, border: "none",
                   background: isActive ? "rgba(255,255,255,0.08)" : "transparent",
-                  color: isActive ? "#fff" : "#9AA1D4", cursor: "pointer", fontSize: 13, fontWeight: isActive ? 700 : 500,
+                  color: isActive ? "#fff" : "var(--c-9aa1d4)", cursor: "pointer", fontSize: 13, fontWeight: isActive ? 700 : 500,
                   borderLeft: isActive ? `3px solid ${GREEN}` : "3px solid transparent",
                 }}
               >
-                <Icon size={17} />
-                {!collapsed && n.label}
-                {!collapsed && n.id === "devices" && deviceErrorCount > 0 && (
+                <Icon size={17} style={{ flexShrink: 0 }} />
+                {showLabels && n.label}
+                {showLabels && n.id === "devices" && deviceErrorCount > 0 && (
                   <span style={{ marginLeft: "auto" }} title="Agent phones that can't work on their own right now (open Device & USSD)">
                     <Badge tone="red">{deviceErrorCount}</Badge>
                   </span>
                 )}
-                {!collapsed && n.id === "payment-transactions" && (stuckCount > 0 || stalledProcessingCount > 0 || duplicateBlockedCount > 0 || unmatchedPaymentSmsCount > 0) && (
+                {showLabels && n.id === "payment-transactions" && (stuckCount > 0 || stalledProcessingCount > 0 || duplicateBlockedCount > 0 || unmatchedPaymentSmsCount > 0) && (
                   <span style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
                     {unmatchedPaymentSmsCount > 0 && (
                       <span title="Payment SMS received that matched no order (last 7 days) — check SMS Monitor">
@@ -17353,27 +17447,27 @@ function AdminDashboardShell({ admin, onLogout }) {
                     )}
                   </span>
                 )}
-                {!collapsed && n.id === "balance-dashboard" && lowBalanceCount > 0 && (
+                {showLabels && n.id === "balance-dashboard" && lowBalanceCount > 0 && (
                   <span style={{ marginLeft: "auto" }} title="SIMs below their low-balance threshold">
                     <Badge tone="red">{lowBalanceCount}</Badge>
                   </span>
                 )}
-                {!collapsed && n.id === "pending-recovery" && pendingRecoveryCount > 0 && (
+                {showLabels && n.id === "pending-recovery" && pendingRecoveryCount > 0 && (
                   <span style={{ marginLeft: "auto" }} title="Orders awaiting manual recovery">
                     <Badge tone="amber">{pendingRecoveryCount}</Badge>
                   </span>
                 )}
-                {!collapsed && n.id === "packages" && missingTemplateCount > 0 && (
+                {showLabels && n.id === "packages" && missingTemplateCount > 0 && (
                   <span style={{ marginLeft: "auto" }} title="Packages with no matching USSD template">
                     <Badge tone="amber">{missingTemplateCount}</Badge>
                   </span>
                 )}
-                {!collapsed && n.id === "feedback" && pendingFeedbackCount > 0 && (
+                {showLabels && n.id === "feedback" && pendingFeedbackCount > 0 && (
                   <span style={{ marginLeft: "auto" }} title="Feedback/suggestions awaiting review">
                     <Badge tone="amber">{pendingFeedbackCount}</Badge>
                   </span>
                 )}
-                {!collapsed && n.id === "support" && pendingSupportCount > 0 && (
+                {showLabels && n.id === "support" && pendingSupportCount > 0 && (
                   <span style={{ marginLeft: "auto" }} title="Customers waiting for an agent">
                     <Badge tone="red">{pendingSupportCount}</Badge>
                   </span>
@@ -17382,37 +17476,49 @@ function AdminDashboardShell({ admin, onLogout }) {
             );
           })}
         </div>
-        <button onClick={() => setCollapsed(!collapsed)} style={{ background: "none", border: "none", color: "#7C86C4", padding: 16, cursor: "pointer", display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
-          <Menu size={16} /> {!collapsed && "Collapse"}
-        </button>
-      </div>
+        {!isMobile && (
+          <button onClick={toggleCollapsed} aria-expanded={!collapsed} aria-controls="dl-sidebar" style={{ background: "none", border: "none", color: "var(--c-7c86c4)", padding: 16, minHeight: 44, cursor: "pointer", display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+            <Menu size={16} /> {!collapsed && "Collapse"}
+          </button>
+        )}
+      </nav>
 
       {/* Main */}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ background: "#fff", borderBottom: `1px solid ${BORDER}`, padding: "16px 26px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <div style={{ fontWeight: 800, fontSize: 18, color: INK }}>{activeLabel}</div>
-            <div style={{ fontSize: 12, color: MUTE }}>Saturday, 25 July 2026</div>
+      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+        <header style={{ background: "var(--c-surface)", borderBottom: `1px solid ${BORDER}`, padding: isMobile ? "10px 12px" : "14px 26px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, position: "sticky", top: 0, zIndex: 40 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+            {isMobile && (
+              <button className="dl-icon-btn" onClick={() => setDrawerOpen(true)} aria-label="Open menu" aria-expanded={drawerOpen} aria-controls="dl-sidebar" style={{ minWidth: 44, minHeight: 44, flexShrink: 0 }}>
+                <Menu size={20} />
+              </button>
+            )}
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 800, fontSize: isMobile ? 16 : 18, color: INK, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{activeLabel}</div>
+              <div className="dl-hide-xs" translate="no" style={{ fontSize: 12, color: MUTE, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{today}</div>
+            </div>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-            <div style={{ textAlign: "right" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 12, flexShrink: 0 }}>
+            <PrefsControls />
+            <div style={{ textAlign: "right", display: isMobile ? "none" : "block" }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: INK }}>{admin?.email}</div>
               <div style={{ fontSize: 10.5, color: MUTE }}>{admin?.role === "super_admin" ? "Super Admin" : "Admin"}</div>
             </div>
-            <div style={{ width: 34, height: 34, borderRadius: 17, background: INDIGO_SOFT, display: "flex", alignItems: "center", justifyContent: "center", color: INDIGO, fontWeight: 800, fontSize: 13 }}>
+            <div className="dl-hide-xs" title={admin?.email} style={{ width: 34, height: 34, borderRadius: 17, background: INDIGO_SOFT, display: "flex", alignItems: "center", justifyContent: "center", color: INDIGO, fontWeight: 800, fontSize: 13, flexShrink: 0 }}>
               {admin?.role === "super_admin" ? "SA" : "AD"}
             </div>
             <button
               onClick={onLogout}
               title="Log out"
-              style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 10, padding: 8, cursor: "pointer", display: "flex", alignItems: "center" }}
+              aria-label="Log out"
+              className="dl-icon-btn"
+              style={{ minWidth: isMobile ? 44 : 38, minHeight: isMobile ? 44 : 38 }}
             >
               <LogOut size={16} color={SLATE} />
             </button>
           </div>
-        </div>
+        </header>
         {admin?.role === "super_admin" && <ConnectionStatusBar />}
-        <div style={{ padding: 22 }}>
+        <main className="dl-content" style={{ padding: 22, flex: 1, minWidth: 0 }}>
           {active === "overview" && <Overview companies={companies} orders={orders} />}
           {active === "financial-overview" && <FinancialOverview admin={admin} />}
           {active === "company-accounts" && <CompanyAccountsSection />}
@@ -17452,7 +17558,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "roles" && <RolesPermissions admin={admin} />}
           {active === "activity-log" && <ActivityLogPanel />}
           {active === "settings" && <SettingsPanel />}
-        </div>
+        </main>
       </div>
     </div>
   );
