@@ -51,7 +51,7 @@ input, select, textarea { color: inherit; }
 .dl-icon-btn:focus-visible, .dl-nav-btn:focus-visible { outline: 2px solid var(--c-003152); outline-offset: 2px; }
 .dl-nav-btn:hover { background: rgba(255, 255, 255, 0.06) !important; }
 
-@media (max-width: 899px) {
+@media (max-width: 899px), (pointer: coarse) and (max-width: 1199px) {
   .dl-content { padding: 12px !important; }
   /* Multi-column grids become as many ~150px columns as fit (2 on most
      phones, 1 on the smallest), so cards never squash or overflow. */
@@ -92,7 +92,7 @@ input, select, textarea { color: inherit; }
 }
 
 /* Live-status strip: one row that scrolls sideways on phones. */
-@media (max-width: 899px) {
+@media (max-width: 899px), (pointer: coarse) and (max-width: 1199px) {
   .dl-statusbar { flex-wrap: nowrap !important; overflow-x: auto; scrollbar-width: none; padding: 6px 0 !important; }
   .dl-statusbar::-webkit-scrollbar { display: none; }
   .dl-statusbar > div { flex-shrink: 0; padding: 0 12px !important; white-space: nowrap; }

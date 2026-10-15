@@ -779,6 +779,18 @@ exchangeRouter.put("/agent/exchange/dial-attempts/:attemptId/step2", requireAuth
   }
   const exchangeOrderId = result[0].exchange_order_id as string;
 
+  // The phone couldn't read a final result, but the carrier's own transfer
+  // SMS may already be on the server (uploaded to sms_logs). If it is, the
+  // money was sent: complete the order instead of failing it.
+  if (status !== "success") {
+    const sms = await findStoredPayoutConfirmation(exchangeOrderId, req.params.attemptId);
+    if (sms) {
+      await completeExchangeOrderByPayoutConfirmation(exchangeOrderId, sms.body);
+      broadcast({ type: "exchange_order.updated", exchangeOrderId });
+      return sendJson(res, 200, await queryOne(`SELECT * FROM exchange_dial_attempts WHERE id=$1`, [req.params.attemptId]));
+    }
+  }
+
   if (status === "success") {
     // Mark Completed only after a successful result — per the explicit
     // requirement. Atomic CAS so a duplicate/retried report can't double-fire.
@@ -841,6 +853,35 @@ exchangeRouter.put("/agent/exchange/dial-attempts/:attemptId/step2", requireAuth
 // failed, or ambiguous — which is exactly the DEX176626979 case this
 // function exists to rescue.
 
+/** Outgoing-transfer wording of the payout confirmations the Agent App
+ * recognizes (Hormuud "ayaad uwareejisay", eDahab "Dollar ayad u warejisay",
+ * Somtel "Waxaad ku wareejisay"). */
+const PAYOUT_SENT_SMS_RE = "(ayaad\\s+uwareejisay|u\\s+warejisay|ku\\s+wareejisay)";
+
+/**
+ * A payout confirmation SMS already uploaded for this order's attempt: same
+ * amount and receiver, outgoing wording, received after the attempt began.
+ */
+async function findStoredPayoutConfirmation(orderId: string, attemptId: string): Promise<{ id: string; body: string } | null> {
+  const order = await queryOne<{ amount_received: string; receiver_phone: string }>(
+    `SELECT amount_received, receiver_phone FROM exchange_orders WHERE id=$1`,
+    [orderId]
+  );
+  const attempt = await queryOne<{ created_at: string }>(`SELECT created_at FROM exchange_dial_attempts WHERE id=$1`, [attemptId]);
+  if (!order || !attempt) return null;
+  const receiver = normalizePhone(order.receiver_phone);
+  if (!receiver) return null;
+  return queryOne<{ id: string; body: string }>(
+    `SELECT id, body FROM sms_logs
+      WHERE received_at >= $1::timestamptz - interval '1 minute'
+        AND parsed_amount IS NOT NULL AND ABS(parsed_amount - $2) < 0.01
+        AND right(regexp_replace(coalesce(parsed_phone, ''), '\\D', '', 'g'), 9) = $3
+        AND body ~* $4
+      ORDER BY received_at DESC LIMIT 1`,
+    [attempt.created_at, order.amount_received, receiver, PAYOUT_SENT_SMS_RE]
+  );
+}
+
 async function completeExchangeOrderByPayoutConfirmation(
   orderId: string,
   confirmationText: string
@@ -858,8 +899,17 @@ async function completeExchangeOrderByPayoutConfirmation(
     return { order, success: false, alreadyCompleted: false };
   }
 
+  // A transfer was attempted once step 1 succeeded (the PIN prompt opened
+  // and the PIN is being or has been entered) -- including while the phone
+  // is still waiting for the carrier's final screen. The carrier's SMS often
+  // lands in that window: confirmed live, the payout's "$16.67 ayaad
+  // uwareejisay" SMS arrived while the attempt was still step1_success, was
+  // ignored, and the order then timed out to Failed with a Retry button for
+  // money already sent. A step-1 failure (no PIN ever entered) still never
+  // counts.
   const attemptedPayout = await queryOne<{ id: string }>(
-    `SELECT id FROM exchange_dial_attempts WHERE exchange_order_id=$1 AND completed_at IS NOT NULL LIMIT 1`,
+    `SELECT id FROM exchange_dial_attempts
+      WHERE exchange_order_id=$1 AND (completed_at IS NOT NULL OR status='step1_success') LIMIT 1`,
     [orderId]
   );
   if (!attemptedPayout) {
@@ -970,6 +1020,62 @@ exchangeRouter.post("/agent/exchange/orders/payout-confirmation", requireAuth("a
     completed: result?.success ?? false,
     alreadyCompleted: result?.alreadyCompleted ?? false,
   });
+});
+
+// ---------------- Mark paid (failed -> completed, admin-confirmed) ----------------
+//
+// For a payout the phone couldn't confirm (timeout after the PIN) but the
+// admin can see went through -- the carrier's transfer SMS is on the payout
+// SIM. Retry would pay the customer twice and Reverse would refund money
+// that was in fact delivered, so this is the third way out. Only for an
+// order whose PIN step was actually reached; recorded in the activity log
+// with the admin who confirmed it.
+exchangeRouter.post("/admin/exchange/orders/:id/mark-paid", requirePermission("exchange.manage"), async (req, res) => {
+  const order = await queryOne<{ id: string; status: string; customer_id: string | null }>(
+    `SELECT id, status, customer_id FROM exchange_orders WHERE id=$1`,
+    [req.params.id]
+  );
+  if (!order) return sendJson(res, 404, { error: "Exchange order not found" });
+  if (order.status !== "failed") {
+    return sendJson(res, 409, { error: `Only a Failed exchange can be marked as paid (this one is '${order.status}').` });
+  }
+  const reachedPin = await queryOne<{ id: string }>(
+    `SELECT id FROM exchange_dial_attempts WHERE exchange_order_id=$1 AND (completed_at IS NOT NULL OR status='step1_success') LIMIT 1`,
+    [order.id]
+  );
+  if (!reachedPin) {
+    return sendJson(res, 409, { error: "No payout attempt reached the PIN step, so no money could have been sent. Use Retry Payout or Reverse." });
+  }
+  const done = await query(
+    `UPDATE exchange_orders SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1 AND status='failed' RETURNING *`,
+    [order.id]
+  );
+  if (done.length === 0) return sendJson(res, 409, { error: "This exchange changed meanwhile — refresh and check again." });
+  await query(
+    `UPDATE exchange_dial_attempts SET status='success', completed_at=coalesce(completed_at, now()),
+            step2_response=coalesce(step2_response || ' — ', '') || 'Confirmed sent by an admin from the payout SMS.'
+      WHERE exchange_order_id=$1 AND status != 'success'
+        AND attempt_number = (SELECT MAX(attempt_number) FROM exchange_dial_attempts WHERE exchange_order_id=$1)`,
+    [order.id]
+  );
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "exchange_marked_paid",
+    entityType: "exchange_order",
+    entityId: order.id,
+    oldValue: { status: "failed" },
+    newValue: { status: "completed" },
+  });
+  broadcast({ type: "exchange_order.updated", exchangeOrderId: order.id });
+  const eo = done[0] as any;
+  if (eo.customer_id) {
+    await notifyCustomer(
+      eo.customer_id,
+      "Sarrifka lacagtaada waa la dhammaystiray",
+      `Sarrifkaaga ${eo.amount_sent} waa la dhammaystiray — ${eo.receiver_phone} waxaa loo diray ${eo.amount_received}.`
+    );
+  }
+  sendJson(res, 200, eo);
 });
 
 // ---------------- Retry payout (failed -> in_progress) ----------------
