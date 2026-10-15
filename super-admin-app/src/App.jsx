@@ -463,6 +463,9 @@ const DalabAdminApi = {
   deleteSmsSenderId: (id) => dalabAdminApiRequest(`/admin/sms-sender-ids/${id}`, { method: "DELETE" }),
   // SMS Format Update (smsFormats.routes.ts) -- Super Admin only, re-tested on the server before activation.
   getSmsFormats: () => dalabAdminApiRequest("/admin/sms-formats"),
+  // Agent App Release APK (agentAppReleases.routes.ts) -- devices.manage.
+  getAgentAppReleases: () => dalabAdminApiRequest("/admin/agent-app/releases"),
+  checkAgentAppRelease: () => dalabAdminApiRequest("/admin/agent-app/releases/check", { method: "POST" }),
   testSmsFormat: (body) => dalabAdminApiRequest("/admin/sms-formats/test", { method: "POST", body }),
   saveSmsFormat: (body) => dalabAdminApiRequest("/admin/sms-formats", { method: "POST", body }),
   activateSmsFormat: (id) => dalabAdminApiRequest(`/admin/sms-formats/${id}/activate`, { method: "POST" }),
@@ -964,6 +967,7 @@ const NAV = [
   { id: "support", label: "Agent Support", icon: MessageCircle, permission: "support.manage" },
   { id: "promo-images", label: "Promo Images", icon: ImageIcon, superAdminOnly: true },
   { id: "nala-soco", label: "Nala Soco", icon: Share2, permission: "settings.manage" },
+  { id: "agent-app-release", label: "Agent App Release APK", icon: Download, permission: "devices.manage" },
   { id: "devices", label: "Device & USSD", icon: SmartphoneNfc, superAdminOnly: true },
   { id: "sms-logs", label: "SMS Monitor", icon: MessageSquare, permission: "devices.manage" },
   { id: "payment-transactions", label: "Payment Transactions", icon: Activity, permission: "orders.manage" },
@@ -13672,6 +13676,178 @@ function ExecutionLogs({ companies }) {
 // matched a pending order — separate from ExecutionLogs, which only shows
 // USSD dial attempts (i.e. SMS that already matched and moved on to
 // dialing). This is the "did we even see the SMS" view.
+// Agent App Release APK: the newest Agent App APK that is safe to install,
+// read live from the project's GitHub Releases by the server
+// (agentAppReleases.routes.ts) -- only a successful CI build whose APK
+// signature and version were verified, with its download link checked.
+// Nothing here is typed by hand.
+function formatBytes(n) {
+  if (!n) return "—";
+  return n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`;
+}
+
+function AgentAppReleasePanel() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState("");
+  const [checkNote, setCheckNote] = useState("");
+
+  const load = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      setData(await DalabAdminApi.getAgentAppReleases());
+    } catch (err) {
+      setError(err.message || "Could not load Agent App releases.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
+    if (DALAB_API_ENABLED) load();
+  }, []);
+
+  const check = async () => {
+    setChecking(true);
+    setError("");
+    setCheckNote("");
+    const before = data?.latest?.runNumber ?? null;
+    try {
+      const next = await DalabAdminApi.checkAgentAppRelease();
+      setData(next);
+      const now = next.latest?.runNumber ?? null;
+      setCheckNote(
+        now && now !== before
+          ? `New release found: ${next.latest.versionName} (build ${now}).`
+          : now
+            ? "You already have the newest verified release."
+            : "No verified release is available yet."
+      );
+    } catch (err) {
+      setError(err.message || "Could not check for a new release.");
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const latest = data?.latest;
+  const ready = latest && latest.downloadVerified === true;
+  const btn = (primary) => ({
+    display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, padding: primary ? "12px 18px" : "10px 14px",
+    borderRadius: 10, border: primary ? "none" : `1px solid ${BORDER}`, background: primary ? INDIGO : "#fff",
+    color: primary ? "#fff" : INK, fontWeight: 700, fontSize: primary ? 14 : 13, cursor: "pointer", textDecoration: "none",
+  });
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div>
+        <div style={{ fontSize: 20, fontWeight: 800, color: INK }}>Agent App Release APK</div>
+        <div style={{ fontSize: 13, color: MUTE, marginTop: 4 }}>
+          The newest DALAB Agent App build that passed CI, with its signature and version verified — install it on the agent phones.
+        </div>
+      </div>
+
+      {error && <Card style={{ padding: 14, color: "#C81E2C", fontSize: 13 }}>{error}</Card>}
+
+      <Card style={{ padding: 18 }}>
+        {loading && !data ? (
+          <div style={{ fontSize: 13, color: MUTE }}>Loading the latest release…</div>
+        ) : latest ? (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 18, alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ minWidth: 220 }}>
+              <Badge tone={ready ? "green" : "amber"}>{ready ? "Latest release · ready" : "Latest release · download not confirmed"}</Badge>
+              <div style={{ fontSize: 26, fontWeight: 800, color: INK, marginTop: 8 }}>
+                v{latest.versionName} <span style={{ fontSize: 15, color: MUTE, fontWeight: 600 }}>({latest.versionCode})</span>
+              </div>
+              <div style={{ fontSize: 13, color: MUTE, marginTop: 6, display: "flex", flexDirection: "column", gap: 3 }}>
+                <span>Released: {latest.publishedAt ? formatDateTime(latest.publishedAt) : "—"}</span>
+                <span>Build number: <b style={{ color: INK }}>{latest.runNumber}</b>{latest.commit ? ` · commit ${String(latest.commit).slice(0, 7)}` : ""}</span>
+                <span>File size: <b style={{ color: INK }}>{formatBytes(latest.sizeBytes)}</b></span>
+                <span>Signature verified in CI{latest.downloadCheckedAt ? ` · link checked ${formatDateTime(latest.downloadCheckedAt)}` : ""}</span>
+              </div>
+              {latest.downloadError && <div style={{ fontSize: 12.5, color: "#C81E2C", marginTop: 6, fontWeight: 600 }}>{latest.downloadError}</div>}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 220 }}>
+              {ready ? (
+                <a href={latest.downloadUrl} style={btn(true)} rel="noopener noreferrer">
+                  <Download size={18} /> Download Latest Release APK
+                </a>
+              ) : (
+                <div style={{ fontSize: 12.5, color: "#A9720A", fontWeight: 600 }}>
+                  The download link hasn't been confirmed — tap Check for New Release to re-check it.
+                </div>
+              )}
+              <button type="button" onClick={check} disabled={checking} style={btn(false)}>
+                <RefreshCw size={15} /> {checking ? "Checking…" : "Check for New Release"}
+              </button>
+            </div>
+          </div>
+        ) : data ? (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ fontSize: 13.5, color: "#A9720A", fontWeight: 600 }}>{data.message || "No verified Agent App release is available yet."}</div>
+            <button type="button" onClick={check} disabled={checking} style={btn(false)}>
+              <RefreshCw size={15} /> {checking ? "Checking…" : "Check for New Release"}
+            </button>
+          </div>
+        ) : null}
+        {checkNote && <div style={{ fontSize: 12.5, color: INK, marginTop: 12, fontWeight: 600 }}>{checkNote}</div>}
+      </Card>
+
+      {data?.releases?.length > 0 && (
+        <Card style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ padding: "14px 16px", display: "flex", alignItems: "center", gap: 8, fontWeight: 800, color: INK }}>
+            <History size={16} /> Release history
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+              <thead>
+                <tr style={{ background: "#F7F8FC", color: MUTE, textAlign: "left" }}>
+                  {["Version", "Build", "Released", "Size", "Status", ""].map((h) => <th key={h} style={{ padding: "8px 12px", fontWeight: 700 }}>{h}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {data.releases.map((r) => (
+                  <tr key={r.tag} style={{ borderTop: `1px solid ${BORDER}` }}>
+                    <td style={{ padding: "8px 12px", fontWeight: 700, color: INK }}>{r.versionName ? `v${r.versionName} (${r.versionCode})` : "—"}</td>
+                    <td style={{ padding: "8px 12px" }}>{r.runNumber}</td>
+                    <td style={{ padding: "8px 12px" }}>{r.publishedAt ? formatDateTime(r.publishedAt) : "—"}</td>
+                    <td style={{ padding: "8px 12px" }}>{formatBytes(r.sizeBytes)}</td>
+                    <td style={{ padding: "8px 12px" }}>
+                      {latest && r.tag === latest.tag ? (
+                        <Badge tone="green">Latest</Badge>
+                      ) : r.verified ? (
+                        <Badge tone="gray">Previous</Badge>
+                      ) : (
+                        <span title={r.notVerifiedReason || ""}><Badge tone="amber">Not verified</Badge></span>
+                      )}
+                    </td>
+                    <td style={{ padding: "8px 12px" }}>
+                      {r.verified ? (
+                        <a href={r.downloadUrl} rel="noopener noreferrer" style={{ color: INDIGO, fontWeight: 700, textDecoration: "none" }}>Download</a>
+                      ) : (
+                        <span style={{ color: MUTE }}>{r.notVerifiedReason}</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      <Card style={{ padding: 14, display: "flex", gap: 10, alignItems: "flex-start", background: "#F2FBF5" }}>
+        <ShieldCheck size={18} color={GREEN} />
+        <div style={{ fontSize: 12.5, color: INK }}>
+          This is the official release-signed Agent App, the same key as earlier release builds, so it installs over them as an update.
+          Install it only on the DALAB agent phones.
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 function SmsLogs({ companies }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -17256,6 +17432,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "notifications" && <Notifications />}
           {active === "promo-images" && <PromoImages />}
           {active === "nala-soco" && <NalaSoco />}
+          {active === "agent-app-release" && <AgentAppReleasePanel />}
           {active === "devices" && <DeviceUssdModule companies={companies} admin={admin} onPackagesChanged={refreshMissingTemplateCount} />}
           {active === "sms-logs" && <SmsLogs companies={companies} />}
           {active === "payment-transactions" && <PaymentTransactionsPanel companies={companies} />}
