@@ -131,6 +131,37 @@ jobs:
           path: agent-app/app/build/outputs/bundle/release/app-release.aab
           if-no-files-found: error
 
+      # Proves the release APK is installable before anything is published:
+      # a valid signature (apksigner -- what Android checks on install), and
+      # its real package/version read from the APK itself (aapt2), not from
+      # source. The facts go into agent-app-release.json next to the APK;
+      # the Admin Dashboard's "Agent App Release APK" page only offers
+      # releases that carry it. Any failure here stops the run, so no
+      # release is created for an APK that wouldn't install.
+      - name: Verify release APK
+        id: verify
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          BT="$(ls -d "$SDK"/build-tools/* | sort -V | tail -1)"
+          APK=app/build/outputs/apk/release/app-release.apk
+          "$BT/apksigner" verify --verbose --print-certs "$APK" | tee "$RUNNER_TEMP/apksigner.txt"
+          BADGING="$("$BT/aapt2" dump badging "$APK" | head -1)"
+          echo "$BADGING"
+          PKG="$(echo "$BADGING" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")"
+          VC="$(echo "$BADGING" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p")"
+          VN="$(echo "$BADGING" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")"
+          CERT="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/apksigner.txt" | head -1)"
+          test -n "$PKG" && test -n "$VC" && test -n "$VN" && test -n "$CERT"
+          SHA="$(sha256sum "$APK" | cut -d' ' -f1)"
+          SIZE="$(stat -c %s "$APK")"
+          cat > "$RUNNER_TEMP/agent-app-release.json" <<JSON
+          {"packageName":"$PKG","versionName":"$VN","versionCode":$VC,"apkSha256":"$SHA","apkSizeBytes":$SIZE,"signatureVerified":true,"signerCertSha256":"$CERT","runNumber":${{ github.run_number }},"commit":"${{ github.sha }}","branch":"${{ github.ref_name }}","builtAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+          JSON
+          cat "$RUNNER_TEMP/agent-app-release.json"
+          echo "version_name=$VN" >> "$GITHUB_OUTPUT"
+          echo "version_code=$VC" >> "$GITHUB_OUTPUT"
+
       # actions/upload-artifact always produces a .zip, and it can only be
       # downloaded through an authenticated GitHub session — both a
       # dealbreaker for tapping "install" straight from a phone browser. A
@@ -149,7 +180,8 @@ jobs:
             agent-app/app/build/outputs/apk/debug/app-debug.apk \
             agent-app/app/build/outputs/apk/release/app-release.apk \
             agent-app/app/build/outputs/bundle/release/app-release.aab \
+            "$RUNNER_TEMP/agent-app-release.json" \
             --repo "${{ github.repository }}" \
-            --title "Agent App build #${{ github.run_number }} ($SHORT_SHA)" \
+            --title "Agent App ${{ steps.verify.outputs.version_name }} (${{ steps.verify.outputs.version_code }}) -- build #${{ github.run_number }} ($SHORT_SHA)" \
             --notes "Automated build from commit $SHORT_SHA on ${{ github.ref_name }}. Direct-installable APKs — no zip, no GitHub login needed. app-debug.apk is unminified (larger, matches the historically-installed build); app-release.apk is R8-shrunk (smaller) and signed with the release keystore — the two are NOT interchangeable updates for each other since they're signed with different keys. app-release.aab is the Android App Bundle for Play Console — Google Play requires this format (not a raw APK) for a Play Store upload/update; it's built from the exact same release-signed source as app-release.apk." \
             --target "${{ github.sha }}"

@@ -15,6 +15,8 @@ import { refundRedeemedPointsIfNeeded } from "../utils/loyaltyPoints.js";
 import { isAlreadyCompleted, createPaymentTransaction, markPaymentFinal } from "../utils/paymentTransactions.js";
 import { rateLimit } from "../auth/rateLimit.js";
 import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
+import { routeStatusFor, SIM_ROUTING_PRIMARY_ORDER } from "../utils/orderRouting.js";
+import { checkSimBalanceForOrder } from "../utils/simBalanceCheck.js";
 import { notifyCustomer } from "../services/customerNotify.js";
 import { allDeliveriesDone } from "../services/deliveries.js";
 import { validateMobileNumber, companyKeyFromLabel } from "../lib/phoneValidation.js";
@@ -550,12 +552,31 @@ ordersRouter.get("/agent/orders/stream", requireAuth("agent"), async (req, res) 
 // underlying template/PIN, with zero manual "Dial Now" tap required.
 // Registered before "/agent/orders/:id" so "self-heal-candidates" isn't
 // swallowed as an :id param (same reasoning as "/agent/orders/stream" above).
-ordersRouter.get("/agent/orders/self-heal-candidates", requireAuth("agent"), async (_req, res) => {
+//
+// Only the orders assigned to the CALLING phone (its template pin, else the
+// company's primary SIM Routing entry -- utils/orderRouting.ts): a backup or
+// any other phone never sees them, so it can't dial them. An order whose
+// assigned phone is offline simply waits here for that phone.
+ordersRouter.get("/agent/orders/self-heal-candidates", requireAuth("agent"), async (req, res) => {
+  const agent = await queryOne<{ device_id: string | null }>(`SELECT device_id FROM agents WHERE id=$1`, [req.auth!.sub]);
+  if (!agent?.device_id) return sendJson(res, 200, []);
   const rows = await query(
-    `${ORDER_LIST_SELECT}
-     WHERE o.status='in_progress' AND o.ussd_generated IS NOT NULL
-       AND EXISTS (SELECT 1 FROM payment_transactions pt WHERE pt.order_id = o.id AND pt.status='pending')
-     ORDER BY o.updated_at ASC`
+    `SELECT * FROM (
+       SELECT x.*,
+              CASE WHEN x.ussd_device_id IS NOT NULL AND x.ussd_sim_slot IS NOT NULL THEN x.ussd_device_id ELSE pr.device_id END AS assigned_device_id,
+              CASE WHEN x.ussd_device_id IS NOT NULL AND x.ussd_sim_slot IS NOT NULL THEN x.ussd_sim_slot ELSE pr.sim_slot END AS assigned_sim_slot
+         FROM (${ORDER_LIST_SELECT}
+               WHERE o.status='in_progress' AND o.ussd_generated IS NOT NULL
+                 AND EXISTS (SELECT 1 FROM payment_transactions pt WHERE pt.order_id = o.id AND pt.status='pending')) x
+         LEFT JOIN LATERAL (
+           SELECT device_id, sim_slot FROM sim_routing
+            WHERE company_id = x.company_id AND device_id IS NOT NULL
+            ORDER BY ${SIM_ROUTING_PRIMARY_ORDER} LIMIT 1
+         ) pr ON true
+     ) c
+     WHERE c.assigned_device_id = $1
+     ORDER BY c.updated_at ASC`,
+    [agent.device_id]
   );
   sendJson(res, 200, rows);
 });
@@ -1099,23 +1120,42 @@ ordersRouter.get("/admin/orders/:id/somlink-status", requireStaff(), async (req,
 // online-status check in the backend, so this never disagrees with the
 // Devices panel's own badge for the same device.
 ordersRouter.get("/admin/orders/:id/delivery-status", requireStaff(), async (req, res) => {
-  const order = await queryOne(`SELECT company_id FROM orders WHERE id=$1`, [req.params.id]);
+  const order = await queryOne(`SELECT id, company_id, status, ussd_device_id, ussd_sim_slot FROM orders WHERE id=$1`, [req.params.id]);
   if (!order) return sendJson(res, 404, { error: "Order not found" });
 
-  const devices = await query(
-    `SELECT d.name, d.last_heartbeat_at, ${DEVICE_ONLINE_SQL} AS online
-     FROM sim_routing sr JOIN agent_devices d ON d.id = sr.device_id
-     WHERE sr.company_id=$1
-     ORDER BY sr.priority ASC`,
-    [order.company_id]
+  // The ONE phone + SIM responsible for this order (utils/orderRouting.ts):
+  // its state alone explains a wait -- the order is never handed to a
+  // backup device, so "Waiting for Assigned SIM" is the honest answer.
+  const { assigned, waitingReason: routeWait } = await routeStatusFor(order);
+  const balance = assigned ? await checkSimBalanceForOrder(order.id, { deviceId: assigned.deviceId, simSlot: assigned.simSlot }) : null;
+  const lastAttempt = await queryOne(
+    `SELECT a.id, a.attempt_number, a.status, a.sim_slot, a.ussd_string_masked, LEFT(a.response_message, 300) AS response_message,
+            a.created_at, a.completed_at, d.name AS device_name
+       FROM ussd_dial_attempts a
+       LEFT JOIN agents ag ON ag.id = a.agent_id
+       LEFT JOIN agent_devices d ON d.id = ag.device_id
+      WHERE a.order_id=$1 ORDER BY a.created_at DESC LIMIT 1`,
+    [order.id]
   );
-  if (devices.length === 0) {
-    return sendJson(res, 200, { hasRouting: false, device: null });
+  let waitingReason = routeWait;
+  if (!waitingReason && order.status === "in_progress") {
+    if (lastAttempt && (lastAttempt.status === "pending" || lastAttempt.status === "ambiguous")) {
+      waitingReason = "Needs verification — the last dial's result is unknown; the money may already have been sent. Check the carrier SMS, then mark it Delivered or Not delivered.";
+    } else if (balance?.status === "insufficient") {
+      waitingReason = balance.message ?? "Insufficient balance on the assigned SIM.";
+    } else if (balance && (balance.status === "unknown" || balance.status === "outdated")) {
+      waitingReason = balance.message ?? "The assigned SIM's balance isn't known yet.";
+    }
   }
-  const top = devices[0];
   sendJson(res, 200, {
-    hasRouting: true,
-    device: { name: top.name, lastHeartbeatAt: top.last_heartbeat_at, stale: !top.online },
+    hasRouting: Boolean(assigned),
+    // Kept for older dashboard builds.
+    device: assigned ? { name: assigned.deviceName ?? assigned.deviceId, lastHeartbeatAt: assigned.lastHeartbeatAt, stale: !assigned.online } : null,
+    orderStatus: order.status,
+    assigned,
+    balance: balance ? { status: balance.status, availableBalance: balance.availableBalance, requestedAmount: balance.requestedAmount, message: balance.message } : null,
+    lastAttempt,
+    waitingReason,
   });
 });
 

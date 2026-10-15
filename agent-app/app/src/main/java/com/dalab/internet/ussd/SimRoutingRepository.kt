@@ -14,11 +14,10 @@ import kotlinx.coroutines.sync.withLock
  * so a routing change the Super Admin makes takes effect without requiring
  * an app restart.
  *
- * Scoped to this physical device's [DeviceIdentity] — routing is now a
- * ranked list per company (a company can have a primary + backup device),
- * so fetching unscoped would pull in every company's routing including ones
- * configured for the OTHER device, and this device would wrongly attempt to
- * dial them on its own local SIM slot numbering.
+ * Scoped to this physical device's [DeviceIdentity], and to the companies
+ * this phone is the PRIMARY routed device for: an order belongs to exactly
+ * one phone + SIM (the server's utils/orderRouting.ts) and never moves to a
+ * backup automatically.
  */
 object SimRoutingRepository {
     @Volatile private var cache: Map<String, Int> = emptyMap() // companyId -> simSlot (1 or 2)
@@ -27,7 +26,15 @@ object SimRoutingRepository {
 
     suspend fun refresh(): Result<Unit> {
         return try {
-            val response = ApiClient.service.getSimRoutingRaw(deviceId = DeviceIdentity.deviceId())
+            // Without this phone's own id the server would have to guess
+            // whose routing to send -- never dial on another phone's routing.
+            val deviceId = DeviceIdentity.deviceId() ?: run {
+                cache = emptyMap()
+                hasLoadedOnce = true
+                DiagnosticsLog.record("sim_routing_refresh", "This phone has no device id yet — no SIM routing loaded, nothing is auto-dialed until it's set.")
+                return Result.success(Unit)
+            }
+            val response = ApiClient.service.getSimRoutingRaw(deviceId = deviceId)
             if (!response.isSuccessful) {
                 val error = IllegalStateException("Failed to load SIM routing: HTTP ${response.code()}")
                 DiagnosticsLog.record("sim_routing_refresh", error.message ?: "unknown error")
@@ -64,6 +71,10 @@ object SimRoutingRepository {
                         ?: throw IllegalStateException("missing companyId")
                     val simSlot = obj.get("simSlot")?.asInt
                         ?: throw IllegalStateException("missing/non-numeric simSlot")
+                    // Only companies this phone is the PRIMARY for are routes
+                    // (current servers send nothing else); a backup row is
+                    // never used to dial automatically.
+                    if (obj.get("primary")?.takeIf { !it.isJsonNull }?.asBoolean == false) continue
                     parsed[companyId] = simSlot
                 } catch (e: Exception) {
                     skipped++

@@ -77,8 +77,15 @@ object SelfHealSweeper {
                 // Diagnostics isn't misled between "go configure SIM routing"
                 // and "transient network blip, will retry automatically."
                 val slot = when (val result = resolveSlot(order)) {
-                    is SimSlotResult.Slot -> result.slot
-                    SimSlotResult.NotConfigured -> {
+                    is AssignedSim.ThisPhone -> result.slot
+                    is AssignedSim.OtherPhone -> {
+                        // Never dialed on this phone: the order waits for its
+                        // own phone + SIM (the server doesn't even list it
+                        // for this phone; this guards an older server).
+                        logSkipOnce(order.id, "other_phone", "Order ${order.id} is assigned to ${result.deviceId} · SIM ${result.slot} — not dialed on this phone.")
+                        continue
+                    }
+                    AssignedSim.NotConfigured -> {
                         // Names the company (and its id) directly in the
                         // message — the whole point is that whoever reads
                         // this shouldn't need to separately look up which
@@ -92,7 +99,7 @@ object SelfHealSweeper {
                         )
                         continue
                     }
-                    SimSlotResult.LoadFailed -> {
+                    AssignedSim.LoadFailed -> {
                         logSkipOnce(order.id, "load_failed", "SIM routing cache failed to load for order ${order.id} — will retry next sweep.")
                         continue
                     }
@@ -120,10 +127,22 @@ object SelfHealSweeper {
         if (!alreadyLogged) DiagnosticsLog.record("self_heal_sweep", message, isError = false)
     }
 
-    private suspend fun resolveSlot(order: Order): SimSlotResult {
-        if (order.ussdDeviceId != null && order.ussdDeviceId == DeviceIdentity.deviceId() && order.ussdSimSlot != null) {
-            return SimSlotResult.Slot(order.ussdSimSlot)
+    /** The order's assigned SIM on this phone (see [resolveAssignedSim]).
+     * The server's own answer (assignedDeviceId/assignedSimSlot) wins: it
+     * reflects an Admin routing change even before this phone's routing
+     * cache refreshes. */
+    private suspend fun resolveSlot(order: Order): AssignedSim {
+        val me = DeviceIdentity.deviceId()
+        if (order.assignedDeviceId != null && order.assignedSimSlot != null) {
+            return if (order.assignedDeviceId == me) AssignedSim.ThisPhone(order.assignedSimSlot)
+            else AssignedSim.OtherPhone(order.assignedDeviceId, order.assignedSimSlot)
         }
-        return SimRoutingRepository.simSlotFor(order.companyId)
+        val pinned = order.ussdDeviceId != null && order.ussdSimSlot != null
+        return resolveAssignedSim(
+            order.ussdDeviceId,
+            order.ussdSimSlot,
+            me,
+            if (pinned) SimSlotResult.NotConfigured else SimRoutingRepository.simSlotFor(order.companyId),
+        )
     }
 }

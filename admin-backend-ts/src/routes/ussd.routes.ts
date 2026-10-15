@@ -15,6 +15,7 @@ import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
 import { deviceHealthIssues } from "../utils/deviceHealth.js";
 import { normalizePhoneForUssd, formatUssdAmount, splitUssdAmount, formatUssdAmountSplit } from "../utils/ussdFormatting.js";
 import { checkSimBalanceForOrder, unverifiedBalancePolicy } from "../utils/simBalanceCheck.js";
+import { assignedRouteFor, primaryRoutesForDevice, SIM_ROUTING_PRIMARY_ORDER } from "../utils/orderRouting.js";
 import { notifyCustomer } from "../services/customerNotify.js";
 import { extractBalanceFromSms, applyBalanceUpdate } from "../utils/simBalances.js";
 import { deliveriesDone, allDeliveriesDone } from "../services/deliveries.js";
@@ -631,7 +632,7 @@ ussdRouter.get("/admin/sim-routing", requireStaff(), async (_req, res) => {
     await query(
       `SELECT sr.*, c.name AS company_name, d.name AS device_name
        FROM sim_routing sr JOIN companies c ON c.id=sr.company_id LEFT JOIN agent_devices d ON d.id=sr.device_id
-       ORDER BY sr.company_id, sr.priority`
+       ORDER BY sr.company_id, sr.${SIM_ROUTING_PRIMARY_ORDER.replace(/, /g, ", sr.")}`
     )
   );
 });
@@ -667,21 +668,18 @@ ussdRouter.delete("/admin/sim-routing/:companyId/:deviceId", requireAuth("super_
   sendJson(res, 200, { deleted: true });
 });
 
-// Agent App: scoped to its own device via ?deviceId= so it only pulls
-// routing relevant to itself.
+// Agent App: the companies THIS device dials, i.e. the ones it is the
+// primary routed device for. A backup row is not a route: an order never
+// moves to a backup device automatically (utils/orderRouting.ts). Never
+// returns another device's routing -- with no deviceId it uses the agent's
+// own registered device, or returns nothing.
 ussdRouter.get("/agent/sim-routing", requireAuth("agent"), async (req, res) => {
-  const { deviceId } = req.query;
-  const rows = deviceId
-    ? await query(
-        `SELECT sr.company_id AS "companyId", sr.device_id AS "deviceId", sr.sim_slot AS "simSlot", c.name AS "companyName"
-         FROM sim_routing sr JOIN companies c ON c.id=sr.company_id WHERE sr.device_id=$1`,
-        [deviceId]
-      )
-    : await query(
-        `SELECT sr.company_id AS "companyId", sr.device_id AS "deviceId", sr.sim_slot AS "simSlot", c.name AS "companyName"
-         FROM sim_routing sr JOIN companies c ON c.id=sr.company_id`
-      );
-  sendJson(res, 200, rows);
+  const requested = typeof req.query.deviceId === "string" && req.query.deviceId.trim() ? req.query.deviceId.trim() : null;
+  const agent = await queryOne<{ device_id: string | null }>(`SELECT device_id FROM agents WHERE id=$1`, [req.auth!.sub]);
+  const deviceId = requested ?? agent?.device_id ?? null;
+  if (!deviceId) return sendJson(res, 200, []);
+  const rows = await primaryRoutesForDevice(deviceId);
+  sendJson(res, 200, rows.map((r) => ({ ...r, deviceId, primary: true })));
 });
 
 // Public: the Agent App has no login screen, so it must be able to list
@@ -883,8 +881,11 @@ ussdRouter.post("/agent/orders/:id/ussd-pin", requireAuth("agent"), async (req, 
 ussdRouter.post("/agent/orders/:id/dial-attempts", requireAuth("agent"), async (req, res) => {
   const { simSlot, ussdString, attemptNumber } = req.body;
   if (!ussdString) return sendJson(res, 400, { error: "ussdString is required" });
-  const order = await queryOne<{ id: string; status: string; send_count: number; ussd_generated: string | null; ussd_generated_masked: string | null }>(
-    `SELECT id, status, send_count, ussd_generated, ussd_generated_masked FROM orders WHERE id=$1`,
+  const order = await queryOne<{
+    id: string; status: string; send_count: number; ussd_generated: string | null; ussd_generated_masked: string | null;
+    company_id: string; ussd_device_id: string | null; ussd_sim_slot: number | null;
+  }>(
+    `SELECT id, status, send_count, ussd_generated, ussd_generated_masked, company_id, ussd_device_id, ussd_sim_slot FROM orders WHERE id=$1`,
     [req.params.id]
   );
   if (!order) return sendJson(res, 404, { error: "Order not found" });
@@ -966,6 +967,27 @@ ussdRouter.post("/agent/orders/:id/dial-attempts", requireAuth("agent"), async (
     }
   }
 
+  // Only the phone + SIM the Admin assigned to this order may dial it
+  // (utils/orderRouting.ts) -- never a backup device, never the other SIM
+  // on the same phone, whatever the reason (offline, no balance, error,
+  // timeout). The order waits for its own SIM until an Admin changes the
+  // assignment. A resubmitted log of an attempt already started is exempt:
+  // it isn't a new dial.
+  if (!sameAttempt) {
+    const route = await assignedRouteFor(order);
+    if (route) {
+      const slot = simSlot ? Number(simSlot) : null;
+      if (agent?.device_id !== route.deviceId || slot !== route.simSlot) {
+        return sendJson(res, 409, {
+          code: "not_assigned_sim",
+          error: `This order is assigned to ${route.deviceId} · SIM ${route.simSlot} — only that SIM dials it. It was not dialed here. Change the assignment in Device & USSD → SIM Routing to move it.`,
+          assignedDeviceId: route.deviceId,
+          assignedSimSlot: route.simSlot,
+        });
+      }
+    }
+  }
+
   // Insufficient SIM Balance: never START a new dial when the company SIM
   // doesn't have enough for this order -- the real carrier send would fail
   // or partially go through. Enforced here because every dial (manual,
@@ -1024,8 +1046,27 @@ ussdRouter.post("/agent/orders/:id/dial-attempts", requireAuth("agent"), async (
   sendJson(res, 201, { id });
 });
 
+/**
+ * A "failed" report carrying no carrier reply at all, or only a timeout,
+ * proves nothing: the carrier may have sent the money and the reply was
+ * lost (live: Amtel order DLB780359065, reported "failed" with no text
+ * after a USSD timeout). Older Agent App builds report a timeout exactly
+ * that way, so it is recorded as 'ambiguous' -- the order then waits for
+ * verification instead of being failed or dialed again.
+ */
+export function effectiveDialStatus(status: string, responseMessage: unknown): string {
+  if (status !== "failed") return status;
+  const text = typeof responseMessage === "string" ? responseMessage.trim() : "";
+  // The app says so when a timeout provably sent nothing (a menu step
+  // before the PIN): that one stays a failure.
+  if (/nothing was (paid|sent)/i.test(text)) return status;
+  if (!text || /no (reply|response) from the carrier|timed? ?out/i.test(text)) return "ambiguous";
+  return status;
+}
+
 ussdRouter.put("/agent/dial-attempts/:attemptId", requireAuth("agent"), async (req, res) => {
-  const { status, responseMessage, isFinalAttempt } = req.body;
+  const { responseMessage, isFinalAttempt } = req.body;
+  const status = effectiveDialStatus(req.body.status, responseMessage);
   // Older Agent App builds never send this field — default true so their
   // (already-correct-for-them, single-attempt) behavior is unchanged.
   const finalAttempt = isFinalAttempt !== false;

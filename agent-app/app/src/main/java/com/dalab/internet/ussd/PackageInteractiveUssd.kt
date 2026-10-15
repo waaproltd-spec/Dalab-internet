@@ -171,7 +171,7 @@ class PackageInteractiveUssdRunner(private val context: Context) {
             for ((index, step) in plan.steps.withIndex()) {
                 val label = "step ${index + 1} of ${plan.steps.size}"
                 val screen = awaitScreen(if (index == 0) 30_000L else 20_000L)
-                    ?: return DialResult(DialOutcome.TIMEOUT, "No response from the carrier at $label — nothing was paid.")
+                    ?: return DialResult(DialOutcome.TIMEOUT, "No response from the carrier at $label — nothing was paid.", moneyNotSent = true)
                 if (!screen.hasInput) {
                     // An error or notice instead of the expected menu (e.g.
                     // "service not available"). Nothing has been paid yet.

@@ -34,6 +34,11 @@ data class Order(
     // device's normal per-company sim_routing entry" (SimRoutingRepository).
     val ussdDeviceId: String? = null,
     val ussdSimSlot: Int? = null,
+    // The phone + SIM the server says is responsible for this order (the
+    // template pin, else the company's primary SIM Routing) -- sent with
+    // self-heal candidates. Null from older servers / other endpoints.
+    val assignedDeviceId: String? = null,
+    val assignedSimSlot: Int? = null,
     val createdAt: String,
     val completedAt: String? = null,
     // Extra Packages (Admin > Add Extra Package): how many times this one

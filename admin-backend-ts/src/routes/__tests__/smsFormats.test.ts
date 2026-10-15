@@ -170,6 +170,16 @@ test("only a Super Admin can test or activate formats; agents only read active o
   assert.equal((await call("GET", "/admin/sms-formats", adminToken)).status, 200);
 });
 
+test("Jeeb is its own provider, read from Jeeb's sender 801 as a Somnet payment", async () => {
+  const jeeb = providerByKey("jeeb");
+  assert.equal(jeeb?.label, "Jeeb");
+  assert.equal(jeeb?.parsedProvider, "Somnet");
+  const overview = (await (await call("GET", "/admin/sms-formats", superToken)).json()) as any;
+  const listed = overview.providers.find((p: any) => p.key === "jeeb");
+  assert.ok(listed, "Jeeb is offered on the SMS Format Update page");
+  assert.deepEqual(listed.senders, ["801"]);
+});
+
 test("Test SMS shows what was read; an unreadable SMS gives a clear error and nothing is saved", async () => {
   const ok = await (await call("POST", "/admin/sms-formats/test", superToken, { provider: "edahab", sms: NEW_EDAHAB })).json() as any;
   assert.equal(ok.ok, true, JSON.stringify(ok));
