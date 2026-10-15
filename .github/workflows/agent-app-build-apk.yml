@@ -151,7 +151,9 @@ jobs:
           PKG="$(echo "$BADGING" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")"
           VC="$(echo "$BADGING" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p")"
           VN="$(echo "$BADGING" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")"
-          CERT="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/apksigner.txt" | head -1)"
+          # apksigner prints "Signer #1 certificate SHA-256 digest: ..." or,
+          # for a v2-signed APK, "V2 Signer: certificate SHA-256 digest: ...".
+          CERT="$(sed -n 's/^.*[Ss]igner.*certificate SHA-256 digest: //p' "$RUNNER_TEMP/apksigner.txt" | head -1)"
           test -n "$PKG" && test -n "$VC" && test -n "$VN" && test -n "$CERT"
           SHA="$(sha256sum "$APK" | cut -d' ' -f1)"
           SIZE="$(stat -c %s "$APK")"
