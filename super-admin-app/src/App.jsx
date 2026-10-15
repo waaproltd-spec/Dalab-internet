@@ -1199,24 +1199,37 @@ const inputStyle = {
 function Overview({ companies, orders }) {
   const [liveStats, setLiveStats] = useState(null);
 
-  // Real backend call — /admin/dashboard/stats currently returns totals for
-  // sales/pending/successful/failed/active-customers (see dalab-backend.zip,
-  // src/routes/orders.js). It doesn't yet break sales out by daily/weekly/
-  // monthly/yearly/profit the way the mock below does, so those five stay
-  // mock-derived even in live mode until the backend grows that endpoint —
-  // called out explicitly rather than silently faked.
+  // Live mode: every card and both charts come from /admin/dashboard/stats
+  // (completed, non-reversed orders; Somalia time). The mock numbers below
+  // are only for the no-backend demo build. Refreshes on the order stream.
+  const [statsError, setStatsError] = useState("");
   useEffect(() => {
     if (!DALAB_API_ENABLED) return;
-    DalabAdminApi.getDashboardStats().then(setLiveStats).catch((err) => {
-      console.error("getDashboardStats failed, showing mock data:", err.message);
-    });
+    const load = () => DalabAdminApi.getDashboardStats()
+      .then((s) => { setLiveStats(s); setStatsError(""); })
+      .catch((err) => setStatsError(err.message || "Could not load the dashboard figures."));
+    load();
+    const unsubscribe = subscribeOrderEvents("/admin/orders/stream", { onEvent: load });
+    return () => unsubscribe();
   }, []);
 
   const stats = useMemo(() => {
     const today = orders.filter((o) => (o.createdAt || "").startsWith("2026-07-25"));
     const total = orders.reduce((s, o) => s + o.amount, 0);
+    if (DALAB_API_ENABLED) {
+      const v = (k) => (liveStats ? Number(liveStats[k] ?? 0) : null);
+      const m = (k) => (v(k) == null ? "…" : v(k).toFixed(2));
+      return {
+        total: m("totalSales"), daily: m("dailySales"), weekly: m("weeklySales"), monthly: m("monthlySales"),
+        yearly: m("yearlySales"), profit: m("profit"),
+        active: liveStats ? liveStats.activeCustomers : "…",
+        pending: liveStats ? liveStats.pendingOrders : "…",
+        success: liveStats ? liveStats.successfulOrders : "…",
+        failed: liveStats ? liveStats.failedOrders : "…",
+      };
+    }
     return {
-      total: (liveStats ? liveStats.totalSales : total).toFixed(2),
+      total: total.toFixed(2),
       daily: today.reduce((s, o) => s + o.amount, 0).toFixed(2),
       weekly: (total * 0.6).toFixed(2),
       monthly: (total * 2.3).toFixed(2),
@@ -1229,14 +1242,24 @@ function Overview({ companies, orders }) {
     };
   }, [orders, liveStats]);
 
+  const weekChart = DALAB_API_ENABLED
+    ? (liveStats?.salesLast7Days || []).map((d) => ({
+        day: new Date(`${d.day}T12:00:00`).toLocaleDateString("en-GB", { weekday: "short" }),
+        sales: Number(d.sales.toFixed(2)),
+      }))
+    : salesTrend;
+  const companyChart = DALAB_API_ENABLED
+    ? (liveStats?.completedOrdersByCompany || []).map((c) => ({ name: c.name, value: c.orders }))
+    : orderBreakdown;
+
   const cards = [
     { label: "Total sales", value: `$${stats.total}`, icon: DollarSign, tone: "green" },
     { label: "Daily sales", value: `$${stats.daily}`, icon: TrendingUp, tone: "neutral" },
-    { label: "Weekly sales", value: `$${stats.weekly}`, icon: TrendingUp, tone: "neutral" },
+    { label: "Weekly sales (7 days)", value: `$${stats.weekly}`, icon: TrendingUp, tone: "neutral" },
     { label: "Monthly sales", value: `$${stats.monthly}`, icon: TrendingUp, tone: "neutral" },
     { label: "Yearly sales", value: `$${stats.yearly}`, icon: TrendingUp, tone: "neutral" },
     { label: "Profit", value: `$${stats.profit}`, icon: TrendingUp, tone: "green" },
-    { label: "Active users", value: stats.active.toLocaleString(), icon: Users, tone: "neutral" },
+    { label: "Active users", value: typeof stats.active === "number" ? stats.active.toLocaleString() : stats.active, icon: Users, tone: "neutral" },
     { label: "Pending orders", value: stats.pending, icon: Clock3, tone: "amber" },
     { label: "Successful orders", value: stats.success, icon: CheckCircle2, tone: "green" },
     { label: "Failed orders", value: stats.failed, icon: XCircle, tone: "red" },
@@ -1256,11 +1279,14 @@ function Overview({ companies, orders }) {
         ))}
       </div>
 
+      {statsError && (
+        <div style={{ marginTop: 10, color: "var(--c-c81e2c)", fontSize: 12.5 }}>Couldn't load the dashboard figures: {statsError}</div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 14, marginTop: 14 }}>
         <Card style={{ padding: 18 }}>
-          <div style={{ fontWeight: 800, color: INK, fontSize: 14, marginBottom: 8 }}>Sales this week</div>
+          <div style={{ fontWeight: 800, color: INK, fontSize: 14, marginBottom: 8 }}>Sales, last 7 days ($)</div>
           <ResponsiveContainer width="100%" height={220}>
-            <LineChart data={salesTrend}>
+            <LineChart data={weekChart}>
               <CartesianGrid stroke="var(--c-eef0fb)" vertical={false} />
               <XAxis dataKey="day" tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
@@ -1270,9 +1296,9 @@ function Overview({ companies, orders }) {
           </ResponsiveContainer>
         </Card>
         <Card style={{ padding: 18 }}>
-          <div style={{ fontWeight: 800, color: INK, fontSize: 14, marginBottom: 8 }}>Orders by company</div>
+          <div style={{ fontWeight: 800, color: INK, fontSize: 14, marginBottom: 8 }}>Completed orders by company</div>
           <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={orderBreakdown}>
+            <BarChart data={companyChart}>
               <CartesianGrid stroke="var(--c-eef0fb)" vertical={false} />
               <XAxis dataKey="name" tick={{ fontSize: 11.5, fill: MUTE }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />

@@ -300,8 +300,12 @@ companiesRouter.put("/admin/companies/:id/auto-process", requirePermission("devi
 // the Customer/Agent apps and every dashboard section right away.
 companiesRouter.delete("/admin/companies/:id", requirePermission("companies.manage"), async (req, res) => {
   try {
-    const result = await query(`DELETE FROM companies WHERE id=$1 AND deleted_at IS NULL RETURNING id`, [req.params.id]);
+    const result = await query(`DELETE FROM companies WHERE id=$1 AND deleted_at IS NULL RETURNING id, name`, [req.params.id]);
     if (result.length === 0) return sendJson(res, 404, { error: "Company not found" });
+    await recordActivity({
+      adminId: req.auth!.sub, action: "delete_company", entityType: "company", entityId: req.params.id,
+      oldValue: { name: result[0].name }, newValue: { deleted: true },
+    });
     broadcast({ type: "catalog.updated" });
     return sendJson(res, 200, { deleted: true });
   } catch (err: any) {
@@ -314,12 +318,23 @@ companiesRouter.delete("/admin/companies/:id", requirePermission("companies.mana
     // cause of a live 500).
     if (err?.code !== "23503" && err?.code !== "23001") throw err;
   }
+  // Kept for the activity log, so a mistaken delete can be put back
+  // exactly as it was (status and app visibility are overwritten below).
+  const before = await queryOne<{ name: string; status: string; visible_customer_app: boolean; visible_agent_app: boolean }>(
+    `SELECT name, status, visible_customer_app, visible_agent_app FROM companies WHERE id=$1 AND deleted_at IS NULL`,
+    [req.params.id]
+  );
   const result = await query(
     `UPDATE companies SET deleted_at=now(), status='offline', visible_customer_app=false, visible_agent_app=false, updated_at=now()
      WHERE id=$1 AND deleted_at IS NULL RETURNING id`,
     [req.params.id]
   );
   if (result.length === 0) return sendJson(res, 404, { error: "Company not found" });
+  await recordActivity({
+    adminId: req.auth!.sub, action: "delete_company", entityType: "company", entityId: req.params.id,
+    oldValue: before ? { name: before.name, status: before.status, visibleCustomerApp: before.visible_customer_app, visibleAgentApp: before.visible_agent_app } : null,
+    newValue: { deleted: true, softDeleted: true },
+  });
   broadcast({ type: "catalog.updated" });
   sendJson(res, 200, { deleted: true, softDeleted: true });
 });
