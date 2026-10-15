@@ -28,6 +28,10 @@ const REPO = () => process.env.AGENT_APP_RELEASES_REPO || "waaproltd-spec/Dalab-
 const WORKFLOW = "agent-app-build-apk.yml";
 const TAG_RE = /^agent-app-run-(\d+)$/;
 const CACHE_MS = 5 * 60 * 1000;
+// Every call to GitHub gets a hard limit: a slow or blocked connection from
+// the server must end with a clear error on the page, never an endless
+// "Loading".
+const GITHUB_TIMEOUT_MS = 10_000;
 
 type Fetch = typeof fetch;
 
@@ -61,7 +65,7 @@ function githubHeaders(): Record<string, string> {
 }
 
 async function getJson(fetchImpl: Fetch, url: string): Promise<any> {
-  const res = await fetchImpl(url, { headers: githubHeaders(), redirect: "follow" });
+  const res = await fetchImpl(url, { headers: githubHeaders(), redirect: "follow", signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`GitHub answered ${res.status} for ${url}`);
   return res.json();
 }
@@ -133,7 +137,12 @@ export async function loadAgentAppReleases(fetchImpl: Fetch = fetch): Promise<{ 
 /** Confirms the download link serves the APK at its recorded size. */
 export async function verifyDownload(release: AgentAppRelease, fetchImpl: Fetch = fetch): Promise<{ ok: boolean; error: string | null }> {
   try {
-    const res = await fetchImpl(release.downloadUrl, { method: "HEAD", redirect: "follow", headers: { "User-Agent": "dalab-admin-backend" } });
+    const res = await fetchImpl(release.downloadUrl, {
+      method: "HEAD",
+      redirect: "follow",
+      headers: { "User-Agent": "dalab-admin-backend" },
+      signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
+    });
     if (!res.ok) return { ok: false, error: `The download link answered ${res.status}.` };
     const length = Number(res.headers.get("content-length"));
     if (Number.isFinite(length) && length > 0 && length !== release.sizeBytes) {
