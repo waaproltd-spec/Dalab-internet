@@ -29,6 +29,7 @@ export const PERMISSIONS = [
   "support.manage",
   "shop.manage",
   "vipNumbers.manage",
+  "football.manage",
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
