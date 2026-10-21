@@ -7,6 +7,16 @@ package com.dalab.internet.ui.i18n
  */
 internal val SomaliStrings: Map<String, String> = hashMapOf(
     // Ciyaaraha (CiyaarahaScreens.kt)
+    "Edit Contest" to "Wax ka beddel Tartanka",
+    "To change the kickoff time, use Postpone on the contest page." to "Si aad u beddesho waqtiga bilowga, isticmaal Dib u dhig bogga tartanka.",
+    "Customers have already predicted this match. Only fix mistakes; every change is saved in the History." to "Macaamiil ayaa horey u saadaaliyay ciyaartan. Kaliya sax khaladaadka; isbeddel kasta waxaa lagu keydiyaa Taariikhda.",
+    "Remove the current match image" to "Ka saar sawirka ciyaarta ee hadda",
+    "Could not save the changes." to "Isbeddelada lama keydin karin.",
+    "Delete this contest?" to "Ma tirtiraysaa tartankan?",
+    "It disappears from the Agent App and the Customer App. Only a contest nobody has predicted can be deleted." to "Wuxuu ka baxayaa Agent App-ka iyo Customer App-ka. Kaliya tartan aan cidna saadaalin ayaa la tirtiri karaa.",
+    "Could not delete the contest." to "Tartanka lama tirtiri karin.",
+    "Edited" to "Wax laga beddelay",
+    "Deleted" to "La tirtiray",
     "1 hour before" to "1 saac ka hor",
     "15 minutes before" to "15 daqiiqo ka hor",
     "30 minutes before" to "30 daqiiqo ka hor",

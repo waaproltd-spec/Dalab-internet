@@ -554,6 +554,14 @@ interface ApiService {
     @GET("agent/football/contests/{id}")
     suspend fun getFootballContest(@Path("id") id: String): Response<FootballContest>
 
+    // Only the fields being changed are sent (see CreateContestPage's edit mode).
+    @PUT("agent/football/contests/{id}")
+    suspend fun updateFootballContest(@Path("id") id: String, @Body body: com.google.gson.JsonObject): Response<FootballContest>
+
+    // Refused (409 HAS_PREDICTIONS) once a customer has predicted -- cancel instead.
+    @DELETE("agent/football/contests/{id}")
+    suspend fun deleteFootballContest(@Path("id") id: String): Response<com.google.gson.JsonObject>
+
     @POST("agent/football/contests/{id}/publish")
     suspend fun publishFootballContest(@Path("id") id: String): Response<FootballContest>
 

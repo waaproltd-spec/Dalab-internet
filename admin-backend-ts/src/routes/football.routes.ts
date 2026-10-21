@@ -123,7 +123,9 @@ const CONTEST_SELECT = `
     FROM football_contests fc
     JOIN football_teams ht ON ht.id = fc.home_team_id
     JOIN football_teams at ON at.id = fc.away_team_id
-    JOIN companies co ON co.id = fc.reward_company_id`;
+    JOIN companies co ON co.id = fc.reward_company_id
+     -- Deleted contests (migration 122) are hidden from every list and lookup.
+     AND fc.deleted_at IS NULL`;
 
 function contestView(c: any, now = new Date()) {
   const showResult = STATUSES_WITH_RESULT.has(c.status);
@@ -384,6 +386,94 @@ footballRouter.post("/agent/football/contests", ...agentGate, async (req, res) =
     if (e instanceof MediaError) return sendJson(res, e.status, { error: e.message });
     throw e;
   }
+});
+
+/**
+ * Fixes a contest's details (team names, league, reward, provider, image)
+ * until its result is entered. Kickoff changes go through /postpone. A
+ * renamed team points the contest at that team's row (teams are shared,
+ * so the old row is left alone). Every change is logged with old and new.
+ */
+footballRouter.put("/agent/football/contests/:id", ...agentGate, async (req, res) => {
+  if (!UUID_RE.test(req.params.id)) return sendJson(res, 404, { error: "Contest not found" });
+  const b = req.body ?? {};
+  try {
+    const out = await withTransaction(async (client) => {
+      const c = (await client.query(`SELECT * FROM football_contests WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, [req.params.id])).rows[0];
+      if (!c) return { status: 404, body: { error: "Contest not found" } };
+      if (!["draft", "open", "closed", "awaiting_result"].includes(c.status) || c.official_home_goals != null) {
+        return { status: 409, body: { error: "A contest can only be edited before its result is entered." } };
+      }
+      const next: Record<string, unknown> = {};
+      if (b.homeTeam !== undefined) next.home_team_id = await upsertTeam(client, b.homeTeam);
+      if (b.awayTeam !== undefined) next.away_team_id = await upsertTeam(client, b.awayTeam);
+      const home = (next.home_team_id ?? c.home_team_id) as string;
+      const away = (next.away_team_id ?? c.away_team_id) as string;
+      if (home === away) throw new MediaError("Home and away teams must be different");
+      if (b.league !== undefined) {
+        const league = String(b.league ?? "").trim();
+        if (!league || league.length > 80) throw new MediaError("League is required (max 80 characters)");
+        next.league = league;
+      }
+      if (b.rewardLabel !== undefined) {
+        const label = String(b.rewardLabel ?? "").trim();
+        if (!label || label.length > 80) throw new MediaError('Reward is required, e.g. "1 GB Internet"');
+        next.reward_label = label;
+      }
+      if (b.rewardCompanyId !== undefined) {
+        const ok = (await client.query(`SELECT 1 FROM companies WHERE id=$1 AND deleted_at IS NULL`, [String(b.rewardCompanyId)])).rows.length;
+        if (!ok) throw new MediaError("Choose a valid reward provider (Hormuud, Somnet, Somtel or Amtel)");
+        next.reward_company_id = String(b.rewardCompanyId);
+      }
+      if (b.removeImage === true) next.image_id = null;
+      else if (b.imageId) {
+        if (!UUID_RE.test(b.imageId) || !(await client.query(`SELECT 1 FROM media_images WHERE id=$1 AND status='active'`, [b.imageId])).rows.length) {
+          throw new MediaError("Match image not found");
+        }
+        next.image_id = b.imageId;
+      }
+      const changed = Object.keys(next).filter((k) => String(next[k] ?? "") !== String(c[k] ?? ""));
+      if (changed.length === 0) return { status: 200, body: { id: c.id, changed: [] } };
+      const sets = changed.map((k, i) => `${k}=$${i + 2}`).join(", ");
+      await client.query(`UPDATE football_contests SET ${sets}, updated_at=now() WHERE id=$1`, [c.id, ...changed.map((k) => next[k])]);
+      await logEvent(
+        client, c.id, "agent", req.auth!.sub, "edited",
+        Object.fromEntries(changed.map((k) => [k, c[k]])),
+        Object.fromEntries(changed.map((k) => [k, next[k]]))
+      );
+      return { status: 200, body: { id: c.id, changed } };
+    });
+    if (out.status !== 200) return sendJson(res, out.status, out.body);
+    sendJson(res, 200, contestView(await queryOne<any>(`${CONTEST_SELECT} WHERE fc.id=$1`, [req.params.id])));
+  } catch (e) {
+    if (e instanceof MediaError) return sendJson(res, e.status, { error: e.message });
+    throw e;
+  }
+});
+
+/**
+ * Deletes a contest nobody has predicted yet. It is kept as cancelled with
+ * deleted_at set (hidden everywhere), so the audit trail survives. Once a
+ * customer has predicted, the agent must cancel it instead, so customers
+ * still see what happened to their prediction.
+ */
+footballRouter.delete("/agent/football/contests/:id", ...agentGate, async (req, res) => {
+  if (!UUID_RE.test(req.params.id)) return sendJson(res, 404, { error: "Contest not found" });
+  const out = await withTransaction(async (client) => {
+    const c = (await client.query(`SELECT * FROM football_contests WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, [req.params.id])).rows[0];
+    if (!c) return { status: 404, body: { error: "Contest not found" } };
+    const n = Number((await client.query(`SELECT COUNT(*) AS n FROM football_predictions WHERE contest_id=$1`, [c.id])).rows[0].n);
+    if (n > 0) {
+      return { status: 409, body: { code: "HAS_PREDICTIONS", error: `${n} customer(s) already predicted this match, so it can't be deleted. Cancel it instead.` } };
+    }
+    await client.query(
+      `UPDATE football_contests SET status='cancelled', status_reason='Deleted', deleted_at=now(), deleted_by_agent_id=$2, updated_at=now() WHERE id=$1`,
+      [c.id, req.auth!.sub]
+    );
+    await logEvent(client, c.id, "agent", req.auth!.sub, "deleted", { status: c.status }, { status: "cancelled", deleted: true });
+    return { status: 200, body: { id: c.id, deleted: true } };
+  });
+  sendJson(res, out.status, out.body);
 });
 
 footballRouter.post("/agent/football/contests/:id/publish", ...agentGate, async (req, res) => {

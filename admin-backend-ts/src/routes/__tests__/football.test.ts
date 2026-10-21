@@ -375,3 +375,50 @@ test("admin overview lists contests with winners and the reward ledger", async (
   assert.equal((await call("GET", "/admin/football/contests", agentTok)).status, 403);
   assert.equal((await call("GET", "/admin/football/cleanup-runs", adminTok)).status, 200);
 });
+
+test("editing fixes a typo before the result; deleting only works with no predictions", async () => {
+  // Edit: team-name typo, reward and provider, logged with old and new.
+  const c = await createContest({ homeTeam: { name: "Barca Edit" }, awayTeam: { name: "Real madti" } });
+  const e = await call("PUT", `/agent/football/contests/${c.id}`, agentTok, { awayTeam: { name: "Real Madrid" }, rewardLabel: "2 GB Internet", rewardCompanyId: "somtel" });
+  assert.equal(e.status, 200, JSON.stringify(e.body));
+  assert.equal(e.body.awayTeam.name, "Real Madrid");
+  assert.equal(e.body.rewardLabel, "2 GB Internet");
+  assert.equal(e.body.rewardCompany.id, "somtel");
+  const ev = await queryOne<any>(`SELECT old_value, new_value FROM football_contest_events WHERE contest_id=$1 AND action='edited'`, [c.id]);
+  assert.ok(ev && ev.old_value.reward_label === "1 GB Internet" && ev.new_value.reward_label === "2 GB Internet");
+  assert.equal((await call("PUT", `/agent/football/contests/${c.id}`, agentTok, { awayTeam: { name: "barca edit" } })).status, 400, "teams must stay different");
+  assert.equal((await call("PUT", `/agent/football/contests/${c.id}`, agentTok, { league: "" })).status, 400);
+  assert.equal((await call("PUT", `/agent/football/contests/${c.id}`, agentOffTok, { league: "X" })).status, 403);
+
+  // A customer predicts: delete is refused (cancel instead), edits still allowed.
+  assert.equal((await call("POST", `/football/contests/${c.id}/predictions`, ahmedTok, { homeGoals: 1, awayGoals: 0 })).status, 201);
+  const d = await call("DELETE", `/agent/football/contests/${c.id}`, agentTok);
+  assert.equal(d.status, 409);
+  assert.equal(d.body.code, "HAS_PREDICTIONS");
+
+  // After the result is entered, no more edits.
+  await kickoffPassed(c.id);
+  assert.equal((await call("POST", `/agent/football/contests/${c.id}/result`, agentTok, { homeGoals: 1, awayGoals: 0 })).status, 200);
+  assert.equal((await call("PUT", `/agent/football/contests/${c.id}`, agentTok, { league: "Other" })).status, 409);
+
+  // Delete with no predictions: hidden everywhere, actions refused, audit kept.
+  const empty = await createContest({ homeTeam: { name: "Delete Me FC" }, awayTeam: { name: "Typo United" } });
+  const del = await call("DELETE", `/agent/football/contests/${empty.id}`, agentTok);
+  assert.equal(del.status, 200, JSON.stringify(del.body));
+  assert.equal((await call("GET", `/agent/football/contests/${empty.id}`, agentTok)).status, 404);
+  assert.equal((await call("GET", `/football/contests/${empty.id}`, ahmedTok)).status, 404);
+  const lists = [
+    (await call("GET", "/agent/football/contests?scope=all", agentTok)).body,
+    (await call("GET", "/football/contests?scope=active", ahmedTok)).body,
+    (await call("GET", "/football/contests?scope=completed", ahmedTok)).body,
+    (await call("GET", "/admin/football/contests", adminTok)).body,
+  ];
+  for (const l of lists) assert.ok(!l.some((x: any) => x.id === empty.id), "deleted contest is not listed");
+  assert.equal((await call("POST", `/football/contests/${empty.id}/predictions`, ahmedTok, { homeGoals: 0, awayGoals: 0 })).status, 409, "no predictions on a deleted contest");
+  assert.equal((await call("PUT", `/agent/football/contests/${empty.id}`, agentTok, { league: "X" })).status, 404);
+  assert.equal((await call("DELETE", `/agent/football/contests/${empty.id}`, agentTok)).status, 404, "delete is not repeated");
+  const row = await queryOne<any>(`SELECT status, deleted_at FROM football_contests WHERE id=$1`, [empty.id]);
+  assert.equal(row.status, "cancelled");
+  assert.ok(row.deleted_at);
+  assert.ok(await queryOne(`SELECT 1 FROM football_contest_events WHERE contest_id=$1 AND action='deleted'`, [empty.id]), "audit trail kept");
+});
