@@ -1104,7 +1104,10 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
       if (exchangeMatch) {
         const alreadyLinked = await queryOne<{ id: string }>(`SELECT id FROM sms_logs WHERE matched_exchange_order_id=$1 LIMIT 1`, [exchangeMatch.id]);
         if (alreadyLinked) {
-          await query(`UPDATE sms_logs SET match_failure_reason=$1 WHERE id=$2`, [
+          // Only written when the note changes: this runs every 15s for
+          // every unmatched SMS, and rewriting an identical value just
+          // takes row locks for nothing.
+          await query(`UPDATE sms_logs SET match_failure_reason=$1 WHERE id=$2 AND match_failure_reason IS DISTINCT FROM $1`, [
             `Exchange order ${exchangeMatch.id} already has a matched payment SMS`,
             sms.id,
           ]);
@@ -1192,7 +1195,8 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
         sms.parsed_phone ?? undefined
       );
       if (!shopMatch) {
-        await query(`UPDATE sms_logs SET match_failure_reason=$1 WHERE id=$2`, [
+        // Same as above: skip the write when the reason hasn't changed.
+        await query(`UPDATE sms_logs SET match_failure_reason=$1 WHERE id=$2 AND match_failure_reason IS DISTINCT FROM $1`, [
           [
             reason,
             offlineAutoReason ? `Offline Auto-Order: ${offlineAutoReason}` : null,
@@ -1226,15 +1230,36 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
 // one" trigger from every place that could unblock it. Bounded to
 // MATCH_WINDOW_HOURS worth of rows and best-effort (never throws), so this
 // can't grow unbounded or take the process down.
+//
+// A pass can take longer than 15s when many SMS are unmatched; the next
+// tick then skips instead of starting a second, overlapping pass over the
+// same rows (overlapping passes waited on each other's row locks until
+// the statement timeout).
+let resweepRunning = false;
+let autoVerifyRunning = false;
 setInterval(() => {
-  resweepUnmatchedSmsLogs().catch((err) => {
-    // eslint-disable-next-line no-console
-    console.error("resweepUnmatchedSmsLogs sweep failed:", (err as Error).message);
-  });
-  autoVerifyMatchedPendingOrders().catch((err) => {
-    // eslint-disable-next-line no-console
-    console.error("autoVerifyMatchedPendingOrders sweep failed:", (err as Error).message);
-  });
+  if (!resweepRunning) {
+    resweepRunning = true;
+    resweepUnmatchedSmsLogs()
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error("resweepUnmatchedSmsLogs sweep failed:", (err as Error).message);
+      })
+      .finally(() => {
+        resweepRunning = false;
+      });
+  }
+  if (!autoVerifyRunning) {
+    autoVerifyRunning = true;
+    autoVerifyMatchedPendingOrders()
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error("autoVerifyMatchedPendingOrders sweep failed:", (err as Error).message);
+      })
+      .finally(() => {
+        autoVerifyRunning = false;
+      });
+  }
 }, 15_000);
 
 /**
