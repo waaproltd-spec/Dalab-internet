@@ -9,7 +9,7 @@ import {
   WifiOff, BatteryFull, BatteryMedium, BatteryLow, BatteryWarning,
   Image as ImageIcon, Upload, MessageSquare, Database, Activity, History, CreditCard, PlayCircle, Percent,
   MessageCircle, Lightbulb, Share2, KeyRound, ExternalLink, PiggyBank, Landmark, Trash, ArrowLeftRight,
-  ShoppingBag, Boxes, Award, Sun, Moon, Languages
+  ShoppingBag, Boxes, Award, Sun, Moon, Languages, Trophy
 } from "lucide-react";
 import { useTheme, useLang, setTheme, setLang } from "./prefs.js";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
@@ -237,6 +237,14 @@ const DalabAdminApi = {
   // (a post can be text-only), unlike Promo Images where it's the whole
   // point — still a data URI for the same reason as above.
   getNalaSocoPosts: () => dalabAdminApiRequest("/admin/nala-soco"),
+  getFootballContests: (status) => dalabAdminApiRequest(`/admin/football/contests${status ? `?status=${status}` : ""}`),
+  getFootballContest: (id) => dalabAdminApiRequest(`/admin/football/contests/${id}`),
+  disputeFootballContest: (id, reason) => dalabAdminApiRequest(`/admin/football/contests/${id}/dispute`, { method: "POST", body: { reason } }),
+  resolveFootballContest: (id, body) => dalabAdminApiRequest(`/admin/football/contests/${id}/resolve`, { method: "POST", body }),
+  getFootballAgents: () => dalabAdminApiRequest("/admin/football/agents"),
+  setFootballAgent: (id, enabled) => dalabAdminApiRequest(`/admin/football/agents/${id}`, { method: "PUT", body: { enabled } }),
+  getFootballRewards: () => dalabAdminApiRequest("/admin/football/rewards"),
+  getCleanupRuns: () => dalabAdminApiRequest("/admin/football/cleanup-runs"),
   createNalaSocoPost: (body) => dalabAdminApiRequest("/admin/nala-soco", { method: "POST", body }),
   updateNalaSocoPost: (id, body) => dalabAdminApiRequest(`/admin/nala-soco/${id}`, { method: "PUT", body }),
   deleteNalaSocoPost: (id) => dalabAdminApiRequest(`/admin/nala-soco/${id}`, { method: "DELETE" }),
@@ -659,6 +667,7 @@ const PERMISSION_OPTIONS = [
   { key: "support.manage", label: "Handle Agent Support conversations" },
   { key: "shop.manage", label: "Manage Shop (categories, products, orders)" },
   { key: "vipNumbers.manage", label: "Manage VIP Numbers (inventory, orders)" },
+  { key: "football.manage", label: "Ciyaaraha (football contests, disputes, agent access)" },
 ];
 
 // Normalizes a GET /admin/companies row into the shape every section of this
@@ -969,6 +978,7 @@ const NAV = [
   { id: "support", label: "Agent Support", icon: MessageCircle, permission: "support.manage" },
   { id: "promo-images", label: "Promo Images", icon: ImageIcon, superAdminOnly: true },
   { id: "nala-soco", label: "Nala Soco", icon: Share2, permission: "settings.manage" },
+  { id: "ciyaaraha", label: "Ciyaaraha", icon: Trophy, permission: "football.manage" },
   { id: "agent-app-release", label: "Agent App Release APK", icon: Download, permission: "devices.manage" },
   { id: "devices", label: "Device & USSD", icon: SmartphoneNfc, superAdminOnly: true },
   { id: "sms-logs", label: "SMS Monitor", icon: MessageSquare, permission: "devices.manage" },
@@ -5001,6 +5011,260 @@ function NalaSocoPostForm({ initial, onSave, onCancel }) {
         <Button onClick={submit} disabled={saving} spin={saving}>{saving ? "Saving..." : "Save"}</Button>
       </div>
     </Modal>
+  );
+}
+
+// ---------------- Ciyaaraha (football prediction contests) ----------------
+// Agents run contests day to day in the Agent App; this is the overview and
+// the place for the exceptions only an Admin handles: disputes, agent
+// access, the reward ledger and cleanup health.
+const FOOTBALL_STATUS_META = {
+  draft: { label: "Draft", tone: "gray" },
+  open: { label: "Predictions open", tone: "green" },
+  closed: { label: "Predictions closed", tone: "blue" },
+  awaiting_result: { label: "Awaiting result", tone: "amber" },
+  verification: { label: "Winner verification", tone: "amber" },
+  completed: { label: "Completed", tone: "green" },
+  no_winner: { label: "No winner", tone: "gray" },
+  cancelled: { label: "Cancelled", tone: "gray" },
+  disputed: { label: "Disputed", tone: "red" },
+};
+const FOOTBALL_WINNER_META = {
+  winner_confirmed: { label: "Winner confirmed", tone: "blue" },
+  reward_pending: { label: "Reward pending", tone: "amber" },
+  reward_paid: { label: "Reward paid", tone: "green" },
+  reward_failed: { label: "Reward failed", tone: "red" },
+  disputed: { label: "Disputed", tone: "red" },
+  revoked: { label: "Revoked", tone: "gray" },
+};
+
+function CiyaarahaAdmin() {
+  const [tab, setTab] = useState("contests");
+  const tabs = [["contests", "Contests"], ["rewards", "Rewards"], ["agents", "Agent access"], ["cleanup", "Cleanup"]];
+  return (
+    <div>
+      <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Ciyaaraha</div>
+      <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2, marginBottom: 14 }}>
+        Football exact-score predictions. Agents create contests, enter the official score and confirm the earliest correct prediction; Admin handles disputes and access.
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+        {tabs.map(([id, label]) => (
+          <button key={id} onClick={() => setTab(id)} style={{ padding: "8px 14px", borderRadius: 10, cursor: "pointer", fontWeight: 700, fontSize: 13, border: `1px solid ${tab === id ? INDIGO : BORDER}`, background: tab === id ? INDIGO : "var(--c-surface)", color: tab === id ? "#fff" : SLATE }}>{label}</button>
+        ))}
+      </div>
+      {tab === "contests" && <CiyaarahaContests />}
+      {tab === "rewards" && <CiyaarahaRewards />}
+      {tab === "agents" && <CiyaarahaAgents />}
+      {tab === "cleanup" && <CiyaarahaCleanup />}
+    </div>
+  );
+}
+
+function useAdminFetch(fn, deps = []) {
+  const [state, setState] = useState({ loading: true, error: "", data: null });
+  const load = async () => {
+    setState((s) => ({ ...s, loading: true, error: "" }));
+    try {
+      setState({ loading: false, error: "", data: await fn() });
+    } catch (err) {
+      setState({ loading: false, error: err.message || "Could not load.", data: null });
+    }
+  };
+  useEffect(() => { load(); }, deps); // eslint-disable-line react-hooks/exhaustive-deps
+  return [state, load];
+}
+
+function CiyaarahaContests() {
+  const [status, setStatus] = useState("");
+  const [state, reload] = useAdminFetch(() => DalabAdminApi.getFootballContests(status), [status]);
+  const [openId, setOpenId] = useState(null);
+  const rows = state.data || [];
+  const counts = rows.reduce((m, c) => ({ ...m, [c.status]: (m[c.status] || 0) + 1 }), {});
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+        <select style={{ ...inputStyle, width: 220 }} value={status} onChange={(e) => setStatus(e.target.value)}>
+          <option value="">All statuses</option>
+          {Object.entries(FOOTBALL_STATUS_META).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+        </select>
+        <Button variant="ghost" icon={RefreshCw} onClick={reload}>Refresh</Button>
+        {!status && counts.disputed > 0 && <Badge tone="red">{counts.disputed} disputed</Badge>}
+        {!status && counts.verification > 0 && <Badge tone="amber">{counts.verification} awaiting winner confirmation</Badge>}
+      </div>
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        {state.loading && <div style={{ padding: 18, color: MUTE, fontSize: 13 }}>Loading…</div>}
+        {state.error && <div style={{ padding: 18, color: "var(--c-c81e2c)", fontSize: 13 }}>{state.error}</div>}
+        {!state.loading && !state.error && rows.length === 0 && <div style={{ padding: 18, color: MUTE, fontSize: 13 }}>No contests yet. Agents create them in the Agent App (Ciyaaraha).</div>}
+        {rows.length > 0 && (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: "var(--c-fafbff)", color: MUTE, textAlign: "left" }}>
+                  {["Match", "Kickoff", "Reward", "Players", "Result", "Status", "Winner", ""].map((h) => <th key={h} style={{ padding: "10px 12px", fontWeight: 700, fontSize: 11.5 }}>{h}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((c) => (
+                  <tr key={c.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                    <td style={{ padding: "10px 12px", color: INK, fontWeight: 700 }}>{c.homeTeam.name} vs {c.awayTeam.name}<div style={{ fontWeight: 500, color: MUTE, fontSize: 11.5 }}>{c.league}</div></td>
+                    <td style={{ padding: "10px 12px", color: SLATE }}>{formatDateTime(c.kickoffAt)}</td>
+                    <td style={{ padding: "10px 12px", color: SLATE }}>{c.rewardLabel} · {c.rewardCompany?.name}</td>
+                    <td style={{ padding: "10px 12px", color: SLATE }}>{c.participants}</td>
+                    <td style={{ padding: "10px 12px", color: INK, fontWeight: 700 }}>{c.officialScore ? `${c.officialScore.home} - ${c.officialScore.away}` : "—"}</td>
+                    <td style={{ padding: "10px 12px" }}><Badge tone={(FOOTBALL_STATUS_META[c.status] || {}).tone}>{(FOOTBALL_STATUS_META[c.status] || {}).label || c.status}</Badge></td>
+                    <td style={{ padding: "10px 12px", color: SLATE }}>{c.winner ? <>{c.winner.name} <span style={{ color: MUTE }}>{c.winner.phoneMasked}</span><div><Badge tone={(FOOTBALL_WINNER_META[c.winner.status] || {}).tone}>{(FOOTBALL_WINNER_META[c.winner.status] || {}).label}</Badge></div></> : c.status === "verification" ? "Candidate ready" : "—"}</td>
+                    <td style={{ padding: "10px 12px" }}><Button variant="ghost" onClick={() => setOpenId(c.id)}>Details</Button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+      {openId && <CiyaarahaContestModal id={openId} onClose={() => setOpenId(null)} onChanged={reload} />}
+    </div>
+  );
+}
+
+function CiyaarahaContestModal({ id, onClose, onChanged }) {
+  const [state, reload] = useAdminFetch(() => DalabAdminApi.getFootballContest(id), [id]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [score, setScore] = useState({ home: "", away: "" });
+  const c = state.data;
+  const act = async (fn) => {
+    setBusy(true); setErr("");
+    try { await fn(); await reload(); onChanged(); } catch (e) { setErr(e.message || "Action failed."); } finally { setBusy(false); }
+  };
+  return (
+    <Modal title="Contest details" onClose={onClose} width={640}>
+      {state.loading && <div style={{ color: MUTE, fontSize: 13 }}>Loading…</div>}
+      {state.error && <div style={{ color: "var(--c-c81e2c)", fontSize: 13 }}>{state.error}</div>}
+      {c && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, fontSize: 13 }}>
+          <div>
+            <div style={{ fontWeight: 800, color: INK, fontSize: 15 }}>{c.homeTeam.name} vs {c.awayTeam.name}</div>
+            <div style={{ color: MUTE }}>{c.league} · Kickoff {formatDateTime(c.kickoffAt)} · Predictions close {formatDateTime(c.predictionsCloseAt)}</div>
+            <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <Badge tone={(FOOTBALL_STATUS_META[c.status] || {}).tone}>{(FOOTBALL_STATUS_META[c.status] || {}).label || c.status}</Badge>
+              <Badge>{c.rewardLabel} · {c.rewardCompany?.name}</Badge>
+              <Badge>{c.participants} predictions</Badge>
+            </div>
+            {c.statusReason && <div style={{ marginTop: 6, color: SLATE }}>Reason: {c.statusReason}</div>}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
+            <Card style={{ padding: 12 }}><div style={{ color: MUTE, fontSize: 11.5, fontWeight: 700 }}>OFFICIAL RESULT</div><div style={{ fontWeight: 800, fontSize: 18, color: INK }}>{c.officialScore ? `${c.officialScore.home} - ${c.officialScore.away}` : "Not entered"}</div>{c.exactScoreCount != null && <div style={{ color: MUTE }}>{c.exactScoreCount} exact predictions</div>}</Card>
+            <Card style={{ padding: 12 }}><div style={{ color: MUTE, fontSize: 11.5, fontWeight: 700 }}>CANDIDATE (EARLIEST CORRECT)</div>{c.candidate ? <><div style={{ fontWeight: 700, color: INK }}>{c.candidate.customerName}</div><div style={{ color: MUTE }}>{c.candidate.phoneMasked} · {formatDateTime(c.candidate.submittedAt)}</div></> : <div style={{ color: MUTE }}>—</div>}</Card>
+            <Card style={{ padding: 12 }}><div style={{ color: MUTE, fontSize: 11.5, fontWeight: 700 }}>CONFIRMED WINNER</div>{c.winner ? <><div style={{ fontWeight: 700, color: INK }}>{c.winner.customerName}</div><div style={{ color: MUTE }}>{c.winner.phone}</div><Badge tone={(FOOTBALL_WINNER_META[c.winner.status] || {}).tone}>{(FOOTBALL_WINNER_META[c.winner.status] || {}).label}</Badge></> : <div style={{ color: MUTE }}>—</div>}</Card>
+          </div>
+          {c.rewards.length > 0 && (
+            <div>
+              <div style={{ fontSize: 11.5, fontWeight: 700, color: MUTE, marginBottom: 4 }}>REWARD ATTEMPTS</div>
+              {c.rewards.map((r) => <div key={r.id} style={{ color: SLATE }}>#{r.attemptNo} · <b style={{ color: r.status === "paid" ? GREEN : "var(--c-c81e2c)" }}>{r.status}</b> · {r.transactionRef || "no ref"} · {formatDateTime(r.createdAt)}{r.note ? ` · ${r.note}` : ""}</div>)}
+            </div>
+          )}
+          {c.status !== "disputed" && !["draft", "cancelled"].includes(c.status) && (
+            <div><Button variant="danger" disabled={busy} onClick={() => { const reason = window.prompt("Why is this contest disputed?"); if (reason) act(() => DalabAdminApi.disputeFootballContest(id, reason)); }}>Mark disputed</Button></div>
+          )}
+          {c.status === "disputed" && (
+            <Card style={{ padding: 12 }}>
+              <div style={{ fontWeight: 700, color: INK, marginBottom: 6 }}>Resolve dispute</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                <Button disabled={busy} onClick={() => act(() => DalabAdminApi.resolveFootballContest(id, { action: "uphold" }))}>Uphold (keep result and winner)</Button>
+                <span style={{ color: MUTE }}>or correct the score:</span>
+                <input style={{ ...inputStyle, width: 64 }} inputMode="numeric" placeholder="Home" value={score.home} onChange={(e) => setScore({ ...score, home: e.target.value })} />
+                <input style={{ ...inputStyle, width: 64 }} inputMode="numeric" placeholder="Away" value={score.away} onChange={(e) => setScore({ ...score, away: e.target.value })} />
+                <Button variant="ghost" disabled={busy || score.home === "" || score.away === ""} onClick={() => {
+                  if (!window.confirm(`Set the official score to ${score.home} - ${score.away}? Any confirmed winner is revoked (kept in history) and the earliest correct prediction becomes the new candidate.`)) return;
+                  act(() => DalabAdminApi.resolveFootballContest(id, { action: "correct_result", homeGoals: Number(score.home), awayGoals: Number(score.away) }));
+                }}>Correct result</Button>
+              </div>
+            </Card>
+          )}
+          {err && <div style={{ color: "var(--c-c81e2c)" }}>{err}</div>}
+          <div>
+            <div style={{ fontSize: 11.5, fontWeight: 700, color: MUTE, marginBottom: 4 }}>AUDIT TRAIL</div>
+            <div style={{ maxHeight: 220, overflowY: "auto" }}>
+              {c.events.map((e, i) => <div key={i} style={{ color: SLATE, padding: "3px 0", borderTop: i ? `1px solid ${BORDER}` : "none" }}>{formatDateTime(e.createdAt)} · <b>{e.action.replace(/_/g, " ")}</b> · {e.actorType}{e.newValue ? ` · ${JSON.stringify(e.newValue)}` : ""}</div>)}
+            </div>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function CiyaarahaRewards() {
+  const [state, reload] = useAdminFetch(() => DalabAdminApi.getFootballRewards(), []);
+  const rows = state.data || [];
+  return (
+    <Card style={{ padding: 0, overflow: "hidden" }}>
+      <div style={{ padding: 12, display: "flex", justifyContent: "space-between" }}><b style={{ color: INK }}>Reward ledger</b><Button variant="ghost" icon={RefreshCw} onClick={reload}>Refresh</Button></div>
+      {state.error && <div style={{ padding: 12, color: "var(--c-c81e2c)" }}>{state.error}</div>}
+      {!state.loading && rows.length === 0 && <div style={{ padding: 12, color: MUTE, fontSize: 13 }}>No rewards recorded yet.</div>}
+      {rows.length > 0 && (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead><tr style={{ background: "var(--c-fafbff)", color: MUTE, textAlign: "left" }}>{["Date", "Match", "Reward", "Winner", "Attempt", "Status", "Reference", "Agent"].map((h) => <th key={h} style={{ padding: "10px 12px", fontSize: 11.5 }}>{h}</th>)}</tr></thead>
+            <tbody>{rows.map((t) => (
+              <tr key={t.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 12px", color: SLATE }}>{formatDateTime(t.createdAt)}</td>
+                <td style={{ padding: "10px 12px", color: INK }}>{t.match}</td>
+                <td style={{ padding: "10px 12px", color: SLATE }}>{t.rewardLabel} · {t.companyId}</td>
+                <td style={{ padding: "10px 12px", color: SLATE }}>{t.recipientPhoneMasked}</td>
+                <td style={{ padding: "10px 12px", color: SLATE }}>#{t.attemptNo}</td>
+                <td style={{ padding: "10px 12px" }}><Badge tone={t.status === "paid" ? "green" : "red"}>{t.status === "paid" ? "Paid" : "Failed"}</Badge></td>
+                <td style={{ padding: "10px 12px", color: SLATE, fontFamily: "monospace" }}>{t.transactionRef || "—"}</td>
+                <td style={{ padding: "10px 12px", color: SLATE }}>{t.agentName || "—"}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function CiyaarahaAgents() {
+  const [state, reload] = useAdminFetch(() => DalabAdminApi.getFootballAgents(), []);
+  const [err, setErr] = useState("");
+  const toggle = async (a) => {
+    setErr("");
+    try { await DalabAdminApi.setFootballAgent(a.id, !a.ciyaarahaEnabled); await reload(); } catch (e) { setErr(e.message || "Could not update."); }
+  };
+  return (
+    <Card style={{ padding: 16 }}>
+      <div style={{ fontWeight: 700, color: INK }}>Who can run Ciyaaraha</div>
+      <div style={{ fontSize: 12.5, color: MUTE, margin: "2px 0 10px" }}>Only these agents can create contests, enter official results, confirm winners and record rewards in the Agent App.</div>
+      {err && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 8 }}>{err}</div>}
+      {(state.data || []).map((a) => (
+        <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderTop: `1px solid ${BORDER}`, flexWrap: "wrap" }}>
+          <div><div style={{ fontWeight: 700, color: INK, fontSize: 13 }}>{a.name}</div><div style={{ fontSize: 12, color: MUTE }}>{a.phone}{a.status !== "active" ? ` · ${a.status}` : ""}</div></div>
+          <Button variant={a.ciyaarahaEnabled ? "primary" : "ghost"} onClick={() => toggle(a)}>{a.ciyaarahaEnabled ? "Enabled" : "Off"}</Button>
+        </div>
+      ))}
+    </Card>
+  );
+}
+
+function CiyaarahaCleanup() {
+  const [state, reload] = useAdminFetch(() => DalabAdminApi.getCleanupRuns(), []);
+  const rows = state.data || [];
+  const last = rows[0];
+  return (
+    <Card style={{ padding: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div><div style={{ fontWeight: 700, color: INK }}>Image cleanup</div><div style={{ fontSize: 12.5, color: MUTE }}>Runs hourly. Removes only unused, expired or orphaned images; predictions, winners and rewards are never deleted.</div></div>
+        <Button variant="ghost" icon={RefreshCw} onClick={reload}>Refresh</Button>
+      </div>
+      {last && last.errors > 0 && <div style={{ marginTop: 10 }}><Badge tone="red">Last run had {last.errors} error(s)</Badge></div>}
+      {!state.loading && rows.length === 0 && <div style={{ marginTop: 10, color: MUTE, fontSize: 13 }}>No runs yet.</div>}
+      {rows.map((r) => (
+        <div key={r.id} style={{ fontSize: 12.5, color: SLATE, padding: "6px 0", borderTop: `1px solid ${BORDER}`, marginTop: 6 }}>
+          {formatDateTime(r.startedAt)} · processed {r.processed} · deleted {r.deleted} · errors <b style={{ color: r.errors ? "var(--c-c81e2c)" : SLATE }}>{r.errors}</b>{r.finishedAt ? "" : " · running"}
+        </div>
+      ))}
+    </Card>
   );
 }
 
@@ -17607,6 +17871,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "notifications" && <Notifications />}
           {active === "promo-images" && <PromoImages />}
           {active === "nala-soco" && <NalaSoco />}
+          {active === "ciyaaraha" && <CiyaarahaAdmin />}
           {active === "agent-app-release" && <AgentAppReleasePanel />}
           {active === "devices" && <DeviceUssdModule companies={companies} admin={admin} onPackagesChanged={refreshMissingTemplateCount} />}
           {active === "sms-logs" && <SmsLogs companies={companies} />}

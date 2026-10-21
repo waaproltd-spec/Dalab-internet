@@ -48,6 +48,7 @@ import { vipNumbersRouter } from "./routes/vipNumbers.routes.js";
 import { vipNumberPackagesRouter } from "./routes/vipNumberPackages.routes.js";
 import { nalaSocoRouter } from "./routes/nalaSoco.routes.js";
 import { devicesRouter } from "./routes/devices.routes.js";
+import { footballRouter } from "./routes/football.routes.js";
 import { pool, queryOne } from "./db/pool.js";
 import { seedAll } from "./db/seed.js";
 import { sendJson } from "./utils/camelCase.js";
@@ -316,6 +317,7 @@ app.use(vipNumbersRouter);
 app.use(vipNumberPackagesRouter);
 app.use(nalaSocoRouter);
 app.use(devicesRouter);
+app.use(footballRouter);
 
 app.use((_req: Request, res: Response) => {
   res.status(404).json({ error: "Not found" });
