@@ -1,6 +1,19 @@
 package com.dalab.internet.network
 
 import com.dalab.internet.data.AgentBalanceEntry
+import com.dalab.internet.data.FootballConfirmWinnerRequest
+import com.dalab.internet.data.FootballContest
+import com.dalab.internet.data.FootballContestCreateRequest
+import com.dalab.internet.data.FootballCustomerSearchResponse
+import com.dalab.internet.data.FootballEnabledResponse
+import com.dalab.internet.data.FootballGoalsRequest
+import com.dalab.internet.data.FootballImageUploadRequest
+import com.dalab.internet.data.FootballImageUploadResponse
+import com.dalab.internet.data.FootballPostponeRequest
+import com.dalab.internet.data.FootballPredictionsPage
+import com.dalab.internet.data.FootballReasonRequest
+import com.dalab.internet.data.FootballRewardRequest
+import com.dalab.internet.data.FootballTeamOption
 import com.dalab.internet.data.TransactionHistoryEntry
 import com.dalab.internet.data.AgentDevice
 import com.dalab.internet.data.AgentProfile
@@ -518,6 +531,61 @@ interface ApiService {
 
     @DELETE("admin/nala-soco/{id}")
     suspend fun deleteNalaSocoPost(@Path("id") id: String): Response<Unit>
+
+    // ---------------- Ciyaaraha (football predictions) ----------------
+    // Only agents an Admin switched on may use these (403 FOOTBALL_NOT_ENABLED
+    // otherwise); /me tells the app whether to offer the section at all.
+
+    @GET("agent/football/me")
+    suspend fun getFootballAccess(): Response<FootballEnabledResponse>
+
+    @GET("agent/football/teams")
+    suspend fun getFootballTeams(): Response<List<FootballTeamOption>>
+
+    @POST("agent/football/images")
+    suspend fun uploadFootballImage(@Body body: FootballImageUploadRequest): Response<FootballImageUploadResponse>
+
+    @GET("agent/football/contests")
+    suspend fun getFootballContests(@Query("scope") scope: String, @Query("page") page: Int = 0): Response<List<FootballContest>>
+
+    @POST("agent/football/contests")
+    suspend fun createFootballContest(@Body body: FootballContestCreateRequest): Response<FootballContest>
+
+    @GET("agent/football/contests/{id}")
+    suspend fun getFootballContest(@Path("id") id: String): Response<FootballContest>
+
+    @POST("agent/football/contests/{id}/publish")
+    suspend fun publishFootballContest(@Path("id") id: String): Response<FootballContest>
+
+    @POST("agent/football/contests/{id}/postpone")
+    suspend fun postponeFootballContest(@Path("id") id: String, @Body body: FootballPostponeRequest): Response<com.google.gson.JsonObject>
+
+    @POST("agent/football/contests/{id}/cancel")
+    suspend fun cancelFootballContest(@Path("id") id: String, @Body body: FootballReasonRequest): Response<com.google.gson.JsonObject>
+
+    @POST("agent/football/contests/{id}/result")
+    suspend fun enterFootballResult(@Path("id") id: String, @Body body: FootballGoalsRequest): Response<com.google.gson.JsonObject>
+
+    @GET("agent/football/contests/{id}/predictions")
+    suspend fun getFootballPredictions(
+        @Path("id") id: String,
+        @Query("home") home: Int? = null,
+        @Query("away") away: Int? = null,
+        @Query("page") page: Int = 0,
+        @Query("pageSize") pageSize: Int = 20,
+    ): Response<FootballPredictionsPage>
+
+    @POST("agent/football/contests/{id}/confirm-winner")
+    suspend fun confirmFootballWinner(@Path("id") id: String, @Body body: FootballConfirmWinnerRequest): Response<com.google.gson.JsonObject>
+
+    @POST("agent/football/contests/{id}/reward")
+    suspend fun recordFootballReward(@Path("id") id: String, @Body body: FootballRewardRequest): Response<com.google.gson.JsonObject>
+
+    @POST("agent/football/contests/{id}/dispute")
+    suspend fun disputeFootballContest(@Path("id") id: String, @Body body: FootballReasonRequest): Response<com.google.gson.JsonObject>
+
+    @GET("agent/football/customers/search")
+    suspend fun searchFootballCustomer(@Query("q") q: String): Response<FootballCustomerSearchResponse>
 
     // See PromoAdResponse's own doc comment. GET here is the management
     // view (every ad, enabled or not) -- distinct from the Customer App's
