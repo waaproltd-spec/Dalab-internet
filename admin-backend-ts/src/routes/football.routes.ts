@@ -7,7 +7,8 @@ import { requireAuth } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { rateLimit } from "../auth/rateLimit.js";
 import { sendJson } from "../utils/camelCase.js";
-import { notifyCustomer } from "../services/customerNotify.js";
+import { sendPushToCustomer } from "../services/push.js";
+import { randomUUID } from "node:crypto";
 import { MediaError, deleteImageFile, imageInUse, mediaDir, readImage, saveImage } from "../utils/mediaStorage.js";
 
 /**
@@ -123,7 +124,9 @@ const CONTEST_SELECT = `
     FROM football_contests fc
     JOIN football_teams ht ON ht.id = fc.home_team_id
     JOIN football_teams at ON at.id = fc.away_team_id
-    JOIN companies co ON co.id = fc.reward_company_id`;
+    JOIN companies co ON co.id = fc.reward_company_id
+     -- Deleted contests (migration 122) are hidden from every list and lookup.
+     AND fc.deleted_at IS NULL`;
 
 function contestView(c: any, now = new Date()) {
   const showResult = STATUSES_WITH_RESULT.has(c.status);
@@ -386,6 +389,94 @@ footballRouter.post("/agent/football/contests", ...agentGate, async (req, res) =
   }
 });
 
+/**
+ * Fixes a contest's details (team names, league, reward, provider, image)
+ * until its result is entered. Kickoff changes go through /postpone. A
+ * renamed team points the contest at that team's row (teams are shared,
+ * so the old row is left alone). Every change is logged with old and new.
+ */
+footballRouter.put("/agent/football/contests/:id", ...agentGate, async (req, res) => {
+  if (!UUID_RE.test(req.params.id)) return sendJson(res, 404, { error: "Contest not found" });
+  const b = req.body ?? {};
+  try {
+    const out = await withTransaction(async (client) => {
+      const c = (await client.query(`SELECT * FROM football_contests WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, [req.params.id])).rows[0];
+      if (!c) return { status: 404, body: { error: "Contest not found" } };
+      if (!["draft", "open", "closed", "awaiting_result"].includes(c.status) || c.official_home_goals != null) {
+        return { status: 409, body: { error: "A contest can only be edited before its result is entered." } };
+      }
+      const next: Record<string, unknown> = {};
+      if (b.homeTeam !== undefined) next.home_team_id = await upsertTeam(client, b.homeTeam);
+      if (b.awayTeam !== undefined) next.away_team_id = await upsertTeam(client, b.awayTeam);
+      const home = (next.home_team_id ?? c.home_team_id) as string;
+      const away = (next.away_team_id ?? c.away_team_id) as string;
+      if (home === away) throw new MediaError("Home and away teams must be different");
+      if (b.league !== undefined) {
+        const league = String(b.league ?? "").trim();
+        if (!league || league.length > 80) throw new MediaError("League is required (max 80 characters)");
+        next.league = league;
+      }
+      if (b.rewardLabel !== undefined) {
+        const label = String(b.rewardLabel ?? "").trim();
+        if (!label || label.length > 80) throw new MediaError('Reward is required, e.g. "1 GB Internet"');
+        next.reward_label = label;
+      }
+      if (b.rewardCompanyId !== undefined) {
+        const ok = (await client.query(`SELECT 1 FROM companies WHERE id=$1 AND deleted_at IS NULL`, [String(b.rewardCompanyId)])).rows.length;
+        if (!ok) throw new MediaError("Choose a valid reward provider (Hormuud, Somnet, Somtel or Amtel)");
+        next.reward_company_id = String(b.rewardCompanyId);
+      }
+      if (b.removeImage === true) next.image_id = null;
+      else if (b.imageId) {
+        if (!UUID_RE.test(b.imageId) || !(await client.query(`SELECT 1 FROM media_images WHERE id=$1 AND status='active'`, [b.imageId])).rows.length) {
+          throw new MediaError("Match image not found");
+        }
+        next.image_id = b.imageId;
+      }
+      const changed = Object.keys(next).filter((k) => String(next[k] ?? "") !== String(c[k] ?? ""));
+      if (changed.length === 0) return { status: 200, body: { id: c.id, changed: [] } };
+      const sets = changed.map((k, i) => `${k}=$${i + 2}`).join(", ");
+      await client.query(`UPDATE football_contests SET ${sets}, updated_at=now() WHERE id=$1`, [c.id, ...changed.map((k) => next[k])]);
+      await logEvent(
+        client, c.id, "agent", req.auth!.sub, "edited",
+        Object.fromEntries(changed.map((k) => [k, c[k]])),
+        Object.fromEntries(changed.map((k) => [k, next[k]]))
+      );
+      return { status: 200, body: { id: c.id, changed } };
+    });
+    if (out.status !== 200) return sendJson(res, out.status, out.body);
+    sendJson(res, 200, contestView(await queryOne<any>(`${CONTEST_SELECT} WHERE fc.id=$1`, [req.params.id])));
+  } catch (e) {
+    if (e instanceof MediaError) return sendJson(res, e.status, { error: e.message });
+    throw e;
+  }
+});
+
+/**
+ * Deletes a contest nobody has predicted yet. It is kept as cancelled with
+ * deleted_at set (hidden everywhere), so the audit trail survives. Once a
+ * customer has predicted, the agent must cancel it instead, so customers
+ * still see what happened to their prediction.
+ */
+footballRouter.delete("/agent/football/contests/:id", ...agentGate, async (req, res) => {
+  if (!UUID_RE.test(req.params.id)) return sendJson(res, 404, { error: "Contest not found" });
+  const out = await withTransaction(async (client) => {
+    const c = (await client.query(`SELECT * FROM football_contests WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, [req.params.id])).rows[0];
+    if (!c) return { status: 404, body: { error: "Contest not found" } };
+    const n = Number((await client.query(`SELECT COUNT(*) AS n FROM football_predictions WHERE contest_id=$1`, [c.id])).rows[0].n);
+    if (n > 0) {
+      return { status: 409, body: { code: "HAS_PREDICTIONS", error: `${n} customer(s) already predicted this match, so it can't be deleted. Cancel it instead.` } };
+    }
+    await client.query(
+      `UPDATE football_contests SET status='cancelled', status_reason='Deleted', deleted_at=now(), deleted_by_agent_id=$2, updated_at=now() WHERE id=$1`,
+      [c.id, req.auth!.sub]
+    );
+    await logEvent(client, c.id, "agent", req.auth!.sub, "deleted", { status: c.status }, { status: "cancelled", deleted: true });
+    return { status: 200, body: { id: c.id, deleted: true } };
+  });
+  sendJson(res, out.status, out.body);
+});
+
 footballRouter.post("/agent/football/contests/:id/publish", ...agentGate, async (req, res) => {
   if (!UUID_RE.test(req.params.id)) return sendJson(res, 404, { error: "Contest not found" });
   const r = await query<any>(
@@ -486,7 +577,11 @@ footballRouter.post("/agent/football/contests/:id/result", ...agentGate, async (
  */
 footballRouter.get("/agent/football/contests/:id/predictions", ...agentGate, async (req, res) => {
   if (!UUID_RE.test(req.params.id)) return sendJson(res, 404, { error: "Contest not found" });
-  const c = await queryOne<any>(`SELECT id, status, official_home_goals, official_away_goals, candidate_prediction_id FROM football_contests WHERE id=$1`, [req.params.id]);
+  const c = await queryOne<any>(
+    `SELECT fc.id, fc.status, fc.official_home_goals, fc.official_away_goals, fc.candidate_prediction_id, fc.reward_label, co.name AS reward_company_name
+       FROM football_contests fc JOIN companies co ON co.id = fc.reward_company_id WHERE fc.id=$1 AND fc.deleted_at IS NULL`,
+    [req.params.id]
+  );
   if (!c) return sendJson(res, 404, { error: "Contest not found" });
   const home = req.query.home !== undefined ? parseGoals(req.query.home) : null;
   const away = req.query.away !== undefined ? parseGoals(req.query.away) : null;
@@ -509,6 +604,31 @@ footballRouter.get("/agent/football/contests/:id/predictions", ...agentGate, asy
   );
   const winner = await queryOne<any>(`SELECT prediction_id, status FROM football_winners WHERE contest_id=$1 AND status <> 'revoked'`, [c.id]);
   const hasResult = c.official_home_goals != null;
+  // The Winning Customer card: the confirmed winner, or else the server's
+  // candidate (the earliest exact prediction, chosen when the result was
+  // entered). The app only shows it; it never picks one itself.
+  const winningId = winner?.prediction_id ?? (hasResult ? c.candidate_prediction_id : null);
+  const wp = winningId
+    ? await queryOne<any>(
+        `SELECT p.id, p.home_goals, p.away_goals, p.created_at, cu.name, cu.phone FROM football_predictions p JOIN customers cu ON cu.id=p.customer_id WHERE p.id=$1`,
+        [winningId]
+      )
+    : null;
+  const winningCustomer = wp
+    ? {
+        predictionId: wp.id,
+        customerName: wp.name ?? "",
+        phoneMasked: maskPhone(wp.phone),
+        home: wp.home_goals,
+        away: wp.away_goals,
+        submittedAt: wp.created_at,
+        rewardLabel: c.reward_label,
+        provider: c.reward_company_name,
+        confirmed: Boolean(winner),
+        winnerStatus: winner?.status ?? null,
+        canConfirm: !winner && c.status === "verification" && wp.id === c.candidate_prediction_id,
+      }
+    : null;
   sendJson(res, 200, {
     total,
     page,
@@ -516,6 +636,9 @@ footballRouter.get("/agent/football/contests/:id/predictions", ...agentGate, asy
     officialScore: hasResult ? { home: c.official_home_goals, away: c.official_away_goals } : null,
     candidatePredictionId: c.candidate_prediction_id,
     winner: winner ? { predictionId: winner.prediction_id, status: winner.status } : null,
+    hasResult,
+    contestStatus: c.status,
+    winningCustomer,
     items: rows.map((r, i) => ({
       predictionId: r.id,
       position: page * pageSize + i + 1,
@@ -577,31 +700,173 @@ async function agentContestDetail(c: any) {
   };
 }
 
-const WINNER_TITLE = "Hambalyo! Waad guuleysatay!";
-function winnerBody(c: any, home: number, away: number) {
-  return (
-    `Waxaad si sax ah u saadaalisay natiijada ciyaarta ${c.home_team_name} vs ${c.away_team_name} (${home} - ${away}). ` +
-    `Agent-ka DALAB APP ayaa xaqiijiyey guushaada. Abaalmarin: ${c.reward_label} (${c.reward_company_name}). ` +
-    `Fadlan nala soo xiriir si aad u hesho abaalmarintaada internet-ka.`
+// ---------- result notifications ----------
+//
+// After the agent confirms the winner, every participant is told the
+// result once: the winner gets "Hambalyo! Waad guuleysatay!", everyone else
+// "Natiijadii Tartanka Waa La Xaqiijiyey!" -- in the language they chose in
+// the Customer App (customers.app_language; Somali when unknown). Rows are
+// queued in football_notifications inside the confirmation transaction, so
+// nothing goes out before the official confirmation and each person is
+// told once per confirmed winner. The in-app notification is written once;
+// only the phone push is retried. The winner is named the public way
+// ("Ahmed A.") -- never a phone number.
+
+const MAX_NOTIFY_ATTEMPTS = 5;
+
+export interface ResultMessageValues {
+  homeTeam: string;
+  awayTeam: string;
+  officialHome: number;
+  officialAway: number;
+  winningHome: number;
+  winningAway: number;
+  reward: string;
+  winnerName: string;
+}
+
+/** The customer-facing text for a result notification. */
+export function resultMessage(kind: "winner" | "participant", language: string | null | undefined, v: ResultMessageValues) {
+  const en = language === "en";
+  const official = `${v.officialHome}–${v.officialAway}`;
+  const winning = `${v.winningHome}–${v.winningAway}`;
+  if (kind === "winner") {
+    return en
+      ? {
+          title: "🏆 Congratulations! You won!",
+          body:
+            `You won the score prediction contest for ${v.homeTeam} vs ${v.awayTeam}.\n\n` +
+            `⚽ Official result: ${official}\n\n🎯 Your correct prediction: ${winning}\n\n🎁 Your reward: ${v.reward}\n\n` +
+            `Open DALAB APP to see the details of your win and your reward.`,
+        }
+      : {
+          title: "🏆 Hambalyo! Waad guuleysatay!",
+          body:
+            `Waxaad ku guuleysatay tartanka saadaasha ciyaarta ${v.homeTeam} vs ${v.awayTeam}.\n\n` +
+            `⚽ Natiijada rasmiga ah: ${official}\n\n🎯 Saadaashaadii saxda ahayd: ${winning}\n\n🎁 Abaalmarintaada: ${v.reward}\n\n` +
+            `Fur DALAB APP si aad u aragto faahfaahinta guushaada iyo abaalmarintaada.`,
+        };
+  }
+  return en
+    ? {
+        title: "🔔 The Contest Result Is Confirmed!",
+        body:
+          `The score prediction contest for ${v.homeTeam} vs ${v.awayTeam} has been completed.\n\n` +
+          `🏆 Winner: ${v.winnerName}\n\n⚽ Winning prediction: ${winning}\n\n` +
+          `Thank you for taking part. Good luck in the next contests!`,
+      }
+    : {
+        title: "🔔 Natiijadii Tartanka Waa La Xaqiijiyey!",
+        body:
+          `Tartanka saadaasha ciyaarta ${v.homeTeam} vs ${v.awayTeam} waa la dhammeystiray.\n\n` +
+          `🏆 Guuleystaha: ${v.winnerName}\n\n⚽ Saadaashii guuleysatay: ${winning}\n\n` +
+          `Waad ku mahadsan tahay ka qaybgalka tartanka. Nasiib wacan tartamada soo socda!`,
+      };
+}
+
+/** Queues one result notification per participant; call inside the confirmation transaction. */
+async function queueResultNotifications(client: PoolClient, contestId: string, winnerId: string, winnerCustomerId: string) {
+  await client.query(
+    `INSERT INTO football_notifications (contest_id, winner_id, customer_id, kind)
+     SELECT $1, $2, p.customer_id, CASE WHEN p.customer_id = $3 THEN 'winner' ELSE 'participant' END
+       FROM football_predictions p WHERE p.contest_id = $1
+     ON CONFLICT (winner_id, customer_id) DO NOTHING`,
+    [contestId, winnerId, winnerCustomerId]
   );
 }
 
-/** Sends the winner notification once (idempotent via notified_at). */
-export async function notifyWinnerOnce(contestId: string): Promise<boolean> {
-  const claim = await query<any>(
-    `UPDATE football_winners SET notified_at=now() WHERE contest_id=$1 AND status <> 'revoked' AND status <> 'disputed' AND notified_at IS NULL
-     RETURNING customer_id, prediction_id`,
-    [contestId]
-  );
-  if (claim.length === 0) return false;
-  const c = await queryOne<any>(`${CONTEST_SELECT} WHERE fc.id=$1`, [contestId]);
-  const p = await queryOne<any>(`SELECT home_goals, away_goals FROM football_predictions WHERE id=$1`, [claim[0].prediction_id]);
-  await notifyCustomer(claim[0].customer_id, "football_contest", WINNER_TITLE, winnerBody(c, p.home_goals, p.away_goals), {
-    kind: "football_winner",
-    contestId,
-  });
-  await logEvent({ query }, contestId, "system", null, "winner_notified", null, { customerId: claim[0].customer_id });
-  return true;
+let delivering = false;
+
+/**
+ * Sends due result notifications (claimed with SKIP LOCKED, so two runs
+ * never send the same one). Rows of a winner later disputed or revoked
+ * are held back. A failed push is retried with growing gaps, up to
+ * MAX_NOTIFY_ATTEMPTS; a customer with no registered phone only gets the
+ * in-app notification ("no_device").
+ */
+export async function deliverFootballNotifications(limit = 200): Promise<{ processed: number }> {
+  if (delivering) return { processed: 0 };
+  delivering = true;
+  try {
+    const rows = await query<any>(
+      `UPDATE football_notifications n
+          SET attempts = n.attempts + 1, next_attempt_at = now() + (LEAST(n.attempts + 1, 6) * interval '2 minutes')
+        WHERE n.id IN (
+          SELECT fn.id FROM football_notifications fn JOIN football_winners w ON w.id = fn.winner_id
+           WHERE w.status NOT IN ('revoked','disputed')
+             AND (fn.notification_id IS NULL OR fn.push_status IN ('pending','failed'))
+             AND fn.attempts < $2 AND fn.next_attempt_at <= now()
+           ORDER BY fn.created_at LIMIT $1
+           FOR UPDATE OF fn SKIP LOCKED)
+        RETURNING n.*`,
+      [limit, MAX_NOTIFY_ATTEMPTS]
+    );
+    const winners = new Map<string, any>();
+    for (const n of rows) {
+      try {
+        let w = winners.get(n.winner_id);
+        if (!w) {
+          w = await queryOne<any>(
+            `SELECT w.id, w.customer_id, cu.name, p.home_goals, p.away_goals FROM football_winners w
+               JOIN customers cu ON cu.id = w.customer_id JOIN football_predictions p ON p.id = w.prediction_id WHERE w.id = $1`,
+            [n.winner_id]
+          );
+          w.contest = await queryOne<any>(`SELECT fc.*, ht.name AS home_team_name, at.name AS away_team_name, co.name AS reward_company_name
+              FROM football_contests fc JOIN football_teams ht ON ht.id = fc.home_team_id JOIN football_teams at ON at.id = fc.away_team_id
+              JOIN companies co ON co.id = fc.reward_company_id WHERE fc.id = $1`, [n.contest_id]);
+          winners.set(n.winner_id, w);
+        }
+        const c = w.contest;
+        const dataKind = n.kind === "winner" ? "football_winner" : "football_result";
+        let notificationId: string = n.notification_id;
+        let title: string;
+        let body: string;
+        let sentAt: string;
+        if (!notificationId) {
+          const lang = (await queryOne<any>(`SELECT app_language FROM customers WHERE id = $1`, [n.customer_id]))?.app_language ?? "so";
+          ({ title, body } = resultMessage(n.kind, lang, {
+            homeTeam: c.home_team_name, awayTeam: c.away_team_name,
+            officialHome: c.official_home_goals, officialAway: c.official_away_goals,
+            winningHome: w.home_goals, winningAway: w.away_goals,
+            reward: `${c.reward_label} (${c.reward_company_name})`,
+            winnerName: publicName(w.name),
+          }));
+          notificationId = randomUUID();
+          sentAt = new Date().toISOString();
+          // The in-app row and the queue row change together, so a retry
+          // never writes the in-app notification twice.
+          await withTransaction(async (client) => {
+            await client.query(
+              `INSERT INTO notifications (id, type, title, body, customer_id, sent_at, data) VALUES ($1,'football_contest',$2,$3,$4,$5,$6)`,
+              [notificationId, title, body, n.customer_id, sentAt, JSON.stringify({ kind: dataKind, contestId: n.contest_id })]
+            );
+            await client.query(`UPDATE football_notifications SET notification_id=$2, language=$3, sent_at=$4 WHERE id=$1`, [n.id, notificationId, lang, sentAt]);
+            if (n.kind === "winner") {
+              const first = (await client.query(`UPDATE football_winners SET notified_at=now() WHERE id=$1 AND notified_at IS NULL RETURNING id`, [n.winner_id])).rows.length;
+              if (first) await logEvent(client, n.contest_id, "system", null, "winner_notified", null, { customerId: n.customer_id });
+            }
+          });
+        } else {
+          const prev = await queryOne<any>(`SELECT title, body, sent_at FROM notifications WHERE id = $1`, [notificationId]);
+          title = prev?.title ?? "";
+          body = prev?.body ?? "";
+          sentAt = prev?.sent_at ? new Date(prev.sent_at).toISOString() : new Date().toISOString();
+        }
+        const push = await sendPushToCustomer(n.customer_id, {
+          title,
+          body,
+          data: { kind: dataKind, contestId: n.contest_id, notificationId, notificationType: "football_contest", sentAt },
+        });
+        const status = !push.attempted ? "no_device" : push.delivered ? "sent" : "failed";
+        await query(`UPDATE football_notifications SET push_status=$2, last_error=$3 WHERE id=$1`, [n.id, status, status === "failed" ? "push not delivered" : null]);
+      } catch (e) {
+        await query(`UPDATE football_notifications SET last_error=$2 WHERE id=$1`, [n.id, String((e as Error).message).slice(0, 300)]).catch(() => {});
+      }
+    }
+    return { processed: rows.length };
+  } finally {
+    delivering = false;
+  }
 }
 
 /**
@@ -627,15 +892,18 @@ footballRouter.post("/agent/football/contests/:id/confirm-winner", ...agentGate,
     if (!candidate || candidate.id !== predictionId || candidate.id !== c.candidate_prediction_id) {
       return { status: 409, body: { code: "NOT_THE_CANDIDATE", error: "Only the earliest correct prediction can be confirmed. Refresh and check again." } };
     }
-    await client.query(
-      `INSERT INTO football_winners (contest_id, prediction_id, customer_id, confirmed_by) VALUES ($1,$2,$3,$4)`,
-      [c.id, candidate.id, candidate.customer_id, req.auth!.sub]
-    );
+    const winner = (
+      await client.query(
+        `INSERT INTO football_winners (contest_id, prediction_id, customer_id, confirmed_by) VALUES ($1,$2,$3,$4) RETURNING id`,
+        [c.id, candidate.id, candidate.customer_id, req.auth!.sub]
+      )
+    ).rows[0];
+    await queueResultNotifications(client, c.id, winner.id, candidate.customer_id);
     await client.query(`UPDATE football_contests SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1`, [c.id]);
     await logEvent(client, c.id, "agent", req.auth!.sub, "winner_confirmed", null, { predictionId: candidate.id, customerId: candidate.customer_id, score: { home: c.official_home_goals, away: c.official_away_goals } });
     return { status: 200, body: { id: c.id, status: "completed" } };
   });
-  if (out.status === 200) await notifyWinnerOnce(req.params.id);
+  if (out.status === 200) await deliverFootballNotifications().catch(() => ({ processed: 0 }));
   sendJson(res, out.status, out.body);
 });
 
@@ -891,12 +1159,8 @@ export async function runFootballLifecycle(): Promise<{ closed: number; awaiting
     [String(minutes)]
   );
   for (const r of awaiting) await logEvent({ query }, r.id, "system", null, "awaiting_result", { status: "closed" }, { status: "awaiting_result" });
-  // A winner confirmed but whose notification didn't go out (crash between
-  // the two steps) is notified on the next pass.
-  const unsent = await query<{ contest_id: string }>(
-    `SELECT contest_id FROM football_winners WHERE notified_at IS NULL AND status NOT IN ('revoked','disputed') LIMIT 50`
-  );
-  for (const u of unsent) await notifyWinnerOnce(u.contest_id);
+  // Result notifications not sent yet (or a push to retry).
+  await deliverFootballNotifications();
   return { closed: closed.length, awaiting: awaiting.length };
 }
 

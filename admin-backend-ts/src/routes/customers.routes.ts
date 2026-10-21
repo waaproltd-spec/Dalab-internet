@@ -593,6 +593,15 @@ customersRouter.get("/customer/profile", requireAuth("customer"), async (req, re
   sendJson(res, 200, customer);
 });
 
+// The language chosen in the Customer App ('so' / 'en'), so messages the
+// server sends (e.g. Ciyaaraha result notifications) match it.
+customersRouter.put("/customer/language", requireAuth("customer"), async (req, res) => {
+  const language = String(req.body?.language ?? "");
+  if (language !== "so" && language !== "en") return sendJson(res, 400, { error: "language must be 'so' or 'en'" });
+  await query(`UPDATE customers SET app_language=$1 WHERE id=$2`, [language, req.auth!.sub]);
+  sendJson(res, 200, { language });
+});
+
 customersRouter.put("/customer/profile", requireAuth("customer"), async (req, res) => {
   const name = String(req.body.name ?? "").trim();
   if (!name) return sendJson(res, 400, { error: "name is required" });

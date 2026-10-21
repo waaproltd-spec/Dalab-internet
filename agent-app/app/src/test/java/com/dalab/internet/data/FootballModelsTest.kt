@@ -52,6 +52,19 @@ class FootballModelsTest {
             FootballPredictionsPage::class.java,
         )
         assertEquals(listOf(1, 2), page.items.map { it.position })
+        assertNull(page.winningCustomer)
+
+        val withCard = gson.fromJson(
+            """{"total":1,"hasResult":true,"contestStatus":"verification","items":[],
+               "winningCustomer":{"predictionId":"p1","customerName":"Yaasiin Maxamed Aadan","phoneMasked":"61****777","home":0,"away":0,
+                 "submittedAt":"2026-10-21T00:59:00.000Z","rewardLabel":"2 maalin free","provider":"Hormuud","confirmed":false,"winnerStatus":null,"canConfirm":true}}""",
+            FootballPredictionsPage::class.java,
+        )
+        val wc = withCard.winningCustomer!!
+        assertEquals("61****777", wc.phoneMasked)
+        assertEquals("Hormuud", wc.provider)
+        assertTrue(wc.canConfirm)
+        assertTrue(withCard.hasResult)
         assertTrue(page.items[0].isCandidate)
 
         val search = gson.fromJson(

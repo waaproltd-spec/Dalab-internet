@@ -25,6 +25,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.Image as ImageIcon
 import androidx.compose.material.icons.filled.PersonSearch
@@ -60,6 +61,7 @@ import com.dalab.internet.data.FootballReasonRequest
 import com.dalab.internet.data.FootballRewardRequest
 import com.dalab.internet.data.FootballTeamInput
 import com.dalab.internet.data.FootballTeamOption
+import com.dalab.internet.data.FootballWinningCustomer
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.util.parseApiDate
 import com.google.gson.JsonParser
@@ -152,6 +154,7 @@ private fun outcomeLabel(outcome: String): String = when (outcome) {
 private sealed class CiyaarahaPage {
     object Contests : CiyaarahaPage()
     object Create : CiyaarahaPage()
+    data class Edit(val contest: FootballContest) : CiyaarahaPage()
     data class Detail(val id: String) : CiyaarahaPage()
     object CustomerSearch : CiyaarahaPage()
 }
@@ -190,7 +193,17 @@ fun CiyaarahaScreen(onBack: () -> Unit) {
                 onBack = { page = CiyaarahaPage.Contests },
                 onCreated = { page = CiyaarahaPage.Detail(it) },
             )
-            is CiyaarahaPage.Detail -> ContestDetailPage(id = p.id, onBack = { page = CiyaarahaPage.Contests })
+            is CiyaarahaPage.Edit -> CreateContestPage(
+                existing = p.contest,
+                onBack = { page = CiyaarahaPage.Detail(p.contest.id) },
+                onCreated = { page = CiyaarahaPage.Detail(it) },
+            )
+            is CiyaarahaPage.Detail -> ContestDetailPage(
+                id = p.id,
+                onBack = { page = CiyaarahaPage.Contests },
+                onEdit = { page = CiyaarahaPage.Edit(it) },
+                onDeleted = { page = CiyaarahaPage.Contests },
+            )
             CiyaarahaPage.CustomerSearch -> CustomerSearchPage(
                 onBack = { page = CiyaarahaPage.Contests },
                 onOpenContest = { page = CiyaarahaPage.Detail(it) },
@@ -379,17 +392,21 @@ private fun rememberImagePicker(onPicked: (PickedFootballImage) -> Unit, onError
 private val DEADLINE_OPTIONS = listOf(0 to "At kickoff", 15 to "15 minutes before", 30 to "30 minutes before", 60 to "1 hour before")
 
 @Composable
-private fun CreateContestPage(onBack: () -> Unit, onCreated: (String) -> Unit) {
-    var homeName by remember { mutableStateOf("") }
-    var awayName by remember { mutableStateOf("") }
+private fun CreateContestPage(onBack: () -> Unit, onCreated: (String) -> Unit, existing: FootballContest? = null) {
+    // Edit mode ([existing] set): kickoff and the deadline are changed with
+    // Postpone instead, and only the fields that changed are sent.
+    val editing = existing != null
+    var homeName by remember { mutableStateOf(existing?.homeTeam?.name ?: "") }
+    var awayName by remember { mutableStateOf(existing?.awayTeam?.name ?: "") }
     var homeLogo by remember { mutableStateOf<PickedFootballImage?>(null) }
     var awayLogo by remember { mutableStateOf<PickedFootballImage?>(null) }
     var contestImage by remember { mutableStateOf<PickedFootballImage?>(null) }
-    var league by remember { mutableStateOf("") }
+    var league by remember { mutableStateOf(existing?.league ?: "") }
+    var removeImage by remember { mutableStateOf(false) }
     var kickoff by remember { mutableStateOf<Date?>(null) }
     var deadlineMinutes by remember { mutableStateOf(0) }
-    var rewardLabel by remember { mutableStateOf("") }
-    var companyId by remember { mutableStateOf<String?>(null) }
+    var rewardLabel by remember { mutableStateOf(existing?.rewardLabel ?: "") }
+    var companyId by remember { mutableStateOf(existing?.rewardCompany?.id?.ifBlank { null }) }
     var publish by remember { mutableStateOf(true) }
     var companies by remember { mutableStateOf<List<Company>>(emptyList()) }
     var teams by remember { mutableStateOf<List<FootballTeamOption>>(emptyList()) }
@@ -413,8 +430,8 @@ private fun CreateContestPage(onBack: () -> Unit, onCreated: (String) -> Unit) {
             homeName.trim().length < 2 || awayName.trim().length < 2 -> { error = tr("Enter both team names."); return }
             homeName.trim().equals(awayName.trim(), ignoreCase = true) -> { error = tr("The two teams must be different."); return }
             league.isBlank() -> { error = tr("Enter the league or competition."); return }
-            k == null -> { error = tr("Choose the kickoff date and time."); return }
-            k.time <= System.currentTimeMillis() + 5 * 60_000 -> { error = tr("Kickoff must be in the future."); return }
+            !editing && k == null -> { error = tr("Choose the kickoff date and time."); return }
+            !editing && k!!.time <= System.currentTimeMillis() + 5 * 60_000 -> { error = tr("Kickoff must be in the future."); return }
             rewardLabel.isBlank() -> { error = tr("Enter the reward, e.g. 1 GB Internet."); return }
             companyId == null -> { error = tr("Choose the reward provider."); return }
         }
@@ -431,6 +448,24 @@ private fun CreateContestPage(onBack: () -> Unit, onCreated: (String) -> Unit) {
                 val homeLogoId = upload(homeLogo, "team_logo")
                 val awayLogoId = upload(awayLogo, "team_logo")
                 val imageId = upload(contestImage, "contest_image")
+                if (existing != null) {
+                    fun team(name: String, logoId: String?) = com.google.gson.JsonObject().apply {
+                        addProperty("name", name)
+                        if (logoId != null) addProperty("logoImageId", logoId)
+                    }
+                    val body = com.google.gson.JsonObject().apply {
+                        if (homeName.trim() != existing.homeTeam.name || homeLogoId != null) add("homeTeam", team(homeName.trim(), homeLogoId))
+                        if (awayName.trim() != existing.awayTeam.name || awayLogoId != null) add("awayTeam", team(awayName.trim(), awayLogoId))
+                        if (league.trim() != existing.league) addProperty("league", league.trim())
+                        if (rewardLabel.trim() != existing.rewardLabel) addProperty("rewardLabel", rewardLabel.trim())
+                        if (companyId != existing.rewardCompany.id) addProperty("rewardCompanyId", companyId)
+                        if (imageId != null) addProperty("imageId", imageId) else if (removeImage) addProperty("removeImage", true)
+                    }
+                    val r = ApiClient.service.updateFootballContest(existing.id, body)
+                    if (r.isSuccessful) onCreated(existing.id) else error = footballError(r, tr("Could not save the changes."))
+                    saving = false
+                    return@launch
+                }
                 val close = Date(k!!.time - deadlineMinutes * 60_000L)
                 val r = ApiClient.service.createFootballContest(
                     FootballContestCreateRequest(
@@ -456,13 +491,23 @@ private fun CreateContestPage(onBack: () -> Unit, onCreated: (String) -> Unit) {
         }
     }
 
-    Scaffold(topBar = { CiyaarahaTopBar("New Contest", onBack = onBack) }) { padding ->
+    Scaffold(topBar = { CiyaarahaTopBar(if (editing) "Edit Contest" else "New Contest", onBack = onBack) }) { padding ->
         Column(Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
             TeamField("Home team", homeName, { homeName = it }, teams, homeLogo, pickHomeLogo, onRemoveLogo = { homeLogo = null })
             Spacer(Modifier.height(12.dp))
             TeamField("Away team", awayName, { awayName = it }, teams, awayLogo, pickAwayLogo, onRemoveLogo = { awayLogo = null })
             Spacer(Modifier.height(12.dp))
             OutlinedTextField(league, { league = it }, label = { Text("League / competition") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            if (editing) {
+                Spacer(Modifier.height(12.dp))
+                LabeledValue("Kickoff", somaliaTime(existing?.kickoffAt))
+                Text("To change the kickoff time, use Postpone on the contest page.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if ((existing?.participants ?: 0) > 0) {
+                    Spacer(Modifier.height(6.dp))
+                    Text("Customers have already predicted this match. Only fix mistakes; every change is saved in the History.", style = MaterialTheme.typography.bodySmall, color = Color(0xFFD97706))
+                }
+            }
+            if (!editing) {
             Spacer(Modifier.height(12.dp))
             OutlinedButton(onClick = { showKickoffPicker = true }, modifier = Modifier.fillMaxWidth()) {
                 Text(kickoff?.let { tr("Kickoff") + ": " + SimpleDateFormat("d MMM yyyy, HH:mm", Locale.US).apply { timeZone = SOMALIA_TZ }.format(it) } ?: tr("Choose kickoff (Somalia time)"))
@@ -473,6 +518,7 @@ private fun CreateContestPage(onBack: () -> Unit, onCreated: (String) -> Unit) {
                 DEADLINE_OPTIONS.forEach { (minutes, label) ->
                     FilterChip(selected = deadlineMinutes == minutes, onClick = { deadlineMinutes = minutes }, label = { Text(label) })
                 }
+            }
             }
             Spacer(Modifier.height(12.dp))
             OutlinedTextField(rewardLabel, { rewardLabel = it }, label = { Text("Reward (e.g. 1 GB Internet)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -485,11 +531,19 @@ private fun CreateContestPage(onBack: () -> Unit, onCreated: (String) -> Unit) {
             Text("Match image (optional)", style = MaterialTheme.typography.labelLarge)
             Spacer(Modifier.height(6.dp))
             ImagePickRow(contestImage, pickContestImage, onRemove = { contestImage = null }, height = 140)
-            Spacer(Modifier.height(12.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(checked = publish, onCheckedChange = { publish = it })
-                Spacer(Modifier.width(10.dp))
-                Text(if (publish) "Publish now (customers can predict)" else "Save as draft", style = MaterialTheme.typography.bodyMedium)
+            if (editing && existing?.imageUrl != null && contestImage == null) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = removeImage, onCheckedChange = { removeImage = it })
+                    Text("Remove the current match image", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+            if (!editing) {
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = publish, onCheckedChange = { publish = it })
+                    Spacer(Modifier.width(10.dp))
+                    Text(if (publish) "Publish now (customers can predict)" else "Save as draft", style = MaterialTheme.typography.bodyMedium)
+                }
             }
             if (error != null) {
                 Spacer(Modifier.height(10.dp))
@@ -497,7 +551,7 @@ private fun CreateContestPage(onBack: () -> Unit, onCreated: (String) -> Unit) {
             }
             Spacer(Modifier.height(16.dp))
             Button(onClick = ::save, enabled = !saving, modifier = Modifier.fillMaxWidth().height(50.dp)) {
-                Text(if (saving) "Saving..." else "Create Contest")
+                Text(if (saving) "Saving..." else if (editing) "Save Changes" else "Create Contest")
             }
             Spacer(Modifier.height(24.dp))
         }
@@ -611,7 +665,7 @@ private fun DateTimePickerDialog(initial: Date?, onDismiss: () -> Unit, onPicked
 // ---------------- detail ----------------
 
 @Composable
-private fun ContestDetailPage(id: String, onBack: () -> Unit) {
+private fun ContestDetailPage(id: String, onBack: () -> Unit, onEdit: (FootballContest) -> Unit, onDeleted: () -> Unit) {
     var contest by remember { mutableStateOf<FootballContest?>(null) }
     var loadError by remember { mutableStateOf<String?>(null) }
     var reloadKey by remember { mutableStateOf(0) }
@@ -662,6 +716,7 @@ private fun ContestDetailPage(id: String, onBack: () -> Unit) {
             else -> {
                 val kickoffPassed = (parseApiDate(c.kickoffAt)?.time ?: Long.MAX_VALUE) <= System.currentTimeMillis()
                 val canEnterResult = kickoffPassed && c.status in listOf("open", "closed", "awaiting_result", "verification", "no_winner")
+                val canEdit = c.officialScore == null && c.status in listOf("draft", "open", "closed", "awaiting_result")
                 Column(Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
                     ContestHeaderCard(c)
                     if (actionInfo != null) { Spacer(Modifier.height(8.dp)); Text(actionInfo!!, color = Color(0xFF16A34A), fontWeight = FontWeight.SemiBold) }
@@ -671,15 +726,18 @@ private fun ContestDetailPage(id: String, onBack: () -> Unit) {
                     Spacer(Modifier.height(12.dp))
                     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (c.status == "draft") Button(onClick = { act("Published.") { ApiClient.service.publishFootballContest(c.id) } }, enabled = !busy) { Text("Publish") }
+                        if (canEdit) OutlinedButton(onClick = { onEdit(c) }, enabled = !busy) { Text("Edit") }
                         if (canEnterResult) Button(onClick = { dialog = "result" }, enabled = !busy) { Text(if (c.officialScore == null) "Enter Result" else "Correct Result") }
                         if (c.status in listOf("draft", "open", "closed", "awaiting_result") && c.officialScore == null) OutlinedButton(onClick = { dialog = "postpone" }, enabled = !busy) { Text("Postpone") }
                         if (c.winner == null && c.status !in listOf("completed", "cancelled")) OutlinedButton(onClick = { dialog = "cancel" }, enabled = !busy) { Text("Cancel Match") }
                         if (c.status !in listOf("draft", "cancelled", "disputed")) OutlinedButton(onClick = { dialog = "dispute" }, enabled = !busy) { Text("Report Problem") }
+                        // Delete only while nobody has predicted (the server checks too).
+                        if (c.participants == 0) OutlinedButton(onClick = { dialog = "delete" }, enabled = !busy) { Text("Delete", color = MaterialTheme.colorScheme.error) }
                     }
 
                     if (c.officialScore != null) {
                         Spacer(Modifier.height(16.dp))
-                        ResultSection(c, busy, onConfirm = { dialog = "confirm" })
+                        ResultSection(c)
                     }
                     if (c.winner != null) {
                         Spacer(Modifier.height(16.dp))
@@ -690,7 +748,7 @@ private fun ContestDetailPage(id: String, onBack: () -> Unit) {
                         )
                     }
                     Spacer(Modifier.height(16.dp))
-                    PredictionSearchSection(c)
+                    PredictionSearchSection(c, onConfirmed = { actionInfo = tr("Winner confirmed. The customer has been notified."); reloadKey++ })
                     if (!c.events.isNullOrEmpty()) {
                         Spacer(Modifier.height(16.dp))
                         SectionTitle("History")
@@ -710,29 +768,33 @@ private fun ContestDetailPage(id: String, onBack: () -> Unit) {
                         onDismiss = { dialog = null },
                         onSave = { h, a -> act("Result saved.") { ApiClient.service.enterFootballResult(c.id, FootballGoalsRequest(h, a)) } },
                     )
-                    "confirm" -> c.candidate?.let { cand ->
-                        AlertDialog(
-                            onDismissRequest = { dialog = null },
-                            title = { Text("Confirm this winner?") },
-                            text = {
-                                Column {
-                                    Text("${cand.customerName} (${cand.phoneMasked})", fontWeight = FontWeight.Bold)
-                                    Text(tr("Prediction") + ": ${cand.home} - ${cand.away}")
-                                    Text(tr("Submitted") + ": ${somaliaTime(cand.submittedAt)}")
-                                    Spacer(Modifier.height(8.dp))
-                                    Text("The customer will be notified that they won. This can't be undone from the app.")
-                                }
-                            },
-                            confirmButton = { TextButton(onClick = { act("Winner confirmed. The customer has been notified.") { ApiClient.service.confirmFootballWinner(c.id, FootballConfirmWinnerRequest(cand.predictionId)) } }, enabled = !busy) { Text("Confirm Winner") } },
-                            dismissButton = { TextButton(onClick = { dialog = null }) { Text("Cancel") } },
-                        )
-                    }
                     "postpone" -> PostponeDialog(c, busy, onDismiss = { dialog = null }) { kickoff, closeAt, reason ->
                         act("Match postponed.") { ApiClient.service.postponeFootballContest(c.id, FootballPostponeRequest(isoUtc(kickoff), isoUtc(closeAt), reason)) }
                     }
                     "cancel" -> ReasonDialog("Cancel this match?", "Customers will see it as cancelled, with no winner.", "Cancel Match", busy, onDismiss = { dialog = null }) { reason ->
                         act("Match cancelled.") { ApiClient.service.cancelFootballContest(c.id, FootballReasonRequest(reason)) }
                     }
+                    "delete" -> AlertDialog(
+                        onDismissRequest = { if (!busy) dialog = null },
+                        title = { Text("Delete this contest?") },
+                        text = { Text("It disappears from the Agent App and the Customer App. Only a contest nobody has predicted can be deleted.") },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                busy = true
+                                actionError = null
+                                scope.launch {
+                                    try {
+                                        val r = ApiClient.service.deleteFootballContest(c.id)
+                                        if (r.isSuccessful) { dialog = null; onDeleted() } else { dialog = null; actionError = footballError(r, tr("Could not delete the contest.")) }
+                                    } catch (_: Exception) {
+                                        actionError = tr("That didn't work. Check your connection.")
+                                    }
+                                    busy = false
+                                }
+                            }, enabled = !busy) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+                        },
+                        dismissButton = { TextButton(onClick = { dialog = null }, enabled = !busy) { Text("Back") } },
+                    )
                     "dispute" -> ReasonDialog("Report a problem", "This pauses the contest and its reward until an Admin resolves it.", "Report", busy, onDismiss = { dialog = null }) { reason ->
                         act("Reported. An Admin will review it.") { ApiClient.service.disputeFootballContest(c.id, FootballReasonRequest(reason)) }
                     }
@@ -764,6 +826,8 @@ private fun eventLabel(action: String): String = when (action) {
     "reward_failed" -> "Reward failed"
     "dispute_opened" -> "Problem reported"
     "dispute_resolved" -> "Dispute resolved"
+    "edited" -> "Edited"
+    "deleted" -> "Deleted"
     else -> action.replace('_', ' ').replaceFirstChar { it.uppercase() }
 }
 
@@ -810,33 +874,15 @@ private fun ContestHeaderCard(c: FootballContest) {
 }
 
 @Composable
-private fun ResultSection(c: FootballContest, busy: Boolean, onConfirm: () -> Unit) {
+private fun ResultSection(c: FootballContest) {
     SectionTitle("Result & Winner Verification")
     Card(shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp)) {
             LabeledValue("Official result", "${c.officialScore!!.home} - ${c.officialScore.away}")
             LabeledValue("Exact-score predictions", "${c.exactScoreCount ?: 0}")
-            Spacer(Modifier.height(8.dp))
-            val cand = c.candidate
-            when {
-                c.winner != null -> Text("Winner confirmed — see below.", style = MaterialTheme.typography.bodySmall)
-                cand == null -> Text("No customer predicted this exact score. The contest has no winner.", style = MaterialTheme.typography.bodyMedium)
-                else -> {
-                    Text("Earliest correct prediction (server time)", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(4.dp))
-                    LabeledValue("Customer", cand.customerName.ifBlank { "—" })
-                    LabeledValue("Phone", cand.phoneMasked)
-                    LabeledValue("Prediction", "${cand.home} - ${cand.away}")
-                    LabeledValue("Submitted", somaliaTime(cand.submittedAt))
-                    if (c.status == "verification") {
-                        Spacer(Modifier.height(10.dp))
-                        Button(onClick = onConfirm, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
-                            Icon(Icons.Filled.EmojiEvents, contentDescription = null)
-                            Spacer(Modifier.width(8.dp))
-                            Text("Confirm Winner")
-                        }
-                    }
-                }
+            if (c.candidate == null && c.winner == null) {
+                Spacer(Modifier.height(8.dp))
+                Text("No customer predicted this exact score. The contest has no winner.", style = MaterialTheme.typography.bodyMedium)
             }
         }
     }
@@ -880,7 +926,7 @@ private fun WinnerSection(c: FootballContest, busy: Boolean, onPending: () -> Un
 
 /** Raadi Saadaasha Saxda ah: all predictions, or just one score, by server time. */
 @Composable
-private fun PredictionSearchSection(c: FootballContest) {
+private fun PredictionSearchSection(c: FootballContest, onConfirmed: () -> Unit) {
     var home by remember(c.id, c.officialScore) { mutableStateOf(c.officialScore?.home?.toString() ?: "") }
     var away by remember(c.id, c.officialScore) { mutableStateOf(c.officialScore?.away?.toString() ?: "") }
     var page by remember { mutableStateOf<FootballPredictionsPage?>(null) }
@@ -930,6 +976,15 @@ private fun PredictionSearchSection(c: FootballContest) {
     if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
     Spacer(Modifier.height(8.dp))
     val pg = page
+    if (pg != null) {
+        val wc = pg.winningCustomer
+        when {
+            wc != null -> WinningCustomerCard(c.id, wc, onConfirmed)
+            pg.hasResult -> NoticeCard("No correct predictions found yet.")
+            else -> NoticeCard("Enter the official result first. The server then finds the earliest correct prediction.")
+        }
+        Spacer(Modifier.height(10.dp))
+    }
     when {
         loading && pg == null -> CircularProgressIndicator(Modifier.size(24.dp))
         pg != null -> {
@@ -965,6 +1020,106 @@ private fun PredictionSearchSection(c: FootballContest) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun NoticeCard(message: String) {
+    Card(shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+        Text(message, modifier = Modifier.padding(14.dp), style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
+    }
+}
+
+/**
+ * 🏆 Winning Customer: the server's earliest exact prediction (or the
+ * confirmed winner). Confirm Winner sends exactly this prediction id; the
+ * server re-checks eligibility, confirms once, logs it and notifies the
+ * customer. There is no way to pick a different customer here.
+ */
+@Composable
+private fun WinningCustomerCard(contestId: String, wc: FootballWinningCustomer, onConfirmed: () -> Unit) {
+    val green = Color(0xFF16A34A)
+    var asking by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    fun confirm() {
+        busy = true
+        error = null
+        scope.launch {
+            try {
+                val r = ApiClient.service.confirmFootballWinner(contestId, FootballConfirmWinnerRequest(wc.predictionId))
+                if (r.isSuccessful) { asking = false; onConfirmed() } else { asking = false; error = footballError(r, tr("Could not confirm the winner. Try again.")) }
+            } catch (_: Exception) {
+                asking = false
+                error = tr("Could not confirm the winner. Check your connection.")
+            }
+            busy = false
+        }
+    }
+
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = green.copy(alpha = 0.10f)),
+        border = androidx.compose.foundation.BorderStroke(2.dp, green),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.EmojiEvents, contentDescription = null, tint = Color(0xFFF5B301), modifier = Modifier.size(30.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("🏆 Winning Customer", fontWeight = FontWeight.Bold, fontSize = 17.sp, color = green, modifier = Modifier.weight(1f))
+                if (wc.confirmed) {
+                    Box(Modifier.clip(RoundedCornerShape(20.dp)).background(green).padding(horizontal = 10.dp, vertical = 4.dp)) {
+                        Text("Confirmed", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(wc.customerName.ifBlank { "—" }, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            Text(wc.phoneMasked, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(8.dp))
+            LabeledValue("Correct prediction", "${wc.home} – ${wc.away}")
+            LabeledValue("Submitted", somaliaTime(wc.submittedAt))
+            LabeledValue("Reward", wc.rewardLabel, green)
+            LabeledValue("Provider", wc.provider)
+            if (wc.confirmed && wc.winnerStatus != null) LabeledValue("Status", tr(winnerStatusLabel(wc.winnerStatus)))
+            if (error != null) {
+                Spacer(Modifier.height(6.dp))
+                Text(error!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+            if (wc.canConfirm) {
+                Spacer(Modifier.height(10.dp))
+                Button(
+                    onClick = { asking = true },
+                    enabled = !busy,
+                    colors = ButtonDefaults.buttonColors(containerColor = green, contentColor = Color.White),
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                ) {
+                    Icon(Icons.Filled.CheckCircle, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Confirm Winner", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+
+    if (asking) {
+        AlertDialog(
+            onDismissRequest = { if (!busy) asking = false },
+            title = { Text("Confirm this winner?") },
+            text = {
+                Column {
+                    Text(wc.customerName.ifBlank { "—" }, fontWeight = FontWeight.Bold)
+                    Text(tr("Correct prediction") + ": ${wc.home} – ${wc.away}")
+                    Spacer(Modifier.height(8.dp))
+                    Text("The customer will be notified that they won. This can't be undone from the app.")
+                }
+            },
+            confirmButton = { TextButton(onClick = ::confirm, enabled = !busy) { Text(if (busy) "Confirming..." else "Confirm Winner") } },
+            dismissButton = { TextButton(onClick = { asking = false }, enabled = !busy) { Text("Cancel") } },
+        )
     }
 }
 

@@ -119,12 +119,31 @@ data class FootballPredictionRow(
     val isWinner: Boolean = false,
 )
 
+/** The Winning Customer card: the server's candidate or the confirmed winner. */
+data class FootballWinningCustomer(
+    val predictionId: String,
+    val customerName: String = "",
+    val phoneMasked: String = "",
+    val home: Int = 0,
+    val away: Int = 0,
+    val submittedAt: String? = null,
+    val rewardLabel: String = "",
+    val provider: String = "",
+    val confirmed: Boolean = false,
+    val winnerStatus: String? = null,
+    // True only while the server would accept Confirm Winner for this prediction.
+    val canConfirm: Boolean = false,
+)
+
 data class FootballPredictionsPage(
     val total: Int = 0,
     val page: Int = 0,
     val pageSize: Int = 20,
     val officialScore: FootballScore? = null,
     val candidatePredictionId: String? = null,
+    val hasResult: Boolean = false,
+    val contestStatus: String? = null,
+    val winningCustomer: FootballWinningCustomer? = null,
     val items: List<FootballPredictionRow> = emptyList(),
 )
 
