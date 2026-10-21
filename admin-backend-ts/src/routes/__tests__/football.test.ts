@@ -186,7 +186,14 @@ test("full contest: predictions, deadline, earliest exact score wins, agent conf
   assert.equal(s.body.items[0].matchesOfficial, true);
   assert.equal(s.body.items[0].phoneMasked, "61****456");
   assert.ok(!JSON.stringify(s.body).includes("610123456"), "full phone numbers are not in search results");
+  // The Winning Customer card: the server's candidate, masked phone, reward.
+  const wc = s.body.winningCustomer;
+  assert.equal(wc.predictionId, ahmedPred.id);
+  assert.equal(wc.customerName, "Ahmed Ali");
+  assert.equal(wc.phoneMasked, "61****456");
+  assert.deepEqual([wc.home, wc.away, wc.rewardLabel, wc.provider, wc.confirmed, wc.canConfirm], [2, 3, "1 GB Internet", "Hormuud", false, true]);
   const all = await call("GET", `/agent/football/contests/${id}/predictions`, agentTok);
+  assert.equal(all.body.winningCustomer.predictionId, ahmedPred.id, "the same card whatever score is searched");
   assert.equal(all.body.total, 3);
   assert.equal(all.body.items[2].matchesOfficial, false);
   assert.equal((await call("GET", `/agent/football/contests/${id}/predictions?home=2`, agentTok)).status, 400);
@@ -203,6 +210,9 @@ test("full contest: predictions, deadline, earliest exact score wins, agent conf
   assert.equal(ok.body.status, "completed");
   const again = await call("POST", `/agent/football/contests/${id}/confirm-winner`, agentTok, { predictionId: ahmedPred.id });
   assert.equal(again.body.alreadyConfirmed, true);
+  const after = (await call("GET", `/agent/football/contests/${id}/predictions?home=2&away=3`, agentTok)).body.winningCustomer;
+  assert.deepEqual([after.confirmed, after.canConfirm], [true, false], "confirmed once; no second Confirm button");
+  assert.equal((await queryOne<any>(`SELECT COUNT(*) AS n FROM football_contest_events WHERE contest_id=$1 AND action='winner_confirmed'`, [id])).n, "1");
   await runFootballLifecycle();
   await runFootballLifecycle(); // a second pass sends nothing new
   const notes = await query<any>(`SELECT customer_id, title, body, data FROM notifications WHERE type='football_contest' AND data->>'contestId'=$1`, [id]);
@@ -294,6 +304,9 @@ test("no exact score means no winner; a result can be corrected before confirmat
   await kickoffPassed(c.id);
   const r = await call("POST", `/agent/football/contests/${c.id}/result`, agentTok, { homeGoals: 3, awayGoals: 3 });
   assert.equal(r.body.status, "no_winner");
+  const nw = (await call("GET", `/agent/football/contests/${c.id}/predictions?home=3&away=3`, agentTok)).body;
+  assert.equal(nw.winningCustomer, null, "no correct prediction: no card");
+  assert.equal(nw.hasResult, true);
   assert.equal(r.body.candidatePredictionId, null, "nobody with a wrong score is picked");
   assert.equal((await call("GET", `/football/contests/${c.id}`, ahmedTok)).body.myResult, "lost");
   // The score was mistyped: correct it -> Sahra (0-0) becomes the candidate.

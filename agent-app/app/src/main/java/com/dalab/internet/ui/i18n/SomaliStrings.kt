@@ -7,6 +7,17 @@ package com.dalab.internet.ui.i18n
  */
 internal val SomaliStrings: Map<String, String> = hashMapOf(
     // Ciyaaraha (CiyaarahaScreens.kt)
+    "🏆 Winning Customer" to "🏆 Macmiilka Guuleystay",
+    "Confirmed" to "La xaqiijiyey",
+    "Correct prediction" to "Saadaasha saxda ah",
+    "Confirming..." to "Waa la xaqiijinayaa...",
+    "No correct predictions found yet." to "Weli lama helin saadaal sax ah.",
+    "Enter the official result first. The server then finds the earliest correct prediction." to "Marka hore geli natiijada rasmiga ah. Server-ka ayaa markaas helaya saadaasha saxda ah ee ugu horreysay.",
+    "Could not confirm the winner. Try again." to "Guuleystaha lama xaqiijin karin. Mar kale isku day.",
+    "Could not confirm the winner. Check your connection." to "Guuleystaha lama xaqiijin karin. Hubi internet-kaaga.",
+    "Only the earliest correct prediction can be confirmed. Refresh and check again." to "Kaliya saadaasha saxda ah ee ugu horreysay ayaa la xaqiijin karaa. Cusboonaysii oo mar kale hubi.",
+    "Enter the official result first; there must be a correct prediction to confirm." to "Marka hore geli natiijada rasmiga ah; waa inay jirtaa saadaal sax ah oo la xaqiijiyo.",
+    "A different winner is already confirmed for this contest." to "Guuleyste kale ayaa horey loogu xaqiijiyey tartankan.",
     "Edit Contest" to "Wax ka beddel Tartanka",
     "To change the kickoff time, use Postpone on the contest page." to "Si aad u beddesho waqtiga bilowga, isticmaal Dib u dhig bogga tartanka.",
     "Customers have already predicted this match. Only fix mistakes; every change is saved in the History." to "Macaamiil ayaa horey u saadaaliyay ciyaartan. Kaliya sax khaladaadka; isbeddel kasta waxaa lagu keydiyaa Taariikhda.",

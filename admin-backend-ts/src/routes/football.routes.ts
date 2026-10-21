@@ -577,7 +577,11 @@ footballRouter.post("/agent/football/contests/:id/result", ...agentGate, async (
  */
 footballRouter.get("/agent/football/contests/:id/predictions", ...agentGate, async (req, res) => {
   if (!UUID_RE.test(req.params.id)) return sendJson(res, 404, { error: "Contest not found" });
-  const c = await queryOne<any>(`SELECT id, status, official_home_goals, official_away_goals, candidate_prediction_id FROM football_contests WHERE id=$1`, [req.params.id]);
+  const c = await queryOne<any>(
+    `SELECT fc.id, fc.status, fc.official_home_goals, fc.official_away_goals, fc.candidate_prediction_id, fc.reward_label, co.name AS reward_company_name
+       FROM football_contests fc JOIN companies co ON co.id = fc.reward_company_id WHERE fc.id=$1 AND fc.deleted_at IS NULL`,
+    [req.params.id]
+  );
   if (!c) return sendJson(res, 404, { error: "Contest not found" });
   const home = req.query.home !== undefined ? parseGoals(req.query.home) : null;
   const away = req.query.away !== undefined ? parseGoals(req.query.away) : null;
@@ -600,6 +604,31 @@ footballRouter.get("/agent/football/contests/:id/predictions", ...agentGate, asy
   );
   const winner = await queryOne<any>(`SELECT prediction_id, status FROM football_winners WHERE contest_id=$1 AND status <> 'revoked'`, [c.id]);
   const hasResult = c.official_home_goals != null;
+  // The Winning Customer card: the confirmed winner, or else the server's
+  // candidate (the earliest exact prediction, chosen when the result was
+  // entered). The app only shows it; it never picks one itself.
+  const winningId = winner?.prediction_id ?? (hasResult ? c.candidate_prediction_id : null);
+  const wp = winningId
+    ? await queryOne<any>(
+        `SELECT p.id, p.home_goals, p.away_goals, p.created_at, cu.name, cu.phone FROM football_predictions p JOIN customers cu ON cu.id=p.customer_id WHERE p.id=$1`,
+        [winningId]
+      )
+    : null;
+  const winningCustomer = wp
+    ? {
+        predictionId: wp.id,
+        customerName: wp.name ?? "",
+        phoneMasked: maskPhone(wp.phone),
+        home: wp.home_goals,
+        away: wp.away_goals,
+        submittedAt: wp.created_at,
+        rewardLabel: c.reward_label,
+        provider: c.reward_company_name,
+        confirmed: Boolean(winner),
+        winnerStatus: winner?.status ?? null,
+        canConfirm: !winner && c.status === "verification" && wp.id === c.candidate_prediction_id,
+      }
+    : null;
   sendJson(res, 200, {
     total,
     page,
@@ -607,6 +636,9 @@ footballRouter.get("/agent/football/contests/:id/predictions", ...agentGate, asy
     officialScore: hasResult ? { home: c.official_home_goals, away: c.official_away_goals } : null,
     candidatePredictionId: c.candidate_prediction_id,
     winner: winner ? { predictionId: winner.prediction_id, status: winner.status } : null,
+    hasResult,
+    contestStatus: c.status,
+    winningCustomer,
     items: rows.map((r, i) => ({
       predictionId: r.id,
       position: page * pageSize + i + 1,

@@ -25,6 +25,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.Image as ImageIcon
 import androidx.compose.material.icons.filled.PersonSearch
@@ -60,6 +61,7 @@ import com.dalab.internet.data.FootballReasonRequest
 import com.dalab.internet.data.FootballRewardRequest
 import com.dalab.internet.data.FootballTeamInput
 import com.dalab.internet.data.FootballTeamOption
+import com.dalab.internet.data.FootballWinningCustomer
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.util.parseApiDate
 import com.google.gson.JsonParser
@@ -735,7 +737,7 @@ private fun ContestDetailPage(id: String, onBack: () -> Unit, onEdit: (FootballC
 
                     if (c.officialScore != null) {
                         Spacer(Modifier.height(16.dp))
-                        ResultSection(c, busy, onConfirm = { dialog = "confirm" })
+                        ResultSection(c)
                     }
                     if (c.winner != null) {
                         Spacer(Modifier.height(16.dp))
@@ -746,7 +748,7 @@ private fun ContestDetailPage(id: String, onBack: () -> Unit, onEdit: (FootballC
                         )
                     }
                     Spacer(Modifier.height(16.dp))
-                    PredictionSearchSection(c)
+                    PredictionSearchSection(c, onConfirmed = { actionInfo = tr("Winner confirmed. The customer has been notified."); reloadKey++ })
                     if (!c.events.isNullOrEmpty()) {
                         Spacer(Modifier.height(16.dp))
                         SectionTitle("History")
@@ -766,23 +768,6 @@ private fun ContestDetailPage(id: String, onBack: () -> Unit, onEdit: (FootballC
                         onDismiss = { dialog = null },
                         onSave = { h, a -> act("Result saved.") { ApiClient.service.enterFootballResult(c.id, FootballGoalsRequest(h, a)) } },
                     )
-                    "confirm" -> c.candidate?.let { cand ->
-                        AlertDialog(
-                            onDismissRequest = { dialog = null },
-                            title = { Text("Confirm this winner?") },
-                            text = {
-                                Column {
-                                    Text("${cand.customerName} (${cand.phoneMasked})", fontWeight = FontWeight.Bold)
-                                    Text(tr("Prediction") + ": ${cand.home} - ${cand.away}")
-                                    Text(tr("Submitted") + ": ${somaliaTime(cand.submittedAt)}")
-                                    Spacer(Modifier.height(8.dp))
-                                    Text("The customer will be notified that they won. This can't be undone from the app.")
-                                }
-                            },
-                            confirmButton = { TextButton(onClick = { act("Winner confirmed. The customer has been notified.") { ApiClient.service.confirmFootballWinner(c.id, FootballConfirmWinnerRequest(cand.predictionId)) } }, enabled = !busy) { Text("Confirm Winner") } },
-                            dismissButton = { TextButton(onClick = { dialog = null }) { Text("Cancel") } },
-                        )
-                    }
                     "postpone" -> PostponeDialog(c, busy, onDismiss = { dialog = null }) { kickoff, closeAt, reason ->
                         act("Match postponed.") { ApiClient.service.postponeFootballContest(c.id, FootballPostponeRequest(isoUtc(kickoff), isoUtc(closeAt), reason)) }
                     }
@@ -889,33 +874,15 @@ private fun ContestHeaderCard(c: FootballContest) {
 }
 
 @Composable
-private fun ResultSection(c: FootballContest, busy: Boolean, onConfirm: () -> Unit) {
+private fun ResultSection(c: FootballContest) {
     SectionTitle("Result & Winner Verification")
     Card(shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp)) {
             LabeledValue("Official result", "${c.officialScore!!.home} - ${c.officialScore.away}")
             LabeledValue("Exact-score predictions", "${c.exactScoreCount ?: 0}")
-            Spacer(Modifier.height(8.dp))
-            val cand = c.candidate
-            when {
-                c.winner != null -> Text("Winner confirmed — see below.", style = MaterialTheme.typography.bodySmall)
-                cand == null -> Text("No customer predicted this exact score. The contest has no winner.", style = MaterialTheme.typography.bodyMedium)
-                else -> {
-                    Text("Earliest correct prediction (server time)", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(4.dp))
-                    LabeledValue("Customer", cand.customerName.ifBlank { "—" })
-                    LabeledValue("Phone", cand.phoneMasked)
-                    LabeledValue("Prediction", "${cand.home} - ${cand.away}")
-                    LabeledValue("Submitted", somaliaTime(cand.submittedAt))
-                    if (c.status == "verification") {
-                        Spacer(Modifier.height(10.dp))
-                        Button(onClick = onConfirm, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
-                            Icon(Icons.Filled.EmojiEvents, contentDescription = null)
-                            Spacer(Modifier.width(8.dp))
-                            Text("Confirm Winner")
-                        }
-                    }
-                }
+            if (c.candidate == null && c.winner == null) {
+                Spacer(Modifier.height(8.dp))
+                Text("No customer predicted this exact score. The contest has no winner.", style = MaterialTheme.typography.bodyMedium)
             }
         }
     }
@@ -959,7 +926,7 @@ private fun WinnerSection(c: FootballContest, busy: Boolean, onPending: () -> Un
 
 /** Raadi Saadaasha Saxda ah: all predictions, or just one score, by server time. */
 @Composable
-private fun PredictionSearchSection(c: FootballContest) {
+private fun PredictionSearchSection(c: FootballContest, onConfirmed: () -> Unit) {
     var home by remember(c.id, c.officialScore) { mutableStateOf(c.officialScore?.home?.toString() ?: "") }
     var away by remember(c.id, c.officialScore) { mutableStateOf(c.officialScore?.away?.toString() ?: "") }
     var page by remember { mutableStateOf<FootballPredictionsPage?>(null) }
@@ -1009,6 +976,15 @@ private fun PredictionSearchSection(c: FootballContest) {
     if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
     Spacer(Modifier.height(8.dp))
     val pg = page
+    if (pg != null) {
+        val wc = pg.winningCustomer
+        when {
+            wc != null -> WinningCustomerCard(c.id, wc, onConfirmed)
+            pg.hasResult -> NoticeCard("No correct predictions found yet.")
+            else -> NoticeCard("Enter the official result first. The server then finds the earliest correct prediction.")
+        }
+        Spacer(Modifier.height(10.dp))
+    }
     when {
         loading && pg == null -> CircularProgressIndicator(Modifier.size(24.dp))
         pg != null -> {
@@ -1044,6 +1020,106 @@ private fun PredictionSearchSection(c: FootballContest) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun NoticeCard(message: String) {
+    Card(shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+        Text(message, modifier = Modifier.padding(14.dp), style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
+    }
+}
+
+/**
+ * 🏆 Winning Customer: the server's earliest exact prediction (or the
+ * confirmed winner). Confirm Winner sends exactly this prediction id; the
+ * server re-checks eligibility, confirms once, logs it and notifies the
+ * customer. There is no way to pick a different customer here.
+ */
+@Composable
+private fun WinningCustomerCard(contestId: String, wc: FootballWinningCustomer, onConfirmed: () -> Unit) {
+    val green = Color(0xFF16A34A)
+    var asking by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    fun confirm() {
+        busy = true
+        error = null
+        scope.launch {
+            try {
+                val r = ApiClient.service.confirmFootballWinner(contestId, FootballConfirmWinnerRequest(wc.predictionId))
+                if (r.isSuccessful) { asking = false; onConfirmed() } else { asking = false; error = footballError(r, tr("Could not confirm the winner. Try again.")) }
+            } catch (_: Exception) {
+                asking = false
+                error = tr("Could not confirm the winner. Check your connection.")
+            }
+            busy = false
+        }
+    }
+
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = green.copy(alpha = 0.10f)),
+        border = androidx.compose.foundation.BorderStroke(2.dp, green),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.EmojiEvents, contentDescription = null, tint = Color(0xFFF5B301), modifier = Modifier.size(30.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("🏆 Winning Customer", fontWeight = FontWeight.Bold, fontSize = 17.sp, color = green, modifier = Modifier.weight(1f))
+                if (wc.confirmed) {
+                    Box(Modifier.clip(RoundedCornerShape(20.dp)).background(green).padding(horizontal = 10.dp, vertical = 4.dp)) {
+                        Text("Confirmed", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(wc.customerName.ifBlank { "—" }, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            Text(wc.phoneMasked, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(8.dp))
+            LabeledValue("Correct prediction", "${wc.home} – ${wc.away}")
+            LabeledValue("Submitted", somaliaTime(wc.submittedAt))
+            LabeledValue("Reward", wc.rewardLabel, green)
+            LabeledValue("Provider", wc.provider)
+            if (wc.confirmed && wc.winnerStatus != null) LabeledValue("Status", tr(winnerStatusLabel(wc.winnerStatus)))
+            if (error != null) {
+                Spacer(Modifier.height(6.dp))
+                Text(error!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+            if (wc.canConfirm) {
+                Spacer(Modifier.height(10.dp))
+                Button(
+                    onClick = { asking = true },
+                    enabled = !busy,
+                    colors = ButtonDefaults.buttonColors(containerColor = green, contentColor = Color.White),
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                ) {
+                    Icon(Icons.Filled.CheckCircle, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Confirm Winner", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+
+    if (asking) {
+        AlertDialog(
+            onDismissRequest = { if (!busy) asking = false },
+            title = { Text("Confirm this winner?") },
+            text = {
+                Column {
+                    Text(wc.customerName.ifBlank { "—" }, fontWeight = FontWeight.Bold)
+                    Text(tr("Correct prediction") + ": ${wc.home} – ${wc.away}")
+                    Spacer(Modifier.height(8.dp))
+                    Text("The customer will be notified that they won. This can't be undone from the app.")
+                }
+            },
+            confirmButton = { TextButton(onClick = ::confirm, enabled = !busy) { Text(if (busy) "Confirming..." else "Confirm Winner") } },
+            dismissButton = { TextButton(onClick = { asking = false }, enabled = !busy) { Text("Cancel") } },
+        )
     }
 }
 
