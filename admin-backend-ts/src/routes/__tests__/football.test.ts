@@ -18,7 +18,7 @@ import express from "express";
 import "express-async-errors";
 import { query, queryOne, pool } from "../../db/pool.js";
 import { signAccessToken } from "../../auth/crypto.js";
-import { footballRouter, runFootballLifecycle, runMediaCleanup, maskPhone, publicName } from "../football.routes.js";
+import { footballRouter, runFootballLifecycle, runMediaCleanup, maskPhone, publicName, deliverFootballNotifications, resultMessage } from "../football.routes.js";
 
 const app = express();
 app.use(express.json({ limit: "8mb" }));
@@ -133,6 +133,8 @@ test("creating a contest: validation, team reuse, image upload", async () => {
 test("full contest: predictions, deadline, earliest exact score wins, agent confirms, notification, reward", async () => {
   const c = await createContest();
   const id = c.id;
+  await query(`UPDATE customers SET app_language='en' WHERE id=$1`, [SAHRA]);
+  await query(`INSERT INTO customer_device_tokens (customer_id, fcm_token) VALUES ($1, 'test-token-yusuf') ON CONFLICT DO NOTHING`, [YUSUF]);
   // Ahmed 2-3 first, then Sahra 2-3, then Yusuf 1-1 (the spec's example).
   assert.equal((await call("POST", `/football/contests/${id}/predictions`, ahmedTok, { homeGoals: 2, awayGoals: 3 })).status, 201);
   assert.equal((await call("POST", `/football/contests/${id}/predictions`, sahraTok, { homeGoals: 2, awayGoals: 3 })).status, 201);
@@ -202,13 +204,45 @@ test("full contest: predictions, deadline, earliest exact score wins, agent conf
   const again = await call("POST", `/agent/football/contests/${id}/confirm-winner`, agentTok, { predictionId: ahmedPred.id });
   assert.equal(again.body.alreadyConfirmed, true);
   await runFootballLifecycle();
-  const notes = await query<any>(`SELECT customer_id, title, body, data FROM notifications WHERE type='football_contest'`);
-  assert.equal(notes.length, 1, "exactly one winner notification");
-  assert.equal(notes[0].customer_id, AHMED);
-  assert.equal(notes[0].title, "Hambalyo! Waad guuleysatay!");
-  assert.match(notes[0].body, /Real Madrid vs Barcelona \(2 - 3\)/);
-  assert.match(notes[0].body, /1 GB Internet/);
-  assert.equal(notes[0].data.contestId, id);
+  await runFootballLifecycle(); // a second pass sends nothing new
+  const notes = await query<any>(`SELECT customer_id, title, body, data FROM notifications WHERE type='football_contest' AND data->>'contestId'=$1`, [id]);
+  assert.equal(notes.length, 3, "one notification per participant, once");
+  const byCustomer = Object.fromEntries(notes.map((n) => [n.customer_id, n]));
+  // Ahmed (Somali, the default): the winner message with the real data.
+  const win = byCustomer[AHMED];
+  assert.equal(win.title, "🏆 Hambalyo! Waad guuleysatay!");
+  assert.match(win.body, /Waxaad ku guuleysatay tartanka saadaasha ciyaarta Real Madrid vs Barcelona\./);
+  assert.match(win.body, /⚽ Natiijada rasmiga ah: 2–3/);
+  assert.match(win.body, /🎯 Saadaashaadii saxda ahayd: 2–3/);
+  assert.match(win.body, /🎁 Abaalmarintaada: 1 GB Internet \(Hormuud\)/);
+  assert.deepEqual(win.data, { kind: "football_winner", contestId: id });
+  // Sahra chose English; Yusuf Somali: the other-participant message.
+  assert.equal(byCustomer[SAHRA].title, "🔔 The Contest Result Is Confirmed!");
+  assert.match(byCustomer[SAHRA].body, /🏆 Winner: Ahmed A\./);
+  assert.match(byCustomer[SAHRA].body, /⚽ Winning prediction: 2–3/);
+  assert.equal(byCustomer[YUSUF].title, "🔔 Natiijadii Tartanka Waa La Xaqiijiyey!");
+  assert.match(byCustomer[YUSUF].body, /🏆 Guuleystaha: Ahmed A\./);
+  assert.equal(byCustomer[YUSUF].data.kind, "football_result");
+  for (const n of notes) assert.ok(!/6101|610123456|252/.test(n.body), "no phone numbers in any message");
+  // Delivery status is recorded; Yusuf's phone push failed and is retried
+  // without writing his in-app notification again.
+  const q = await query<any>(`SELECT customer_id, kind, push_status, attempts, language FROM football_notifications WHERE contest_id=$1`, [id]);
+  assert.equal(q.length, 3);
+  assert.equal(q.find((r) => r.customer_id === AHMED).push_status, "no_device");
+  assert.equal(q.find((r) => r.customer_id === SAHRA).language, "en");
+  const y = q.find((r) => r.customer_id === YUSUF);
+  assert.equal(y.push_status, "failed");
+  await query(`UPDATE football_notifications SET next_attempt_at = now() WHERE contest_id=$1`, [id]);
+  await deliverFootballNotifications();
+  const y2 = await queryOne<any>(`SELECT attempts FROM football_notifications WHERE contest_id=$1 AND customer_id=$2`, [id, YUSUF]);
+  assert.equal(y2.attempts, y.attempts + 1, "the failed push was retried");
+  for (let i = 0; i < 8; i++) {
+    await query(`UPDATE football_notifications SET next_attempt_at = now() WHERE contest_id=$1`, [id]);
+    await deliverFootballNotifications();
+  }
+  assert.equal((await queryOne<any>(`SELECT attempts FROM football_notifications WHERE contest_id=$1 AND customer_id=$2`, [id, YUSUF])).attempts, 5, "retries stop at 5");
+  assert.equal(Number((await queryOne<any>(`SELECT COUNT(*) AS n FROM notifications WHERE customer_id=$1 AND data->>'contestId'=$2`, [YUSUF, id])).n), 1, "in-app notification written once");
+  assert.ok((await queryOne<any>(`SELECT notified_at FROM football_winners WHERE contest_id=$1`, [id])).notified_at);
 
   assert.equal((await call("GET", `/football/contests/${id}`, ahmedTok)).body.myResult, "won");
   const sahraView = await call("GET", `/football/contests/${id}`, sahraTok);
@@ -292,7 +326,8 @@ test("disputes pause rewards; an Admin corrects the result and the old winner is
   assert.equal(fix.body.candidatePredictionId, yusufPred.id);
   assert.equal((await call("POST", `/agent/football/contests/${c.id}/confirm-winner`, agentTok, { predictionId: yusufPred.id })).status, 200);
   await runFootballLifecycle();
-  assert.equal(Number((await queryOne<any>(`SELECT COUNT(*) AS n FROM notifications WHERE type='football_contest' AND customer_id=$1`, [YUSUF])).n), 1);
+  const yusufNotes = await query<any>(`SELECT title, data FROM notifications WHERE type='football_contest' AND customer_id=$1 AND data->>'contestId'=$2`, [YUSUF, c.id]);
+  assert.equal(yusufNotes.filter((n) => n.data.kind === "football_winner").length, 1, "the corrected winner is told once");
 
   // Once a reward is paid, the result can't be changed; uphold only.
   await call("POST", `/agent/football/contests/${c.id}/reward`, agentTok, { status: "paid", transactionRef: "MP1" });
@@ -421,4 +456,22 @@ test("editing fixes a typo before the result; deleting only works with no predic
   assert.equal(row.status, "cancelled");
   assert.ok(row.deleted_at);
   assert.ok(await queryOne(`SELECT 1 FROM football_contest_events WHERE contest_id=$1 AND action='deleted'`, [empty.id]), "audit trail kept");
+});
+
+test("result messages: Somali and English text from the real values", () => {
+  const v = { homeTeam: "Barcelona", awayTeam: "Real Madrid", officialHome: 0, officialAway: 2, winningHome: 0, winningAway: 2, reward: "1 Maalin Data Free ah (Hormuud)", winnerName: "Yaasiin M." };
+  const so = resultMessage("winner", null, v);
+  assert.equal(so.title, "🏆 Hambalyo! Waad guuleysatay!");
+  assert.equal(
+    so.body,
+    "Waxaad ku guuleysatay tartanka saadaasha ciyaarta Barcelona vs Real Madrid.\n\n⚽ Natiijada rasmiga ah: 0–2\n\n🎯 Saadaashaadii saxda ahayd: 0–2\n\n🎁 Abaalmarintaada: 1 Maalin Data Free ah (Hormuud)\n\nFur DALAB APP si aad u aragto faahfaahinta guushaada iyo abaalmarintaada."
+  );
+  const other = resultMessage("participant", "so", v);
+  assert.equal(other.title, "🔔 Natiijadii Tartanka Waa La Xaqiijiyey!");
+  assert.equal(
+    other.body,
+    "Tartanka saadaasha ciyaarta Barcelona vs Real Madrid waa la dhammeystiray.\n\n🏆 Guuleystaha: Yaasiin M.\n\n⚽ Saadaashii guuleysatay: 0–2\n\nWaad ku mahadsan tahay ka qaybgalka tartanka. Nasiib wacan tartamada soo socda!"
+  );
+  assert.equal(resultMessage("winner", "en", v).title, "🏆 Congratulations! You won!");
+  assert.match(resultMessage("participant", "en", v).body, /Winner: Yaasiin M\./);
 });
