@@ -18,6 +18,8 @@ import "express-async-errors";
 import { query, queryOne, pool } from "../../db/pool.js";
 import { signAccessToken } from "../../auth/crypto.js";
 import { deviceActivationRouter, agentDeviceActivationMiddleware } from "../deviceActivation.routes.js";
+import { footballRouter } from "../football.routes.js";
+import { readFileSync } from "node:fs";
 import { clearApprovedDeviceCache, generateActivationCode, hashActivationCode } from "../../utils/deviceActivation.js";
 
 delete process.env.DEVICE_ACTIVATION_REQUIRED;
@@ -39,6 +41,8 @@ app.use(deviceActivationRouter);
 app.get("/agent/ping", (_req, res) => {
   res.json({ ok: true });
 });
+// A real agent router too: Ciyaaraha (football predictions).
+app.use(footballRouter);
 let server: http.Server;
 let baseUrl: string;
 
@@ -56,6 +60,11 @@ function ping(token: string, installId?: string) {
   const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
   if (installId) headers["X-Agent-Install-Id"] = installId;
   return fetch(`${baseUrl}/agent/ping`, { headers });
+}
+function football(token: string, installId?: string) {
+  const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+  if (installId) headers["X-Agent-Install-Id"] = installId;
+  return fetch(`${baseUrl}/agent/football/me`, { headers });
 }
 function admin(path: string, token: string, body: unknown = {}) {
   return fetch(`${baseUrl}${path}`, {
@@ -133,7 +142,7 @@ test("a new device is pending: it gets a device number and a code, stable across
 });
 
 test("an unapproved device can't use any agent API (with or without an install id)", async () => {
-  for (const r of [await ping(agentToken, installA), await ping(agentToken)]) {
+  for (const r of [await ping(agentToken, installA), await ping(agentToken), await football(agentToken, installA), await football(agentToken)]) {
     assert.equal(r.status, 403);
     assert.equal(r.headers.get("x-device-activation"), "required");
     assert.equal((await json(r)).code, "DEVICE_NOT_ACTIVATED");
@@ -177,6 +186,8 @@ test("approve needs this device's own code; approval unlocks the app and is audi
 
   assert.equal((await json(await status(agentToken, installA))).status, "approved");
   assert.equal((await ping(agentToken, installA)).status, 200);
+  assert.equal((await football(agentToken, installA)).status, 200, "Ciyaaraha works on the approved device");
+  assert.equal((await football(agentToken, installB)).status, 403, "but not on another install");
   const log = await queryOne(`SELECT 1 FROM admin_activity_log WHERE admin_id=$1 AND action='device_activation.approved' AND entity_id=$2`, [
     SUPER_ADMIN,
     deviceId,
@@ -253,5 +264,14 @@ test("the feature can be switched off on the server (DEVICE_ACTIVATION_REQUIRED=
     assert.equal((await json(await status(agentToken, installB))).status, "approved");
   } finally {
     delete process.env.DEVICE_ACTIVATION_REQUIRED;
+  }
+});
+
+test("server.ts checks device activation before every agent router, Ciyaaraha included", () => {
+  const src = readFileSync(new URL("../../server.ts", import.meta.url).pathname, "utf8");
+  const gate = src.indexOf("app.use(agentDeviceActivationMiddleware)");
+  assert.ok(gate > 0);
+  for (const r of ["app.use(footballRouter)", "app.use(devicesRouter)", "app.use(nalaSocoRouter)"]) {
+    assert.ok(src.indexOf(r) > gate, `${r} is mounted after the device activation check`);
   }
 });
