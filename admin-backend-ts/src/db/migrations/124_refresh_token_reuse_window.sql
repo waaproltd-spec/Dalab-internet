@@ -1,0 +1,14 @@
+-- Refresh-token rotation with a short reuse window.
+--
+-- Every refresh revokes the token it was given and issues a new pair. If
+-- the response is lost on a weak network (the server already rotated, the
+-- app never received the new pair), or two tabs of the web app refresh at
+-- the same moment, the app presents the just-rotated token again and used
+-- to get a 401 -- logging the customer out of a perfectly valid session.
+--
+-- rotated_at marks a token revoked by rotation only. /auth/refresh accepts
+-- such a token once more within 60 seconds of rotation. Every other
+-- revocation (logout, password reset, device removal, account deletion,
+-- an inactive account) leaves rotated_at NULL, so it never qualifies.
+-- Additive only, safe to re-run.
+ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS rotated_at TIMESTAMPTZ;

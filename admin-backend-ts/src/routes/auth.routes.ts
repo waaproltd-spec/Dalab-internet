@@ -228,7 +228,7 @@ authRouter.post("/auth/customer/forgot-password/reset", rateLimit("customer-forg
   // Forces re-login everywhere, same as the admin password-reset flow —
   // the old password may be compromised, which is presumably why the
   // customer is here.
-  await query(`UPDATE refresh_tokens SET revoked=true WHERE subject_id=$1`, [customer.id]);
+  await query(`UPDATE refresh_tokens SET revoked=true, rotated_at=NULL WHERE subject_id=$1`, [customer.id]);
   sendJson(res, 200, { message: "Password reset successfully. Please log in with your new password." });
 });
 
@@ -425,7 +425,7 @@ authRouter.post("/auth/logout", async (req, res) => {
   const refreshToken = String(req.body.refreshToken ?? "");
   if (refreshToken) {
     const tokenHash = createHash("sha256").update(refreshToken).digest("hex");
-    await query(`UPDATE refresh_tokens SET revoked=true WHERE token_hash=$1`, [tokenHash]);
+    await query(`UPDATE refresh_tokens SET revoked=true, rotated_at=NULL WHERE token_hash=$1`, [tokenHash]);
   }
   sendJson(res, 200, { message: "Logged out" });
 });
@@ -523,7 +523,7 @@ authRouter.post("/admin/auth/reset-password", rateLimit("reset-password", 10, 15
 
   await query(`UPDATE admin_password_resets SET consumed=true WHERE id=$1`, [row.id]);
   await query(`UPDATE admin_users SET password_hash=$1 WHERE id=$2`, [await hashPassword(newPassword), row.admin_id]);
-  await query(`UPDATE refresh_tokens SET revoked=true WHERE subject_id=$1`, [row.admin_id]);
+  await query(`UPDATE refresh_tokens SET revoked=true, rotated_at=NULL WHERE subject_id=$1`, [row.admin_id]);
   sendJson(res, 200, { message: "Password reset successfully. Please log in with your new password." });
 });
 
@@ -565,10 +565,25 @@ authRouter.post("/auth/refresh", async (req, res) => {
   if (!payload || payload.type !== "refresh") return sendJson(res, 401, { error: "Invalid refresh token" });
 
   const tokenHash = createHash("sha256").update(refreshToken).digest("hex");
-  const row = await queryOne(
+  let row = await queryOne<any>(
     `SELECT * FROM refresh_tokens WHERE token_hash=$1 AND revoked=false AND expires_at > now()`,
     [tokenHash]
   );
+  if (!row) {
+    // Reuse window (migration 124): a token revoked by rotation in the last
+    // 60s is accepted once more -- the app never got the new pair (lost
+    // response, retry) or another tab rotated it a moment earlier. Claimed
+    // atomically (rotated_at cleared) so it can't be used a third time.
+    // Logout, password reset, device removal and every other revocation
+    // leave rotated_at NULL and never qualify; the account/device checks
+    // below still run.
+    row = await queryOne<any>(
+      `UPDATE refresh_tokens SET rotated_at=NULL
+        WHERE token_hash=$1 AND revoked=true AND rotated_at > now() - interval '60 seconds' AND expires_at > now()
+        RETURNING *`,
+      [tokenHash]
+    );
+  }
   if (!row) return sendJson(res, 401, { error: "Refresh token revoked or expired" });
 
   // A Reseller session must end the moment Admin disables the account —
@@ -579,7 +594,7 @@ authRouter.post("/auth/refresh", async (req, res) => {
   if (payload.role === "reseller") {
     const reseller = await queryOne<{ status: string }>(`SELECT status FROM resellers WHERE id=$1`, [payload.sub]);
     if (!reseller || reseller.status !== "active") {
-      await query(`UPDATE refresh_tokens SET revoked=true WHERE id=$1`, [row.id]);
+      await query(`UPDATE refresh_tokens SET revoked=true, rotated_at=NULL WHERE id=$1`, [row.id]);
       return sendJson(res, 401, { error: "This Reseller account is no longer active" });
     }
   }
@@ -595,7 +610,7 @@ authRouter.post("/auth/refresh", async (req, res) => {
   if (payload.role === "agent") {
     const agent = await queryOne<{ status: string }>(`SELECT status FROM agents WHERE id=$1`, [payload.sub]);
     if (!agent || agent.status !== "active") {
-      await query(`UPDATE refresh_tokens SET revoked=true WHERE id=$1`, [row.id]);
+      await query(`UPDATE refresh_tokens SET revoked=true, rotated_at=NULL WHERE id=$1`, [row.id]);
       return sendJson(res, 401, { error: "This Agent account is no longer active" });
     }
   }
@@ -613,12 +628,17 @@ authRouter.post("/auth/refresh", async (req, res) => {
       [payload.sub, row.device_id]
     );
     if (device?.revoked_at) {
-      await query(`UPDATE refresh_tokens SET revoked=true WHERE id=$1`, [row.id]);
+      await query(`UPDATE refresh_tokens SET revoked=true, rotated_at=NULL WHERE id=$1`, [row.id]);
       return sendJson(res, 401, { error: "This device's access has been removed. Please sign in again." });
     }
   }
 
-  await query(`UPDATE refresh_tokens SET revoked=true WHERE id=$1`, [row.id]);
+  // rotated_at marks this as a rotation (not a logout/removal), opening the
+  // short reuse window above. A token already used through that window
+  // stays NULL: one extra use only.
+  if (!row.revoked) {
+    await query(`UPDATE refresh_tokens SET revoked=true, rotated_at=now() WHERE id=$1 AND revoked=false`, [row.id]);
+  }
   // Carries the same device_id forward onto the new token row -- a
   // refreshed session is still the same physical device, not a new one,
   // and Trusted Devices' "this device's session" revocation (see

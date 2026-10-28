@@ -55,7 +55,9 @@ export function decrypt(stored: string): string {
 
 // ---------- JWT ----------
 const JWT_SECRET: string = requiredSecret("JWT_SECRET", "dev-only-jwt-secret-change-in-production");
-const ACCESS_TTL_SECONDS = 15 * 60;
+// 15 minutes. ACCESS_TOKEN_TTL_SECONDS can shorten it for local testing of
+// the silent-refresh path (never set in production); at least 10 seconds.
+const ACCESS_TTL_SECONDS = Math.max(10, Number(process.env.ACCESS_TOKEN_TTL_SECONDS) || 15 * 60);
 const REFRESH_TTL_SECONDS = 30 * 24 * 60 * 60;
 // Resellers get a far longer-lived refresh token than every other role: the
 // product requirement is that a Reseller signs in once with their admin-
