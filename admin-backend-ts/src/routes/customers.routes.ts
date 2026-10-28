@@ -856,7 +856,7 @@ customersRouter.delete("/customer/profile", requireAuth("customer"), async (req,
     // usable to mint new access tokens for an identity that no longer
     // exists -- revoke it the same instant the row is gone, not left to
     // expire naturally.
-    await query(`UPDATE refresh_tokens SET revoked=true WHERE subject_id=$1 AND subject_role='customer'`, [req.auth!.sub]);
+    await query(`UPDATE refresh_tokens SET revoked=true, rotated_at=NULL WHERE subject_id=$1 AND subject_role='customer'`, [req.auth!.sub]);
     sendJson(res, 200, { deleted: true });
   } catch (err: any) {
     // A blocked ON DELETE RESTRICT can surface as either 23503
