@@ -3343,11 +3343,21 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
             ) : (
               <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
                 {attempts.map((a) => (
-                  <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: `1px solid ${BORDER}`, fontSize: 11.5 }}>
-                    <Badge tone={a.status === "success" ? "green" : a.status === "failed" ? "red" : "amber"}>{a.status}</Badge>
-                    <span style={{ color: MUTE }}>SIM {a.simSlot ?? "—"}</span>
-                    <span style={{ color: MUTE }}>attempt #{a.attemptNumber}</span>
-                    <span style={{ color: MUTE, marginLeft: "auto" }}>{formatDateTime(a.createdAt)}</span>
+                  <div key={a.id} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${BORDER}`, fontSize: 11.5 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <Badge tone={a.status === "success" ? "green" : a.status === "failed" ? "red" : "amber"}>{a.status}</Badge>
+                      {a.balanceFailure && <Badge tone="red">Insufficient SIM balance</Badge>}
+                      <span style={{ color: MUTE }}>SIM {a.simSlot ?? "—"}</span>
+                      <span style={{ color: MUTE }}>attempt #{a.attemptNumber}</span>
+                      <span style={{ color: MUTE, marginLeft: "auto" }}>{formatDateTime(a.createdAt)}</span>
+                    </div>
+                    {/* The carrier's own reply, exactly as the Agent App reported it. */}
+                    {a.responseMessage && (
+                      <div style={{ marginTop: 6, color: a.status === "success" ? MUTE : "var(--c-c81e2c)", overflowWrap: "anywhere" }}>
+                        Carrier reply: {a.responseMessage}
+                      </div>
+                    )}
+                    {a.status === "pending" && <div style={{ marginTop: 6, color: MUTE }}>Dialing — waiting for the carrier's reply.</div>}
                   </div>
                 ))}
               </div>

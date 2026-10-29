@@ -261,13 +261,11 @@ test("an interactive order gets a PIN-free menu plan with the screen checks; the
 
   // No dial in progress yet -> no PIN.
   assert.equal((await call("POST", `/agent/orders/${orderId}/ussd-pin`, agentToken)).status, 409);
-  // The existing SIM balance gate applies to menu orders too: with no
-  // recorded eDahab balance the dial is refused until the agent confirms.
-  const blocked = await call("POST", `/agent/orders/${orderId}/dial-attempts`, agentToken, { simSlot: 2, ussdString: result.ussd, attemptNumber: 1 });
-  assert.equal(blocked.status, 409);
-  assert.equal(blocked.body.code, "sim_balance_unverified");
-  const attempt = await call("POST", `/agent/orders/${orderId}/dial-attempts`, agentToken, { simSlot: 2, ussdString: result.ussd, attemptNumber: 1, confirmUnknownBalance: true });
+  // The SIM balance check applies to menu orders too: with no recorded
+  // eDahab balance the dial goes ahead, with the warning attached.
+  const attempt = await call("POST", `/agent/orders/${orderId}/dial-attempts`, agentToken, { simSlot: 2, ussdString: result.ussd, attemptNumber: 1 });
   assert.equal(attempt.status, 201, JSON.stringify(attempt.body));
+  assert.equal(attempt.body.balanceWarning.status, "unknown");
   const pin = await call("POST", `/agent/orders/${orderId}/ussd-pin`, agentToken);
   assert.equal(pin.status, 200);
   assert.equal(pin.body.pin, "4321");
@@ -416,7 +414,7 @@ test("insufficient: not enough eDahab is refused even when the Somtel SIM balanc
   assert.equal(Number((await queryOne<any>(`SELECT COUNT(*) FROM ussd_dial_attempts WHERE order_id=$1`, [order.id])).count), 0, "nothing was dialed");
 });
 
-test("unknown: no eDahab balance recorded is 'unknown' (never zero, never the Somtel balance) and needs the agent's confirmation", async () => {
+test("unknown: no eDahab balance recorded is 'unknown' (never zero, never the Somtel balance); the dial is attempted with a warning", async () => {
   await clearBalances();
   await setBalance("somtel", 50); // Send Data doesn't pay for Dhameys Plus
   await setBalance("edahab", 10, new Date(), OTHER_DEVICE_ID); // another SIM's wallet doesn't either
@@ -426,21 +424,20 @@ test("unknown: no eDahab balance recorded is 'unknown' (never zero, never the So
   assert.equal(res.body.availableBalance, null, "unknown, not $0");
   assert.equal(res.body.missingAmount, null);
   assert.match(res.body.message, /eDahab Balance Unknown/);
-  const blocked = await dial(order);
-  assert.equal(blocked.status, 409);
-  assert.equal(blocked.body.code, "sim_balance_unverified");
-  const confirmed = await dial(order, { confirmUnknownBalance: true });
-  assert.equal(confirmed.status, 201);
+  const dialed = await dial(order);
+  assert.equal(dialed.status, 201);
+  assert.match(dialed.body.balanceWarning.message, /eDahab Balance Unknown/);
 });
 
-test("outdated: an old eDahab reading needs the agent's confirmation", async () => {
+test("outdated: an old eDahab reading doesn't hold the order", async () => {
   await clearBalances();
   await setBalance("edahab", 10, new Date(Date.now() - 3 * 24 * 60 * 60 * 1000));
   const order = await menuOrder("3");
   const res = await check(order.id);
   assert.equal(res.body.status, "outdated");
-  const blocked = await dial(order);
-  assert.equal(blocked.body.code, "sim_balance_unverified");
+  const dialed = await dial(order);
+  assert.equal(dialed.status, 201);
+  assert.equal(dialed.body.balanceWarning.status, "outdated");
 });
 
 test("an order without a wallet source still checks the company's own SIM balance, as before", async () => {

@@ -16,7 +16,7 @@ import { isAlreadyCompleted, createPaymentTransaction, markPaymentFinal } from "
 import { rateLimit } from "../auth/rateLimit.js";
 import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
 import { routeStatusFor, SIM_ROUTING_PRIMARY_ORDER } from "../utils/orderRouting.js";
-import { checkSimBalanceForOrder } from "../utils/simBalanceCheck.js";
+import { checkSimBalanceForOrder, isInsufficientBalanceReply, unverifiedBalancePolicy } from "../utils/simBalanceCheck.js";
 import { notifyCustomer } from "../services/customerNotify.js";
 import { allDeliveriesDone } from "../services/deliveries.js";
 import { validateMobileNumber, companyKeyFromLabel } from "../lib/phoneValidation.js";
@@ -1141,11 +1141,16 @@ ordersRouter.get("/admin/orders/:id/delivery-status", requireStaff(), async (req
   if (!waitingReason && order.status === "in_progress") {
     if (lastAttempt && (lastAttempt.status === "pending" || lastAttempt.status === "ambiguous")) {
       waitingReason = "Needs verification — the last dial's result is unknown; the money may already have been sent. Check the carrier SMS, then mark it Delivered or Not delivered.";
+    } else if (lastAttempt?.status === "failed" && isInsufficientBalanceReply(lastAttempt.response_message)) {
+      waitingReason = `The last dial failed: the carrier reported an insufficient SIM balance ("${lastAttempt.response_message}"). Nothing was sent. Recharge the SIM, then retry.`;
     } else if (balance?.status === "insufficient") {
       waitingReason = balance.message ?? "Insufficient balance on the assigned SIM.";
-    } else if (balance && (balance.status === "unknown" || balance.status === "outdated")) {
+    } else if (balance && (balance.status === "unknown" || balance.status === "outdated") && unverifiedBalancePolicy() === "confirm") {
       waitingReason = balance.message ?? "The assigned SIM's balance isn't known yet.";
     }
+    // An unknown/outdated balance alone doesn't hold the order (the dial is
+    // attempted and the carrier's reply decides): it stays a warning on
+    // the balance badge, not the reason the order is waiting.
   }
   sendJson(res, 200, {
     hasRouting: Boolean(assigned),

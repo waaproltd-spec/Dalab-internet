@@ -19,9 +19,9 @@ import "express-async-errors";
 import { query, queryOne, pool } from "../../db/pool.js";
 import { signAccessToken } from "../../auth/crypto.js";
 import { ussdRouter } from "../ussd.routes.js";
-import { evaluateSimBalance } from "../../utils/simBalanceCheck.js";
+import { evaluateSimBalance, isInsufficientBalanceReply } from "../../utils/simBalanceCheck.js";
 
-// The default policy: unknown/outdated balances need the agent's confirmation.
+// The default policy: an unknown/outdated balance doesn't hold the order.
 delete process.env.SIM_BALANCE_UNVERIFIED_POLICY;
 
 const COMPANY_ID = "test-simbal-hormuud";
@@ -235,29 +235,110 @@ test("sufficient balance: the dial goes ahead exactly as before", async () => {
   assert.equal(retry.status, 200);
 });
 
-test("unknown balance: refused until the agent confirms, then allowed", async () => {
+function report(attemptId: string, status: string, responseMessage: string | null, isFinalAttempt = false) {
+  return fetch(`${baseUrl}/agent/dial-attempts/${attemptId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ status, responseMessage, isFinalAttempt }),
+  });
+}
+
+test("unknown balance: the order is dialed, with the warning returned", async () => {
   const orderId = await insertOrder(20);
   const c = (await (await check(orderId)).json()) as Record<string, unknown>;
   assert.equal(c.status, "unknown");
   assert.equal(c.availableBalance, null);
 
-  const blocked = await dial(orderId);
-  assert.equal(blocked.status, 409);
-  assert.equal(((await blocked.json()) as { code: string }).code, "sim_balance_unverified");
-  assert.equal(await attemptCount(orderId), 0);
-
-  const confirmed = await dial(orderId, { confirmUnknownBalance: true });
-  assert.equal(confirmed.status, 201);
+  const res = await dial(orderId);
+  assert.equal(res.status, 201);
+  const body = (await res.json()) as { id: string; balanceWarning: { status: string; message: string } };
+  assert.ok(body.id);
+  assert.equal(body.balanceWarning.status, "unknown");
+  assert.match(body.balanceWarning.message, /^SIM Balance Unknown/);
+  assert.equal(await attemptCount(orderId), 1);
 });
 
-test("outdated balance: a 2-day-old balance is not trusted, even if it was enough", async () => {
-  await setBalance(100, new Date(Date.now() - 2 * 24 * 60 * 60 * 1000));
-  const orderId = await insertOrder(20);
+test("outdated balance (the live case: $24.50 recorded 2 days ago, $0.70 order): dialed, not held", async () => {
+  await setBalance(24.5, new Date(Date.now() - 2 * 24 * 60 * 60 * 1000));
+  const orderId = await insertOrder(0.7);
   const c = (await (await check(orderId)).json()) as Record<string, unknown>;
   assert.equal(c.status, "outdated");
-  const blocked = await dial(orderId);
-  assert.equal(blocked.status, 409);
-  assert.equal(((await blocked.json()) as { code: string }).code, "sim_balance_unverified");
+  const res = await dial(orderId);
+  assert.equal(res.status, 201);
+  assert.equal(((await res.json()) as { balanceWarning: { status: string } }).balanceWarning.status, "outdated");
+  assert.equal(await attemptCount(orderId), 1);
+});
+
+test("a sufficient balance dials with no warning", async () => {
+  await setBalance(25);
+  const res = await dial(await insertOrder(20));
+  assert.equal(res.status, 201);
+  assert.equal(((await res.json()) as { balanceWarning: unknown }).balanceWarning, null);
+});
+
+test("the carrier's insufficient-balance reply is recorded as a failed attempt with its exact text", async () => {
+  await setBalance(24.5, new Date(Date.now() - 2 * 24 * 60 * 60 * 1000));
+  const orderId = await insertOrder(0.7);
+  const { id } = (await (await dial(orderId)).json()) as { id: string };
+  const reply = "Haraaga xisaabtaadu kuguma filna, haraagaagu waa: 0.20";
+  assert.equal((await report(id, "failed", reply)).status, 200);
+  const row = await queryOne<{ status: string; response_message: string }>(`SELECT status, response_message FROM ussd_dial_attempts WHERE id=$1`, [id]);
+  assert.equal(row!.status, "failed");
+  assert.equal(row!.response_message, reply);
+  assert.equal(isInsufficientBalanceReply(row!.response_message), true);
+});
+
+test("retrying: a definite failure may be dialed again, an unknown result may not", async () => {
+  await setBalance(24.5, new Date(Date.now() - 2 * 24 * 60 * 60 * 1000));
+  const orderId = await insertOrder(0.7);
+  const first = (await (await dial(orderId)).json()) as { id: string };
+  // While attempt 1 has no result the money may be on its way: no 2nd dial.
+  const whilePending = await dial(orderId, { attemptNumber: 2 });
+  assert.equal(whilePending.status, 409);
+  assert.equal(((await whilePending.json()) as { code: string }).code, "previous_attempt_unresolved");
+
+  await report(first.id, "failed", "Insufficient balance. Please recharge.");
+  // The same attempt is never dialed twice...
+  const again = await dial(orderId, { attemptNumber: 1 });
+  assert.equal(again.status, 409);
+  assert.equal(((await again.json()) as { code: string }).code, "attempt_already_resolved");
+  // ...but after a definite failure (nothing sent) the next attempt is allowed.
+  const second = await dial(orderId, { attemptNumber: 2 });
+  assert.equal(second.status, 201);
+  const secondId = ((await second.json()) as { id: string }).id;
+
+  // A timeout / no reply is outcome-unknown: recorded as ambiguous, and it
+  // blocks every further dial until a person checks it.
+  await report(secondId, "failed", "");
+  assert.equal((await queryOne<{ status: string }>(`SELECT status FROM ussd_dial_attempts WHERE id=$1`, [secondId]))!.status, "ambiguous");
+  const third = await dial(orderId, { attemptNumber: 3 });
+  assert.equal(third.status, 409);
+  assert.equal(((await third.json()) as { code: string }).code, "previous_attempt_unresolved");
+  assert.equal(await attemptCount(orderId), 2);
+});
+
+test("SIM_BALANCE_UNVERIFIED_POLICY=confirm restores the old hold: refused until the agent confirms", async () => {
+  process.env.SIM_BALANCE_UNVERIFIED_POLICY = "confirm";
+  try {
+    await setBalance(100, new Date(Date.now() - 2 * 24 * 60 * 60 * 1000));
+    const orderId = await insertOrder(20);
+    const blocked = await dial(orderId);
+    assert.equal(blocked.status, 409);
+    assert.equal(((await blocked.json()) as { code: string }).code, "sim_balance_unverified");
+    assert.equal(await attemptCount(orderId), 0);
+    assert.equal((await dial(orderId, { confirmUnknownBalance: true })).status, 201);
+  } finally {
+    delete process.env.SIM_BALANCE_UNVERIFIED_POLICY;
+  }
+});
+
+test("insufficient-balance reply detection (English and Somali), and nothing else", () => {
+  for (const t of ["Insufficient balance", "You do not have enough balance", "Haraaga xisaabtaadu kuguma filna", "haraagaagu kuma filna", "Your balance is too low"]) {
+    assert.equal(isInsufficientBalanceReply(t), true, t);
+  }
+  for (const t of ["", null, "Invalid PIN", "Receiver Account Not Found", "Waad ku guuleysatay. Haraagaagu waa: $28.75"]) {
+    assert.equal(isInsufficientBalanceReply(t), false, String(t));
+  }
 });
 
 test("an Extra Package needs the balance for every delivery still owed", async () => {
