@@ -9,7 +9,7 @@ import { requireAuth } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
 import { Role } from "../types/index.js";
 import { rateLimit } from "../auth/rateLimit.js";
-import { validateMobileNumber } from "../lib/phoneValidation.js";
+import { validateMobileNumber, normalizeMobileDigits } from "../lib/phoneValidation.js";
 import { parseDeviceInfo, registerCustomerDeviceLogin } from "../services/deviceTracking.js";
 
 export const authRouter = Router();
@@ -415,6 +415,154 @@ authRouter.post("/auth/customer/login", rateLimit("customer-pin-login", 10, 15 *
       friendCode: customer.friend_code,
     },
   });
+});
+
+// ---------------- Customer: one Number + PIN screen (login or automatic signup) ----------------
+// The Customer App's only sign-in screen: Number + PIN + Login, no separate
+// Create Account. The number decides what happens, never the PIN:
+//  - the number has an account -> the PIN must match it (the account's PIN,
+//    or the password an older app version set for it). A wrong PIN is
+//    refused and NEVER creates anything;
+//  - the number has no account -> a new one is created with this number and
+//    PIN (bcrypt-hashed, never stored or logged in plain text).
+// Every spelling of the number ("252...", "+252...", 9 digits) is the same
+// account: it is looked up by its 9-digit local form, created as "252" +
+// those digits, and migration 125's unique index (plus customers.phone's
+// own UNIQUE) makes a concurrent second create a no-op that is then
+// verified like any login -- two taps, two phones or a retried request can
+// never make two accounts for one number.
+// Wrong PINs are counted per number (customer_login_failures): 5 in 15
+// minutes locks that number for 15 minutes, on top of the per-IP limit.
+// A forgotten PIN is reset by a Super Admin (PUT /admin/customers/:id/pin).
+const PIN_FAILURE_LIMIT = 5;
+const PIN_FAILURE_WINDOW_MINUTES = 15;
+const PIN_LOCK_MINUTES = 15;
+
+async function findCustomerByLocalNumber(local: string) {
+  return queryOne(
+    `SELECT * FROM customers WHERE phone IN ($1, $2, $3) ORDER BY (phone = $2) DESC, created_at ASC LIMIT 1`,
+    [local, `252${local}`, `+252${local}`]
+  );
+}
+
+function customerSummary(customer: any) {
+  return {
+    id: customer.id,
+    phone: customer.phone,
+    name: customer.name,
+    email: customer.email,
+    status: customer.status,
+    evcPlusName: customer.evc_plus_name,
+    evcPlusNumber: customer.evc_plus_number,
+    edahabName: customer.edahab_name,
+    edahabNumber: customer.edahab_number,
+    friendCode: customer.friend_code,
+  };
+}
+
+/** Records a wrong PIN; returns how many tries are left before the lock (0 = now locked). */
+async function recordPinFailure(local: string): Promise<number> {
+  const row = await queryOne<{ failed_count: number }>(
+    `INSERT INTO customer_login_failures (phone_local, failed_count, first_failed_at)
+     VALUES ($1, 1, now())
+     ON CONFLICT (phone_local) DO UPDATE SET
+       failed_count = CASE WHEN customer_login_failures.first_failed_at < now() - make_interval(mins => $2) THEN 1 ELSE customer_login_failures.failed_count + 1 END,
+       first_failed_at = CASE WHEN customer_login_failures.first_failed_at < now() - make_interval(mins => $2) THEN now() ELSE customer_login_failures.first_failed_at END,
+       locked_until = NULL
+     RETURNING failed_count`,
+    [local, PIN_FAILURE_WINDOW_MINUTES]
+  );
+  const count = Number(row?.failed_count ?? 1);
+  if (count >= PIN_FAILURE_LIMIT) {
+    await query(
+      `UPDATE customer_login_failures SET locked_until = now() + make_interval(mins => $2), failed_count = 0 WHERE phone_local=$1`,
+      [local, PIN_LOCK_MINUTES]
+    );
+    return 0;
+  }
+  return PIN_FAILURE_LIMIT - count;
+}
+
+async function pinMatches(customer: { pin_hash: string | null; password_hash: string | null }, pin: string): Promise<boolean> {
+  if (customer.pin_hash && (await verifyPassword(pin, customer.pin_hash))) return true;
+  // Accounts made by older app versions signed in with a password; it still
+  // opens the account from this screen until a PIN replaces it.
+  if (customer.password_hash && (await verifyPassword(pin, customer.password_hash))) return true;
+  return false;
+}
+
+authRouter.post("/auth/customer/enter", rateLimit("customer-enter", 20, 15 * 60 * 1000), async (req, res) => {
+  const phoneCheck = validateMobileNumber(req.body.phone);
+  if (!phoneCheck.valid) return sendJson(res, 400, { error: phoneCheck.error, code: "invalid_phone" });
+  const local = normalizeMobileDigits(req.body.phone);
+  const pin = String(req.body.pin ?? "");
+  if (!pin) return sendJson(res, 400, { error: "Enter your PIN.", code: "pin_required" });
+
+  const lock = await queryOne<{ minutes: number }>(
+    `SELECT CEIL(EXTRACT(EPOCH FROM (locked_until - now())) / 60)::int AS minutes
+       FROM customer_login_failures WHERE phone_local=$1 AND locked_until > now()`,
+    [local]
+  );
+  if (lock) {
+    return sendJson(res, 429, { error: `Too many wrong PINs for this number. Try again in ${lock.minutes} minute(s), or ask Support to reset your PIN.`, code: "pin_locked", retryAfterMinutes: lock.minutes });
+  }
+
+  let customer: any = await findCustomerByLocalNumber(local);
+  let created = false;
+  if (!customer) {
+    if (!isValidPin(pin)) return sendJson(res, 400, { error: "PIN must be 4-8 digits.", code: "invalid_pin" });
+    // A referral only counts for a genuinely new number (resolved here,
+    // never trusted from the client as an id).
+    const referralCode = req.body.referralCode ? String(req.body.referralCode).trim() : "";
+    let referredBy: string | null = null;
+    if (referralCode) {
+      const referrer = await queryOne<{ id: string; status: string }>(`SELECT id, status FROM customers WHERE referral_code=$1`, [referralCode]);
+      if (referrer && referrer.status !== "blocked") referredBy = referrer.id;
+    }
+    const pinHash = await hashPassword(pin);
+    // Up to 3 tries: a skipped insert is either this number created a
+    // moment ago by another request (from here it's a login) or, rarely, a
+    // clash on the random friend_code default (just try again).
+    for (let i = 0; i < 3 && !customer; i++) {
+      customer = await queryOne(
+        `INSERT INTO customers (id, phone, pin_hash, referred_by_customer_id) VALUES ($1,$2,$3,$4)
+         ON CONFLICT DO NOTHING RETURNING *`,
+        [randomUUID(), `252${local}`, pinHash, referredBy]
+      );
+      if (customer) created = true;
+      else customer = await findCustomerByLocalNumber(local);
+    }
+    if (!customer) throw new Error("Could not create the customer account");
+  }
+
+  if (!created) {
+    if (!customer.pin_hash && !customer.password_hash) {
+      // An account from the old phone-only sign-in, never given a PIN or
+      // password: this PIN becomes its PIN, keeping all its history. Only
+      // while it still has none (a concurrent claim can't overwrite it).
+      if (!isValidPin(pin)) return sendJson(res, 400, { error: "PIN must be 4-8 digits.", code: "invalid_pin" });
+      const claimed = await queryOne(
+        `UPDATE customers SET pin_hash=$1 WHERE id=$2 AND pin_hash IS NULL AND password_hash IS NULL RETURNING *`,
+        [await hashPassword(pin), customer.id]
+      );
+      customer = claimed ?? (await queryOne(`SELECT * FROM customers WHERE id=$1`, [customer.id]));
+    }
+    if (!(await pinMatches(customer, pin))) {
+      const left = await recordPinFailure(local);
+      if (left === 0) {
+        return sendJson(res, 429, { error: `Too many wrong PINs for this number. Try again in ${PIN_LOCK_MINUTES} minutes, or ask Support to reset your PIN.`, code: "pin_locked", retryAfterMinutes: PIN_LOCK_MINUTES });
+      }
+      return sendJson(res, 401, { error: "Wrong PIN for this number.", code: "wrong_pin", attemptsLeft: left });
+    }
+    await query(`DELETE FROM customer_login_failures WHERE phone_local=$1`, [local]);
+  }
+
+  // A suspended customer still gets a session, as with every other customer
+  // login: the app shows its suspension screen (Support stays reachable).
+  const deviceInfo = parseDeviceInfo(req.body.device);
+  const tokens = await issueTokens(customer.id, "customer", deviceInfo?.deviceId ?? null);
+  await registerCustomerDeviceLogin(customer.id, deviceInfo);
+  sendJson(res, created ? 201 : 200, { ...tokens, created, customer: customerSummary(customer), pinSet: Boolean(customer.pin_hash) });
 });
 
 // Best-effort session teardown for the Customer App's explicit "Log out" —

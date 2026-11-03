@@ -268,7 +268,7 @@ test("PUT /agent/customers/:id/block 404s for an unknown customer", async () => 
 
 // ---------------- PIN management ----------------
 
-test("agent PIN lifecycle: unset -> set a specific PIN -> generate replaces it -> clear", async () => {
+test("agent PIN lifecycle: unset -> set a specific PIN -> generate replaces it -> clear (only while a password protects the account)", async () => {
   const initialStatus = await asJson(await authed(`/agent/customers/${CUSTOMER_A_ID}/pin-status`));
   assert.equal(initialStatus.isSet, false);
 
@@ -288,7 +288,15 @@ test("agent PIN lifecycle: unset -> set a specific PIN -> generate replaces it -
   assert.ok(await verifyPassword(genBody.pin, rowAfterGen!.pin_hash));
   assert.ok(!(await verifyPassword("4321", rowAfterGen!.pin_hash)), "the old PIN must stop working once a new one is generated");
 
+  // With no password, the PIN is how this customer signs in: removing it
+  // would leave the number open to anyone, so it's refused.
+  const refused = await authed(`/agent/customers/${CUSTOMER_A_ID}/pin`, { method: "DELETE" });
+  assert.equal(refused.status, 409);
+  assert.equal((await asJson(refused)).code, "pin_is_login");
+  const { rows: [pw] } = await pool.query(`SELECT password_hash FROM customers WHERE id=$1`, [CUSTOMER_A_ID]);
+  await query(`UPDATE customers SET password_hash='x' WHERE id=$1`, [CUSTOMER_A_ID]);
   const clearRes = await authed(`/agent/customers/${CUSTOMER_A_ID}/pin`, { method: "DELETE" });
+  await query(`UPDATE customers SET password_hash=$2 WHERE id=$1`, [CUSTOMER_A_ID, pw.password_hash]);
   assert.equal(clearRes.status, 200);
   const afterClear = await asJson(await authed(`/agent/customers/${CUSTOMER_A_ID}/pin-status`));
   assert.equal(afterClear.isSet, false);

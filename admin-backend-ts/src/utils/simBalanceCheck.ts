@@ -51,15 +51,31 @@ export const WALLET_BALANCE_SOURCES: Record<string, string> = { edahab: "eDahab"
 
 /**
  * What happens to a dial when the SIM balance is unknown or outdated:
- *  - "confirm" (default): refused until the agent has seen the warning and
- *    explicitly confirmed -- the balance is never assumed to be enough, so
- *    automatic dials (SMS-matched / self-heal) wait for the agent;
- *  - "warn": allowed, the app still shows the warning.
- * Insufficient balance is always refused, whatever this says.
+ *  - "warn" (default): the dial goes ahead. An old or missing reading says
+ *    nothing about the SIM now, so the order is attempted and the carrier's
+ *    own reply decides: a real insufficient-balance reply is recorded as a
+ *    failed attempt with that exact text (USSD Execution History), and the
+ *    warning is still shown to the agent and on the dashboard;
+ *  - "confirm": refused until the agent has seen the warning and explicitly
+ *    confirmed, so automatic dials (SMS-matched / self-heal) wait for the
+ *    agent. This blocked paid orders behind a merely outdated reading
+ *    (e.g. $24.50 recorded yesterday for a $0.70 send), so it is opt-in.
+ * A recent recorded balance that is below the order amount is always
+ * refused, whatever this says.
  * Set with SIM_BALANCE_UNVERIFIED_POLICY on the server.
  */
 export function unverifiedBalancePolicy(): "confirm" | "warn" {
-  return process.env.SIM_BALANCE_UNVERIFIED_POLICY === "warn" ? "warn" : "confirm";
+  return process.env.SIM_BALANCE_UNVERIFIED_POLICY === "confirm" ? "confirm" : "warn";
+}
+
+/**
+ * True when a carrier's USSD reply says the SIM didn't have enough balance
+ * (English, and the Somali "kuguma filna" / "kuma filna" Hormuud uses).
+ * Only labels a reply already recorded as a failure; it never decides one.
+ */
+export function isInsufficientBalanceReply(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return /insufficient|(not|n.t)( have)? enough (balance|credit|funds|money)|low balance|balance is (too )?low|kuguma filna|kuma filna/i.test(text);
 }
 
 /** A balance older than this is "outdated": it may no longer be true. */

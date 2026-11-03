@@ -231,6 +231,26 @@ customersRouter.put("/admin/customers/:id/exchange-limits", requirePermission("c
 // a customer who still has access to their own account is a separate,
 // later-added set of routes below ("Customer: own profile" section), which
 // operate on this same pin_hash column but never touch the OTP login flow.
+// The PIN is also the Customer App login (POST /auth/customer/enter): a new
+// PIN signs the customer out everywhere -- the old one may be known to
+// someone else -- and lifts any wrong-PIN lock on the number.
+async function afterCustomerPinChange(customerId: string) {
+  await query(`UPDATE refresh_tokens SET revoked=true, rotated_at=NULL WHERE subject_id=$1 AND revoked=false`, [customerId]);
+  await query(
+    `DELETE FROM customer_login_failures WHERE phone_local = (SELECT regexp_replace(regexp_replace(phone, '\\D', '', 'g'), '^252(\\d{9})$', '\\1') FROM customers WHERE id=$1)`,
+    [customerId]
+  );
+}
+
+// A PIN-only account (made on the Customer App's Number + PIN screen) has
+// no password: removing its PIN would leave it with no credential at all,
+// and the next person to type that number would get it. Removal is only
+// allowed while a password still protects the account.
+async function customerHasPassword(customerId: string): Promise<boolean> {
+  const row = await queryOne<{ password_hash: string | null }>(`SELECT password_hash FROM customers WHERE id=$1`, [customerId]);
+  return Boolean(row?.password_hash);
+}
+
 customersRouter.get("/admin/customers/:id/pin-status", requireAuth("super_admin"), async (req, res) => {
   const customer = await queryOne<{ pin_hash: string | null }>(`SELECT pin_hash FROM customers WHERE id=$1`, [req.params.id]);
   if (!customer) return sendJson(res, 404, { error: "Customer not found" });
@@ -246,6 +266,7 @@ customersRouter.put("/admin/customers/:id/pin", requireAuth("super_admin"), asyn
   if (!existing) return sendJson(res, 404, { error: "Customer not found" });
   const pinHash = await hashPassword(String(pin));
   await query(`UPDATE customers SET pin_hash=$1 WHERE id=$2`, [pinHash, req.params.id]);
+  await afterCustomerPinChange(req.params.id);
   sendJson(res, 200, { message: "PIN saved", isSet: true });
 });
 
@@ -265,7 +286,8 @@ customersRouter.post("/admin/customers/:id/pin/generate", requireAuth("super_adm
   const pin = generateRandomPin();
   const pinHash = await hashPassword(pin);
   await query(`UPDATE customers SET pin_hash=$1 WHERE id=$2`, [pinHash, req.params.id]);
-  sendJson(res, 200, { message: "New Recovery PIN generated", pin, isSet: true });
+  await afterCustomerPinChange(req.params.id);
+  sendJson(res, 200, { message: "New PIN generated", pin, isSet: true });
 });
 
 // "Reset" clears the PIN back to unset (optional) rather than assigning a
@@ -275,6 +297,7 @@ customersRouter.post("/admin/customers/:id/pin/generate", requireAuth("super_adm
 customersRouter.delete("/admin/customers/:id/pin", requireAuth("super_admin"), async (req, res) => {
   const existing = await queryOne(`SELECT id FROM customers WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Customer not found" });
+  if (!(await customerHasPassword(req.params.id))) return sendJson(res, 409, { error: "This PIN is how the customer signs in, so it can't be removed. Set or generate a new PIN instead.", code: "pin_is_login" });
   await query(`UPDATE customers SET pin_hash=NULL WHERE id=$1`, [req.params.id]);
   sendJson(res, 200, { message: "PIN reset", isSet: false });
 });
@@ -547,6 +570,7 @@ customersRouter.put("/agent/customers/:id/pin", requireAuth("agent"), async (req
   if (!existing) return sendJson(res, 404, { error: "Customer not found" });
   const pinHash = await hashPassword(String(pin));
   await query(`UPDATE customers SET pin_hash=$1 WHERE id=$2`, [pinHash, req.params.id]);
+  await afterCustomerPinChange(req.params.id);
   sendJson(res, 200, { message: "PIN saved", isSet: true });
 });
 
@@ -560,12 +584,14 @@ customersRouter.post("/agent/customers/:id/pin/generate", requireAuth("agent"), 
   const pin = generateRandomPin();
   const pinHash = await hashPassword(pin);
   await query(`UPDATE customers SET pin_hash=$1 WHERE id=$2`, [pinHash, req.params.id]);
-  sendJson(res, 200, { message: "New Recovery PIN generated", pin, isSet: true });
+  await afterCustomerPinChange(req.params.id);
+  sendJson(res, 200, { message: "New PIN generated", pin, isSet: true });
 });
 
 customersRouter.delete("/agent/customers/:id/pin", requireAuth("agent"), async (req, res) => {
   const existing = await queryOne(`SELECT id FROM customers WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Customer not found" });
+  if (!(await customerHasPassword(req.params.id))) return sendJson(res, 409, { error: "This PIN is how the customer signs in, so it can't be removed. Set or generate a new PIN instead.", code: "pin_is_login" });
   await query(`UPDATE customers SET pin_hash=NULL WHERE id=$1`, [req.params.id]);
   sendJson(res, 200, { message: "PIN reset", isSet: false });
 });
@@ -914,6 +940,7 @@ customersRouter.put("/customer/pin", requireAuth("customer"), async (req, res) =
 // and the app stops prompting for a PIN on future logins, same as if they
 // had never created one.
 customersRouter.delete("/customer/pin", requireAuth("customer"), async (req, res) => {
+  if (!(await customerHasPassword(req.auth!.sub))) return sendJson(res, 409, { error: "You sign in with this PIN, so it can't be removed. You can change it instead.", code: "pin_is_login" });
   await query(`UPDATE customers SET pin_hash=NULL WHERE id=$1`, [req.auth!.sub]);
   sendJson(res, 200, { message: "PIN removed", isSet: false });
 });

@@ -14,7 +14,7 @@ import { refundRedeemedPointsIfNeeded } from "../utils/loyaltyPoints.js";
 import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
 import { deviceHealthIssues } from "../utils/deviceHealth.js";
 import { normalizePhoneForUssd, formatUssdAmount, splitUssdAmount, formatUssdAmountSplit } from "../utils/ussdFormatting.js";
-import { checkSimBalanceForOrder, unverifiedBalancePolicy } from "../utils/simBalanceCheck.js";
+import { checkSimBalanceForOrder, unverifiedBalancePolicy, type SimBalanceCheck } from "../utils/simBalanceCheck.js";
 import { assignedRouteFor, primaryRoutesForDevice, SIM_ROUTING_PRIMARY_ORDER } from "../utils/orderRouting.js";
 import { notifyCustomer } from "../services/customerNotify.js";
 import { extractBalanceFromSms, applyBalanceUpdate } from "../utils/simBalances.js";
@@ -988,14 +988,18 @@ ussdRouter.post("/agent/orders/:id/dial-attempts", requireAuth("agent"), async (
     }
   }
 
-  // Insufficient SIM Balance: never START a new dial when the company SIM
-  // doesn't have enough for this order -- the real carrier send would fail
-  // or partially go through. Enforced here because every dial (manual,
+  // Insufficient SIM Balance: never START a new dial when a recent
+  // recorded balance for the company SIM is below what this order sends --
+  // the carrier would refuse it. Enforced here because every dial (manual,
   // SMS-matched auto-dial, self-heal sweep) goes through this route. An
-  // unknown/outdated balance is never assumed to be enough: it's refused
-  // too unless the agent has seen the warning and explicitly confirmed
-  // (confirmUnknownBalance). Nothing is changed on the order, so once the
-  // SIM is recharged and its balance updated, the same order dials normally.
+  // unknown or outdated balance is NOT a reason to hold a paid order: by
+  // default (unverifiedBalancePolicy "warn") the dial goes ahead and the
+  // carrier's reply decides -- an insufficient-balance reply comes back as
+  // a failed attempt with the carrier's own text, which proves nothing was
+  // sent. The warning is returned with the new attempt so the app can show
+  // it. Nothing is changed on the order, so once the SIM is recharged and
+  // its balance updated, a refused order dials normally.
+  let balanceWarning: SimBalanceCheck | null = null;
   if (!sameAttempt) {
     const balanceCheck = await checkSimBalanceForOrder(req.params.id, {
       deviceId: agent?.device_id ?? null,
@@ -1004,13 +1008,11 @@ ussdRouter.post("/agent/orders/:id/dial-attempts", requireAuth("agent"), async (
     if (balanceCheck && balanceCheck.status === "insufficient") {
       return sendJson(res, 409, { error: balanceCheck.message, code: "insufficient_sim_balance", balanceCheck });
     }
-    if (
-      balanceCheck &&
-      (balanceCheck.status === "unknown" || balanceCheck.status === "outdated") &&
-      req.body.confirmUnknownBalance !== true &&
-      unverifiedBalancePolicy() === "confirm"
-    ) {
-      return sendJson(res, 409, { error: balanceCheck.message, code: "sim_balance_unverified", balanceCheck });
+    if (balanceCheck && (balanceCheck.status === "unknown" || balanceCheck.status === "outdated")) {
+      if (req.body.confirmUnknownBalance !== true && unverifiedBalancePolicy() === "confirm") {
+        return sendJson(res, 409, { error: balanceCheck.message, code: "sim_balance_unverified", balanceCheck });
+      }
+      balanceWarning = balanceCheck;
     }
   }
 
@@ -1043,7 +1045,7 @@ ussdRouter.post("/agent/orders/:id/dial-attempts", requireAuth("agent"), async (
     simSlot: simSlot ?? null,
     ussdDialAttemptId: id,
   });
-  sendJson(res, 201, { id });
+  sendJson(res, 201, { id, balanceWarning });
 });
 
 /**
