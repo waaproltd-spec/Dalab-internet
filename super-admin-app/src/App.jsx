@@ -4237,18 +4237,18 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
       )}
 
       {pinTarget && (
-        <Modal title={`Password Recovery — ${pinTarget.name || pinTarget.phone}`} onClose={() => setPinTarget(null)}>
+        <Modal title={`Login PIN — ${pinTarget.name || pinTarget.phone}`} onClose={() => setPinTarget(null)}>
           <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>
-            The Customer App's Forgot Password screen sends a customer who's forgotten their Recovery PIN here.
-            The PIN is stored as a secure hash and can never be viewed once set — only replaced.
+            Customers sign in to the Customer App with their number and this PIN. A customer who forgot it is sent here by "Forgot your PIN? Contact Support".
+            The PIN is stored as a secure hash and can never be viewed once set — only replaced. A new PIN signs the customer out on every device and unlocks the number if it was locked after wrong PINs.
           </div>
-          <Field label="Recovery PIN status">
+          <Field label="Login PIN status">
             <Badge tone={pinTarget.pinSet ? "green" : "amber"}>{pinTarget.pinSet ? "Set" : "Not set"}</Badge>
           </Field>
           <div style={{ marginBottom: 16, padding: 12, borderRadius: 10, background: "var(--c-fafbff)", border: "1px solid var(--c-e5e8f4)" }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: INK, marginBottom: 4 }}>Reset Recovery PIN</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: INK, marginBottom: 4 }}>Reset Login PIN</div>
             <div style={{ fontSize: 12, color: MUTE, marginBottom: 10 }}>
-              Generates a brand-new 4-digit Recovery PIN and immediately invalidates the old one. Shown once, here, for you to relay to the customer yourself (call, WhatsApp, etc.).
+              Generates a brand-new 4-digit PIN and immediately invalidates the old one. Shown once, here, for you to relay to the customer yourself (call, WhatsApp, etc.).
             </div>
             <Button onClick={generatePin} icon={pinSaving ? Loader2 : RefreshCw} spin={pinSaving} disabled={pinSaving}>
               Generate New PIN
@@ -4256,7 +4256,7 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
           </div>
           <Field label={pinTarget.pinSet ? "Or set a specific PIN (replaces the current one)" : "Or create a specific PIN"}>
             <input
-              type="password" inputMode="numeric" maxLength={8} placeholder="3-8 digits"
+              type="password" inputMode="numeric" maxLength={8} placeholder="4-8 digits"
               style={inputStyle}
               value={pinDraft}
               onChange={(e) => setPinDraft(e.target.value.replace(/\D/g, ""))}
@@ -4267,7 +4267,9 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
             <Button variant="ghost" onClick={savePin} icon={pinSaving ? Loader2 : Check} spin={pinSaving} disabled={pinSaving || !pinDraft}>
               {pinTarget.pinSet ? "Change PIN" : "Create PIN"}
             </Button>
-            {pinTarget.pinSet && (
+            {/* Without a password the PIN is the only way into the account:
+                clearing it would leave the number open (the server refuses it). */}
+            {pinTarget.pinSet && pinTarget.hasPassword && (
               <Button variant="danger" onClick={resetPin} disabled={pinSaving}>Clear PIN</Button>
             )}
             <Button variant="ghost" onClick={() => setPinTarget(null)} disabled={pinSaving}>Cancel</Button>
@@ -4276,12 +4278,12 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
       )}
 
       {generatedPin && (
-        <Modal title={`New Recovery PIN — ${generatedPin.customer.name || generatedPin.customer.phone}`} onClose={() => setGeneratedPin(null)}>
+        <Modal title={`New Login PIN — ${generatedPin.customer.name || generatedPin.customer.phone}`} onClose={() => setGeneratedPin(null)}>
           <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>
             Relay this PIN to the customer yourself (call, WhatsApp, etc.) — there's no automatic delivery.
-            It's shown here once and can't be retrieved again after you close this dialog. Their previous Recovery PIN no longer works.
+            It's shown here once and can't be retrieved again after you close this dialog. Their previous PIN no longer works, and they were signed out on every device.
           </div>
-          <Field label="New Recovery PIN">
+          <Field label="New Login PIN">
             <div style={{ display: "flex", gap: 8 }}>
               <input readOnly style={{ ...inputStyle, fontFamily: "monospace", fontWeight: 700, fontSize: 18, letterSpacing: 4, textAlign: "center" }} value={generatedPin.pin} onFocus={(e) => e.target.select()} />
               <Button
