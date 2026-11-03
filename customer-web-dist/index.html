@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="so">
+<head>
+  <!-- Replaced by `flutter build web --base-href`. The app works at any
+       address (its own domain or a sub-path); nothing here names a domain. -->
+  <base href="/">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <!-- No viewport-fit=cover: Safari keeps the app inside the iPhone's safe
+       area (notch and home bar) on its own. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="DALAB INTERNET — buy internet packages, eBadal, Shop and VIP Numbers with EVC Plus and eDahab.">
+  <meta name="theme-color" content="#003152">
+  <meta name="format-detection" content="telephone=no">
+
+  <!-- Home Screen install (iPhone/iPad) -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="DALAB">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+
+  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="manifest" href="manifest.json">
+  <title>DALAB INTERNET</title>
+
+  <style>
+    html, body { margin: 0; height: 100%; background: #003152; }
+    #dl-splash {
+      position: fixed; inset: 0; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 18px;
+      background: #003152; color: #fff; z-index: 1;
+      font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      text-align: center; padding: 24px; box-sizing: border-box;
+      transition: opacity .25s ease-out;
+    }
+    #dl-splash img { width: 96px; height: 96px; border-radius: 22px; }
+    #dl-splash .dl-spin {
+      width: 26px; height: 26px; border-radius: 50%;
+      border: 3px solid rgba(255,255,255,.25); border-top-color: #fff;
+      animation: dl-spin 0.9s linear infinite;
+    }
+    #dl-splash .dl-msg { max-width: 320px; display: none; }
+    #dl-splash.dl-offline .dl-spin { display: none; }
+    #dl-splash.dl-offline .dl-msg { display: block; }
+    #dl-splash button {
+      margin-top: 6px; min-height: 44px; padding: 0 22px; border: 0; border-radius: 12px;
+      background: #fff; color: #003152; font: inherit; font-weight: 700;
+    }
+    body.app-ready #dl-splash { opacity: 0; pointer-events: none; }
+    @keyframes dl-spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div id="dl-splash" role="status" aria-live="polite">
+    <img src="icons/Icon-192.png" alt="DALAB INTERNET">
+    <div class="dl-spin" aria-hidden="true"></div>
+    <div class="dl-msg">
+      <b>Internet ayaa loo baahan yahay · Internet connection required</b><br>
+      DALAB wuxuu u baahan yahay internet si uu u furmo oo lacag-bixinta u xaqiijiyo.<br>
+      DALAB needs the internet to open and to confirm your payments.
+      <br><button type="button" onclick="location.reload()">Isku day mar kale · Try again</button>
+    </div>
+  </div>
+  <noscript>DALAB INTERNET needs JavaScript turned on.</noscript>
+
+  <script>
+    // If the app can't load (no connection and nothing saved yet), say so
+    // instead of spinning forever.
+    (function () {
+      var splash = document.getElementById("dl-splash");
+      function showOffline() {
+        if (!document.body.classList.contains("app-ready")) splash.className = "dl-offline";
+      }
+      window.addEventListener("error", function (e) {
+        if (e && e.target && (e.target.tagName === "SCRIPT")) showOffline();
+      }, true);
+      setTimeout(function () { if (!navigator.onLine) showOffline(); }, 4000);
+      setTimeout(showOffline, 45000);
+      window.addEventListener("load", function () {
+        setTimeout(function () {
+          if (document.body.classList.contains("app-ready")) splash.remove();
+        }, 400);
+      });
+      document.body.addEventListener("transitionend", function () {
+        if (document.body.classList.contains("app-ready") && splash.parentNode) splash.remove();
+      }, true);
+    })();
+
+    // Offline cache for the app's own files only (see sw.js).
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", function () {
+        navigator.serviceWorker.register("sw.js").catch(function (err) {
+          console.warn("Service worker registration failed:", err);
+        });
+      });
+    }
+  </script>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>
