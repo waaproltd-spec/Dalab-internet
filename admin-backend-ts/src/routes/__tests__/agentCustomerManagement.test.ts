@@ -163,7 +163,8 @@ test("PUT /agent/customers/:id edits name and phone, matching the Admin route", 
   assert.equal(res.status, 200);
   const body = await asJson(res);
   assert.equal(body.name, "Renamed By Agent");
-  assert.equal(body.phone, newPhone);
+  // Stored in the one canonical spelling (lib/customerPhone.ts).
+  assert.equal(body.phone, `252${newPhone}`);
 
   // Restore so later tests keep using the original fixture phone.
   await query(`UPDATE customers SET name='Agent Mgmt Customer A', phone=$1 WHERE id=$2`, [CUSTOMER_A_PHONE, CUSTOMER_A_ID]);

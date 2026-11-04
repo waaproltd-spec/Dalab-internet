@@ -11,6 +11,7 @@ import { rateLimit } from "../auth/rateLimit.js";
 import { notifyCustomer as notifyCustomerShared } from "../services/customerNotify.js";
 import { validateMobileNumber } from "../lib/phoneValidation.js";
 import { formatEvcDahabUssdAmount } from "../utils/ussdFormatting.js";
+import { findOrCreateCustomerByPhone } from "../lib/customerPhone.js";
 
 export const exchangeRouter = Router();
 
@@ -363,10 +364,8 @@ async function createExchangeOrder(params: {
     if (!customer) return { error: "Customer not found", status: 404 };
     if (customer.status === "blocked") return { error: "This customer's account has been blocked", status: 403 };
   } else if (params.customerPhone) {
-    let customer = await queryOne<{ id: string; status: string }>(`SELECT id, status FROM customers WHERE phone=$1`, [params.customerPhone]);
-    if (!customer) {
-      customer = await queryOne(`INSERT INTO customers (id, phone) VALUES ($1,$2) RETURNING id, status`, [randomUUID(), params.customerPhone]);
-    }
+    // Any spelling of the number is the same customer (lib/customerPhone.ts).
+    const { customer } = await findOrCreateCustomerByPhone<{ id: string; status: string }>(params.customerPhone, {}, "id, status");
     if (customer!.status === "blocked") return { error: "This customer's account has been blocked", status: 403 };
     customerId = customer!.id;
   }

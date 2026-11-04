@@ -1,5 +1,4 @@
 import { Router } from "express";
-import { randomUUID } from "node:crypto";
 import { query, queryOne } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
@@ -7,6 +6,7 @@ import { sendJson } from "../utils/camelCase.js";
 import { hashPassword, verifyPassword, isValidPin } from "../auth/crypto.js";
 import { parseDataUri } from "../utils/dataUri.js";
 import { validateMobileNumber, companyKeyFromLabel, normalizeMobileDigits } from "../lib/phoneValidation.js";
+import { canonicalCustomerPhone, findCustomerByPhone, findOrCreateCustomerByPhone } from "../lib/customerPhone.js";
 
 export const customersRouter = Router();
 
@@ -96,13 +96,15 @@ customersRouter.put("/admin/customers/:id", requirePermission("customers.manage"
   const existing = await queryOne(`SELECT * FROM customers WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Customer not found" });
   const name = req.body.name ?? existing.name;
-  const phone = req.body.phone ?? existing.phone;
-  if (phone !== existing.phone) {
-    const phoneCheck = validateMobileNumber(String(phone));
+  // A changed number is stored as "252" + 9 digits and must not be any
+  // spelling of another customer's number (lib/customerPhone.ts).
+  const changed = req.body.phone != null && canonicalCustomerPhone(req.body.phone) !== canonicalCustomerPhone(existing.phone);
+  const phone = changed ? canonicalCustomerPhone(req.body.phone) : existing.phone;
+  if (changed) {
+    const phoneCheck = validateMobileNumber(String(req.body.phone));
     if (!phoneCheck.valid) return sendJson(res, 400, { error: phoneCheck.error });
-  }
-  if (phone !== existing.phone && (await queryOne(`SELECT id FROM customers WHERE phone=$1`, [phone]))) {
-    return sendJson(res, 409, { error: "A customer with this phone already exists" });
+    const other = await findCustomerByPhone<{ id: string }>(req.body.phone, "id");
+    if (other && other.id !== existing.id) return sendJson(res, 409, { error: "A customer with this phone already exists" });
   }
   await query(`UPDATE customers SET name=$1, phone=$2 WHERE id=$3`, [name, phone, req.params.id]);
   sendJson(res, 200, await queryOne(`SELECT ${ADMIN_CUSTOMER_COLUMNS} FROM customers WHERE id=$1`, [req.params.id]));
@@ -381,12 +383,11 @@ customersRouter.post("/agent/customers", requireAuth("agent"), async (req, res) 
   if (!phoneCheck.valid) return sendJson(res, 400, { error: phoneCheck.error });
   const name = req.body.name ? String(req.body.name).trim() : null;
 
-  const existing = await queryOne(`SELECT ${AGENT_CUSTOMER_COLUMNS} FROM customers WHERE phone=$1`, [phone]);
-  if (existing) return sendJson(res, 409, { error: "A customer with this phone already exists", customer: existing });
-
-  const id = randomUUID();
-  await query(`INSERT INTO customers (id, phone, name) VALUES ($1,$2,$3)`, [id, phone, name]);
-  sendJson(res, 201, await queryOne(`SELECT ${AGENT_CUSTOMER_COLUMNS} FROM customers WHERE id=$1`, [id]));
+  // Any spelling of the number is the same customer (lib/customerPhone.ts).
+  const { customer, created } = await findOrCreateCustomerByPhone<{ id: string }>(phone, { name }, "id");
+  const row = await queryOne(`SELECT ${AGENT_CUSTOMER_COLUMNS} FROM customers WHERE id=$1`, [customer.id]);
+  if (!created) return sendJson(res, 409, { error: "A customer with this phone already exists", customer: row });
+  sendJson(res, 201, row);
 });
 
 // Single-customer detail: the same list columns plus pinSet (never the PIN
@@ -440,13 +441,15 @@ customersRouter.put("/agent/customers/:id", requireAuth("agent"), async (req, re
   const existing = await queryOne(`SELECT * FROM customers WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Customer not found" });
   const name = req.body.name ?? existing.name;
-  const phone = req.body.phone ?? existing.phone;
-  if (phone !== existing.phone) {
-    const phoneCheck = validateMobileNumber(String(phone));
+  // A changed number is stored as "252" + 9 digits and must not be any
+  // spelling of another customer's number (lib/customerPhone.ts).
+  const changed = req.body.phone != null && canonicalCustomerPhone(req.body.phone) !== canonicalCustomerPhone(existing.phone);
+  const phone = changed ? canonicalCustomerPhone(req.body.phone) : existing.phone;
+  if (changed) {
+    const phoneCheck = validateMobileNumber(String(req.body.phone));
     if (!phoneCheck.valid) return sendJson(res, 400, { error: phoneCheck.error });
-  }
-  if (phone !== existing.phone && (await queryOne(`SELECT id FROM customers WHERE phone=$1`, [phone]))) {
-    return sendJson(res, 409, { error: "A customer with this phone already exists" });
+    const other = await findCustomerByPhone<{ id: string }>(req.body.phone, "id");
+    if (other && other.id !== existing.id) return sendJson(res, 409, { error: "A customer with this phone already exists" });
   }
   await query(`UPDATE customers SET name=$1, phone=$2 WHERE id=$3`, [name, phone, req.params.id]);
   sendJson(res, 200, await queryOne(`SELECT ${AGENT_CUSTOMER_COLUMNS} FROM customers WHERE id=$1`, [req.params.id]));

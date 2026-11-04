@@ -20,6 +20,7 @@ import { checkSimBalanceForOrder, isInsufficientBalanceReply, unverifiedBalanceP
 import { notifyCustomer } from "../services/customerNotify.js";
 import { allDeliveriesDone } from "../services/deliveries.js";
 import { validateMobileNumber, companyKeyFromLabel } from "../lib/phoneValidation.js";
+import { findCustomerByPhone, findOrCreateCustomerByPhone } from "../lib/customerPhone.js";
 
 export const ordersRouter = Router();
 
@@ -353,10 +354,8 @@ ordersRouter.post("/guest/orders", rateLimit("guest-order-create", 20, 15 * 60 *
     if (!check.valid) return sendJson(res, 400, { error: check.error });
   }
 
-  let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
-  if (!customer) {
-    customer = await queryOne(`INSERT INTO customers (id, phone) VALUES ($1,$2) RETURNING *`, [randomUUID(), phone]);
-  }
+  // Any spelling of the number is the same customer (lib/customerPhone.ts).
+  let { customer } = await findOrCreateCustomerByPhone(phone);
   if (customer!.status === "blocked") return sendJson(res, 403, { error: "This account has been blocked" });
 
   const id = orderRef();
@@ -447,7 +446,7 @@ ordersRouter.get("/guest/orders/stream", (req, res) => {
 ordersRouter.get("/guest/orders/by-phone/:phone", rateLimit("guest-order-lookup", 20, 15 * 60 * 1000), async (req, res) => {
   const phone = String(req.params.phone ?? "").trim();
   if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid phone number" });
-  const customer = await queryOne<{ id: string }>(`SELECT id FROM customers WHERE phone=$1`, [phone]);
+  const customer = await findCustomerByPhone<{ id: string }>(phone, "id");
   if (!customer) return sendJson(res, 200, []);
   const rows = await query(
     `${ORDER_LIST_SELECT} WHERE o.customer_id=$1 ORDER BY o.created_at DESC LIMIT 20`,
@@ -495,10 +494,8 @@ ordersRouter.post("/agent/orders", requireAuth("agent"), async (req, res) => {
     if (!check.valid) return sendJson(res, 400, { error: check.error });
   }
 
-  let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
-  if (!customer) {
-    customer = await queryOne(`INSERT INTO customers (id, phone) VALUES ($1,$2) RETURNING *`, [randomUUID(), phone]);
-  }
+  // Any spelling of the number is the same customer (lib/customerPhone.ts).
+  let { customer } = await findOrCreateCustomerByPhone(phone);
   if (customer!.status === "blocked") return sendJson(res, 403, { error: "This customer's account has been blocked" });
 
   const id = orderRef();

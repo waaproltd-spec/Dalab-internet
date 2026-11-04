@@ -11,6 +11,7 @@ import { Role } from "../types/index.js";
 import { rateLimit } from "../auth/rateLimit.js";
 import { validateMobileNumber, normalizeMobileDigits } from "../lib/phoneValidation.js";
 import { parseDeviceInfo, registerCustomerDeviceLogin } from "../services/deviceTracking.js";
+import { canonicalCustomerPhone, findCustomerByPhone } from "../lib/customerPhone.js";
 
 export const authRouter = Router();
 
@@ -63,7 +64,7 @@ authRouter.post("/auth/register", rateLimit("customer-register", 10, 15 * 60 * 1
 
   const passwordHash = await hashPassword(password);
   const pinHash = pin != null ? await hashPassword(pin) : null;
-  let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
+  let customer: any = await findCustomerByPhone(phone);
 
   if (customer) {
     // A row for this phone already exists — either a genuine "already
@@ -102,7 +103,7 @@ authRouter.post("/auth/register", rateLimit("customer-register", 10, 15 * 60 * 1
     }
     customer = await queryOne(
       `INSERT INTO customers (id, phone, name, email, password_hash, pin_hash, referred_by_customer_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [randomUUID(), phone, name, email, passwordHash, pinHash, referredBy]
+      [randomUUID(), canonicalCustomerPhone(phone), name, email, passwordHash, pinHash, referredBy]
     );
   }
 
@@ -133,10 +134,9 @@ authRouter.post("/auth/login", rateLimit("customer-login", 10, 15 * 60 * 1000), 
   if (!identifier || !password) return sendJson(res, 400, { error: "phone/email and password are required" });
 
   const isEmail = identifier.includes("@");
-  const customer = await queryOne(
-    isEmail ? `SELECT * FROM customers WHERE email=$1` : `SELECT * FROM customers WHERE phone=$1`,
-    [isEmail ? identifier.toLowerCase() : identifier]
-  );
+  const customer: any = isEmail
+    ? await queryOne(`SELECT * FROM customers WHERE email=$1`, [identifier.toLowerCase()])
+    : await findCustomerByPhone(identifier);
   // Same generic message whether the account doesn't exist, has no password
   // yet, or the password is simply wrong — never reveal which case it is.
   const genericError = () => sendJson(res, 401, { error: "Invalid phone/email or password" });
@@ -192,10 +192,7 @@ authRouter.post("/auth/customer/forgot-password/verify-pin", rateLimit("customer
   const pin = String(req.body.pin ?? "");
   if (!phone || !pin) return sendJson(res, 400, { error: "phone and pin are required" });
 
-  const customer = await queryOne<{ pin_hash: string | null; status: string }>(
-    `SELECT pin_hash, status FROM customers WHERE phone=$1`,
-    [phone]
-  );
+  const customer = await findCustomerByPhone<{ pin_hash: string | null; status: string }>(phone, "pin_hash, status");
   // Same generic message whether the phone isn't registered, has no PIN
   // set yet, or the PIN is simply wrong — never reveal which case it is.
   const genericError = () => sendJson(res, 401, { error: "Invalid phone number or PIN" });
@@ -215,10 +212,7 @@ authRouter.post("/auth/customer/forgot-password/reset", rateLimit("customer-forg
     return sendJson(res, 400, { error: "Password must be at least 6 characters." });
   }
 
-  const customer = await queryOne<{ id: string; pin_hash: string | null; status: string }>(
-    `SELECT id, pin_hash, status FROM customers WHERE phone=$1`,
-    [phone]
-  );
+  const customer = await findCustomerByPhone<{ id: string; pin_hash: string | null; status: string }>(phone, "id, pin_hash, status");
   const genericError = () => sendJson(res, 401, { error: "Invalid phone number or PIN" });
   if (!customer || !customer.pin_hash) return genericError();
   if (!(await verifyPassword(pin, customer.pin_hash))) return genericError();
@@ -247,7 +241,7 @@ authRouter.post("/auth/identify", rateLimit("customer-identify", 20, 15 * 60 * 1
   if (!phoneCheck.valid) return sendJson(res, 400, { error: phoneCheck.error });
   if (!name) return sendJson(res, 400, { error: "Full name is required" });
 
-  let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
+  let customer: any = await findCustomerByPhone(phone);
   if (customer) {
     // A suspended customer is deliberately still allowed to identify/sign
     // in here too — same reasoning as /auth/login above: the Customer App
@@ -261,7 +255,7 @@ authRouter.post("/auth/identify", rateLimit("customer-identify", 20, 15 * 60 * 1
       customer = await queryOne(`SELECT * FROM customers WHERE id=$1`, [customer.id]);
     }
   } else {
-    customer = await queryOne(`INSERT INTO customers (id, phone, name) VALUES ($1,$2,$3) RETURNING *`, [randomUUID(), phone, name]);
+    customer = await queryOne(`INSERT INTO customers (id, phone, name) VALUES ($1,$2,$3) RETURNING *`, [randomUUID(), canonicalCustomerPhone(phone), name]);
   }
 
   const deviceInfo = parseDeviceInfo(req.body.device);
@@ -303,10 +297,7 @@ function isFourDigitPin(pin: string): boolean {
 authRouter.post("/auth/customer/check-phone", rateLimit("customer-check-phone", 30, 15 * 60 * 1000), async (req, res) => {
   const phone = normalizeCustomerPhone(req.body.phone);
   if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid phone number" });
-  const customer = await queryOne<{ name: string | null; pin_hash: string | null }>(
-    `SELECT name, pin_hash FROM customers WHERE phone=$1`,
-    [phone]
-  );
+  const customer = await findCustomerByPhone<{ name: string | null; pin_hash: string | null }>(phone, "name, pin_hash");
   sendJson(res, 200, {
     exists: Boolean(customer),
     pinSet: Boolean(customer?.pin_hash),
@@ -323,7 +314,7 @@ authRouter.post("/auth/customer/signup", rateLimit("customer-pin-signup", 10, 15
   if (!name) return sendJson(res, 400, { error: "Full name is required" });
   if (!isFourDigitPin(pin)) return sendJson(res, 400, { error: "PIN must be exactly 4 digits" });
 
-  let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
+  let customer: any = await findCustomerByPhone(phone);
   if (customer?.pin_hash) {
     return sendJson(res, 409, { error: "An account with this phone number already exists. Please sign in instead." });
   }
@@ -357,7 +348,7 @@ authRouter.post("/auth/customer/signup", rateLimit("customer-pin-signup", 10, 15
     }
     customer = await queryOne(
       `INSERT INTO customers (id, phone, name, pin_hash, referred_by_customer_id) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [randomUUID(), phone, name, pinHash, referredBy]
+      [randomUUID(), canonicalCustomerPhone(phone), name, pinHash, referredBy]
     );
   }
 
@@ -386,7 +377,7 @@ authRouter.post("/auth/customer/login", rateLimit("customer-pin-login", 10, 15 *
   const pin = String(req.body.pin ?? "");
   if (!phone || !pin) return sendJson(res, 400, { error: "phone and pin are required" });
 
-  const customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
+  const customer: any = await findCustomerByPhone(phone);
   // Same generic message whether the phone isn't registered, has no PIN
   // yet, or the PIN is simply wrong — never reveal which case it is.
   const genericError = () => sendJson(res, 401, { error: "Invalid phone number or PIN" });
@@ -437,13 +428,6 @@ authRouter.post("/auth/customer/login", rateLimit("customer-pin-login", 10, 15 *
 const PIN_FAILURE_LIMIT = 5;
 const PIN_FAILURE_WINDOW_MINUTES = 15;
 const PIN_LOCK_MINUTES = 15;
-
-async function findCustomerByLocalNumber(local: string) {
-  return queryOne(
-    `SELECT * FROM customers WHERE phone IN ($1, $2, $3) ORDER BY (phone = $2) DESC, created_at ASC LIMIT 1`,
-    [local, `252${local}`, `+252${local}`]
-  );
-}
 
 function customerSummary(customer: any) {
   return {
@@ -507,7 +491,7 @@ authRouter.post("/auth/customer/enter", rateLimit("customer-enter", 20, 15 * 60 
     return sendJson(res, 429, { error: `Too many wrong PINs for this number. Try again in ${lock.minutes} minute(s), or ask Support to reset your PIN.`, code: "pin_locked", retryAfterMinutes: lock.minutes });
   }
 
-  let customer: any = await findCustomerByLocalNumber(local);
+  let customer: any = await findCustomerByPhone(local);
   let created = false;
   if (!customer) {
     if (!isValidPin(pin)) return sendJson(res, 400, { error: "PIN must be 4-8 digits.", code: "invalid_pin" });
@@ -530,7 +514,7 @@ authRouter.post("/auth/customer/enter", rateLimit("customer-enter", 20, 15 * 60 
         [randomUUID(), `252${local}`, pinHash, referredBy]
       );
       if (customer) created = true;
-      else customer = await findCustomerByLocalNumber(local);
+      else customer = await findCustomerByPhone(local);
     }
     if (!customer) throw new Error("Could not create the customer account");
   }
