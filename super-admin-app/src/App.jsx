@@ -17990,19 +17990,21 @@ export default function AdminDashboard() {
 }
 
 function HubNotice({ title, message, isError = false, onLocalLogin }) {
+  // Self-contained colours: this panel must render in every system's
+  // dashboard, whatever theme constants or CSS variables that app defines.
   return (
-    <div style={{ minHeight: "100vh", background: "var(--sidebar-bg)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "'Inter','Segoe UI',system-ui,-apple-system,sans-serif" }}>
-      <div style={{ width: "100%", maxWidth: 400, background: "var(--c-surface)", borderRadius: 16, padding: 28, textAlign: "center" }}>
-        <img src={`${import.meta.env.BASE_URL}logo.png`} alt="" width={56} height={56} style={{ borderRadius: 14, marginBottom: 14 }} />
-        <h1 style={{ fontSize: 20, margin: "0 0 8px", color: INK }}>{title}</h1>
-        <p style={{ fontSize: 14, margin: "0 0 18px", color: isError ? "var(--c-c81e2c)" : SLATE }}>{message}</p>
+    <div style={{ minHeight: "100vh", background: "var(--sidebar-bg, #0B1240)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "'Inter','Segoe UI',system-ui,-apple-system,sans-serif" }}>
+      <div style={{ width: "100%", maxWidth: 400, background: "#FFFFFF", borderRadius: 16, padding: 28, textAlign: "center", boxShadow: "0 12px 40px rgba(0,0,0,0.25)" }}>
+        <img src={`${import.meta.env.BASE_URL}logo.png`} alt="" width={56} height={56} style={{ borderRadius: 14, marginBottom: 14 }} onError={(e) => { e.currentTarget.style.display = "none"; }} />
+        <h1 style={{ fontSize: 20, margin: "0 0 8px", color: "#0F172A" }}>{title}</h1>
+        <p style={{ fontSize: 14, margin: "0 0 18px", color: isError ? "#B91C1C" : "#475569" }}>{message}</p>
         {HUB_URL && onLocalLogin !== undefined && (
-          <button onClick={goToHub} style={{ width: "100%", minHeight: 44, borderRadius: 10, border: "none", background: INDIGO, color: "#fff", fontWeight: 700, cursor: "pointer" }}>
+          <button onClick={goToHub} style={{ width: "100%", minHeight: 44, borderRadius: 10, border: "none", background: "#1E3A8A", color: "#FFFFFF", fontWeight: 700, cursor: "pointer" }}>
             Go to the Admin Hub
           </button>
         )}
         {onLocalLogin && (
-          <button onClick={onLocalLogin} style={{ marginTop: 12, background: "none", border: "none", color: SLATE, fontSize: 12.5, cursor: "pointer", textDecoration: "underline" }}>
+          <button onClick={onLocalLogin} style={{ marginTop: 12, background: "none", border: "none", color: "#475569", fontSize: 12.5, cursor: "pointer", textDecoration: "underline" }}>
             Use a local account instead
           </button>
         )}
