@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { useTheme, useLang, setTheme, setLang } from "./prefs.js";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
-import { HUB_URL, takeHubAssertion, goToHub, openHub, signOutToHub, hubNav, watchSystemSuspension, loadHubPayment } from "./hubSession.js";
+import { HUB_URL, takeHubAssertion, goToHub, openHub, signOutToHub, hubNav, watchSystemSuspension, loadHubPayment, acknowledgeHubPayment } from "./hubSession.js";
 import HubPaymentBanner, { usePaymentStatus } from "./HubPaymentBanner.jsx";
 
 // ---- DALAB INTERNET / Admin design tokens ----
@@ -17926,7 +17926,7 @@ export default function AdminDashboard() {
   const [hubError, setHubError] = useState("");
   const [showLocalLogin, setShowLocalLogin] = useState(!HUB_URL);
   // Super Admins opened from the hub: their annual payment, shown above everything.
-  const payment = usePaymentStatus(loadHubPayment);
+  const { data: payment, refresh: refreshPayment } = usePaymentStatus(loadHubPayment);
   // Set when this system's API says the Platform Owner has suspended it.
   const [suspendedMessage, setSuspendedMessage] = useState("");
   useEffect(() => watchSystemSuspension((message) => setSuspendedMessage(message || "System temporarily suspended. Please contact support.")), []);
@@ -17988,7 +17988,9 @@ export default function AdminDashboard() {
 
   return (
     <>
-      {admin.viaHub && admin.role === "super_admin" && <HubPaymentBanner subscription={payment} />}
+      {admin.viaHub && admin.role === "super_admin" && (
+        <HubPaymentBanner data={payment} onAcknowledge={() => acknowledgeHubPayment().finally(refreshPayment)} />
+      )}
       <AdminDashboardShell
         admin={admin}
         onLogout={() => {

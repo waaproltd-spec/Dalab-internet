@@ -85,16 +85,26 @@ export function watchSystemSuspension(onSuspended) {
   return () => suspendedListeners.delete(onSuspended);
 }
 
-/** The signed-in Super Admin's annual payment status from the hub (null: none to show). */
-export async function loadHubPayment() {
-  let token = null;
+/** The signed-in Super Admin's annual payment status and today's reminder from the hub (null: nothing to show). */
+function payToken() {
   try {
-    token = sessionStorage.getItem(PAY_KEY);
+    return sessionStorage.getItem(PAY_KEY);
   } catch {
     return null;
   }
+}
+
+export async function loadHubPayment() {
+  const token = payToken();
   if (!token || !HUB_URL) return null;
   const res = await fetch(`${HUB_URL}/api/billing/view`, { headers: { Authorization: `Bearer ${token}` } });
   if (!res.ok) return null;
-  return (await res.json()).subscription || null;
+  return res.json();
+}
+
+/** "I understand" on today's reminder (stored by the hub, so it shows once a day on every device). */
+export async function acknowledgeHubPayment() {
+  const token = payToken();
+  if (!token || !HUB_URL) return;
+  await fetch(`${HUB_URL}/api/billing/view/reminder-seen`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
 }
