@@ -13,7 +13,8 @@ import {
 } from "lucide-react";
 import { useTheme, useLang, setTheme, setLang } from "./prefs.js";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
-import { HUB_URL, takeHubAssertion, goToHub, openHub, signOutToHub, hubNav, watchSystemSuspension } from "./hubSession.js";
+import { HUB_URL, takeHubAssertion, goToHub, openHub, signOutToHub, hubNav, watchSystemSuspension, loadHubPayment } from "./hubSession.js";
+import HubPaymentBanner, { usePaymentStatus } from "./HubPaymentBanner.jsx";
 
 // ---- DALAB INTERNET / Admin design tokens ----
 // INDIGO is the shared brand color, kept under its old name (avoids a
@@ -17924,6 +17925,8 @@ export default function AdminDashboard() {
   const [hubStatus, setHubStatus] = useState(hubAssertion ? "signing-in" : null);
   const [hubError, setHubError] = useState("");
   const [showLocalLogin, setShowLocalLogin] = useState(!HUB_URL);
+  // Super Admins opened from the hub: their annual payment, shown above everything.
+  const payment = usePaymentStatus(loadHubPayment);
   // Set when this system's API says the Platform Owner has suspended it.
   const [suspendedMessage, setSuspendedMessage] = useState("");
   useEffect(() => watchSystemSuspension((message) => setSuspendedMessage(message || "System temporarily suspended. Please contact support.")), []);
@@ -17985,6 +17988,7 @@ export default function AdminDashboard() {
 
   return (
     <>
+      {admin.viaHub && admin.role === "super_admin" && <HubPaymentBanner subscription={payment} />}
       <AdminDashboardShell
         admin={admin}
         onLogout={() => {

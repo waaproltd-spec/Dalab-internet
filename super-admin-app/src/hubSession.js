@@ -4,6 +4,7 @@
 // exchanged with this system's backend for its normal admin session.
 export const HUB_URL = (import.meta.env.VITE_HUB_URL || "").replace(/\/+$/, "");
 const NAV_KEY = "waapro_hub_nav";
+const PAY_KEY = "waapro_hub_pay";
 
 export function takeHubAssertion() {
   const hash = window.location.hash || "";
@@ -15,6 +16,10 @@ export function takeHubAssertion() {
     const nav = params.get("hub_nav");
     if (nav === "switch" || nav === "hub") sessionStorage.setItem(NAV_KEY, nav);
     else sessionStorage.removeItem(NAV_KEY);
+    // Super Admins: read-only token for their own annual payment status.
+    const pay = params.get("hub_pay");
+    if (pay) sessionStorage.setItem(PAY_KEY, pay);
+    else sessionStorage.removeItem(PAY_KEY);
   } catch {
     /* storage unavailable: no link back */
   }
@@ -44,6 +49,7 @@ export function openHub() {
 export function signOutToHub() {
   try {
     sessionStorage.removeItem(NAV_KEY);
+    sessionStorage.removeItem(PAY_KEY);
   } catch {
     /* ignore */
   }
@@ -77,4 +83,18 @@ export function watchSystemSuspension(onSuspended) {
     };
   }
   return () => suspendedListeners.delete(onSuspended);
+}
+
+/** The signed-in Super Admin's annual payment status from the hub (null: none to show). */
+export async function loadHubPayment() {
+  let token = null;
+  try {
+    token = sessionStorage.getItem(PAY_KEY);
+  } catch {
+    return null;
+  }
+  if (!token || !HUB_URL) return null;
+  const res = await fetch(`${HUB_URL}/api/billing/view`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) return null;
+  return (await res.json()).subscription || null;
 }
