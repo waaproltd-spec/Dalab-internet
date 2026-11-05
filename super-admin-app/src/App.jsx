@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { useTheme, useLang, setTheme, setLang } from "./prefs.js";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
-import { HUB_URL, takeHubAssertion, goToHub } from "./hubSession.js";
+import { HUB_URL, takeHubAssertion, goToHub, openHub, signOutToHub, hubNav } from "./hubSession.js";
 
 // ---- DALAB INTERNET / Admin design tokens ----
 // INDIGO is the shared brand color, kept under its old name (avoids a
@@ -17977,15 +17977,31 @@ export default function AdminDashboard() {
   }
 
   return (
-    <AdminDashboardShell
-      admin={admin}
-      onLogout={() => {
-        dalabAdminAccessToken = null;
-        dalabAdminRefreshToken = null;
-        setAdmin(null);
-        if (admin.viaHub && HUB_URL) goToHub();
-      }}
-    />
+    <>
+      <AdminDashboardShell
+        admin={admin}
+        onLogout={() => {
+          dalabAdminAccessToken = null;
+          dalabAdminRefreshToken = null;
+          setAdmin(null);
+          if (admin.viaHub && HUB_URL) signOutToHub();
+        }}
+      />
+      {admin.viaHub && HUB_URL && hubNav() && <HubSwitchButton label={hubNav() === "switch" ? "Switch system" : "Admin Hub"} />}
+    </>
+  );
+}
+
+/** Small way back to the Admin Hub for people who have something to do there. */
+function HubSwitchButton({ label }) {
+  return (
+    <button
+      onClick={openHub}
+      title="Back to the WAAPRO Admin Hub"
+      style={{ position: "fixed", left: 12, bottom: 12, zIndex: 9999, display: "flex", alignItems: "center", gap: 6, minHeight: 36, padding: "0 14px", borderRadius: 18, border: "1px solid rgba(255,255,255,0.25)", background: "#0B1240", color: "#FFFFFF", fontSize: 12.5, fontWeight: 700, fontFamily: "'Inter','Segoe UI',system-ui,-apple-system,sans-serif", boxShadow: "0 6px 18px rgba(0,0,0,0.25)", cursor: "pointer", opacity: 0.92 }}
+    >
+      <span aria-hidden="true">⇄</span> {label}
+    </button>
   );
 }
 
