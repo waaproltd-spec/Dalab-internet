@@ -20,8 +20,11 @@ function cleanPermissions(value: unknown): string[] {
   return Array.isArray(value) ? [...new Set(value.filter(isPermission))] : [];
 }
 
+// Ends every refresh token of this admin. (A token rotated a moment ago
+// that a reuse window would accept once more is still refused: /auth/refresh
+// re-checks the admin is active with the same role.)
 async function revokeSessions(adminId: string): Promise<void> {
-  await query(`UPDATE refresh_tokens SET revoked=true, rotated_at=NULL WHERE subject_id=$1 AND revoked=false`, [adminId]);
+  await query(`UPDATE refresh_tokens SET revoked=true WHERE subject_id=$1 AND revoked=false`, [adminId]);
 }
 
 /** The local admin for a hub account: by link, else (first time) by email. */
