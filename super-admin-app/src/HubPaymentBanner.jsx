@@ -51,9 +51,9 @@ const T = {
     payNow: "HADDA BIXI",
     payNowSub: "(Telegram Bot)",
     opening: "Waa la furayaa…",
-    pending: (txn) => `Lacag-bixintaada (Transaction ID ${txn}) waxay sugaysaa xaqiijinta Owner-ka.`,
+    pending: (ref) => `Lacag-bixintaada (laga soo diray ${ref}) waxay sugaysaa xaqiijinta Owner-ka.`,
     pendingShort: "Sugaya xaqiijin",
-    rejected: (txn) => `Lacag-bixinta Transaction ID ${txn} waa la diiday: lacagtu kuma soo gelin account-ka. Hubi oo mar kale soo gudbi.`,
+    rejected: (ref) => `Lacag-bixinta laga soo diray ${ref} waa la diiday: lacagtu kuma soo gelin account-ka. Hubi oo mar kale soo gudbi.`,
     extension: (d) => `Waxaa lagu siiyay 2 maalmood oo dheeraad ah: ugu dambeyn ${d}.`,
     whereToPay: "Halka lacagta loo dirayo",
     noInstructions: "Owner-ku weli ma qorin lambarka lacag-bixinta.",
@@ -99,9 +99,9 @@ const T = {
     payNow: "PAY NOW",
     payNowSub: "(Telegram Bot)",
     opening: "Opening…",
-    pending: (txn) => `Your payment (transaction ID ${txn}) is awaiting the Owner's verification.`,
+    pending: (ref) => `Your payment (sent from ${ref}) is awaiting the Owner's verification.`,
     pendingShort: "Awaiting verification",
-    rejected: (txn) => `Your payment with transaction ID ${txn} was rejected: it did not arrive in the account. Check and submit again.`,
+    rejected: (ref) => `Your payment sent from ${ref} was rejected: it did not arrive in the account. Check and submit again.`,
     extension: (d) => `You were granted 2 extra days: pay by ${d} at the latest.`,
     whereToPay: "Where to pay",
     noInstructions: "The Owner has not set the payment number yet.",
@@ -189,9 +189,10 @@ export default function HubPaymentBanner({ data, onAcknowledge, onPayNow }) {
     }
   };
   const submission = data.submission;
+  const subRef = submission ? submission.senderPhone || submission.transactionId : "";
   const statusText =
     s.phase === "paid" ? t.statusPaid
-      : submission?.status === "pending" ? `${t.pendingShort} (${submission.transactionId})`
+      : submission?.status === "pending" ? `${t.pendingShort} (${subRef})`
         : s.phase === "expired" ? t.statusExpired : s.phase === "grace" ? t.statusGrace : t.statusPending;
 
   // PAY NOW opens the Telegram Payment Bot. The window is opened during the
@@ -311,10 +312,10 @@ export default function HubPaymentBanner({ data, onAcknowledge, onPayNow }) {
         {(submission || s.extension) && (
           <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
             {submission?.status === "pending" && (
-              <div style={{ background: "#FEF3C7", color: "#78350F", borderRadius: 10, padding: "8px 12px", fontSize: 13.5, fontWeight: 700 }}>⏳ {t.pending(submission.transactionId)}</div>
+              <div style={{ background: "#FEF3C7", color: "#78350F", borderRadius: 10, padding: "8px 12px", fontSize: 13.5, fontWeight: 700 }}>⏳ {t.pending(subRef)}</div>
             )}
             {submission?.status === "rejected" && (
-              <div style={{ background: "#FFFFFF", color: "#991B1B", borderRadius: 10, padding: "8px 12px", fontSize: 13.5, fontWeight: 700 }}>❌ {t.rejected(submission.transactionId)}</div>
+              <div style={{ background: "#FFFFFF", color: "#991B1B", borderRadius: 10, padding: "8px 12px", fontSize: 13.5, fontWeight: 700 }}>❌ {t.rejected(subRef)}</div>
             )}
             {s.extension && (
               <div style={{ background: "rgba(255,255,255,0.18)", borderRadius: 10, padding: "8px 12px", fontSize: 13.5, fontWeight: 700 }}>➕ {t.extension(fmtDate(s.extension.newDeadline, lang))}</div>
