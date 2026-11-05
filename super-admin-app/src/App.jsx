@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { useTheme, useLang, setTheme, setLang } from "./prefs.js";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
-import { HUB_URL, takeHubAssertion, goToHub, openHub, signOutToHub, hubNav, watchSystemSuspension, loadHubPayment, acknowledgeHubPayment } from "./hubSession.js";
+import { HUB_URL, takeHubAssertion, goToHub, openHub, signOutToHub, hubNav, watchSystemSuspension, loadHubPayment, acknowledgeHubPayment, payNowHubPayment } from "./hubSession.js";
 import HubPaymentBanner, { usePaymentStatus } from "./HubPaymentBanner.jsx";
 
 // ---- DALAB INTERNET / Admin design tokens ----
@@ -17989,7 +17989,7 @@ export default function AdminDashboard() {
   return (
     <>
       {admin.viaHub && admin.role === "super_admin" && (
-        <HubPaymentBanner data={payment} onAcknowledge={() => acknowledgeHubPayment().finally(refreshPayment)} />
+        <HubPaymentBanner data={payment} onAcknowledge={() => acknowledgeHubPayment().finally(refreshPayment)} onPayNow={payNowHubPayment} />
       )}
       <AdminDashboardShell
         admin={admin}

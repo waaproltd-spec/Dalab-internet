@@ -48,6 +48,15 @@ const T = {
     reminderTitle: "Xusuusin maalinle ah: lacag-bixinta sannadlaha",
     understood: "Waan fahmay",
     lang: "EN",
+    payNow: "HADDA BIXI",
+    payNowSub: "(Telegram Bot)",
+    opening: "Waa la furayaa…",
+    pending: (txn) => `Lacag-bixintaada (Transaction ID ${txn}) waxay sugaysaa xaqiijinta Owner-ka.`,
+    pendingShort: "Sugaya xaqiijin",
+    rejected: (txn) => `Lacag-bixinta Transaction ID ${txn} waa la diiday: lacagtu kuma soo gelin account-ka. Hubi oo mar kale soo gudbi.`,
+    extension: (d) => `Waxaa lagu siiyay 2 maalmood oo dheeraad ah: ugu dambeyn ${d}.`,
+    whereToPay: "Halka lacagta loo dirayo",
+    noInstructions: "Owner-ku weli ma qorin lambarka lacag-bixinta.",
   },
   en: {
     required: "Annual payment required!",
@@ -87,6 +96,15 @@ const T = {
     reminderTitle: "Daily reminder: annual payment",
     understood: "I understand",
     lang: "SO",
+    payNow: "PAY NOW",
+    payNowSub: "(Telegram Bot)",
+    opening: "Opening…",
+    pending: (txn) => `Your payment (transaction ID ${txn}) is awaiting the Owner's verification.`,
+    pendingShort: "Awaiting verification",
+    rejected: (txn) => `Your payment with transaction ID ${txn} was rejected: it did not arrive in the account. Check and submit again.`,
+    extension: (d) => `You were granted 2 extra days: pay by ${d} at the latest.`,
+    whereToPay: "Where to pay",
+    noInstructions: "The Owner has not set the payment number yet.",
   },
 };
 
@@ -153,9 +171,10 @@ function Icon({ kind, size = 28, color = "currentColor" }) {
 
 const KEYFRAMES = "@keyframes waaproPayPulse{0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,.55)}50%{box-shadow:0 0 0 10px rgba(220,38,38,0)}}";
 
-export default function HubPaymentBanner({ data, onAcknowledge }) {
+export default function HubPaymentBanner({ data, onAcknowledge, onPayNow }) {
   const [lang, setLang] = useState(readLang);
   const [open, setOpen] = useState(false);
+  const [opening, setOpening] = useState(false);
   const s = data?.subscription;
   if (!s) return null;
   const t = T[lang];
@@ -169,7 +188,36 @@ export default function HubPaymentBanner({ data, onAcknowledge }) {
       /* ignore */
     }
   };
-  const statusText = s.phase === "paid" ? t.statusPaid : s.phase === "expired" ? t.statusExpired : s.phase === "grace" ? t.statusGrace : t.statusPending;
+  const submission = data.submission;
+  const statusText =
+    s.phase === "paid" ? t.statusPaid
+      : submission?.status === "pending" ? `${t.pendingShort} (${submission.transactionId})`
+        : s.phase === "expired" ? t.statusExpired : s.phase === "grace" ? t.statusGrace : t.statusPending;
+
+  // PAY NOW opens the Telegram Payment Bot. The window is opened during the
+  // tap itself (phones block windows opened later), then pointed at the bot.
+  const payNow = async () => {
+    if (!data.payNow || !onPayNow) {
+      setOpen(true);
+      return;
+    }
+    const w = window.open("", "_blank");
+    setOpening(true);
+    try {
+      const url = await onPayNow();
+      if (url && w) w.location.href = url;
+      else if (url) window.location.href = url;
+      else {
+        if (w) w.close();
+        setOpen(true);
+      }
+    } catch {
+      if (w) w.close();
+      setOpen(true);
+    } finally {
+      setOpening(false);
+    }
+  };
 
   const langButton = (
     <button onClick={switchLang} style={{ background: "rgba(255,255,255,0.16)", color: "inherit", border: "1px solid rgba(255,255,255,0.35)", borderRadius: 8, padding: "4px 9px", fontSize: 12, fontWeight: 700, cursor: "pointer" }} aria-label="Language">
@@ -260,11 +308,40 @@ export default function HubPaymentBanner({ data, onAcknowledge }) {
           ))}
         </div>
 
+        {(submission || s.extension) && (
+          <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
+            {submission?.status === "pending" && (
+              <div style={{ background: "#FEF3C7", color: "#78350F", borderRadius: 10, padding: "8px 12px", fontSize: 13.5, fontWeight: 700 }}>⏳ {t.pending(submission.transactionId)}</div>
+            )}
+            {submission?.status === "rejected" && (
+              <div style={{ background: "#FFFFFF", color: "#991B1B", borderRadius: 10, padding: "8px 12px", fontSize: 13.5, fontWeight: 700 }}>❌ {t.rejected(submission.transactionId)}</div>
+            )}
+            {s.extension && (
+              <div style={{ background: "rgba(255,255,255,0.18)", borderRadius: 10, padding: "8px 12px", fontSize: 13.5, fontWeight: 700 }}>➕ {t.extension(fmtDate(s.extension.newDeadline, lang))}</div>
+            )}
+          </div>
+        )}
+
+        {submission?.status !== "pending" && (
+          <button
+            onClick={payNow}
+            disabled={opening}
+            style={{ marginTop: 12, width: "100%", minHeight: 56, borderRadius: 14, border: "3px solid #FACC15", background: "linear-gradient(135deg, #1D4ED8, #2563EB)", color: "#FFFFFF", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 12, fontFamily: FONT }}
+          >
+            <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden="true"><path fill="#FFFFFF" d="M21.9 4.3 18.8 19c-.2 1-.8 1.3-1.7.8l-4.6-3.4-2.2 2.1c-.2.2-.5.4-1 .4l.3-4.7 8.6-7.8c.4-.3-.1-.5-.6-.2L6.9 12.9 2.4 11.5c-1-.3-1-1 .2-1.5L20.5 3c.8-.3 1.6.2 1.4 1.3z" /></svg>
+            <span style={{ display: "flex", flexDirection: "column", lineHeight: 1.15, textAlign: "left" }}>
+              <span style={{ fontSize: 19, fontWeight: 900, letterSpacing: 0.5 }}>{opening ? t.opening : t.payNow}</span>
+              {data.payNow && <span style={{ fontSize: 12.5, opacity: 0.9 }}>{t.payNowSub}</span>}
+            </span>
+          </button>
+        )}
+
         {open && (
           <div style={{ marginTop: 10, background: "rgba(0,0,0,0.22)", borderRadius: 12, padding: "10px 14px", fontSize: 13.5, display: "grid", gap: 6 }}>
             <div>{t.status}: <b>{statusText}</b></div>
             <div>{t.lastPayment}: <b>{s.lastPaymentDate ? fmtDate(s.lastPaymentDate, lang) : t.notPaid}</b></div>
             <div>{t.graceEnds}: <b>{fmtDate(s.graceEndDate, lang)}</b></div>
+            <div>{t.whereToPay}: <b style={{ whiteSpace: "pre-wrap" }}>{data.paymentInstructions || t.noInstructions}</b></div>
             <div>{t.howToPay}: {t.howToPayText}</div>
           </div>
         )}

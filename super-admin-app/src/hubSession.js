@@ -108,3 +108,12 @@ export async function acknowledgeHubPayment() {
   if (!token || !HUB_URL) return;
   await fetch(`${HUB_URL}/api/billing/view/reminder-seen`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
 }
+
+/** PAY NOW: a one-time link to the Telegram Payment Bot for this Super Admin (null if the bot is off). */
+export async function payNowHubPayment() {
+  const token = payToken();
+  if (!token || !HUB_URL) return null;
+  const res = await fetch(`${HUB_URL}/api/billing/view/pay-now`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) return null;
+  return (await res.json()).url || null;
+}
