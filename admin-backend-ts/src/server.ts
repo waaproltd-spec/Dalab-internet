@@ -3,6 +3,7 @@
 // error-handling middleware below via next(err) instead of leaving the
 // request hanging forever with no response (Express 4 doesn't do this on its
 // own; Express 5 does, but that's a larger upgrade than this fix warrants).
+import { hubRouter, cleanupHubTokens } from "./routes/hub.routes.js";
 import "express-async-errors";
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
@@ -52,7 +53,7 @@ import { footballRouter } from "./routes/football.routes.js";
 import { pool, queryOne } from "./db/pool.js";
 import { seedAll } from "./db/seed.js";
 import { sendJson } from "./utils/camelCase.js";
-import { customerSuspensionMiddleware } from "./auth/middleware.js";
+import { customerSuspensionMiddleware, staffStatusMiddleware } from "./auth/middleware.js";
 import { deviceActivationRouter, agentDeviceActivationMiddleware } from "./routes/deviceActivation.routes.js";
 import { smsFormatsRouter } from "./routes/smsFormats.routes.js";
 import { interactiveServicesRouter } from "./routes/interactiveServices.routes.js";
@@ -271,7 +272,9 @@ app.use(customerSuspensionMiddleware);
 // Device Activation: every agent API call must come from an approved app install.
 app.use(agentDeviceActivationMiddleware);
 
+app.use(staffStatusMiddleware);
 app.use(authRouter);
+app.use(hubRouter);
 app.use(deviceActivationRouter);
 app.use(smsFormatsRouter);
 app.use(usersRouter);
@@ -342,6 +345,9 @@ async function start() {
     // eslint-disable-next-line no-console
     console.error("Seeding failed (has `npm run migrate` been run?):", err);
   }
+  setInterval(() => {
+    cleanupHubTokens().catch(() => undefined);
+  }, 10 * 60 * 1000);
   app.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(`DALAB Admin API listening on port ${PORT}`);

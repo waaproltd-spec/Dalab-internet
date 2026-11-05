@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { hubOnlyLogin } from "../auth/hub.js";
 import { randomUUID } from "node:crypto";
 import { query, queryOne } from "../db/pool.js";
 import { requireAuth } from "../auth/middleware.js";
@@ -7,6 +8,16 @@ import { hashPassword, isValidEmail, isStrongPassword } from "../auth/crypto.js"
 import { sendJson } from "../utils/camelCase.js";
 
 export const usersRouter = Router();
+
+// With the Admin Hub, accounts linked to it are managed there (the hub would
+// overwrite a local change on the next sign-in). With HUB_ONLY_LOGIN every
+// admin is managed in the hub.
+const HUB_MANAGED = "This admin is managed in the Admin Hub (admin.waaproltd.com).";
+async function hubManaged(id: string): Promise<boolean> {
+  if (hubOnlyLogin()) return true;
+  const row = await queryOne<{ hub_user_id: string | null }>(`SELECT hub_user_id FROM admin_users WHERE id=$1`, [id]);
+  return !!row?.hub_user_id;
+}
 
 // Only a Super Admin can create/manage other staff accounts — an Admin
 // cannot promote themselves or create new Admins. This is the actual RBAC
@@ -17,6 +28,7 @@ usersRouter.get("/admin/users", requireAuth("super_admin"), async (_req, res) =>
 });
 
 usersRouter.post("/admin/users", requireAuth("super_admin"), async (req, res) => {
+  if (hubOnlyLogin()) return sendJson(res, 403, { error: "Add admins in the Admin Hub (admin.waaproltd.com)." });
   const { email, password, role } = req.body;
   const normalizedEmail = String(email ?? "").trim().toLowerCase();
   if (!isValidEmail(normalizedEmail)) return sendJson(res, 400, { error: "A valid email is required" });
@@ -37,6 +49,7 @@ usersRouter.post("/admin/users", requireAuth("super_admin"), async (req, res) =>
 });
 
 usersRouter.put("/admin/users/:id/role", requireAuth("super_admin"), async (req, res) => {
+  if (await hubManaged(req.params.id)) return sendJson(res, 409, { error: HUB_MANAGED });
   const { role } = req.body;
   if (!["admin", "super_admin"].includes(role)) return sendJson(res, 400, { error: "role must be 'admin' or 'super_admin'" });
   const result = await query(`UPDATE admin_users SET role=$1 WHERE id=$2 RETURNING id`, [role, req.params.id]);
@@ -47,6 +60,7 @@ usersRouter.put("/admin/users/:id/role", requireAuth("super_admin"), async (req,
 // Deleting the last remaining Super Admin would lock everyone out — guard
 // against that rather than let it happen silently.
 usersRouter.delete("/admin/users/:id", requireAuth("super_admin"), async (req, res) => {
+  if (await hubManaged(req.params.id)) return sendJson(res, 409, { error: HUB_MANAGED });
   const target = await queryOne(`SELECT role FROM admin_users WHERE id=$1`, [req.params.id]);
   if (!target) return sendJson(res, 404, { error: "User not found" });
 
@@ -69,6 +83,7 @@ usersRouter.get("/admin/users/:id/permissions", requireAuth("super_admin"), asyn
 });
 
 usersRouter.put("/admin/users/:id/permissions", requireAuth("super_admin"), async (req, res) => {
+  if (await hubManaged(req.params.id)) return sendJson(res, 409, { error: HUB_MANAGED });
   const { permissions } = req.body;
   if (!Array.isArray(permissions) || !permissions.every(isPermission)) {
     return sendJson(res, 400, { error: `permissions must be an array drawn from: ${PERMISSIONS.join(", ")}` });

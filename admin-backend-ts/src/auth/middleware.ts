@@ -36,6 +36,26 @@ export function requireAuth(...roles: Role[]) {
   };
 }
 
+/**
+ * Staff tokens: the admin must still exist, not be disabled, and still have
+ * the role the token was issued for -- checked on every request, so the
+ * Admin Hub removing someone's access (or changing their role) takes effect
+ * immediately rather than when the 15-minute token runs out.
+ */
+export async function staffStatusMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
+  const header = req.headers.authorization ?? "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+  if (!token) return next();
+  const payload = verifyToken(token);
+  if (!payload || (payload.role !== "super_admin" && payload.role !== "admin")) return next();
+  const admin = await queryOne<{ role: string; disabled_at: string | null }>(`SELECT role, disabled_at FROM admin_users WHERE id=$1`, [payload.sub]);
+  if (!admin || admin.disabled_at || admin.role !== payload.role) {
+    sendJson(res, 401, { error: "Your admin access has changed. Please sign in again.", code: "ADMIN_ACCESS_CHANGED" });
+    return;
+  }
+  next();
+}
+
 /** super_admin and admin both count as "staff" for routes either may use. */
 export const requireStaff = () => requireAuth("super_admin", "admin");
 

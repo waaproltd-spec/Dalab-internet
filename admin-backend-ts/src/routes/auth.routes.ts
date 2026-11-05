@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { hubOnlyLogin } from "../auth/hub.js";
 import { randomUUID, createHash } from "node:crypto";
 import { query, queryOne } from "../db/pool.js";
 import {
@@ -13,6 +14,8 @@ import { validateMobileNumber, normalizeMobileDigits } from "../lib/phoneValidat
 import { parseDeviceInfo, registerCustomerDeviceLogin } from "../services/deviceTracking.js";
 import { canonicalCustomerPhone, findCustomerByPhone } from "../lib/customerPhone.js";
 
+const HUB_SIGN_IN_MESSAGE = "Sign in through the Admin Hub: https://admin.waaproltd.com";
+
 export const authRouter = Router();
 
 // deviceId is optional and, today, only ever sent by customer-app login/
@@ -20,7 +23,7 @@ export const authRouter = Router();
 // other role's call sites below simply don't pass one, so this is a purely
 // additive column with no change to how tokens are issued or verified for
 // admin/agent/reseller.
-async function issueTokens(subjectId: string, role: Role, deviceId: string | null = null) {
+export async function issueTokens(subjectId: string, role: Role, deviceId: string | null = null) {
   const accessToken = signAccessToken(subjectId, role);
   const jti = randomUUID();
   const refreshToken = signRefreshToken(subjectId, role, jti);
@@ -591,10 +594,15 @@ authRouter.post("/admin/auth/login", rateLimit("admin-login", 5, 15 * 60 * 1000)
   if (!isValidEmail(email) || !password) {
     return sendJson(res, 400, { error: "A valid email and password are required" });
   }
+  if (hubOnlyLogin()) return sendJson(res, 403, { error: HUB_SIGN_IN_MESSAGE, code: "HUB_ONLY" });
   const admin = await queryOne(`SELECT * FROM admin_users WHERE email=$1`, [email]);
   if (!admin || !(await verifyPassword(password, admin.password_hash))) {
     return sendJson(res, 401, { error: "Invalid email or password" });
   }
+  // Once an admin has used the Admin Hub, the hub is their only way in (a
+  // removed or disabled hub account must not keep a back door here).
+  if (admin.hub_user_id) return sendJson(res, 403, { error: HUB_SIGN_IN_MESSAGE, code: "HUB_ONLY" });
+  if (admin.disabled_at) return sendJson(res, 403, { error: "This admin account is disabled." });
   await query(`UPDATE admin_users SET last_login_at = now() WHERE id=$1`, [admin.id]);
   const tokens = await issueTokens(admin.id, admin.role as Role);
   sendJson(res, 200, {
@@ -610,6 +618,9 @@ authRouter.post("/admin/auth/change-password", requireAuth("super_admin", "admin
     return sendJson(res, 400, { error: "New password must be at least 8 characters and include a letter, a number, and a symbol" });
   }
   const admin = await queryOne(`SELECT * FROM admin_users WHERE id=$1`, [req.auth!.sub]);
+  if (hubOnlyLogin() || admin?.hub_user_id) {
+    return sendJson(res, 403, { error: "Your password is managed in the Admin Hub (admin.waaproltd.com).", code: "HUB_ONLY" });
+  }
   if (!admin || !(await verifyPassword(currentPassword, admin.password_hash))) {
     return sendJson(res, 401, { error: "Current password is incorrect" });
   }
@@ -621,10 +632,12 @@ authRouter.post("/admin/auth/forgot-password", rateLimit("forgot-password", 3, 6
   const email = String(req.body.email ?? "").trim().toLowerCase();
   if (!isValidEmail(email)) return sendJson(res, 400, { error: "A valid email is required" });
 
+  if (hubOnlyLogin()) return sendJson(res, 403, { error: HUB_SIGN_IN_MESSAGE, code: "HUB_ONLY" });
   const admin = await queryOne(`SELECT * FROM admin_users WHERE email=$1`, [email]);
   const response: Record<string, unknown> = { message: "If that email has an account, a reset link has been sent." };
 
-  if (admin) {
+  // Hub-linked or disabled admins never get a local reset link.
+  if (admin && !admin.hub_user_id && !admin.disabled_at) {
     const resetToken = randomUUID() + randomUUID();
     await query(
       `INSERT INTO admin_password_resets (id, admin_id, token_hash, expires_at) VALUES ($1,$2,$3, now() + interval '30 minutes')`,
@@ -652,6 +665,11 @@ authRouter.post("/admin/auth/reset-password", rateLimit("reset-password", 10, 15
     [tokenHash]
   );
   if (!row) return sendJson(res, 401, { error: "Invalid or expired reset link" });
+  const resetAdmin = await queryOne(`SELECT hub_user_id, disabled_at FROM admin_users WHERE id=$1`, [row.admin_id]);
+  if (hubOnlyLogin() || resetAdmin?.hub_user_id || resetAdmin?.disabled_at) {
+    await query(`UPDATE admin_password_resets SET consumed=true WHERE id=$1`, [row.id]);
+    return sendJson(res, 403, { error: HUB_SIGN_IN_MESSAGE, code: "HUB_ONLY" });
+  }
 
   await query(`UPDATE admin_password_resets SET consumed=true WHERE id=$1`, [row.id]);
   await query(`UPDATE admin_users SET password_hash=$1 WHERE id=$2`, [await hashPassword(newPassword), row.admin_id]);
@@ -762,6 +780,16 @@ authRouter.post("/auth/refresh", async (req, res) => {
     if (device?.revoked_at) {
       await query(`UPDATE refresh_tokens SET revoked=true, rotated_at=NULL WHERE id=$1`, [row.id]);
       return sendJson(res, 401, { error: "This device's access has been removed. Please sign in again." });
+    }
+  }
+
+  // Staff: the account must still be active here, with the same role the
+  // token carries (the Admin Hub can disable it or change the role).
+  if (payload.role === "super_admin" || payload.role === "admin") {
+    const staff = await queryOne<{ role: string; disabled_at: string | null }>(`SELECT role, disabled_at FROM admin_users WHERE id=$1`, [payload.sub]);
+    if (!staff || staff.disabled_at || staff.role !== payload.role) {
+      await query(`UPDATE refresh_tokens SET revoked=true WHERE id=$1`, [row.id]);
+      return sendJson(res, 401, { error: "Your admin access has changed. Please sign in again." });
     }
   }
 

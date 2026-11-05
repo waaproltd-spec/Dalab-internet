@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { useTheme, useLang, setTheme, setLang } from "./prefs.js";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
+import { HUB_URL, takeHubAssertion, goToHub } from "./hubSession.js";
 
 // ---- DALAB INTERNET / Admin design tokens ----
 // INDIGO is the shared brand color, kept under its old name (avoids a
@@ -137,6 +138,7 @@ async function dalabAdminApiRequest(path, { method = "GET", body, _isRetry = fal
 // stubs, just unreachable until DALAB_API_BASE_URL points at a deployed server.
 const DalabAdminApi = {
   login: (email, password) => dalabAdminApiRequest("/admin/auth/login", { method: "POST", body: { email, password } }),
+  hubSso: (assertion) => dalabAdminApiRequest("/admin/auth/hub-sso", { method: "POST", body: { assertion } }),
   forgotPassword: (email) => dalabAdminApiRequest("/admin/auth/forgot-password", { method: "POST", body: { email } }),
   resetPassword: (token, newPassword) => dalabAdminApiRequest("/admin/auth/reset-password", { method: "POST", body: { token, newPassword } }),
   changePassword: (currentPassword, newPassword) => dalabAdminApiRequest("/admin/auth/change-password", { method: "POST", body: { currentPassword, newPassword } }),
@@ -1002,7 +1004,7 @@ const NAV = [
 function Logo({ size = 34 }) {
   return (
     <img
-      src="/logo.png"
+      src={`${import.meta.env.BASE_URL}logo.png`}
       alt="Dalab Internet"
       width={size}
       height={size}
@@ -2704,7 +2706,7 @@ const DATA_ICON_COMPANIES = ["hormuud", "somnet", "somtel", "amtel"];
 const dataIconFor = (company) => {
   const name = `${company?.slug || ""} ${company?.name || ""}`.toLowerCase();
   const match = DATA_ICON_COMPANIES.find((c) => name.includes(c)) || "somnet";
-  return `/service-types/mobile_data_${match}.png`;
+  return `${import.meta.env.BASE_URL}service-types/mobile_data_${match}.png`;
 };
 
 // A type's icon: its artwork when it has one (Data), else its emoji.
@@ -17917,6 +17919,11 @@ function AdminDashboardShell({ admin, onLogout }) {
 // this client-side gate is a UX convenience, not the actual security boundary.
 export default function AdminDashboard() {
   const [admin, setAdmin] = useState(null);
+  // Opened from the Admin Hub: exchange its one-time hand-off for a session.
+  const [hubAssertion] = useState(takeHubAssertion);
+  const [hubStatus, setHubStatus] = useState(hubAssertion ? "signing-in" : null);
+  const [hubError, setHubError] = useState("");
+  const [showLocalLogin, setShowLocalLogin] = useState(!HUB_URL);
 
   // Lets the module-level request helper (dalabAdminApiRequest) drop the
   // admin back to the login screen when a token refresh itself fails — the
@@ -17929,6 +17936,42 @@ export default function AdminDashboard() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!hubAssertion) return;
+    let cancelled = false;
+    DalabAdminApi.hubSso(hubAssertion)
+      .then((result) => {
+        if (cancelled) return;
+        dalabAdminAccessToken = result.accessToken;
+        dalabAdminRefreshToken = result.refreshToken;
+        setAdmin({ ...result.admin, viaHub: true });
+        setHubStatus(null);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setHubError(err.message || "Couldn't sign in from the Admin Hub.");
+        setHubStatus("failed");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [hubAssertion]);
+
+  if (!admin && hubStatus === "signing-in") {
+    return <HubNotice title="Signing you in…" message="Opening this dashboard from the Admin Hub." />;
+  }
+
+  if (!admin && !showLocalLogin) {
+    return (
+      <HubNotice
+        title="Sign in through the Admin Hub"
+        message={hubError || "Admins open this dashboard from the Admin Hub with their own account."}
+        isError={Boolean(hubError)}
+        onLocalLogin={() => setShowLocalLogin(true)}
+      />
+    );
+  }
+
   if (!admin) {
     return <AdminLoginScreen onLoggedIn={setAdmin} />;
   }
@@ -17940,7 +17983,30 @@ export default function AdminDashboard() {
         dalabAdminAccessToken = null;
         dalabAdminRefreshToken = null;
         setAdmin(null);
+        if (admin.viaHub && HUB_URL) goToHub();
       }}
     />
+  );
+}
+
+function HubNotice({ title, message, isError = false, onLocalLogin }) {
+  return (
+    <div style={{ minHeight: "100vh", background: "var(--sidebar-bg)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "'Inter','Segoe UI',system-ui,-apple-system,sans-serif" }}>
+      <div style={{ width: "100%", maxWidth: 400, background: "var(--c-surface)", borderRadius: 16, padding: 28, textAlign: "center" }}>
+        <img src={`${import.meta.env.BASE_URL}logo.png`} alt="" width={56} height={56} style={{ borderRadius: 14, marginBottom: 14 }} />
+        <h1 style={{ fontSize: 20, margin: "0 0 8px", color: INK }}>{title}</h1>
+        <p style={{ fontSize: 14, margin: "0 0 18px", color: isError ? "var(--c-c81e2c)" : SLATE }}>{message}</p>
+        {HUB_URL && onLocalLogin !== undefined && (
+          <button onClick={goToHub} style={{ width: "100%", minHeight: 44, borderRadius: 10, border: "none", background: INDIGO, color: "#fff", fontWeight: 700, cursor: "pointer" }}>
+            Go to the Admin Hub
+          </button>
+        )}
+        {onLocalLogin && (
+          <button onClick={onLocalLogin} style={{ marginTop: 12, background: "none", border: "none", color: SLATE, fontSize: 12.5, cursor: "pointer", textDecoration: "underline" }}>
+            Use a local account instead
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
