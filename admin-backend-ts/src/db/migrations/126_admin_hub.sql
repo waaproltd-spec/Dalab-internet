@@ -12,3 +12,13 @@ CREATE TABLE IF NOT EXISTS hub_used_tokens (
   jti        TEXT PRIMARY KEY,
   expires_at TIMESTAMPTZ NOT NULL
 );
+
+-- System Control (Admin Hub): whether the Platform Owner has suspended this
+-- whole system. One row; kept here so it survives restarts and still holds
+-- if the hub can't be reached. Suspending never changes any other data.
+CREATE TABLE IF NOT EXISTS hub_system_state (
+  id         INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  suspended  BOOLEAN NOT NULL DEFAULT false,
+  changed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  changed_by TEXT
+);

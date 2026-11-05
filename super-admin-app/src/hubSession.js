@@ -49,3 +49,32 @@ export function signOutToHub() {
   }
   if (HUB_URL) window.location.assign(`${HUB_URL}/?from=system`);
 }
+
+/**
+ * System Control: when this system's API answers "suspended" (the Platform
+ * Owner disabled the system in the Admin Hub), tell the dashboard so it
+ * shows the suspension notice instead of a half-working page.
+ */
+let watching = false;
+const suspendedListeners = new Set();
+export function watchSystemSuspension(onSuspended) {
+  suspendedListeners.add(onSuspended);
+  if (!watching && typeof window !== "undefined" && window.fetch) {
+    watching = true;
+    const original = window.fetch.bind(window);
+    window.fetch = async (...args) => {
+      const res = await original(...args);
+      if (res.status === 503) {
+        res
+          .clone()
+          .json()
+          .then((body) => {
+            if (body && body.code === "SYSTEM_SUSPENDED") suspendedListeners.forEach((fn) => fn(body.error));
+          })
+          .catch(() => undefined);
+      }
+      return res;
+    };
+  }
+  return () => suspendedListeners.delete(onSuspended);
+}

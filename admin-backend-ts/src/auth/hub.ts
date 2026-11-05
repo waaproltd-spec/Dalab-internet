@@ -39,7 +39,7 @@ export type HubClaims = { [key: string]: unknown; typ: string; jti: string; sub?
  * by the hub, addressed to THIS system, of the expected kind, not expired,
  * and never seen before. Returns null on any failure.
  */
-export async function verifyHubToken(token: string, typ: "hub_sso" | "hub_sync" | "hub_meta"): Promise<HubClaims | null> {
+export async function verifyHubToken(token: string, typ: "hub_sso" | "hub_sync" | "hub_meta" | "hub_status"): Promise<HubClaims | null> {
   const key = hubPublicKey();
   const aud = hubSystemKey();
   if (!key || !aud || !token) return null;

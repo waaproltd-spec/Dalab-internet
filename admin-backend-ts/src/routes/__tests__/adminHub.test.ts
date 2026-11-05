@@ -19,6 +19,7 @@ import { requireStaff, staffStatusMiddleware } from "../../auth/middleware.js";
 import { authRouter } from "../auth.routes.js";
 import { hubRouter } from "../hub.routes.js";
 import { usersRouter } from "../users.routes.js";
+import { systemSuspensionMiddleware, rememberSystemState } from "../../auth/systemStatus.js";
 
 const jwt = jwtLib as unknown as { sign: (p: object, k: string, o: Record<string, unknown>) => string };
 
@@ -33,10 +34,14 @@ const SECOND_EMAIL = "hub-test-second@example.com";
 
 const app = express();
 app.use(express.json());
+app.use(systemSuspensionMiddleware);
 app.use(staffStatusMiddleware);
 app.use(authRouter);
 app.use(hubRouter);
 app.use(usersRouter);
+app.get("/test/customer-or-agent", (_req, res) => {
+  res.json({ ok: true });
+});
 app.get("/test/staff", requireStaff(), (_req, res) => {
   res.json({ ok: true });
 });
@@ -187,4 +192,47 @@ test("HUB_ONLY_LOGIN closes local sign-in for everyone", async () => {
   } finally {
     delete process.env.HUB_ONLY_LOGIN;
   }
+});
+
+test("System Control: a suspended system refuses everything but the hub; re-enabling restores it", async () => {
+  const status = (st: string, changedAt: string, opts = {}) =>
+    call("POST", "/admin/hub/status", {}, sign("hub_status", { status: st, changedAt, changedBy: "owner@example.com" }, opts));
+  process.env.HUB_ONLY_LOGIN = "";
+  await query(`DELETE FROM hub_system_state`);
+  rememberSystemState(false);
+  assert.equal((await call("GET", "/test/customer-or-agent")).status, 200);
+
+  // Only a signed status message for this system counts.
+  assert.equal((await call("POST", "/admin/hub/status", {}, sign("hub_sync", { status: "suspended", changedAt: new Date().toISOString() }))).status, 401);
+  assert.equal((await status("suspended", new Date().toISOString(), { aud: "other-system" })).status, 401);
+  assert.equal((await status("suspended", new Date().toISOString(), { key: otherKeys.privateKey })).status, 401);
+  assert.equal((await call("GET", "/test/customer-or-agent")).status, 200);
+
+  const t1 = new Date(Date.now() - 1000).toISOString();
+  const off = await status("suspended", t1);
+  assert.equal(off.status, 200);
+  assert.equal(off.body.status, "suspended");
+  for (const path of ["/test/customer-or-agent", "/test/staff"]) {
+    const r = await call("GET", path);
+    assert.equal(r.status, 503, path);
+    assert.equal(r.body.error, "System temporarily suspended. Please contact support.");
+    assert.equal(r.body.code, "SYSTEM_SUSPENDED");
+  }
+  // Admin sign-in (hub hand-off and local) is blocked too ...
+  assert.equal((await ssoFor(randomUUID(), "hub-test-blocked@example.com", "super_admin")).status, 503);
+  assert.equal((await call("POST", "/admin/auth/login", { email: IMPORTED_EMAIL, password: "x" })).status, 503);
+  assert.equal(await queryOne(`SELECT 1 FROM admin_users WHERE email='hub-test-blocked@example.com'`), null);
+  // ... but the hub can still reach it, and survives a restart (state is in the database).
+  assert.equal((await call("GET", "/admin/hub/meta", undefined, sign("hub_meta", {}))).status, 200);
+  assert.equal((await queryOne(`SELECT suspended FROM hub_system_state WHERE id=1`))!.suspended, true);
+
+  // A delayed, older message can't undo a newer change.
+  assert.equal((await status("active", new Date(Date.now() - 60_000).toISOString())).body.status, "suspended");
+
+  const on = await status("active", new Date().toISOString());
+  assert.equal(on.body.status, "active");
+  assert.equal((await call("GET", "/test/customer-or-agent")).status, 200);
+  assert.equal((await ssoFor(randomUUID(), "hub-test-unblocked@example.com", "admin")).status, 200);
+  await query(`DELETE FROM hub_system_state`);
+  rememberSystemState(false);
 });

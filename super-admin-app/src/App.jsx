@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { useTheme, useLang, setTheme, setLang } from "./prefs.js";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
-import { HUB_URL, takeHubAssertion, goToHub, openHub, signOutToHub, hubNav } from "./hubSession.js";
+import { HUB_URL, takeHubAssertion, goToHub, openHub, signOutToHub, hubNav, watchSystemSuspension } from "./hubSession.js";
 
 // ---- DALAB INTERNET / Admin design tokens ----
 // INDIGO is the shared brand color, kept under its old name (avoids a
@@ -17924,6 +17924,9 @@ export default function AdminDashboard() {
   const [hubStatus, setHubStatus] = useState(hubAssertion ? "signing-in" : null);
   const [hubError, setHubError] = useState("");
   const [showLocalLogin, setShowLocalLogin] = useState(!HUB_URL);
+  // Set when this system's API says the Platform Owner has suspended it.
+  const [suspendedMessage, setSuspendedMessage] = useState("");
+  useEffect(() => watchSystemSuspension((message) => setSuspendedMessage(message || "System temporarily suspended. Please contact support.")), []);
 
   // Lets the module-level request helper (dalabAdminApiRequest) drop the
   // admin back to the login screen when a token refresh itself fails — the
@@ -17956,6 +17959,10 @@ export default function AdminDashboard() {
       cancelled = true;
     };
   }, [hubAssertion]);
+
+  if (suspendedMessage) {
+    return <HubNotice title="System suspended" message={suspendedMessage} isError onLocalLogin={HUB_URL ? null : undefined} />;
+  }
 
   if (!admin && hubStatus === "signing-in") {
     return <HubNotice title="Signing you in…" message="Opening this dashboard from the Admin Hub." />;

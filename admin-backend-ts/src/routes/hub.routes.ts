@@ -8,6 +8,7 @@ import { rateLimit } from "../auth/rateLimit.js";
 import { sendJson } from "../utils/camelCase.js";
 import { issueTokens } from "./auth.routes.js";
 import { Role } from "../types/index.js";
+import { rememberSystemState } from "../auth/systemStatus.js";
 
 export const hubRouter = Router();
 
@@ -134,6 +135,32 @@ hubRouter.get("/admin/hub/meta", async (req, res) => {
   const claims = await verifyHubToken(bearer(req.headers.authorization), "hub_meta");
   if (!claims) return sendJson(res, 401, { error: "Invalid hub request." });
   sendJson(res, 200, { permissions: PERMISSIONS });
+});
+
+/**
+ * System Control: the Platform Owner suspends or re-enables this whole
+ * system. Stored here so it holds across restarts and without the hub. A
+ * change older than the one already stored (a delayed retry) is ignored.
+ */
+hubRouter.post("/admin/hub/status", async (req, res) => {
+  if (!hubEnabled()) return sendJson(res, 404, { error: "Admin Hub is not enabled on this system." });
+  const claims = await verifyHubToken(bearer(req.headers.authorization), "hub_status");
+  if (!claims) return sendJson(res, 401, { error: "Invalid hub request." });
+  const status = claims.status;
+  const changedAt = typeof claims.changedAt === "string" ? new Date(claims.changedAt) : null;
+  if ((status !== "active" && status !== "suspended") || !changedAt || Number.isNaN(changedAt.getTime())) {
+    return sendJson(res, 400, { error: "Invalid status." });
+  }
+  const changedBy = typeof claims.changedBy === "string" ? claims.changedBy.slice(0, 200) : null;
+  await query(
+    `INSERT INTO hub_system_state (id, suspended, changed_at, changed_by) VALUES (1,$1,$2,$3)
+     ON CONFLICT (id) DO UPDATE SET suspended=EXCLUDED.suspended, changed_at=EXCLUDED.changed_at, changed_by=EXCLUDED.changed_by
+      WHERE hub_system_state.changed_at <= EXCLUDED.changed_at`,
+    [status === "suspended", changedAt.toISOString(), changedBy]
+  );
+  const row = await queryOne<{ suspended: boolean }>(`SELECT suspended FROM hub_system_state WHERE id=1`);
+  rememberSystemState(row?.suspended === true);
+  sendJson(res, 200, { status: row?.suspended ? "suspended" : "active" });
 });
 
 /** Old single-use markers can go once they would have expired anyway. */
