@@ -313,13 +313,18 @@ ussdRouter.get("/admin/ussd-logs", requireAuth("super_admin"), async (req, res) 
  * to resolve with an explicit ussdTemplateId link.
  */
 export async function matchTemplateByName(companyId: string, packageName: string): Promise<{ id: string } | null> {
+  // A menu service created from the dashboard (menu_category_slug set,
+  // migration 126) is only ever reached through its own packages' ID link,
+  // never by guessing from another package's name -- otherwise a new
+  // service named e.g. "Data" could take over unrelated, unlinked packages.
+  // Every template that existed before keeps matching exactly as before.
   const exact = await queryOne<{ id: string }>(
-    `SELECT id FROM ussd_templates WHERE company_id=$1 AND status='enabled' AND LOWER(service_name)=LOWER($2) LIMIT 1`,
+    `SELECT id FROM ussd_templates WHERE company_id=$1 AND status='enabled' AND menu_category_slug IS NULL AND LOWER(service_name)=LOWER($2) LIMIT 1`,
     [companyId, packageName]
   );
   if (exact) return exact;
   const candidates = await query<{ id: string; service_name: string }>(
-    `SELECT id, service_name FROM ussd_templates WHERE company_id=$1 AND status='enabled'`,
+    `SELECT id, service_name FROM ussd_templates WHERE company_id=$1 AND status='enabled' AND menu_category_slug IS NULL`,
     [companyId]
   );
   const lowerPackageName = packageName.toLowerCase();

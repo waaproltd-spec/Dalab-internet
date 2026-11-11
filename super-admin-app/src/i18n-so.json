@@ -1553,5 +1553,13 @@
 "· pending": "· sugaya",
 "— none —": "— midna —",
 "— unlinked —": "— aan la xirin —",
-"•••• (set — type to replace)": "•••• (waa la dejiyay — qor si aad u beddesho)"
+"•••• (set — type to replace)": "•••• (waa la dejiyay — qor si aad u beddesho)",
+"USSD Services": "Adeegyada USSD",
+"Add New USSD Service": "Ku dar Adeeg USSD Cusub",
+"All USSD Services": "Dhammaan Adeegyada USSD",
+"Custom reply / text": "Jawaab gaar ah / qoraal",
+"Create service": "Samee adeegga",
+"Service type": "Nooca adeegga",
+"USSD menu steps": "Tallaabooyinka menu-ga USSD",
+"Menu USSD services, each with its own code, menu steps, packages and on/off switch": "Adeegyada menu-ga USSD, mid kasta wuxuu leeyahay code, tallaabooyin menu, baakadyo iyo shid/dami u gaar ah"
 }

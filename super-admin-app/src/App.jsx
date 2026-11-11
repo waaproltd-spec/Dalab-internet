@@ -172,6 +172,9 @@ const DalabAdminApi = {
   getInteractiveService: (id) => dalabAdminApiRequest(`/admin/interactive-services/${id}`),
   updateInteractiveService: (id, body) => dalabAdminApiRequest(`/admin/interactive-services/${id}`, { method: "PUT", body }),
   setInteractiveServiceActive: (id, active) => dalabAdminApiRequest(`/admin/interactive-services/${id}/active`, { method: "PUT", body: { active } }),
+  createInteractiveService: (body) => dalabAdminApiRequest("/admin/interactive-services", { method: "POST", body }),
+  duplicateInteractiveService: (id, body) => dalabAdminApiRequest(`/admin/interactive-services/${id}/duplicate`, { method: "POST", body }),
+  deleteInteractiveService: (id) => dalabAdminApiRequest(`/admin/interactive-services/${id}`, { method: "DELETE" }),
   getPackagesMissingTemplate: () => dalabAdminApiRequest("/admin/packages/missing-template"),
   // One icon per package, shown in the Customer App's package list --
   // uploaded as a data URI (base64), same as Promo Images/Shop products.
@@ -966,7 +969,7 @@ const NAV = [
   { id: "provider-numbers", label: "Provider Numbers", icon: Radio, permission: "companies.manage" },
   { id: "payment-wallets", label: "Payment Wallets", icon: CreditCard, superAdminOnly: true },
   { id: "packages", label: "Packages & Pricing", icon: Package, permission: "packages.manage" },
-  { id: "dhameys-plus", label: "Dhameys Plus", icon: Radio, permission: "packages.manage" },
+  { id: "dhameys-plus", label: "USSD Services", icon: Radio, permission: "packages.manage" },
   { id: "categories", label: "Categories", icon: Tags, permission: "categories.manage" },
   { id: "orders", label: "Orders", icon: ShoppingCart, permission: "orders.manage" },
   { id: "offline", label: "Offline (Rukumo)", icon: WifiOff, permission: "orders.manage" },
@@ -16291,17 +16294,62 @@ const usd = (v) => {
 };
 const profitColor = (v) => (Number(v) < 0 ? "var(--c-c81e2c)" : GREEN);
 
-// ---------------- Dhameys Plus (menu USSD services) ----------------
-// A menu-driven USSD service (Somtel Dhameys Plus: *101# > 4 > package >
-// 2 > number > PIN) and its packages. Packages are managed here with the
-// normal package routes (packages.manage); the USSD menu settings are
-// Super-Admin-only, like every USSD template (backend: interactiveServices
-// .routes.ts). The backend validates everything again on save.
+// ---------------- USSD Services (menu USSD services) ----------------
+// Menu-driven USSD services (e.g. Somtel Dhameys Plus: *101# > 4 > package >
+// 2 > number > PIN), each with its own first code, menu steps, packages and
+// on/off switch. A Super Admin can add, edit, duplicate and delete services
+// (backend: interactiveServices.routes.ts, which validates everything again
+// on save); packages.manage turns services on/off and manages packages with
+// the normal package routes. A new or duplicated service starts OFF.
 
-const MENU_STEP_REPLIES = [
+const MENU_STEP_TYPES = [
+  { value: "menu", label: "Menu number" },
   { value: "{packageCode}", label: "Package option" },
   { value: "{number}", label: "Receiver number" },
+  { value: "{amount}", label: "Amount" },
   { value: "{pin}", label: "Provider PIN" },
+  { value: "text", label: "Custom reply / text" },
+];
+const MENU_STEP_TOKENS = ["{packageCode}", "{number}", "{amount}", "{pin}"];
+
+/** Which of MENU_STEP_TYPES a saved step is. */
+function menuStepType(step) {
+  if (step.kind === "text") return "text";
+  if (MENU_STEP_TOKENS.includes(step.reply)) return step.reply;
+  return "menu";
+}
+
+/** A safe starting menu for a new service: menu number > package > number > PIN. */
+function defaultMenuSteps() {
+  return [
+    { reply: "1", expectText: "" },
+    { reply: "{packageCode}", expectText: "", checkMenuPrice: true },
+    { reply: "{number}", expectText: "" },
+    { reply: "{pin}", expectText: "", checkAmount: true, checkNumber: true },
+  ];
+}
+
+/** Editor rows -> the API's replySteps. */
+function menuStepsForApi(steps) {
+  return steps.map((s) => ({
+    reply: String(s.reply || "").trim(),
+    ...(s.kind === "text" ? { kind: "text" } : {}),
+    expect: String(s.expectText || "").split(",").map((t) => t.trim()).filter(Boolean),
+    checkMenuPrice: s.reply === "{packageCode}" && Boolean(s.checkMenuPrice),
+    checkAmount: Boolean(s.checkAmount),
+    checkNumber: Boolean(s.checkNumber),
+  }));
+}
+
+function menuStepsFromApi(steps) {
+  return (steps || []).map((s) => ({ ...s, expectText: (s.expect || []).join(", ") }));
+}
+
+const MENU_SERVICE_TYPES = [
+  { value: "data", label: "Data" },
+  { value: "call", label: "Calls" },
+  { value: "wifi", label: "WiFi" },
+  { value: "wireless", label: "Wireless" },
 ];
 
 const PACKAGE_FILTERS = [
@@ -16327,13 +16375,112 @@ function emptyMenuPackage(service) {
   };
 }
 
+const menuTh = { textAlign: "left", padding: "9px 10px", fontSize: 11, color: MUTE, fontWeight: 700, whiteSpace: "nowrap" };
+const menuTd = { padding: "9px 10px", fontSize: 12.5, color: INK, verticalAlign: "top" };
+function MenuCheck({ label, value, onChange, disabled }) {
+  return (
+    <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: INK, cursor: disabled ? "default" : "pointer" }}>
+      <input type="checkbox" checked={Boolean(value)} disabled={disabled} onChange={(e) => onChange(e.target.checked)} /> {label}
+    </label>
+  );
+}
+
+/** The ordered menu steps of a service: type, value, "screen must show"
+ * and checks, with add / delete / move up / move down. */
+function UssdStepsEditor({ steps, onChange, disabled }) {
+  const update = (i, patch) => onChange(steps.map((st, j) => (j === i ? { ...st, ...patch } : st)));
+  const move = (i, dir) => {
+    const j = i + dir;
+    if (j < 0 || j >= steps.length) return;
+    const next = [...steps];
+    [next[i], next[j]] = [next[j], next[i]];
+    onChange(next);
+  };
+  const setType = (i, type) => {
+    const { kind, ...rest } = steps[i];
+    if (type === "menu") update(i, { ...rest, kind: undefined, reply: /^[0-9]{1,3}$/.test(rest.reply) ? rest.reply : "1" });
+    else if (type === "text") update(i, { ...rest, kind: "text", reply: MENU_STEP_TOKENS.includes(rest.reply) ? "" : rest.reply });
+    else update(i, { ...rest, kind: undefined, reply: type, checkMenuPrice: type === "{packageCode}" ? true : rest.checkMenuPrice });
+  };
+  return (
+    <div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "var(--c-fafbff)" }}>
+              {["Step", "Reply", "Screen must show", "Checks", ""].map((h) => <th key={h} style={menuTh}>{h}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {steps.map((s, i) => {
+              const type = menuStepType(s);
+              return (
+                <tr key={i} style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <td style={{ ...menuTd, color: MUTE }}>{i + 1}</td>
+                  <td style={{ ...menuTd, whiteSpace: "nowrap" }}>
+                    <select style={{ ...inputStyle, width: 180, padding: "6px 8px" }} disabled={disabled} value={type} onChange={(e) => setType(i, e.target.value)}>
+                      {MENU_STEP_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                    </select>
+                    {type === "menu" && (
+                      <input style={{ ...inputStyle, width: 60, padding: "6px 8px", marginLeft: 6, fontFamily: "monospace" }} disabled={disabled} value={s.reply}
+                        onChange={(e) => update(i, { reply: e.target.value.replace(/[^0-9]/g, "").slice(0, 3) })} placeholder="4" />
+                    )}
+                    {type === "text" && (
+                      <input style={{ ...inputStyle, width: 120, padding: "6px 8px", marginLeft: 6, fontFamily: "monospace" }} disabled={disabled} value={s.reply}
+                        onChange={(e) => update(i, { reply: e.target.value.slice(0, 30) })} placeholder="e.g. Y" />
+                    )}
+                  </td>
+                  <td style={menuTd}>
+                    <input style={{ ...inputStyle, width: 200, padding: "6px 8px" }} disabled={disabled} value={s.expectText || ""} placeholder="e.g. Dhameys"
+                      onChange={(e) => update(i, { expectText: e.target.value })} />
+                  </td>
+                  <td style={menuTd}>
+                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                      {type === "{packageCode}" && <MenuCheck label="Menu price" value={s.checkMenuPrice} disabled={disabled} onChange={(v) => update(i, { checkMenuPrice: v })} />}
+                      <MenuCheck label="Amount" value={s.checkAmount} disabled={disabled} onChange={(v) => update(i, { checkAmount: v })} />
+                      <MenuCheck label="Number" value={s.checkNumber} disabled={disabled} onChange={(v) => update(i, { checkNumber: v })} />
+                    </div>
+                  </td>
+                  <td style={{ ...menuTd, whiteSpace: "nowrap" }}>
+                    {!disabled && (
+                      <div style={{ display: "flex", gap: 4 }}>
+                        <Button variant="ghost" onClick={() => move(i, -1)} disabled={i === 0}>↑</Button>
+                        <Button variant="ghost" onClick={() => move(i, 1)} disabled={i === steps.length - 1}>↓</Button>
+                        <Button variant="danger" icon={Trash2} onClick={() => onChange(steps.filter((_, j) => j !== i))} />
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {!disabled && (
+        <div style={{ marginTop: 10 }}>
+          <Button variant="ghost" icon={Plus} onClick={() => onChange([...steps, { reply: "1", expectText: "" }])}>Add step</Button>
+        </div>
+      )}
+      <div style={{ fontSize: 11.5, color: MUTE, marginTop: 8, lineHeight: 1.5 }}>
+        The first code is dialed, then each step's reply is sent in order. "Screen must show" words are checked on the carrier's screen before that reply.
+        The PIN must be the last step and must check the amount and number. A service needs a Package option step (which must check the menu price) or an Amount step.
+        Custom replies may use letters, digits, spaces and * # + . - (up to 30). Amount and custom replies need the latest Agent App.
+      </div>
+    </div>
+  );
+}
+
 function MenuUssdServicesSection({ admin }) {
   const isSuper = admin?.role === "super_admin";
   const canManage = hasPermission(admin, "packages.manage");
   const [services, setServices] = useState([]);
+  const [companies, setCompanies] = useState([]);
+  const [providerFilter, setProviderFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
   const [serviceId, setServiceId] = useState("");
   const [service, setService] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [listLoading, setListLoading] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [search, setSearch] = useState("");
@@ -16344,15 +16491,18 @@ function MenuUssdServicesSection({ admin }) {
   const [formError, setFormError] = useState("");
   const [settings, setSettings] = useState(null); // editable copy of the USSD settings
   const [settingsError, setSettingsError] = useState("");
+  const [creating, setCreating] = useState(null); // new-service form
+  const [createError, setCreateError] = useState("");
 
   const loadServices = async () => {
     if (!DALAB_API_ENABLED) return;
+    setListLoading(true);
     try {
-      const list = await DalabAdminApi.listInteractiveServices();
-      setServices(list);
-      if (!serviceId && list.length) setServiceId(list[0].id);
+      setServices(await DalabAdminApi.listInteractiveServices());
     } catch (err) {
-      setError(err.message || "Could not load the menu USSD services.");
+      setError(err.message || "Could not load the USSD services.");
+    } finally {
+      setListLoading(false);
     }
   };
   const loadService = async (id = serviceId) => {
@@ -16365,7 +16515,7 @@ function MenuUssdServicesSection({ admin }) {
       setSettings({
         serviceName: res.serviceName,
         initialDial: res.ussdCode,
-        replySteps: (res.replySteps || []).map((s) => ({ ...s, expectText: (s.expect || []).join(", ") })),
+        replySteps: menuStepsFromApi(res.replySteps),
         successText: (res.successKeywords || []).join(", "),
         balanceSource: res.balanceSource || "",
       });
@@ -16375,10 +16525,34 @@ function MenuUssdServicesSection({ admin }) {
       setLoading(false);
     }
   };
-  useEffect(() => { loadServices(); }, []);
-  useEffect(() => { loadService(serviceId); }, [serviceId]);
+  useEffect(() => {
+    loadServices();
+    if (DALAB_API_ENABLED) DalabAdminApi.getCompanies().then((list) => setCompanies((list || []).filter((c) => !c.deletedAt))).catch(() => {});
+  }, []);
+  useEffect(() => { if (serviceId) loadService(serviceId); else setService(null); }, [serviceId]);
 
-  const flash = (msg) => { setNotice(msg); setTimeout(() => setNotice(""), 3500); };
+  // One timer at a time, so an older message's timer never clears a newer one.
+  const flashTimer = useRef(null);
+  const flash = (msg) => {
+    clearTimeout(flashTimer.current);
+    setNotice(msg);
+    flashTimer.current = setTimeout(() => setNotice(""), 5000);
+  };
+  useEffect(() => () => clearTimeout(flashTimer.current), []);
+  const openService = (id) => { setError(""); setSearch(""); setFilter("all"); setServiceId(id); };
+  const backToList = () => { setServiceId(""); setService(null); setSettings(null); setEditing(null); loadServices(); };
+
+  const providers = useMemo(() => {
+    const seen = new Map();
+    services.forEach((s) => seen.set(s.companyId, s.companyName));
+    return [...seen.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
+  }, [services]);
+  const shownServices = useMemo(() => services.filter((s) => {
+    if (providerFilter && s.companyId !== providerFilter) return false;
+    if (statusFilter === "on") return s.categoryStatus === "enabled";
+    if (statusFilter === "off") return s.categoryStatus !== "enabled";
+    return true;
+  }), [services, providerFilter, statusFilter]);
 
   const packages = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -16399,26 +16573,85 @@ function MenuUssdServicesSection({ admin }) {
     return [...list].sort(by);
   }, [service, search, filter, sort]);
 
-  const serviceActive = service?.category?.status === "enabled";
-  const toggleService = async () => {
-    if (!service) return;
-    const next = !serviceActive;
-    if (!next && !window.confirm(`Turn off ${service.serviceName}? Customers and agents can't order any of its packages until you turn it back on. Existing orders are not affected.`)) return;
+  // ----- whole-service actions (list and detail) -----
+  const setServiceActive = async (svc, next) => {
+    if (!next && !window.confirm(`Turn off ${svc.serviceName}? Customers and agents can't order any of its packages until you turn it back on. Existing orders are not affected.`)) return;
+    if (next && !window.confirm(`Turn on ${svc.serviceName}? Its active packages become orderable. Make sure every agent phone for ${svc.companyName} runs the latest Agent App first.`)) return;
     try {
-      await DalabAdminApi.setInteractiveServiceActive(service.id, next);
-      flash(next ? "Service turned on." : "Service turned off.");
-      loadService();
+      await DalabAdminApi.setInteractiveServiceActive(svc.id, next);
+      flash(next ? `${svc.serviceName} turned on.` : `${svc.serviceName} turned off.`);
+      loadServices();
+      if (service?.id === svc.id) loadService(svc.id);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+  const duplicateService = async (svc) => {
+    if (!window.confirm(`Duplicate ${svc.serviceName}? The copy gets the same menu settings and copies of its packages, all turned OFF. ${svc.serviceName} itself is not changed.`)) return;
+    try {
+      const res = await DalabAdminApi.duplicateInteractiveService(svc.id, {});
+      flash(`Created ${res.serviceName} (${res.packagesCopied} package${res.packagesCopied === 1 ? "" : "s"} copied, all off).`);
+      await loadServices();
+      openService(res.id);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+  const deleteService = async (svc) => {
+    if (!window.confirm(`Delete ${svc.serviceName} and its ${svc.packageCount} package(s) permanently? This is only allowed because nothing was ever ordered from it.`)) return;
+    try {
+      await DalabAdminApi.deleteInteractiveService(svc.id);
+      flash(`${svc.serviceName} deleted.`);
+      if (service?.id === svc.id) backToList();
+      else loadServices();
     } catch (err) {
       setError(err.message);
     }
   };
 
+  // ----- new service -----
+  const openCreate = () => {
+    setCreateError("");
+    setCreating({
+      companyId: providerFilter || companies[0]?.id || "", serviceName: "", serviceType: "data", initialDial: "", successText: "", balanceSource: "",
+      replySteps: defaultMenuSteps(),
+    });
+  };
+  const saveCreate = async () => {
+    const f = creating;
+    setCreateError("");
+    if (!f.companyId) return setCreateError("Choose the provider.");
+    if (!f.serviceName.trim()) return setCreateError("Enter the service name.");
+    setSaving(true);
+    try {
+      const res = await DalabAdminApi.createInteractiveService({
+        companyId: f.companyId,
+        serviceName: f.serviceName.trim(),
+        serviceType: f.serviceType,
+        initialDial: f.initialDial.trim(),
+        replySteps: menuStepsForApi(f.replySteps),
+        successKeywords: f.successText.split(",").map((t) => t.trim()).filter(Boolean),
+        balanceSource: f.balanceSource || null,
+      });
+      setCreating(null);
+      flash(`${res.serviceName} created. It is OFF — add its packages, check them, then turn it on.`);
+      await loadServices();
+      openService(res.id);
+    } catch (err) {
+      setCreateError(err.message || "Could not create the service.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // ----- packages -----
+  const selectsByOption = (service?.replySteps || []).some((s) => s.reply === "{packageCode}");
   const savePackage = async () => {
     const f = editing.form;
     setFormError("");
     if (!f.name.trim()) return setFormError("Enter the package name.");
     if (!(Number(f.price) > 0)) return setFormError("Enter a price greater than 0.");
-    if (!/^[0-9]{1,2}$/.test(String(f.code).trim())) return setFormError("Menu option must be the package's number on the Somtel menu (for example 3).");
+    if (selectsByOption && !/^[0-9]{1,2}$/.test(String(f.code).trim())) return setFormError("Menu option must be the package's number on the provider's menu (for example 3).");
     const body = {
       name: f.name.trim(), description: f.description, price: Number(f.price), providerAmount: Number(f.price),
       validity: f.validity, code: String(f.code).trim(), sortOrder: Number(f.sortOrder) || 0,
@@ -16465,74 +16698,179 @@ function MenuUssdServicesSection({ admin }) {
     }
   };
 
-  const updateStep = (i, patch) => setSettings((s) => ({ ...s, replySteps: s.replySteps.map((st, j) => (j === i ? { ...st, ...patch } : st)) }));
-  const moveStep = (i, dir) => setSettings((s) => {
-    const steps = [...s.replySteps];
-    const j = i + dir;
-    if (j < 0 || j >= steps.length) return s;
-    [steps[i], steps[j]] = [steps[j], steps[i]];
-    return { ...s, replySteps: steps };
-  });
   const saveSettings = async () => {
     setSettingsError("");
-    const replySteps = settings.replySteps.map((s) => ({
-      reply: String(s.reply || "").trim(),
-      expect: String(s.expectText || "").split(",").map((t) => t.trim()).filter(Boolean),
-      checkMenuPrice: Boolean(s.checkMenuPrice), checkAmount: Boolean(s.checkAmount), checkNumber: Boolean(s.checkNumber),
-    }));
     try {
       await DalabAdminApi.updateInteractiveService(service.id, {
         serviceName: settings.serviceName,
         initialDial: settings.initialDial,
-        replySteps,
+        replySteps: menuStepsForApi(settings.replySteps),
         successKeywords: settings.successText.split(",").map((t) => t.trim()).filter(Boolean),
         balanceSource: settings.balanceSource || null,
       });
-      flash("USSD settings saved.");
+      flash("USSD settings saved. Orders already placed keep the menu they were created with.");
       loadService();
     } catch (err) {
       setSettingsError(err.message || "Could not save the USSD settings.");
     }
   };
 
-  const th = { textAlign: "left", padding: "9px 10px", fontSize: 11, color: MUTE, fontWeight: 700, whiteSpace: "nowrap" };
-  const td = { padding: "9px 10px", fontSize: 12.5, color: INK, verticalAlign: "top" };
-  const check = (label, value, onChange, disabled) => (
-    <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: INK, cursor: disabled ? "default" : "pointer" }}>
-      <input type="checkbox" checked={Boolean(value)} disabled={disabled} onChange={(e) => onChange(e.target.checked)} /> {label}
-    </label>
+  const paidFromSelect = (value, onChange, disabled) => (
+    <select style={{ ...inputStyle, width: 240 }} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
+      <option value="">Company SIM balance (Send Data)</option>
+      <option value="edahab">eDahab wallet on the dialing SIM</option>
+      <option value="evc_plus">EVC Plus wallet on the dialing SIM</option>
+    </select>
   );
 
-  if (!DALAB_API_ENABLED) return <Card style={{ padding: 18 }}>Connect the dashboard to the backend to manage Dhameys Plus.</Card>;
+  if (!DALAB_API_ENABLED) return <Card style={{ padding: 18 }}>Connect the dashboard to the backend to manage USSD services.</Card>;
+
+  const messages = (
+    <>
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+      {notice && <div style={{ color: GREEN, fontSize: 12.5, marginBottom: 12, fontWeight: 700 }}>{notice}</div>}
+    </>
+  );
+
+  const createModal = creating && (
+    <Modal title="Add New USSD Service" onClose={() => setCreating(null)} width={860}>
+      <div style={{ display: "grid", gap: 12 }}>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <Field label="Provider">
+            <select style={{ ...inputStyle, width: 180 }} value={creating.companyId} onChange={(e) => setCreating({ ...creating, companyId: e.target.value })}>
+              <option value="">Choose…</option>
+              {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Service name"><input style={{ ...inputStyle, width: 220 }} value={creating.serviceName} placeholder="e.g. Hormuud Bundles" onChange={(e) => setCreating({ ...creating, serviceName: e.target.value })} /></Field>
+          <Field label="Service type">
+            <select style={{ ...inputStyle, width: 130 }} value={creating.serviceType} onChange={(e) => setCreating({ ...creating, serviceType: e.target.value })}>
+              {MENU_SERVICE_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+            </select>
+          </Field>
+          <Field label="First USSD code"><input style={{ ...inputStyle, width: 130, fontFamily: "monospace" }} value={creating.initialDial} placeholder="*101#" onChange={(e) => setCreating({ ...creating, initialDial: e.target.value })} /></Field>
+        </div>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <Field label="Success words (comma separated)"><input style={{ ...inputStyle, width: 320 }} value={creating.successText} placeholder="e.g. guuleysatay" onChange={(e) => setCreating({ ...creating, successText: e.target.value })} /></Field>
+          <Field label="Paid from (balance checked before each dial)">{paidFromSelect(creating.balanceSource, (v) => setCreating({ ...creating, balanceSource: v }), false)}</Field>
+        </div>
+        <div style={{ fontWeight: 800, fontSize: 13, color: INK }}>USSD menu steps</div>
+        <UssdStepsEditor steps={creating.replySteps} onChange={(replySteps) => setCreating({ ...creating, replySteps })} disabled={false} />
+        <div style={{ fontSize: 11.5, color: MUTE }}>The service is created OFF. Add its packages, check them, then turn it on. No other service is changed.</div>
+        {createError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5 }}>{createError}</div>}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <Button variant="ghost" onClick={() => setCreating(null)}>Cancel</Button>
+          <Button icon={saving ? Loader2 : Check} spin={saving} onClick={saveCreate} disabled={saving}>Create service</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+
+  // ================= List of all services =================
+  if (!serviceId) {
+    return (
+      <div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 14 }}>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>USSD Services</div>
+            <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Menu USSD services, each with its own code, menu steps, packages and on/off switch</div>
+          </div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <select style={{ ...inputStyle, width: 170, padding: "8px 10px" }} value={providerFilter} onChange={(e) => setProviderFilter(e.target.value)}>
+              <option value="">All providers</option>
+              {providers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+            <select style={{ ...inputStyle, width: 140, padding: "8px 10px" }} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+              <option value="all">All statuses</option>
+              <option value="on">On</option>
+              <option value="off">Off</option>
+            </select>
+            <Button variant="ghost" icon={listLoading ? Loader2 : RefreshCw} spin={listLoading} onClick={loadServices} disabled={listLoading}>Refresh</Button>
+            {isSuper && <Button icon={Plus} onClick={openCreate}>Add New USSD Service</Button>}
+          </div>
+        </div>
+        {messages}
+        <Card style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ background: "var(--c-fafbff)" }}>
+                  {["Service", "Provider", "First code", "Status", "Packages", "Orders", ""].map((h) => <th key={h} style={menuTh}>{h}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {shownServices.map((svc) => {
+                  const on = svc.categoryStatus === "enabled";
+                  return (
+                    <tr key={svc.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                      <td style={menuTd}>
+                        <button onClick={() => openService(svc.id)} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontWeight: 800, color: INK, fontSize: 13, textAlign: "left" }}>{svc.serviceName}</button>
+                      </td>
+                      <td style={menuTd}>{svc.companyName}</td>
+                      <td style={{ ...menuTd, fontFamily: "monospace" }}>{svc.ussdCode}</td>
+                      <td style={menuTd}><Badge tone={on ? "green" : "red"}>{on ? "On" : "Off"}</Badge></td>
+                      <td style={menuTd}>{svc.activePackageCount} active / {svc.packageCount}</td>
+                      <td style={menuTd}>{svc.orderCount}</td>
+                      <td style={{ ...menuTd, whiteSpace: "nowrap" }}>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          <Button variant="ghost" icon={Pencil} onClick={() => openService(svc.id)}>Edit</Button>
+                          {isSuper && <Button variant="ghost" icon={Copy} onClick={() => duplicateService(svc)}>Duplicate</Button>}
+                          {canManage && svc.categoryStatus && (
+                            <Button variant={on ? "danger" : "primary"} icon={Power} onClick={() => setServiceActive(svc, !on)}>{on ? "Deactivate" : "Activate"}</Button>
+                          )}
+                          {isSuper && svc.menuCategorySlug && svc.orderCount === 0 && <Button variant="danger" icon={Trash2} onClick={() => deleteService(svc)}>Delete</Button>}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {shownServices.length === 0 && (
+                  <tr><td colSpan={7} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>
+                    {listLoading ? "Loading…" : services.length === 0 ? "No USSD service yet." + (isSuper ? " Use Add New USSD Service to create one." : "") : "No service matches these filters."}
+                  </td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+        <div style={{ fontSize: 11.5, color: MUTE, marginTop: 10 }}>
+          Built-in services (like Dhameys Plus) and services that have orders can't be deleted — turn them off instead, so their history stays. New and duplicated services start off.
+        </div>
+        {createModal}
+      </div>
+    );
+  }
+
+  // ================= One service =================
+  const serviceActive = service?.category?.status === "enabled";
+  const listRow = services.find((s) => s.id === serviceId);
 
   return (
     <div>
+      <div style={{ marginBottom: 10 }}>
+        <Button variant="ghost" icon={ArrowLeft} onClick={backToList}>All USSD Services</Button>
+      </div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 14 }}>
         <div>
-          <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>{service?.serviceName || "Dhameys Plus"}</div>
+          <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>{service?.serviceName || "USSD service"}</div>
           <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>
-            {service ? `${service.companyName} · menu USSD ${service.ussdCode}` : "Menu USSD services and their packages"}
+            {service ? `${service.companyName} · menu USSD ${service.ussdCode}` : "Loading…"}
           </div>
         </div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          {services.length > 1 && (
-            <select style={{ ...inputStyle, width: 220, padding: "8px 10px" }} value={serviceId} onChange={(e) => setServiceId(e.target.value)}>
-              {services.map((s) => <option key={s.id} value={s.id}>{s.companyName} · {s.serviceName}</option>)}
-            </select>
-          )}
           {service && <Badge tone={serviceActive ? "green" : "red"}>{serviceActive ? "Service on" : "Service off"}</Badge>}
-          {service && canManage && (
-            <Button variant={serviceActive ? "danger" : "primary"} icon={Power} onClick={toggleService}>{serviceActive ? "Turn off" : "Turn on"}</Button>
+          {service && canManage && service.category && (
+            <Button variant={serviceActive ? "danger" : "primary"} icon={Power} onClick={() => setServiceActive(service, !serviceActive)}>{serviceActive ? "Turn off" : "Turn on"}</Button>
+          )}
+          {service && isSuper && <Button variant="ghost" icon={Copy} onClick={() => duplicateService(service)}>Duplicate</Button>}
+          {service && isSuper && service.menuCategorySlug && listRow && listRow.orderCount === 0 && (
+            <Button variant="danger" icon={Trash2} onClick={() => deleteService({ ...service, packageCount: service.packages.length })}>Delete</Button>
           )}
           <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={() => loadService()} disabled={loading}>Refresh</Button>
         </div>
       </div>
 
-      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
-      {notice && <div style={{ color: GREEN, fontSize: 12.5, marginBottom: 12, fontWeight: 700 }}>{notice}</div>}
-      {!loading && services.length === 0 && !error && (
-        <Card style={{ padding: 18 }}>No menu USSD service exists yet. It is created by the backend update (migration 118) when the Somtel company exists.</Card>
-      )}
+      {messages}
 
       {service && !service.pinIsSet && (
         <Card style={{ padding: 14, marginBottom: 14, background: "var(--c-fff6e3)", border: "1px solid var(--c-f5dfb0)" }}>
@@ -16544,7 +16882,7 @@ function MenuUssdServicesSection({ admin }) {
       {service && (
         <Card style={{ padding: 14, marginBottom: 14, background: "var(--c-eef3ff)", border: "1px solid var(--c-d6e0ff)" }}>
           <div style={{ fontSize: 12.5, color: SLATE, lineHeight: 1.5 }}>
-            Packages are delivered by the Agent App stepping through the Somtel menu. Before turning packages on, make sure every agent phone that
+            Packages are delivered by the Agent App stepping through the {service.companyName} menu. Before turning packages on, make sure every agent phone that
             handles {service.companyName} runs the latest Agent App and has <b>Dalab Agent</b> enabled under Settings &gt; Accessibility.
             The Agent App checks each menu screen (the package price, then the amount and number on the confirmation) and cancels before the PIN if anything doesn't match.
           </div>
@@ -16575,21 +16913,21 @@ function MenuUssdServicesSection({ admin }) {
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr style={{ background: "var(--c-fafbff)" }}>
-                  {["Order", "Package", "Menu option", "Price", "Validity", "Status", "Orders", "Created", "Last modified", ""].map((h) => <th key={h} style={th}>{h}</th>)}
+                  {["Order", "Package", "Menu option", "Price", "Validity", "Status", "Orders", "Created", "Last modified", ""].map((h) => <th key={h} style={menuTh}>{h}</th>)}
                 </tr>
               </thead>
               <tbody>
                 {packages.map((p) => (
                   <tr key={p.id} style={{ borderTop: `1px solid ${BORDER}`, opacity: p.active ? 1 : 0.6 }}>
-                    <td style={{ ...td, color: MUTE }}>{p.sortOrder}</td>
-                    <td style={td}>
+                    <td style={{ ...menuTd, color: MUTE }}>{p.sortOrder}</td>
+                    <td style={menuTd}>
                       <div style={{ fontWeight: 700 }}>{p.name}</div>
                       {p.description && <div style={{ fontSize: 11, color: MUTE }}>{p.description}</div>}
                     </td>
-                    <td style={{ ...td, fontFamily: "monospace" }}>{p.code || "—"}</td>
-                    <td style={{ ...td, fontWeight: 700, color: GREEN }}>{usd(p.price)}</td>
-                    <td style={td}>{p.validity || "—"}</td>
-                    <td style={td}>
+                    <td style={{ ...menuTd, fontFamily: "monospace" }}>{p.code || "—"}</td>
+                    <td style={{ ...menuTd, fontWeight: 700, color: GREEN }}>{usd(p.price)}</td>
+                    <td style={menuTd}>{p.validity || "—"}</td>
+                    <td style={menuTd}>
                       <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                         <Badge tone={p.active ? "green" : "gray"}>{p.active ? "Active" : "Inactive"}</Badge>
                         {p.active && !p.ordersEnabled && <Badge tone="amber">Unavailable</Badge>}
@@ -16597,10 +16935,10 @@ function MenuUssdServicesSection({ admin }) {
                         {!p.visibleAgentApp && <Badge tone="blue">Hidden: Agent App</Badge>}
                       </div>
                     </td>
-                    <td style={td}>{p.orderCount}</td>
-                    <td style={{ ...td, whiteSpace: "nowrap", color: SLATE }}>{formatDateTime(p.createdAt)}</td>
-                    <td style={{ ...td, whiteSpace: "nowrap", color: SLATE }}>{formatDateTime(p.updatedAt)}</td>
-                    <td style={{ ...td, whiteSpace: "nowrap" }}>
+                    <td style={menuTd}>{p.orderCount}</td>
+                    <td style={{ ...menuTd, whiteSpace: "nowrap", color: SLATE }}>{formatDateTime(p.createdAt)}</td>
+                    <td style={{ ...menuTd, whiteSpace: "nowrap", color: SLATE }}>{formatDateTime(p.updatedAt)}</td>
+                    <td style={{ ...menuTd, whiteSpace: "nowrap" }}>
                       {canManage && (
                         <div style={{ display: "flex", gap: 6 }}>
                           <Button variant="ghost" icon={Pencil} onClick={() => {
@@ -16620,7 +16958,9 @@ function MenuUssdServicesSection({ admin }) {
                   </tr>
                 ))}
                 {packages.length === 0 && (
-                  <tr><td colSpan={10} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No packages match.</td></tr>
+                  <tr><td colSpan={10} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>
+                    {service.packages.length === 0 ? "No packages yet — add the first one." : "No packages match."}
+                  </td></tr>
                 )}
               </tbody>
             </table>
@@ -16635,68 +16975,18 @@ function MenuUssdServicesSection({ admin }) {
             {!isSuper && <Badge tone="gray">Super Admin only</Badge>}
           </div>
           <div style={{ fontSize: 12, color: MUTE, marginBottom: 14 }}>
-            The first code is dialed, then each step's reply is sent in order. "Screen must show" words are checked on the carrier's screen before that reply.
-            The PIN must be the last step and must check the amount and number; the package step must check the menu price.
+            Changes apply to new orders only — orders already placed keep the menu they were created with.
           </div>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
             <Field label="Service name"><input style={{ ...inputStyle, width: 220 }} value={settings.serviceName} disabled={!isSuper} onChange={(e) => setSettings({ ...settings, serviceName: e.target.value })} /></Field>
             <Field label="First USSD code"><input style={{ ...inputStyle, width: 140, fontFamily: "monospace" }} value={settings.initialDial} disabled={!isSuper} onChange={(e) => setSettings({ ...settings, initialDial: e.target.value })} /></Field>
             <Field label="Success words (comma separated)"><input style={{ ...inputStyle, width: 320 }} value={settings.successText} disabled={!isSuper} onChange={(e) => setSettings({ ...settings, successText: e.target.value })} /></Field>
-            <Field label="Paid from (balance checked before each dial)">
-              <select style={{ ...inputStyle, width: 240 }} value={settings.balanceSource} disabled={!isSuper} onChange={(e) => setSettings({ ...settings, balanceSource: e.target.value })}>
-                <option value="">Company SIM balance (Send Data)</option>
-                <option value="edahab">eDahab wallet on the dialing SIM</option>
-                <option value="evc_plus">EVC Plus wallet on the dialing SIM</option>
-              </select>
-            </Field>
+            <Field label="Paid from (balance checked before each dial)">{paidFromSelect(settings.balanceSource, (v) => setSettings({ ...settings, balanceSource: v }), !isSuper)}</Field>
           </div>
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead>
-                <tr style={{ background: "var(--c-fafbff)" }}>
-                  {["Step", "Reply", "Screen must show", "Checks", ""].map((h) => <th key={h} style={th}>{h}</th>)}
-                </tr>
-              </thead>
-              <tbody>
-                {settings.replySteps.map((s, i) => {
-                  const isToken = MENU_STEP_REPLIES.some((r) => r.value === s.reply);
-                  return (
-                    <tr key={i} style={{ borderTop: `1px solid ${BORDER}` }}>
-                      <td style={{ ...td, color: MUTE }}>{i + 1}</td>
-                      <td style={td}>
-                        <select style={{ ...inputStyle, width: 170, padding: "6px 8px" }} disabled={!isSuper} value={isToken ? s.reply : "menu"} onChange={(e) => updateStep(i, { reply: e.target.value === "menu" ? "1" : e.target.value })}>
-                          <option value="menu">Menu number</option>
-                          {MENU_STEP_REPLIES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
-                        </select>
-                        {!isToken && <input style={{ ...inputStyle, width: 60, padding: "6px 8px", marginLeft: 6 }} disabled={!isSuper} value={s.reply} onChange={(e) => updateStep(i, { reply: e.target.value })} />}
-                      </td>
-                      <td style={td}><input style={{ ...inputStyle, width: 200, padding: "6px 8px" }} disabled={!isSuper} value={s.expectText} placeholder="e.g. Dhameys" onChange={(e) => updateStep(i, { expectText: e.target.value })} /></td>
-                      <td style={td}>
-                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                          {s.reply === "{packageCode}" && check("Menu price", s.checkMenuPrice, (v) => updateStep(i, { checkMenuPrice: v }), !isSuper)}
-                          {check("Amount", s.checkAmount, (v) => updateStep(i, { checkAmount: v }), !isSuper)}
-                          {check("Number", s.checkNumber, (v) => updateStep(i, { checkNumber: v }), !isSuper)}
-                        </div>
-                      </td>
-                      <td style={{ ...td, whiteSpace: "nowrap" }}>
-                        {isSuper && (
-                          <div style={{ display: "flex", gap: 4 }}>
-                            <Button variant="ghost" onClick={() => moveStep(i, -1)} disabled={i === 0}>↑</Button>
-                            <Button variant="ghost" onClick={() => moveStep(i, 1)} disabled={i === settings.replySteps.length - 1}>↓</Button>
-                            <Button variant="danger" icon={Trash2} onClick={() => setSettings((st) => ({ ...st, replySteps: st.replySteps.filter((_, j) => j !== i) }))} />
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <UssdStepsEditor steps={settings.replySteps} onChange={(replySteps) => setSettings({ ...settings, replySteps })} disabled={!isSuper} />
           {settingsError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginTop: 10 }}>{settingsError}</div>}
           {isSuper && (
             <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-              <Button variant="ghost" icon={Plus} onClick={() => setSettings((st) => ({ ...st, replySteps: [...st.replySteps, { reply: "1", expectText: "" }] }))}>Add step</Button>
               <Button icon={Check} onClick={saveSettings}>Save USSD settings</Button>
             </div>
           )}
@@ -16710,23 +17000,25 @@ function MenuUssdServicesSection({ admin }) {
             const set = (patch) => setEditing((e) => ({ ...e, form: { ...e.form, ...patch } }));
             return (
               <div style={{ display: "grid", gap: 12 }}>
-                <Field label="Package name"><input style={inputStyle} value={f.name} onChange={(e) => set({ name: e.target.value })} placeholder="Dhameys Plus — Daily" /></Field>
+                <Field label="Package name"><input style={inputStyle} value={f.name} onChange={(e) => set({ name: e.target.value })} placeholder={`${service?.serviceName || "Package"} — Daily`} /></Field>
                 <Field label="Description"><input style={inputStyle} value={f.description} onChange={(e) => set({ description: e.target.value })} placeholder="Unlimited data & calls for 24 hours" /></Field>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                   <Field label="Price ($)"><input style={inputStyle} type="number" step="0.01" min="0" value={f.price} onChange={(e) => set({ price: e.target.value })} /></Field>
                   <Field label="Validity"><input style={inputStyle} value={f.validity} onChange={(e) => set({ validity: e.target.value })} placeholder="24 hours" /></Field>
-                  <Field label="Menu option (number on the Somtel menu)"><input style={{ ...inputStyle, fontFamily: "monospace" }} value={f.code} onChange={(e) => set({ code: e.target.value })} placeholder="3" /></Field>
+                  <Field label={selectsByOption ? `Menu option (number on the ${service?.companyName || "provider"} menu)` : "Menu option (not used by this service)"}>
+                    <input style={{ ...inputStyle, fontFamily: "monospace" }} value={f.code} disabled={!selectsByOption} onChange={(e) => set({ code: e.target.value })} placeholder="3" />
+                  </Field>
                   <Field label="Display order"><input style={inputStyle} type="number" min="0" value={f.sortOrder} onChange={(e) => set({ sortOrder: e.target.value })} /></Field>
                 </div>
                 <div style={{ display: "grid", gap: 8 }}>
-                  {check("Show in the Customer App", f.visibleCustomerApp, (v) => set({ visibleCustomerApp: v }))}
-                  {check("Show in the Agent App", f.visibleAgentApp, (v) => set({ visibleAgentApp: v }))}
-                  {check("Accept new orders (off = temporarily unavailable)", f.ordersEnabled, (v) => set({ ordersEnabled: v }))}
-                  {check("Active", f.active, (v) => set({ active: v }))}
+                  <MenuCheck label="Show in the Customer App" value={f.visibleCustomerApp} onChange={(v) => set({ visibleCustomerApp: v })} />
+                  <MenuCheck label="Show in the Agent App" value={f.visibleAgentApp} onChange={(v) => set({ visibleAgentApp: v })} />
+                  <MenuCheck label="Accept new orders (off = temporarily unavailable)" value={f.ordersEnabled} onChange={(v) => set({ ordersEnabled: v })} />
+                  <MenuCheck label="Active" value={f.active} onChange={(v) => set({ active: v })} />
                 </div>
                 <div style={{ fontSize: 11.5, color: MUTE }}>
-                  The price is what customers pay and what the Agent App expects to see on the Somtel menu and confirmation — keep it equal to Somtel's own price.
-                  Changing it never changes orders already placed.
+                  The price is what customers pay and what the Agent App expects to see on the {service?.companyName || "provider"} menu and confirmation — keep it equal to the provider's own price.
+                  {selectsByOption && " Each menu option can be used by only one active package in this service."} Changing it never changes orders already placed.
                 </div>
                 {formError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5 }}>{formError}</div>}
                 <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
@@ -16738,6 +17030,7 @@ function MenuUssdServicesSection({ admin }) {
           })()}
         </Modal>
       )}
+      {createModal}
     </div>
   );
 }

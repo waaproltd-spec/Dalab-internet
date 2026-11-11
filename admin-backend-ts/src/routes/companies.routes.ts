@@ -495,13 +495,13 @@ async function packageOptionError(templateId: string | null, code: unknown, pack
   );
   if (template?.dial_mode !== "interactive") return undefined;
   if (!(template.reply_steps ?? []).some((s: any) => String(s?.reply ?? "").trim() === "{packageCode}")) return undefined;
-  if (!isValidPackageOption(code)) return "Menu option must be the package's number on the Somtel menu (1 to 99).";
+  if (!isValidPackageOption(code)) return "Menu option must be the package's number on the provider's menu (1 to 99).";
   if (!active) return undefined;
   const clash = await queryOne<{ name: string }>(
     `SELECT name FROM packages WHERE ussd_template_id=$1 AND active=true AND TRIM(code)=$2 AND ($3::uuid IS NULL OR id<>$3)`,
     [templateId, String(code).trim(), packageId]
   );
-  return clash ? `Menu option ${String(code).trim()} is already used by "${clash.name}".` : undefined;
+  return clash ? `Menu option ${String(code).trim()} is already used by "${clash.name}" in this USSD service.` : undefined;
 }
 
 packagesRouter.post("/admin/packages", requirePermission("packages.manage"), async (req, res) => {
