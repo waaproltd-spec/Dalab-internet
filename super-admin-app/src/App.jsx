@@ -16400,6 +16400,7 @@ function UssdStepsEditor({ steps, onChange, disabled }) {
     const { kind, ...rest } = steps[i];
     if (type === "menu") update(i, { ...rest, kind: undefined, reply: /^[0-9]{1,3}$/.test(rest.reply) ? rest.reply : "1" });
     else if (type === "text") update(i, { ...rest, kind: "text", reply: MENU_STEP_TOKENS.includes(rest.reply) ? "" : rest.reply });
+    else if (type === "{pin}") update(i, { ...rest, kind: undefined, reply: type, checkAmount: true, checkNumber: true });
     else update(i, { ...rest, kind: undefined, reply: type, checkMenuPrice: type === "{packageCode}" ? true : rest.checkMenuPrice });
   };
   return (
