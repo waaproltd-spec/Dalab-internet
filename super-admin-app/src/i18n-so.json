@@ -1561,5 +1561,12 @@
 "Create service": "Samee adeegga",
 "Service type": "Nooca adeegga",
 "USSD menu steps": "Tallaabooyinka menu-ga USSD",
-"Menu USSD services, each with its own code, menu steps, packages and on/off switch": "Adeegyada menu-ga USSD, mid kasta wuxuu leeyahay code, tallaabooyin menu, baakadyo iyo shid/dami u gaar ah"
+"Menu USSD services, each with its own code, menu steps, packages and on/off switch": "Adeegyada menu-ga USSD, mid kasta wuxuu leeyahay code, tallaabooyin menu, baakadyo iyo shid/dami u gaar ah",
+"Set PIN (Agent App sign-in)": "Deji PIN (gelitaanka Agent App)",
+"New PIN (4–8 digits)": "PIN cusub (4–8 god)",
+"Repeat the PIN": "Ku celi PIN-ka",
+"PIN (4–8 digits, for Agent App sign-in)": "PIN (4–8 god, gelitaanka Agent App)",
+"The PIN must be 4 to 8 digits.": "PIN-ku waa inuu noqdaa 4 ilaa 8 god.",
+"The two PINs don't match.": "Labada PIN isma laha.",
+"Could not save the PIN.": "PIN-ka lama keydin karin."
 }

@@ -317,6 +317,7 @@ const DalabAdminApi = {
   updateAgent: (id, body) => dalabAdminApiRequest(`/admin/agents/${id}`, { method: "PUT", body }),
   suspendAgent: (id) => dalabAdminApiRequest(`/admin/agents/${id}/suspend`, { method: "PUT" }),
   deleteAgent: (id) => dalabAdminApiRequest(`/admin/agents/${id}`, { method: "DELETE" }),
+  setAgentPin: (id, pin) => dalabAdminApiRequest(`/admin/agents/${id}/pin`, { method: "PUT", body: { pin } }),
   getAgentCompanies: (id) => dalabAdminApiRequest(`/admin/agents/${id}/companies`),
   setAgentCompanies: (id, companyIds) => dalabAdminApiRequest(`/admin/agents/${id}/companies`, { method: "PUT", body: { companyIds } }),
   assignAgentDevice: (agentId, deviceId) => dalabAdminApiRequest(`/admin/agents/${agentId}/device`, { method: "PUT", body: { deviceId } }),
@@ -4635,6 +4636,11 @@ function AgentsSection({ companies, admin }) {
   // also a pure toggle, so a double-click would flip status twice and
   // silently undo an intended suspend with no error shown.
   const [suspendTogglingId, setSuspendTogglingId] = useState(null);
+  // Set PIN: the PIN the agent signs in to the Agent App with (phone + PIN).
+  const [pinFor, setPinFor] = useState(null); // agent object | null
+  const [pinForm, setPinForm] = useState({ pin: "", confirm: "" });
+  const [pinError, setPinError] = useState("");
+  const [pinSaving, setPinSaving] = useState(false);
   const canManage = hasPermission(admin, "agents.manage");
 
   const fetchAgents = async () => {
@@ -4656,6 +4662,7 @@ function AgentsSection({ companies, admin }) {
 
   const save = async () => {
     if (!form.phone || !form.name || (editing === "new" && !form.password)) return;
+    if (editing === "new" && !/^\d{4,8}$/.test(form.password)) { alert("The PIN must be 4 to 8 digits."); return; }
     try {
       if (editing === "new") await DalabAdminApi.createAgent({ phone: form.phone, name: form.name, password: form.password });
       else await DalabAdminApi.updateAgent(editing, { phone: form.phone, name: form.name });
@@ -4678,6 +4685,24 @@ function AgentsSection({ companies, admin }) {
       fetchAgents();
     }
     setSuspendTogglingId(null);
+  };
+
+  const openPin = (a) => { setPinFor(a); setPinForm({ pin: "", confirm: "" }); setPinError(""); };
+  const savePin = async () => {
+    if (pinSaving) return;
+    if (!/^\d{4,8}$/.test(pinForm.pin)) { setPinError("The PIN must be 4 to 8 digits."); return; }
+    if (pinForm.pin !== pinForm.confirm) { setPinError("The two PINs don't match."); return; }
+    setPinSaving(true);
+    setPinError("");
+    try {
+      await DalabAdminApi.setAgentPin(pinFor.id, pinForm.pin);
+      setPinFor(null);
+      alert(`PIN saved. ${pinFor.name} signs in to the Agent App with ${pinFor.phone} and this PIN.`);
+    } catch (err) {
+      setPinError(err.message || "Could not save the PIN.");
+    } finally {
+      setPinSaving(false);
+    }
   };
 
   const remove = async (a) => {
@@ -4747,6 +4772,9 @@ function AgentsSection({ companies, admin }) {
                       <button onClick={() => toggleSuspend(a)} disabled={suspendTogglingId === a.id} title={a.status === "active" ? "Suspend" : "Activate"} style={{ background: "none", border: "none", cursor: suspendTogglingId === a.id ? "default" : "pointer", opacity: suspendTogglingId === a.id ? 0.5 : 1, marginLeft: 8 }}>
                         <Power size={14} color={a.status === "active" ? GREEN : "var(--c-c81e2c)"} />
                       </button>
+                      <button onClick={() => openPin(a)} title="Set PIN (Agent App sign-in)" style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
+                        <KeyRound size={14} color={INDIGO} />
+                      </button>
                       <button onClick={() => openEdit(a)} style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
                         <Pencil size={14} color={INDIGO} />
                       </button>
@@ -4774,13 +4802,32 @@ function AgentsSection({ companies, admin }) {
             <input style={inputStyle} value={form.phone || ""} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="252..." />
           </Field>
           {editing === "new" && (
-            <Field label="Password">
-              <input type="password" style={inputStyle} value={form.password || ""} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+            <Field label="PIN (4–8 digits, for Agent App sign-in)">
+              <input type="password" inputMode="numeric" autoComplete="new-password" style={inputStyle} value={form.password || ""} onChange={(e) => setForm({ ...form, password: e.target.value.replace(/\D/g, "").slice(0, 8) })} />
             </Field>
           )}
           <div style={{ display: "flex", gap: 10 }}>
             <Button onClick={save} icon={Check}>Save</Button>
             <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
+          </div>
+        </Modal>
+      )}
+
+      {pinFor && (
+        <Modal title={`Set PIN — ${pinFor.name}`} onClose={() => setPinFor(null)} width={380}>
+          <div style={{ fontSize: 12, color: MUTE, marginBottom: 12 }}>
+            The agent signs in to the Agent App with their phone number ({pinFor.phone}) and this PIN. A phone that is already signed in stays signed in.
+          </div>
+          <Field label="New PIN (4–8 digits)">
+            <input type="password" inputMode="numeric" autoComplete="new-password" style={inputStyle} value={pinForm.pin} onChange={(e) => setPinForm({ ...pinForm, pin: e.target.value.replace(/\D/g, "").slice(0, 8) })} />
+          </Field>
+          <Field label="Repeat the PIN">
+            <input type="password" inputMode="numeric" autoComplete="new-password" style={inputStyle} value={pinForm.confirm} onChange={(e) => setPinForm({ ...pinForm, confirm: e.target.value.replace(/\D/g, "").slice(0, 8) })} />
+          </Field>
+          {pinError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{pinError}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            <Button onClick={savePin} icon={Check} disabled={pinSaving}>{pinSaving ? "Saving…" : "Save PIN"}</Button>
+            <Button variant="ghost" onClick={() => setPinFor(null)}>Cancel</Button>
           </div>
         </Modal>
       )}

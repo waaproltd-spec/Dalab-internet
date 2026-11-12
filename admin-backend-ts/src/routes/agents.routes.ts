@@ -35,6 +35,18 @@ agentsRouter.put("/admin/agents/:id", requirePermission("agents.manage"), async 
   sendJson(res, 200, await queryOne(`SELECT id, phone, name, status, device_id, last_login_at, created_at FROM agents WHERE id=$1`, [req.params.id]));
 });
 
+// Set (or reset) the PIN an agent signs in to the Agent App with (phone
+// number + PIN, through the Admin Hub). It's the agent's password; 4 to 8
+// digits. The agent's current sessions keep working, so a phone that is
+// already signed in isn't interrupted.
+agentsRouter.put("/admin/agents/:id/pin", requirePermission("agents.manage"), async (req, res) => {
+  const pin = typeof req.body?.pin === "string" ? req.body.pin.trim() : "";
+  if (!/^\d{4,8}$/.test(pin)) return sendJson(res, 400, { error: "The PIN must be 4 to 8 digits." });
+  const updated = await queryOne<{ id: string }>(`UPDATE agents SET password_hash=$1 WHERE id=$2 RETURNING id`, [await hashPassword(pin), req.params.id]);
+  if (!updated) return sendJson(res, 404, { error: "Agent not found" });
+  sendJson(res, 200, { ok: true });
+});
+
 // A single atomic UPDATE, not a separate read-then-write -- see
 // customers.routes.ts's identical PUT /admin/customers/:id/block comment
 // for why (two of these landing close together used to silently undo the
