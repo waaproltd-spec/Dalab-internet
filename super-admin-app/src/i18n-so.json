@@ -1568,5 +1568,15 @@
 "PIN (4–8 digits, for Agent App sign-in)": "PIN (4–8 god, gelitaanka Agent App)",
 "The PIN must be 4 to 8 digits.": "PIN-ku waa inuu noqdaa 4 ilaa 8 god.",
 "The two PINs don't match.": "Labada PIN isma laha.",
-"Could not save the PIN.": "PIN-ka lama keydin karin."
+"Could not save the PIN.": "PIN-ka lama keydin karin.",
+"Operations": "Hawlgallada",
+"Agent approved a payment": "Agent-ku wuxuu oggolaaday lacag-bixin",
+"Agent approved a payment WITHOUT a matched SMS": "Agent-ku wuxuu oggolaaday lacag-bixin AAN SMS la helin",
+"Agent rejected a payment": "Agent-ku wuxuu diiday lacag-bixin",
+"Agent cancelled an order": "Agent-ku wuxuu joojiyay dalab",
+"Agent retried an order": "Agent-ku wuxuu isku dayay dalab mar kale",
+"Agent reversed a completed order": "Agent-ku wuxuu dib u celiyay dalab dhammaaday",
+"Agent operational access switched on": "Awoodda hawlgallada Agent-ka waa la shiday",
+"Agent operational access switched off": "Awoodda hawlgallada Agent-ka waa la damiyay",
+"Could not change operational access.": "Awoodda hawlgallada lama beddeli karin."
 }

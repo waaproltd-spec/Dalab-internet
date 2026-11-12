@@ -318,6 +318,7 @@ const DalabAdminApi = {
   suspendAgent: (id) => dalabAdminApiRequest(`/admin/agents/${id}/suspend`, { method: "PUT" }),
   deleteAgent: (id) => dalabAdminApiRequest(`/admin/agents/${id}`, { method: "DELETE" }),
   setAgentPin: (id, pin) => dalabAdminApiRequest(`/admin/agents/${id}/pin`, { method: "PUT", body: { pin } }),
+  setAgentOperations: (id, enabled) => dalabAdminApiRequest(`/admin/agents/${id}/operations`, { method: "PUT", body: { enabled } }),
   getAgentCompanies: (id) => dalabAdminApiRequest(`/admin/agents/${id}/companies`),
   setAgentCompanies: (id, companyIds) => dalabAdminApiRequest(`/admin/agents/${id}/companies`, { method: "PUT", body: { companyIds } }),
   assignAgentDevice: (agentId, deviceId) => dalabAdminApiRequest(`/admin/agents/${agentId}/device`, { method: "PUT", body: { deviceId } }),
@@ -4687,6 +4688,22 @@ function AgentsSection({ companies, admin }) {
     setSuspendTogglingId(null);
   };
 
+  // Operational access (approve/reject payments, cancel, retry, reverse).
+  const [opsTogglingId, setOpsTogglingId] = useState(null);
+  const toggleOperations = async (a) => {
+    if (opsTogglingId) return;
+    const next = a.operationsEnabled === false;
+    if (!next && !window.confirm(`Switch off operational access for ${a.name}? They will no longer be able to approve or reject payments, cancel, retry or reverse orders. Automatic SMS processing keeps running.`)) return;
+    setOpsTogglingId(a.id);
+    try {
+      await DalabAdminApi.setAgentOperations(a.id, next);
+      setAgents((prev) => prev.map((x) => (x.id === a.id ? { ...x, operationsEnabled: next } : x)));
+    } catch (err) {
+      setError(err.message || "Could not change operational access.");
+    }
+    setOpsTogglingId(null);
+  };
+
   const openPin = (a) => { setPinFor(a); setPinForm({ pin: "", confirm: "" }); setPinError(""); };
   const savePin = async () => {
     if (pinSaving) return;
@@ -4753,7 +4770,7 @@ function AgentsSection({ companies, admin }) {
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: "var(--c-fafbff)" }}>
-              {["Name", "Phone", "Status", "Last login", ""].map((h) => (
+              {["Name", "Phone", "Status", "Operations", "Last login", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
             </tr>
@@ -4764,6 +4781,20 @@ function AgentsSection({ companies, admin }) {
                 <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{a.name}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE, fontFamily: "monospace" }}>{a.phone}</td>
                 <td style={{ padding: "10px 14px" }}><Badge tone={a.status === "active" ? "green" : "red"}>{a.status === "active" ? "Active" : "Suspended"}</Badge></td>
+                <td style={{ padding: "10px 14px" }}>
+                  {canManage ? (
+                    <button
+                      onClick={() => toggleOperations(a)}
+                      disabled={opsTogglingId === a.id}
+                      title={a.operationsEnabled === false ? "Operational access is off: tap to switch on" : "Agent can approve/reject payments, cancel, retry and reverse orders: tap to switch off"}
+                      style={{ background: "none", border: "none", padding: 0, cursor: opsTogglingId === a.id ? "default" : "pointer", opacity: opsTogglingId === a.id ? 0.5 : 1 }}
+                    >
+                      <Badge tone={a.operationsEnabled === false ? "red" : "green"}>{a.operationsEnabled === false ? "Off" : "On"}</Badge>
+                    </button>
+                  ) : (
+                    <Badge tone={a.operationsEnabled === false ? "red" : "green"}>{a.operationsEnabled === false ? "Off" : "On"}</Badge>
+                  )}
+                </td>
                 <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE }}>{a.lastLoginAt ? formatDateTime(a.lastLoginAt) : "Never"}</td>
                 <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
                   {canManage && (
@@ -4787,7 +4818,7 @@ function AgentsSection({ companies, admin }) {
               </tr>
             ))}
             {agents.length === 0 && !loading && (
-              <tr><td colSpan={5} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No agents yet.</td></tr>
+              <tr><td colSpan={6} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No agents yet.</td></tr>
             )}
           </tbody>
         </table>
@@ -15573,6 +15604,14 @@ function ActivityLogPanel() {
     payment_completed: "Payment completed — order fulfilled",
     payment_already_processed: "Duplicate payment rejected",
     setting_updated: "Updated a system setting",
+    agent_payment_approved: "Agent approved a payment",
+    agent_payment_approved_without_sms: "Agent approved a payment WITHOUT a matched SMS",
+    agent_payment_rejected: "Agent rejected a payment",
+    agent_order_cancelled: "Agent cancelled an order",
+    agent_order_retried: "Agent retried an order",
+    agent_order_reversed: "Agent reversed a completed order",
+    agent_operations_enabled: "Agent operational access switched on",
+    agent_operations_disabled: "Agent operational access switched off",
   }[action] || action);
 
   const paymentStatusTone = (status) => ({
@@ -15629,7 +15668,7 @@ function ActivityLogPanel() {
                 <React.Fragment key={r.id}>
                   <tr style={{ borderTop: `1px solid ${BORDER}`, cursor: "pointer" }} onClick={() => setExpanded((prev) => ({ ...prev, [r.id]: !prev[r.id] }))}>
                     <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap", verticalAlign: "top" }}>{formatDateTime(r.createdAt)}</td>
-                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, verticalAlign: "top" }}>{r.entityType === "payment_transaction" ? "Agent App" : (r.adminEmail || "Unknown admin")}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, verticalAlign: "top" }}>{r.agentName ? `Agent: ${r.agentName}${r.agentPhone ? ` (${r.agentPhone})` : ""}` : r.entityType === "payment_transaction" ? "Agent App" : (r.adminEmail || "Unknown admin")}</td>
                     <td style={{ padding: "10px 14px", verticalAlign: "top" }}>
                       <div style={{ fontSize: 12.5, color: INK, fontWeight: 600 }}>{actionLabel(r.action)}</div>
                       {r.entityType === "payment_transaction" && r.newValue && (
