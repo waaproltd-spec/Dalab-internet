@@ -27,6 +27,9 @@ internal val SomaliStrings: Map<String, String> = hashMapOf(
     "Sign out?" to "Ma ka baxaysaa?",
     "This phone stops processing payments and orders until an agent signs in again." to "Taleefankani wuu joojinayaa lacag-bixinnada iyo dalabaadka ilaa agent mar kale galo.",
     "Sign in again with phone number + PIN" to "Mar kale ku gal lambarka taleefanka + PIN",
+    "9 digit phone number" to "Lambar 9 god ah",
+    "Enter your Somali phone number (9 digits) after +252." to "Geli lambarkaaga Soomaaliyeed (9 god) kadib +252.",
+    "The phone number must be exactly 9 digits." to "Lambarka taleefanku waa inuu noqdaa 9 god oo keliya.",
     "Cancel" to "Jooji",
     "Phone number" to "Lambarka taleefanka",
     // Ciyaaraha (CiyaarahaScreens.kt)
