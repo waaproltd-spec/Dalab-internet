@@ -196,7 +196,7 @@ private fun AgentHomeHeader(
                 com.dalab.internet.ui.WaaproHeaderBrush,
                 shape = RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp),
             )
-            .padding(20.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -223,10 +223,10 @@ private fun AgentHomeHeader(
             }
         }
 
-        Spacer(Modifier.height(14.dp))
+        Spacer(Modifier.height(10.dp))
 
         Surface(color = Color.White.copy(alpha = 0.15f), shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
-            Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
                         .size(36.dp)
@@ -303,23 +303,23 @@ private fun AgentBalanceSection(balances: List<AgentBalanceEntry>, loading: Bool
     val methodBalances = balances.filter { it.category == "method" }
     val companyBalances = balances.filter { it.category == "company" }
 
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
         BalanceGroupHeader(
             title = "Payment Method (${methodBalances.size})",
             totalBalance = methodBalances.sumOf { it.balance },
             loading = loading,
             accentColor = DalabGreen,
         )
-        Spacer(Modifier.height(12.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
             methodBalances.forEach { entry ->
                 PaymentMethodCard(entry = entry, loading = loading, modifier = Modifier.weight(1f))
             }
         }
 
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(10.dp))
         HorizontalDivider(color = DalabSurfaceTint)
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(10.dp))
 
         BalanceGroupHeader(
             title = "Payment Company (${companyBalances.size})",
@@ -327,9 +327,9 @@ private fun AgentBalanceSection(balances: List<AgentBalanceEntry>, loading: Bool
             loading = loading,
             accentColor = DalabBrandBlue,
         )
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(8.dp))
         companyBalances.chunked(2).forEach { rowEntries ->
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
                 rowEntries.forEach { entry ->
                     PaymentCompanyCard(entry = entry, loading = loading, modifier = Modifier.weight(1f))
                 }
@@ -353,7 +353,7 @@ private fun BalanceGroupHeader(title: String, totalBalance: Double, loading: Boo
         Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = DalabIndigo)
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
-                modifier = Modifier.size(30.dp).clip(CircleShape).background(accentColor),
+                modifier = Modifier.size(26.dp).clip(CircleShape).background(accentColor),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(Icons.Filled.AccountBalanceWallet, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
@@ -423,15 +423,15 @@ private fun PaymentMethodCard(entry: AgentBalanceEntry, loading: Boolean, modifi
                     .clip(CircleShape)
                     .background(accent.copy(alpha = 0.14f)),
             )
-            Column(modifier = Modifier.padding(14.dp)) {
+            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
                 Image(
                     painter = painterResource(logoResFor(entry.providerKey)),
                     contentDescription = entry.providerName,
                     contentScale = ContentScale.Fit,
                     alignment = Alignment.CenterStart,
-                    modifier = Modifier.height(26.dp).fillMaxWidth(0.72f),
+                    modifier = Modifier.height(20.dp).fillMaxWidth(0.72f),
                 )
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(6.dp))
                 Text(entry.providerName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = DalabIndigo)
                 Spacer(Modifier.height(4.dp))
                 Text(
@@ -483,19 +483,19 @@ private fun PaymentCompanyCard(entry: AgentBalanceEntry, loading: Boolean, modif
                     .clip(CircleShape)
                     .background(Color.White.copy(alpha = 0.08f)),
             )
-            Column(modifier = Modifier.padding(14.dp)) {
+            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
                 Box(
-                    modifier = Modifier.size(36.dp).clip(RoundedCornerShape(10.dp)).background(Color.White),
+                    modifier = Modifier.size(30.dp).clip(RoundedCornerShape(10.dp)).background(Color.White),
                     contentAlignment = Alignment.Center,
                 ) {
                     Image(
                         painter = painterResource(logoResFor(entry.providerKey)),
                         contentDescription = entry.providerName,
                         contentScale = ContentScale.Fit,
-                        modifier = Modifier.size(28.dp).clip(RoundedCornerShape(6.dp)),
+                        modifier = Modifier.size(24.dp).clip(RoundedCornerShape(6.dp)),
                     )
                 }
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(6.dp))
                 Text(entry.providerName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = onBrand)
                 Spacer(Modifier.height(4.dp))
                 Text(
