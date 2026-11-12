@@ -68,7 +68,7 @@ fun SmsPermissionScreen(
             Spacer(Modifier.height(10.dp))
             WaaproAgentPill(textSize = 19.sp)
             Spacer(Modifier.height(10.dp))
-            Tagline()
+            WaaproTagline()
             Spacer(Modifier.height(18.dp))
 
             SmsIllustration()
@@ -164,26 +164,6 @@ fun SmsPermissionScreen(
             Spacer(Modifier.height(70.dp))
         }
     }
-}
-
-@Composable
-private fun Tagline() {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.width(36.dp).height(2.dp).background(WaaproGold))
-        Spacer(Modifier.width(10.dp))
-        Text("Fudud", color = WaaproNavy, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-        Dot()
-        Text("Degdeg", color = WaaproNavy, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-        Dot()
-        Text("Amaan", color = WaaproNavy, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.width(10.dp))
-        Box(Modifier.width(36.dp).height(2.dp).background(WaaproGold))
-    }
-}
-
-@Composable
-private fun Dot() {
-    Box(Modifier.padding(horizontal = 8.dp).size(8.dp).background(WaaproGold, CircleShape))
 }
 
 /** A phone with a message and a green check, drawn with widgets (not an image). */

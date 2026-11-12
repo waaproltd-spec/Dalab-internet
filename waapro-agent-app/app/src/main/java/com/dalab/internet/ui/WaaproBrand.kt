@@ -5,6 +5,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.SupportAgent
@@ -65,6 +66,22 @@ fun WaaproAgentPill(textSize: TextUnit = 22.sp) {
         Icon(Icons.Filled.SupportAgent, contentDescription = null, tint = Color.White, modifier = Modifier.size(26.dp))
         Spacer(Modifier.width(10.dp))
         Text(WAAPRO_APP_NAME, color = Color.White, fontSize = textSize, fontWeight = FontWeight.Bold)
+    }
+}
+
+/** "Fudud • Degdeg • Amaan" between two gold lines. */
+@Composable
+fun WaaproTagline() {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.width(36.dp).height(2.dp).background(WaaproGold))
+        Spacer(Modifier.width(10.dp))
+        Text("Fudud", color = WaaproNavy, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+        Box(Modifier.padding(horizontal = 8.dp).size(7.dp).background(WaaproGold, CircleShape))
+        Text("Degdeg", color = WaaproNavy, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+        Box(Modifier.padding(horizontal = 8.dp).size(7.dp).background(WaaproGold, CircleShape))
+        Text("Amaan", color = WaaproNavy, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.width(10.dp))
+        Box(Modifier.width(36.dp).height(2.dp).background(WaaproGold))
     }
 }
 
