@@ -6,18 +6,18 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Regression coverage for the shared per-SIM-slot USSD lock — see
- * UssdSimLock's own doc comment for why a bare Mutex isn't enough (it only
- * orders callers by call time, not by the requests' real creation time),
- * and for why this is keyed per SIM slot rather than being one lock for the
- * whole device. These tests exercise the real Mutex/CompletableDeferred
+ * Regression coverage for the app-wide USSD queue (UssdSimLock): only ONE
+ * USSD session at a time across the whole app, whatever the SIM slot, in
+ * real arrival order -- see UssdSimLock's own doc comment. These tests exercise the real Mutex/CompletableDeferred
  * concurrency directly with `runBlocking`, no fakes — [UssdSimLock.debounceMs]
  * is shrunk in [setUp] so the tests run fast without weakening what's
  * actually being proven.
@@ -74,52 +74,105 @@ class UssdSimLockTest {
     }
 
     @Test
-    fun `requests for DIFFERENT SIM slots run fully concurrently -- neither waits on the other`() = runBlocking {
-        val activeCountSim1 = AtomicInteger(0)
-        val activeCountSim2 = AtomicInteger(0)
-        val maxObservedSim1 = AtomicInteger(0)
-        val maxObservedSim2 = AtomicInteger(0)
+    fun `requests for DIFFERENT SIM slots never run at the same time -- one USSD session app-wide`() = runBlocking {
+        val activeCount = AtomicInteger(0)
+        val maxObservedActive = AtomicInteger(0)
         val order = mutableListOf<String>()
-        val bothActiveAtOnce = AtomicInteger(0)
 
-        // A long session on SIM 1 must never delay a session on SIM 2, and
-        // vice versa -- this is the actual behavior the fix requires ("If
-        // an Agent has 2 mobile phones and 4 SIMs, routing must correctly
-        // isolate each Mobile/SIM... only one USSD session at a time per
-        // SIM", never a device-wide serialization).
-        val sim1 = async {
-            val ticket = UssdSimLock.acquire(1, "reseller_withdrawal:WDR1", arrivalTimeMs = 1_000L)
-            try {
-                synchronized(order) { order.add("sim1-start") }
-                activeCountSim1.incrementAndGet()
-                if (activeCountSim2.get() > 0) bothActiveAtOnce.incrementAndGet()
-                delay(60L)
-            } finally {
-                activeCountSim1.decrementAndGet()
-                UssdSimLock.release(ticket)
-            }
-        }
-        delay(10L) // let sim1 clearly start first
-        val sim2 = async {
-            val ticket = UssdSimLock.acquire(2, "exchange:DEX1", arrivalTimeMs = 1_010L)
-            try {
-                synchronized(order) { order.add("sim2-start") }
-                activeCountSim2.incrementAndGet()
-                if (activeCountSim1.get() > 0) bothActiveAtOnce.incrementAndGet()
-                delay(10L)
-            } finally {
-                activeCountSim2.decrementAndGet()
-                UssdSimLock.release(ticket)
-            }
-        }
+        // The global rule: SIM 1 and SIM 2 share ONE queue. SIM 2's request
+        // must wait for SIM 1's whole session, then start by itself.
+        val sim1 = session(1, "reseller_withdrawal:WDR1", arrivalTimeMs = 1_000L, holdMs = 60L, activeCount, maxObservedActive, order)
+        delay(10L)
+        val sim2 = session(2, "exchange:DEX1", arrivalTimeMs = 1_010L, holdMs = 10L, activeCount, maxObservedActive, order)
         sim1.await()
         sim2.await()
 
-        assertTrue(
-            "SIM 2's request must be able to start and finish WHILE SIM 1's own session is still running",
-            bothActiveAtOnce.get() > 0,
+        assertEquals("never two USSD sessions at once, even on different SIMs", 1, maxObservedActive.get())
+        assertEquals(listOf("reseller_withdrawal:WDR1", "exchange:DEX1"), order)
+    }
+
+    @Test
+    fun `four flows on four different SIM slots all run one at a time in arrival order`() = runBlocking {
+        val activeCount = AtomicInteger(0)
+        val maxObservedActive = AtomicInteger(0)
+        val order = mutableListOf<String>()
+        val jobs = listOf(
+            session(2, "wallet-lookup:L1", arrivalTimeMs = 1_003L, holdMs = 15L, activeCount, maxObservedActive, order),
+            session(1, "internet_store:O1:attempt1", arrivalTimeMs = 1_000L, holdMs = 15L, activeCount, maxObservedActive, order),
+            session(3, "exchange:DEX9", arrivalTimeMs = 1_002L, holdMs = 15L, activeCount, maxObservedActive, order),
+            session(4, "reseller:WDR9", arrivalTimeMs = 1_001L, holdMs = 15L, activeCount, maxObservedActive, order),
         )
-        assertEquals(listOf("sim1-start", "sim2-start"), order)
+        jobs.forEach { it.await() }
+        assertEquals(1, maxObservedActive.get())
+        assertEquals(listOf("internet_store:O1:attempt1", "reseller:WDR9", "exchange:DEX9", "wallet-lookup:L1"), order)
+    }
+
+    @Test
+    fun `status shows the one Running request and the Waiting ones in order, then goes idle`() = runBlocking {
+        assertTrue(UssdSimLock.status.value.isIdle)
+        val first = UssdSimLock.acquire(1, "internet_store:ORD1:attempt1", arrivalTimeMs = 1_000L)
+        val second = async { UssdSimLock.acquire(2, "exchange:DEX2", arrivalTimeMs = 1_001L) }
+        val third = async { UssdSimLock.acquire(1, "reseller_withdrawal:WDR3:attempt1", arrivalTimeMs = 1_002L) }
+        delay(40L)
+
+        val s = UssdSimLock.status.value
+        assertEquals("internet_store:ORD1", s.running?.key)
+        assertEquals("Order ORD1", s.running?.label)
+        assertEquals(1, s.running?.simSlot)
+        assertEquals(listOf("exchange:DEX2", "reseller:WDR3"), s.waiting.map { it.key })
+        assertEquals(UssdJobState.Running, s.stateOf("internet_store:ORD1"))
+        assertEquals(UssdJobState.Waiting(1, 2), s.stateOf("exchange:DEX2"))
+        assertEquals(UssdJobState.Waiting(2, 2), s.stateOf("reseller:WDR3"))
+        assertEquals(UssdJobState.None, s.stateOf("internet_store:OTHER"))
+
+        UssdSimLock.release(first)
+        val t2 = second.await()
+        assertEquals("exchange:DEX2", UssdSimLock.status.value.running?.key)
+        UssdSimLock.release(t2)
+        val t3 = third.await()
+        assertEquals("reseller:WDR3", UssdSimLock.status.value.running?.key)
+        UssdSimLock.release(t3)
+        assertTrue(UssdSimLock.status.value.isIdle)
+    }
+
+    @Test
+    fun `a session stuck past the safety limit is released so the queue keeps moving, and its late release is ignored`() = runBlocking {
+        UssdSimLock.maxSessionMs = 60L
+        try {
+            val stuck = UssdSimLock.acquire(1, "exchange:STUCK", arrivalTimeMs = 1_000L)
+            val next = withTimeout(2_000L) { UssdSimLock.acquire(2, "wallet-lookup:NEXT", arrivalTimeMs = 1_001L) }
+            assertEquals("wallet-lookup:NEXT", UssdSimLock.status.value.running?.key)
+            UssdSimLock.release(stuck) // late: must not free NEXT's turn
+            assertEquals("wallet-lookup:NEXT", UssdSimLock.status.value.running?.key)
+            UssdSimLock.release(next)
+            assertTrue(UssdSimLock.status.value.isIdle)
+        } finally {
+            UssdSimLock.maxSessionMs = 5 * 60_000L
+        }
+    }
+
+    @Test
+    fun `job keys drop the attempt number and give both Reseller paths one name`() {
+        assertEquals("internet_store:O1", normalizeUssdJobKey("internet_store:O1:attempt3"))
+        assertEquals("reseller:W1", normalizeUssdJobKey("reseller_withdrawal:W1:attempt1"))
+        assertEquals("reseller:W1", normalizeUssdJobKey("reseller:W1"))
+        assertEquals("exchange:DEX1", normalizeUssdJobKey("exchange:DEX1"))
+        assertEquals("Reseller withdrawal W1", ussdJobLabel("reseller_withdrawal:W1:attempt2"))
+        assertEquals("Money Exchange DEX1", ussdJobLabel("exchange:DEX1"))
+    }
+
+    @Test
+    fun `the job registry refuses a second claim of the same job until it is released`() = runBlocking {
+        UssdJobRegistry.resetForTest()
+        assertTrue(UssdJobRegistry.claim("reseller:W7"))
+        // The other Reseller Withdraw path, same withdrawal: refused.
+        assertFalse(UssdJobRegistry.claim("reseller_withdrawal:W7"))
+        assertFalse(UssdJobRegistry.claim("reseller:W7"))
+        // A different job is unaffected.
+        assertTrue(UssdJobRegistry.claim("internet_store:W7"))
+        UssdJobRegistry.release("reseller:W7")
+        assertTrue(UssdJobRegistry.claim("reseller:W7"))
+        UssdJobRegistry.resetForTest()
     }
 
     @Test

@@ -12,8 +12,6 @@ import com.dalab.internet.network.VerifyPaymentRequest
 import com.dalab.internet.queue.PendingActionQueue
 import com.dalab.internet.queue.RetryClassifier
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 
 /** Gson-serialized payload for a queued dial-attempt audit replay — carries
@@ -627,15 +625,12 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         // already-COMPLETED check, since neither dial had finished yet, and
         // both proceeded to physically dial). This is the single choke point
         // both processMatchedOrder and executeManually now go through.
-        private val inFlightMutex = Mutex()
-        private val inFlightOrderIds = mutableSetOf<String>()
-
-        private suspend fun claimOrder(orderId: String): Boolean = inFlightMutex.withLock {
-            if (orderId in inFlightOrderIds) false else { inFlightOrderIds.add(orderId); true }
-        }
+        // Now the app-wide UssdJobRegistry (see UssdSimLock.kt), keyed
+        // "internet_store:<orderId>".
+        private suspend fun claimOrder(orderId: String): Boolean = UssdJobRegistry.claim("internet_store:$orderId")
 
         private suspend fun releaseOrder(orderId: String) {
-            inFlightMutex.withLock { inFlightOrderIds.remove(orderId) }
+            UssdJobRegistry.release("internet_store:$orderId")
         }
 
         /** Replays a queued [DialAttemptAuditAction] — called by QueueDrainer.

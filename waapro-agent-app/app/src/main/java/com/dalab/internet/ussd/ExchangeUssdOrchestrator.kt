@@ -9,8 +9,6 @@ import com.dalab.internet.network.ExchangeStepRequest
 import com.dalab.internet.queue.PendingActionQueue
 import com.dalab.internet.queue.RetryClassifier
 import com.dalab.internet.util.parseApiDate
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 
 /** Gson-serialized payload for a queued step1/step2 report replay -- see
@@ -310,15 +308,11 @@ class ExchangeUssdOrchestrator(private val context: Context) {
         // Process-wide, mirroring UssdOrchestrator's own inFlight guard —
         // stops two concurrent taps (or a screen re-composition) from
         // dialing the same live-money payout twice.
-        private val inFlightMutex = Mutex()
-        private val inFlightOrderIds = mutableSetOf<String>()
-
-        private suspend fun claim(orderId: String): Boolean = inFlightMutex.withLock {
-            if (orderId in inFlightOrderIds) false else { inFlightOrderIds.add(orderId); true }
-        }
+        // Now the app-wide UssdJobRegistry (see UssdSimLock.kt).
+        private suspend fun claim(orderId: String): Boolean = UssdJobRegistry.claim("exchange:$orderId")
 
         private suspend fun release(orderId: String) {
-            inFlightMutex.withLock { inFlightOrderIds.remove(orderId) }
+            UssdJobRegistry.release("exchange:$orderId")
         }
 
         /** Replays a queued [ExchangeDialStepReportAction] -- called by

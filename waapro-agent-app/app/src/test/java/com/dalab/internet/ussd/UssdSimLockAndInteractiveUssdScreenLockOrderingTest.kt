@@ -73,8 +73,8 @@ class UssdSimLockAndInteractiveUssdScreenLockOrderingTest {
 
         assertEquals("both flows should have actually run", 2, order.size)
         assertEquals(
-            "UssdSimLock alone would let these two run fully concurrently (different slots) -- " +
-                "InteractiveUssdScreenLock must still stop them from ever holding the screen at the same instant",
+            "UssdSimLock (one app-wide queue) and " +
+                "InteractiveUssdScreenLock must never let them hold the screen at the same instant",
             1,
             maxObservedScreenActive.get(),
         )

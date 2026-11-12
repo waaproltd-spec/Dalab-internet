@@ -1,158 +1,127 @@
 package com.dalab.internet.ussd
 
+import com.dalab.internet.diagnostics.DiagnosticsLog
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Cross-flow FIFO lock enforcing "one USSD session at a time per physical
- * SIM slot" — across EVERY flow that dials a real USSD code on this device:
- * Internet Store recharge (UssdOrchestrator), Money Exchange/eBadal payout
- * (ExchangeUssdOrchestrator) and its own Wallet Name Lookup
- * (WalletLookupUssdOrchestrator), and Reseller Withdraw (both its one-shot
- * UssdDialer-based path and its interactive
- * ResellerWithdrawalInteractiveUssdOrchestrator path). Every one of those
- * ultimately drives the same physical modem/SIM radio, whether via
- * TelephonyManager.sendUssdRequest() (no visible dialog) or ACTION_CALL +
- * the on-screen "USSD message" reply dialog (read by an AccessibilityService)
- * — two overlapping sessions on the SAME SIM is a real hazard regardless of
- * which mechanism either side uses (the carrier/modem serializes USSD
- * sessions per SIM itself; dialing a second one mid-session can abort the
- * first, return a garbled/cross-contaminated response, or simply fail), and
- * two DIFFERENT SIMs are two independent physical radios that never need to
- * wait on each other at all. Every one of these flows performs a REAL USSD
- * dial (not just something adjacent to one) — this lock is scoped to
- * exactly that set, on purpose: a feature that never actually dials USSD
- * has no need to touch this and must stay unwired.
+ * THE global USSD queue of the Agent App: only ONE USSD session may be
+ * active at a time across the whole app -- whatever the flow and whatever
+ * the SIM slot.
  *
- * This was formerly InteractiveUssdSessionQueue, a single GLOBAL queue
- * (deliberately covering only the two AccessibilityService-driven flows,
- * since those were the only ones that could visibly collide with each
- * OTHER on screen). Two gaps that left real overlap possible: (1) it never
- * serialized against the one-shot TelephonyManager-based flows at all — an
- * Internet Store recharge and a Money Exchange/eBadal payout could
- * genuinely dial the same physical SIM at the same moment; (2) it was one
- * shared queue for the whole device, not per SIM slot — a 2-SIM device
- * serialized SIM 1 and SIM 2 against each other unnecessarily, even though
- * they're independent radios. Generalized here to key every bit of this
- * state (the waiter list, the debounce leader, the busy flag) by [Int] SIM
- * slot (1 or 2): each slot gets its own fully independent FIFO queue, and
- * every dialing flow — one-shot or interactive — acquires the lock for the
- * SIM slot it's about to dial on, for exactly the span of that one dial
- * attempt.
+ * Every flow that dials a real USSD code goes through here, for exactly the
+ * span of one dial attempt: Internet Store recharge and its menu packages
+ * (UssdOrchestrator / PackageInteractiveUssdRunner), Money Exchange/eBadal
+ * payout (ExchangeUssdOrchestrator), its Wallet Name Lookup
+ * (WalletLookupUssdOrchestrator), and Reseller Withdraw (both
+ * ResellerWithdrawalUssdOrchestrator and
+ * ResellerWithdrawalInteractiveUssdOrchestrator). UssdSimLockWiringTest
+ * proves each of them acquires and releases it, so no screen or button can
+ * start a USSD session around it: the queue lives in the dialing layer
+ * itself, not in any screen, and survives every screen change (it is a
+ * process-wide singleton).
  *
- * Ordering within one SIM slot's queue is by each request's own real
- * arrival time (business creation timestamp where the caller has one —
- * e.g. ExchangeOrder.createdAt / ResellerWithdrawalPendingPayout.createdAt
- * — or simply "now" for the one-shot flows below, which have no equivalent
- * cross-flow-discovery-race to solve — see each call site), NOT the moment
- * this device happens to notice or dial it, with a monotonic per-process
- * `sequence` as a pure tie-breaker for two requests sharing the same
- * millisecond. A plain Mutex only orders callers by when they happen to
- * call lock()/withLock() — eBadal and Reseller are each discovered by their
- * own independent polling loop (see AgentBackgroundService's various
- * *SelfHealSweepLoop functions) and could otherwise call in at slightly
- * different moments than their true creation order, which is why this
- * exists instead of a bare per-slot Mutex.
+ * This used to be one queue PER SIM SLOT (two SIMs could dial at the same
+ * moment). It is now one queue for the whole app: two SIMs in one phone
+ * share one modem and -- for the interactive flows -- one screen, and two
+ * overlapping sessions there could abort each other or mix their replies.
+ * The public API (acquire(simSlot, ...) / release(ticket)) is unchanged; the
+ * SIM slot is kept on each request only to show the agent which SIM it uses.
  *
- * [debounceMs] exists only to correctly order two requests for the SAME SIM
- * slot that arrive "at nearly the same time" against a fully idle queue for
- * that slot (nothing else active or waiting on it): the very first request
- * to reach an idle slot-queue holds off briefly to give a near-simultaneous
- * sibling a chance to enqueue too, then whichever of them actually has the
- * earlier arrivalTimeMs is promoted. Once any request is already queued for
- * that slot (whether because a session is actively running on it, or a
- * debounce window is already in progress for this idle transition), every
- * later arrival for that same slot simply joins the existing sorted queue
- * with no further delay, and [release] promotes that slot's next request
- * immediately (no debounce) — the multi-second USSD session that was
- * already running is itself the "grace window" for those arrivals, so "the
- * next queued operation should start automatically" is never held up by
- * this. A different SIM slot's own debounce/queue is entirely unaffected.
+ * Order: by each request's real arrival time (business creation time where
+ * the caller has one, else "now"), then a monotonic sequence number as tie
+ * breaker. The first request to reach an IDLE queue waits [debounceMs] so a
+ * near-simultaneous sibling can line up in its correct order; afterwards
+ * every next request starts immediately when the previous one is released
+ * -- completed, failed, timed out or cancelled (callers release in a
+ * finally block).
+ *
+ * Safety net: should a session ever hold the queue longer than
+ * [maxSessionMs] (far longer than any real session, which ends within ~2.5
+ * minutes on its own timeouts), it is released automatically so the queue
+ * can never stay stuck forever; that ticket's late release() is ignored.
+ *
+ * [status] is what the agent sees: the request that is Running and the
+ * ones Waiting, in order.
  */
 object UssdSimLock {
 
-    /** Held by whichever request currently owns [simSlot]'s shared USSD
-     * session. Must always be handed back to [release] exactly once — on
-     * SUCCESS, FAILED, CANCELLED, TIMEOUT, or any unexpected exception —
-     * via a try/finally around the dial, same pattern already used for the
-     * wake lock and the accessibility bridge's arm()/disarm() in every
-     * interactive orchestrator. */
-    class Ticket internal constructor(internal val simSlot: Int, internal val requestId: String)
+    /** Held by whichever request currently owns the app's one USSD session.
+     * Must be handed back to [release] exactly once, whatever the outcome. */
+    class Ticket internal constructor(internal val simSlot: Int, internal val requestId: String, internal val id: Long)
 
     private data class Waiter(
         val requestId: String,
+        val simSlot: Int,
         val arrivalTimeMs: Long,
+        val enqueuedAtMs: Long,
         val sequence: Long,
         val signal: CompletableDeferred<Ticket>,
     )
 
-    /** Per-SIM-slot state — every field here is scoped to exactly one slot,
-     * so slot 1 and slot 2 (or a future slot 3/4, if this device model ever
-     * exposes more) are entirely independent queues. */
-    private class SlotState {
-        val waiters = mutableListOf<Waiter>()
-        var busy = false
-    }
-
-    /** Real production value; shrunk by tests so they don't have to wait
-     * out a real 300ms — see UssdSimLockTest. */
+    /** Real production value; shrunk by tests. */
     internal var debounceMs: Long = 300L
 
-    // One shared guard protects the whole `slots` map and every SlotState's
-    // mutable fields — safe and cheap even under cross-slot contention
-    // since every critical section here is a tiny in-memory list
-    // operation, never held across the actual (multi-second) USSD dial
-    // itself, which happens entirely between acquire() returning and
-    // release() being called. Two different SIM slots' dials genuinely run
-    // concurrently; this guard is only ever held for microseconds of
-    // bookkeeping around that.
+    /** Safety net only -- see class doc. */
+    internal var maxSessionMs: Long = 5 * 60_000L
+
     private val guard = Mutex()
-    private val slots = mutableMapOf<Int, SlotState>()
-
-    // A single global monotonic counter, not one per slot: AtomicLong's own
-    // getAndIncrement() is safe to call without `guard` (unlike the `slots`
-    // map itself), and correctness only requires sequence values to be
-    // unique and monotonic WITHIN one slot's own sorted waiter list --
-    // never compared across slots -- so one shared counter for the whole
-    // object is simplest and exactly as correct as a per-slot one would be.
+    private val waiters = mutableListOf<Waiter>()
+    private var running: Waiter? = null
+    private var runningTicketId: Long = -1
+    private var runningSinceMs: Long = 0
+    private var watchdog: Job? = null
     private val sequenceCounter = AtomicLong(0)
+    private val ticketCounter = AtomicLong(0)
+    private val watchdogScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    private fun slotState(simSlot: Int): SlotState = slots.getOrPut(simSlot) { SlotState() }
+    private val _status = MutableStateFlow(UssdQueueStatus())
 
-    /** Test-only: clears all state between test cases — this object is a
-     * process-wide singleton and would otherwise leak state across test
-     * cases run in the same JVM. */
+    /** Live Running/Waiting view of the queue, for the agent's screens. */
+    val status: StateFlow<UssdQueueStatus> = _status.asStateFlow()
+
+    /** Test-only: clears all state between test cases. */
     internal suspend fun resetForTest() {
-        guard.withLock { slots.clear() }
+        guard.withLock {
+            watchdog?.cancel()
+            watchdog = null
+            waiters.clear()
+            running = null
+            runningTicketId = -1
+            publishLocked()
+        }
     }
 
-    /** Suspends until [requestId] reaches the head of [simSlot]'s own
-     * queue — see the class doc for exactly how "head" is decided. Returns
-     * a [Ticket] that MUST be passed to [release] exactly once, however
-     * this request's own session ends up finishing. */
+    /** Suspends until [requestId] is at the head of the app-wide queue and
+     * nothing else is running. [simSlot] is the SIM this request will dial
+     * on (shown to the agent; it no longer gives a separate queue). */
     suspend fun acquire(simSlot: Int, requestId: String, arrivalTimeMs: Long): Ticket {
-        val waiter = Waiter(requestId, arrivalTimeMs, sequenceCounter.getAndIncrement(), CompletableDeferred())
+        val waiter = Waiter(requestId, simSlot, arrivalTimeMs, System.currentTimeMillis(), sequenceCounter.getAndIncrement(), CompletableDeferred())
         val iAmDebounceLeader = guard.withLock {
-            val state = slotState(simSlot)
-            state.waiters.add(waiter)
-            state.waiters.sortWith(compareBy({ it.arrivalTimeMs }, { it.sequence }))
-            !state.busy && state.waiters.size == 1
+            waiters.add(waiter)
+            waiters.sortWith(compareBy({ it.arrivalTimeMs }, { it.sequence }))
+            publishLocked()
+            running == null && waiters.size == 1
         }
         if (iAmDebounceLeader) {
-            // NonCancellable: this caller's own coroutine could be
-            // cancelled mid-debounce (e.g. the flow it belongs to was torn
-            // down) -- the promotion decision is shared, per-slot process-
-            // wide state, not this caller's own work, so it must always run
-            // to completion or every later-queued request for this slot
-            // would stall behind a debounce that never resolves.
+            // NonCancellable: the promotion decision is shared state, not
+            // this caller's own work -- it must always complete.
             withContext(NonCancellable) {
                 delay(debounceMs)
-                guard.withLock { promoteNextLocked(simSlot) }
+                guard.withLock { promoteNextLocked() }
             }
         }
         try {
@@ -160,38 +129,151 @@ object UssdSimLock {
         } catch (e: Throwable) {
             withContext(NonCancellable) {
                 guard.withLock {
-                    val state = slotState(simSlot)
-                    if (!state.waiters.remove(waiter) && waiter.signal.isCompleted && state.busy) {
-                        // Was granted the turn but this caller is being
-                        // cancelled/failed before it could act on it --
-                        // release immediately so this slot's queue keeps
-                        // moving instead of stalling forever.
-                        state.busy = false
-                        promoteNextLocked(simSlot)
+                    if (!waiters.remove(waiter) && waiter.signal.isCompleted && running === waiter) {
+                        // Granted the turn but cancelled before acting on it.
+                        finishRunningLocked()
                     }
+                    publishLocked()
                 }
             }
             throw e
         }
     }
 
-    /** Hands [simSlot]'s shared session back. Always promotes that slot's
-     * next-earliest queued request (if any) immediately — no debounce, see
-     * class doc. Never affects any other SIM slot's own queue. */
+    /** Hands the session back and starts the next waiting request at once. */
     suspend fun release(ticket: Ticket) {
         guard.withLock {
-            val state = slotState(ticket.simSlot)
-            state.busy = false
-            promoteNextLocked(ticket.simSlot)
+            if (ticket.id != runningTicketId) {
+                // Already force-released by the safety net (or released
+                // twice): the queue has moved on, so nothing to do.
+                return@withLock
+            }
+            finishRunningLocked()
         }
     }
 
-    // Must be called while already holding `guard`.
-    private fun promoteNextLocked(simSlot: Int) {
-        val state = slotState(simSlot)
-        if (state.busy) return
-        val head = state.waiters.removeFirstOrNull() ?: return
-        state.busy = true
-        head.signal.complete(Ticket(simSlot, head.requestId))
+    // ---- must be called while holding `guard` ----
+
+    private fun finishRunningLocked() {
+        watchdog?.cancel()
+        watchdog = null
+        running = null
+        runningTicketId = -1
+        promoteNextLocked()
+        publishLocked()
+    }
+
+    private fun promoteNextLocked() {
+        if (running != null) return
+        val head = waiters.removeFirstOrNull()
+        if (head == null) {
+            publishLocked()
+            return
+        }
+        val ticket = Ticket(head.simSlot, head.requestId, ticketCounter.incrementAndGet())
+        running = head
+        runningTicketId = ticket.id
+        runningSinceMs = System.currentTimeMillis()
+        startWatchdogLocked(ticket)
+        publishLocked()
+        head.signal.complete(ticket)
+    }
+
+    private fun startWatchdogLocked(ticket: Ticket) {
+        val limit = maxSessionMs
+        watchdog = watchdogScope.launch {
+            delay(limit)
+            guard.withLock {
+                if (runningTicketId != ticket.id) return@withLock
+                DiagnosticsLog.record(
+                    "ussd_queue_watchdog",
+                    "USSD session ${ticket.requestId} held the queue over ${limit / 1000}s -- released so the next request can start.",
+                    isError = true,
+                )
+                watchdog = null
+                finishRunningLocked()
+            }
+        }
+    }
+
+    private fun publishLocked() {
+        val now = running
+        _status.value = UssdQueueStatus(
+            running = now?.let { UssdQueueEntry(normalizeUssdJobKey(it.requestId), ussdJobLabel(it.requestId), it.simSlot, runningSinceMs) },
+            waiting = waiters.map { UssdQueueEntry(normalizeUssdJobKey(it.requestId), ussdJobLabel(it.requestId), it.simSlot, it.enqueuedAtMs) },
+        )
+    }
+}
+
+/** One request in the queue, as the agent sees it. [key] is the job's
+ * stable id, e.g. "internet_store:ORDER_ID" -- see [normalizeUssdJobKey]. */
+data class UssdQueueEntry(val key: String, val label: String, val simSlot: Int, val sinceMs: Long)
+
+/** Running request (at most one, app-wide) and the Waiting ones in order. */
+data class UssdQueueStatus(
+    val running: UssdQueueEntry? = null,
+    val waiting: List<UssdQueueEntry> = emptyList(),
+) {
+    val isIdle: Boolean get() = running == null && waiting.isEmpty()
+
+    /** Running / Waiting (with 1-based position) / not queued, for one job. */
+    fun stateOf(key: String): UssdJobState {
+        val k = normalizeUssdJobKey(key)
+        if (running?.key == k) return UssdJobState.Running
+        val i = waiting.indexOfFirst { it.key == k }
+        return if (i >= 0) UssdJobState.Waiting(i + 1, waiting.size) else UssdJobState.None
+    }
+}
+
+sealed class UssdJobState {
+    object None : UssdJobState()
+    object Running : UssdJobState()
+    data class Waiting(val position: Int, val total: Int) : UssdJobState()
+}
+
+/** The stable job id behind a lock request id: drops the per-attempt
+ * suffix (":attempt2") and gives both Reseller Withdraw paths one name. */
+fun normalizeUssdJobKey(requestId: String): String {
+    val noAttempt = requestId.replace(Regex(":attempt\\d+$"), "")
+    return if (noAttempt.startsWith("reseller_withdrawal:")) "reseller:" + noAttempt.removePrefix("reseller_withdrawal:") else noAttempt
+}
+
+/** Short label shown to the agent, e.g. "Order 1234". */
+fun ussdJobLabel(requestId: String): String {
+    val key = normalizeUssdJobKey(requestId)
+    val id = key.substringAfter(':', "")
+    return when (key.substringBefore(':')) {
+        "internet_store" -> "Order $id"
+        "exchange" -> "Money Exchange $id"
+        "wallet-lookup" -> "Wallet name lookup"
+        "reseller" -> "Reseller withdrawal $id"
+        else -> "USSD request"
+    }
+}
+
+/**
+ * The one app-wide record of which payment/transaction jobs are being
+ * processed right now. Every flow's own in-flight guard (UssdOrchestrator's
+ * claimOrder, ExchangeUssdOrchestrator's / WalletLookupUssdOrchestrator's /
+ * both Reseller Withdraw orchestrators' claim) uses this, under the job's
+ * normalized key -- so the same job can never be started twice, from any
+ * screen or background sweep, and the two Reseller Withdraw paths now also
+ * guard against EACH OTHER for the same withdrawal.
+ */
+object UssdJobRegistry {
+    private val mutex = Mutex()
+    private val active = mutableSetOf<String>()
+
+    /** True if this caller now owns [key]; false if it is already in progress. */
+    suspend fun claim(key: String): Boolean = mutex.withLock { active.add(normalizeUssdJobKey(key)) }
+
+    suspend fun release(key: String) {
+        mutex.withLock { active.remove(normalizeUssdJobKey(key)) }
+    }
+
+    internal suspend fun isActive(key: String): Boolean = mutex.withLock { normalizeUssdJobKey(key) in active }
+
+    internal suspend fun resetForTest() {
+        mutex.withLock { active.clear() }
     }
 }

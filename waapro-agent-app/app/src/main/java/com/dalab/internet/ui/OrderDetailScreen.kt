@@ -242,6 +242,8 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
                 DetailRow("Amount", "$${"%.2f".format(current.amount)}", big = true)
                 Spacer(Modifier.height(6.dp))
                 StatusBar(current)
+                // App-wide USSD queue: Running now, or Waiting (position).
+                UssdJobStatusLine("internet_store:${current.id}", Modifier.padding(top = 6.dp))
             }
 
             // Approve / reject the payment, retry, cancel, reverse.

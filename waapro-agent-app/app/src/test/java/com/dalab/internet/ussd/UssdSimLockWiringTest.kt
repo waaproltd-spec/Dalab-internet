@@ -73,4 +73,21 @@ class UssdSimLockWiringTest {
             )
         }
     }
+
+    @Test
+    fun `every USSD-dialing orchestrator guards duplicates through the one app-wide UssdJobRegistry`() {
+        val expectedKeys = mapOf(
+            "UssdOrchestrator.kt" to "\"internet_store:",
+            "ExchangeUssdOrchestrator.kt" to "\"exchange:",
+            "WalletLookupUssdOrchestrator.kt" to "\"wallet-lookup:",
+            "ResellerWithdrawalUssdOrchestrator.kt" to "\"reseller:",
+            "ResellerWithdrawalInteractiveUssdOrchestrator.kt" to "\"reseller:",
+        )
+        for ((fileName, key) in expectedKeys) {
+            val source = readSource(fileName)
+            assertTrue("$fileName must claim its job in UssdJobRegistry", source.contains("UssdJobRegistry.claim($key"))
+            assertTrue("$fileName must release its job in UssdJobRegistry", source.contains("UssdJobRegistry.release($key"))
+            assertFalse("$fileName must not keep its own separate in-flight set", source.contains("inFlightMutex"))
+        }
+    }
 }

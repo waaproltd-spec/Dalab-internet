@@ -6,8 +6,6 @@ import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.WalletLookupPending
 import com.dalab.internet.network.WalletLookupReportRequest
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 
 /**
  * Wallet Name Lookup (the customer app's "Complete Account" flow) — dials
@@ -199,15 +197,11 @@ class WalletLookupUssdOrchestrator(private val context: Context) {
 
     companion object {
         // Same same-device in-flight guard shape as ExchangeUssdOrchestrator.
-        private val inFlightMutex = Mutex()
-        private val inFlightIds = mutableSetOf<String>()
-
-        private suspend fun claim(id: String): Boolean = inFlightMutex.withLock {
-            if (id in inFlightIds) false else { inFlightIds.add(id); true }
-        }
+        // Now the app-wide UssdJobRegistry (see UssdSimLock.kt).
+        private suspend fun claim(id: String): Boolean = UssdJobRegistry.claim("wallet-lookup:$id")
 
         private suspend fun release(id: String) {
-            inFlightMutex.withLock { inFlightIds.remove(id) }
+            UssdJobRegistry.release("wallet-lookup:$id")
         }
     }
 }

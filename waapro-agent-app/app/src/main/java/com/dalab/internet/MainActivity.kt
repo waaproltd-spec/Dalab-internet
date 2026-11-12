@@ -773,7 +773,10 @@ private fun AgentHome(
             )
         }
     ) { padding ->
-        Box(modifier = Modifier.padding(padding)) {
+        Column(modifier = Modifier.padding(padding)) {
+        // App-wide USSD queue: what is Running and what is Waiting, on every tab.
+        com.dalab.internet.ui.UssdQueueBanner()
+        Box(modifier = Modifier.weight(1f)) {
             when (tab) {
                 HomeTab.HOME -> OrdersListScreen(
                     onOpenOrder = onOpenOrder,
@@ -816,6 +819,7 @@ private fun AgentHome(
                     onOpenShopVipOrders = { onTabChange(HomeTab.ORDERS) },
                 )
             }
+        }
         }
     }
 }

@@ -9,8 +9,6 @@ import com.dalab.internet.network.DialAttemptResultRequest
 import com.dalab.internet.network.DialAttemptStartRequest
 import com.dalab.internet.queue.PendingActionQueue
 import com.dalab.internet.util.parseApiDate
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 
 /**
@@ -264,15 +262,14 @@ class ResellerWithdrawalInteractiveUssdOrchestrator(private val context: Context
     }
 
     companion object {
-        private val inFlightMutex = Mutex()
-        private val inFlightWithdrawalIds = mutableSetOf<String>()
-
-        private suspend fun claim(withdrawalId: String): Boolean = inFlightMutex.withLock {
-            if (withdrawalId in inFlightWithdrawalIds) false else { inFlightWithdrawalIds.add(withdrawalId); true }
-        }
+        // Now the app-wide UssdJobRegistry (see UssdSimLock.kt), under the
+        // SAME "reseller:<id>" key as the other Reseller Withdraw
+        // orchestrator -- so the one-shot and interactive paths can't both
+        // pay out the same withdrawal.
+        private suspend fun claim(withdrawalId: String): Boolean = UssdJobRegistry.claim("reseller:$withdrawalId")
 
         private suspend fun release(withdrawalId: String) {
-            inFlightMutex.withLock { inFlightWithdrawalIds.remove(withdrawalId) }
+            UssdJobRegistry.release("reseller:$withdrawalId")
         }
     }
 }

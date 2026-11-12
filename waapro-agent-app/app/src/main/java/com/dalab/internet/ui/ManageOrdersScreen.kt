@@ -248,6 +248,7 @@ private fun ManageOrderCard(order: Order, onClick: () -> Unit) {
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
                     )
                 }
+                UssdJobPill("internet_store:${order.id}", Modifier.padding(top = 4.dp))
             }
             Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = WaaproNavy, modifier = Modifier.padding(start = 4.dp))
         }

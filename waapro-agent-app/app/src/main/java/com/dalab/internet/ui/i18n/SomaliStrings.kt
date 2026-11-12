@@ -652,6 +652,9 @@ internal val SomaliStrings: Map<String, String> = hashMapOf(
     "Reverse sort order" to "Rog habka kala horreynta",
     "Reversed" to "La rogay",
     "Running" to "Shaqaynaya",
+    "USSD running now" to "USSD hadda socda",
+    "Waiting in the USSD queue" to "Waa ku sugaya safka USSD",
+    "Starting" to "Bilaabanaya",
     "SMS + background service status for this device" to "Xaaladda SMS + adeegga gadaasha ee qalabkan",
     "SMS Listening — Active" to "Dhegeysiga SMS — Firfircoon",
     "SMS Listening — Inactive" to "Dhegeysiga SMS — Aan firfircoonayn",
@@ -941,4 +944,8 @@ internal val SomaliPatterns: List<Pair<Regex, String>> = listOf(
     Regex("(\\d+) selected") to "{1} la doortay",
     Regex("(\\d+) waiting to send") to "{1} sugaya in la diro",
     Regex("(\\d+) Numbers Package") to "Xirmada {1} Lambar",
+    Regex("Waiting #(\\d+)") to "Sugaya #{1}",
+    Regex("Position (\\d+) of (\\d+)") to "Kaalinta {1} ee {2}",
+    Regex("Running now: (.+)") to "Hadda socda: {1}",
+    Regex("Order (\\S+) · SIM (\\d+)") to "Dalab {1} · SIM {2}",
 )
