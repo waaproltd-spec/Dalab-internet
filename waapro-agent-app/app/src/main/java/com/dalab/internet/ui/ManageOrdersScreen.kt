@@ -191,7 +191,7 @@ fun ManageOrdersScreen(onOpenOrder: (Order) -> Unit, onBack: () -> Unit) {
 }
 
 /** Pill colours per status: (background, text). */
-fun orderStatusColors(order: Order): Pair<Color, Color> = when (order.status) {
+fun orderStatusColors(order: Order): Pair<Color, Color> = if (order.reversedAt != null) Color(0xFFFFF3D6) to Color(0xFF8A5A00) else when (order.status) {
     OrderStatus.PENDING -> WaaproSoft to WaaproNavy
     OrderStatus.IN_PROGRESS -> Color(0xFFFFF3D6) to Color(0xFF8A5A00)
     OrderStatus.FAILED -> Color(0xFFFDE2E2) to Color(0xFFB42318)
@@ -199,7 +199,7 @@ fun orderStatusColors(order: Order): Pair<Color, Color> = when (order.status) {
     OrderStatus.CANCELLED -> Color(0xFFECEEF2) to WaaproMuted
 }
 
-fun orderStatusLabel(order: Order): String = when (order.status) {
+fun orderStatusLabel(order: Order): String = if (order.reversedAt != null) "Reversed" else when (order.status) {
     OrderStatus.PENDING -> "Pending"
     OrderStatus.IN_PROGRESS -> if (order.ussdGenerated != null) "Delivering" else "Processing"
     OrderStatus.FAILED -> "Failed"

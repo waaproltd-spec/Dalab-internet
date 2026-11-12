@@ -13,6 +13,7 @@ internal val SomaliStrings: Map<String, String> = hashMapOf(
     "Show PIN" to "Muuji PIN-ka",
     "Hide PIN" to "Qari PIN-ka",
     "Sign in" to "Gal",
+    "This order was reversed. It is final: it can't be retried, cancelled or dialed." to "Dalabkan waa la celiyay. Waa kama dambays: dib looma isku dayi karo, lama joojin karo, lamana garaaci karo.",
     "Signing in..." to "Waa la galayaa...",
     "Forgot your PIN? Ask your admin." to "PIN-ka ma ilowday? Weydii maamulahaaga.",
     "Wrong phone number or PIN." to "Lambarka taleefanka ama PIN-ka waa khalad.",

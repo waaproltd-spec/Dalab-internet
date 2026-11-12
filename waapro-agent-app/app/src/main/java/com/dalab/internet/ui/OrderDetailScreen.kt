@@ -198,7 +198,7 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
             )
         },
         bottomBar = {
-            if (current.status == OrderStatus.IN_PROGRESS) {
+            if (current.reversedAt == null && current.status == OrderStatus.IN_PROGRESS) {
                 Surface(color = WaaproBg, shadowElevation = 8.dp) {
                     Button(
                         onClick = { markCompleted() },
@@ -248,7 +248,20 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
                 message = done
             }
 
-            if (current.status == OrderStatus.PENDING || current.status == OrderStatus.IN_PROGRESS) {
+            if (current.reversedAt != null) {
+                Surface(shape = RoundedCornerShape(12.dp), color = Color(0xFFFFF3D6), modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            "This order was reversed. It is final: it can't be retried, cancelled or dialed.",
+                            color = Color(0xFF8A5A00),
+                            fontWeight = FontWeight.Medium,
+                        )
+                        androidx.compose.material3.Text(formatApiDateTime(current.reversedAt), color = Color(0xFF8A5A00), style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+
+            if (current.reversedAt == null && (current.status == OrderStatus.PENDING || current.status == OrderStatus.IN_PROGRESS)) {
                 // The SIM this order's provider is routed to first; the other
                 // slot's warning shows only if that's the one with a problem.
                 val shownSlot = recommendedSlot ?: balanceChecks.keys.minOrNull()
@@ -270,7 +283,7 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
                 }
             }
 
-            if (current.status == OrderStatus.PENDING) {
+            if (current.reversedAt == null && current.status == OrderStatus.PENDING) {
                 // Approving goes through "Approve payment" above (a reason is
                 // required when no payment SMS was matched, and it's logged);
                 // once approved, the order is dialed automatically or with
@@ -285,7 +298,7 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
                 }
             }
 
-            if (current.status == OrderStatus.IN_PROGRESS) {
+            if (current.reversedAt == null && current.status == OrderStatus.IN_PROGRESS) {
                 // Covers the order that's already verified but was never
                 // actually dialed (e.g. verified before this screen dialed on
                 // verify, or a dial that exhausted its retries) — same

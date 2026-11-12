@@ -89,7 +89,7 @@ fun actionsFor(status: OrderStatus): List<AgentOrderAction> = when (status) {
  */
 @Composable
 fun AgentOrderActions(order: Order, onUpdated: (Order, String) -> Unit) {
-    val actions = actionsFor(order.status)
+    val actions = if (order.reversedAt != null) emptyList() else actionsFor(order.status)
     if (actions.isEmpty()) return
     val scope = rememberCoroutineScope()
     var pending by remember { mutableStateOf<AgentOrderAction?>(null) }

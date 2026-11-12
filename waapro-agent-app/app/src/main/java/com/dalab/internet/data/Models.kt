@@ -44,6 +44,9 @@ data class Order(
     val assignedSimSlot: Int? = null,
     val createdAt: String,
     val completedAt: String? = null,
+    // Set once the order was reversed (its points and commission taken back).
+    // A reversed order is final: no retry, cancel or dial.
+    val reversedAt: String? = null,
     // Extra Packages (Admin > Add Extra Package): how many times this one
     // paid order is delivered, how many deliveries the server has already
     // confirmed, and the next unused dial attempt number. Null from older
