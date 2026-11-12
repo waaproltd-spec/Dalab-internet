@@ -4,6 +4,7 @@
 // request hanging forever with no response (Express 4 doesn't do this on its
 // own; Express 5 does, but that's a larger upgrade than this fix warrants).
 import { hubRouter, cleanupHubTokens } from "./routes/hub.routes.js";
+import { hubAgentsRouter } from "./routes/hubAgents.routes.js";
 import { systemSuspensionMiddleware } from "./auth/systemStatus.js";
 import "express-async-errors";
 import express, { NextFunction, Request, Response } from "express";
@@ -279,6 +280,7 @@ app.use(systemSuspensionMiddleware);
 app.use(staffStatusMiddleware);
 app.use(authRouter);
 app.use(hubRouter);
+app.use(hubAgentsRouter);
 app.use(deviceActivationRouter);
 app.use(smsFormatsRouter);
 app.use(usersRouter);
