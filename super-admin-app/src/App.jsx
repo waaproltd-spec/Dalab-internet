@@ -17643,7 +17643,16 @@ function isValidEmailClient(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
 }
 
-function AdminLoginScreen({ onLoggedIn }) {
+/** The wrong-password answer, in plain words (the server says the same for an unknown email, on purpose). */
+function friendlyLoginError(err) {
+  const msg = err?.message || "";
+  if (/invalid (email|credentials)|incorrect password|wrong (email|password)|invalid email or password/i.test(msg) || err?.status === 401) {
+    return "Incorrect password. Please try again.";
+  }
+  return msg || "Incorrect password. Please try again.";
+}
+
+function AdminLoginScreen({ onLoggedIn, onBack }) {
   const [view, setView] = useState("login"); // 'login' | 'forgot'
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -17668,7 +17677,7 @@ function AdminLoginScreen({ onLoggedIn }) {
       dalabAdminRefreshToken = result.refreshToken;
       onLoggedIn(result.admin);
     } catch (err) {
-      setError(err.message || "Invalid email or password.");
+      setError(friendlyLoginError(err));
     } finally {
       setLoading(false);
     }
@@ -17696,6 +17705,15 @@ function AdminLoginScreen({ onLoggedIn }) {
     <div style={{ minHeight: "100vh", background: "var(--sidebar-bg)", position: "relative", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter','Segoe UI',system-ui,-apple-system,sans-serif", padding: "72px 20px 20px" }}>
       <div style={{ position: "absolute", top: 12, right: 12 }}><PrefsControls onDark /></div>
       <div style={{ width: "100%", maxWidth: 400 }}>
+        {onBack && (
+          <button
+            type="button"
+            onClick={onBack}
+            style={{ display: "inline-flex", alignItems: "center", gap: 8, minHeight: 44, padding: "8px 16px", marginBottom: 14, borderRadius: 999, border: "1px solid rgba(255,255,255,0.3)", background: "rgba(255,255,255,0.08)", color: "#FFFFFF", fontSize: 15, fontWeight: 700, cursor: "pointer" }}
+          >
+            <span aria-hidden="true">←</span> Back
+          </button>
+        )}
         <div style={{ textAlign: "center", marginBottom: 22 }}>
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,0.06)", padding: "6px 14px", borderRadius: 20, marginBottom: 18 }}>
             <Lock size={13} color="var(--c-7c86c4)" />
@@ -18304,6 +18322,23 @@ export default function AdminDashboard() {
   const [hubStatus, setHubStatus] = useState(hubAssertion ? "signing-in" : null);
   const [hubError, setHubError] = useState("");
   const [showLocalLogin, setShowLocalLogin] = useState(!HUB_URL);
+  // "Use a local account instead" is its own step in the browser history:
+  // the Back button on the form, and Android's / the browser's Back, return
+  // to the "Sign in through the Admin Hub" screen instead of leaving.
+  const openLocalLogin = () => {
+    try { window.history.pushState({ ...(window.history.state || {}), localLogin: true }, ""); } catch { /* ignore */ }
+    setShowLocalLogin(true);
+  };
+  const closeLocalLogin = () => {
+    if (window.history.state?.localLogin) window.history.back();
+    else setShowLocalLogin(false);
+  };
+  useEffect(() => {
+    if (!HUB_URL) return undefined;
+    const onPop = () => { if (!window.history.state?.localLogin) setShowLocalLogin(false); };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
   // Super Admins opened from the hub: their annual payment, shown above everything.
   const { data: payment, refresh: refreshPayment } = usePaymentStatus(loadHubPayment);
   // Set when this system's API says the Platform Owner has suspended it.
@@ -18356,13 +18391,13 @@ export default function AdminDashboard() {
         title="Sign in through the Admin Hub"
         message={hubError || "Admins open this dashboard from the Admin Hub with their own account."}
         isError={Boolean(hubError)}
-        onLocalLogin={() => setShowLocalLogin(true)}
+        onLocalLogin={openLocalLogin}
       />
     );
   }
 
   if (!admin) {
-    return <AdminLoginScreen onLoggedIn={setAdmin} />;
+    return <AdminLoginScreen onLoggedIn={setAdmin} onBack={HUB_URL ? closeLocalLogin : undefined} />;
   }
 
   return (
@@ -18402,7 +18437,14 @@ function HubNotice({ title, message, isError = false, onLocalLogin }) {
   // dashboard, whatever theme constants or CSS variables that app defines.
   return (
     <div style={{ minHeight: "100vh", background: "var(--sidebar-bg, #0B1240)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "'Inter','Segoe UI',system-ui,-apple-system,sans-serif" }}>
-      <div style={{ width: "100%", maxWidth: 400, background: "#FFFFFF", borderRadius: 16, padding: 28, textAlign: "center", boxShadow: "0 12px 40px rgba(0,0,0,0.25)" }}>
+      <div style={{ width: "100%", maxWidth: 400, background: "#FFFFFF", borderRadius: 16, padding: 28, textAlign: "center", boxShadow: "0 12px 40px rgba(0,0,0,0.25)", position: "relative" }}>
+        <button
+          type="button"
+          onClick={() => { if (window.history.length > 1) window.history.back(); else if (HUB_URL) goToHub(); }}
+          style={{ position: "absolute", top: 12, left: 12, display: "inline-flex", alignItems: "center", gap: 6, minHeight: 40, padding: "6px 12px", borderRadius: 999, border: "1px solid #CBD5E1", background: "#F8FAFC", color: "#0F172A", fontSize: 14, fontWeight: 700, cursor: "pointer" }}
+        >
+          <span aria-hidden="true">←</span> Back
+        </button>
         <img src={`${import.meta.env.BASE_URL}logo.png`} alt="" width={56} height={56} style={{ borderRadius: 14, marginBottom: 14 }} onError={(e) => { e.currentTarget.style.display = "none"; }} />
         <h1 style={{ fontSize: 20, margin: "0 0 8px", color: "#0F172A" }}>{title}</h1>
         <p style={{ fontSize: 14, margin: "0 0 18px", color: isError ? "#B91C1C" : "#475569" }}>{message}</p>
