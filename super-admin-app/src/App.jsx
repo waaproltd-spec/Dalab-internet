@@ -18458,7 +18458,22 @@ function HubSwitchButton({ label }) {
 const AGENT_APP_LATEST_URL = "https://admin.waaproltd.com/api/agent-app/latest";
 
 /** "Download Agent App" in the top bar, for Super Admins and Admins. */
+/** The newest release's version (e.g. "1.0.30"), asked from the Admin Hub. */
+function useAgentAppVersion() {
+  const [version, setVersion] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    fetch(`${AGENT_APP_LATEST_URL}?format=json`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (alive && d?.version) setVersion(d.version); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  return version;
+}
+
 function AgentAppDownloadButton({ admin, compact = false }) {
+  const version = useAgentAppVersion();
   if (!admin || (admin.role !== "super_admin" && admin.role !== "admin")) return null;
   return (
     <a
@@ -18466,7 +18481,7 @@ function AgentAppDownloadButton({ admin, compact = false }) {
       download
       target="_blank"
       rel="noopener noreferrer"
-      title="Download the latest Agent App (release APK)"
+      title={version ? `Download Agent App ${version} (release APK)` : "Download the latest Agent App (release APK)"}
       aria-label="Download Agent App"
       style={{
         display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0,
@@ -18477,7 +18492,7 @@ function AgentAppDownloadButton({ admin, compact = false }) {
       }}
     >
       <Download size={16} color="#F5B800" />
-      {!compact && <span>Download Agent App</span>}
+      <span>{compact ? (version ? `v${version}` : "Agent App") : `Download Agent App${version ? ` ${version}` : ""}`}</span>
     </a>
   );
 }
