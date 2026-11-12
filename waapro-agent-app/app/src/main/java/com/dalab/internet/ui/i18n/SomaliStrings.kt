@@ -13,6 +13,8 @@ internal val SomaliStrings: Map<String, String> = hashMapOf(
     "Show PIN" to "Muuji PIN-ka",
     "Hide PIN" to "Qari PIN-ka",
     "Sign in" to "Gal",
+    "Order Actions" to "Hawlaha Dalabka",
+    "Dial" to "Garaac",
     "This order was reversed. It is final: it can't be retried, cancelled or dialed." to "Dalabkan waa la celiyay. Waa kama dambays: dib looma isku dayi karo, lama joojin karo, lamana garaaci karo.",
     "Signing in..." to "Waa la galayaa...",
     "Forgot your PIN? Ask your admin." to "PIN-ka ma ilowday? Weydii maamulahaaga.",
@@ -855,6 +857,18 @@ internal val SomaliStrings: Map<String, String> = hashMapOf(
  * order, so a more specific pattern must come before a general one.
  */
 internal val SomaliPatterns: List<Pair<Regex, String>> = listOf(
+    Regex("Assigned SIM: SIM (\\d) on this phone \\(Admin → SIM Routing\\)\\.") to
+        "SIM-ka loo qoondeeyay: SIM {1} ee taleefankan (Admin → SIM Routing).",
+    Regex("SIM Balance Outdated — (.+)\\. The (.+) SIM showed (\\\$[\\d.]+) at its last update, which may no longer be correct\\. Check the (.+) SIM balance before processing this (\\\$[\\d.]+) order\\.") to
+        "Haraaga SIM-ku waa duug — {1}. SIM-ka {2} wuxuu muujiyay {3} markii ugu dambaysay ee la cusbooneysiiyay, taasoo laga yaabo inaanay hadda sax ahayn. Hubi haraaga SIM-ka {4} ka hor intaadan habayn dalabkan {5}.",
+    Regex("SIM Balance Outdated! The (.+) SIM showed (\\\$[\\d.]+) at its last update, which may no longer be correct\\. Check the SIM balance before processing this (\\\$[\\d.]+) order\\.") to
+        "Haraaga SIM-ku waa duug! SIM-ka {1} wuxuu muujiyay {2} markii ugu dambaysay ee la cusbooneysiiyay, taasoo laga yaabo inaanay hadda sax ahayn. Hubi haraaga SIM-ka ka hor intaadan habayn dalabkan {3}.",
+    Regex("SIM Balance Unknown — (.+)\\. The (.+) SIM balance has not been recorded yet, so it can't be confirmed that it covers the customer's (\\\$[\\d.]+)\\. Check the (.+) SIM balance before processing this order\\.") to
+        "Haraaga SIM-ka lama yaqaan — {1}. Haraaga SIM-ka {2} weli lama diiwaangelin, sidaas darteed lama xaqiijin karo inuu daboolayo {3} ee macmiilka. Hubi haraaga SIM-ka {4} ka hor intaadan habayn dalabkan.",
+    Regex("SIM Balance Unknown! The (.+) SIM balance has not been recorded yet, so it can't be confirmed that it covers the customer's (\\\$[\\d.]+)\\. Check the SIM balance before processing this order\\.") to
+        "Haraaga SIM-ka lama yaqaan! Haraaga SIM-ka {1} weli lama diiwaangelin, sidaas darteed lama xaqiijin karo inuu daboolayo {2} ee macmiilka. Hubi haraaga SIM-ka ka hor intaadan habayn dalabkan.",
+    Regex("Insufficient SIM Balance — (.+)\\. The customer requested (\\\$[\\d.]+), but the available SIM balance is only (\\\$[\\d.]+)\\. The remaining amount needed is (\\\$[\\d.]+)\\. Please recharge the (.+) SIM and try again\\.") to
+        "Haraaga SIM-ku kuma filna — {1}. Macmiilku wuxuu codsaday {2}, laakiin haraaga SIM-ka ee jira waa {3} oo keliya. Waxaa loo baahan yahay {4} dheeraad ah. Fadlan ku shub SIM-ka {5} oo mar kale isku day.",
     Regex("Insufficient SIM Balance! The customer requested (\\\$[\\d.]+), but the (.+) SIM has only (\\\$[\\d.]+) available\\. An additional (\\\$[\\d.]+) is required\\. Please recharge the company SIM before processing this order\\.") to
         "Haraaga SIM-ku kuma filna! Macmiilku wuxuu codsaday {1}, laakiin SIM-ka {2} wuxuu haystaa {3} oo keliya. Waxaa loo baahan yahay {4} dheeraad ah. Fadlan ku shub SIM-ka shirkadda ka hor intaadan habayn dalabkan.",
     Regex("(\\d+) sales created") to "{1} iib ayaa la sameeyay",

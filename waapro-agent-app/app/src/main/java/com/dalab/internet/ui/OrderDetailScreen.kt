@@ -392,7 +392,9 @@ private fun DetailRow(label: String, value: String, icon: ImageVector? = null, b
         verticalAlignment = Alignment.Top,
     ) {
         Text(label, style = MaterialTheme.typography.bodyMedium, color = WaaproInk, modifier = Modifier.padding(end = 12.dp))
-        Spacer(Modifier.weight(1f))
+        // The value takes the rest of the row and sits flush right, so every
+        // value in a card lines up on the same edge.
+        Spacer(Modifier.weight(1f, fill = false))
         if (icon != null) {
             Icon(icon, contentDescription = null, tint = WaaproNavy, modifier = Modifier.size(18.dp).padding(top = 2.dp))
             Spacer(Modifier.width(6.dp))
@@ -403,7 +405,7 @@ private fun DetailRow(label: String, value: String, icon: ImageVector? = null, b
             fontWeight = FontWeight.Bold,
             fontSize = if (big) 20.sp else 15.sp,
             textAlign = TextAlign.End,
-            modifier = Modifier.weight(2f, fill = false),
+            modifier = Modifier.weight(1f),
         )
     }
 }
