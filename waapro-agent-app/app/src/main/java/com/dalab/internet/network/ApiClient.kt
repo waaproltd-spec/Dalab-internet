@@ -37,7 +37,7 @@ object ApiClient {
     // A separate, plain client with no auth header and no authenticator —
     // used only to call /auth/refresh, so refreshing a token can never
     // recursively trigger another refresh attempt.
-    private val plainClient = OkHttpClient.Builder().connectTimeout(45, TimeUnit.SECONDS).readTimeout(45, TimeUnit.SECONDS).build()
+    private val plainClient = OkHttpClient.Builder().dns(com.dalab.internet.network.Ipv4FirstDns).connectTimeout(15, TimeUnit.SECONDS).readTimeout(45, TimeUnit.SECONDS).build()
     private val plainServices = PerSystem { base ->
         Retrofit.Builder()
             .baseUrl(base)
@@ -135,10 +135,10 @@ object ApiClient {
     // first request after any idle period (most commonly login, the first
     // thing the app calls) failed with a generic connection error even
     // though the server was simply waking up, not actually unreachable.
-    private val okHttpClient = OkHttpClient.Builder()
+    private val okHttpClient = OkHttpClient.Builder().dns(com.dalab.internet.network.Ipv4FirstDns)
         .addInterceptor(authInterceptor)
         .authenticator(refreshAuthenticator)
-        .connectTimeout(45, TimeUnit.SECONDS)
+        .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(45, TimeUnit.SECONDS)
         .build()
 

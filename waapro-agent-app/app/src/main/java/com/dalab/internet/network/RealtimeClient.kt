@@ -33,7 +33,7 @@ enum class ConnectionState { CONNECTING, CONNECTED, DISCONNECTED }
  */
 class RealtimeClient(private val path: String, private val onOrderEvent: (data: String) -> Unit) {
 
-    private val client = OkHttpClient.Builder()
+    private val client = OkHttpClient.Builder().dns(com.dalab.internet.network.Ipv4FirstDns)
         .readTimeout(0, TimeUnit.MILLISECONDS) // SSE connections stay open indefinitely
         .build()
     private var eventSource: EventSource? = null

@@ -36,7 +36,7 @@ object ResellerApiClient {
     // /auth/refresh, exactly like ApiClient's own plainService, so
     // refreshing a reseller token can never recursively trigger another
     // refresh attempt.
-    private val plainClient = OkHttpClient.Builder().connectTimeout(45, TimeUnit.SECONDS).readTimeout(45, TimeUnit.SECONDS).build()
+    private val plainClient = OkHttpClient.Builder().dns(com.dalab.internet.network.Ipv4FirstDns).connectTimeout(15, TimeUnit.SECONDS).readTimeout(45, TimeUnit.SECONDS).build()
     private val plainServices = PerSystem { base ->
         Retrofit.Builder()
             .baseUrl(base)
@@ -102,10 +102,10 @@ object ResellerApiClient {
         return count
     }
 
-    private val okHttpClient = OkHttpClient.Builder()
+    private val okHttpClient = OkHttpClient.Builder().dns(com.dalab.internet.network.Ipv4FirstDns)
         .addInterceptor(authInterceptor)
         .authenticator(refreshAuthenticator)
-        .connectTimeout(45, TimeUnit.SECONDS)
+        .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(45, TimeUnit.SECONDS)
         .build()
 

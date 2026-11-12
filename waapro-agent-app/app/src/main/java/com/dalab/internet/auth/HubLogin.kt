@@ -43,8 +43,8 @@ object HubLogin {
     private val gson = Gson()
 
     // Each system answers the hub within 8 s; the hub adds a 1.2 s floor.
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
+    private val client = OkHttpClient.Builder().dns(com.dalab.internet.network.Ipv4FirstDns)
+        .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(45, TimeUnit.SECONDS)
         .build()
 
