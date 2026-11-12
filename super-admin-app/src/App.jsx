@@ -18452,10 +18452,10 @@ function HubSwitchButton({ label }) {
   );
 }
 
-// The AGENT APP (one app for every WAAPRO LTD system). This link always
-// serves the newest RELEASE-signed APK -- the Agent App build updates it on
-// every release; it never points at a debug build.
-const AGENT_APP_LATEST_URL = "https://github.com/waaproltd-spec/Dalab-internet/releases/download/waapro-agent-app-latest/AGENT-APP.apk";
+// The AGENT APP (one app for every WAAPRO LTD system). This permanent link
+// is answered by the Admin Hub, which redirects to the newest RELEASE-signed
+// APK (app-release.apk of the newest build) -- never a debug build.
+const AGENT_APP_LATEST_URL = "https://admin.waaproltd.com/api/agent-app/latest";
 
 /** "Download Agent App" in the top bar, for Super Admins and Admins. */
 function AgentAppDownloadButton({ admin, compact = false }) {
