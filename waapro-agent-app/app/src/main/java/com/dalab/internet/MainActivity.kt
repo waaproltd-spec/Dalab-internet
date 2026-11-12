@@ -22,6 +22,7 @@ import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.shadow
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
@@ -861,65 +862,88 @@ private fun DalabBottomNavigation(
     onSelectTab: (HomeTab) -> Unit,
     supportHasUnread: Boolean,
 ) {
+    // Design "3": a rounded bar; the selected tab sits in a large raised
+    // circle (WAAPRO navy to blue) on a bump of the bar, its label under it.
+    // -1 = a screen that isn't in the bar (e.g. Shop & VIP Orders): no circle.
     val selectedIndex = BOTTOM_NAV_TABS.indexOfFirst { it.tab == selectedTab }
-    // The exact same tokens NavigationBarItemDefaults.colors() already
-    // resolves to today, so this is purely an animation change -- the
-    // brand-neutral colors this bar has always shown are unchanged.
-    val indicatorColor = MaterialTheme.colorScheme.secondaryContainer
-    val selectedIconColor = MaterialTheme.colorScheme.onSecondaryContainer
-    val unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val barColor = MaterialTheme.colorScheme.surface
+    val iconColor = if (com.dalab.internet.ui.theme.isAgentDark) MaterialTheme.colorScheme.onSurface else com.dalab.internet.ui.WaaproNavy
+    val circleSize = 56.dp
+    val bumpSize = 72.dp
+    val lift = 22.dp
 
-    Box {
-        NavigationBar {
-            BOTTOM_NAV_TABS.forEach { spec ->
-                val selected = spec.tab == selectedTab
-                val iconTint by animateColorAsState(
-                    targetValue = if (selected) Color.Transparent else unselectedIconColor,
-                    label = "navIconTint",
-                )
-                NavigationBarItem(
-                    selected = selected,
-                    onClick = { onSelectTab(spec.tab) },
-                    icon = {
-                        if (spec.tab == HomeTab.SUPPORT) {
-                            BadgedBox(badge = { if (supportHasUnread && !selected) Badge() }) {
-                                Icon(spec.icon, contentDescription = spec.label, tint = iconTint)
-                            }
-                        } else {
-                            Icon(spec.icon, contentDescription = spec.label, tint = iconTint)
-                        }
-                    },
-                    label = { Text(spec.label) },
-                    colors = NavigationBarItemDefaults.colors(indicatorColor = Color.Transparent),
-                )
-            }
-        }
+    Box(modifier = Modifier.fillMaxWidth().navigationBarsPadding()) {
+        Surface(
+            color = barColor,
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            shadowElevation = 12.dp,
+            modifier = Modifier.fillMaxWidth().padding(top = lift).height(72.dp),
+        ) {}
 
-        // The single shared elevated circular indicator -- see this
-        // function's own doc comment above for why it's a separate overlay
-        // rather than each item's own indicator.
-        BoxWithConstraints(Modifier.matchParentSize()) {
+        BoxWithConstraints(Modifier.fillMaxWidth().height(72.dp + lift)) {
             val itemWidth = maxWidth / BOTTOM_NAV_TABS.size
-            val indicatorSize = 44.dp
-            val indicatorX by animateDpAsState(
-                targetValue = itemWidth * selectedIndex + (itemWidth - indicatorSize) / 2,
-                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow),
-                label = "navIndicatorX",
-            )
-            Surface(
-                color = indicatorColor,
-                shape = CircleShape,
-                shadowElevation = 6.dp,
-                modifier = Modifier
-                    .offset(x = indicatorX, y = (-16).dp)
-                    .size(indicatorSize),
-            ) {
-                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                    Icon(
-                        BOTTOM_NAV_TABS[selectedIndex].icon,
-                        contentDescription = null,
-                        tint = selectedIconColor,
-                    )
+            if (selectedIndex >= 0) {
+                val centerX by animateDpAsState(
+                    targetValue = itemWidth * selectedIndex + itemWidth / 2,
+                    animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow),
+                    label = "navCenterX",
+                )
+                // The bump: a circle of the bar's colour behind the button.
+                Box(
+                    Modifier
+                        .offset(x = centerX - bumpSize / 2, y = lift - 14.dp)
+                        .size(bumpSize)
+                        .background(barColor, CircleShape),
+                )
+                // The raised button.
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .offset(x = centerX - circleSize / 2, y = lift - 6.dp)
+                        .size(circleSize)
+                        .shadow(8.dp, CircleShape)
+                        .background(com.dalab.internet.ui.WaaproHeaderBrush, CircleShape)
+                        .clickable { onSelectTab(BOTTOM_NAV_TABS[selectedIndex].tab) },
+                ) {
+                    Icon(BOTTOM_NAV_TABS[selectedIndex].icon, contentDescription = BOTTOM_NAV_TABS[selectedIndex].label, tint = Color.White, modifier = Modifier.size(28.dp))
+                }
+            }
+
+            Row(modifier = Modifier.fillMaxWidth().padding(top = lift).height(72.dp)) {
+                BOTTOM_NAV_TABS.forEachIndexed { index, spec ->
+                    val selected = index == selectedIndex
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = if (selected) Arrangement.Bottom else Arrangement.Center,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .clickable(
+                                onClickLabel = spec.label,
+                                role = androidx.compose.ui.semantics.Role.Tab,
+                            ) { onSelectTab(spec.tab) }
+                            .padding(bottom = if (selected) 8.dp else 0.dp),
+                    ) {
+                        if (!selected) {
+                            if (spec.tab == HomeTab.SUPPORT) {
+                                BadgedBox(badge = { if (supportHasUnread) Badge() }) {
+                                    Icon(spec.icon, contentDescription = null, tint = iconColor, modifier = Modifier.size(24.dp))
+                                }
+                            } else {
+                                Icon(spec.icon, contentDescription = null, tint = iconColor, modifier = Modifier.size(24.dp))
+                            }
+                            Spacer(Modifier.height(3.dp))
+                        }
+                        Text(
+                            spec.label,
+                            color = if (selected) com.dalab.internet.ui.WaaproBlue else iconColor,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                            fontSize = 11.sp,
+                            lineHeight = 13.sp,
+                            maxLines = 2,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        )
+                    }
                 }
             }
         }
