@@ -24,6 +24,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -954,6 +955,7 @@ private fun MoreScreen(
             runCatching { moreContext.packageManager.getPackageInfo(moreContext.packageName, 0).versionName }.getOrNull()
         }
         com.dalab.internet.ui.WaaproScreenHeader("More", "Settings, tools and your work", badge = appVersion?.let { "v$it" })
+        MoreTabs()
         // Sales/Customers/Reports were their own bottom-nav tabs before the
         // bar was cut down to exactly 4 (Home/Support Agent/Broadcast/More)
         // to make room for Support Agent and Broadcast -- kept first and
@@ -1152,8 +1154,52 @@ private fun MoreScreen(
     }
 }
 
+/** More's tabs: short label -> the section it shows. */
+private val MORE_TABS = listOf(
+    "Theme" to "Appearance & Language",
+    "Notifications" to "Notifications",
+    "My Work" to "My Work",
+    "Money" to "Money",
+    "Catalog" to "Catalog & Sales",
+    "Device" to "Device & Diagnostics",
+    "Account" to "Account",
+)
+
+/** The open More tab; kept while the app runs so coming back keeps it. */
+private var moreTab by mutableStateOf("My Work")
+
+/** The row of tabs under the More header: one section at a time, no long scroll. */
+@Composable
+private fun MoreTabs() {
+    Row(
+        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        MORE_TABS.forEach { (label, section) ->
+            val selected = moreTab == section
+            Surface(
+                onClick = { moreTab = section },
+                shape = RoundedCornerShape(50),
+                color = if (selected) com.dalab.internet.ui.WaaproGold else MaterialTheme.colorScheme.surface,
+                border = if (selected) null else androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)),
+            ) {
+                Text(
+                    label,
+                    color = if (selected) com.dalab.internet.ui.WaaproNavy else MaterialTheme.colorScheme.onSurface,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun MoreSection(title: String, content: @Composable ColumnScope.() -> Unit) {
+    // Only the section of the open tab is shown.
+    if (title != moreTab) return
     // WAAPRO LTD look: gold section title, white card with a thin border.
     Text(
         title.uppercase(),
@@ -1161,7 +1207,7 @@ private fun MoreSection(title: String, content: @Composable ColumnScope.() -> Un
         fontWeight = FontWeight.ExtraBold,
         color = if (com.dalab.internet.ui.theme.isAgentDark) com.dalab.internet.ui.WaaproGold else com.dalab.internet.ui.WaaproGoldText,
         letterSpacing = 0.8.sp,
-        modifier = Modifier.padding(start = 18.dp, top = 22.dp, bottom = 6.dp),
+        modifier = Modifier.padding(start = 18.dp, top = 4.dp, bottom = 6.dp),
     )
     Card(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
