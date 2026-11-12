@@ -13,6 +13,7 @@ internal val SomaliStrings: Map<String, String> = hashMapOf(
     "Show PIN" to "Muuji PIN-ka",
     "Hide PIN" to "Qari PIN-ka",
     "Sign in" to "Gal",
+    "Total Balance (all)" to "Wadarta Haraaga (dhammaan)",
     "Manage Orders" to "Maamul Dalabyada",
     "Shop & VIP Orders" to "Dalabyada Dukaanka & VIP",
     "Shop, VIP number and VIP package orders" to "Dalabyada dukaanka, lambarada VIP iyo xirmooyinka VIP",
@@ -865,6 +866,7 @@ internal val SomaliStrings: Map<String, String> = hashMapOf(
  * order, so a more specific pattern must come before a general one.
  */
 internal val SomaliPatterns: List<Pair<Regex, String>> = listOf(
+    Regex("Methods (\\\$[\\d.]+) \\+ Companies (\\\$[\\d.]+)") to "Hababka {1} + Shirkadaha {2}",
     Regex("This order was completed at (.+)\\.") to "Dalabkan waxaa la dhammaystiray {1}.",
     Regex("This order was completed\\.") to "Dalabkan waa la dhammaystiray.",
     Regex("Assigned SIM: SIM (\\d) on this phone \\(Admin → SIM Routing\\)\\.") to

@@ -304,6 +304,12 @@ private fun AgentBalanceSection(balances: List<AgentBalanceEntry>, loading: Bool
     val companyBalances = balances.filter { it.category == "company" }
 
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+        GrandTotalBar(
+            methods = methodBalances.sumOf { it.balance },
+            companies = companyBalances.sumOf { it.balance },
+            loading = loading,
+        )
+        Spacer(Modifier.height(10.dp))
         BalanceGroupHeader(
             title = "Payment Method (${methodBalances.size})",
             totalBalance = methodBalances.sumOf { it.balance },
@@ -343,6 +349,34 @@ private fun AgentBalanceSection(balances: List<AgentBalanceEntry>, loading: Bool
 // accentColor lets Payment Method (green) and Payment Company (blue) each
 // read as their own group at a glance, matching the reference design. No
 // subtitle/description line under the title, per the current design spec.
+/** Everything together: payment methods + payment companies. */
+@Composable
+private fun GrandTotalBar(methods: Double, companies: Double, loading: Boolean) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(com.dalab.internet.ui.WaaproHeaderBrush)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text("Total Balance (all)", color = Color.White.copy(alpha = 0.85f), style = MaterialTheme.typography.labelMedium)
+            Text(
+                if (loading) "…" else "Methods $${"%.2f".format(methods)} + Companies $${"%.2f".format(companies)}",
+                color = Color.White.copy(alpha = 0.75f),
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+        Text(
+            if (loading) "…" else "$ ${"%.2f".format(methods + companies)}",
+            color = com.dalab.internet.ui.WaaproGold,
+            fontWeight = FontWeight.Black,
+            style = MaterialTheme.typography.headlineSmall,
+        )
+    }
+}
+
 @Composable
 private fun BalanceGroupHeader(title: String, totalBalance: Double, loading: Boolean, accentColor: Color) {
     Row(
