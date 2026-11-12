@@ -84,6 +84,7 @@ data class HeartbeatRequest(
 data class LoginResponse(val accessToken: String, val refreshToken: String, val agent: AgentProfile)
 data class RegisterDeviceTokenRequest(val fcmToken: String)
 data class RefreshRequest(val refreshToken: String)
+data class AgentActionRequest(val reason: String? = null)
 data class RefreshResponse(val accessToken: String, val refreshToken: String)
 
 // ---------------- Reseller (reseller-role login; see auth/ResellerSessionManager.kt) ----------------
@@ -427,6 +428,25 @@ interface ApiService {
         @Path("id") id: String,
         @Body body: VerifyPaymentRequest,
     ): Response<Order>
+
+    // Agent operations (approve/reject payments, cancel, retry, reverse).
+    // Each returns the updated order; 403 AGENT_OPERATIONS_DISABLED when an
+    // admin switched this agent's operational access off, 409 when someone
+    // already handled the order.
+    @POST("agent/orders/{id}/approve-payment")
+    suspend fun approvePayment(@Path("id") id: String, @Body body: AgentActionRequest): Response<Order>
+
+    @POST("agent/orders/{id}/reject-payment")
+    suspend fun rejectPayment(@Path("id") id: String, @Body body: AgentActionRequest): Response<Order>
+
+    @POST("agent/orders/{id}/cancel")
+    suspend fun cancelOrder(@Path("id") id: String, @Body body: AgentActionRequest): Response<Order>
+
+    @POST("agent/orders/{id}/retry")
+    suspend fun retryOrder(@Path("id") id: String, @Body body: AgentActionRequest): Response<Order>
+
+    @POST("agent/orders/{id}/reverse")
+    suspend fun reverseOrder(@Path("id") id: String, @Body body: AgentActionRequest): Response<Order>
 
     @POST("agent/orders/{id}/complete")
     suspend fun completeOrder(@Path("id") id: String): Response<Order>

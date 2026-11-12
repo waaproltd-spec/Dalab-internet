@@ -1,5 +1,7 @@
 package com.dalab.internet.ui
 
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import android.content.ClipData
 import android.content.ClipboardManager
 import androidx.compose.foundation.layout.*
@@ -154,7 +156,7 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
             )
         }
     ) { padding ->
-        Column(modifier = Modifier.padding(padding).padding(20.dp).fillMaxSize()) {
+        Column(modifier = Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)) {
 
             if (copied) {
                 Text("Order ID copied to clipboard", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
@@ -179,7 +181,15 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
             SectionLabel("STATUS")
             StatusChip(current)
 
-            Spacer(Modifier.height(28.dp))
+            Spacer(Modifier.height(20.dp))
+            // Approve / reject the payment, retry, cancel, reverse.
+            AgentOrderActions(current) { updated, done ->
+                current = updated
+                onOrderUpdated(updated)
+                message = done
+            }
+
+            Spacer(Modifier.height(20.dp))
 
             if (current.status == OrderStatus.PENDING || current.status == OrderStatus.IN_PROGRESS) {
                 // The SIM this order's provider is routed to first; the other
@@ -205,25 +215,15 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
             }
 
             if (current.status == OrderStatus.PENDING) {
+                // Approving goes through "Approve payment" above (a reason is
+                // required when no payment SMS was matched, and it's logged);
+                // once approved, the order is dialed automatically or with
+                // the Dial buttons below.
                 Text(
-                    "Verifying payment also generates and dials the USSD code — pick the SIM this order's provider is routed to.",
+                    "Approve the payment above first. The order is then dialed automatically on the SIM it is routed to, or you can dial it here.",
                     style = MaterialTheme.typography.labelSmall,
                 )
                 AssignedSimNote(assigned)
-                Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    dialSlots.forEach { slot ->
-                        val isRecommended = recommendedSlot == slot
-                        OutlinedButton(
-                            onClick = { onDialTapped(slot) },
-                            enabled = !working && balanceChecks[slot]?.status != "insufficient",
-                            modifier = Modifier.weight(1f),
-                            colors = if (isRecommended) ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary) else ButtonDefaults.outlinedButtonColors(),
-                        ) {
-                            Text(if (working) "Working..." else if (isRecommended) "Verify + Dial SIM $slot ★" else "Verify + Dial SIM $slot")
-                        }
-                    }
-                }
             }
 
             if (current.status == OrderStatus.IN_PROGRESS) {
