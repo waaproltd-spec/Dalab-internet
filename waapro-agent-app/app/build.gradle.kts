@@ -26,8 +26,8 @@ android {
         applicationId = "com.waaproltd.agent"
         minSdk = 26
         targetSdk = 34
-        versionCode = 12
-        versionName = "1.0.11"
+        versionCode = 13
+        versionName = "1.0.12"
     }
 
     signingConfigs {

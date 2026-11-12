@@ -30,6 +30,22 @@ import com.dalab.internet.ui.theme.DalabDangerRed
 import com.dalab.internet.ui.theme.DalabWarningAmber
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Inventory2
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.SimCard
 import kotlinx.coroutines.launch
 import com.dalab.internet.ui.i18n.Text
 
@@ -135,10 +151,30 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
         )
     }
 
+    // Mark as Completed sits pinned at the bottom (same call as before), so it
+    // is always visible without scrolling.
+    fun markCompleted() {
+        working = true
+        scope.launch {
+            try {
+                val response = ApiClient.service.completeOrder(current.id)
+                response.body()?.let {
+                    current = it
+                    onOrderUpdated(it)
+                    message = "Order marked as completed."
+                } ?: run { message = "Couldn't complete — try again." }
+            } catch (_: Exception) {
+                message = "Network error while completing."
+            }
+            working = false
+        }
+    }
+
     Scaffold(
+        containerColor = WaaproBg,
         topBar = {
             TopAppBar(
-                title = { Text("Order ${current.id}") },
+                title = { Text("Order ${current.id}", fontWeight = FontWeight.Bold, maxLines = 1) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
@@ -153,43 +189,64 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
                         Icon(Icons.Filled.ContentCopy, contentDescription = "Copy order ID")
                     }
                 },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = WaaproNavy,
+                    titleContentColor = Color.White,
+                    navigationIconContentColor = Color.White,
+                    actionIconContentColor = Color.White,
+                ),
             )
-        }
+        },
+        bottomBar = {
+            if (current.status == OrderStatus.IN_PROGRESS) {
+                Surface(color = WaaproBg, shadowElevation = 8.dp) {
+                    Button(
+                        onClick = { markCompleted() },
+                        enabled = !working,
+                        shape = RoundedCornerShape(16.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = WaaproNavy),
+                        modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 12.dp, vertical = 10.dp).heightIn(min = 54.dp),
+                    ) {
+                        Icon(Icons.Filled.Check, contentDescription = null, tint = Color.White)
+                        Spacer(Modifier.width(10.dp))
+                        Text(if (working) "Completing..." else "Mark as Completed", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                    }
+                }
+            }
+        },
     ) { padding ->
-        Column(modifier = Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)) {
+        Column(
+            modifier = Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
 
             if (copied) {
-                Text("Order ID copied to clipboard", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.height(8.dp))
+                Text("Order ID copied to clipboard", style = MaterialTheme.typography.labelMedium, color = WaaproBlue)
                 LaunchedEffect(copied) {
                     kotlinx.coroutines.delay(1500)
                     copied = false
                 }
             }
 
-            SectionLabel("CUSTOMER")
-            DetailRow("Name", current.customerName ?: "Not provided")
-            DetailRow("Phone", current.customerPhone ?: "Not provided")
+            DetailCard(Icons.Filled.Person, "Customer") {
+                DetailRow("Name", current.customerName ?: "Not provided")
+                DetailRow("Phone", current.customerPhone ?: "Not provided", Icons.Filled.Phone)
+            }
 
-            Spacer(Modifier.height(20.dp))
-            SectionLabel("PACKAGE")
-            DetailRow("Provider", current.companyName)
-            DetailRow("Package", current.packageName)
-            DetailRow("Amount", "$${"%.2f".format(current.amount)}")
+            DetailCard(Icons.Filled.Inventory2, "Package") {
+                DetailRow("Provider", current.companyName)
+                DetailRow("Package", current.packageName)
+                DetailRow("Amount", "$${"%.2f".format(current.amount)}", big = true)
+                Spacer(Modifier.height(6.dp))
+                StatusBar(current)
+            }
 
-            Spacer(Modifier.height(20.dp))
-            SectionLabel("STATUS")
-            StatusChip(current)
-
-            Spacer(Modifier.height(20.dp))
             // Approve / reject the payment, retry, cancel, reverse.
             AgentOrderActions(current) { updated, done ->
                 current = updated
                 onOrderUpdated(updated)
                 message = done
             }
-
-            Spacer(Modifier.height(20.dp))
 
             if (current.status == OrderStatus.PENDING || current.status == OrderStatus.IN_PROGRESS) {
                 // The SIM this order's provider is routed to first; the other
@@ -198,20 +255,19 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
                 val shown = shownSlot?.let { balanceChecks[it] }
                 if (shown != null && !shown.ok) {
                     SimBalanceWarningCard(shown)
-                    Spacer(Modifier.height(16.dp))
                 } else if (balanceCheckFailed) {
                     Text(
                         "Couldn't check the SIM balance right now — it will be checked again before dialing.",
                         style = MaterialTheme.typography.labelSmall,
                         color = DalabWarningAmber,
                     )
-                    Spacer(Modifier.height(12.dp))
                 }
             }
 
             if (message != null) {
-                Text(message!!, color = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.height(12.dp))
+                Surface(shape = RoundedCornerShape(12.dp), color = WaaproSoft, modifier = Modifier.fillMaxWidth()) {
+                    Text(message!!, color = WaaproNavy, fontWeight = FontWeight.Medium, modifier = Modifier.padding(12.dp))
+                }
             }
 
             if (current.status == OrderStatus.PENDING) {
@@ -219,57 +275,42 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
                 // required when no payment SMS was matched, and it's logged);
                 // once approved, the order is dialed automatically or with
                 // the Dial buttons below.
-                Text(
-                    "Approve the payment above first. The order is then dialed automatically on the SIM it is routed to, or you can dial it here.",
-                    style = MaterialTheme.typography.labelSmall,
-                )
-                AssignedSimNote(assigned)
+                Column {
+                    Text(
+                        "Approve the payment above first. The order is then dialed automatically on the SIM it is routed to, or you can dial it here.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = WaaproMuted,
+                    )
+                    AssignedSimNote(assigned)
+                }
             }
 
             if (current.status == OrderStatus.IN_PROGRESS) {
-                Spacer(Modifier.height(12.dp))
                 // Covers the order that's already verified but was never
                 // actually dialed (e.g. verified before this screen dialed on
                 // verify, or a dial that exhausted its retries) — same
                 // executeManually call as above, safe to re-run.
-                Text("No confirmation the USSD was dialed yet? Retry it here.", style = MaterialTheme.typography.labelSmall)
-                AssignedSimNote(assigned)
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    dialSlots.forEach { slot ->
-                        val isRecommended = recommendedSlot == slot
-                        OutlinedButton(
-                            onClick = { onDialTapped(slot) },
-                            enabled = !working && balanceChecks[slot]?.status != "insufficient",
-                            modifier = Modifier.weight(1f),
-                            colors = if (isRecommended) ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary) else ButtonDefaults.outlinedButtonColors(),
-                        ) {
-                            Text(if (working) "Working..." else if (isRecommended) "Dial SIM $slot ★" else "Dial SIM $slot")
+                DetailCard(Icons.Filled.SimCard, "Dial") {
+                    Text("No confirmation the USSD was dialed yet? Retry it here.", style = MaterialTheme.typography.labelSmall, color = WaaproMuted)
+                    AssignedSimNote(assigned)
+                    if (dialSlots.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                            dialSlots.forEach { slot ->
+                                val isRecommended = recommendedSlot == slot
+                                OutlinedButton(
+                                    onClick = { onDialTapped(slot) },
+                                    enabled = !working && balanceChecks[slot]?.status != "insufficient",
+                                    shape = RoundedCornerShape(12.dp),
+                                    border = BorderStroke(1.5.dp, WaaproNavy),
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = WaaproNavy),
+                                ) {
+                                    Text(if (working) "Working..." else if (isRecommended) "Dial SIM $slot ★" else "Dial SIM $slot", fontWeight = FontWeight.Bold)
+                                }
+                            }
                         }
                     }
-                }
-                Spacer(Modifier.height(12.dp))
-                Button(
-                    onClick = {
-                        working = true
-                        scope.launch {
-                            try {
-                                val response = ApiClient.service.completeOrder(current.id)
-                                response.body()?.let {
-                                    current = it
-                                    onOrderUpdated(it)
-                                    message = "Order marked as completed."
-                                } ?: run { message = "Couldn't complete — try again." }
-                            } catch (_: Exception) {
-                                message = "Network error while completing."
-                            }
-                            working = false
-                        }
-                    },
-                    enabled = !working,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(if (working) "Completing..." else "Mark as Completed")
                 }
             }
 
@@ -277,26 +318,80 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
                 Text(
                     "This order was completed${current.completedAt?.let { " at ${formatApiDateTime(it)}" } ?: ""}.",
                     style = MaterialTheme.typography.bodyMedium,
+                    color = WaaproInk,
                 )
             }
         }
     }
 }
 
+/** A white card with a soft navy header strip (icon + title). */
 @Composable
-private fun SectionLabel(text: String) {
-    Text(text, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-    Spacer(Modifier.height(6.dp))
+private fun DetailCard(icon: ImageVector, title: String, content: @Composable ColumnScope.() -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = Color.White,
+        border = BorderStroke(1.dp, WaaproBorder),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().background(WaaproSoft.copy(alpha = 0.55f)).padding(horizontal = 14.dp, vertical = 8.dp),
+            ) {
+                Box(Modifier.size(30.dp).clip(CircleShape).background(WaaproNavy), contentAlignment = Alignment.Center) {
+                    Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                }
+                Spacer(Modifier.width(10.dp))
+                Text(title, color = WaaproNavy, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+            }
+            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp), content = content)
+        }
+    }
+}
+
+/** Status row inside the Package card, with the coloured status pill. */
+@Composable
+private fun StatusBar(order: Order) {
+    val (pillBg, pillText) = orderStatusColors(order)
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(WaaproSoft.copy(alpha = 0.55f)).padding(horizontal = 10.dp, vertical = 8.dp),
+    ) {
+        Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = WaaproNavy, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.width(8.dp))
+        Text("Status", color = WaaproNavy, fontWeight = FontWeight.Bold, fontSize = 16.sp, modifier = Modifier.weight(1f))
+        Surface(shape = RoundedCornerShape(50), color = pillBg) {
+            Text(
+                orderStatusLabel(order),
+                color = pillText,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+            )
+        }
+    }
 }
 
 @Composable
-private fun DetailRow(label: String, value: String) {
+private fun DetailRow(label: String, value: String, icon: ImageVector? = null, big: Boolean = false) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        verticalAlignment = Alignment.Top,
     ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium)
-        Text(value, fontWeight = FontWeight.Medium)
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = WaaproInk, modifier = Modifier.padding(end = 12.dp))
+        Spacer(Modifier.weight(1f))
+        if (icon != null) {
+            Icon(icon, contentDescription = null, tint = WaaproNavy, modifier = Modifier.size(18.dp).padding(top = 2.dp))
+            Spacer(Modifier.width(6.dp))
+        }
+        Text(
+            value,
+            color = WaaproNavy,
+            fontWeight = FontWeight.Bold,
+            fontSize = if (big) 20.sp else 15.sp,
+            textAlign = TextAlign.End,
+            modifier = Modifier.weight(2f, fill = false),
+        )
     }
 }
 
@@ -314,13 +409,13 @@ private fun SimBalanceWarningCard(check: SimBalanceCheck) {
     }
     fun usd(v: Double?) = v?.let { "$" + "%.2f".format(it) } ?: "Unknown"
     Surface(
-        color = accent.copy(alpha = 0.10f),
+        color = accent.copy(alpha = 0.12f),
         shape = RoundedCornerShape(14.dp),
         border = androidx.compose.foundation.BorderStroke(1.dp, accent.copy(alpha = 0.6f)),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
-            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Filled.Warning, contentDescription = null, tint = accent)
                 Spacer(Modifier.width(8.dp))
                 Text(title, fontWeight = FontWeight.Bold, color = accent, style = MaterialTheme.typography.titleMedium)
@@ -333,7 +428,13 @@ private fun SimBalanceWarningCard(check: SimBalanceCheck) {
             if (insufficient) DetailRow("Missing amount", usd(check.missingAmount))
             check.message?.let {
                 Spacer(Modifier.height(8.dp))
-                Text(it, style = MaterialTheme.typography.bodySmall)
+                HorizontalDivider(color = accent.copy(alpha = 0.4f))
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.Top) {
+                    Icon(Icons.Filled.Info, contentDescription = null, tint = WaaproBlue, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = WaaproInk)
+                }
             }
         }
     }

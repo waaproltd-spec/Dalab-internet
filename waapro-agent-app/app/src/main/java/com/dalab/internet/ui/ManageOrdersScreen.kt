@@ -191,7 +191,7 @@ fun ManageOrdersScreen(onOpenOrder: (Order) -> Unit, onBack: () -> Unit) {
 }
 
 /** Pill colours per status: (background, text). */
-private fun statusColors(order: Order): Pair<Color, Color> = when (order.status) {
+fun orderStatusColors(order: Order): Pair<Color, Color> = when (order.status) {
     OrderStatus.PENDING -> WaaproSoft to WaaproNavy
     OrderStatus.IN_PROGRESS -> Color(0xFFFFF3D6) to Color(0xFF8A5A00)
     OrderStatus.FAILED -> Color(0xFFFDE2E2) to Color(0xFFB42318)
@@ -199,7 +199,7 @@ private fun statusColors(order: Order): Pair<Color, Color> = when (order.status)
     OrderStatus.CANCELLED -> Color(0xFFECEEF2) to WaaproMuted
 }
 
-private fun statusLabel(order: Order): String = when (order.status) {
+fun orderStatusLabel(order: Order): String = when (order.status) {
     OrderStatus.PENDING -> "Pending"
     OrderStatus.IN_PROGRESS -> if (order.ussdGenerated != null) "Delivering" else "Processing"
     OrderStatus.FAILED -> "Failed"
@@ -210,7 +210,7 @@ private fun statusLabel(order: Order): String = when (order.status) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ManageOrderCard(order: Order, onClick: () -> Unit) {
-    val (pillBg, pillText) = statusColors(order)
+    val (pillBg, pillText) = orderStatusColors(order)
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(16.dp),
@@ -241,7 +241,7 @@ private fun ManageOrderCard(order: Order, onClick: () -> Unit) {
                 Spacer(Modifier.height(6.dp))
                 Surface(shape = RoundedCornerShape(50), color = pillBg) {
                     Text(
-                        statusLabel(order),
+                        orderStatusLabel(order),
                         color = pillText,
                         fontWeight = FontWeight.SemiBold,
                         style = MaterialTheme.typography.labelLarge,

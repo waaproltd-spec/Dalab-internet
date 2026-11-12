@@ -1,5 +1,7 @@
 package com.dalab.internet.ui
 
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.foundation.border
 import com.dalab.internet.ui.i18n.Text
 import com.dalab.internet.ui.i18n.tr
 import androidx.compose.foundation.background
@@ -96,11 +98,16 @@ fun AgentOrderActions(order: Order, onUpdated: (Order, String) -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
 
     Column(
-        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(WaaproSoft.copy(alpha = 0.5f)).padding(12.dp),
+        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color.White)
+            .border(1.dp, WaaproBorder, RoundedCornerShape(16.dp)).padding(12.dp),
     ) {
-        Text("ORDER ACTIONS", color = WaaproNavy, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-        Spacer(Modifier.height(8.dp))
-        actions.chunked(2).forEach { row ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.Settings, contentDescription = null, tint = WaaproNavy, modifier = Modifier.size(22.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Order Actions", color = WaaproNavy, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+        }
+        Spacer(Modifier.height(10.dp))
+        actions.chunked(3).forEach { row ->
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 row.forEach { action ->
                     Button(
@@ -108,15 +115,23 @@ fun AgentOrderActions(order: Order, onUpdated: (Order, String) -> Unit) {
                         enabled = !busy,
                         colors = ButtonDefaults.buttonColors(containerColor = action.color),
                         shape = RoundedCornerShape(12.dp),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
-                        modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+                        modifier = Modifier.weight(1f).heightIn(min = 52.dp),
                     ) {
                         Icon(action.icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(action.label, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1)
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            action.label,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            maxLines = 2,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            lineHeight = 15.sp,
+                        )
                     }
                 }
-                if (row.size == 1) Spacer(Modifier.weight(1f))
+                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
             }
             Spacer(Modifier.height(8.dp))
         }
