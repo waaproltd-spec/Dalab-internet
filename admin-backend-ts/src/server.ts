@@ -21,6 +21,7 @@ import { offlinePaymentMethodsRouter } from "./routes/offlinePaymentMethods.rout
 import { agentsRouter } from "./routes/agents.routes.js";
 import { smsLogsRouter } from "./routes/smsLogs.routes.js";
 import { reportsRouter } from "./routes/reports.routes.js";
+import { agentDailyRouter } from "./routes/agentDaily.routes.js";
 import { settingsRouter } from "./routes/settings.routes.js";
 import { ussdRouter } from "./routes/ussd.routes.js";
 import { macaashRouter } from "./routes/macaash.routes.js";
@@ -296,6 +297,7 @@ app.use(offlinePaymentMethodsRouter);
 app.use(agentsRouter);
 app.use(smsLogsRouter);
 app.use(reportsRouter);
+app.use(agentDailyRouter);
 app.use(settingsRouter);
 app.use(ussdRouter);
 app.use(macaashRouter);

@@ -1578,5 +1578,16 @@
 "Agent reversed a completed order": "Agent-ku wuxuu dib u celiyay dalab dhammaaday",
 "Agent operational access switched on": "Awoodda hawlgallada Agent-ka waa la shiday",
 "Agent operational access switched off": "Awoodda hawlgallada Agent-ka waa la damiyay",
-"Could not change operational access.": "Awoodda hawlgallada lama beddeli karin."
+"Could not change operational access.": "Awoodda hawlgallada lama beddeli karin.",
+"Maintenance Notices": "Ogeysiisyada Dayactirka",
+"New notice": "Ogeysiis cusub",
+"Edit notice": "Wax ka beddel ogeysiiska",
+"Showing now": "Hadda la muujinayo",
+"Ended": "Dhammaaday",
+"No notices yet.": "Weli ogeysiis ma jiro.",
+"Show to agents": "U muuji wakiilada",
+"Start (optional)": "Bilow (ikhtiyaari)",
+"End (optional)": "Dhammaad (ikhtiyaari)",
+"Starts immediately": "Hadda ayuu bilaabanayaa",
+"No end time": "Waqti dhammaad ma leh"
 }

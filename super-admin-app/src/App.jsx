@@ -15,6 +15,7 @@ import { useTheme, useLang, setTheme, setLang } from "./prefs.js";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 import { HUB_URL, takeHubAssertion, goToHub, openHub, signOutToHub, hubNav, watchSystemSuspension, loadHubPayment, acknowledgeHubPayment, payNowHubPayment } from "./hubSession.js";
 import HubPaymentBanner, { usePaymentStatus } from "./HubPaymentBanner.jsx";
+import AgentNotices, { AgentNoticesIcon } from "./AgentNotices.jsx";
 
 // ---- DALAB INTERNET / Admin design tokens ----
 // INDIGO is the shared brand color, kept under its old name (avoids a
@@ -982,6 +983,7 @@ const NAV = [
   { id: "agents", label: "Agents", icon: UserCog, permission: "agents.manage" },
   { id: "device-activation", label: "Device Activation", icon: Smartphone, permission: "agents.manage" },
   { id: "notifications", label: "Notifications", icon: Bell, permission: "settings.manage" },
+  { id: "agent-notices", label: "Maintenance Notices", icon: AgentNoticesIcon, permission: "agents.manage" },
   { id: "feedback", label: "Feedback & Suggestions", icon: Lightbulb, permission: "feedback.manage" },
   { id: "support", label: "Agent Support", icon: MessageCircle, permission: "support.manage" },
   { id: "promo-images", label: "Promo Images", icon: ImageIcon, superAdminOnly: true },
@@ -18282,6 +18284,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "agents" && <AgentsSection companies={companies} admin={admin} />}
           {active === "device-activation" && <DeviceActivationSection admin={admin} />}
           {active === "notifications" && <Notifications />}
+          {active === "agent-notices" && <AgentNotices request={dalabAdminApiRequest} />}
           {active === "promo-images" && <PromoImages />}
           {active === "nala-soco" && <NalaSoco />}
           {active === "ciyaaraha" && <CiyaarahaAdmin />}
