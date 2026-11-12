@@ -16,6 +16,7 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, 
 import { HUB_URL, takeHubAssertion, goToHub, openHub, signOutToHub, hubNav, watchSystemSuspension, loadHubPayment, acknowledgeHubPayment, payNowHubPayment } from "./hubSession.js";
 import HubPaymentBanner, { usePaymentStatus } from "./HubPaymentBanner.jsx";
 import AgentNotices, { AgentNoticesIcon } from "./AgentNotices.jsx";
+import AgentDirectorySetting from "./AgentDirectorySetting.jsx";
 
 // ---- DALAB INTERNET / Admin design tokens ----
 // INDIGO is the shared brand color, kept under its old name (avoids a
@@ -18281,7 +18282,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "orders" && <Orders orders={orders} setOrders={setOrders} companies={companies} admin={admin} />}
           {active === "offline" && <OfflinePanel companies={companies} />}
           {active === "customers" && <Customers customers={customers} setCustomers={setCustomers} refreshCustomers={refreshCustomers} admin={admin} />}
-          {active === "agents" && <AgentsSection companies={companies} admin={admin} />}
+          {active === "agents" && <><AgentDirectorySetting request={dalabAdminApiRequest} /><AgentsSection companies={companies} admin={admin} /></>}
           {active === "device-activation" && <DeviceActivationSection admin={admin} />}
           {active === "notifications" && <Notifications />}
           {active === "agent-notices" && <AgentNotices request={dalabAdminApiRequest} />}

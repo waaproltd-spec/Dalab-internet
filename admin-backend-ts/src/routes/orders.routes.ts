@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { touchAgentPresence } from "./agentDirectory.routes.js";
 import { randomUUID } from "node:crypto";
 import { query, queryOne, withTransaction } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
@@ -535,7 +536,15 @@ ordersRouter.get("/agent/orders", requireAuth("agent"), async (req, res) => {
 // swallowed as an :id param.
 ordersRouter.get("/agent/orders/stream", requireAuth("agent"), async (req, res) => {
   const unsubscribe = subscribe(res);
-  req.on("close", unsubscribe);
+  // Other Agents: while this live connection stays open the agent is
+  // online -- refresh their last-seen time every minute.
+  const agentId = req.auth!.sub;
+  void touchAgentPresence(agentId);
+  const presence = setInterval(() => void touchAgentPresence(agentId), 60_000);
+  req.on("close", () => {
+    clearInterval(presence);
+    unsubscribe();
+  });
 });
 
 // Self-heal target list for the Agent App: an order that reached in_progress

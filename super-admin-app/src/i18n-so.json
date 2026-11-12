@@ -1589,5 +1589,8 @@
 "Start (optional)": "Bilow (ikhtiyaari)",
 "End (optional)": "Dhammaad (ikhtiyaari)",
 "Starts immediately": "Hadda ayuu bilaabanayaa",
-"No end time": "Waqti dhammaad ma leh"
+"No end time": "Waqti dhammaad ma leh",
+"Other Agents (Agent App)": "Wakiilada Kale (Agent App)",
+"Show work phone numbers": "Muuji lambarrada shaqada",
+"Agents see each other's name and ONLINE / OFFLINE status. Choose whether they also see each other's work phone number.": "Wakiiladu waxay arkaan magacyada iyo xaaladda ONLINE / OFFLINE ee midba midka kale. Dooro inay sidoo kale arkaan lambarka shaqada."
 }
