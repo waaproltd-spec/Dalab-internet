@@ -1101,13 +1101,17 @@ private fun MoreScreen(
             )
         }
         var confirmSignOut by remember { mutableStateOf(false) }
+        // Read once (decrypting the session on every recomposition is slow).
+        val accountLine = remember {
+            listOfNotNull(
+                SessionManager.currentAgent()?.name?.takeIf { it.isNotBlank() },
+                com.dalab.internet.auth.SystemSession.systemName(),
+            ).joinToString(" · ").ifBlank { "Sign in again with phone number + PIN" }
+        }
         MoreSection(title = "Account") {
             MoreItem(
                 title = "Sign out",
-                subtitle = listOfNotNull(
-                    SessionManager.currentAgent()?.name?.takeIf { it.isNotBlank() },
-                    com.dalab.internet.auth.SystemSession.systemName(),
-                ).joinToString(" · ").ifBlank { "Sign in again with phone number + PIN" },
+                subtitle = accountLine,
                 icon = Icons.Filled.Logout,
                 onClick = { confirmSignOut = true },
             )
