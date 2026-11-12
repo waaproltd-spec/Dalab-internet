@@ -48,6 +48,14 @@ object ApiClient {
     }
     private val plainService: ApiService get() = plainServices.get(BASE_URL)
 
+    /**
+     * No agent token. For the few endpoints that need none and must work
+     * before this phone passes Device Activation -- the device list on the
+     * device setup screen (with a token, the server's Device Activation
+     * check would refuse it with 403 on a not-yet-approved phone).
+     */
+    val publicService: ApiService get() = plainServices.get(BASE_URL)
+
     // Guards the refresh call below against a thundering-herd race: several
     // requests (a queued backlog draining after connectivity returns, a
     // heartbeat tick, a live SMS upload) can all get a 401 within the same

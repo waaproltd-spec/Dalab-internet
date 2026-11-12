@@ -59,7 +59,7 @@ fun DeviceSetupScreen(onDeviceSelected: () -> Unit) {
         error = null
         scope.launch {
             try {
-                val response = ApiClient.service.getDevices()
+                val response = ApiClient.publicService.getDevices()
                 if (response.isSuccessful) {
                     devices = response.body().orEmpty()
                 } else {
