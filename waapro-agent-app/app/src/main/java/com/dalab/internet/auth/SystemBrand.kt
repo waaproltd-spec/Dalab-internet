@@ -9,7 +9,7 @@ import com.dalab.internet.R
  */
 object SystemBrand {
     fun logo(): Int = when (SystemSession.systemKey()) {
-        "dalab" -> com.dalab.internet.auth.SystemBrand.logo()
+        "dalab" -> R.drawable.dalab_logo
         "danwadaag" -> R.drawable.danwadaag_logo
         else -> R.drawable.ic_notification
     }
