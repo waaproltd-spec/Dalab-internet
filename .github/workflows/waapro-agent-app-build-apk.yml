@@ -170,7 +170,12 @@ jobs:
       # A fixed download link that always holds the newest RELEASE APK (never
       # the debug one) -- the dashboards' "Download Agent App" button points
       # here: releases/download/waapro-agent-app-latest/AGENT-APP.apk.
+      # Best effort: releases are immutable in this repository, so this
+      # fixed release can't be re-filled once published. The dashboards use
+      # the Admin Hub's /api/agent-app/latest instead, which always redirects
+      # to the newest run's app-release.apk. Never fails the build.
       - name: Update the fixed "latest release APK" link
+        continue-on-error: true
         working-directory: .
         env:
           GH_TOKEN: ${{ github.token }}
