@@ -949,7 +949,11 @@ private fun MoreScreen(
     onOpenManageOrders: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        com.dalab.internet.ui.WaaproScreenHeader("More", "Settings, tools and your work")
+        val moreContext = androidx.compose.ui.platform.LocalContext.current
+        val appVersion = remember {
+            runCatching { moreContext.packageManager.getPackageInfo(moreContext.packageName, 0).versionName }.getOrNull()
+        }
+        com.dalab.internet.ui.WaaproScreenHeader("More", "Settings, tools and your work", badge = appVersion?.let { "v$it" })
         // Sales/Customers/Reports were their own bottom-nav tabs before the
         // bar was cut down to exactly 4 (Home/Support Agent/Broadcast/More)
         // to make room for Support Agent and Broadcast -- kept first and

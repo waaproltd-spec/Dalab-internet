@@ -61,7 +61,7 @@ fun BrandIconTile(icon: androidx.compose.ui.graphics.vector.ImageVector, size: D
 
 /** The navy-to-blue header with the WAAPRO LTD logo, a title and the gold line. */
 @Composable
-fun WaaproScreenHeader(title: String, subtitle: String? = null) {
+fun WaaproScreenHeader(title: String, subtitle: String? = null, badge: String? = null) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -79,11 +79,25 @@ fun WaaproScreenHeader(title: String, subtitle: String? = null) {
                     .padding(3.dp),
             )
             Spacer(Modifier.width(12.dp))
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp)
                 if (subtitle != null) {
                     Text(subtitle, color = Color.White.copy(alpha = 0.85f), fontSize = 13.sp)
                 }
+            }
+            if (badge != null) {
+                // e.g. the app version, top right of the header.
+                Spacer(Modifier.width(8.dp))
+                androidx.compose.material3.Text(
+                    badge,
+                    color = WaaproNavy,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(WaaproGold)
+                        .padding(horizontal = 12.dp, vertical = 5.dp),
+                )
             }
         }
         Spacer(Modifier.height(12.dp))
