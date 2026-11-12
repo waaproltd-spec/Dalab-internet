@@ -18420,8 +18420,13 @@ export default function AdminDashboard() {
         onLogout={() => {
           dalabAdminAccessToken = null;
           dalabAdminRefreshToken = null;
+          if (admin.viaHub && HUB_URL) {
+            // Straight to the hub's sign-out. Clearing the admin first would
+            // redirect to the hub's front door, which reopens this system.
+            signOutToHub();
+            return;
+          }
           setAdmin(null);
-          if (admin.viaHub && HUB_URL) signOutToHub();
         }}
       />
       {admin.viaHub && HUB_URL && hubNav() && <HubSwitchButton label={hubNav() === "switch" ? "Switch system" : "Admin Hub"} />}
