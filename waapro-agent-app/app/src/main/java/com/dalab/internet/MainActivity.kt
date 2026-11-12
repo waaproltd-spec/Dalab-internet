@@ -266,7 +266,9 @@ private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILI
 // distinct from Home's existing Internet Store recharge queue
 // (OrdersListScreen/Order), same "own tab per business line" pattern
 // Money Exchange/Reseller Withdrawal already follow.
-private enum class HomeTab { HOME, ORDERS, SUPPORT, BROADCAST, MORE }
+// ORDERS = the Shop/VIP queue (More > My Work, and order notifications);
+// MANAGE = Manage Orders, the second tab in the bottom bar.
+private enum class HomeTab { HOME, MANAGE, ORDERS, SUPPORT, BROADCAST, MORE }
 
 @Composable
 private fun AgentApp() {
@@ -776,6 +778,10 @@ private fun AgentHome(
                     onOpenOrder = onOpenOrder,
                     onOpenAlerts = onOpenAlerts,
                 )
+                HomeTab.MANAGE -> ManageOrdersScreen(
+                    onOpenOrder = onOpenOrder,
+                    onBack = { onTabChange(HomeTab.HOME) },
+                )
                 HomeTab.ORDERS -> AgentOrdersScreen(
                     topTab = ordersTopTab,
                     onTopTabChange = onOrdersTopTabChange,
@@ -806,6 +812,7 @@ private fun AgentHome(
                     onOpenPromoAds = onOpenPromoAds,
                     onOpenCiyaaraha = onOpenCiyaaraha,
                     onOpenManageOrders = onOpenManageOrders,
+                    onOpenShopVipOrders = { onTabChange(HomeTab.ORDERS) },
                 )
             }
         }
@@ -820,7 +827,7 @@ private data class BottomNavTab(
 
 private val BOTTOM_NAV_TABS = listOf(
     BottomNavTab(HomeTab.HOME, Icons.Filled.Home, "Home"),
-    BottomNavTab(HomeTab.ORDERS, Icons.Filled.ShoppingCart, "Orders"),
+    BottomNavTab(HomeTab.MANAGE, Icons.Filled.FactCheck, "Manage Orders"),
     BottomNavTab(HomeTab.SUPPORT, Icons.Filled.SupportAgent, "Support Agent"),
     BottomNavTab(HomeTab.BROADCAST, Icons.Filled.Notifications, "Broadcast"),
     BottomNavTab(HomeTab.MORE, Icons.Filled.MoreHoriz, "More"),
@@ -948,6 +955,7 @@ private fun MoreScreen(
     onOpenPromoAds: () -> Unit,
     onOpenCiyaaraha: () -> Unit,
     onOpenManageOrders: () -> Unit,
+    onOpenShopVipOrders: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         val moreContext = androidx.compose.ui.platform.LocalContext.current
@@ -1005,10 +1013,10 @@ private fun MoreScreen(
         }
         MoreSection(title = "My Work") {
             MoreItem(
-                title = "Manage Orders",
-                subtitle = "Approve, reject, cancel, retry or reverse orders",
-                icon = Icons.Filled.FactCheck,
-                onClick = onOpenManageOrders,
+                title = "Shop & VIP Orders",
+                subtitle = "Shop, VIP number and VIP package orders",
+                icon = Icons.Filled.ShoppingCart,
+                onClick = onOpenShopVipOrders,
             )
             MoreItem(
                 title = "Sales",
