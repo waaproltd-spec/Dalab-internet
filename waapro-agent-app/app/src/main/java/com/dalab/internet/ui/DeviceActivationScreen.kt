@@ -118,15 +118,14 @@ fun DeviceActivationScreen(onContinue: () -> Unit) {
         WaaproWaves()
         Column(Modifier.fillMaxSize().systemBarsPadding()) {
             Column(
-                modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 18.dp),
+                modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 10.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                WaaproLogoBlock(logoSize = 64.dp, nameSize = 24.sp)
-                Spacer(Modifier.height(8.dp))
-                WaaproAgentPill(textSize = 18.sp)
-                Spacer(Modifier.height(8.dp))
-                WaaproTagline()
-                Spacer(Modifier.height(18.dp))
+                // Sized to fit one phone screen without scrolling.
+                WaaproLogoBlock(logoSize = 48.dp, nameSize = 19.sp)
+                Spacer(Modifier.height(6.dp))
+                WaaproAgentPill(textSize = 15.sp)
+                Spacer(Modifier.height(10.dp))
 
                 // Agent / device information, each with copy.
                 InfoCard {
@@ -134,36 +133,36 @@ fun DeviceActivationScreen(onContinue: () -> Unit) {
                         IdRow(label = "Agent ID", value = agentId, copied = copiedAgent) { copy("Agent ID", agentId); copiedAgent = true }
                     }
                     if (agentId != null && deviceNumber != null) {
-                        Box(Modifier.fillMaxWidth().padding(vertical = 8.dp).height(1.dp).background(WaaproBorder))
+                        Box(Modifier.fillMaxWidth().padding(vertical = 5.dp).height(1.dp).background(WaaproBorder))
                     }
                     IdRow(label = "Device ID", value = deviceNumber?.let { "ID $it" } ?: "ID …", copied = copiedId) {
                         if (deviceNumber != null) { copy("Device ID", deviceNumber); copiedId = true }
                     }
                 }
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(10.dp))
 
                 if (status == Status.APPROVED) {
                     ActivatedState()
                 } else {
                     InfoCard {
                         Row(verticalAlignment = Alignment.Top) {
-                            Icon(Icons.Filled.VerifiedUser, contentDescription = null, tint = WaaproBlue, modifier = Modifier.size(48.dp))
+                            Icon(Icons.Filled.VerifiedUser, contentDescription = null, tint = WaaproBlue, modifier = Modifier.size(38.dp))
                             Spacer(Modifier.width(12.dp))
-                            Box(Modifier.width(2.dp).height(48.dp).background(WaaproNavy))
+                            Box(Modifier.width(2.dp).height(40.dp).background(WaaproNavy))
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
-                                Text("Device Activation", color = WaaproNavy, fontSize = 24.sp, fontWeight = FontWeight.Black)
+                                Text("Device Activation", color = WaaproNavy, fontSize = 20.sp, fontWeight = FontWeight.Black)
                                 Spacer(Modifier.height(6.dp))
                                 Text(
                                     "For security purposes, please contact your account manager and provide the following activation code:",
                                     color = WaaproInk,
-                                    fontSize = 15.sp,
-                                    lineHeight = 21.sp,
+                                    fontSize = 13.sp,
+                                    lineHeight = 18.sp,
                                 )
                             }
                         }
                         if (status == Status.PENDING && code != null) {
-                            Spacer(Modifier.height(16.dp))
+                            Spacer(Modifier.height(10.dp))
                             // The code, large, with copy.
                             Row(
                                 modifier = Modifier
@@ -171,22 +170,22 @@ fun DeviceActivationScreen(onContinue: () -> Unit) {
                                     .clip(RoundedCornerShape(18.dp))
                                     .background(Brush.horizontalGradient(listOf(WaaproBlue, WaaproNavy)))
                                     .clickable { copy("Activation code", code); copiedCode = true }
-                                    .padding(start = 18.dp, end = 10.dp, top = 14.dp, bottom = 14.dp),
+                                    .padding(start = 18.dp, end = 10.dp, top = 8.dp, bottom = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 androidx.compose.material3.Text(
                                     code,
                                     color = Color.White,
-                                    fontSize = 52.sp,
+                                    fontSize = 40.sp,
                                     fontWeight = FontWeight.ExtraBold,
                                     letterSpacing = 6.sp,
                                     textAlign = TextAlign.Center,
                                     modifier = Modifier.weight(1f),
                                 )
-                                Box(Modifier.width(1.dp).height(48.dp).background(Color.White.copy(alpha = 0.4f)))
+                                Box(Modifier.width(1.dp).height(40.dp).background(Color.White.copy(alpha = 0.4f)))
                                 Spacer(Modifier.width(10.dp))
                                 Box(
-                                    Modifier.size(52.dp).clip(RoundedCornerShape(14.dp)).background(Color.White.copy(alpha = 0.15f)),
+                                    Modifier.size(44.dp).clip(RoundedCornerShape(12.dp)).background(Color.White.copy(alpha = 0.15f)),
                                     contentAlignment = Alignment.Center,
                                 ) {
                                     Icon(
@@ -204,18 +203,18 @@ fun DeviceActivationScreen(onContinue: () -> Unit) {
                             DeviceActivationState.codeExpiresAt?.let {
                                 Spacer(Modifier.height(10.dp))
                                 Row(
-                                    modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(WaaproSoft).padding(horizontal = 14.dp, vertical = 8.dp),
+                                    modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(WaaproSoft).padding(horizontal = 12.dp, vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
                                     Icon(Icons.Filled.CalendarMonth, contentDescription = null, tint = WaaproNavy, modifier = Modifier.size(20.dp))
                                     Spacer(Modifier.width(8.dp))
-                                    Text(tr("Code expires") + ": ", color = WaaproInk, fontSize = 14.sp)
-                                    androidx.compose.material3.Text(formatApiDateTime(it), color = WaaproNavy, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                    Text(tr("Code expires") + ": ", color = WaaproInk, fontSize = 13.sp)
+                                    androidx.compose.material3.Text(formatApiDateTime(it), color = WaaproNavy, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                                 }
                             }
                         }
                     }
-                    Spacer(Modifier.height(14.dp))
+                    Spacer(Modifier.height(10.dp))
 
                     val httpError = DeviceActivationState.lastHttpError
                     when {
@@ -255,7 +254,7 @@ fun DeviceActivationScreen(onContinue: () -> Unit) {
                         else -> {}
                     }
                 }
-                Spacer(Modifier.height(40.dp))
+                Spacer(Modifier.height(8.dp))
             }
 
             // Bottom action: Check Again (one check at a time), or Continue once approved.
@@ -265,7 +264,7 @@ fun DeviceActivationScreen(onContinue: () -> Unit) {
                 shape = RoundedCornerShape(50),
                 contentPadding = PaddingValues(0.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent, disabledContainerColor = Color.Transparent),
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp).height(58.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp).height(52.dp),
             ) {
                 Box(
                     Modifier.fillMaxSize().background(Brush.horizontalGradient(listOf(WaaproBlue, WaaproNavy))),
@@ -305,26 +304,26 @@ private fun InfoCard(content: @Composable ColumnScope.() -> Unit) {
         border = BorderStroke(1.dp, WaaproSoft),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally, content = content)
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), horizontalAlignment = Alignment.CenterHorizontally, content = content)
     }
 }
 
 @Composable
 private fun IdRow(label: String, value: String, copied: Boolean, onCopy: () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-        Box(Modifier.size(48.dp).clip(RoundedCornerShape(14.dp)).background(WaaproSoft), contentAlignment = Alignment.Center) {
-            Icon(Icons.Filled.PhoneAndroid, contentDescription = null, tint = WaaproNavy, modifier = Modifier.size(26.dp))
+        Box(Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).background(WaaproSoft), contentAlignment = Alignment.Center) {
+            Icon(Icons.Filled.PhoneAndroid, contentDescription = null, tint = WaaproNavy, modifier = Modifier.size(22.dp))
         }
         Spacer(Modifier.width(12.dp))
-        Box(Modifier.width(1.dp).height(40.dp).background(WaaproBorder))
+        Box(Modifier.width(1.dp).height(34.dp).background(WaaproBorder))
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(label, color = WaaproMuted, fontSize = 14.sp)
-            androidx.compose.material3.Text(value, color = WaaproNavy, fontSize = 22.sp, fontWeight = FontWeight.Black)
+            Text(label, color = WaaproMuted, fontSize = 12.sp)
+            androidx.compose.material3.Text(value, color = WaaproNavy, fontSize = 18.sp, fontWeight = FontWeight.Black)
         }
         IconButton(
             onClick = onCopy,
-            modifier = Modifier.size(48.dp).clip(RoundedCornerShape(14.dp)).background(WaaproSoft),
+            modifier = Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).background(WaaproSoft),
         ) {
             Icon(
                 if (copied) Icons.Filled.CheckCircle else Icons.Filled.ContentCopy,
