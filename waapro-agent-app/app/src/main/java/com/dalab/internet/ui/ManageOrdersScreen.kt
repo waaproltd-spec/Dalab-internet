@@ -1,7 +1,8 @@
 package com.dalab.internet.ui
 
 import com.dalab.internet.ui.i18n.Text
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -10,13 +11,19 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.dalab.internet.data.Order
 import com.dalab.internet.data.OrderStatus
@@ -96,52 +103,85 @@ fun ManageOrdersScreen(onOpenOrder: (Order) -> Unit, onBack: () -> Unit) {
     val shown = remember(orders, search) { orders.filter { orderMatches(it, search) } }
 
     Scaffold(
+        containerColor = WaaproBg,
         topBar = {
             TopAppBar(
-                title = { Text("Manage Orders") },
+                title = { Text("Manage Orders", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back") }
                 },
                 actions = {
                     IconButton(onClick = ::refresh) { Icon(Icons.Filled.Refresh, contentDescription = "Refresh") }
                 },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = WaaproNavy,
+                    titleContentColor = Color.White,
+                    navigationIconContentColor = Color.White,
+                    actionIconContentColor = Color.White,
+                ),
             )
         }
     ) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
             Row(
-                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 6.dp),
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 ManageOrdersFilter.values().forEach { f ->
-                    FilterChip(selected = filter == f, onClick = { filter = f; lastManageOrdersFilter = f }, label = { Text(f.label) })
+                    val selected = filter == f
+                    Surface(
+                        onClick = { filter = f; lastManageOrdersFilter = f },
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (selected) WaaproBlue else Color.White,
+                        border = if (selected) null else BorderStroke(1.dp, WaaproBorder),
+                        shadowElevation = if (selected) 2.dp else 0.dp,
+                    ) {
+                        Text(
+                            f.label,
+                            color = if (selected) Color.White else WaaproNavy,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+                        )
+                    }
                 }
             }
             OutlinedTextField(
                 value = search,
                 onValueChange = { search = it },
                 singleLine = true,
-                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                placeholder = { Text("Search number, reference or package") },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                shape = RoundedCornerShape(14.dp),
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, tint = WaaproNavy) },
+                placeholder = { Text("Search number, reference or package", color = WaaproMuted) },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedContainerColor = Color.White,
+                    unfocusedContainerColor = Color.White,
+                    focusedBorderColor = WaaproBlue,
+                    unfocusedBorderColor = WaaproBorder,
+                    focusedTextColor = WaaproInk,
+                    unfocusedTextColor = WaaproInk,
+                ),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
             )
             error?.let {
                 Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
             }
             Box(modifier = Modifier.fillMaxSize()) {
                 if (loading && orders.isEmpty()) {
-                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center), color = WaaproBlue)
                 } else if (shown.isEmpty()) {
                     Text(
                         if (search.isBlank()) "No ${filter.label.lowercase()} orders." else "No orders match \"$search\".",
                         modifier = Modifier.align(Alignment.Center),
+                        color = WaaproMuted,
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 } else {
-                    LazyColumn {
+                    LazyColumn(
+                        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
                         items(shown, key = { it.id }) { order ->
                             ManageOrderCard(order = order, onClick = { onOpenOrder(order) })
-                            HorizontalDivider()
                         }
                     }
                 }
@@ -150,26 +190,75 @@ fun ManageOrdersScreen(onOpenOrder: (Order) -> Unit, onBack: () -> Unit) {
     }
 }
 
+/** Pill colours per status: (background, text). */
+private fun statusColors(order: Order): Pair<Color, Color> = when (order.status) {
+    OrderStatus.PENDING -> WaaproSoft to WaaproNavy
+    OrderStatus.IN_PROGRESS -> Color(0xFFFFF3D6) to Color(0xFF8A5A00)
+    OrderStatus.FAILED -> Color(0xFFFDE2E2) to Color(0xFFB42318)
+    OrderStatus.COMPLETED -> Color(0xFFDDF5E5) to Color(0xFF117A3D)
+    OrderStatus.CANCELLED -> Color(0xFFECEEF2) to WaaproMuted
+}
+
+private fun statusLabel(order: Order): String = when (order.status) {
+    OrderStatus.PENDING -> "Pending"
+    OrderStatus.IN_PROGRESS -> if (order.ussdGenerated != null) "Delivering" else "Processing"
+    OrderStatus.FAILED -> "Failed"
+    OrderStatus.COMPLETED -> "Completed"
+    OrderStatus.CANCELLED -> "Cancelled"
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ManageOrderCard(order: Order, onClick: () -> Unit) {
-    Column(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp)) {
-        Row(horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+    val (pillBg, pillText) = statusColors(order)
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(16.dp),
+        color = Color.White,
+        border = BorderStroke(1.dp, WaaproBorder),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(modifier = Modifier.padding(start = 16.dp, end = 8.dp, top = 14.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(order.id, fontWeight = FontWeight.Bold)
-                Text("${order.companyName} · ${order.packageName}", style = MaterialTheme.typography.bodySmall)
+                Text(order.id, color = WaaproNavy, fontWeight = FontWeight.ExtraBold, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "${order.companyName} · ${order.packageName}",
+                    color = WaaproInk,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(6.dp))
+                val who = order.receiverPhone ?: order.customerPhone
+                if (who != null || order.customerName != null) {
+                    CardLine(Icons.Filled.Phone, listOfNotNull(order.customerName, who).joinToString(" · "))
+                }
+                CardLine(Icons.Filled.Schedule, order.createdAt.take(16).replace('T', ' '))
             }
+            Spacer(Modifier.width(8.dp))
             Column(horizontalAlignment = Alignment.End) {
-                Text("$${"%.2f".format(order.amount)}", fontWeight = FontWeight.Bold)
-                StatusChip(order)
+                Text("$${"%.2f".format(order.amount)}", color = WaaproNavy, fontWeight = FontWeight.ExtraBold, style = MaterialTheme.typography.titleLarge)
+                Spacer(Modifier.height(6.dp))
+                Surface(shape = RoundedCornerShape(50), color = pillBg) {
+                    Text(
+                        statusLabel(order),
+                        color = pillText,
+                        fontWeight = FontWeight.SemiBold,
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                    )
+                }
             }
+            Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = WaaproNavy, modifier = Modifier.padding(start = 4.dp))
         }
-        val who = order.receiverPhone ?: order.customerPhone
-        if (who != null || order.customerName != null) {
-            Text(
-                listOfNotNull(order.customerName, who).joinToString(" · "),
-                style = MaterialTheme.typography.labelSmall,
-            )
-        }
-        Text(order.createdAt.take(16).replace('T', ' '), style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+@Composable
+private fun CardLine(icon: ImageVector, text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+        Icon(icon, contentDescription = null, tint = WaaproNavy, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(text, color = WaaproMuted, style = MaterialTheme.typography.bodySmall)
     }
 }
