@@ -42,9 +42,9 @@ private data class TargetOption(val value: String, val label: String, val icon: 
 
 private val TARGET_TYPES = listOf(
     TargetOption("single", "One customer", Icons.Filled.Person),
-    TargetOption("multiple", "Selected customers", Icons.Filled.Group),
+    TargetOption("multiple", "Selected", Icons.Filled.Group),
     TargetOption("all", "All customers", Icons.Filled.Groups),
-    TargetOption("recent", "Joined in last 7 days", Icons.Filled.Schedule),
+    TargetOption("recent", "New (7 days)", Icons.Filled.Schedule),
 )
 private val SERVICE_FILTERS = listOf("all" to "All Services", "internet" to "Internet", "ebadal" to "eBadal", "reseller" to "Reseller")
 
@@ -193,14 +193,9 @@ fun NotificationsScreen(onBack: () -> Unit) {
             item {
                 Spacer(Modifier.height(12.dp))
                 Text("Send to", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text(
-                    "Choose who will receive this notification",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(6.dp))
                 TargetOptionGrid(targetType) { targetType = it; selectedCustomers = emptyList() }
-                Spacer(Modifier.height(20.dp))
+                Spacer(Modifier.height(12.dp))
             }
 
             if (targetType == "single" || targetType == "multiple") {
@@ -244,12 +239,7 @@ fun NotificationsScreen(onBack: () -> Unit) {
 
             item {
                 Text("Service", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text(
-                    "Select the service for this notification",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(6.dp))
                 var serviceMenuExpanded by remember { mutableStateOf(false) }
                 ExposedDropdownMenuBox(expanded = serviceMenuExpanded, onExpandedChange = { serviceMenuExpanded = it }) {
                     OutlinedTextField(
@@ -272,15 +262,10 @@ fun NotificationsScreen(onBack: () -> Unit) {
                         }
                     }
                 }
-                Spacer(Modifier.height(20.dp))
+                Spacer(Modifier.height(12.dp))
 
                 Text("Title", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text(
-                    "Enter a short and clear title",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(6.dp))
                 OutlinedTextField(
                     value = title,
                     onValueChange = { title = it },
@@ -290,21 +275,16 @@ fun NotificationsScreen(onBack: () -> Unit) {
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Spacer(Modifier.height(20.dp))
+                Spacer(Modifier.height(12.dp))
 
                 Text("Message", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text(
-                    "Enter your notification message",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(6.dp))
                 OutlinedTextField(
                     value = body,
                     onValueChange = { if (it.length <= 500) body = it },
                     placeholder = { Text("Message") },
                     leadingIcon = { Icon(Icons.Filled.Message, contentDescription = null) },
-                    minLines = 3,
+                    minLines = 2,
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -334,7 +314,7 @@ fun NotificationsScreen(onBack: () -> Unit) {
                     onClick = ::send,
                     enabled = canSend,
                     shape = RoundedCornerShape(50),
-                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
                 ) {
                     Icon(Icons.Filled.Send, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
@@ -388,9 +368,9 @@ fun NotificationsScreen(onBack: () -> Unit) {
 
 @Composable
 private fun TargetOptionGrid(selected: String, onSelect: (String) -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         for (row in TARGET_TYPES.chunked(2)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 row.forEach { option ->
                     TargetOptionCard(
                         option = option,
@@ -421,7 +401,7 @@ private fun TargetOptionCard(option: TargetOption, selected: Boolean, onClick: (
         modifier = modifier,
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 16.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 11.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
@@ -436,6 +416,7 @@ private fun TargetOptionCard(option: TargetOption, selected: Boolean, onClick: (
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
                 color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
             )
         }
     }
