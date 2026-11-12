@@ -49,10 +49,18 @@ import java.util.concurrent.atomic.AtomicLong
  * -- completed, failed, timed out or cancelled (callers release in a
  * finally block).
  *
- * Safety net: should a session ever hold the queue longer than
- * [maxSessionMs] (far longer than any real session, which ends within ~2.5
- * minutes on its own timeouts), it is released automatically so the queue
- * can never stay stuck forever; that ticket's late release() is ignored.
+ * Session timeout (safe): every kind of request has a hard time limit
+ * ([sessionLimitMs]) well above its own dial timeouts. If a session ever
+ * holds the queue past it, the queue -- and only the queue -- moves on:
+ *  - the job is NOT retried and NOT marked failed: it is recorded as an
+ *    UNCERTAIN timeout ([onSessionTimeout], shown to the agent as "check
+ *    before retrying"), because the carrier may still have done it;
+ *  - the job keeps its UssdJobRegistry claim until its own code returns, so
+ *    the same payment/transaction can never be started a second time while
+ *    the stuck one may still be running;
+ *  - the next request waits [timeoutCooldownMs] first, so the stuck carrier
+ *    session has time to close before a new one is dialed;
+ *  - the stuck ticket's late release() is ignored.
  *
  * [status] is what the agent sees: the request that is Running and the
  * ones Waiting, in order.
@@ -75,8 +83,29 @@ object UssdSimLock {
     /** Real production value; shrunk by tests. */
     internal var debounceMs: Long = 300L
 
-    /** Safety net only -- see class doc. */
-    internal var maxSessionMs: Long = 5 * 60_000L
+    /** Test-only override of every [sessionLimitMs]. */
+    internal var maxSessionOverrideMs: Long? = null
+
+    /** Pause after a timed-out session before the next one starts. */
+    internal var timeoutCooldownMs: Long = 5_000L
+
+    /** Hard time limit for one session of [requestId]'s kind -- each is well
+     * above that flow's own dial/screen timeouts, so it only ever fires if
+     * those failed. */
+    fun sessionLimitMs(requestId: String): Long {
+        maxSessionOverrideMs?.let { return it }
+        return when (normalizeUssdJobKey(requestId).substringBefore(':')) {
+            "wallet-lookup" -> 90_000L      // one read step (own timeouts ~45s)
+            "exchange" -> 150_000L          // two steps + PIN (wake lock 80s)
+            "internet_store" -> 180_000L    // one-shot 30s, menu packages up to ~150s
+            "reseller" -> 180_000L          // interactive steps (wake lock 120s)
+            else -> 180_000L
+        }
+    }
+
+    /** Called (outside the lock) when a session hits its limit, so the app can
+     * record it as an uncertain transaction. Must not throw. */
+    @Volatile var onSessionTimeout: ((UssdQueueEntry) -> Unit)? = null
 
     private val guard = Mutex()
     private val waiters = mutableListOf<Waiter>()
@@ -84,6 +113,8 @@ object UssdSimLock {
     private var runningTicketId: Long = -1
     private var runningSinceMs: Long = 0
     private var watchdog: Job? = null
+    private var coolingDown = false
+    private val timedOut = ArrayDeque<UssdQueueEntry>()
     private val sequenceCounter = AtomicLong(0)
     private val ticketCounter = AtomicLong(0)
     private val watchdogScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -101,6 +132,8 @@ object UssdSimLock {
             waiters.clear()
             running = null
             runningTicketId = -1
+            coolingDown = false
+            timedOut.clear()
             publishLocked()
         }
     }
@@ -164,7 +197,7 @@ object UssdSimLock {
     }
 
     private fun promoteNextLocked() {
-        if (running != null) return
+        if (running != null || coolingDown) return
         val head = waiters.removeFirstOrNull()
         if (head == null) {
             publishLocked()
@@ -180,18 +213,33 @@ object UssdSimLock {
     }
 
     private fun startWatchdogLocked(ticket: Ticket) {
-        val limit = maxSessionMs
+        val limit = sessionLimitMs(ticket.requestId)
         watchdog = watchdogScope.launch {
             delay(limit)
+            var entry: UssdQueueEntry? = null
             guard.withLock {
                 if (runningTicketId != ticket.id) return@withLock
                 DiagnosticsLog.record(
-                    "ussd_queue_watchdog",
-                    "USSD session ${ticket.requestId} held the queue over ${limit / 1000}s -- released so the next request can start.",
+                    "ussd_queue_timeout",
+                    "USSD session ${ticket.requestId} ran over ${limit / 1000}s -- outcome uncertain; not retried; next request starts after a short pause.",
                     isError = true,
                 )
+                entry = UssdQueueEntry(normalizeUssdJobKey(ticket.requestId), ussdJobLabel(ticket.requestId), ticket.simSlot, System.currentTimeMillis())
+                timedOut.addFirst(entry!!)
+                while (timedOut.size > 5) timedOut.removeLast()
                 watchdog = null
-                finishRunningLocked()
+                running = null
+                runningTicketId = -1
+                coolingDown = true
+                publishLocked()
+            }
+            val e = entry ?: return@launch
+            try { onSessionTimeout?.invoke(e) } catch (_: Throwable) { }
+            delay(timeoutCooldownMs)
+            guard.withLock {
+                coolingDown = false
+                promoteNextLocked()
+                publishLocked()
             }
         }
     }
@@ -201,6 +249,8 @@ object UssdSimLock {
         _status.value = UssdQueueStatus(
             running = now?.let { UssdQueueEntry(normalizeUssdJobKey(it.requestId), ussdJobLabel(it.requestId), it.simSlot, runningSinceMs) },
             waiting = waiters.map { UssdQueueEntry(normalizeUssdJobKey(it.requestId), ussdJobLabel(it.requestId), it.simSlot, it.enqueuedAtMs) },
+            timedOut = timedOut.toList(),
+            runningLimitMs = now?.let { sessionLimitMs(it.requestId) } ?: 0L,
         )
     }
 }
@@ -213,6 +263,10 @@ data class UssdQueueEntry(val key: String, val label: String, val simSlot: Int, 
 data class UssdQueueStatus(
     val running: UssdQueueEntry? = null,
     val waiting: List<UssdQueueEntry> = emptyList(),
+    /** Sessions that hit their time limit this run, newest first: outcome uncertain. */
+    val timedOut: List<UssdQueueEntry> = emptyList(),
+    /** The running session's hard limit, for "1:10 of 3:00". */
+    val runningLimitMs: Long = 0L,
 ) {
     val isIdle: Boolean get() = running == null && waiting.isEmpty()
 
@@ -221,7 +275,8 @@ data class UssdQueueStatus(
         val k = normalizeUssdJobKey(key)
         if (running?.key == k) return UssdJobState.Running
         val i = waiting.indexOfFirst { it.key == k }
-        return if (i >= 0) UssdJobState.Waiting(i + 1, waiting.size) else UssdJobState.None
+        if (i >= 0) return UssdJobState.Waiting(i + 1, waiting.size)
+        return if (timedOut.any { it.key == k }) UssdJobState.TimedOut else UssdJobState.None
     }
 }
 
@@ -229,6 +284,8 @@ sealed class UssdJobState {
     object None : UssdJobState()
     object Running : UssdJobState()
     data class Waiting(val position: Int, val total: Int) : UssdJobState()
+    /** Hit its time limit: the carrier may or may not have done it. */
+    object TimedOut : UssdJobState()
 }
 
 /** The stable job id behind a lock request id: drops the per-attempt
@@ -263,17 +320,29 @@ fun ussdJobLabel(requestId: String): String {
 object UssdJobRegistry {
     private val mutex = Mutex()
     private val active = mutableSetOf<String>()
+    private val _activeKeys = MutableStateFlow<Set<String>>(emptySet())
+
+    /** Jobs in progress right now (for the screens; never used to decide). */
+    val activeKeys: StateFlow<Set<String>> = _activeKeys.asStateFlow()
 
     /** True if this caller now owns [key]; false if it is already in progress. */
-    suspend fun claim(key: String): Boolean = mutex.withLock { active.add(normalizeUssdJobKey(key)) }
+    suspend fun claim(key: String): Boolean = mutex.withLock {
+        active.add(normalizeUssdJobKey(key)).also { _activeKeys.value = active.toSet() }
+    }
 
     suspend fun release(key: String) {
-        mutex.withLock { active.remove(normalizeUssdJobKey(key)) }
+        mutex.withLock {
+            active.remove(normalizeUssdJobKey(key))
+            _activeKeys.value = active.toSet()
+        }
     }
 
     internal suspend fun isActive(key: String): Boolean = mutex.withLock { normalizeUssdJobKey(key) in active }
 
     internal suspend fun resetForTest() {
-        mutex.withLock { active.clear() }
+        mutex.withLock {
+            active.clear()
+            _activeKeys.value = emptySet()
+        }
     }
 }

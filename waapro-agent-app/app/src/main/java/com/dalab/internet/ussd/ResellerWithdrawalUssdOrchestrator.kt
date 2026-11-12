@@ -42,6 +42,9 @@ data class ResellerWithdrawalDialAttemptAuditAction(
  * audit/dedup, mirroring [UssdOrchestrator] and [ExchangeUssdOrchestrator]'s
  * exact shape.
  */
+/** Only a confirmed FAILED payout is ever dialed again automatically. */
+internal fun isResellerWithdrawalAutoRetryable(result: DialResult): Boolean = isAutomaticallyRetryable(result)
+
 class ResellerWithdrawalUssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
     private val dialer = UssdDialer(context)
 
@@ -121,10 +124,13 @@ class ResellerWithdrawalUssdOrchestrator(context: Context, private val maxAttemp
             reportDialResult(withdrawalId, simSlot, ussdString, attempt, attemptId, lastResult)
 
             if (lastResult.outcome == DialOutcome.SUCCESS) return lastResult
-            val retryable = lastResult.outcome == DialOutcome.FAILED ||
-                lastResult.outcome == DialOutcome.TIMEOUT ||
-                lastResult.outcome == DialOutcome.AMBIGUOUS
-            if (!retryable) return lastResult // permission/config/no-SIM problems — don't retry blindly
+            // Only a CONFIRMED failure is dialed again. A timeout or an
+            // unrecognised reply may mean the money already went out (the
+            // whole payout is in one dial string), so -- exactly like
+            // Internet Store recharge -- it is reported and left for a person
+            // to check, never repeated automatically.
+            val retryable = isResellerWithdrawalAutoRetryable(lastResult)
+            if (!retryable) return lastResult // uncertain, or permission/config/no-SIM problems — don't retry blindly
             if (attempt < maxAttempts) delay(2000L * attempt) // simple linear backoff, same as UssdOrchestrator
         }
         return lastResult

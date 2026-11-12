@@ -73,6 +73,8 @@ class DalabAgentApp : Application() {
         initSafely("sms_listener_init") { SmsListenerState.init(this) }
         initSafely("sms_ledger_init") { com.dalab.internet.sms.SmsFingerprintStore.init(this) }
         initSafely("pending_queue_init") { PendingActionQueue.init(this) }
+        initSafely("network_status_init") { com.dalab.internet.network.NetworkStatus.init(this) }
+        initSafely("uncertain_ussd_init") { com.dalab.internet.ussd.UncertainUssdJobs.init(this) }
         initSafely("agent_alerts_init") { AgentAlertsState.init(this) }
         // Previously only initialized from MainActivity.kt, which never runs
         // for a process the OS started to host just the background service

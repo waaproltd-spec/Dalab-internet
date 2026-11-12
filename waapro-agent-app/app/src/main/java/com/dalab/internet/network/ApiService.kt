@@ -791,6 +791,14 @@ interface ApiService {
     @GET("agent/reports/dashboard")
     suspend fun getReportDashboard(@Query("range") range: String): Response<AgentReportDashboard>
 
+    // Home "Today": orders created today, this agent's performance, daily revenue.
+    @GET("agent/today")
+    suspend fun getAgentToday(): Response<com.dalab.internet.data.AgentToday>
+
+    // Admin Maintenance Notices (active + scheduled).
+    @GET("agent/notices")
+    suspend fun getAgentNotices(): Response<List<com.dalab.internet.data.AgentNotice>>
+
     @GET("agent/reports/dashboard/companies/{id}")
     suspend fun getCompanyReport(@Path("id") companyId: String, @Query("range") range: String): Response<CompanyReport>
 

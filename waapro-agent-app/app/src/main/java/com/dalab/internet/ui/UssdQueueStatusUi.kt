@@ -31,6 +31,16 @@ import androidx.compose.ui.unit.sp
 import com.dalab.internet.ui.i18n.Text
 import com.dalab.internet.ussd.UssdJobState
 import com.dalab.internet.ussd.UssdSimLock
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
+
+private fun clock(ms: Long): String {
+    val s = (ms.coerceAtLeast(0L) / 1000L)
+    return "%d:%02d".format(s / 60, s % 60)
+}
 
 /** Colours for the queue's two states. */
 private val RunningBg = Color(0xFFE6F6EC)
@@ -62,8 +72,10 @@ fun UssdQueueBanner(modifier: Modifier = Modifier) {
                 if (running != null) {
                     QueuePill("Running", RunningBg, RunningInk)
                     Spacer(Modifier.width(8.dp))
+                    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+                    LaunchedEffect(running.key) { while (true) { nowMs = System.currentTimeMillis(); delay(1_000L) } }
                     Text(
-                        "${running.label} · SIM ${running.simSlot}",
+                        "${running.label} · SIM ${running.simSlot} · ${clock(nowMs - running.sinceMs)}/${clock(status.runningLimitMs)}",
                         color = Color.White,
                         fontSize = 13.sp,
                         maxLines = 1,
@@ -105,6 +117,7 @@ fun UssdJobPill(jobKey: String, modifier: Modifier = Modifier) {
     when (val s = status.stateOf(jobKey)) {
         UssdJobState.Running -> Box(modifier) { QueuePill("Running", RunningBg, RunningInk) }
         is UssdJobState.Waiting -> Box(modifier) { QueuePill("Waiting #${s.position}", WaitingBg, WaitingInk) }
+        UssdJobState.TimedOut -> Box(modifier) { QueuePill("Timed out", WaitingBg, WaitingInk) }
         UssdJobState.None -> Unit
     }
 }
@@ -118,6 +131,19 @@ fun UssdJobStatusLine(jobKey: String, modifier: Modifier = Modifier) {
     val status by UssdSimLock.status.collectAsState()
     val state = status.stateOf(jobKey)
     if (state == UssdJobState.None) return
+    if (state == UssdJobState.TimedOut) {
+        Surface(shape = RoundedCornerShape(12.dp), color = WaitingBg, modifier = modifier.fillMaxWidth()) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                Icon(Icons.Filled.HourglassTop, contentDescription = null, tint = WaitingInk, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("USSD timed out — result unknown", color = WaitingInk, fontWeight = FontWeight.Bold)
+                    Text("It was not dialed again. Check the customer's balance or SMS before retrying.", color = WaitingInk, fontSize = 12.sp)
+                }
+            }
+        }
+        return
+    }
     val running = state == UssdJobState.Running
     Surface(shape = RoundedCornerShape(12.dp), color = if (running) RunningBg else WaitingBg, modifier = modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {

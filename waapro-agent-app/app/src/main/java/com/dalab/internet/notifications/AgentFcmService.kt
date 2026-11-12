@@ -48,6 +48,11 @@ class AgentFcmService : FirebaseMessagingService() {
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
+        // A Maintenance Notice was created: show it at once (the OS shows the
+        // push itself in the background, as for every other alert).
+        if (message.data["type"] == "agent_notice") {
+            scope.launch { com.dalab.internet.network.AgentDayRepository.refreshNotices() }
+        }
         val title = message.notification?.title ?: message.data["title"] ?: return
         val body = message.notification?.body ?: message.data["body"] ?: ""
         val conversationId = message.data["conversationId"]

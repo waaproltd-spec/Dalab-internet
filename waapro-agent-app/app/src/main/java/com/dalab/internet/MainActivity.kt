@@ -761,6 +761,28 @@ private fun AgentHome(
         }
     }
 
+    // Today figures and Maintenance Notices: on open, on every order change,
+    // every minute, and right after the internet comes back (which also
+    // refreshes every order screen -- nothing is dialed by this).
+    LaunchedEffect(Unit) {
+        while (true) {
+            com.dalab.internet.network.AgentDayRepository.refreshAll()
+            kotlinx.coroutines.delay(60_000L)
+        }
+    }
+    LaunchedEffect(Unit) {
+        com.dalab.internet.network.AgentEventBus.orderEvents.collect {
+            kotlinx.coroutines.delay(1_500L)
+            com.dalab.internet.network.AgentDayRepository.refreshToday()
+        }
+    }
+    LaunchedEffect(Unit) {
+        com.dalab.internet.network.NetworkStatus.reconnected.collect {
+            com.dalab.internet.network.AgentDayRepository.refreshAll()
+            com.dalab.internet.network.AgentEventBus.emitOrderEvent()
+        }
+    }
+
     Scaffold(
         bottomBar = {
             DalabBottomNavigation(
@@ -774,6 +796,10 @@ private fun AgentHome(
         }
     ) { padding ->
         Column(modifier = Modifier.padding(padding)) {
+        // Offline / back online / transactions to check (never re-dialed).
+        com.dalab.internet.ui.ConnectionRecoveryBanner()
+        // Admin Maintenance Notices.
+        com.dalab.internet.ui.AgentNoticesBanner()
         // App-wide USSD queue: what is Running and what is Waiting, on every tab.
         com.dalab.internet.ui.UssdQueueBanner()
         Box(modifier = Modifier.weight(1f)) {

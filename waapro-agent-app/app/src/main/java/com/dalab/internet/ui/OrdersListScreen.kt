@@ -159,6 +159,11 @@ fun OrdersListScreen(
             }
 
             item {
+                // Orders Created Today, My Performance, Daily Revenue.
+                AgentTodaySection()
+            }
+
+            item {
                 AgentBalanceSection(balances = balances, loading = balancesLoading)
             }
         }

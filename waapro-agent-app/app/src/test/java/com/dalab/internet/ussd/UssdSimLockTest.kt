@@ -28,6 +28,8 @@ class UssdSimLockTest {
     fun setUp() = runBlocking {
         UssdSimLock.debounceMs = 20L
         UssdSimLock.resetForTest()
+        UssdSimLock.maxSessionOverrideMs = null
+        UssdSimLock.timeoutCooldownMs = 5_000L
     }
 
     /** Simulates one flow's full USSD session on [simSlot]: acquire -> hold
@@ -136,19 +138,63 @@ class UssdSimLockTest {
     }
 
     @Test
-    fun `a session stuck past the safety limit is released so the queue keeps moving, and its late release is ignored`() = runBlocking {
-        UssdSimLock.maxSessionMs = 60L
+    fun `a session past its time limit frees the queue after a pause, is reported uncertain, and its late release is ignored`() = runBlocking {
+        UssdSimLock.maxSessionOverrideMs = 60L
+        UssdSimLock.timeoutCooldownMs = 80L
+        val reported = mutableListOf<UssdQueueEntry>()
+        UssdSimLock.onSessionTimeout = { synchronized(reported) { reported.add(it) } }
         try {
             val stuck = UssdSimLock.acquire(1, "exchange:STUCK", arrivalTimeMs = 1_000L)
-            val next = withTimeout(2_000L) { UssdSimLock.acquire(2, "wallet-lookup:NEXT", arrivalTimeMs = 1_001L) }
-            assertEquals("wallet-lookup:NEXT", UssdSimLock.status.value.running?.key)
+            val startedAt = System.currentTimeMillis()
+            val next = withTimeout(3_000L) { UssdSimLock.acquire(2, "wallet-lookup:NEXT", arrivalTimeMs = 1_001L) }
+            // limit (60) + cooldown (80): the next session never starts before both.
+            assertTrue(System.currentTimeMillis() - startedAt >= 130L)
+            val s = UssdSimLock.status.value
+            assertEquals("wallet-lookup:NEXT", s.running?.key)
+            assertEquals(listOf("exchange:STUCK"), s.timedOut.map { it.key })
+            assertEquals(UssdJobState.TimedOut, s.stateOf("exchange:STUCK"))
+            assertEquals(listOf("exchange:STUCK"), reported.map { it.key })
             UssdSimLock.release(stuck) // late: must not free NEXT's turn
             assertEquals("wallet-lookup:NEXT", UssdSimLock.status.value.running?.key)
             UssdSimLock.release(next)
-            assertTrue(UssdSimLock.status.value.isIdle)
+            assertEquals(null, UssdSimLock.status.value.running)
+            assertTrue(UssdSimLock.status.value.waiting.isEmpty())
         } finally {
-            UssdSimLock.maxSessionMs = 5 * 60_000L
+            UssdSimLock.maxSessionOverrideMs = null
+            UssdSimLock.timeoutCooldownMs = 5_000L
+            UssdSimLock.onSessionTimeout = null
         }
+    }
+
+    @Test
+    fun `a timed-out job keeps its duplicate guard until its own code finishes`() = runBlocking {
+        UssdJobRegistry.resetForTest()
+        UssdSimLock.maxSessionOverrideMs = 40L
+        UssdSimLock.timeoutCooldownMs = 0L
+        try {
+            assertTrue(UssdJobRegistry.claim("exchange:DUP1"))
+            val stuck = UssdSimLock.acquire(1, "exchange:DUP1", arrivalTimeMs = 1_000L)
+            delay(120L) // well past the limit: the queue has moved on
+            assertEquals(null, UssdSimLock.status.value.running)
+            // The same payout can still NOT be started again.
+            assertFalse(UssdJobRegistry.claim("exchange:DUP1"))
+            UssdSimLock.release(stuck)
+            UssdJobRegistry.release("exchange:DUP1")
+            assertTrue(UssdJobRegistry.claim("exchange:DUP1"))
+        } finally {
+            UssdSimLock.maxSessionOverrideMs = null
+            UssdSimLock.timeoutCooldownMs = 5_000L
+            UssdJobRegistry.resetForTest()
+        }
+    }
+
+    @Test
+    fun `every kind of request has a time limit above its own dial timeouts`() {
+        assertEquals(90_000L, UssdSimLock.sessionLimitMs("wallet-lookup:L1"))
+        assertEquals(150_000L, UssdSimLock.sessionLimitMs("exchange:DEX1"))
+        assertEquals(180_000L, UssdSimLock.sessionLimitMs("internet_store:O1:attempt2"))
+        assertEquals(180_000L, UssdSimLock.sessionLimitMs("reseller_withdrawal:W1:attempt1"))
+        assertEquals(180_000L, UssdSimLock.sessionLimitMs("reseller:W1"))
     }
 
     @Test

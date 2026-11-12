@@ -151,6 +151,9 @@ jobs:
       # rather than fetched by a client, so it works even from networks
       # that can't reach GitHub's artifact blob storage host.
       - name: Publish direct-download release
+        # Only the release branch publishes an APK for agents; any other
+        # branch only builds and tests it (artifacts stay in the run).
+        if: github.ref_name == 'claude/unified-agent-app'
         working-directory: .
         env:
           GH_TOKEN: ${{ github.token }}
@@ -175,6 +178,9 @@ jobs:
       # the Admin Hub's /api/agent-app/latest instead, which always redirects
       # to the newest run's app-release.apk. Never fails the build.
       - name: Update the fixed "latest release APK" link
+        # Only the release branch publishes an APK for agents; any other
+        # branch only builds and tests it (artifacts stay in the run).
+        if: github.ref_name == 'claude/unified-agent-app'
         continue-on-error: true
         working-directory: .
         env:

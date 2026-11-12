@@ -58,6 +58,10 @@ object DialJournal {
     @Synchronized
     fun get(context: Context, orderId: String): Entry? = load(context)[orderId]
 
+    /** Every dial still waiting for its result (read-only, for the screens). */
+    @Synchronized
+    fun all(context: Context): Map<String, Entry> = load(context)
+
     @Synchronized
     fun clear(context: Context, orderId: String) {
         val entries = load(context)

@@ -88,5 +88,6 @@ object SessionManager {
             snapshot = Snapshot(null, null, null)
             prefs.edit().clear().apply()
         }
+        com.dalab.internet.network.AgentDayRepository.clear()
     }
 }
