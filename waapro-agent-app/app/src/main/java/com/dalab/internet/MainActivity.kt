@@ -61,6 +61,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.dalab.internet.auth.DeviceIdentity
 import com.dalab.internet.auth.ResellerSessionManager
@@ -948,6 +949,7 @@ private fun MoreScreen(
     onOpenManageOrders: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        com.dalab.internet.ui.WaaproScreenHeader("More", "Settings, tools and your work")
         // Sales/Customers/Reports were their own bottom-nav tabs before the
         // bar was cut down to exactly 4 (Home/Support Agent/Broadcast/More)
         // to make room for Support Agent and Broadcast -- kept first and
@@ -983,7 +985,7 @@ private fun MoreScreen(
             ListItem(
                 headlineContent = { Text("Agent Support sounds") },
                 supportingContent = { Text("Play a short tone for new customer messages and help requests") },
-                leadingContent = { Icon(Icons.Filled.Notifications, contentDescription = null) },
+                leadingContent = { com.dalab.internet.ui.BrandIconTile(Icons.Filled.Notifications) },
                 trailingContent = {
                     Switch(
                         checked = AgentSettings.supportSounds,
@@ -1148,17 +1150,21 @@ private fun MoreScreen(
 
 @Composable
 private fun MoreSection(title: String, content: @Composable ColumnScope.() -> Unit) {
+    // WAAPRO LTD look: gold section title, white card with a thin border.
     Text(
         title.uppercase(),
         style = MaterialTheme.typography.labelMedium,
-        fontWeight = FontWeight.Bold,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 4.dp),
+        fontWeight = FontWeight.ExtraBold,
+        color = if (com.dalab.internet.ui.theme.isAgentDark) com.dalab.internet.ui.WaaproGold else com.dalab.internet.ui.WaaproGoldText,
+        letterSpacing = 0.8.sp,
+        modifier = Modifier.padding(start = 18.dp, top = 22.dp, bottom = 6.dp),
     )
     Card(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-        shape = RoundedCornerShape(14.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
         Column(content = content)
     }
@@ -1235,7 +1241,7 @@ private fun NotificationHealthRows() {
         supportingContent = {
             Text(if (notificationsOn) "Yes" else "No — tap to allow notifications for WAAPRO LTD AGENT")
         },
-        leadingContent = { Icon(Icons.Filled.Notifications, contentDescription = null) },
+        leadingContent = { com.dalab.internet.ui.BrandIconTile(Icons.Filled.Notifications) },
         modifier = Modifier.clickable {
             val intent = Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                 .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
@@ -1251,12 +1257,12 @@ private fun NotificationHealthRows() {
                 else "Not set up — Firebase isn't configured in this build. Alerts work while the app runs in the background; ask your admin to add the Firebase config.",
             )
         },
-        leadingContent = { Icon(Icons.Filled.Security, contentDescription = null) },
+        leadingContent = { com.dalab.internet.ui.BrandIconTile(Icons.Filled.Security) },
     )
     ListItem(
         headlineContent = { Text("Test alert") },
         supportingContent = { Text("Shows a sample customer request with the alert sound") },
-        leadingContent = { Icon(Icons.Filled.Campaign, contentDescription = null) },
+        leadingContent = { com.dalab.internet.ui.BrandIconTile(Icons.Filled.Campaign) },
         modifier = Modifier.clickable { com.dalab.internet.notifications.SupportAlerts.sendTestAlert() },
     )
 }
@@ -1314,7 +1320,8 @@ private fun MoreItem(title: String, subtitle: String, icon: androidx.compose.ui.
     ListItem(
         headlineContent = { Text(title) },
         supportingContent = { Text(subtitle) },
-        leadingContent = { Icon(icon, contentDescription = null) },
+        leadingContent = { com.dalab.internet.ui.BrandIconTile(icon) },
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
         modifier = Modifier.clickable(onClick = onClick),
     )
 }

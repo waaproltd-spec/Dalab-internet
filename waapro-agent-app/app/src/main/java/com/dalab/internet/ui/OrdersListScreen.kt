@@ -193,7 +193,7 @@ private fun AgentHomeHeader(
         modifier = Modifier
             .fillMaxWidth()
             .background(
-                Brush.linearGradient(listOf(DalabBrandFill, DalabBrandFillLight)),
+                com.dalab.internet.ui.WaaproHeaderBrush,
                 shape = RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp),
             )
             .padding(20.dp),

@@ -39,6 +39,57 @@ val WaaproInk = Color(0xFF1B2333)
 val WaaproMuted = Color(0xFF5B6475)
 val WaaproBorder = Color(0xFFD5DCE8)
 val WaaproSoft = Color(0xFFE3EEFD)
+/** Gold dark enough to read as text on white (section titles). */
+val WaaproGoldText = Color(0xFFB98A00)
+/** The header gradient: navy to royal blue, as on the sign-in screen. */
+val WaaproHeaderBrush: Brush
+    get() = Brush.linearGradient(listOf(WaaproNavy, WaaproBlue))
+
+/** A round navy tile with a white icon, used in front of list rows. */
+@Composable
+fun BrandIconTile(icon: androidx.compose.ui.graphics.vector.ImageVector, size: Dp = 38.dp) {
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(com.dalab.internet.ui.theme.DalabBrandFill),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(size * 0.55f))
+    }
+}
+
+/** The navy-to-blue header with the WAAPRO LTD logo, a title and the gold line. */
+@Composable
+fun WaaproScreenHeader(title: String, subtitle: String? = null) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(WaaproHeaderBrush, RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp))
+            .padding(horizontal = 20.dp, vertical = 18.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Image(
+                painter = painterResource(R.drawable.waapro_ltd_logo),
+                contentDescription = "WAAPRO LTD",
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color.White)
+                    .padding(3.dp),
+            )
+            Spacer(Modifier.width(12.dp))
+            Column {
+                Text(title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                if (subtitle != null) {
+                    Text(subtitle, color = Color.White.copy(alpha = 0.85f), fontSize = 13.sp)
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Box(Modifier.width(56.dp).height(4.dp).background(WaaproGold, RoundedCornerShape(2.dp)))
+    }
+}
 
 /** The official WAAPRO LTD logo (res/drawable/waapro_ltd_logo.png, unchanged) with the company name under it. */
 @Composable
