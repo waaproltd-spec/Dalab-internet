@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Deliberately not restricted to a specific packageNames list — same
+  reasoning as exchange_accessibility_service_config.xml: the native USSD
+  reply dialog's owning package varies by OEM. Real acting on what it reads
+  is still gated in code by ResellerWithdrawalInteractiveUssdBridge.armed —
+  see ResellerWithdrawalInteractiveUssdAccessibilityService.kt.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagRetrieveInteractiveWindows|flagReportViewIds"
+    android:canRetrieveWindowContent="true"
+    android:canPerformGestures="false"
+    android:description="@string/reseller_withdrawal_interactive_accessibility_description"
+    android:notificationTimeout="100" />

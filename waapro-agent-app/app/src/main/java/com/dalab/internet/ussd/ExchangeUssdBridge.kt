@@ -1,0 +1,539 @@
+package com.dalab.internet.ussd
+
+import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import android.os.PowerManager
+import android.provider.Settings
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.withTimeoutOrNull
+
+/**
+ * In-process bridge between [ExchangeUssdAccessibilityService] (which reads
+ * and drives the native USSD reply dialog) and [ExchangeUssdOrchestrator]
+ * (which decides what each dialog means and when to inject the PIN). Kept
+ * deliberately tiny and stateless-between-attempts: the PIN is held here
+ * only for the seconds it takes the service to fill+submit it, then cleared
+ * — never logged, never persisted, never exposed outside this process.
+ *
+ * This same instance is ALSO used by [WalletLookupUssdOrchestrator] (its
+ * read-only $1 name lookup reuses this bridge/accessibility service rather
+ * than duplicating the dialog-detection heuristics) -- which means [arm] and
+ * every other piece of mutable state below (lockedPackageName, the event
+ * channel, etc.) is shared by two conceptually different flows. [UssdSimLock]
+ * only serializes the actual DIAL per SIM slot; it does nothing to stop a
+ * real Money Exchange payout on one SIM slot and a Wallet Name Lookup on a
+ * DIFFERENT slot from both calling [arm] on THIS single un-slotted object at
+ * the same moment -- confirmed live: a wallet lookup's reported failure
+ * carried a different, concurrently-running real payout's own dialed number
+ * as its "raw response" (arm() unconditionally resets lockedPackageName and
+ * every other field, so whichever caller's arm() ran last silently hijacked
+ * the other's in-flight session). See [acquireSession]/[releaseSession].
+ */
+object ExchangeUssdBridge {
+
+    /** Thin delegation to [InteractiveUssdScreenLock] -- see that object's
+     * own doc comment for why the lock itself lives in a separate,
+     * Android-free object rather than as a property here (this object
+     * eagerly constructs a real Handler tied to the main Looper below,
+     * which makes merely REFERENCING this class throw outside a real
+     * Android runtime — a plain lock property here would make it
+     * impossible to unit-test the lock on its own), and for why this lock
+     * is now shared with Reseller Withdraw's own separate bridge too, not
+     * just the two flows that already share this bridge object. Call from
+     * the same `finally` block that calls [disarm], after it. */
+    suspend fun acquireSession() = InteractiveUssdScreenLock.acquire()
+
+    fun releaseSession() = InteractiveUssdScreenLock.release()
+
+    @Volatile
+    var serviceConnected: Boolean = false
+        internal set
+
+    @Volatile
+    var armed: Boolean = false
+        private set
+
+    @Volatile
+    private var pendingPinToInject: String? = null
+
+    /** True while a lookup-only attempt wants the next scan to find and tap
+     * the dialog's Cancel/No button instead of doing anything else with it
+     * — see [armDialogCancellation]. Deliberately separate from
+     * [pendingPinToInject]: the two are mutually exclusive within a single
+     * attempt (a lookup never arms PIN injection at all), but kept as
+     * distinct flags rather than one combined "pending action" so neither
+     * can be silently overwritten by the other. */
+    @Volatile
+    private var cancelRequested: Boolean = false
+
+    /** True once [UssdDialogEvent.PinSubmitted] has been emitted for the
+     * current attempt — the signal that distinguishes a pre-PIN confirm
+     * screen (Step 1) from the separate post-PIN confirm screen (Step 3),
+     * without duplicating that state in the accessibility service. */
+    @Volatile
+    private var pinSubmitted: Boolean = false
+
+    /** Separate dedup trackers for the two stages a confirm screen can
+     * belong to — kept independent so an identically-worded Step 1 and
+     * Step 3 confirm screen can never collide and cause Step 3 to be
+     * wrongly treated as "already tapped" and silently skipped. */
+    @Volatile
+    private var lastPreConfirmText: String? = null
+
+    @Volatile
+    private var lastPostConfirmText: String? = null
+
+    /** The package name of the window this attempt has confirmed is the
+     * real carrier dialog — set the first time a scan sees any dialog text
+     * at all (armed only goes true right as the USSD dial is placed, so the
+     * first window to show any text is overwhelmingly likely to be the
+     * actual dialer). Every later scan in this attempt must come from this
+     * same window; a mismatch means the foreground drifted to an unrelated
+     * app (e.g. Chrome) and must never be treated as carrier output or have
+     * a PIN injected into it. */
+    @Volatile
+    private var lockedPackageName: String? = null
+
+    /** The AccessibilityWindowInfo id of the window locked in as [lockedPackageName],
+     * captured at the same moment as the package name. Window ids stay stable for a
+     * given window's whole lifetime independent of whether its package name is still
+     * resolvable -- confirmed live (order DEX546004901, eDahab -> EVC Plus): a
+     * self-heal-sweep-triggered (backgrounded) dial's carrier dialog stayed visible
+     * and interactive on screen, but every later scan's getWindows() call reported it
+     * (and everything else visible) with no resolvable package name at all, so the
+     * package-only check in [isWindowAllowed] could never re-find it -- the PIN sat
+     * there unfilled until the attempt timed out. This id is purely an additional,
+     * OR'd fallback signal for re-acquiring an already-locked window; it never
+     * changes when or what a lock is first established on. */
+    @Volatile
+    private var lockedWindowId: Int? = null
+
+    @Volatile
+    private var lastLoggedMismatchPackage: String? = null
+
+    /** True once a post-PIN (Step 3) confirmation screen has already been
+     * auto-tapped this attempt. Caps that auto-tap to at most once: the
+     * carrier's own final receipt reuses the same dialog template (still
+     * has an EditText, may still have an OK/Send-looking button), so
+     * without this cap a genuinely final screen could be mistaken for
+     * another Step 3 confirm and tapped instead of being accepted as the
+     * real result. */
+    @Volatile
+    private var postPinConfirmationTapped: Boolean = false
+
+    /** True once this attempt has already logged an exchange_window_search_miss
+     * entry -- caps it to once per attempt so a prolonged background period
+     * (repeated 500ms polls all missing) doesn't spam Diagnostics. Deliberately
+     * separate from [recoveryAttemptCount]/[recoveryInProgress] below -- capping
+     * the actual recovery *action* to the same one-shot budget as this log line
+     * meant a flickering window (found, lost again, found, lost again...) only
+     * ever got one real rescue attempt no matter how much of the step's timeout
+     * budget remained -- confirmed live (order DEX441787877): recovery
+     * succeeded once, then the attempt still ended in STEP2_FAILED ~22s later
+     * with no further recovery attempted and no further diagnostics logged. */
+    @Volatile
+    private var windowSearchMissLogged: Boolean = false
+
+    /** How many [attemptForegroundRecovery]-style recovery cycles this attempt
+     * has started, and whether one is currently in flight (its 500ms delayed
+     * re-scan hasn't run yet) -- see [shouldAttemptWindowRecovery]. Bounded by
+     * [MAX_RECOVERY_ATTEMPTS] so a genuinely, permanently gone window can't
+     * spend the rest of the step's timeout budget bouncing the app to the
+     * foreground; [recoveryInProgress] stops two misses found moments apart
+     * (an accessibility event and the PIN poll, say) from both kicking off an
+     * overlapping recovery cycle. */
+    @Volatile
+    private var recoveryAttemptCount: Int = 0
+
+    @Volatile
+    private var recoveryInProgress: Boolean = false
+
+    private const val MAX_RECOVERY_ATTEMPTS = 4
+
+    /** The order and dial-attempt this armed session belongs to, set from
+     * [arm]'s params -- purely for tagging diagnostics lines (window
+     * search/recovery, final action) so a Diagnostics screen with several
+     * attempts logged close together (e.g. a self-heal sweep working
+     * through a batch) reads as separate, identifiable stories instead of
+     * an unlabelled pile of "window not found" / "recovery succeeded"
+     * lines. Never read for any decision. */
+    @Volatile
+    private var currentOrderId: String? = null
+
+    @Volatile
+    private var currentAttemptId: String? = null
+
+    /** Running count of window-search checks that came up empty this
+     * attempt -- the initial scan plus every recovery poll -- so a burst of
+     * misses is traceable as "detection attempt 1, 2, 3…" instead of
+     * identical-looking repeated lines. Purely diagnostic. */
+    @Volatile
+    private var detectionAttemptCounter: Int = 0
+
+    /** True once this attempt has already logged an exchange_pin_field_miss
+     * entry -- caps it to once per attempt for the same reason as
+     * [windowSearchMissLogged]: the PIN poll re-scans every 500ms while the
+     * field hasn't rendered yet, which would otherwise spam Diagnostics with
+     * one entry per poll for the entire wait. */
+    @Volatile
+    private var pinFieldMissLogged: Boolean = false
+
+    /** The current attempt's screen-on wake lock (see ExchangeUssdOrchestrator) --
+     * exposed here purely so a window-search-miss diagnostic can query its live
+     * .isHeld state. ExchangeUssdOrchestrator remains the sole owner: it's the
+     * only place that acquires, releases, or otherwise touches this lock. */
+    @Volatile
+    var activeWakeLock: PowerManager.WakeLock? = null
+
+    private var events = Channel<UssdDialogEvent>(capacity = Channel.CONFLATED)
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var pinPollRunnable: Runnable? = null
+    private var cancelPollRunnable: Runnable? = null
+    private const val PIN_POLL_INTERVAL_MS = 500L
+
+    fun isAccessibilityServiceEnabled(context: Context): Boolean {
+        val enabled = Settings.Secure.getString(
+            context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: return false
+        val expected = "${context.packageName}/${ExchangeUssdAccessibilityService::class.java.name}"
+        return enabled.split(':').any { it.equals(expected, ignoreCase = true) }
+    }
+
+    /** Starts a fresh watch session — a new channel so a stale event from a
+     * previous, already-finished attempt can never be misread as belonging
+     * to this one. [orderId]/[attemptId] are purely for tagging this
+     * session's diagnostics lines -- see [currentOrderId]. */
+    fun arm(orderId: String? = null, attemptId: String? = null) {
+        events = Channel(capacity = Channel.CONFLATED)
+        pendingPinToInject = null
+        cancelRequested = false
+        pinSubmitted = false
+        lastPreConfirmText = null
+        lastPostConfirmText = null
+        lockedPackageName = null
+        lockedWindowId = null
+        lastLoggedMismatchPackage = null
+        postPinConfirmationTapped = false
+        windowSearchMissLogged = false
+        pinFieldMissLogged = false
+        recoveryAttemptCount = 0
+        recoveryInProgress = false
+        currentOrderId = orderId
+        currentAttemptId = attemptId
+        detectionAttemptCounter = 0
+        stopPinPolling()
+        stopCancelPolling()
+        armed = true
+    }
+
+    fun disarm() {
+        armed = false
+        pendingPinToInject = null
+        cancelRequested = false
+        pinSubmitted = false
+        lastPreConfirmText = null
+        lastPostConfirmText = null
+        lockedPackageName = null
+        lockedWindowId = null
+        lastLoggedMismatchPackage = null
+        windowSearchMissLogged = false
+        pinFieldMissLogged = false
+        recoveryAttemptCount = 0
+        recoveryInProgress = false
+        postPinConfirmationTapped = false
+        currentOrderId = null
+        currentAttemptId = null
+        detectionAttemptCounter = 0
+        stopPinPolling()
+        stopCancelPolling()
+    }
+
+    /** Tells the service to fill+submit this PIN into the next input-bearing
+     * dialog it sees, then actively re-checks the currently foregrounded
+     * window at a short interval until it's consumed (submitted) or the
+     * attempt ends. A single immediate check isn't enough: the reply
+     * dialog's input field can render a beat after the window itself
+     * appears, and some OEM dialogs never fire a second accessibility event
+     * once drawn — leaving a purely event-driven scan no way to try again
+     * before ExchangeUssdOrchestrator's step-2 timeout gives up (confirmed
+     * live on order DEX933880917: STEP2_FAILED, PIN never actually typed).
+     * Polling only changes how often scanAndAct() gets called — what it
+     * does with what it finds (inject once, else restore for next look) is
+     * unchanged. */
+    fun armPinInjection(pin: String) {
+        pendingPinToInject = pin
+        startPinPolling()
+    }
+
+    private fun startPinPolling() {
+        stopPinPolling()
+        val runnable = object : Runnable {
+            override fun run() {
+                if (!armed || pendingPinToInject == null) return // submitted, or attempt finished/cancelled — stop
+                ExchangeUssdAccessibilityService.instance?.scanAndAct()
+                if (armed && pendingPinToInject != null) {
+                    mainHandler.postDelayed(this, PIN_POLL_INTERVAL_MS)
+                }
+            }
+        }
+        pinPollRunnable = runnable
+        mainHandler.post(runnable)
+    }
+
+    private fun stopPinPolling() {
+        pinPollRunnable?.let(mainHandler::removeCallbacks)
+        pinPollRunnable = null
+    }
+
+    internal fun consumePendingPinToInject(): String? {
+        val pin = pendingPinToInject
+        pendingPinToInject = null
+        return pin
+    }
+
+    /** Puts the PIN back if the window scanAndAct just looked at wasn't the
+     * right one — e.g. it had no input field yet — so a later poll/window
+     * still gets it. */
+    internal fun restorePendingPinToInject(pin: String) {
+        pendingPinToInject = pin
+    }
+
+    /** Tells the service to find and tap the dialog's Cancel/No button on
+     * its next scan, then emit [UssdDialogEvent.DialogCancelled] — used by
+     * lookup-only flows the instant they've read the response text they
+     * needed, so the carrier's own USSD session is backed out of instead of
+     * left sitting on a live PIN prompt. Polls the same way
+     * [armPinInjection] does and for the same reason: this is normally
+     * called right after the very dialog it targets was just scanned, so
+     * the button is usually there immediately, but a poll is cheap
+     * insurance against a scan landing a beat before the button itself
+     * renders. */
+    fun armDialogCancellation() {
+        cancelRequested = true
+        startCancelPolling()
+    }
+
+    private fun startCancelPolling() {
+        stopCancelPolling()
+        val runnable = object : Runnable {
+            override fun run() {
+                if (!armed || !cancelRequested) return // cancelled, or attempt finished — stop
+                ExchangeUssdAccessibilityService.instance?.scanAndAct()
+                if (armed && cancelRequested) {
+                    mainHandler.postDelayed(this, PIN_POLL_INTERVAL_MS)
+                }
+            }
+        }
+        cancelPollRunnable = runnable
+        mainHandler.post(runnable)
+    }
+
+    private fun stopCancelPolling() {
+        cancelPollRunnable?.let(mainHandler::removeCallbacks)
+        cancelPollRunnable = null
+    }
+
+    /** True (and clears the request) the first time a scan sees this
+     * armed cancellation — mirrors [consumePendingPinToInject]'s
+     * consume-once shape. */
+    internal fun consumeCancelRequest(): Boolean {
+        val requested = cancelRequested
+        cancelRequested = false
+        return requested
+    }
+
+    /** Puts the cancel request back if the window scanAndAct just looked at
+     * wasn't the right one yet — same rationale as
+     * [restorePendingPinToInject]. */
+    internal fun restoreCancelRequest() {
+        cancelRequested = true
+    }
+
+    /** True the first time this exact dialog text is seen *for the current
+     * stage* (Step 1's pre-PIN confirm vs Step 3's post-PIN confirm — see
+     * [currentConfirmationStage]) during the current attempt — and
+     * remembers it, so a repeat scan of the same still-on-screen
+     * confirmation dialog (multiple accessibility events can fire before
+     * the tap actually dismisses it) never taps its button twice. A
+     * different dialog text (the next step in a multi-screen confirm flow)
+     * is allowed through again. Stages are tracked independently so an
+     * identically-worded Step 1 and Step 3 screen never collide. */
+    internal fun shouldAutoConfirm(dialogText: String): Boolean {
+        return if (pinSubmitted) {
+            if (dialogText == lastPostConfirmText) false else { lastPostConfirmText = dialogText; true }
+        } else {
+            if (dialogText == lastPreConfirmText) false else { lastPreConfirmText = dialogText; true }
+        }
+    }
+
+    /** Which real step a confirm screen being auto-tapped right now belongs
+     * to: Step 1 (pre-PIN) if the PIN hasn't been submitted yet this
+     * attempt, Step 3 (post-PIN) if it has. */
+    internal fun currentConfirmationStage(): ConfirmationStage =
+        if (pinSubmitted) ConfirmationStage.POST_PIN else ConfirmationStage.PRE_PIN
+
+    /** True if [packageName] is the window already confirmed as this
+     * attempt's real carrier dialog, or if no window has been confirmed
+     * yet (in which case [packageName] becomes the locked window). False
+     * means the foreground has drifted to a different app mid-attempt --
+     * its content must never be read as carrier output.
+     *
+     * [windowId] is a second, purely additive identity signal (see
+     * [lockedWindowId]) checked only once the primary package-name check
+     * has already failed against an established lock -- it can never
+     * change whether/when a lock is first established, only widen how an
+     * *already-locked* window is re-recognized on a later scan.
+     *
+     * [ownPackageName] is this agent app's own package (from the
+     * accessibility service's own Context) -- confirmed live (Wallet Name
+     * Lookup attempts 9cfba9d4/c9176de9/4ab743dc): a background/self-heal
+     * dial can fire while the agent app's OWN foreground screen is still
+     * showing (the same dial()-vs-dialer-UI race the comment below already
+     * covers), and if that screen happens to have any clickable button --
+     * completely unrelated to USSD -- it satisfies [looksLikeUssdDialog]
+     * just like a real dialog would. The agent app locked onto itself
+     * (`com.dalab.internet.debug`), read a phone number visible in its own
+     * UI as the "dialog text", then never found the real carrier window
+     * again. The carrier's reply dialog can never live inside this app's
+     * own package, so it's excluded outright rather than trusted to the
+     * same heuristic as every other (genuinely unpredictable, OEM-varying)
+     * package. */
+    internal fun isWindowAllowed(packageName: String?, windowId: Int?, looksLikeUssdDialog: Boolean, ownPackageName: String?): Boolean {
+        val locked = lockedPackageName
+        if (locked == null) {
+            // Don't lock onto whatever's merely on screen -- confirmed live
+            // (order DEX426547905): a background/self-heal-triggered dial
+            // can fire while an unrelated app's window is still active
+            // (nothing the user is doing "wrong" -- there's an inherent
+            // race between dial() and the real dialer UI taking over), and
+            // locking onto that app's content produced a Step 1 "carrier
+            // response" that was actually just an app label. Only content
+            // that already looks like a genuine USSD dialog establishes the
+            // lock; anything else is skipped so a later scan, once the real
+            // dialer appears, gets to establish it correctly instead.
+            if (!looksLikeUssdDialog) return false
+            if (ownPackageName != null && packageName == ownPackageName) return false
+            lockedPackageName = packageName
+            lockedWindowId = windowId
+            return true
+        }
+        if (packageName != null && packageName == locked) return true
+        val lockedId = lockedWindowId
+        return lockedId != null && windowId != null && windowId == lockedId
+    }
+
+    /** True the first time this attempt fails to find its locked window
+     * among the currently visible windows -- caps the diagnostic log to
+     * once per attempt. */
+    internal fun shouldLogWindowSearchMiss(): Boolean {
+        if (windowSearchMissLogged) return false
+        windowSearchMissLogged = true
+        return true
+    }
+
+    /** True if this attempt should start another foreground-recovery cycle:
+     * not already mid-cycle, and under [MAX_RECOVERY_ATTEMPTS] so far this
+     * attempt. Deliberately independent of [shouldLogWindowSearchMiss] -- a
+     * flickering window can keep being lost and found throughout a step's
+     * whole timeout budget, and each loss deserves its own rescue attempt,
+     * not just the first one. Marks a cycle as started (increments the
+     * count, sets in-progress) when it returns true; the caller must pair
+     * this with [recoveryAttemptFinished] once that cycle's re-scan runs. */
+    internal fun shouldAttemptWindowRecovery(): Boolean {
+        if (recoveryInProgress || recoveryAttemptCount >= MAX_RECOVERY_ATTEMPTS) return false
+        recoveryAttemptCount++
+        recoveryInProgress = true
+        return true
+    }
+
+    /** Marks the current recovery cycle as finished (succeeded, failed, or
+     * skipped) so a later miss -- including one found by that same cycle's
+     * own re-scan -- is free to start another cycle via
+     * [shouldAttemptWindowRecovery], up to the same per-attempt cap. */
+    internal fun recoveryAttemptFinished() {
+        recoveryInProgress = false
+    }
+
+    /** The 1-based number of the recovery cycle currently in flight (set by
+     * the most recent true result from [shouldAttemptWindowRecovery]) --
+     * purely for tagging that cycle's diagnostics lines as "attempt N of
+     * [maxRecoveryAttempts]". */
+    internal fun recoveryAttemptNumber(): Int = recoveryAttemptCount
+
+    /** The per-attempt cap on recovery cycles -- exposed read-only so
+     * diagnostics can report "N of MAX" without duplicating the constant. */
+    internal fun maxRecoveryAttempts(): Int = MAX_RECOVERY_ATTEMPTS
+
+    /** Increments and returns this attempt's running count of window-search
+     * checks that came up empty -- see [detectionAttemptCounter]. */
+    internal fun nextDetectionAttempt(): Int {
+        detectionAttemptCounter++
+        return detectionAttemptCounter
+    }
+
+    /** "[order=… attempt=…]" prefix for every window-detection/recovery
+     * diagnostics line -- see [currentOrderId]/[currentAttemptId]. */
+    internal fun diagnosticsTag(): String =
+        "[order=${currentOrderId ?: "?"} attempt=${currentAttemptId ?: "?"}]"
+
+    /** True the first time this attempt's PIN poll sees its locked window
+     * but finds no editable field in it yet -- caps the diagnostic log to
+     * once per attempt, same as [shouldLogWindowSearchMiss]. */
+    internal fun shouldLogPinFieldMiss(): Boolean {
+        if (pinFieldMissLogged) return false
+        pinFieldMissLogged = true
+        return true
+    }
+
+    /** The package this attempt has locked onto, once established --
+     * lets the service actively search for that specific window across
+     * every currently visible window, not only the active one. */
+    internal fun lockedWindowPackageOrNull(): String? = lockedPackageName
+
+    /** The window id captured alongside [lockedPackageName] at lock time,
+     * once established -- see [isWindowAllowed] and [lockedWindowId]. */
+    internal fun lockedWindowIdOrNull(): Int? = lockedWindowId
+
+    /** True the first time a given off-target package is seen this
+     * attempt, so a window mismatch logs once instead of on every 500ms
+     * poll while the wrong app stays foregrounded. */
+    internal fun shouldLogWindowMismatch(packageName: String?): Boolean {
+        if (packageName == lastLoggedMismatchPackage) return false
+        lastLoggedMismatchPackage = packageName
+        return true
+    }
+
+    internal fun emit(event: UssdDialogEvent) {
+        if (event is UssdDialogEvent.PinSubmitted) pinSubmitted = true
+        if (event is UssdDialogEvent.ConfirmationAdvanced && event.stage == ConfirmationStage.POST_PIN) {
+            postPinConfirmationTapped = true
+        }
+        events.trySend(event)
+    }
+
+    /** True while a post-PIN screen should still be evaluated as a
+     * possible Step 3 confirm-tap target rather than read as final content
+     * -- i.e. the PIN has been submitted, but no Step 3 screen has been
+     * auto-tapped yet this attempt. */
+    internal fun isEligibleForPostPinConfirmTap(): Boolean =
+        pinSubmitted && !postPinConfirmationTapped
+
+    /** Discards any event already buffered in the conflated channel before a
+     * fresh wait starts, so awaitNextEvent only ever returns something that
+     * happens *after* this call — not a stray DialogSeen left over from a
+     * still-on-screen dialog re-firing an accessibility event during the
+     * previous step's network round-trip (confirmed live: STEP2_FAILED
+     * firing ~5s after dialing, an order of magnitude under the 15s budget,
+     * on orders DEX176626979 and DEX565544915). */
+    internal fun drainStaleEvents() {
+        while (events.tryReceive().isSuccess) {
+            // discard
+        }
+    }
+
+    suspend fun awaitNextEvent(timeoutMs: Long): UssdDialogEvent? = withTimeoutOrNull(timeoutMs) {
+        events.receive()
+    }
+}

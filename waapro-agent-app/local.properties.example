@@ -1,0 +1,3 @@
+# Rename to local.properties (this file is gitignored) and set to your
+# Android SDK path. Android Studio does this automatically on first open.
+sdk.dir=/path/to/your/Android/sdk

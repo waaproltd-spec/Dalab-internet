@@ -1,0 +1,451 @@
+package com.dalab.internet.data
+
+import com.google.gson.annotations.SerializedName
+
+/**
+ * Mirrors the `orders` table exactly as the production backend returns it
+ * (dalab-admin-backend-ts, src/routes/orders.routes.ts — Express + TypeScript
+ * + PostgreSQL, the sole production backend for this project as of the
+ * backend consolidation; response shapes are verified identical to the
+ * earlier SQLite backend this was originally built against, field-by-field).
+ * An earlier version of this file had its OrderStatus enum stale against the
+ * real backend (used PENDING/VERIFIED/COMPLETED instead of the actual
+ * pending/in_progress/completed/failed/cancelled) — Gson would have thrown a
+ * deserialization error on every single order fetch. @SerializedName below
+ * maps each constant to the exact lowercase/underscore value the server
+ * actually sends.
+ */
+data class Order(
+    val id: String,               // "DLB..." reference
+    val customerName: String?,
+    val customerPhone: String?,
+    val companyId: String,        // "hormuud" | "somnet" | "somtel" | "amtel" — needed to look up SIM routing
+    val companyName: String,
+    val packageName: String,
+    val amount: Double,
+    val status: OrderStatus,
+    val senderPhone: String?,
+    val receiverPhone: String?,
+    val paymentMethod: String?,
+    val macaashEarned: Int = 0,
+    val ussdGenerated: String? = null,
+    // Set when the matched USSD template pins this order to a specific
+    // device+SIM slot (Admin > USSD Templates); null means "use this
+    // device's normal per-company sim_routing entry" (SimRoutingRepository).
+    val ussdDeviceId: String? = null,
+    val ussdSimSlot: Int? = null,
+    // The one sending Mobile (Mobile 2 or Mobile 3) chosen to deliver this
+    // order's data -- automatically when the payment is verified, or by an
+    // admin. Only that Mobile dials; every other phone leaves the order alone.
+    val assignedDeviceId: String? = null,
+    val assignedDeviceName: String? = null,
+    // The SIM on that Mobile (when the server sends it). Null from older
+    // servers / other endpoints.
+    val assignedSimSlot: Int? = null,
+    val createdAt: String,
+    val completedAt: String? = null,
+    // Extra Packages (Admin > Add Extra Package): how many times this one
+    // paid order is delivered, how many deliveries the server has already
+    // confirmed, and the next unused dial attempt number. Null from older
+    // servers -- treated as a normal single delivery.
+    val sendCount: Int? = null,
+    val deliveriesDone: Int? = null,
+    val nextAttemptNumber: Int? = null,
+    // Menu (interactive) packages such as Somtel Dhameys Plus: "interactive"
+    // plus the PIN-free plan the backend rendered for this order (see
+    // ussd/PackageInteractiveUssd.kt). Null for every one-shot order and
+    // from older servers -- dialed exactly as before.
+    val ussdDialMode: String? = null,
+    val ussdPlan: com.dalab.internet.ussd.UssdPlan? = null,
+)
+
+enum class OrderStatus {
+    @SerializedName("pending") PENDING,
+    @SerializedName("in_progress") IN_PROGRESS,
+    @SerializedName("completed") COMPLETED,
+    @SerializedName("failed") FAILED,
+    @SerializedName("cancelled") CANCELLED,
+}
+
+/**
+ * One row from `sms_logs` — either freshly captured by this device's listener, or
+ * fetched from the server for review.
+ */
+data class SmsLogEntry(
+    val id: String? = null,       // null until the server assigns one
+    val sender: String,
+    val body: String,
+    val parsedProvider: String? = null,
+    val parsedAmount: Double? = null,
+    val parsedPhone: String? = null,
+    val matchedOrderId: String? = null,
+    val receivedAt: String,
+    // The telecom's own per-transaction reference/receipt code, when the SMS
+    // format includes one (e.g. Somtel eDahab's "Aqanoosiga" field) — a
+    // stronger duplicate-payment signal than sender+body+timestamp alone.
+    // Null for formats with no such field; the server falls back to its
+    // existing sender+body+minute dedup in that case.
+    val transactionRef: String? = null,
+    // Which physical SIM slot (1 or 2 — matches ussd_templates.sim_slot's
+    // existing 1-based convention) on THIS device actually received the
+    // SMS, resolved from the incoming broadcast's subscription id (see
+    // SmsReceiver.resolveSimSlot). Null when it can't be determined
+    // (single-SIM device, missing READ_PHONE_STATE, older/OEM broadcast
+    // with no subscription extra) — the backend then falls back to
+    // device-level matching only.
+    val simSlot: Int? = null,
+)
+
+data class Transaction(
+    val orderId: String,
+    // Nullable despite the backend now coalescing to phone as a fallback —
+    // customers.name is nullable in the database, and a non-null Kotlin
+    // field here previously crashed the app the moment Gson silently
+    // assigned null to it for a customer with no name on file.
+    val customerName: String? = null,
+    val companyName: String,
+    val amount: Double,
+    val completedAt: String,
+)
+
+/** One row of GET /agent/transactions/history -- this agent's order with
+ * the customer's Payment Number (the number they paid from) and the
+ * Internet Destination Number (the number that received the data) kept as
+ * two separate fields. */
+data class TransactionHistoryEntry(
+    val orderId: String,
+    val customerName: String? = null,
+    val customerPhone: String? = null,
+    val companyId: String,
+    val companyName: String,
+    val colorHex: String? = null,
+    val packageName: String? = null,
+    val packageValidity: String? = null,
+    val paymentNumber: String? = null,
+    val destinationNumber: String? = null,
+    val amount: Double,
+    val status: String,
+    val paymentMethod: String? = null,
+    val createdAt: String? = null,
+    val completedAt: String? = null,
+    val reversedAt: String? = null,
+)
+
+/** GET /agent/wallet-balances — one row per SIM slot (1 and 2) on this
+ * agent's own device, regardless of whether a real balance has been
+ * recorded yet (providerName/phoneNumber/balance are null/0 until the
+ * first real payment SMS or a manual override sets them). */
+data class WalletBalanceEntry(
+    val simSlot: Int,
+    val companyId: String? = null,
+    val providerName: String? = null,
+    val colorHex: String? = null,
+    val phoneNumber: String? = null,
+    val balance: Double = 0.0,
+    val lowBalanceThreshold: Double = 5.0,
+    val balanceUpdatedAt: String? = null,
+)
+
+/** GET /agent/balances — Home screen's Agent Balance section: always
+ * exactly 6 fixed rows (evc_plus/edahab under "method", hormuud/somnet/
+ * somtel/amtel under "company"), each summed company-wide across every
+ * device, not just this agent's own, from the exact same
+ * getProviderBalanceTotals() call the Super Admin's own Balance Dashboard
+ * uses (admin-backend-ts/src/utils/simBalances.ts) -- never a separately
+ * computed value. [balance] is always a real number, defaulting to 0.0 as
+ * the UI placeholder for "no confirmed balance yet" (product decision --
+ * unlike the Admin dashboard's own "Unknown" text for that same case, this
+ * screen always shows a dollar figure); the backend never invents a
+ * database balance to produce it, only a per-request display default. */
+data class AgentBalanceEntry(
+    val providerKey: String,
+    val providerName: String,
+    val category: String,
+    val balance: Double = 0.0,
+)
+
+/** GET /agent/payment-transactions — every payment_transactions row this
+ * agent's own SMS uploads produced, matched or not, dialed or not. */
+data class AgentPaymentTransaction(
+    val id: String,
+    val orderId: String? = null,
+    val customerPhone: String? = null,
+    val amount: Double? = null,
+    // "pending" | "processing" | "completed" | "failed" | "duplicate_blocked"
+    val status: String,
+    val createdAt: String,
+    val smsSender: String? = null,
+    val providerName: String? = null,
+)
+
+data class AgentProfile(
+    val id: String,
+    val name: String,
+    val phone: String,
+)
+
+/**
+ * Mirrors GET /agent/notifications (notifications.routes.ts) — admin-sent
+ * system notices, camelCased from the `notifications` table's sent_at
+ * column. There is no per-agent read state server-side; "unread" is tracked
+ * locally, see AgentAlertsState.
+ */
+data class AgentNotification(
+    val id: String,
+    val title: String,
+    val body: String,
+    val sentAt: String,
+)
+
+// ---------------- Agent Support (support.routes.ts, /agent/support/*) ----------------
+// Same support_conversations/support_messages rows the Admin Dashboard's
+// "Agent Support" panel already reads and writes (super-admin-app/src/App.jsx)
+// — a field agent claiming, chatting in, and resolving/closing a conversation
+// here is indistinguishable server-side from a staff member doing the same
+// thing from the dashboard. See serializeConversation() in support.routes.ts
+// for the exact shape; the queue-listing endpoint returns a subset (no
+// queuePosition/customersAhead/agentName/messages), hence all of those being
+// nullable/defaulted here rather than required.
+
+enum class SupportConversationStatus {
+    @SerializedName("queued") QUEUED,
+    @SerializedName("pending") PENDING,
+    @SerializedName("assigned") ASSIGNED,
+    @SerializedName("resolved") RESOLVED,
+    @SerializedName("closed") CLOSED,
+}
+
+data class SupportMessage(
+    val id: String,
+    // "customer" | "agent" | "system"
+    val senderType: String,
+    // "text" | "image" | "voice" -- see support.routes.ts's composeMessage.
+    val messageType: String = "text",
+    val body: String? = null,
+    // Path (not a full URL), e.g. "/support/messages/{id}/media" -- resolve
+    // against ApiClient.BASE_URL and attach the same bearer token as every
+    // other call. Non-null only for image/voice messages.
+    val mediaUrl: String? = null,
+    val mediaMimeType: String? = null,
+    val createdAt: String? = null,
+)
+
+data class SupportConversation(
+    val id: String,
+    val customerId: String? = null,
+    val topic: String,
+    val status: SupportConversationStatus,
+    val agentId: String? = null,
+    val agentRole: String? = null,
+    val agentOfflineAtStart: Boolean = false,
+    val queuePosition: Int? = null,
+    val customersAhead: Int? = null,
+    val agentName: String? = null,
+    val customerName: String? = null,
+    val customerPhone: String? = null,
+    val firstMessage: String? = null,
+    val createdAt: String? = null,
+    val updatedAt: String? = null,
+    val assignedAt: String? = null,
+    val resolvedAt: String? = null,
+    val closedAt: String? = null,
+    val messages: List<SupportMessage> = emptyList(),
+)
+
+/** Mirrors GET /companies (admin-backend-ts, companies.routes.ts) — public, no auth required. */
+data class Company(
+    val id: String,
+    val name: String,
+    val groupNumber: Int,
+    val colorHex: String,
+    val logoUrl: String? = null,
+    val status: String, // "online" | "offline"
+    val gateway: String? = null,
+)
+
+/** Mirrors GET /companies/{id}/packages. */
+data class PackageItem(
+    val id: String,
+    val companyId: String,
+    val categoryId: String,
+    val name: String,
+    val oldPrice: Double? = null,
+    val price: Double,
+    val mb: Int = 0,
+    val minutes: Int = 0,
+    val sms: Int = 0,
+    val validity: String? = null,
+    val active: Boolean = true,
+    // The package's picture (GET /packages/{id}/image) exists, and its
+    // service category's display name -- both already in the response.
+    val hasImage: Boolean = false,
+    val categoryName: String? = null,
+    // Admin > Dhameys Plus / Packages: false = listed but temporarily
+    // unavailable (new orders are refused by the server either way).
+    val ordersEnabled: Boolean = true,
+    val description: String? = null,
+)
+
+/** Mirrors GET/POST /agent/customers -- same columns Admin's own customer
+ * list/edit responses use (customers.routes.ts's AGENT_CUSTOMER_COLUMNS ==
+ * ADMIN_CUSTOMER_COLUMNS), so an Agent action never sees a narrower shape
+ * than Admin does. */
+data class CustomerSummary(
+    val id: String,
+    val phone: String,
+    val name: String?,
+    val status: String, // "active" | "blocked"
+    val macaashPoints: Int = 0,
+    val createdAt: String,
+    val evcPlusName: String? = null,
+    val evcPlusNumber: String? = null,
+    val edahabName: String? = null,
+    val edahabNumber: String? = null,
+)
+
+/** Mirrors GET /agent/customers/{id} -- the Customer Details screen's header
+ * card. Same fields as [CustomerSummary] plus this customer's own real
+ * completed-order totals (computed server-side, never estimated here) and
+ * [pinSet] -- whether a login/recovery PIN exists, never the PIN itself. */
+data class CustomerDetail(
+    val id: String,
+    val phone: String,
+    val name: String?,
+    val status: String, // "active" | "blocked"
+    val macaashPoints: Int = 0,
+    val createdAt: String,
+    val pinSet: Boolean = false,
+    val totalOrders: Int = 0,
+    val totalSpent: Double = 0.0,
+    val evcPlusName: String? = null,
+    val evcPlusNumber: String? = null,
+    val edahabName: String? = null,
+    val edahabNumber: String? = null,
+)
+
+/** Mirrors GET /agent/customers/{id}/orders -- this customer's own Internet
+ * Store order history, newest first, real orders table data (same one
+ * [Order] itself mirrors), never a separately-maintained history. */
+data class CustomerOrderHistoryEntry(
+    val id: String,
+    val companyId: String,
+    val companyName: String,
+    val packageName: String,
+    val amount: Double,
+    val status: String, // "pending" | "in_progress" | "completed" | "failed" | "cancelled"
+    val createdAt: String,
+    val completedAt: String? = null,
+)
+
+/** Sent successfully / failed / cancelled counts and their share of all
+ * finished orders, from the Reports dashboard endpoints. */
+data class ReportStatusSplit(
+    val sent: Int,
+    val failed: Int,
+    val cancelled: Int,
+    val sentPercent: Double,
+    val failedPercent: Double,
+    val cancelledPercent: Double,
+)
+
+/** company cost + markup = selling price; selling price - discount = final
+ * price; final price - company cost = actual profit. */
+data class ReportProfitBreakdown(
+    val companyCost: Double,
+    val markup: Double,
+    val sellingPrice: Double,
+    val discount: Double,
+    val finalPrice: Double,
+    val actualProfit: Double,
+)
+
+/** One company's card on the Reports dashboard -- from that company's own
+ * orders only. [sharePercent] is its share of all the agent's orders. */
+data class ReportCompanyCard(
+    val companyId: String,
+    val companyName: String,
+    val colorHex: String?,
+    val hasLogo: Boolean,
+    val totalOrders: Int,
+    val successfulValue: Double,
+    val totalProfit: Double,
+    val totalDiscount: Double,
+    val sharePercent: Double,
+)
+
+/** Mirrors GET /agent/reports/dashboard (reports.routes.ts). */
+data class AgentReportDashboard(
+    val range: String,
+    val totalOrders: Int,
+    val successfulValue: Double,
+    val totalProfit: Double,
+    val totalDiscount: Double,
+    val status: ReportStatusSplit,
+    val profitBreakdown: ReportProfitBreakdown,
+    val companies: List<ReportCompanyCard>?,
+)
+
+data class ReportCompanyRef(
+    val companyId: String,
+    val companyName: String,
+    val colorHex: String?,
+    val hasLogo: Boolean,
+)
+
+data class ReportPackageRow(
+    val packageId: String,
+    val name: String,
+    val validity: String?,
+    val hasImage: Boolean,
+    val totalOrders: Int,
+    val successfulValue: Double,
+    val totalProfit: Double,
+    val totalDiscount: Double,
+)
+
+/** A worked example for one sale of the company's most-ordered package. */
+data class ReportPriceExample(
+    val packageName: String,
+    val validity: String?,
+    val companyCost: Double,
+    val markup: Double,
+    val sellingPrice: Double,
+    val discount: Double,
+    val finalPrice: Double,
+    val actualProfit: Double,
+)
+
+/** Mirrors GET /agent/reports/dashboard/companies/{id}. */
+data class CompanyReport(
+    val range: String,
+    val company: ReportCompanyRef,
+    val totalOrders: Int,
+    val successfulValue: Double,
+    val totalProfit: Double,
+    val totalDiscount: Double,
+    val status: ReportStatusSplit,
+    val profitBreakdown: ReportProfitBreakdown,
+    val packages: List<ReportPackageRow>?,
+    val priceExample: ReportPriceExample?,
+)
+
+/** Mirrors GET /agent/devices — the physical Agent App installs registered under this account. */
+data class AgentDevice(
+    val id: String,
+    val name: String,
+    val description: String? = null,
+    val sim1: DeviceSimInfo? = null,
+    val sim2: DeviceSimInfo? = null,
+)
+
+/** One SIM slot's real routing (ussd.routes.ts's AGENT_DEVICE_SIM_SQL) --
+ * which company this device+slot currently dials for, and that SIM's own
+ * confirmed phone number (falling back to the company's shared payment
+ * number until one is confirmed). Null when this slot has no sim_routing
+ * entry yet -- never a placeholder company/number. */
+data class DeviceSimInfo(
+    val companyId: String,
+    val companyName: String,
+    val companyColorHex: String?,
+    val phoneNumber: String?,
+)

@@ -1,0 +1,915 @@
+package com.dalab.internet.network
+
+import com.dalab.internet.data.AgentBalanceEntry
+import com.dalab.internet.data.FootballConfirmWinnerRequest
+import com.dalab.internet.data.FootballContest
+import com.dalab.internet.data.FootballContestCreateRequest
+import com.dalab.internet.data.FootballCustomerSearchResponse
+import com.dalab.internet.data.FootballEnabledResponse
+import com.dalab.internet.data.FootballGoalsRequest
+import com.dalab.internet.data.FootballImageUploadRequest
+import com.dalab.internet.data.FootballImageUploadResponse
+import com.dalab.internet.data.FootballPostponeRequest
+import com.dalab.internet.data.FootballPredictionsPage
+import com.dalab.internet.data.FootballReasonRequest
+import com.dalab.internet.data.FootballRewardRequest
+import com.dalab.internet.data.FootballTeamOption
+import com.dalab.internet.data.TransactionHistoryEntry
+import com.dalab.internet.data.AgentDevice
+import com.dalab.internet.data.AgentProfile
+import com.dalab.internet.data.AgentReportDashboard
+import com.dalab.internet.data.CompanyReport
+import com.dalab.internet.data.Company
+import com.dalab.internet.data.CustomerDetail
+import com.dalab.internet.data.CustomerOrderHistoryEntry
+import com.dalab.internet.data.CustomerSummary
+import com.dalab.internet.data.ExchangeOrder
+import com.dalab.internet.data.Order
+import com.dalab.internet.data.PackageItem
+import com.dalab.internet.data.ResellerCompany
+import com.dalab.internet.data.ResellerDeposit
+import com.dalab.internet.data.ResellerDepositMethod
+import com.dalab.internet.data.ResellerLoginResponse
+import com.dalab.internet.data.ResellerMe
+import com.dalab.internet.data.ResellerOrder
+import com.dalab.internet.data.ResellerPaymentNumber
+import com.dalab.internet.data.ResellerWithdrawal
+import com.dalab.internet.data.ResellerWithdrawalPendingPayout
+import com.dalab.internet.data.ResellerWithdrawalSimRoutingEntry
+import com.dalab.internet.data.ShopAgentOrder
+import com.dalab.internet.data.SmsLogEntry
+import com.dalab.internet.data.SupportConversation
+import com.dalab.internet.data.Transaction
+import com.dalab.internet.data.AgentNotification
+import com.dalab.internet.data.AgentPaymentTransaction
+import com.dalab.internet.data.VipNumberAgentOrder
+import com.dalab.internet.data.VipPackageAgentOrder
+import com.dalab.internet.data.WalletBalanceEntry
+import com.dalab.internet.sms.SmsSenderIdEntry
+import okhttp3.ResponseBody
+import retrofit2.Response
+import retrofit2.http.*
+
+data class DeviceLoginRequest(val deviceId: String)
+data class DiagnosticsEntryDto(
+    val tag: String,
+    val message: String,
+    val isError: Boolean,
+    val occurredAt: Long,
+)
+data class HeartbeatRequest(
+    val batteryPercent: Int?,
+    val networkOnline: Boolean,
+    val sim1Present: Boolean?,
+    val sim2Present: Boolean?,
+    // Reliability Dashboard: piggybacks the device's not-yet-delivered local
+    // DiagnosticsLog entries onto this same call rather than a separate
+    // endpoint/round-trip — best-effort, omitted (null/empty) when there's
+    // nothing new to report.
+    val recentDiagnostics: List<DiagnosticsEntryDto>? = null,
+    // Automation health (DeviceHealthSnapshot): null = unknown / older app.
+    val smsPermission: Boolean? = null,
+    val pendingSmsCount: Int? = null,
+    val oldestPendingSmsAgeSec: Long? = null,
+    val pendingActionCount: Int? = null,
+    val lastSmsUploadAt: Long? = null,
+    val accessibilityResellerEnabled: Boolean? = null,
+    val accessibilityExchangeEnabled: Boolean? = null,
+    val batteryOptimizationIgnored: Boolean? = null,
+    val notificationsEnabled: Boolean? = null,
+    val phonePermission: Boolean? = null,
+    val serviceStartedAt: Long? = null,
+    val appVersion: String? = null,
+)
+data class LoginResponse(val accessToken: String, val refreshToken: String, val agent: AgentProfile)
+data class RegisterDeviceTokenRequest(val fcmToken: String)
+data class RefreshRequest(val refreshToken: String)
+data class RefreshResponse(val accessToken: String, val refreshToken: String)
+
+// ---------------- Reseller (reseller-role login; see auth/ResellerSessionManager.kt) ----------------
+data class ResellerLoginRequest(val resellerId: String, val pin: String)
+data class ResellerCreateOrderRequest(
+    val companyId: String,
+    val receivingNumber: String,
+    val amount: Double,
+    val clientRequestId: String,
+)
+data class ResellerCreateDepositRequest(
+    val method: String,
+    val fromNumber: String,
+    val amount: Double,
+    val clientRequestId: String,
+)
+data class ResellerCreateWithdrawalRequest(
+    val companyId: String,
+    val destinationNumber: String,
+    val amount: Double,
+    val clientRequestId: String,
+)
+data class VerifyPaymentRequest(val smsLogId: String? = null)
+data class SmsLogUploadResponse(
+    val id: String,
+    val matchedOrderId: String?,
+    val requiresManualApproval: Boolean = false,
+    // See admin-backend-ts smsLogs.routes.ts: duplicate/status reflect the
+    // server's transaction_ref (or sender+body+minute) dedup check — a
+    // duplicate payment is rejected as "already_processed" rather than
+    // being matched/dialed a second time.
+    val duplicate: Boolean = false,
+    val status: String? = null,
+    val orderAlreadyCompleted: Boolean = false,
+)
+data class VoucherConfirmationRequest(val receiverPhone: String, val amount: Double, val provider: String)
+data class VoucherConfirmationResponse(val matched: Boolean, val orderId: String? = null, val alreadyCompleted: Boolean = false)
+data class ExchangePayoutConfirmationRequest(val receiverPhone: String, val amount: Double, val rawText: String)
+data class ExchangePayoutConfirmationResponse(val matched: Boolean, val orderId: String? = null, val alreadyCompleted: Boolean = false)
+
+// ---------------- Notification broadcast ----------------
+// Same POST /notifications/broadcast + GET /notifications/campaigns the
+// Admin dashboard's Notifications tab uses (App.jsx's DalabAdminApi.
+// broadcastNotification/getNotificationCampaigns) — an agent hitting these
+// exact routes gets the identical targeting options and history the Admin
+// dashboard shows, with no capability gap between the two apps.
+data class BroadcastRequest(
+    val targetType: String, // "single" | "multiple" | "all" | "recent"
+    val customerIds: List<String> = emptyList(),
+    val serviceFilter: String, // "all" | "internet" | "ebadal" | "reseller"
+    val title: String,
+    val body: String,
+)
+data class BroadcastResponse(
+    val id: String,
+    val recipientCount: Int,
+    val sentCount: Int,
+    val deliveredCount: Int,
+    val failedCount: Int,
+)
+data class NotificationCampaign(
+    val id: String,
+    val title: String,
+    val body: String,
+    val targetType: String,
+    val serviceFilter: String,
+    val recipientCount: Int,
+    val sentCount: Int,
+    val deliveredCount: Int,
+    val failedCount: Int,
+    val createdByName: String?,
+    val createdByRole: String,
+    val createdAt: String,
+)
+
+// ---------------- Nala Soco ----------------
+// Shared Admin+Agent management -- same GET/POST/PUT/DELETE /admin/nala-soco
+// routes the Admin dashboard's own Nala Soco section uses (App.jsx's
+// DalabAdminApi.getNalaSocoPosts/createNalaSocoPost/updateNalaSocoPost/
+// deleteNalaSocoPost), same reasoning as the notification broadcast section
+// above: requireAuth("super_admin","admin","agent") on the backend, not
+// requireStaff(), so an Agent has the exact same create/edit/publish/
+// unpublish/delete capability an Admin has, with no capability gap.
+data class NalaSocoPostResponse(
+    val id: String,
+    val title: String,
+    val body: String,
+    val hasImage: Boolean,
+    val published: Boolean,
+    val createdAt: String,
+    val updatedAt: String,
+)
+data class NalaSocoCreateRequest(
+    val title: String,
+    val body: String,
+    val published: Boolean = true,
+    val imageBase64: String? = null,
+)
+// ---------------- Promo Ad popup (Customer App app-open popup) ----------------
+// Agent-only management (requireAuth("agent") on the backend, not shared
+// with Admin the way Nala Soco above is) -- Add/Edit/Enable-Disable/
+// Reorder/Delete the slides shown in the Customer App's promotional ad
+// popup. Deliberately a separate feature/table from Nala Soco and from
+// promo-images (the Admin-managed, image-only Home-screen carousel banner)
+// -- this is the full-screen popup with its own headline/body text, shown
+// once per 24h per customer on app open.
+// destinationType is "company" (go to that provider's packages), "package"
+// (go to one exact package), or null (tapping the ad does nothing but
+// close the popup, same as before this existed). destinationCompanyId is
+// set for both non-null types; destinationPackageId only for "package" --
+// see migration 110's header comment (admin-backend-ts) for why the three
+// are always written together.
+data class PromoAdResponse(
+    val id: String,
+    val title: String?,
+    val body: String?,
+    val enabled: Boolean,
+    val position: Int,
+    val destinationType: String? = null,
+    val destinationCompanyId: String? = null,
+    val destinationPackageId: String? = null,
+    // Danwadaag's server names the same thing targetCompanyId/targetPackageId
+    // (a package -> "package", a provider only -> "company"). Read through
+    // effectiveDestination*, which understands both.
+    val targetCompanyId: String? = null,
+    val targetPackageId: String? = null,
+    val createdAt: String,
+    val updatedAt: String,
+) {
+    val effectiveDestinationType: String?
+        get() = destinationType ?: when {
+            targetCompanyId == null -> null
+            targetPackageId != null -> "package"
+            else -> "company"
+        }
+    val effectiveDestinationCompanyId: String? get() = destinationCompanyId ?: targetCompanyId
+    val effectiveDestinationPackageId: String? get() = destinationPackageId ?: targetPackageId
+}
+// Sends the destination in both servers' spellings (DALAB: destination*,
+// Danwadaag: target*); each server reads its own and ignores the other.
+data class PromoAdCreateRequest(
+    val imageBase64: String,
+    val title: String?,
+    val body: String?,
+    val destinationType: String? = null,
+    val destinationCompanyId: String? = null,
+    val destinationPackageId: String? = null,
+    val targetCompanyId: String? = destinationCompanyId,
+    val targetPackageId: String? = destinationPackageId,
+)
+data class PromoAdStatusRequest(val enabled: Boolean)
+data class PromoAdReorderRequest(val orderedIds: List<String>)
+
+// confirmUnknownBalance: the agent saw the "SIM balance unknown/outdated"
+// warning and chose to dial anyway (null = not confirmed; never overrides an
+// insufficient balance -- see ussd.routes.ts dial-attempts).
+data class DialAttemptStartRequest(val simSlot: Int?, val ussdString: String, val attemptNumber: Int, val confirmUnknownBalance: Boolean? = null)
+
+/** GET /agent/orders/:id/sim-balance-check (utils/simBalanceCheck.ts). */
+/** POST /agent/orders/{id}/ussd-pin -- held in memory for one reply only. */
+data class UssdPinResponse(val pin: String)
+
+data class SimBalanceCheck(
+    // "sufficient" | "insufficient" | "unknown" | "outdated"
+    val status: String,
+    val ok: Boolean,
+    val orderId: String,
+    val customerName: String,
+    val companyId: String,
+    val companyName: String,
+    val requestedAmount: Double,
+    val availableBalance: Double? = null,
+    val missingAmount: Double? = null,
+    val balanceUpdatedAt: String? = null,
+    val deviceId: String? = null,
+    val simSlot: Int? = null,
+    val message: String? = null,
+    // Which balance on the SIM pays for this order: the company's own
+    // ("somtel") or a wallet ("edahab" for Dhameys Plus). Older backends
+    // don't send these, which means the company's own SIM balance.
+    val balanceSource: String? = null,
+    val balanceLabel: String? = null,
+)
+
+/** "SIM" for the company's own balance, else the wallet's name ("eDahab"). */
+val SimBalanceCheck.balanceName: String
+    get() = if (balanceSource == null || balanceSource == companyName.lowercase()) "SIM" else (balanceLabel ?: "SIM")
+
+/** GET /agent/sms-formats (smsFormats.routes.ts) -- see sms/DynamicSmsFormats.kt. */
+data class SmsFormatDto(
+    val id: String,
+    val provider: String,
+    val parsedProvider: String?,
+    val version: Int,
+    val pattern: String,
+    val amountGroup: Int,
+    val senderGroup: Int,
+    val referenceGroup: Int? = null,
+    val recipientGroup: Int? = null,
+    val keywords: List<String> = emptyList(),
+    val senders: List<String> = emptyList(),
+)
+
+/** POST /agent/device-activation/status (deviceActivation.routes.ts). */
+data class DeviceActivationStatusRequest(val installId: String, val deviceModel: String?, val agentDeviceId: String?)
+data class DeviceActivationStatusResponse(
+    // "pending" | "approved" | "rejected" (a revoked device comes back as pending with a new code)
+    val status: String,
+    val required: Boolean = true,
+    val deviceNumber: String? = null,
+    val code: String? = null,
+    val codeExpiresAt: String? = null,
+)
+data class DialAttemptStartResponse(val id: String)
+// isFinalAttempt: true when this is the last outcome this order will get
+// (success, a non-retryable failure, or the last of maxAttempts retries) —
+// the backend only marks the order 'failed' when this is true, so a
+// mid-retry attempt reported as failed/ambiguous doesn't show the customer
+// "Failed" moments before a later retry might still succeed.
+data class DialAttemptResultRequest(val status: String, val responseMessage: String?, val isFinalAttempt: Boolean = true)
+data class DialAttemptResultResponse(val id: String, val status: String)
+// ---------------- Agent Support ----------------
+
+data class SupportStatusResponse(val online: Boolean, val activeConversationId: String? = null)
+data class SupportStatusUpdateRequest(val online: Boolean)
+data class SupportClaimNextResponse(val claimed: SupportConversation? = null)
+// messageType is "text" (default -- message required), "image", or "voice"
+// (mediaBase64 required for the latter two -- a data:<mime>;base64,<data>
+// string, see support.routes.ts's composeMessage).
+data class SupportSendMessageRequest(
+    val message: String? = null,
+    val messageType: String = "text",
+    val mediaBase64: String? = null,
+)
+data class SupportEndConversationResponse(val ended: Boolean, val next: SupportConversation? = null)
+
+data class CreateCustomerRequest(val phone: String, val name: String? = null)
+data class UpdateCustomerRequest(val name: String? = null, val phone: String? = null)
+data class UpdateCustomerWalletNumbersRequest(
+    val evcPlusName: String? = null,
+    val evcPlusNumber: String? = null,
+    val edahabName: String? = null,
+    val edahabNumber: String? = null,
+)
+data class SetCustomerPinRequest(val pin: String)
+data class CustomerPinStatusResponse(val isSet: Boolean)
+data class CustomerPinActionResponse(val message: String, val isSet: Boolean)
+data class GenerateCustomerPinResponse(val message: String, val pin: String, val isSet: Boolean)
+data class CreateSaleRequest(
+    val customerPhone: String,
+    val companyId: String,
+    val packageId: String,
+    val receiverPhone: String? = null,
+    val paymentMethod: String? = null,
+    val clientRequestId: String? = null,
+)
+
+// ---------------- Money Exchange (separate business line — see ussd/Exchange*.kt) ----------------
+
+data class ExchangeDialAttemptStartRequest(val attemptNumber: Int = 1)
+// pin is null only on the rare duplicate-insert path (a retried start call
+// for an attemptNumber that already exists) — the caller must treat that as
+// "can't proceed automatically, ask a Super Admin" rather than dial blind.
+data class ExchangeDialAttemptStartResponse(val id: String, val step1UssdString: String, val pin: String? = null, val simSlot: Int? = null)
+data class ExchangeStepRequest(val status: String, val responseMessage: String? = null, val isFinalAttempt: Boolean = true)
+data class ExchangeDialAttemptDto(
+    val id: String,
+    val exchangeOrderId: String,
+    val simSlot: Int? = null,
+    val attemptNumber: Int,
+    val step1UssdString: String? = null,
+    val step1Response: String? = null,
+    val step2Response: String? = null,
+    val status: String,
+    val createdAt: String,
+    val completedAt: String? = null,
+)
+
+// ---------------- Wallet Name Lookup (Complete Account) ----------------
+// Read-only $1 USSD prompt — verifies an EVC Plus/eDahab number against the
+// carrier's own registered account name before a customer can save it as a
+// Money Exchange wallet. Deliberately separate from the payout endpoints
+// above: never carries a PIN, never moves money — see
+// ussd/WalletLookupUssdOrchestrator.kt.
+
+/** One row from GET agent/wallet-lookups — a lookup no device has claimed
+ * yet. Deliberately minimal (id/walletId/phoneNumber only); the dial string
+ * and SIM slot are resolved server-side at claim time (POST .../claim), not
+ * here, so a device that never claims a given row never needs to know how
+ * to build its dial string. */
+data class WalletLookupPending(val id: String, val walletId: String, val phoneNumber: String)
+
+/** Response to POST agent/wallet-lookups/{id}/claim — present only when the
+ * claim actually succeeded (a 409 means another device already won it). */
+data class WalletLookupClaimResponse(
+    val id: String,
+    val walletId: String,
+    val phoneNumber: String,
+    val lookupUssdString: String,
+    val simSlot: Int,
+)
+
+data class WalletLookupReportRequest(val status: String, val registeredName: String? = null, val rawResponse: String? = null)
+
+/**
+ * Mirrors the backend architecture doc, §4 "Agent-facing", and the real
+ * implementation in dalab-backend.zip (src/routes/ *.js) — every path and body
+ * shape here matches what that server actually returns, verified against its
+ * test suite. Base URL and auth header (Authorization: Bearer <token>) are
+ * attached in ApiClient's OkHttp interceptor, not here — this interface only
+ * describes the routes/shapes.
+ */
+interface ApiService {
+
+    @POST("agent/auth/device-login")
+    suspend fun deviceLogin(@Body body: DeviceLoginRequest): Response<LoginResponse>
+
+    // Sign out: revokes this refresh token on the system (best effort).
+    @POST("auth/logout")
+    suspend fun logout(@Body body: RefreshRequest): Response<Unit>
+
+    @POST("auth/refresh")
+    suspend fun refresh(@Body body: RefreshRequest): Response<RefreshResponse>
+
+    @GET("agent/orders")
+    suspend fun getOrders(@Query("status") status: String? = null): Response<List<Order>>
+
+    // Orders that reached in_progress with a USSD string generated but were
+    // never actually dialed — e.g. generation failed at verify-payment time
+    // and a Super Admin fixed the missing template/PIN afterward. Drained by
+    // SelfHealSweeper so that fix alone is enough, with no manual "Dial Now"
+    // tap required.
+    @GET("agent/orders/self-heal-candidates")
+    suspend fun getSelfHealCandidates(): Response<List<Order>>
+
+    @GET("agent/orders/{id}")
+    suspend fun getOrder(@Path("id") id: String): Response<Order>
+
+    @POST("agent/orders/{id}/verify-payment")
+    suspend fun verifyPayment(
+        @Path("id") id: String,
+        @Body body: VerifyPaymentRequest,
+    ): Response<Order>
+
+    @POST("agent/orders/{id}/complete")
+    suspend fun completeOrder(@Path("id") id: String): Response<Order>
+
+    // ---------------- Orders: Shop / VIP Numbers ----------------
+    // Deliberately separate from agent/orders above (the Internet Store
+    // recharge queue) -- same "own endpoints per business line" convention
+    // as Money Exchange/Reseller Withdrawal. Real backend data only, no
+    // agent-side order creation here: Shop/VIP orders are always
+    // customer-initiated checkouts, never agent-created.
+
+    @GET("agent/shop/orders")
+    suspend fun getAgentShopOrders(@Query("status") status: String? = null): Response<List<ShopAgentOrder>>
+
+    @GET("agent/shop/orders/{id}")
+    suspend fun getAgentShopOrder(@Path("id") id: String): Response<ShopAgentOrder>
+
+    // Real backend status change (pending/processing -> delivered) -- server
+    // refuses with 409 unless payment_status is already 'paid' and the order
+    // isn't already terminal (delivered/cancelled/failed/returned/refunded).
+    // Never touches payment_status itself, so Paid stays Paid. Never
+    // local-only, same as completeAgentVipNumberOrder below.
+    @POST("agent/shop/orders/{id}/complete")
+    suspend fun completeAgentShopOrder(@Path("id") id: String): Response<ShopAgentOrder>
+
+    @GET("agent/vip-numbers/orders")
+    suspend fun getAgentVipNumberOrders(@Query("status") status: String? = null): Response<List<VipNumberAgentOrder>>
+
+    @GET("agent/vip-numbers/orders/{id}")
+    suspend fun getAgentVipNumberOrder(@Path("id") id: String): Response<VipNumberAgentOrder>
+
+    // "Create" -- the agent starts the real-world work. Server refuses with
+    // 409 unless payment_status is already 'paid' (Verify Payment), the
+    // order isn't already terminal, and it hasn't already been started.
+    // Never changes the customer-visible status (stays 'processing'), only
+    // sets agentStartedAt -- which is what the /complete route below then
+    // requires before it will let the agent finish the order.
+    @POST("agent/vip-numbers/orders/{id}/start")
+    suspend fun startAgentVipNumberOrder(@Path("id") id: String): Response<VipNumberAgentOrder>
+
+    // Real backend status change (processing -> completed) -- server
+    // refuses with 409 unless payment_status is already 'paid', the order
+    // has been started (agentStartedAt set via /start above), and it isn't
+    // already terminal. Never local-only.
+    @POST("agent/vip-numbers/orders/{id}/complete")
+    suspend fun completeAgentVipNumberOrder(@Path("id") id: String): Response<VipNumberAgentOrder>
+
+    @GET("agent/vip-numbers/packages/orders")
+    suspend fun getAgentVipPackageOrders(@Query("status") status: String? = null): Response<List<VipPackageAgentOrder>>
+
+    @GET("agent/vip-numbers/packages/orders/{id}")
+    suspend fun getAgentVipPackageOrder(@Path("id") id: String): Response<VipPackageAgentOrder>
+
+    @POST("agent/vip-numbers/packages/orders/{id}/start")
+    suspend fun startAgentVipPackageOrder(@Path("id") id: String): Response<VipPackageAgentOrder>
+
+    @POST("agent/vip-numbers/packages/orders/{id}/complete")
+    suspend fun completeAgentVipPackageOrder(@Path("id") id: String): Response<VipPackageAgentOrder>
+
+    @GET("agent/transactions")
+    suspend fun getTransactions(@Query("range") range: String? = null): Response<List<Transaction>>
+
+    @GET("agent/transactions/history")
+    suspend fun getTransactionHistory(
+        @Query("range") range: String?,
+        @Query("date") date: String?,
+        @Query("companyId") companyId: String?,
+        @Query("search") search: String?,
+    ): Response<List<TransactionHistoryEntry>>
+
+    // ---------------- Wallet Balances dashboard ----------------
+
+    @GET("agent/wallet-balances")
+    suspend fun getWalletBalances(): Response<List<WalletBalanceEntry>>
+
+    // Home screen's Agent Balance section -- see AgentBalanceEntry's own doc
+    // comment for why this is a separate, company-wide-not-per-device call
+    // from getWalletBalances() above.
+    @GET("agent/balances")
+    suspend fun getAgentBalances(): Response<List<AgentBalanceEntry>>
+
+    @GET("agent/payment-transactions")
+    suspend fun getAgentPaymentTransactions(@Query("limit") limit: Int? = null): Response<List<AgentPaymentTransaction>>
+
+    @POST("agent/sms-logs")
+    suspend fun uploadSmsLog(@Body body: SmsLogEntry): Response<SmsLogUploadResponse>
+
+    @POST("agent/orders/voucher-confirmation")
+    suspend fun reportVoucherConfirmation(@Body body: VoucherConfirmationRequest): Response<VoucherConfirmationResponse>
+
+    @POST("agent/exchange/orders/payout-confirmation")
+    suspend fun reportExchangePayoutConfirmation(@Body body: ExchangePayoutConfirmationRequest): Response<ExchangePayoutConfirmationResponse>
+
+    @GET("agent/notifications")
+    suspend fun getNotifications(): Response<List<AgentNotification>>
+
+    @POST("notifications/broadcast")
+    suspend fun broadcastNotification(@Body body: BroadcastRequest): Response<BroadcastResponse>
+
+    @GET("notifications/campaigns")
+    suspend fun getNotificationCampaigns(): Response<List<NotificationCampaign>>
+
+    // See NalaSocoPostResponse's own doc comment. GET here is deliberately
+    // the "list every post, including unpublished drafts" management view
+    // (/admin/nala-soco) -- distinct from the plain public feed
+    // (/nala-soco, published-only) this app has no reason to call.
+    @GET("admin/nala-soco")
+    suspend fun getNalaSocoPosts(): Response<List<NalaSocoPostResponse>>
+
+    @POST("admin/nala-soco")
+    suspend fun createNalaSocoPost(@Body body: NalaSocoCreateRequest): Response<NalaSocoPostResponse>
+
+    // @Body is a raw JsonObject, not a typed data class, on purpose: the
+    // backend's PUT distinguishes "imageBase64 key entirely absent" (leave
+    // the existing image untouched) from "imageBase64: null" (remove it)
+    // from "imageBase64: <data URI>" (replace it) -- and Gson's default
+    // (non-serializeNulls) POJO field serialization silently OMITS a null
+    // Kotlin field rather than emitting `"imageBase64":null`, which would
+    // make "remove" indistinguishable from "leave unchanged". A hand-built
+    // JsonObject sidesteps that: JsonNull.INSTANCE is emitted as a real
+    // JSON null, and a key never added is genuinely absent.
+    @PUT("admin/nala-soco/{id}")
+    suspend fun updateNalaSocoPost(@Path("id") id: String, @Body body: com.google.gson.JsonObject): Response<NalaSocoPostResponse>
+
+    @DELETE("admin/nala-soco/{id}")
+    suspend fun deleteNalaSocoPost(@Path("id") id: String): Response<Unit>
+
+    // ---------------- Ciyaaraha (football predictions) ----------------
+    // Only agents an Admin switched on may use these (403 FOOTBALL_NOT_ENABLED
+    // otherwise); /me tells the app whether to offer the section at all.
+
+    @GET("agent/football/me")
+    suspend fun getFootballAccess(): Response<FootballEnabledResponse>
+
+    @GET("agent/football/teams")
+    suspend fun getFootballTeams(): Response<List<FootballTeamOption>>
+
+    @POST("agent/football/images")
+    suspend fun uploadFootballImage(@Body body: FootballImageUploadRequest): Response<FootballImageUploadResponse>
+
+    @GET("agent/football/contests")
+    suspend fun getFootballContests(@Query("scope") scope: String, @Query("page") page: Int = 0): Response<List<FootballContest>>
+
+    @POST("agent/football/contests")
+    suspend fun createFootballContest(@Body body: FootballContestCreateRequest): Response<FootballContest>
+
+    @GET("agent/football/contests/{id}")
+    suspend fun getFootballContest(@Path("id") id: String): Response<FootballContest>
+
+    // Only the fields being changed are sent (see CreateContestPage's edit mode).
+    @PUT("agent/football/contests/{id}")
+    suspend fun updateFootballContest(@Path("id") id: String, @Body body: com.google.gson.JsonObject): Response<FootballContest>
+
+    // Refused (409 HAS_PREDICTIONS) once a customer has predicted -- cancel instead.
+    @DELETE("agent/football/contests/{id}")
+    suspend fun deleteFootballContest(@Path("id") id: String): Response<com.google.gson.JsonObject>
+
+    @POST("agent/football/contests/{id}/publish")
+    suspend fun publishFootballContest(@Path("id") id: String): Response<FootballContest>
+
+    @POST("agent/football/contests/{id}/postpone")
+    suspend fun postponeFootballContest(@Path("id") id: String, @Body body: FootballPostponeRequest): Response<com.google.gson.JsonObject>
+
+    @POST("agent/football/contests/{id}/cancel")
+    suspend fun cancelFootballContest(@Path("id") id: String, @Body body: FootballReasonRequest): Response<com.google.gson.JsonObject>
+
+    @POST("agent/football/contests/{id}/result")
+    suspend fun enterFootballResult(@Path("id") id: String, @Body body: FootballGoalsRequest): Response<com.google.gson.JsonObject>
+
+    @GET("agent/football/contests/{id}/predictions")
+    suspend fun getFootballPredictions(
+        @Path("id") id: String,
+        @Query("home") home: Int? = null,
+        @Query("away") away: Int? = null,
+        @Query("page") page: Int = 0,
+        @Query("pageSize") pageSize: Int = 20,
+    ): Response<FootballPredictionsPage>
+
+    @POST("agent/football/contests/{id}/confirm-winner")
+    suspend fun confirmFootballWinner(@Path("id") id: String, @Body body: FootballConfirmWinnerRequest): Response<com.google.gson.JsonObject>
+
+    @POST("agent/football/contests/{id}/reward")
+    suspend fun recordFootballReward(@Path("id") id: String, @Body body: FootballRewardRequest): Response<com.google.gson.JsonObject>
+
+    @POST("agent/football/contests/{id}/dispute")
+    suspend fun disputeFootballContest(@Path("id") id: String, @Body body: FootballReasonRequest): Response<com.google.gson.JsonObject>
+
+    @GET("agent/football/customers/search")
+    suspend fun searchFootballCustomer(@Query("q") q: String): Response<FootballCustomerSearchResponse>
+
+    // See PromoAdResponse's own doc comment. GET here is the management
+    // view (every ad, enabled or not) -- distinct from the Customer App's
+    // own GET /promo-ads (enabled-only), which this app never calls.
+    @GET("agent/promo-ads")
+    suspend fun getPromoAds(): Response<List<PromoAdResponse>>
+
+    @POST("agent/promo-ads")
+    suspend fun createPromoAd(@Body body: PromoAdCreateRequest): Response<PromoAdResponse>
+
+    // Same raw-JsonObject reasoning as updateNalaSocoPost above --
+    // imageBase64 omitted entirely means "keep the existing image", which a
+    // typed nullable Kotlin field can't express (Gson's default POJO
+    // serialization drops a null field rather than sending it).
+    @PUT("agent/promo-ads/{id}")
+    suspend fun updatePromoAd(@Path("id") id: String, @Body body: com.google.gson.JsonObject): Response<PromoAdResponse>
+
+    @PUT("agent/promo-ads/{id}/status")
+    suspend fun updatePromoAdStatus(@Path("id") id: String, @Body body: PromoAdStatusRequest): Response<PromoAdResponse>
+
+    @PUT("agent/promo-ads/reorder")
+    suspend fun reorderPromoAds(@Body body: PromoAdReorderRequest): Response<List<PromoAdResponse>>
+
+    @DELETE("agent/promo-ads/{id}")
+    suspend fun deletePromoAd(@Path("id") id: String): Response<Unit>
+
+    // Registers/clears this device's FCM token so a newly-assigned support
+    // conversation can push straight to it -- see notifications/
+    // AgentFcmService.kt and PushTokenRegistrar.kt.
+    @POST("agent/notifications/register-device")
+    suspend fun registerAgentDeviceToken(@Body body: RegisterDeviceTokenRequest): Response<Unit>
+
+    @POST("agent/notifications/unregister-device")
+    suspend fun unregisterAgentDeviceToken(@Body body: RegisterDeviceTokenRequest): Response<Unit>
+
+    // ---------------- Agent Support ----------------
+    // Same routes the Admin Dashboard's "Agent Support" panel uses (registered
+    // at both /admin/support/... and /agent/support/... by support.routes.ts's
+    // dual() helper) — any online field agent may claim/handle a conversation,
+    // same as any staff member with the support.manage permission.
+
+    @GET("agent/support/status")
+    suspend fun getSupportStatus(): Response<SupportStatusResponse>
+
+    @PUT("agent/support/status")
+    suspend fun setSupportStatus(@Body body: SupportStatusUpdateRequest): Response<SupportStatusResponse>
+
+    @GET("agent/support/queue")
+    suspend fun getSupportQueue(): Response<List<SupportConversation>>
+
+    @GET("agent/support/conversations/{id}")
+    suspend fun getSupportConversation(@Path("id") id: String): Response<SupportConversation>
+
+    @POST("agent/support/claim-next")
+    suspend fun claimNextSupportConversation(): Response<SupportClaimNextResponse>
+
+    @POST("agent/support/conversations/{id}/claim")
+    suspend fun claimSupportConversation(@Path("id") id: String): Response<SupportConversation>
+
+    @POST("agent/support/conversations/{id}/messages")
+    suspend fun sendSupportMessage(@Path("id") id: String, @Body body: SupportSendMessageRequest): Response<SupportConversation>
+
+    // Note: registered at /support/messages/{id}/media (no /agent prefix) --
+    // shared by the customer and any authorized staff/agent, see
+    // support.routes.ts's combined auth check on that one route.
+    @Streaming
+    @GET("support/messages/{id}/media")
+    suspend fun getSupportMessageMedia(@Path("id") id: String): Response<ResponseBody>
+
+    @POST("agent/support/conversations/{id}/resolve")
+    suspend fun resolveSupportConversation(@Path("id") id: String): Response<SupportEndConversationResponse>
+
+    @POST("agent/support/conversations/{id}/close")
+    suspend fun closeSupportConversation(@Path("id") id: String): Response<SupportEndConversationResponse>
+
+    // Raw body, parsed manually and defensively in SimRoutingRepository —
+    // see that class's comment for why: Retrofit's automatic
+    // Response<List<SimRoutingEntry>> conversion throws (and previously
+    // logged only an unhelpful "ClassCastException: no message") on this
+    // exact device in production, with no way to see the actual payload
+    // that failed to parse.
+    @GET("agent/sim-routing")
+    suspend fun getSimRoutingRaw(@Query("deviceId") deviceId: String? = null): Response<ResponseBody>
+
+    @GET("agent/sms-sender-ids")
+    suspend fun getSmsSenderIds(): Response<List<SmsSenderIdEntry>>
+
+    @POST("agent/orders/{id}/dial-attempts")
+    suspend fun startDialAttempt(@Path("id") orderId: String, @Body body: DialAttemptStartRequest): Response<DialAttemptStartResponse>
+
+    @PUT("agent/dial-attempts/{attemptId}")
+    suspend fun reportDialResult(@Path("attemptId") attemptId: String, @Body body: DialAttemptResultRequest): Response<DialAttemptResultResponse>
+
+    // ---------------- Device identity & health (dual-mobile reliability) ----------------
+
+    @GET("agent/devices")
+    suspend fun getDevices(): Response<List<AgentDevice>>
+
+    @POST("agent/devices/{id}/heartbeat")
+    suspend fun sendHeartbeat(@Path("id") deviceId: String, @Body body: HeartbeatRequest): Response<Unit>
+
+    // ---------------- Customer management (same visibility/power as Admin) ----------------
+
+    @GET("agent/customers")
+    suspend fun getCustomers(@Query("search") search: String? = null): Response<List<CustomerSummary>>
+
+    @POST("agent/customers")
+    suspend fun createCustomer(@Body body: CreateCustomerRequest): Response<CustomerSummary>
+
+    @GET("agent/customers/{id}")
+    suspend fun getCustomerDetail(@Path("id") customerId: String): Response<CustomerDetail>
+
+    @PUT("agent/customers/{id}")
+    suspend fun updateCustomer(@Path("id") customerId: String, @Body body: UpdateCustomerRequest): Response<CustomerSummary>
+
+    @PUT("agent/customers/{id}/wallet-numbers")
+    suspend fun updateCustomerWalletNumbers(@Path("id") customerId: String, @Body body: UpdateCustomerWalletNumbersRequest): Response<CustomerSummary>
+
+    @GET("agent/customers/{id}/orders")
+    suspend fun getCustomerOrders(@Path("id") customerId: String): Response<List<CustomerOrderHistoryEntry>>
+
+    @PUT("agent/customers/{id}/block")
+    suspend fun toggleCustomerBlock(@Path("id") customerId: String): Response<CustomerSummary>
+
+    @GET("agent/customers/{id}/pin-status")
+    suspend fun getCustomerPinStatus(@Path("id") customerId: String): Response<CustomerPinStatusResponse>
+
+    @PUT("agent/customers/{id}/pin")
+    suspend fun setCustomerPin(@Path("id") customerId: String, @Body body: SetCustomerPinRequest): Response<CustomerPinActionResponse>
+
+    @POST("agent/customers/{id}/pin/generate")
+    suspend fun generateCustomerPin(@Path("id") customerId: String): Response<GenerateCustomerPinResponse>
+
+    @DELETE("agent/customers/{id}/pin")
+    suspend fun clearCustomerPin(@Path("id") customerId: String): Response<CustomerPinActionResponse>
+
+    // ---------------- Packages catalog (for sales + browsing) ----------------
+
+    @GET("companies")
+    suspend fun getCompanies(): Response<List<Company>>
+
+    // audience=agent: leaves out packages the admin hid from the Agent App.
+    @GET("companies/{id}/packages")
+    suspend fun getPackages(@Path("id") companyId: String, @Query("audience") audience: String = "agent"): Response<List<PackageItem>>
+
+    // ---------------- Sales ----------------
+
+    @POST("agent/orders")
+    suspend fun createSale(@Body body: CreateSaleRequest): Response<Order>
+
+    // ---------------- Reports ----------------
+
+    @GET("agent/reports/dashboard")
+    suspend fun getReportDashboard(@Query("range") range: String): Response<AgentReportDashboard>
+
+    @GET("agent/reports/dashboard/companies/{id}")
+    suspend fun getCompanyReport(@Path("id") companyId: String, @Query("range") range: String): Response<CompanyReport>
+
+    // ---------------- Money Exchange ----------------
+    // Deliberately separate endpoints/models from Internet Store's orders
+    // above — see ExchangeUssdOrchestrator for why the USSD flow itself is
+    // also a completely separate mechanism.
+
+    @GET("agent/exchange/orders")
+    suspend fun getExchangeOrders(): Response<List<ExchangeOrder>>
+
+    @POST("agent/exchange/orders/{id}/dial-attempts")
+    suspend fun startExchangeDialAttempt(
+        @Path("id") orderId: String,
+        @Body body: ExchangeDialAttemptStartRequest,
+    ): Response<ExchangeDialAttemptStartResponse>
+
+    @PUT("agent/exchange/dial-attempts/{attemptId}/step1")
+    suspend fun reportExchangeStep1(
+        @Path("attemptId") attemptId: String,
+        @Body body: ExchangeStepRequest,
+    ): Response<ExchangeDialAttemptDto>
+
+    @PUT("agent/exchange/dial-attempts/{attemptId}/step2")
+    suspend fun reportExchangeStep2(
+        @Path("attemptId") attemptId: String,
+        @Body body: ExchangeStepRequest,
+    ): Response<ExchangeDialAttemptDto>
+
+    // ---------------- Wallet Name Lookup (Complete Account) ----------------
+
+    @GET("agent/wallet-lookups")
+    suspend fun getWalletLookups(): Response<List<WalletLookupPending>>
+
+    @POST("agent/wallet-lookups/{id}/claim")
+    suspend fun claimWalletLookup(@Path("id") id: String): Response<WalletLookupClaimResponse>
+
+    @PUT("agent/wallet-lookups/{id}")
+    suspend fun reportWalletLookup(
+        @Path("id") id: String,
+        @Body body: WalletLookupReportRequest,
+    ): Response<Unit>
+
+    // ---------------- Reseller Withdraw (automatic payout — see ussd/ResellerWithdrawalUssdOrchestrator.kt) ----------------
+    // Same one-shot combined-string USSD dial as Internet Store above (not
+    // Money Exchange's two-step interactive PIN flow) — reuses UssdDialer,
+    // not ExchangeUssdDialer. Deliberately separate endpoints/models from
+    // both existing pipelines: the automation is analogous to Internet
+    // Store's, but a dial result here never completes the withdrawal itself
+    // (only the real outgoing SMS does — see this file's/backend's own doc
+    // comments), which is why this isn't just reusing startDialAttempt/
+    // reportDialResult above.
+
+    @GET("agent/reseller-withdrawals/pending-payout")
+    suspend fun getResellerWithdrawalsPendingPayout(): Response<List<ResellerWithdrawalPendingPayout>>
+
+    @POST("agent/reseller-withdrawals/{id}/dial-attempts")
+    suspend fun startResellerWithdrawalDialAttempt(
+        @Path("id") withdrawalId: String,
+        @Body body: DialAttemptStartRequest,
+    ): Response<DialAttemptStartResponse>
+
+    @PUT("agent/reseller-withdrawal-dial-attempts/{attemptId}")
+    suspend fun reportResellerWithdrawalDialResult(
+        @Path("attemptId") attemptId: String,
+        @Body body: DialAttemptResultRequest,
+    ): Response<DialAttemptResultResponse>
+
+    // Reseller Withdraw's OWN SIM routing (company -> device + physical
+    // slot) — deliberately separate from getSimRouting above (which is
+    // Internet Store/eBadal recharge's own routing table), so a Reseller
+    // Withdraw payout SIM can be managed independently. Mirrors
+    // getSimRouting's shape/scoping exactly (see SimRoutingRepository.kt).
+    @GET("agent/reseller-withdrawal-sim-routing")
+    suspend fun getResellerWithdrawalSimRouting(@Query("deviceId") deviceId: String? = null): Response<List<ResellerWithdrawalSimRoutingEntry>>
+
+    // ---------------- Reseller account (reseller-role login) ----------------
+    // Exposes the SAME Admin Reseller system (admin-backend-ts's
+    // resellers.routes.ts/resellerOrders.routes.ts/
+    // resellerDepositsWithdrawals.routes.ts/resellerPaymentConfig.routes.ts)
+    // super-admin-app already manages, now reachable directly by a reseller
+    // logging in with their own Reseller ID + PIN — see
+    // auth/ResellerSessionManager.kt and network/ResellerApiClient.kt for
+    // why these calls run through a completely separate token/session from
+    // every other endpoint in this file. Called only via
+    // ResellerApiClient.service, never via ApiClient.service.
+    @POST("reseller/auth/login")
+    suspend fun resellerLogin(@Body body: ResellerLoginRequest): Response<ResellerLoginResponse>
+
+    @GET("reseller/me")
+    suspend fun getResellerMe(): Response<ResellerMe>
+
+    @GET("reseller/companies")
+    suspend fun getResellerCompanies(): Response<List<ResellerCompany>>
+
+    @GET("reseller/payment-numbers")
+    suspend fun getResellerPaymentNumbers(
+        @Query("companyId") companyId: String,
+        @Query("role") role: String? = null,
+    ): Response<List<ResellerPaymentNumber>>
+
+    @GET("reseller/deposit-methods")
+    suspend fun getResellerDepositMethods(): Response<List<ResellerDepositMethod>>
+
+    @POST("reseller/orders")
+    suspend fun createResellerOrder(@Body body: ResellerCreateOrderRequest): Response<ResellerOrder>
+
+    @GET("reseller/orders")
+    suspend fun getResellerOrders(): Response<List<ResellerOrder>>
+
+    @PUT("reseller/orders/{id}/payment-sent")
+    suspend fun markResellerOrderPaymentSent(@Path("id") id: String): Response<ResellerOrder>
+
+    @POST("reseller/deposits")
+    suspend fun createResellerDeposit(@Body body: ResellerCreateDepositRequest): Response<ResellerDeposit>
+
+    @GET("reseller/deposits")
+    suspend fun getResellerDeposits(): Response<List<ResellerDeposit>>
+
+    @POST("reseller/withdrawals")
+    suspend fun createResellerWithdrawal(@Body body: ResellerCreateWithdrawalRequest): Response<ResellerWithdrawal>
+
+    @GET("reseller/withdrawals")
+    suspend fun getResellerWithdrawals(): Response<List<ResellerWithdrawal>>
+
+    @PUT("reseller/withdrawals/{id}/cancel")
+    suspend fun cancelResellerWithdrawal(@Path("id") id: String): Response<ResponseBody>
+
+    @GET("agent/sms-formats")
+    suspend fun getSmsFormats(): Response<List<SmsFormatDto>>
+
+    // Menu (interactive) package orders: the provider PIN, fetched only at
+    // the PIN step of a dial in progress. Never stored or logged.
+    @POST("agent/orders/{id}/ussd-pin")
+    suspend fun getUssdPin(@Path("id") id: String): Response<UssdPinResponse>
+
+    @GET("agent/orders/{id}/sim-balance-check")
+    suspend fun getSimBalanceCheck(@Path("id") id: String, @Query("simSlot") simSlot: Int? = null): Response<SimBalanceCheck>
+
+    @POST("agent/device-activation/status")
+    suspend fun getDeviceActivationStatus(@Body body: DeviceActivationStatusRequest): Response<DeviceActivationStatusResponse>
+}

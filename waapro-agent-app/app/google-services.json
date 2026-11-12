@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "621688221396",
+    "project_id": "waaproltd-fd9ee",
+    "storage_bucket": "waaproltd-fd9ee.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:621688221396:android:e676226c74005d34465541",
+        "android_client_info": {
+          "package_name": "com.waaproltd.agent"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAC9eVpN4qkVBOMmJmXP0O0ypc0jfhJek0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
