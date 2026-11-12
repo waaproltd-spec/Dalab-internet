@@ -64,7 +64,13 @@ fun SmsPermissionScreen(
                 Image(
                     painter = painterResource(com.dalab.internet.auth.SystemBrand.logo()),
                     contentDescription = null,
-                    modifier = Modifier.size(44.dp).background(DalabBrandFill, RoundedCornerShape(12.dp)).padding(4.dp),
+                    // White behind the WAAPRO LTD logo (its dark blue would
+                    // disappear on the brand fill); a system's own logo
+                    // keeps the brand fill as before.
+                    modifier = Modifier.size(44.dp).background(
+                        if (com.dalab.internet.auth.SystemBrand.logo() == com.dalab.internet.R.drawable.waapro_ltd_logo) androidx.compose.ui.graphics.Color.White else DalabBrandFill,
+                        RoundedCornerShape(12.dp),
+                    ).padding(4.dp),
                 )
                 Spacer(Modifier.width(10.dp))
                 Column {

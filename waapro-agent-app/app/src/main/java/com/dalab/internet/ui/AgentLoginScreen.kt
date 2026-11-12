@@ -8,7 +8,6 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
@@ -24,6 +23,10 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+import com.dalab.internet.R
 import com.dalab.internet.auth.HubLogin
 import com.dalab.internet.auth.HubLoginResult
 import com.dalab.internet.auth.SignedInSystem
@@ -72,13 +75,14 @@ fun AgentLoginScreen(onSignedIn: (SignedInSystem) -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Icon(
-            Icons.Filled.PhoneAndroid,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(72.dp),
+        // The official WAAPRO LTD logo, unchanged (res/drawable/waapro_ltd_logo.png).
+        Image(
+            painter = painterResource(R.drawable.waapro_ltd_logo),
+            contentDescription = "WAAPRO LTD",
+            modifier = Modifier.size(112.dp),
         )
-        Spacer(Modifier.height(12.dp))
+        Text("WAAPRO LTD", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, letterSpacing = 1.sp)
+        Spacer(Modifier.height(14.dp))
         Text("Agent App", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(6.dp))
         Text(
