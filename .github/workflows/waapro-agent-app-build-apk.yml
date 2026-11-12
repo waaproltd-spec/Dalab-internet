@@ -166,3 +166,24 @@ jobs:
             --title "Waapro Agent App ${{ steps.verify.outputs.version_name }} (${{ steps.verify.outputs.version_code }}) -- build #${{ github.run_number }} ($SHORT_SHA)" \
             --notes "Automated build from commit $SHORT_SHA on ${{ github.ref_name }}. Direct-installable APKs — no zip, no GitHub login needed. app-debug.apk is unminified (larger, matches the historically-installed build); app-release.apk is R8-shrunk (smaller) and signed with the release keystore — the two are NOT interchangeable updates for each other since they're signed with different keys. app-release.aab is the Android App Bundle for Play Console — Google Play requires this format (not a raw APK) for a Play Store upload/update; it's built from the exact same release-signed source as app-release.apk." \
             --target "${{ github.sha }}"
+
+      # A fixed download link that always holds the newest RELEASE APK (never
+      # the debug one) -- the dashboards' "Download Agent App" button points
+      # here: releases/download/waapro-agent-app-latest/AGENT-APP.apk.
+      - name: Update the fixed "latest release APK" link
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          LATEST="waapro-agent-app-latest"
+          cp waapro-agent-app/app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/AGENT-APP.apk"
+          TITLE="AGENT APP -- latest release ${{ steps.verify.outputs.version_name }} (${{ steps.verify.outputs.version_code }})"
+          if gh release view "$LATEST" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$LATEST" "$RUNNER_TEMP/AGENT-APP.apk" "$RUNNER_TEMP/agent-app-release.json" --clobber --repo "${{ github.repository }}"
+            gh release edit "$LATEST" --title "$TITLE" --repo "${{ github.repository }}"
+          else
+            gh release create "$LATEST" "$RUNNER_TEMP/AGENT-APP.apk" "$RUNNER_TEMP/agent-app-release.json" \
+              --repo "${{ github.repository }}" --title "$TITLE" --latest=false \
+              --notes "Always the newest release-signed AGENT APP. Download: AGENT-APP.apk" \
+              --target "${{ github.sha }}"
+          fi
