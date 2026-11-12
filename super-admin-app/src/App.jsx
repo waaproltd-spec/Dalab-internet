@@ -18426,6 +18426,7 @@ export default function AdminDashboard() {
 /** Small way back to the Admin Hub for people who have something to do there. */
 function HubSwitchButton({ label }) {
   return (
+    <>
     <button
       onClick={openHub}
       title="Back to the WAAPRO Admin Hub"
@@ -18433,6 +18434,9 @@ function HubSwitchButton({ label }) {
     >
       <span aria-hidden="true">⇄</span> {label}
     </button>
+    {/* Room under the side menu so this button never covers its last item. */}
+    <style>{'nav[aria-label="Main menu"]{padding-bottom:64px !important;box-sizing:border-box}'}</style>
+    </>
   );
 }
 
