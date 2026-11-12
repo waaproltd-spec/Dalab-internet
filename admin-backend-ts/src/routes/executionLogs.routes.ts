@@ -2,6 +2,7 @@ import { Router } from "express";
 import { query } from "../db/pool.js";
 import { requireStaff } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
+import { isInsufficientBalanceReply } from "../utils/simBalanceCheck.js";
 
 export const executionLogsRouter = Router();
 
@@ -40,5 +41,8 @@ executionLogsRouter.get("/admin/execution-logs", requireStaff(), async (req, res
   if (dateFrom) { args.push(dateFrom); sql += ` AND da.created_at >= $${args.length}`; }
   if (dateTo) { args.push(dateTo); sql += ` AND da.created_at <= $${args.length}`; }
   sql += ` ORDER BY da.order_id DESC, da.attempt_number ASC LIMIT 2000`;
-  sendJson(res, 200, await query(sql, args));
+  // balance_failure: a failed dial whose carrier reply says the SIM lacked
+  // balance, so the dashboard can label it (the reply itself is shown too).
+  const rows = await query<{ status: string; response_message: string | null }>(sql, args);
+  sendJson(res, 200, rows.map((r) => ({ ...r, balance_failure: r.status === "failed" && isInsufficientBalanceReply(r.response_message) })));
 });

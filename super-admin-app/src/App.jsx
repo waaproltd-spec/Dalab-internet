@@ -9,9 +9,12 @@ import {
   WifiOff, BatteryFull, BatteryMedium, BatteryLow, BatteryWarning,
   Image as ImageIcon, Upload, MessageSquare, Database, Activity, History, CreditCard, PlayCircle, Percent,
   MessageCircle, Lightbulb, Share2, KeyRound, ExternalLink, PiggyBank, Landmark, Trash, ArrowLeftRight,
-  ShoppingBag, Boxes, Award
+  ShoppingBag, Boxes, Award, Sun, Moon, Languages, Trophy
 } from "lucide-react";
+import { useTheme, useLang, setTheme, setLang } from "./prefs.js";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
+import { HUB_URL, takeHubAssertion, goToHub, openHub, signOutToHub, hubNav, watchSystemSuspension, loadHubPayment, acknowledgeHubPayment, payNowHubPayment } from "./hubSession.js";
+import HubPaymentBanner, { usePaymentStatus } from "./HubPaymentBanner.jsx";
 
 // ---- DALAB INTERNET / Admin design tokens ----
 // INDIGO is the shared brand color, kept under its old name (avoids a
@@ -19,14 +22,14 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, 
 // value as the Customer App's kDarkAzure and the Agent App's colors.xml.
 // GREEN/amber/red/blue below stay separate: functional status colors, not
 // brand.
-const INK = "#0B1240";
-const INDIGO = "#003152";
-const INDIGO_SOFT = "#EEF0FB";
-const GREEN = "#16A34A";
-const SLATE = "#5B6389";
-const MUTE = "#8791B5";
-const BORDER = "#E7EAF6";
-const BG = "#F5F6FB";
+const INK = "var(--c-0b1240)";
+const INDIGO = "var(--c-003152)";
+const INDIGO_SOFT = "var(--c-eef0fb)";
+const GREEN = "var(--c-16a34a)";
+const SLATE = "var(--c-5b6389)";
+const MUTE = "var(--c-8791b5)";
+const BORDER = "var(--c-e7eaf6)";
+const BG = "var(--c-f5f6fb)";
 
 // ---- Mock data ----
 const LOGOS = {
@@ -136,6 +139,7 @@ async function dalabAdminApiRequest(path, { method = "GET", body, _isRetry = fal
 // stubs, just unreachable until DALAB_API_BASE_URL points at a deployed server.
 const DalabAdminApi = {
   login: (email, password) => dalabAdminApiRequest("/admin/auth/login", { method: "POST", body: { email, password } }),
+  hubSso: (assertion) => dalabAdminApiRequest("/admin/auth/hub-sso", { method: "POST", body: { assertion } }),
   forgotPassword: (email) => dalabAdminApiRequest("/admin/auth/forgot-password", { method: "POST", body: { email } }),
   resetPassword: (token, newPassword) => dalabAdminApiRequest("/admin/auth/reset-password", { method: "POST", body: { token, newPassword } }),
   changePassword: (currentPassword, newPassword) => dalabAdminApiRequest("/admin/auth/change-password", { method: "POST", body: { currentPassword, newPassword } }),
@@ -166,6 +170,14 @@ const DalabAdminApi = {
   createPackage: (body) => dalabAdminApiRequest("/admin/packages", { method: "POST", body }),
   updatePackage: (id, body) => dalabAdminApiRequest(`/admin/packages/${id}`, { method: "PUT", body }),
   deletePackage: (id) => dalabAdminApiRequest(`/admin/packages/${id}`, { method: "DELETE" }),
+  deletePackagePermanent: (id) => dalabAdminApiRequest(`/admin/packages/${id}/permanent`, { method: "DELETE" }),
+  listInteractiveServices: () => dalabAdminApiRequest("/admin/interactive-services"),
+  getInteractiveService: (id) => dalabAdminApiRequest(`/admin/interactive-services/${id}`),
+  updateInteractiveService: (id, body) => dalabAdminApiRequest(`/admin/interactive-services/${id}`, { method: "PUT", body }),
+  setInteractiveServiceActive: (id, active) => dalabAdminApiRequest(`/admin/interactive-services/${id}/active`, { method: "PUT", body: { active } }),
+  createInteractiveService: (body) => dalabAdminApiRequest("/admin/interactive-services", { method: "POST", body }),
+  duplicateInteractiveService: (id, body) => dalabAdminApiRequest(`/admin/interactive-services/${id}/duplicate`, { method: "POST", body }),
+  deleteInteractiveService: (id) => dalabAdminApiRequest(`/admin/interactive-services/${id}`, { method: "DELETE" }),
   getPackagesMissingTemplate: () => dalabAdminApiRequest("/admin/packages/missing-template"),
   // One icon per package, shown in the Customer App's package list --
   // uploaded as a data URI (base64), same as Promo Images/Shop products.
@@ -231,6 +243,14 @@ const DalabAdminApi = {
   // (a post can be text-only), unlike Promo Images where it's the whole
   // point — still a data URI for the same reason as above.
   getNalaSocoPosts: () => dalabAdminApiRequest("/admin/nala-soco"),
+  getFootballContests: (status) => dalabAdminApiRequest(`/admin/football/contests${status ? `?status=${status}` : ""}`),
+  getFootballContest: (id) => dalabAdminApiRequest(`/admin/football/contests/${id}`),
+  disputeFootballContest: (id, reason) => dalabAdminApiRequest(`/admin/football/contests/${id}/dispute`, { method: "POST", body: { reason } }),
+  resolveFootballContest: (id, body) => dalabAdminApiRequest(`/admin/football/contests/${id}/resolve`, { method: "POST", body }),
+  getFootballAgents: () => dalabAdminApiRequest("/admin/football/agents"),
+  setFootballAgent: (id, enabled) => dalabAdminApiRequest(`/admin/football/agents/${id}`, { method: "PUT", body: { enabled } }),
+  getFootballRewards: () => dalabAdminApiRequest("/admin/football/rewards"),
+  getCleanupRuns: () => dalabAdminApiRequest("/admin/football/cleanup-runs"),
   createNalaSocoPost: (body) => dalabAdminApiRequest("/admin/nala-soco", { method: "POST", body }),
   updateNalaSocoPost: (id, body) => dalabAdminApiRequest(`/admin/nala-soco/${id}`, { method: "PUT", body }),
   deleteNalaSocoPost: (id) => dalabAdminApiRequest(`/admin/nala-soco/${id}`, { method: "DELETE" }),
@@ -287,6 +307,12 @@ const DalabAdminApi = {
   deleteAgentDevice: (id) => dalabAdminApiRequest(`/admin/agent-devices/${id}`, { method: "DELETE" }),
   setCompanyAutoProcess: (companyId, enabled) => dalabAdminApiRequest(`/admin/companies/${companyId}/auto-process`, { method: "PUT", body: { enabled } }),
   getAgentsList: () => dalabAdminApiRequest("/admin/agents"),
+  // Device Activation (deviceActivation.routes.ts) -- agents.manage, checked on the server.
+  checkDeviceActivationCode: (code) => dalabAdminApiRequest("/admin/device-activations/check", { method: "POST", body: { code } }),
+  approveDeviceActivation: (id, code) => dalabAdminApiRequest(`/admin/device-activations/${id}/approve`, { method: "POST", body: { code } }),
+  rejectDeviceActivation: (id) => dalabAdminApiRequest(`/admin/device-activations/${id}/reject`, { method: "POST", body: {} }),
+  revokeDeviceActivation: (id) => dalabAdminApiRequest(`/admin/device-activations/${id}/revoke`, { method: "POST", body: {} }),
+  getDeviceActivations: (status) => dalabAdminApiRequest(`/admin/device-activations${status ? `?status=${status}` : ""}`),
   createAgent: (body) => dalabAdminApiRequest("/admin/agents", { method: "POST", body }),
   updateAgent: (id, body) => dalabAdminApiRequest(`/admin/agents/${id}`, { method: "PUT", body }),
   suspendAgent: (id) => dalabAdminApiRequest(`/admin/agents/${id}/suspend`, { method: "PUT" }),
@@ -338,6 +364,10 @@ const DalabAdminApi = {
   },
   getPaymentTransactionTimeline: (id) => dalabAdminApiRequest(`/admin/payment-transactions/${id}/timeline`),
   getStuckPaymentCount: (minutes) => dalabAdminApiRequest(`/admin/payment-transactions/stuck-count${minutes ? `?minutes=${minutes}` : ""}`),
+  getUnmatchedPaymentSmsCount: () => dalabAdminApiRequest("/admin/sms-logs/unmatched-payment-count"),
+  getDeviceHealthIssues: () => dalabAdminApiRequest("/admin/agent-devices/health-issues"),
+  resolveDialAttempt: (attemptId, delivered, note) =>
+    dalabAdminApiRequest(`/admin/dial-attempts/${attemptId}/resolve`, { method: "POST", body: JSON.stringify({ delivered, note }) }),
   getDuplicateBlockedCount: (minutes) => dalabAdminApiRequest(`/admin/payment-transactions/duplicate-count${minutes ? `?minutes=${minutes}` : ""}`),
   // Commission Management — the cut the company/Super Admin earns from a
   // completed order, calculated automatically server-side; this dashboard
@@ -403,6 +433,11 @@ const DalabAdminApi = {
     const qs = new URLSearchParams(Object.fromEntries(Object.entries({ from, to }).filter(([, v]) => v))).toString();
     return dalabAdminApiRequest(`/admin/finance/overview${qs ? `?${qs}` : ""}`);
   },
+  // Shirkadda Xisaab: one company's books for a period (finance.routes.ts).
+  getCompanyAccounts: (params = {}) => {
+    const qs = new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== ""))).toString();
+    return dalabAdminApiRequest(`/admin/finance/company-accounts${qs ? `?${qs}` : ""}`);
+  },
   getFinanceExpenses: (filters = {}) => {
     const qs = new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([, v]) => v))).toString();
     return dalabAdminApiRequest(`/admin/finance/expenses${qs ? `?${qs}` : ""}`);
@@ -432,6 +467,7 @@ const DalabAdminApi = {
   verifyExchangeOrder: (id) => dalabAdminApiRequest(`/admin/exchange/orders/${id}/verify`, { method: "POST" }),
   reverseExchangeOrder: (id) => dalabAdminApiRequest(`/admin/exchange/orders/${id}/reverse`, { method: "POST" }),
   retryExchangePayout: (id) => dalabAdminApiRequest(`/admin/exchange/orders/${id}/retry-payout`, { method: "POST" }),
+  markExchangePaid: (id) => dalabAdminApiRequest(`/admin/exchange/orders/${id}/mark-paid`, { method: "POST" }),
   // Which real SMS sender ID(s) each provider network (Hormuud EVC Plus,
   // Somtel eDahab, Somnet EVC Plus, ...) is allowed to send from — the Agent
   // App's PaymentSmsParsers/ExchangePayoutSentParsers fetch and cache this
@@ -441,6 +477,15 @@ const DalabAdminApi = {
   createSmsSenderId: (body) => dalabAdminApiRequest("/admin/sms-sender-ids", { method: "POST", body }),
   setSmsSenderIdStatus: (id, enabled) => dalabAdminApiRequest(`/admin/sms-sender-ids/${id}/status`, { method: "PUT", body: { enabled } }),
   deleteSmsSenderId: (id) => dalabAdminApiRequest(`/admin/sms-sender-ids/${id}`, { method: "DELETE" }),
+  // SMS Format Update (smsFormats.routes.ts) -- Super Admin only, re-tested on the server before activation.
+  getSmsFormats: () => dalabAdminApiRequest("/admin/sms-formats"),
+  // Agent App Release APK (agentAppReleases.routes.ts) -- devices.manage.
+  getAgentAppReleases: () => dalabAdminApiRequest("/admin/agent-app/releases"),
+  checkAgentAppRelease: () => dalabAdminApiRequest("/admin/agent-app/releases/check", { method: "POST" }),
+  testSmsFormat: (body) => dalabAdminApiRequest("/admin/sms-formats/test", { method: "POST", body }),
+  saveSmsFormat: (body) => dalabAdminApiRequest("/admin/sms-formats", { method: "POST", body }),
+  activateSmsFormat: (id) => dalabAdminApiRequest(`/admin/sms-formats/${id}/activate`, { method: "POST" }),
+  deactivateSmsFormat: (provider) => dalabAdminApiRequest(`/admin/sms-formats/providers/${provider}/deactivate`, { method: "POST" }),
   // Resellers — wholesale users with an admin-issued ID + 8-digit PIN (no
   // self-registration) and a single overall wallet balance. Matches
   // admin-backend-ts/src/routes/resellers.routes.ts, resellerOrders.routes.ts,
@@ -628,6 +673,7 @@ const PERMISSION_OPTIONS = [
   { key: "support.manage", label: "Handle Agent Support conversations" },
   { key: "shop.manage", label: "Manage Shop (categories, products, orders)" },
   { key: "vipNumbers.manage", label: "Manage VIP Numbers (inventory, orders)" },
+  { key: "football.manage", label: "Ciyaaraha (football contests, disputes, agent access)" },
 ];
 
 // Normalizes a GET /admin/companies row into the shape every section of this
@@ -804,9 +850,9 @@ function ConnectionStatusBar() {
 
   if (!DALAB_API_ENABLED) return null;
 
-  const sseTone = sseState === "connected" ? GREEN : sseState === "connecting" ? "#A9720A" : "#C81E2C";
+  const sseTone = sseState === "connected" ? GREEN : sseState === "connecting" ? "var(--c-a9720a)" : "var(--c-c81e2c)";
   const sseLabel = sseState === "connected" ? "Connected" : sseState === "connecting" ? "Reconnecting…" : "Disconnected";
-  const dbTone = dbState === "connected" ? GREEN : dbState === "checking" ? "#A9720A" : "#C81E2C";
+  const dbTone = dbState === "connected" ? GREEN : dbState === "checking" ? "var(--c-a9720a)" : "var(--c-c81e2c)";
   const dbLabel = dbState === "connected" ? "Session active" : dbState === "checking" ? "Checking…" : "Unreachable";
   const overallLive = sseState === "connected" && dbState === "connected";
 
@@ -821,14 +867,14 @@ function ConnectionStatusBar() {
   );
 
   return (
-    <div style={{
-      display: "flex", alignItems: "stretch", flexWrap: "wrap", background: "#fff", borderBottom: `1px solid ${BORDER}`,
+    <div className="dl-statusbar" style={{
+      display: "flex", alignItems: "stretch", flexWrap: "wrap", background: "var(--c-surface)", borderBottom: `1px solid ${BORDER}`,
       padding: "8px 10px 8px 0",
     }}>
       <Item icon={Radio} label="SSE LIVE STREAM" value={sseLabel} tone={sseTone} />
       <Item icon={Database} label="DATABASE SESSION" value={dbLabel} tone={dbTone} />
       <Item icon={Activity} label="SYNC STATUS" value={`${eventCount} update${eventCount === 1 ? "" : "s"} received`} tone={overallLive ? GREEN : undefined} />
-      <Item icon={overallLive ? Wifi : WifiOff} label="LIVE UPDATES" value={overallLive ? "Receiving" : "Paused"} tone={overallLive ? GREEN : "#A9720A"} />
+      <Item icon={overallLive ? Wifi : WifiOff} label="LIVE UPDATES" value={overallLive ? "Receiving" : "Paused"} tone={overallLive ? GREEN : "var(--c-a9720a)"} />
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 16px" }}>
         <Clock3 size={14} color={MUTE} />
         <div>
@@ -841,10 +887,10 @@ function ConnectionStatusBar() {
 }
 
 const initialCompanies = [
-  { id: "hormuud", name: "Hormuud", group: 1, color: "#16A34A", status: "enabled", payNumber: "610338686", gateway: "EVC Plus" },
-  { id: "somnet", name: "Somnet", group: 1, color: "#1D4ED8", status: "enabled", payNumber: "685115555", gateway: "JEEB" },
-  { id: "somtel", name: "Somtel", group: 2, color: "#F2C200", status: "enabled", payNumber: "620338686", gateway: "eDahab" },
-  { id: "amtel", name: "Amtel", group: 2, color: "#C81E2C", status: "disabled", payNumber: "252-68-XXXXXXX", gateway: "Manual" },
+  { id: "hormuud", name: "Hormuud", group: 1, color: "var(--c-16a34a)", status: "enabled", payNumber: "610338686", gateway: "EVC Plus" },
+  { id: "somnet", name: "Somnet", group: 1, color: "var(--c-1d4ed8)", status: "enabled", payNumber: "685115555", gateway: "JEEB" },
+  { id: "somtel", name: "Somtel", group: 2, color: "var(--c-f2c200)", status: "enabled", payNumber: "620338686", gateway: "eDahab" },
+  { id: "amtel", name: "Amtel", group: 2, color: "var(--c-c81e2c)", status: "disabled", payNumber: "252-68-XXXXXXX", gateway: "Manual" },
 ];
 
 const initialPackages = [
@@ -857,32 +903,32 @@ const initialPackages = [
 ];
 
 const initialOrders = [
-  { id: "DLB284739201", customerName: "Yaaain Ahmed", senderPhone: "252611234567", receiverPhone: "252611234567", companyName: "Hormuud", companyColor: "#16A34A", packageName: "Anfac Plus 2GB", amount: 0.89, status: "completed", paymentMethod: "EVC Plus", createdAt: "2026-07-22 14:32:07", completedAt: "2026-07-22 14:41:02", macaashEarned: 8 },
-  { id: "DLB284739844", customerName: "Faarax Nur", senderPhone: "252639812201", receiverPhone: "252639812201", companyName: "Somtel", companyColor: "#F2C200", packageName: "eDahab Max 6GB", amount: 2.1, status: "pending", paymentMethod: "eDahab", createdAt: "2026-07-24 09:14:52", completedAt: null, macaashEarned: 0 },
-  { id: "DLB284712093", customerName: "Hodan Ali", senderPhone: "252657714402", receiverPhone: "252657714402", companyName: "Somnet", companyColor: "#1D4ED8", packageName: "Qanciye Plus 1.2GB", amount: 0.99, status: "failed", paymentMethod: "Jeeb", createdAt: "2026-07-24 18:47:21", completedAt: null, macaashEarned: 0 },
-  { id: "DLB284798821", customerName: "Cabdi Rashiid", senderPhone: "252685529910", receiverPhone: "252611009988", companyName: "Amtel", companyColor: "#C81E2C", packageName: "Amtel Family 4GB", amount: 1.5, status: "cancelled", paymentMethod: "Manual", createdAt: "2026-07-23 11:02:15", completedAt: null, macaashEarned: 0 },
-  { id: "DLB284755102", customerName: "Ifrah Warsame", senderPhone: "252619001122", receiverPhone: "252619001122", companyName: "Hormuud", companyColor: "#16A34A", packageName: "Anfac Plus 5GB", amount: 1.78, status: "in_progress", paymentMethod: "EVC Plus", createdAt: "2026-07-25 07:58:44", completedAt: null, macaashEarned: 17 },
+  { id: "DLB284739201", customerName: "Yaaain Ahmed", senderPhone: "252611234567", receiverPhone: "252611234567", companyName: "Hormuud", companyColor: "var(--c-16a34a)", packageName: "Anfac Plus 2GB", amount: 0.89, status: "completed", paymentMethod: "EVC Plus", createdAt: "2026-07-22 14:32:07", completedAt: "2026-07-22 14:41:02", macaashEarned: 8 },
+  { id: "DLB284739844", customerName: "Faarax Nur", senderPhone: "252639812201", receiverPhone: "252639812201", companyName: "Somtel", companyColor: "var(--c-f2c200)", packageName: "eDahab Max 6GB", amount: 2.1, status: "pending", paymentMethod: "eDahab", createdAt: "2026-07-24 09:14:52", completedAt: null, macaashEarned: 0 },
+  { id: "DLB284712093", customerName: "Hodan Ali", senderPhone: "252657714402", receiverPhone: "252657714402", companyName: "Somnet", companyColor: "var(--c-1d4ed8)", packageName: "Qanciye Plus 1.2GB", amount: 0.99, status: "failed", paymentMethod: "Jeeb", createdAt: "2026-07-24 18:47:21", completedAt: null, macaashEarned: 0 },
+  { id: "DLB284798821", customerName: "Cabdi Rashiid", senderPhone: "252685529910", receiverPhone: "252611009988", companyName: "Amtel", companyColor: "var(--c-c81e2c)", packageName: "Amtel Family 4GB", amount: 1.5, status: "cancelled", paymentMethod: "Manual", createdAt: "2026-07-23 11:02:15", completedAt: null, macaashEarned: 0 },
+  { id: "DLB284755102", customerName: "Ifrah Warsame", senderPhone: "252619001122", receiverPhone: "252619001122", companyName: "Hormuud", companyColor: "var(--c-16a34a)", packageName: "Anfac Plus 5GB", amount: 1.78, status: "in_progress", paymentMethod: "EVC Plus", createdAt: "2026-07-25 07:58:44", completedAt: null, macaashEarned: 17 },
 ];
 
 const initialUssdTemplates = [
-  { id: "t1", companyId: "amtel", companyName: "Amtel", companyColor: "#C81E2C", serviceName: "Tanaad GB", ussdCode: "*914*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t2", companyId: "amtel", companyName: "Amtel", companyColor: "#C81E2C", serviceName: "Bulaal Unlimited Data", ussdCode: "*918*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t3", companyId: "somnet", companyName: "Somnet", companyColor: "#1D4ED8", serviceName: "Kaafi Unlimited Data & Voice", ussdCode: "*834*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t4", companyId: "somnet", companyName: "Somnet", companyColor: "#1D4ED8", serviceName: "Kaafi Voice", ussdCode: "*829*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t5", companyId: "somnet", companyName: "Somnet", companyColor: "#1D4ED8", serviceName: "Qanciye Plus", ussdCode: "*830*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t6", companyId: "somnet", companyName: "Somnet", companyColor: "#1D4ED8", serviceName: "Unlimited Data & Voice", ussdCode: "*834*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t7", companyId: "somnet", companyName: "Somnet", companyColor: "#1D4ED8", serviceName: "5G", ussdCode: "*827*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t8", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "Anfac", ussdCode: "*737*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t9", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "Anfac Plus", ussdCode: "*738*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t10", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "Unlimited Data & Voice", ussdCode: "*729*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t11", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "Unlimited Calls", ussdCode: "*741*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t12", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "5G Plus", ussdCode: "*727*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t13", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "ADSL Plus", ussdCode: "*729*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t14", companyId: "hormuud", companyName: "Hormuud", companyColor: "#16A34A", serviceName: "Kaar Kuhadal", ussdCode: "*727*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t15", companyId: "somtel", companyName: "Somtel", companyColor: "#F2C200", serviceName: "Unlimited Data & Voice", ussdCode: "*831*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t16", companyId: "somtel", companyName: "Somtel", companyColor: "#F2C200", serviceName: "No Expire", ussdCode: "*830*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t17", companyId: "somtel", companyName: "Somtel", companyColor: "#F2C200", serviceName: "Unlimited Calls", ussdCode: "*834*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
-  { id: "t18", companyId: "somtel", companyName: "Somtel", companyColor: "#F2C200", serviceName: "Voice", ussdCode: "*832*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t1", companyId: "amtel", companyName: "Amtel", companyColor: "var(--c-c81e2c)", serviceName: "Tanaad GB", ussdCode: "*914*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t2", companyId: "amtel", companyName: "Amtel", companyColor: "var(--c-c81e2c)", serviceName: "Bulaal Unlimited Data", ussdCode: "*918*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t3", companyId: "somnet", companyName: "Somnet", companyColor: "var(--c-1d4ed8)", serviceName: "Kaafi Unlimited Data & Voice", ussdCode: "*834*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t4", companyId: "somnet", companyName: "Somnet", companyColor: "var(--c-1d4ed8)", serviceName: "Kaafi Voice", ussdCode: "*829*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t5", companyId: "somnet", companyName: "Somnet", companyColor: "var(--c-1d4ed8)", serviceName: "Qanciye Plus", ussdCode: "*830*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t6", companyId: "somnet", companyName: "Somnet", companyColor: "var(--c-1d4ed8)", serviceName: "Unlimited Data & Voice", ussdCode: "*834*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t7", companyId: "somnet", companyName: "Somnet", companyColor: "var(--c-1d4ed8)", serviceName: "5G", ussdCode: "*827*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t8", companyId: "hormuud", companyName: "Hormuud", companyColor: "var(--c-16a34a)", serviceName: "Anfac", ussdCode: "*737*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t9", companyId: "hormuud", companyName: "Hormuud", companyColor: "var(--c-16a34a)", serviceName: "Anfac Plus", ussdCode: "*738*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t10", companyId: "hormuud", companyName: "Hormuud", companyColor: "var(--c-16a34a)", serviceName: "Unlimited Data & Voice", ussdCode: "*729*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t11", companyId: "hormuud", companyName: "Hormuud", companyColor: "var(--c-16a34a)", serviceName: "Unlimited Calls", ussdCode: "*741*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t12", companyId: "hormuud", companyName: "Hormuud", companyColor: "var(--c-16a34a)", serviceName: "5G Plus", ussdCode: "*727*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t13", companyId: "hormuud", companyName: "Hormuud", companyColor: "var(--c-16a34a)", serviceName: "ADSL Plus", ussdCode: "*729*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t14", companyId: "hormuud", companyName: "Hormuud", companyColor: "var(--c-16a34a)", serviceName: "Kaar Kuhadal", ussdCode: "*727*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t15", companyId: "somtel", companyName: "Somtel", companyColor: "var(--c-f2c200)", serviceName: "Unlimited Data & Voice", ussdCode: "*831*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t16", companyId: "somtel", companyName: "Somtel", companyColor: "var(--c-f2c200)", serviceName: "No Expire", ussdCode: "*830*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t17", companyId: "somtel", companyName: "Somtel", companyColor: "var(--c-f2c200)", serviceName: "Unlimited Calls", ussdCode: "*834*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
+  { id: "t18", companyId: "somtel", companyName: "Somtel", companyColor: "var(--c-f2c200)", serviceName: "Voice", ussdCode: "*832*{number}*{amount}*{pin}#", status: "enabled", notes: "" },
 ];
 
 const initialCustomers = [
@@ -919,22 +965,27 @@ const orderBreakdown = [
 const NAV = [
   { id: "overview", label: "Overview", icon: LayoutGrid },
   { id: "financial-overview", label: "Financial Overview", icon: PiggyBank, superAdminOnly: true },
+  { id: "company-accounts", label: "Shirkadda Xisaab", icon: Building2, permission: "finance.manage" },
   { id: "balance-dashboard", label: "Balance Dashboard", icon: DollarSign, permission: "devices.manage" },
   { id: "companies", label: "Companies", icon: Building2, permission: "companies.manage" },
   { id: "payment-numbers", label: "Payment Numbers", icon: Wallet, permission: "companies.manage" },
   { id: "provider-numbers", label: "Provider Numbers", icon: Radio, permission: "companies.manage" },
   { id: "payment-wallets", label: "Payment Wallets", icon: CreditCard, superAdminOnly: true },
   { id: "packages", label: "Packages & Pricing", icon: Package, permission: "packages.manage" },
+  { id: "dhameys-plus", label: "USSD Services", icon: Radio, permission: "packages.manage" },
   { id: "categories", label: "Categories", icon: Tags, permission: "categories.manage" },
   { id: "orders", label: "Orders", icon: ShoppingCart, permission: "orders.manage" },
   { id: "offline", label: "Offline (Rukumo)", icon: WifiOff, permission: "orders.manage" },
   { id: "customers", label: "Customers", icon: Users, permission: "customers.manage" },
   { id: "agents", label: "Agents", icon: UserCog, permission: "agents.manage" },
+  { id: "device-activation", label: "Device Activation", icon: Smartphone, permission: "agents.manage" },
   { id: "notifications", label: "Notifications", icon: Bell, permission: "settings.manage" },
   { id: "feedback", label: "Feedback & Suggestions", icon: Lightbulb, permission: "feedback.manage" },
   { id: "support", label: "Agent Support", icon: MessageCircle, permission: "support.manage" },
   { id: "promo-images", label: "Promo Images", icon: ImageIcon, superAdminOnly: true },
   { id: "nala-soco", label: "Nala Soco", icon: Share2, permission: "settings.manage" },
+  { id: "ciyaaraha", label: "Ciyaaraha", icon: Trophy, permission: "football.manage" },
+  { id: "agent-app-release", label: "Agent App Release APK", icon: Download, permission: "devices.manage" },
   { id: "devices", label: "Device & USSD", icon: SmartphoneNfc, superAdminOnly: true },
   { id: "sms-logs", label: "SMS Monitor", icon: MessageSquare, permission: "devices.manage" },
   { id: "payment-transactions", label: "Payment Transactions", icon: Activity, permission: "orders.manage" },
@@ -944,6 +995,7 @@ const NAV = [
   { id: "shop", label: "Shop", icon: ShoppingBag, permission: "shop.manage" },
   { id: "vip-numbers", label: "VIP Numbers", icon: Award, permission: "vipNumbers.manage" },
   { id: "sms-sender-ids", label: "SMS Sender IDs", icon: MessageSquare, superAdminOnly: true },
+  { id: "sms-format-update", label: "SMS Format Update", icon: MessageSquare, superAdminOnly: true },
   { id: "referrals", label: "Referral Rewards", icon: Share2, permission: "referrals.manage" },
   { id: "pending-recovery", label: "Pending Recovery", icon: RotateCcw, permission: "orders.manage" },
   { id: "execution-logs", label: "Execution Logs", icon: Terminal, permission: "devices.manage" },
@@ -956,7 +1008,7 @@ const NAV = [
 function Logo({ size = 34 }) {
   return (
     <img
-      src="/logo.png"
+      src={`${import.meta.env.BASE_URL}logo.png`}
       alt="Dalab Internet"
       width={size}
       height={size}
@@ -967,12 +1019,12 @@ function Logo({ size = 34 }) {
 
 function Badge({ children, tone = "neutral" }) {
   const tones = {
-    neutral: { bg: "#EEF0FB", fg: INDIGO },
-    green: { bg: "#E4F7EA", fg: GREEN },
-    amber: { bg: "#FFF4D9", fg: "#A9720A" },
-    red: { bg: "#FCE7E8", fg: "#C81E2C" },
-    blue: { bg: "#E5EBFF", fg: "#1D4ED8" },
-    gray: { bg: "#F0F1F5", fg: "#5B6389" },
+    neutral: { bg: "var(--c-eef0fb)", fg: INDIGO },
+    green: { bg: "var(--c-e4f7ea)", fg: GREEN },
+    amber: { bg: "var(--c-fff4d9)", fg: "var(--c-a9720a)" },
+    red: { bg: "var(--c-fce7e8)", fg: "var(--c-c81e2c)" },
+    blue: { bg: "var(--c-e5ebff)", fg: "var(--c-1d4ed8)" },
+    gray: { bg: "var(--c-f0f1f5)", fg: "var(--c-5b6389)" },
   };
   const t = tones[tone];
   return (
@@ -1082,6 +1134,13 @@ function displayOrderTone(order) {
 // to the caller's default text) while the status hasn't loaded yet.
 function waitingForDeviceMessage(deliveryStatus) {
   if (!deliveryStatus) return null;
+  // Newer servers explain it from the ASSIGNED SIM's own state (an order is
+  // never moved to another phone or SIM).
+  if (deliveryStatus.waitingReason) return deliveryStatus.waitingReason;
+  if (deliveryStatus.assigned) {
+    const a = deliveryStatus.assigned;
+    return `Verified and USSD generated — waiting on ${a.deviceName || a.deviceId} · SIM ${a.simSlot} to dial it. This should happen automatically within a few minutes.`;
+  }
   if (!deliveryStatus.hasRouting) return "No device is configured to handle payments for this provider.";
   if (deliveryStatus.device?.stale) {
     const seen = deliveryStatus.device.lastHeartbeatAt ? formatDateTime(deliveryStatus.device.lastHeartbeatAt) : "never";
@@ -1092,7 +1151,7 @@ function waitingForDeviceMessage(deliveryStatus) {
 
 function Card({ children, style }) {
   return (
-    <div style={{ background: "#fff", borderRadius: 16, border: `1px solid ${BORDER}`, boxShadow: "0 2px 10px rgba(20,30,90,0.04)", ...style }}>
+    <div style={{ background: "var(--c-surface)", borderRadius: 16, border: `1px solid ${BORDER}`, boxShadow: "0 2px 10px rgba(20,30,90,0.04)", ...style }}>
       {children}
     </div>
   );
@@ -1100,9 +1159,9 @@ function Card({ children, style }) {
 
 function Button({ children, onClick, variant = "primary", icon: Icon, style, disabled, spin }) {
   const variants = {
-    primary: { background: `linear-gradient(90deg,${INDIGO},#2A3FC0)`, color: "#fff", border: "none" },
-    ghost: { background: "#fff", color: INDIGO, border: `1px solid ${BORDER}` },
-    danger: { background: "#fff", color: "#C81E2C", border: "1px solid #F3D3D6" },
+    primary: { background: `linear-gradient(90deg,${INDIGO},var(--c-2a3fc0))`, color: "#fff", border: "none" },
+    ghost: { background: "var(--c-surface)", color: INDIGO, border: `1px solid ${BORDER}` },
+    danger: { background: "var(--c-surface)", color: "var(--c-c81e2c)", border: "1px solid var(--c-f3d3d6)" },
     subtle: { background: INDIGO_SOFT, color: INDIGO, border: "none" },
   };
   return (
@@ -1124,7 +1183,7 @@ function Button({ children, onClick, variant = "primary", icon: Icon, style, dis
 function Modal({ title, onClose, children, width = 420 }) {
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(11,18,64,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 16 }}>
-      <div style={{ background: "#fff", borderRadius: 18, width, maxWidth: "100%", maxHeight: "88vh", overflowY: "auto", padding: 22 }}>
+      <div style={{ background: "var(--c-surface)", borderRadius: 18, width, maxWidth: "100%", maxHeight: "88vh", overflowY: "auto", padding: 22 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
           <div style={{ fontWeight: 800, fontSize: 16, color: INK }}>{title}</div>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer" }}>
@@ -1156,24 +1215,37 @@ const inputStyle = {
 function Overview({ companies, orders }) {
   const [liveStats, setLiveStats] = useState(null);
 
-  // Real backend call — /admin/dashboard/stats currently returns totals for
-  // sales/pending/successful/failed/active-customers (see dalab-backend.zip,
-  // src/routes/orders.js). It doesn't yet break sales out by daily/weekly/
-  // monthly/yearly/profit the way the mock below does, so those five stay
-  // mock-derived even in live mode until the backend grows that endpoint —
-  // called out explicitly rather than silently faked.
+  // Live mode: every card and both charts come from /admin/dashboard/stats
+  // (completed, non-reversed orders; Somalia time). The mock numbers below
+  // are only for the no-backend demo build. Refreshes on the order stream.
+  const [statsError, setStatsError] = useState("");
   useEffect(() => {
     if (!DALAB_API_ENABLED) return;
-    DalabAdminApi.getDashboardStats().then(setLiveStats).catch((err) => {
-      console.error("getDashboardStats failed, showing mock data:", err.message);
-    });
+    const load = () => DalabAdminApi.getDashboardStats()
+      .then((s) => { setLiveStats(s); setStatsError(""); })
+      .catch((err) => setStatsError(err.message || "Could not load the dashboard figures."));
+    load();
+    const unsubscribe = subscribeOrderEvents("/admin/orders/stream", { onEvent: load });
+    return () => unsubscribe();
   }, []);
 
   const stats = useMemo(() => {
     const today = orders.filter((o) => (o.createdAt || "").startsWith("2026-07-25"));
     const total = orders.reduce((s, o) => s + o.amount, 0);
+    if (DALAB_API_ENABLED) {
+      const v = (k) => (liveStats ? Number(liveStats[k] ?? 0) : null);
+      const m = (k) => (v(k) == null ? "…" : v(k).toFixed(2));
+      return {
+        total: m("totalSales"), daily: m("dailySales"), weekly: m("weeklySales"), monthly: m("monthlySales"),
+        yearly: m("yearlySales"), profit: m("profit"),
+        active: liveStats ? liveStats.activeCustomers : "…",
+        pending: liveStats ? liveStats.pendingOrders : "…",
+        success: liveStats ? liveStats.successfulOrders : "…",
+        failed: liveStats ? liveStats.failedOrders : "…",
+      };
+    }
     return {
-      total: (liveStats ? liveStats.totalSales : total).toFixed(2),
+      total: total.toFixed(2),
       daily: today.reduce((s, o) => s + o.amount, 0).toFixed(2),
       weekly: (total * 0.6).toFixed(2),
       monthly: (total * 2.3).toFixed(2),
@@ -1186,14 +1258,24 @@ function Overview({ companies, orders }) {
     };
   }, [orders, liveStats]);
 
+  const weekChart = DALAB_API_ENABLED
+    ? (liveStats?.salesLast7Days || []).map((d) => ({
+        day: new Date(`${d.day}T12:00:00`).toLocaleDateString("en-GB", { weekday: "short" }),
+        sales: Number(d.sales.toFixed(2)),
+      }))
+    : salesTrend;
+  const companyChart = DALAB_API_ENABLED
+    ? (liveStats?.completedOrdersByCompany || []).map((c) => ({ name: c.name, value: c.orders }))
+    : orderBreakdown;
+
   const cards = [
     { label: "Total sales", value: `$${stats.total}`, icon: DollarSign, tone: "green" },
     { label: "Daily sales", value: `$${stats.daily}`, icon: TrendingUp, tone: "neutral" },
-    { label: "Weekly sales", value: `$${stats.weekly}`, icon: TrendingUp, tone: "neutral" },
+    { label: "Weekly sales (7 days)", value: `$${stats.weekly}`, icon: TrendingUp, tone: "neutral" },
     { label: "Monthly sales", value: `$${stats.monthly}`, icon: TrendingUp, tone: "neutral" },
     { label: "Yearly sales", value: `$${stats.yearly}`, icon: TrendingUp, tone: "neutral" },
     { label: "Profit", value: `$${stats.profit}`, icon: TrendingUp, tone: "green" },
-    { label: "Active users", value: stats.active.toLocaleString(), icon: Users, tone: "neutral" },
+    { label: "Active users", value: typeof stats.active === "number" ? stats.active.toLocaleString() : stats.active, icon: Users, tone: "neutral" },
     { label: "Pending orders", value: stats.pending, icon: Clock3, tone: "amber" },
     { label: "Successful orders", value: stats.success, icon: CheckCircle2, tone: "green" },
     { label: "Failed orders", value: stats.failed, icon: XCircle, tone: "red" },
@@ -1213,12 +1295,15 @@ function Overview({ companies, orders }) {
         ))}
       </div>
 
+      {statsError && (
+        <div style={{ marginTop: 10, color: "var(--c-c81e2c)", fontSize: 12.5 }}>Couldn't load the dashboard figures: {statsError}</div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 14, marginTop: 14 }}>
         <Card style={{ padding: 18 }}>
-          <div style={{ fontWeight: 800, color: INK, fontSize: 14, marginBottom: 8 }}>Sales this week</div>
+          <div style={{ fontWeight: 800, color: INK, fontSize: 14, marginBottom: 8 }}>Sales, last 7 days ($)</div>
           <ResponsiveContainer width="100%" height={220}>
-            <LineChart data={salesTrend}>
-              <CartesianGrid stroke="#EEF0FB" vertical={false} />
+            <LineChart data={weekChart}>
+              <CartesianGrid stroke="var(--c-eef0fb)" vertical={false} />
               <XAxis dataKey="day" tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
               <Tooltip />
@@ -1227,10 +1312,10 @@ function Overview({ companies, orders }) {
           </ResponsiveContainer>
         </Card>
         <Card style={{ padding: 18 }}>
-          <div style={{ fontWeight: 800, color: INK, fontSize: 14, marginBottom: 8 }}>Orders by company</div>
+          <div style={{ fontWeight: 800, color: INK, fontSize: 14, marginBottom: 8 }}>Completed orders by company</div>
           <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={orderBreakdown}>
-              <CartesianGrid stroke="#EEF0FB" vertical={false} />
+            <BarChart data={companyChart}>
+              <CartesianGrid stroke="var(--c-eef0fb)" vertical={false} />
               <XAxis dataKey="name" tick={{ fontSize: 11.5, fill: MUTE }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
               <Tooltip />
@@ -1411,12 +1496,12 @@ function BalanceDashboard({ admin }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
         <SummaryMetricCard icon={DollarSign} label="Overall System Balance" value={`$${Number(summary?.totalBalance ?? 0).toFixed(2)}`} color={INDIGO} />
         <SummaryMetricCard icon={ArrowDown} label="Received Today" value={`$${Number(summary?.totalReceivedToday ?? 0).toFixed(2)}`} color={GREEN} />
-        <SummaryMetricCard icon={ArrowUp} label="Spent Today" value={`$${Number(summary?.totalSpentToday ?? 0).toFixed(2)}`} color="#C81E2C" />
+        <SummaryMetricCard icon={ArrowUp} label="Spent Today" value={`$${Number(summary?.totalSpentToday ?? 0).toFixed(2)}`} color="var(--c-c81e2c)" />
         <SummaryMetricCard
           icon={AlertTriangle}
           label="Low-Balance SIMs"
           value={rows.filter((r) => r.balance != null && Number(r.balance) < Number(r.lowBalanceThreshold)).length}
-          color="#A9720A"
+          color="var(--c-a9720a)"
           hint="Below their configured threshold"
         />
       </div>
@@ -1475,7 +1560,7 @@ function BalanceDashboard({ admin }) {
                         <td style={{ padding: "8px" }}>{r.phoneNumber || "—"}</td>
                         <td style={{ padding: "8px" }}>{r.deviceName}</td>
                         <td style={{ padding: "8px" }}>SIM {r.simSlot}</td>
-                        <td style={{ padding: "8px", fontWeight: 800, color: low ? "#C81E2C" : hasBalance ? INK : MUTE, background: low ? "#FCE7E8" : "transparent" }}>
+                        <td style={{ padding: "8px", fontWeight: 800, color: low ? "var(--c-c81e2c)" : hasBalance ? INK : MUTE, background: low ? "var(--c-fce7e8)" : "transparent" }}>
                           {hasBalance ? `$${Number(r.balance).toFixed(2)}${low ? " ⚠" : ""}` : "No recent balance"}
                           {hasBalance && r.lastSource && (
                             <span style={{ marginLeft: 6, fontWeight: 700, fontSize: 10.5, color: MUTE }}>
@@ -1520,7 +1605,7 @@ function BalanceDashboard({ admin }) {
               ))}
             </select>
           </Field>
-          {editError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{editError}</div>}
+          {editError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{editError}</div>}
           <Button onClick={saveEdit} disabled={saving} style={{ width: "100%", justifyContent: "center" }}>{saving ? "Saving..." : "Save"}</Button>
         </Modal>
       )}
@@ -1542,7 +1627,7 @@ function BalanceDashboard({ admin }) {
                   <div style={{ marginTop: 6 }}>
                     ${Number(h.previousBalance ?? 0).toFixed(2)} → <strong>${Number(h.newBalance).toFixed(2)}</strong>
                     {h.changeAmount != null && (
-                      <span style={{ color: Number(h.changeAmount) < 0 ? "#C81E2C" : GREEN, marginLeft: 8 }}>
+                      <span style={{ color: Number(h.changeAmount) < 0 ? "var(--c-c81e2c)" : GREEN, marginLeft: 8 }}>
                         ({Number(h.changeAmount) >= 0 ? "+" : ""}{Number(h.changeAmount).toFixed(2)})
                       </span>
                     )}
@@ -1666,11 +1751,11 @@ function FinancialOverview({ admin }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
         <SummaryMetricCard icon={Landmark} label="Total Money Available" value={money(overview?.totalMoneyAvailable)} color={INDIGO} hint={walletCoverageHint(overview, "Sum of all SIM wallet balances")} />
         <SummaryMetricCard icon={ArrowDown} label="Total Money Received" value={money(overview?.moneyReceived)} color={GREEN} hint="From completed customer payments" />
-        <SummaryMetricCard icon={ArrowUp} label="Total Money Out" value={money(overview?.totalMoneyOut)} color="#C81E2C" hint="Data cost + other expenses" />
-        <SummaryMetricCard icon={Wifi} label="Total Data Cost" value={money(overview?.totalDataCost)} color="#A9720A" hint="Paid to providers via USSD" />
+        <SummaryMetricCard icon={ArrowUp} label="Total Money Out" value={money(overview?.totalMoneyOut)} color="var(--c-c81e2c)" hint="Data cost + other expenses" />
+        <SummaryMetricCard icon={Wifi} label="Total Data Cost" value={money(overview?.totalDataCost)} color="var(--c-a9720a)" hint="Paid to providers via USSD" />
         <SummaryMetricCard icon={Wallet} label="Current Wallet Balance" value={money(overview?.currentWalletBalance)} color={INDIGO} hint={walletCoverageHint(overview, "Real, carrier-reported SIM balance")} />
-        <SummaryMetricCard icon={PiggyBank} label="Remaining Balance" value={money(overview?.remainingBalance)} color={overview?.remainingBalance < 0 ? "#C81E2C" : GREEN} hint="Received minus total money out" />
-        <SummaryMetricCard icon={TrendingUp} label="Profit / Earnings" value={money(overview?.profit)} color={overview?.profit < 0 ? "#C81E2C" : GREEN} hint="Received minus total money out" />
+        <SummaryMetricCard icon={PiggyBank} label="Remaining Balance" value={money(overview?.remainingBalance)} color={overview?.remainingBalance < 0 ? "var(--c-c81e2c)" : GREEN} hint="Received minus total money out" />
+        <SummaryMetricCard icon={TrendingUp} label="Profit / Earnings" value={money(overview?.profit)} color={overview?.profit < 0 ? "var(--c-c81e2c)" : GREEN} hint="Received minus total money out" />
       </div>
 
       <Card style={{ padding: 18, marginTop: 14 }}>
@@ -1678,12 +1763,12 @@ function FinancialOverview({ admin }) {
         <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
           {[
             { label: "Customer Payments", value: overview?.moneyReceived, color: GREEN },
-            { label: "Data Cost", value: -(overview?.totalDataCost ?? 0), color: "#A9720A" },
-            { label: "Other Expenses", value: -(overview?.otherMoneyOut ?? 0), color: "#C81E2C" },
+            { label: "Data Cost", value: -(overview?.totalDataCost ?? 0), color: "var(--c-a9720a)" },
+            { label: "Other Expenses", value: -(overview?.otherMoneyOut ?? 0), color: "var(--c-c81e2c)" },
             { label: "Remaining Balance", value: overview?.remainingBalance, color: INDIGO },
           ].map((step, i, arr) => (
             <React.Fragment key={step.label}>
-              <div style={{ background: "#FAFBFF", border: `1px solid ${BORDER}`, borderRadius: 12, padding: "10px 14px", minWidth: 150 }}>
+              <div style={{ background: "var(--c-fafbff)", border: `1px solid ${BORDER}`, borderRadius: 12, padding: "10px 14px", minWidth: 150 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: MUTE }}>{step.label}</div>
                 <div style={{ fontSize: 15, fontWeight: 800, color: step.color, marginTop: 2 }}>
                   {step.value < 0 ? "-" : ""}{money(Math.abs(step.value ?? 0))}
@@ -1703,10 +1788,10 @@ function FinancialOverview({ admin }) {
               <span>Received</span><span style={{ color: GREEN, fontWeight: 700 }}>{money(data?.moneyReceived)}</span>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: SLATE, marginBottom: 6 }}>
-              <span>Data Cost</span><span style={{ color: "#A9720A", fontWeight: 700 }}>{money(data?.dataCost)}</span>
+              <span>Data Cost</span><span style={{ color: "var(--c-a9720a)", fontWeight: 700 }}>{money(data?.dataCost)}</span>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: SLATE, marginBottom: 6 }}>
-              <span>Other Money Out</span><span style={{ color: "#C81E2C", fontWeight: 700 }}>{money(data?.otherMoneyOut)}</span>
+              <span>Other Money Out</span><span style={{ color: "var(--c-c81e2c)", fontWeight: 700 }}>{money(data?.otherMoneyOut)}</span>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: INK, fontWeight: 800, paddingTop: 6, borderTop: `1px solid ${BORDER}` }}>
               <span>Remaining</span><span>{money(data?.remainingBalance)}</span>
@@ -1723,7 +1808,7 @@ function FinancialOverview({ admin }) {
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
-              <tr style={{ background: "#FAFBFF" }}>
+              <tr style={{ background: "var(--c-fafbff)" }}>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Category</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Amount</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Note</th>
@@ -1736,7 +1821,7 @@ function FinancialOverview({ admin }) {
               {expenses.map((e) => (
                 <tr key={e.id} style={{ borderTop: `1px solid ${BORDER}` }}>
                   <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontWeight: 600 }}>{e.category}</td>
-                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: "#C81E2C", fontWeight: 700 }}>{money(e.amount)}</td>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, color: "var(--c-c81e2c)", fontWeight: 700 }}>{money(e.amount)}</td>
                   <td style={{ padding: "10px 14px", fontSize: 12, color: SLATE }}>{e.note || "—"}</td>
                   <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE }}>{e.createdByEmail || "—"}</td>
                   <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(e.createdAt)}</td>
@@ -1768,7 +1853,7 @@ function FinancialOverview({ admin }) {
           <Field label="Note (optional)">
             <input value={addForm.note} onChange={(e) => setAddForm({ ...addForm, note: e.target.value })} style={inputStyle} placeholder="Details for this expense" />
           </Field>
-          {addError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{addError}</div>}
+          {addError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{addError}</div>}
           <Button onClick={saveExpense} disabled={saving} style={{ width: "100%", justifyContent: "center" }}>{saving ? "Saving…" : "Save Expense"}</Button>
         </Modal>
       )}
@@ -1905,7 +1990,7 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
         {canManage && <Button icon={Plus} onClick={openNew}>Add company</Button>}
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 14 }}>
         {[1, 2].map((g) => (
@@ -1930,7 +2015,7 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
                 <Badge tone={c.status === "enabled" ? "green" : "red"}>{c.status === "enabled" ? "Enabled" : "Disabled"}</Badge>
                 {canManageStatus && (
                   <button onClick={() => toggle(c)} title="Enable / disable" style={{ background: "none", border: "none", cursor: "pointer" }}>
-                    <Power size={16} color={c.status === "enabled" ? GREEN : "#C81E2C"} />
+                    <Power size={16} color={c.status === "enabled" ? GREEN : "var(--c-c81e2c)"} />
                   </button>
                 )}
                 {canManage && (
@@ -1942,7 +2027,7 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
                       <Pencil size={15} color={INDIGO} />
                     </button>
                     <button onClick={() => remove(c)} style={{ background: "none", border: "none", cursor: "pointer" }}>
-                      <Trash2 size={15} color="#C81E2C" />
+                      <Trash2 size={15} color="var(--c-c81e2c)" />
                     </button>
                   </>
                 )}
@@ -1965,7 +2050,7 @@ function Companies({ companies, setCompanies, refreshCompanies, admin }) {
 
           <Field label="Provider logo (image)">
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{ width: 44, height: 44, borderRadius: 10, background: form.color || "#003152", display: "flex", alignItems: "center", justifyContent: "center", padding: 6, overflow: "hidden", flexShrink: 0 }}>
+              <div style={{ width: 44, height: 44, borderRadius: 10, background: form.color || "var(--c-003152)", display: "flex", alignItems: "center", justifyContent: "center", padding: 6, overflow: "hidden", flexShrink: 0 }}>
                 {form.logoBase64 ? (
                   <img src={form.logoBase64} alt="Logo preview" style={{ maxHeight: "100%", maxWidth: "100%", objectFit: "contain" }} />
                 ) : editing !== "new" && form.hasLogo ? (
@@ -2100,11 +2185,11 @@ function PaymentNumbers({ companies, setCompanies, refreshCompanies, admin }) {
         The Agent App stores the payment numbers used by customers to send funds. Customers dial these USSD templates. Changes apply instantly — no app update required.
         {!canManage && " Only a Super Admin can add, edit, enable, or disable these settings — you can view them here."}
       </div>
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Provider", "Wallet Type", "Payment Phone Number", "USSD Code Template", "Status", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "12px 16px", fontSize: 11.5, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -2130,10 +2215,10 @@ function PaymentNumbers({ companies, setCompanies, refreshCompanies, admin }) {
                     style={{
                       display: "flex", alignItems: "center", gap: 6, border: "none", background: "none",
                       cursor: canManage ? "pointer" : "default", fontSize: 12, fontWeight: 700,
-                      color: c.status === "enabled" ? GREEN : "#A9720A", opacity: togglingId === c.id ? 0.5 : 1,
+                      color: c.status === "enabled" ? GREEN : "var(--c-a9720a)", opacity: togglingId === c.id ? 0.5 : 1,
                     }}
                   >
-                    {c.status === "enabled" ? <Power size={14} color={GREEN} /> : <Power size={14} color="#A9720A" />}
+                    {c.status === "enabled" ? <Power size={14} color={GREEN} /> : <Power size={14} color="var(--c-a9720a)" />}
                     {c.status === "enabled" ? "Active" : "Inactive"}
                   </button>
                 </td>
@@ -2157,7 +2242,7 @@ function PaymentNumbers({ companies, setCompanies, refreshCompanies, admin }) {
           <div style={{ fontSize: 11.5, color: MUTE, marginTop: -8, marginBottom: 12 }}>
             This is the exact code the Customer App opens the dialer with — it should embed the payment number above (not a placeholder), with only {"{amount}"} filled in dynamically per order. Update it together with the payment number so they never go out of sync.
           </div>
-          {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+          {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
           <div style={{ display: "flex", gap: 10 }}>
             <Button onClick={save} icon={Check} disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
             <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
@@ -2175,6 +2260,9 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
   const [companyFilter, setCompanyFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState(null);
+  // Whether the open form is the Extra Package form -- kept apart from the
+  // Send Count itself so the field stays visible whatever number is typed.
+  const [extraMode, setExtraMode] = useState(false);
   const [form, setForm] = useState({});
   const [error, setError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
@@ -2235,15 +2323,21 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
       })
     : companyFiltered;
 
-  const openNew = () => {
+  // extra: Admin -> Add Extra Package -- the same package, plus a Send
+  // Count: the customer pays the selling price once and the package is
+  // delivered that many times (2, 3, 10 ...).
+  const openNew = (extra = false) => {
     const companyId = companyFilter !== "all" ? companyFilter : companies[0]?.id || "";
-    setForm({ companyId, categoryId: "", name: "", oldPrice: "", price: "", providerAmount: "", mb: "", minutes: "", sms: "", validity: "", active: true, ussdTemplateId: "" });
+    // An Extra Package's Send Count starts empty: the Admin types the exact number.
+    setForm({ companyId, categoryId: "", name: "", oldPrice: "", price: "", providerAmount: "", mb: "", minutes: "", sms: "", validity: "", active: true, ussdTemplateId: "", sendCount: extra ? "" : 1 });
+    setExtraMode(extra);
     setTemplateWarning("");
     setError("");
     setEditing("new");
   };
   const openEdit = (p) => {
     setForm(DALAB_API_ENABLED ? p : { ...p, companyId: companies.find((c) => c.name === p.company)?.id, oldPrice: p.old, minutes: p.min });
+    setExtraMode(Number(p.sendCount) > 1);
     setTemplateWarning("");
     setError("");
     setEditing(p.id);
@@ -2252,6 +2346,13 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
   const save = async () => {
     if (!form.name || form.price === "" || form.price == null) return;
     setError("");
+    if (extraMode) {
+      const n = Number(form.sendCount);
+      if (form.sendCount === "" || form.sendCount == null || !Number.isInteger(n) || n < 1 || n > 50) {
+        setError("Send Count must be a whole number from 1 to 50.");
+        return;
+      }
+    }
     if (DALAB_API_ENABLED) {
       setSaving(true);
       let warning = "";
@@ -2344,21 +2445,26 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
         <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Packages & pricing</div>
-        {canManage && <Button icon={Plus} onClick={openNew}>Add package</Button>}
+        {canManage && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Button icon={Plus} onClick={() => openNew(false)}>Add package</Button>
+            <Button icon={Plus} variant="ghost" onClick={() => openNew(true)}>Add Extra Package</Button>
+          </div>
+        )}
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
       {successMessage && <div style={{ color: GREEN, fontSize: 12.5, marginBottom: 14, fontWeight: 600 }}>{successMessage}</div>}
 
       <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
         <button onClick={() => setCompanyFilter("all")} style={{
           padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
-          border: `1px solid ${companyFilter === "all" ? INDIGO : BORDER}`, background: companyFilter === "all" ? INDIGO : "#fff", color: companyFilter === "all" ? "#fff" : SLATE,
+          border: `1px solid ${companyFilter === "all" ? INDIGO : BORDER}`, background: companyFilter === "all" ? INDIGO : "var(--c-surface)", color: companyFilter === "all" ? "#fff" : SLATE,
         }}>All</button>
         {companies.map((c) => (
           <button key={c.id} onClick={() => setCompanyFilter(c.id)} style={{
             padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
-            border: `1px solid ${companyFilter === c.id ? INDIGO : BORDER}`, background: companyFilter === c.id ? INDIGO : "#fff", color: companyFilter === c.id ? "#fff" : SLATE,
+            border: `1px solid ${companyFilter === c.id ? INDIGO : BORDER}`, background: companyFilter === c.id ? INDIGO : "var(--c-surface)", color: companyFilter === c.id ? "#fff" : SLATE,
           }}>{c.name}</button>
         ))}
       </div>
@@ -2382,7 +2488,7 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
         <div style={{ overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Package", "Company", "Old price", "Price", "Provider Amt", "MB", "Min", "SMS", "Validity", ...(DALAB_API_ENABLED ? ["Status"] : []), ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700, whiteSpace: "nowrap" }}>{h}</th>
               ))}
@@ -2397,6 +2503,11 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
                       <img src={DalabAdminApi.packageImageUrl(p.id)} alt="" style={{ width: 22, height: 22, borderRadius: 6, objectFit: "cover", flexShrink: 0 }} />
                     )}
                     <span>{p?.name || "Unnamed package"}</span>
+                    {Number(p.sendCount) > 1 && (
+                      <span title={`Extra Package: sent ${p.sendCount} times per purchase`} style={{ fontSize: 11, fontWeight: 800, color: "#fff", background: INDIGO, borderRadius: 10, padding: "2px 8px", whiteSpace: "nowrap" }}>
+                        Extra ×{p.sendCount}
+                      </span>
+                    )}
                   </div>
                 </td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE }}>{p.company || companies.find((c) => c.id === p.companyId)?.name}</td>
@@ -2416,7 +2527,7 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
                   {canManage && (
                     <>
                       <button onClick={() => openEdit(p)} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}><Pencil size={14} color={INDIGO} /></button>
-                      <button onClick={() => remove(p)} style={{ background: "none", border: "none", cursor: "pointer" }}><Trash2 size={14} color="#C81E2C" /></button>
+                      <button onClick={() => remove(p)} style={{ background: "none", border: "none", cursor: "pointer" }}><Trash2 size={14} color="var(--c-c81e2c)" /></button>
                     </>
                   )}
                 </td>
@@ -2431,7 +2542,11 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
       </Card>
 
       {editing && (
-        <Modal title={editing === "new" ? "Add package" : "Edit package"} onClose={() => setEditing(null)} width={460}>
+        <Modal
+          title={extraMode ? (editing === "new" ? "Add Extra Package" : "Edit Extra Package") : editing === "new" ? "Add package" : "Edit package"}
+          onClose={() => setEditing(null)}
+          width={460}
+        >
           <Field label="Company">
             <select style={inputStyle} value={form.companyId} onChange={(e) => setForm({ ...form, companyId: e.target.value })}>
               {companies.map((c) => <option key={c.id} value={c.id}>{c?.name || "Unnamed"}</option>)}
@@ -2474,7 +2589,7 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
                   </Button>
                   {form.hasImage && (
                     <button onClick={removePackageImage} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 8, cursor: "pointer" }}>
-                      <Trash2 size={13} color="#C81E2C" />
+                      <Trash2 size={13} color="var(--c-c81e2c)" />
                     </button>
                   )}
                 </div>
@@ -2484,11 +2599,35 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <Field label="Old price ($)"><input style={inputStyle} value={form.oldPrice ?? ""} onChange={(e) => setForm({ ...form, oldPrice: e.target.value })} /></Field>
             <Field label="Discount price ($)"><input style={inputStyle} value={form.price ?? ""} onChange={(e) => setForm({ ...form, price: e.target.value })} /></Field>
-            <Field label="MB"><input style={inputStyle} value={form.mb ?? ""} onChange={(e) => setForm({ ...form, mb: e.target.value })} /></Field>
-            <Field label="Minutes"><input style={inputStyle} value={form.minutes ?? ""} onChange={(e) => setForm({ ...form, minutes: e.target.value })} /></Field>
-            <Field label="SMS"><input style={inputStyle} value={form.sms ?? ""} onChange={(e) => setForm({ ...form, sms: e.target.value })} /></Field>
+            <Field label="MB"><input style={inputStyle} inputMode="numeric" placeholder="0" value={form.mb ?? ""} onChange={(e) => setForm({ ...form, mb: e.target.value.replace(/\D/g, "") })} /></Field>
+            <Field label="Minutes"><input style={inputStyle} inputMode="numeric" placeholder="0" value={form.minutes ?? ""} onChange={(e) => setForm({ ...form, minutes: e.target.value.replace(/\D/g, "") })} /></Field>
+            <Field label="SMS"><input style={inputStyle} inputMode="numeric" placeholder="0" value={form.sms ?? ""} onChange={(e) => setForm({ ...form, sms: e.target.value.replace(/\D/g, "") })} /></Field>
             <Field label="Validity"><input style={inputStyle} value={form.validity ?? ""} onChange={(e) => setForm({ ...form, validity: e.target.value })} placeholder="e.g. 1 month" /></Field>
           </div>
+          {extraMode && (
+            <Field label="Send Count — how many times this package is sent per purchase">
+              <input
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={50}
+                step={1}
+                style={{ ...inputStyle, width: 140 }}
+                value={form.sendCount ?? ""}
+                placeholder="e.g. 23"
+                onChange={(e) => setForm({ ...form, sendCount: e.target.value === "" ? "" : Number(e.target.value) })}
+                aria-label="Send Count"
+              />
+              <div style={{ fontSize: 11.5, color: MUTE, marginTop: 6 }}>
+                The customer pays the Discount price above once
+                {form.price !== "" && form.price != null ? ` ($${Number(form.price).toFixed(2)})` : ""}, and the package is sent{" "}
+                {Number.isInteger(Number(form.sendCount)) && Number(form.sendCount) >= 1 && form.sendCount !== ""
+                  ? `${Number(form.sendCount)} time${Number(form.sendCount) === 1 ? "" : "s"}`
+                  : "the number of times you enter"}
+                . Any whole number from 1 to 50.
+              </div>
+            </Field>
+          )}
           <Field label="Provider / USSD Amount ($) — optional">
             <input
               style={inputStyle}
@@ -2533,7 +2672,7 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
             </Field>
           )}
           {templateWarning && (
-            <div style={{ background: "#FFF6E5", border: "1px solid #F5C451", borderRadius: 8, padding: "10px 12px", fontSize: 12.5, color: "#8A6100", marginBottom: 14 }}>
+            <div style={{ background: "var(--c-fff6e5)", border: "1px solid var(--c-f5c451)", borderRadius: 8, padding: "10px 12px", fontSize: 12.5, color: "var(--c-8a6100)", marginBottom: 14 }}>
               {templateWarning}
             </div>
           )}
@@ -2543,7 +2682,7 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
               Available for purchase (active)
             </label>
           )}
-          {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+          {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
           <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
             <Button onClick={save} icon={Check} disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
             <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
@@ -2557,11 +2696,41 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
 // Admin-only Service Type for a service category -- decides which icon the
 // Customer App draws on the service's card. Customers never choose it.
 const SERVICE_TYPES = [
-  { value: "wifi", label: "📶 WiFi" },
-  { value: "wireless", label: "📡 Wireless" },
-  { value: "call", label: "📞 Call" },
+  { value: "wifi", emoji: "📶", name: "WiFi" },
+  { value: "wireless", emoji: "📡", name: "Wireless" },
+  { value: "call", emoji: "📞", name: "Call" },
+  { value: "data", emoji: "⇅", image: true, name: "Data" },
 ];
-const serviceTypeLabel = (value) => SERVICE_TYPES.find((t) => t.value === value)?.label || "—";
+// A service can have one or more types (backend serviceTypes);
+// falls back to the older single serviceType for rows saved before that.
+const serviceTypesOf = (c) => (c.serviceTypes?.length ? c.serviceTypes : c.serviceType ? [c.serviceType] : []);
+// Data's phone + arrows artwork in the company's own color -- the same
+// icons the Customer App shows (Somnet blue for any other company).
+const DATA_ICON_COMPANIES = ["hormuud", "somnet", "somtel", "amtel"];
+const dataIconFor = (company) => {
+  const name = `${company?.slug || ""} ${company?.name || ""}`.toLowerCase();
+  const match = DATA_ICON_COMPANIES.find((c) => name.includes(c)) || "somnet";
+  return `${import.meta.env.BASE_URL}service-types/mobile_data_${match}.png`;
+};
+
+// A type's icon: its artwork when it has one (Data), else its emoji.
+function ServiceTypeIcon({ type, size, style, company }) {
+  return type.image ? (
+    <img src={dataIconFor(company)} alt="" style={{ width: size, height: size, objectFit: "contain", verticalAlign: "middle", ...style }} />
+  ) : (
+    <span style={{ fontSize: size * 0.8, lineHeight: `${size}px`, verticalAlign: "middle", ...style }}>{type.emoji}</span>
+  );
+}
+function ServiceTypesLabel({ types, company }) {
+  const selected = SERVICE_TYPES.filter((t) => types.includes(t.value));
+  if (!selected.length) return "—";
+  return selected.map((t, i) => (
+    <span key={t.value} style={{ whiteSpace: "nowrap" }}>
+      {i > 0 && " + "}
+      <ServiceTypeIcon type={t} size={18} company={company} /> {t.name}
+    </span>
+  ));
+}
 
 function Categories({ companies, admin }) {
   const [categories, setCategories] = useState([]);
@@ -2584,8 +2753,16 @@ function Categories({ companies, admin }) {
   useEffect(() => { fetchCategories(); }, [companyFilter]);
   useEffect(() => { if (!companyFilter && companies[0]) setCompanyFilter(companies[0].id); }, [companies]);
 
-  const openNew = () => { setForm({ name: "", companyId: companyFilter, serviceType: "" }); setEditing("new"); setError(""); };
-  const openEdit = (c) => { setForm({ ...c, iconBase64: null }); setEditing(c.id); setError(""); };
+  const openNew = () => { setForm({ name: "", companyId: companyFilter, serviceTypes: [] }); setEditing("new"); setError(""); };
+  const openEdit = (c) => { setForm({ ...c, serviceTypes: serviceTypesOf(c), iconBase64: null }); setEditing(c.id); setError(""); };
+  const toggleType = (value) =>
+    setForm((prev) => {
+      const current = prev.serviceTypes || [];
+      const next = current.includes(value) ? current.filter((t) => t !== value) : [...current, value];
+      return { ...prev, serviceTypes: SERVICE_TYPES.map((t) => t.value).filter((t) => next.includes(t)) };
+    });
+
+  const formCompany = companies.find((co) => co.id === (form.companyId || companyFilter));
 
   const onIconSelected = (e) => {
     const file = e.target.files?.[0];
@@ -2605,18 +2782,18 @@ function Categories({ companies, admin }) {
   const save = async () => {
     if (!form.name) return setError("Service name is required.");
     if (editing === "new" && !form.companyId) return setError("Select a company.");
-    if (!form.serviceType) return setError("Select a service type.");
+    if (!form.serviceTypes?.length) return setError("Select at least one service type.");
     setSaving(true);
     setError("");
     try {
       let id = editing;
       if (editing === "new") {
-        const created = await DalabAdminApi.createCategory({ companyId: form.companyId, name: form.name, serviceType: form.serviceType });
+        const created = await DalabAdminApi.createCategory({ companyId: form.companyId, name: form.name, serviceTypes: form.serviceTypes });
         id = created.id;
         // Show the company the new service was added to.
         if (form.companyId !== companyFilter) setCompanyFilter(form.companyId);
       } else {
-        await DalabAdminApi.updateCategory(editing, { name: form.name, serviceType: form.serviceType });
+        await DalabAdminApi.updateCategory(editing, { name: form.name, serviceTypes: form.serviceTypes });
       }
       if (form.iconBase64) await DalabAdminApi.updateCategoryIcon(id, form.iconBase64);
       await fetchCategories();
@@ -2675,17 +2852,17 @@ function Categories({ companies, admin }) {
         {companies.map((c) => (
           <button key={c.id} onClick={() => setCompanyFilter(c.id)} style={{
             padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
-            border: `1px solid ${companyFilter === c.id ? c.color : BORDER}`, background: companyFilter === c.id ? c.color : "#fff", color: companyFilter === c.id ? "#fff" : SLATE,
+            border: `1px solid ${companyFilter === c.id ? c.color : BORDER}`, background: companyFilter === c.id ? c.color : "var(--c-surface)", color: companyFilter === c.id ? "#fff" : SLATE,
           }}>{c.name}</button>
         ))}
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Icon", "Name", "Type", "Slug", "Status", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -2695,7 +2872,7 @@ function Categories({ companies, admin }) {
             {categories.map((c) => (
               <tr key={c.id} style={{ borderTop: `1px solid ${BORDER}` }}>
                 <td style={{ padding: "10px 14px" }}>
-                  <div style={{ width: 34, height: 34, borderRadius: 8, border: `1px solid ${BORDER}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", background: "#FAFBFF" }}>
+                  <div style={{ width: 34, height: 34, borderRadius: 8, border: `1px solid ${BORDER}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", background: "var(--c-fafbff)" }}>
                     {c.hasIcon ? (
                       <img src={DalabAdminApi.categoryIconUrl(c.id)} alt={c.name} style={{ maxHeight: "100%", maxWidth: "100%", objectFit: "contain" }} />
                     ) : (
@@ -2704,20 +2881,20 @@ function Categories({ companies, admin }) {
                   </div>
                 </td>
                 <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{c.name}</td>
-                <td style={{ padding: "10px 14px", fontSize: 12.5, color: c.serviceType ? INK : MUTE, whiteSpace: "nowrap" }}>{serviceTypeLabel(c.serviceType)}</td>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: serviceTypesOf(c).length ? INK : MUTE, whiteSpace: "nowrap" }}><ServiceTypesLabel types={serviceTypesOf(c)} company={companies.find((co) => co.id === (c.companyId || companyFilter))} /></td>
                 <td style={{ padding: "10px 14px", fontSize: 12, color: SLATE, fontFamily: "monospace" }}>{c.slug}</td>
                 <td style={{ padding: "10px 14px" }}><Badge tone={c.status === "enabled" ? "green" : "gray"}>{c.status === "enabled" ? "Enabled" : "Disabled"}</Badge></td>
                 <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
                   {canManage && (
                     <>
                       <button onClick={() => toggleStatus(c)} title={c.status === "enabled" ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
-                        <Power size={14} color={c.status === "enabled" ? GREEN : "#C81E2C"} />
+                        <Power size={14} color={c.status === "enabled" ? GREEN : "var(--c-c81e2c)"} />
                       </button>
                       <button onClick={() => openEdit(c)} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
                         <Pencil size={14} color={INDIGO} />
                       </button>
                       <button onClick={() => remove(c)} style={{ background: "none", border: "none", cursor: "pointer" }}>
-                        <Trash2 size={14} color="#C81E2C" />
+                        <Trash2 size={14} color="var(--c-c81e2c)" />
                       </button>
                     </>
                   )}
@@ -2750,23 +2927,35 @@ function Categories({ companies, admin }) {
             )}
           </Field>
 
-          <Field label="Service type (admin only — customers never choose this)">
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Field label="Service icons — select one or more (admin only; customers never choose these)">
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(84px, 1fr))", gap: 8 }}>
               {SERVICE_TYPES.map((t) => {
-                const selected = form.serviceType === t.value;
+                const selected = (form.serviceTypes || []).includes(t.value);
                 return (
-                  <button key={t.value} type="button" onClick={() => setForm({ ...form, serviceType: t.value })} style={{
-                    padding: "8px 14px", borderRadius: 10, fontSize: 13, fontWeight: 700, cursor: "pointer",
-                    border: `1.5px solid ${selected ? INDIGO : BORDER}`, background: selected ? INDIGO : "#fff", color: selected ? "#fff" : INK,
-                  }}>{t.label}</button>
+                  <button key={t.value} type="button" role="checkbox" aria-checked={selected} onClick={() => toggleType(t.value)} style={{
+                    position: "relative", padding: "12px 6px 10px", borderRadius: 12, cursor: "pointer",
+                    display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
+                    border: `2px solid ${selected ? INDIGO : BORDER}`, background: selected ? "var(--c-eef3fa)" : "var(--c-surface)",
+                    boxShadow: selected ? "0 2px 8px rgba(0,49,82,0.15)" : "none",
+                  }}>
+                    <span style={{
+                      position: "absolute", top: 6, right: 6, width: 16, height: 16, borderRadius: 4, fontSize: 11, lineHeight: "14px", fontWeight: 900,
+                      border: `1.5px solid ${selected ? INDIGO : BORDER}`, background: selected ? INDIGO : "var(--c-surface)", color: "#fff",
+                    }}>{selected ? "✓" : ""}</span>
+                    <ServiceTypeIcon type={t} size={30} style={{ opacity: selected ? 1 : 0.45 }} company={formCompany} />
+                    <span style={{ fontSize: 12.5, fontWeight: 800, color: selected ? INDIGO : SLATE }}>{t.name}</span>
+                  </button>
                 );
               })}
+            </div>
+            <div style={{ fontSize: 11.5, color: MUTE, marginTop: 6 }}>
+              Customers see: <ServiceTypesLabel types={form.serviceTypes || []} company={formCompany} />
             </div>
           </Field>
 
           <Field label="Category icon/logo (image)">
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{ width: 44, height: 44, borderRadius: 10, border: `1px solid ${BORDER}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", flexShrink: 0, background: "#FAFBFF" }}>
+              <div style={{ width: 44, height: 44, borderRadius: 10, border: `1px solid ${BORDER}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", flexShrink: 0, background: "var(--c-fafbff)" }}>
                 {form.iconBase64 ? (
                   <img src={form.iconBase64} alt="Icon preview" style={{ maxHeight: "100%", maxWidth: "100%", objectFit: "contain" }} />
                 ) : editing !== "new" && form.hasIcon ? (
@@ -2784,7 +2973,7 @@ function Categories({ companies, admin }) {
             <div style={{ fontSize: 11, color: MUTE, marginTop: 6 }}>Shown on this category's card in the Customer/Agent apps. Uploads apply when you press Save; existing categories keep their current icon until you change it here.</div>
           </Field>
 
-          {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+          {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
           <div style={{ display: "flex", gap: 10 }}>
             <Button onClick={save} icon={Check} disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
             <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
@@ -2798,6 +2987,56 @@ function Categories({ companies, admin }) {
 // Drawer close animation duration — kept in one place so the CSS transition
 // and the setTimeout that defers the actual unmount stay in sync.
 const DRAWER_TRANSITION_MS = 220;
+// Which phone + SIM is responsible for an order, its live state, and the
+// last dial -- from GET /admin/orders/:id/delivery-status. The order only
+// ever moves to another SIM when an Admin changes SIM Routing.
+function AssignedSimPanel({ ds, order }) {
+  const a = ds.assigned;
+  const balanceTone = { sufficient: "green", insufficient: "red", unknown: "amber", outdated: "amber" };
+  const last = ds.lastAttempt;
+  const line = (label, value) => (
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12, padding: "3px 0" }}>
+      <span style={{ color: MUTE }}>{label}</span>
+      <span style={{ color: INK, fontWeight: 600, textAlign: "right" }}>{value}</span>
+    </div>
+  );
+  return (
+    <>
+      <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>ASSIGNED SIM</div>
+      <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 8, border: `1px solid ${BORDER}` }}>
+        {line("Provider", order.companyName || order.companyId || "—")}
+        {a ? (
+          <>
+            {line("Mobile device", a.deviceName || a.deviceId)}
+            {line("SIM slot", `SIM ${a.simSlot}${a.source === "template" ? " (USSD template)" : " (SIM Routing primary)"}`)}
+            {line("Device status", <Badge tone={a.online ? "green" : "red"}>{a.online ? "Online" : "Offline"}</Badge>)}
+            {a.simPresent === false && line("SIM", <Badge tone="red">Not detected</Badge>)}
+            {line(
+              "SIM balance",
+              ds.balance ? (
+                <Badge tone={balanceTone[ds.balance.status] || "gray"}>
+                  {ds.balance.status}
+                  {ds.balance.availableBalance != null ? ` · $${Number(ds.balance.availableBalance).toFixed(2)}` : ""}
+                </Badge>
+              ) : "—"
+            )}
+          </>
+        ) : (
+          line("Mobile device", <Badge tone="red">No SIM assigned</Badge>)
+        )}
+        {line("Order status", ds.orderStatus || order.status)}
+        {line(
+          "Last dial",
+          last ? `#${last.attemptNumber} · ${last.status}${last.deviceName ? ` · ${last.deviceName}` : ""} · SIM ${last.simSlot ?? "—"} · ${formatDateTime(last.createdAt)}` : "None yet"
+        )}
+        {last?.responseMessage && line("Carrier reply", last.responseMessage)}
+        {ds.waitingReason && (
+          <div style={{ marginTop: 6, fontSize: 12, fontWeight: 700, color: "var(--c-b45309)" }}>{ds.waitingReason}</div>
+        )}
+      </div>
+    </>
+  );
+}
 
 function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
   const [attempts, setAttempts] = useState([]);
@@ -2851,15 +3090,14 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
       .catch((err) => setPaymentTxError(err.message || "Could not load payment transaction history."));
   }, [order?.id]);
 
-  // Only worth checking when we're in the specific ambiguous state: verified,
-  // USSD generated, no attempts yet, and generation itself didn't fail — the
-  // one case a bare "no dial attempts" leaves unexplained.
+  // The order's assigned phone + SIM and why it's waiting (if it is) --
+  // shown for every USSD order, so staff always see which SIM is
+  // responsible instead of guessing.
   useEffect(() => {
     setDeliveryStatus(null);
-    if (!order || !DALAB_API_ENABLED) return;
-    if (attempts.length > 0 || !order.ussdGenerated || order.ussdGenerationFailedReason) return;
+    if (!order || !DALAB_API_ENABLED || isSomlink) return;
     DalabAdminApi.getOrderDeliveryStatus(order.id).then(setDeliveryStatus).catch(() => {});
-  }, [order?.id, attempts.length, order?.ussdGenerated, order?.ussdGenerationFailedReason]);
+  }, [order?.id, order?.status, attempts.length, isSomlink]);
 
   // SOMLINK-fulfilled orders have no USSD dial history — this is their
   // equivalent panel, sourced from somlink_transactions instead.
@@ -2937,7 +3175,7 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
-          width: 420, maxWidth: "100%", background: "#fff", height: "100%", overflowY: "auto", padding: 24,
+          width: 420, maxWidth: "100%", background: "var(--c-surface)", height: "100%", overflowY: "auto", padding: 24,
           transform: visible ? "translateX(0)" : "translateX(100%)",
           transition: `transform ${DRAWER_TRANSITION_MS}ms ease-out`,
           boxShadow: "-8px 0 24px rgba(11,18,64,0.18)",
@@ -2964,7 +3202,7 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
           <div style={{ marginLeft: "auto" }}><Badge tone={displayOrderTone(localOrder)}>{displayOrderStatus(localOrder)}</Badge></div>
         </div>
         {localOrder.reversedAt && (
-          <div style={{ marginTop: 10, fontSize: 11.5, color: "#A9720A", background: "#FFF8E8", border: "1px solid #F4E3B0", borderRadius: 8, padding: "6px 10px" }}>
+          <div style={{ marginTop: 10, fontSize: 11.5, color: "var(--c-a9720a)", background: "var(--c-fff8e8)", border: "1px solid var(--c-f4e3b0)", borderRadius: 8, padding: "6px 10px" }}>
             Reversed {formatDateTime(localOrder.reversedAt)} — internal bookkeeping only, no real money moved.
           </div>
         )}
@@ -3000,7 +3238,7 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
 
         <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>PAYMENT TRANSACTION HISTORY</div>
         {paymentTxError ? (
-          <div style={{ marginTop: 8, fontSize: 12, color: "#C81E2C" }}>{paymentTxError}</div>
+          <div style={{ marginTop: 8, fontSize: 12, color: "var(--c-c81e2c)" }}>{paymentTxError}</div>
         ) : paymentTx.length === 0 ? (
           <div style={{ marginTop: 8, fontSize: 12, color: MUTE }}>No payment transaction recorded for this order yet.</div>
         ) : (
@@ -3008,7 +3246,7 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
             {paymentTx.map((t) => {
               const meta = PAYMENT_TX_STATUS_META[t.status] || { label: t.status, tone: "neutral" };
               return (
-                <div key={t.id} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${t.status === "duplicate_blocked" ? "#F4E3B0" : BORDER}`, background: t.status === "duplicate_blocked" ? "#FFFBEF" : "transparent" }}>
+                <div key={t.id} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${t.status === "duplicate_blocked" ? "var(--c-f4e3b0)" : BORDER}`, background: t.status === "duplicate_blocked" ? "var(--c-fffbef)" : "transparent" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11.5 }}>
                     <Badge tone={meta.tone}>{meta.label}</Badge>
                     <span style={{ color: MUTE, fontFamily: "monospace" }}>{t.transactionRef || "no ref"}</span>
@@ -3028,7 +3266,7 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
           <>
             <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>SOMLINK ORDER STATUS</div>
             {somlinkStatusError ? (
-              <div style={{ marginTop: 8, fontSize: 12, color: "#C81E2C" }}>{somlinkStatusError}</div>
+              <div style={{ marginTop: 8, fontSize: 12, color: "var(--c-c81e2c)" }}>{somlinkStatusError}</div>
             ) : !somlinkStatus?.transaction ? (
               <div style={{ marginTop: 8, fontSize: 12, color: MUTE }}>No SOMLINK delivery attempt recorded for this order yet.</div>
             ) : (
@@ -3053,11 +3291,11 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
                 )}
               </div>
             )}
-            {retrySomlinkError && <div style={{ color: "#C81E2C", fontSize: 12, marginTop: 8 }}>{retrySomlinkError}</div>}
+            {retrySomlinkError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12, marginTop: 8 }}>{retrySomlinkError}</div>}
             {localOrder.status === "in_progress" && ["failed", "ambiguous"].includes(somlinkStatus?.transaction?.status) && (
               <div style={{ marginTop: 10 }}>
                 {somlinkStatus.transaction.status === "ambiguous" && (
-                  <div style={{ fontSize: 11, color: "#A9720A", marginBottom: 6 }}>
+                  <div style={{ fontSize: 11, color: "var(--c-a9720a)", marginBottom: 6 }}>
                     The outcome of the last attempt is unknown — confirm via SOMLINK's own dashboard that it did NOT go through before retrying, to avoid a duplicate charge.
                   </div>
                 )}
@@ -3071,18 +3309,18 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
           <>
             <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>USSD DIALER</div>
             {order.ussdGenerated ? (
-              <div style={{ background: "#0B1240", borderRadius: 10, padding: 12, marginTop: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-                <span style={{ color: "#22B24C", fontFamily: "monospace", fontSize: 13.5, fontWeight: 700, wordBreak: "break-all" }}>{order.ussdGenerated}</span>
+              <div style={{ background: "var(--c-0b1240)", borderRadius: 10, padding: 12, marginTop: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                <span style={{ color: "var(--c-22b24c)", fontFamily: "monospace", fontSize: 13.5, fontWeight: 700, wordBreak: "break-all" }}>{order.ussdGenerated}</span>
                 <button
                   onClick={() => navigator.clipboard?.writeText(order.ussdGenerated)}
                   title="Copy"
                   style={{ background: "none", border: "none", cursor: "pointer", flexShrink: 0 }}
                 >
-                  <Copy size={15} color="#9AA1D4" />
+                  <Copy size={15} color="var(--c-9aa1d4)" />
                 </button>
               </div>
             ) : order.ussdGenerationFailedReason ? (
-              <div style={{ marginTop: 8, fontSize: 12.5, color: "#C81E2C", fontWeight: 600 }}>
+              <div style={{ marginTop: 8, fontSize: 12.5, color: "var(--c-c81e2c)", fontWeight: 600 }}>
                 USSD generation failed: {order.ussdGenerationFailedReason}
               </div>
             ) : (
@@ -3097,11 +3335,13 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
         {row("Created", formatDateTime(order.createdAt), true)}
         {order.completedAt && row("Completed", formatDateTime(order.completedAt), true)}
 
+        {!isSomlink && deliveryStatus && <AssignedSimPanel ds={deliveryStatus} order={order} />}
+
         {!isSomlink && (
           <>
             <div style={{ marginTop: 18, fontSize: 11.5, fontWeight: 700, color: MUTE, letterSpacing: 0.5 }}>USSD EXECUTION HISTORY</div>
             {attemptsError ? (
-              <div style={{ marginTop: 8, fontSize: 12, color: "#C81E2C" }}>{attemptsError}</div>
+              <div style={{ marginTop: 8, fontSize: 12, color: "var(--c-c81e2c)" }}>{attemptsError}</div>
             ) : attempts.length === 0 ? (
               <div style={{ marginTop: 8, fontSize: 12, color: MUTE }}>
                 {waitingForDeviceMessage(deliveryStatus) || "No dial attempts recorded for this order yet."}
@@ -3109,11 +3349,21 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
             ) : (
               <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
                 {attempts.map((a) => (
-                  <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: `1px solid ${BORDER}`, fontSize: 11.5 }}>
-                    <Badge tone={a.status === "success" ? "green" : a.status === "failed" ? "red" : "amber"}>{a.status}</Badge>
-                    <span style={{ color: MUTE }}>SIM {a.simSlot ?? "—"}</span>
-                    <span style={{ color: MUTE }}>attempt #{a.attemptNumber}</span>
-                    <span style={{ color: MUTE, marginLeft: "auto" }}>{formatDateTime(a.createdAt)}</span>
+                  <div key={a.id} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${BORDER}`, fontSize: 11.5 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <Badge tone={a.status === "success" ? "green" : a.status === "failed" ? "red" : "amber"}>{a.status}</Badge>
+                      {a.balanceFailure && <Badge tone="red">Insufficient SIM balance</Badge>}
+                      <span style={{ color: MUTE }}>SIM {a.simSlot ?? "—"}</span>
+                      <span style={{ color: MUTE }}>attempt #{a.attemptNumber}</span>
+                      <span style={{ color: MUTE, marginLeft: "auto" }}>{formatDateTime(a.createdAt)}</span>
+                    </div>
+                    {/* The carrier's own reply, exactly as the Agent App reported it. */}
+                    {a.responseMessage && (
+                      <div style={{ marginTop: 6, color: a.status === "success" ? MUTE : "var(--c-c81e2c)", overflowWrap: "anywhere" }}>
+                        Carrier reply: {a.responseMessage}
+                      </div>
+                    )}
+                    {a.status === "pending" && <div style={{ marginTop: 6, color: MUTE }}>Dialing — waiting for the carrier's reply.</div>}
                   </div>
                 ))}
               </div>
@@ -3121,7 +3371,7 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
           </>
         )}
 
-        {reverseError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginTop: 14 }}>{reverseError}</div>}
+        {reverseError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginTop: 14 }}>{reverseError}</div>}
 
         {(nextActions[localOrder.status]?.length > 0 || canReverse) && (
           <div style={{ display: "flex", gap: 10, marginTop: 22, flexWrap: "wrap" }}>
@@ -3142,14 +3392,14 @@ function OrderDetailDrawer({ order, onClose, onStatus, admin }) {
 
 function StatusCountTile({ label, count, tone, active, onClick }) {
   const tones = {
-    amber: "#A9720A", blue: "#1D4ED8", green: "#16A34A", red: "#C81E2C", gray: "#5B6389", neutral: INDIGO,
+    amber: "var(--c-a9720a)", blue: "var(--c-1d4ed8)", green: "var(--c-16a34a)", red: "var(--c-c81e2c)", gray: "var(--c-5b6389)", neutral: INDIGO,
   };
   return (
     <button
       onClick={onClick}
       style={{
         flex: "1 1 110px", minWidth: 110, textAlign: "left", padding: "12px 14px", borderRadius: 12, cursor: "pointer",
-        border: `1.5px solid ${active ? tones[tone] : BORDER}`, background: active ? `${tones[tone]}12` : "#fff",
+        border: `1.5px solid ${active ? tones[tone] : BORDER}`, background: active ? `color-mix(in srgb, ${tones[tone]} 8%, var(--c-surface))` : "var(--c-surface)",
       }}
     >
       <div style={{ fontSize: 20, fontWeight: 800, color: tones[tone] }}>{count}</div>
@@ -3161,7 +3411,7 @@ function StatusCountTile({ label, count, tone, active, onClick }) {
 function SummaryMetricCard({ icon: Icon, label, value, color, hint }) {
   return (
     <Card style={{ padding: 16, display: "flex", alignItems: "center", gap: 12 }}>
-      <div style={{ width: 40, height: 40, borderRadius: 10, background: `${color}18`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+      <div style={{ width: 40, height: 40, borderRadius: 10, background: `color-mix(in srgb, ${color} 10%, transparent)`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
         <Icon size={19} color={color} />
       </div>
       <div style={{ minWidth: 0 }}>
@@ -3316,7 +3566,7 @@ function Orders({ orders, setOrders, companies, admin }) {
   ];
 
   const quickActions = {
-    pending: { label: "Start", status: "in_progress", color: "#1D4ED8" },
+    pending: { label: "Start", status: "in_progress", color: "var(--c-1d4ed8)" },
     in_progress: { label: "Complete", status: "completed", color: GREEN },
   };
 
@@ -3384,7 +3634,7 @@ function Orders({ orders, setOrders, companies, admin }) {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
           {DALAB_API_ENABLED && (
-            <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 700, color: live ? GREEN : "#A9720A" }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 700, color: live ? GREEN : "var(--c-a9720a)" }}>
               <Radio size={12} /> {live ? "Live" : `Polling every ${ORDERS_POLL_INTERVAL_MS / 1000}s`}
             </span>
           )}
@@ -3399,7 +3649,7 @@ function Orders({ orders, setOrders, companies, admin }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 16 }}>
         <SummaryMetricCard icon={ShoppingCart} label="Total Orders" value={summary.totalOrders.toLocaleString()} color={INDIGO} />
         <SummaryMetricCard icon={DollarSign} label="Daily Revenue" value={`$${summary.dailyRevenue.toFixed(2)}`} color={GREEN} hint="Orders created today" />
-        <SummaryMetricCard icon={TrendingUp} label="Average Transaction Value" value={`$${summary.avgTransactionValue.toFixed(2)}`} color="#1D4ED8" />
+        <SummaryMetricCard icon={TrendingUp} label="Average Transaction Value" value={`$${summary.avgTransactionValue.toFixed(2)}`} color="var(--c-1d4ed8)" />
       </div>
 
       {/* Status count tiles — always reflect true totals regardless of the active filter */}
@@ -3834,7 +4084,7 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
         </div>
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       {isMobile ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -3844,7 +4094,7 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontWeight: 800, color: INK, fontSize: 14, display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
                     {c?.name || "Not provided"}
-                    {c.hasHigherExchangeLimit && <CheckCircle2 size={14} color="#1D4ED8" title="Approved for a higher exchange limit" />}
+                    {c.hasHigherExchangeLimit && <CheckCircle2 size={14} color="var(--c-1d4ed8)" title="Approved for a higher exchange limit" />}
                   </div>
                   <div style={{ fontSize: 12, color: SLATE, fontFamily: "monospace", marginTop: 3 }}>{c?.phone || "—"}</div>
                 </div>
@@ -3903,7 +4153,7 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Customer", "Phone", "Orders", "Macaash points", "Joined", "Status", ...(canManagePin ? ["PIN"] : []), ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -3915,7 +4165,7 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
                 <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
                     {c?.name || "Not provided"}
-                    {c.hasHigherExchangeLimit && <CheckCircle2 size={14} color="#1D4ED8" title="Approved for a higher exchange limit" />}
+                    {c.hasHigherExchangeLimit && <CheckCircle2 size={14} color="var(--c-1d4ed8)" title="Approved for a higher exchange limit" />}
                   </span>
                 </td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE, fontFamily: "monospace" }}>{c?.phone || "—"}</td>
@@ -3945,7 +4195,7 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
                         <Pencil size={14} color={INDIGO} />
                       </button>
                       <button onClick={() => remove(c)} style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
-                        <Trash2 size={14} color="#C81E2C" />
+                        <Trash2 size={14} color="var(--c-c81e2c)" />
                       </button>
                       <button onClick={() => openWallet(c)} title="eBadal wallet info (EVC Plus / eDahab)" style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
                         <Wallet size={14} color={INDIGO} />
@@ -3984,7 +4234,7 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
           <Field label="Phone">
             <input style={inputStyle} value={form.phone || ""} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
           </Field>
-          {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+          {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
           <div style={{ display: "flex", gap: 10 }}>
             <Button onClick={saveEdit} icon={Check}>Save</Button>
             <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
@@ -3993,18 +4243,18 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
       )}
 
       {pinTarget && (
-        <Modal title={`Password Recovery — ${pinTarget.name || pinTarget.phone}`} onClose={() => setPinTarget(null)}>
+        <Modal title={`Login PIN — ${pinTarget.name || pinTarget.phone}`} onClose={() => setPinTarget(null)}>
           <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>
-            The Customer App's Forgot Password screen sends a customer who's forgotten their Recovery PIN here.
-            The PIN is stored as a secure hash and can never be viewed once set — only replaced.
+            Customers sign in to the Customer App with their number and this PIN. A customer who forgot it is sent here by "Forgot your PIN? Contact Support".
+            The PIN is stored as a secure hash and can never be viewed once set — only replaced. A new PIN signs the customer out on every device and unlocks the number if it was locked after wrong PINs.
           </div>
-          <Field label="Recovery PIN status">
+          <Field label="Login PIN status">
             <Badge tone={pinTarget.pinSet ? "green" : "amber"}>{pinTarget.pinSet ? "Set" : "Not set"}</Badge>
           </Field>
-          <div style={{ marginBottom: 16, padding: 12, borderRadius: 10, background: "#FAFBFF", border: "1px solid #E5E8F4" }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: INK, marginBottom: 4 }}>Reset Recovery PIN</div>
+          <div style={{ marginBottom: 16, padding: 12, borderRadius: 10, background: "var(--c-fafbff)", border: "1px solid var(--c-e5e8f4)" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: INK, marginBottom: 4 }}>Reset Login PIN</div>
             <div style={{ fontSize: 12, color: MUTE, marginBottom: 10 }}>
-              Generates a brand-new 4-digit Recovery PIN and immediately invalidates the old one. Shown once, here, for you to relay to the customer yourself (call, WhatsApp, etc.).
+              Generates a brand-new 4-digit PIN and immediately invalidates the old one. Shown once, here, for you to relay to the customer yourself (call, WhatsApp, etc.).
             </div>
             <Button onClick={generatePin} icon={pinSaving ? Loader2 : RefreshCw} spin={pinSaving} disabled={pinSaving}>
               Generate New PIN
@@ -4012,18 +4262,20 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
           </div>
           <Field label={pinTarget.pinSet ? "Or set a specific PIN (replaces the current one)" : "Or create a specific PIN"}>
             <input
-              type="password" inputMode="numeric" maxLength={8} placeholder="3-8 digits"
+              type="password" inputMode="numeric" maxLength={8} placeholder="4-8 digits"
               style={inputStyle}
               value={pinDraft}
               onChange={(e) => setPinDraft(e.target.value.replace(/\D/g, ""))}
             />
           </Field>
-          {pinError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{pinError}</div>}
+          {pinError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{pinError}</div>}
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <Button variant="ghost" onClick={savePin} icon={pinSaving ? Loader2 : Check} spin={pinSaving} disabled={pinSaving || !pinDraft}>
               {pinTarget.pinSet ? "Change PIN" : "Create PIN"}
             </Button>
-            {pinTarget.pinSet && (
+            {/* Without a password the PIN is the only way into the account:
+                clearing it would leave the number open (the server refuses it). */}
+            {pinTarget.pinSet && pinTarget.hasPassword && (
               <Button variant="danger" onClick={resetPin} disabled={pinSaving}>Clear PIN</Button>
             )}
             <Button variant="ghost" onClick={() => setPinTarget(null)} disabled={pinSaving}>Cancel</Button>
@@ -4032,12 +4284,12 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
       )}
 
       {generatedPin && (
-        <Modal title={`New Recovery PIN — ${generatedPin.customer.name || generatedPin.customer.phone}`} onClose={() => setGeneratedPin(null)}>
+        <Modal title={`New Login PIN — ${generatedPin.customer.name || generatedPin.customer.phone}`} onClose={() => setGeneratedPin(null)}>
           <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>
             Relay this PIN to the customer yourself (call, WhatsApp, etc.) — there's no automatic delivery.
-            It's shown here once and can't be retrieved again after you close this dialog. Their previous Recovery PIN no longer works.
+            It's shown here once and can't be retrieved again after you close this dialog. Their previous PIN no longer works, and they were signed out on every device.
           </div>
-          <Field label="New Recovery PIN">
+          <Field label="New Login PIN">
             <div style={{ display: "flex", gap: 8 }}>
               <input readOnly style={{ ...inputStyle, fontFamily: "monospace", fontWeight: 700, fontSize: 18, letterSpacing: 4, textAlign: "center" }} value={generatedPin.pin} onFocus={(e) => e.target.select()} />
               <Button
@@ -4116,7 +4368,7 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
             </label>
           )}
 
-          {walletError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{walletError}</div>}
+          {walletError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{walletError}</div>}
           <div style={{ display: "flex", gap: 10 }}>
             <Button onClick={saveWallet} icon={walletSaving ? Loader2 : Check} spin={walletSaving} disabled={walletSaving}>Save</Button>
             <Button variant="ghost" onClick={() => setWalletTarget(null)} disabled={walletSaving}>Cancel</Button>
@@ -4139,7 +4391,7 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
           <Field label="Yearly limit ($)">
             <input style={inputStyle} type="number" min="0" placeholder="2000 (default)" value={limitsDraft.yearlyLimit} onChange={(e) => setLimitsDraft({ ...limitsDraft, yearlyLimit: e.target.value })} />
           </Field>
-          {limitsError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{limitsError}</div>}
+          {limitsError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{limitsError}</div>}
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <Button onClick={saveLimits} icon={limitsSaving ? Loader2 : Check} spin={limitsSaving} disabled={limitsSaving}>Save</Button>
             <Button variant="ghost" onClick={resetLimitsDraft} disabled={limitsSaving}>Reset to defaults</Button>
@@ -4150,6 +4402,226 @@ function Customers({ customers, setCustomers, refreshCustomers, admin }) {
     </div>
   );
 }
+
+// ---------------- Device Activation ----------------
+// A new Agent App install shows a 4-character activation code; the admin
+// enters it here, checks whose device it is, and activates it. Everything is
+// verified on the server (deviceActivation.routes.ts): the code must be live,
+// unused and belong to that device, and approval needs agents.manage.
+const ACTIVATION_TONE = { pending: "amber", approved: "green", rejected: "red", revoked: "gray" };
+const ACTIVATION_LABEL = { pending: "Pending", approved: "Authorized", rejected: "Rejected", revoked: "Revoked" };
+
+function DeviceActivationSection({ admin }) {
+  const [code, setCode] = useState("");
+  const [checking, setChecking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [details, setDetails] = useState(null);
+  const [checkedCode, setCheckedCode] = useState("");
+  const [justActivated, setJustActivated] = useState(false);
+  const [recent, setRecent] = useState([]);
+  const [recentFilter, setRecentFilter] = useState("");
+  const canManage = hasPermission(admin, "agents.manage");
+
+  const loadRecent = async (status = recentFilter) => {
+    if (!DALAB_API_ENABLED) return;
+    try {
+      setRecent(await DalabAdminApi.getDeviceActivations(status || undefined));
+    } catch {
+      /* the list is secondary; the check flow still works */
+    }
+  };
+  useEffect(() => { loadRecent(); }, [recentFilter]);
+
+  const normalized = code.trim().toLowerCase();
+  const validFormat = /^[a-z0-9]{4}$/.test(normalized);
+
+  const check = async () => {
+    if (!validFormat || checking) return;
+    setChecking(true);
+    setError("");
+    setDetails(null);
+    setJustActivated(false);
+    try {
+      setDetails(await DalabAdminApi.checkDeviceActivationCode(normalized));
+      setCheckedCode(normalized);
+    } catch (err) {
+      setError(err.message || "Could not check this code.");
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const activate = async () => {
+    if (!details || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      setDetails(await DalabAdminApi.approveDeviceActivation(details.activationId, checkedCode));
+      setJustActivated(true);
+      loadRecent();
+    } catch (err) {
+      setError(err.message || "Could not activate this device.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reject = async () => {
+    if (!details || busy) return;
+    if (!window.confirm(`Reject device ${details.deviceNumber} for ${details.agentName}?`)) return;
+    setBusy(true);
+    try {
+      setDetails(await DalabAdminApi.rejectDeviceActivation(details.activationId));
+      loadRecent();
+    } catch (err) {
+      setError(err.message || "Could not reject this device.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revoke = async (row) => {
+    if (!window.confirm(`Remove access for device ${row.deviceNumber} (${row.agentName})? The phone will need a new activation code.`)) return;
+    try {
+      await DalabAdminApi.revokeDeviceActivation(row.activationId);
+      loadRecent();
+    } catch (err) {
+      alert(err.message || "Could not revoke this device.");
+    }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to activate devices.</div>;
+  }
+
+  const Row = ({ label, children }) => (
+    <div style={{ display: "flex", gap: 12, padding: "5px 0", fontSize: 13 }}>
+      <div style={{ width: 140, color: MUTE, flexShrink: 0 }}>{label}</div>
+      <div style={{ color: INK, fontWeight: 600, minWidth: 0, overflowWrap: "anywhere" }}>{children}</div>
+    </div>
+  );
+  const pending = details?.activationStatus === "pending";
+  const approved = details?.activationStatus === "approved";
+
+  return (
+    <div style={{ maxWidth: 760 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        <div style={{ width: 42, height: 42, borderRadius: 12, background: "var(--c-e5ebff)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <Smartphone size={22} color="var(--c-1d4ed8)" />
+        </div>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 18, color: INK }}>Device Activation</div>
+          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Enter the 4-character code shown on the agent's phone. · Geli 4-xaraf code ee Agent-ka si aad u hubiso.</div>
+        </div>
+      </div>
+
+      <Card style={{ padding: 18, marginBottom: 16 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: SLATE, marginBottom: 8 }}>Enter Activation Code</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <input
+            value={code}
+            onChange={(e) => setCode(e.target.value.replace(/[^a-zA-Z0-9]/g, "").slice(0, 4))}
+            onKeyDown={(e) => { if (e.key === "Enter") check(); }}
+            placeholder="44b1"
+            autoComplete="off"
+            spellCheck={false}
+            style={{ ...inputStyle, width: 160, fontSize: 22, fontWeight: 800, letterSpacing: 4, fontFamily: "monospace" }}
+          />
+          <Button icon={checking ? Loader2 : Search} spin={checking} disabled={!validFormat || checking} onClick={check}>
+            {checking ? "Checking…" : "Check Code"}
+          </Button>
+        </div>
+        {error && (
+          <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, color: "var(--c-c81e2c)", fontSize: 13, fontWeight: 600 }}>
+            <XCircle size={16} /> {error}
+          </div>
+        )}
+      </Card>
+
+      {details && (
+        <Card style={{ padding: 18, marginBottom: 16, background: approved ? "var(--c-f2f8ff)" : pending ? "var(--c-f3fbf5)" : "var(--c-surface)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, fontWeight: 800, fontSize: 16, color: approved ? "var(--c-1d4ed8)" : pending ? GREEN : "var(--c-c81e2c)" }}>
+            {pending || approved ? <CheckCircle2 size={22} /> : <XCircle size={22} />}
+            {justActivated ? "Device activated! · Device waa la fasaxay!" : pending ? "Code is valid · Code waa sax!" : approved ? "Device is authorized" : `Device ${ACTIVATION_LABEL[details.activationStatus] || details.activationStatus}`}
+          </div>
+          <Row label="Agent Name">{details.agentName}</Row>
+          <Row label="Agent ID">{details.agentCode}</Row>
+          <Row label="Phone Number">{details.agentPhone}</Row>
+          <Row label="Device ID">{details.deviceNumber}{details.deviceModel ? ` · ${details.deviceModel}` : ""}</Row>
+          <Row label="Account Status"><Badge tone={details.accountStatus === "active" ? "green" : "red"}>{details.accountStatus === "active" ? "Active" : "Suspended"}</Badge></Row>
+          <Row label="Activation Status"><Badge tone={ACTIVATION_TONE[details.activationStatus] || "gray"}>{ACTIVATION_LABEL[details.activationStatus] || details.activationStatus}</Badge></Row>
+          {pending && details.codeExpiresAt && <Row label="Code Expires">{formatDateTime(details.codeExpiresAt)}</Row>}
+          {approved && <Row label="Authorized By">{details.approvedByEmail || "System (existing device)"}</Row>}
+          {approved && details.approvedAt && <Row label="Authorized At">{formatDateTime(details.approvedAt)}</Row>}
+
+          {pending && canManage && (
+            <div style={{ display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" }}>
+              <Button icon={busy ? Loader2 : CheckCircle2} spin={busy} disabled={busy} onClick={activate} style={{ background: "var(--c-16a34a)", flex: 1, justifyContent: "center", padding: "12px 14px" }}>
+                Activate Device
+              </Button>
+              <Button variant="danger" icon={XCircle} disabled={busy} onClick={reject}>Reject</Button>
+            </div>
+          )}
+          {pending && !canManage && <div style={{ marginTop: 12, fontSize: 12.5, color: MUTE }}>You need the "Manage agents" permission to activate devices.</div>}
+        </Card>
+      )}
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 14px", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ fontWeight: 800, fontSize: 14, color: INK }}>Agent devices</div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <select value={recentFilter} onChange={(e) => setRecentFilter(e.target.value)} style={{ ...inputStyle, width: 150, padding: "7px 10px" }}>
+              <option value="">All</option>
+              <option value="pending">Pending</option>
+              <option value="approved">Authorized</option>
+              <option value="rejected">Rejected</option>
+              <option value="revoked">Revoked</option>
+            </select>
+            <Button variant="ghost" icon={RefreshCw} onClick={() => loadRecent()}>Refresh</Button>
+          </div>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: "var(--c-fafbff)" }}>
+                {["Device ID", "Agent", "Status", "Authorized by", "Last seen", ""].map((h) => (
+                  <th key={h} style={{ textAlign: "left", padding: "9px 14px", fontSize: 11, color: MUTE, fontWeight: 700, whiteSpace: "nowrap" }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {recent.length === 0 && (
+                <tr><td colSpan={6} style={{ padding: 16, fontSize: 12.5, color: MUTE }}>No devices yet.</td></tr>
+              )}
+              {recent.map((r) => (
+                <tr key={r.activationId} style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <td style={{ padding: "9px 14px", fontSize: 12.5, fontWeight: 700, color: INK, whiteSpace: "nowrap" }}>{r.deviceNumber}<div style={{ fontWeight: 500, color: MUTE, fontSize: 11 }}>{r.deviceModel || ""}</div></td>
+                  <td style={{ padding: "9px 14px", fontSize: 12.5, color: INK }}>{r.agentName}<div style={{ color: MUTE, fontSize: 11 }}>{r.agentCode} · {r.agentPhone}</div></td>
+                  <td style={{ padding: "9px 14px" }}><Badge tone={ACTIVATION_TONE[r.activationStatus] || "gray"}>{ACTIVATION_LABEL[r.activationStatus] || r.activationStatus}</Badge></td>
+                  <td style={{ padding: "9px 14px", fontSize: 12, color: MUTE }}>
+                    {r.activationStatus === "approved" ? (r.approvedByEmail || (r.approvalNote ? "System (existing device)" : "—")) : "—"}
+                    {r.approvedAt && <div style={{ fontSize: 11 }}>{formatDateTime(r.approvedAt)}</div>}
+                  </td>
+                  <td style={{ padding: "9px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{r.lastSeenAt ? formatDateTime(r.lastSeenAt) : "—"}</td>
+                  <td style={{ padding: "9px 14px", textAlign: "right" }}>
+                    {canManage && (r.activationStatus === "approved" || r.activationStatus === "rejected") && (
+                      <Button variant="danger" onClick={() => revoke(r)} style={{ padding: "6px 10px", fontSize: 12 }}>
+                        {r.activationStatus === "approved" ? "Revoke" : "Reset"}
+                      </Button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+
 
 function AgentsSection({ companies, admin }) {
   const [agents, setAgents] = useState([]);
@@ -4250,12 +4722,12 @@ function AgentsSection({ companies, admin }) {
         {canManage && <Button icon={Plus} onClick={openNew}>Add agent</Button>}
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Name", "Phone", "Status", "Last login", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -4273,13 +4745,13 @@ function AgentsSection({ companies, admin }) {
                     <>
                       <Button variant="ghost" onClick={() => openAssign(a)}>Companies</Button>
                       <button onClick={() => toggleSuspend(a)} disabled={suspendTogglingId === a.id} title={a.status === "active" ? "Suspend" : "Activate"} style={{ background: "none", border: "none", cursor: suspendTogglingId === a.id ? "default" : "pointer", opacity: suspendTogglingId === a.id ? 0.5 : 1, marginLeft: 8 }}>
-                        <Power size={14} color={a.status === "active" ? GREEN : "#C81E2C"} />
+                        <Power size={14} color={a.status === "active" ? GREEN : "var(--c-c81e2c)"} />
                       </button>
                       <button onClick={() => openEdit(a)} style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
                         <Pencil size={14} color={INDIGO} />
                       </button>
                       <button onClick={() => remove(a)} style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
-                        <Trash2 size={14} color="#C81E2C" />
+                        <Trash2 size={14} color="var(--c-c81e2c)" />
                       </button>
                     </>
                   )}
@@ -4440,7 +4912,7 @@ function PromoImages() {
         </div>
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 14 }}>
         {ordered.map((img, i) => (
@@ -4466,7 +4938,7 @@ function PromoImages() {
                 {img.active ? <EyeOff size={13} color={SLATE} /> : <Eye size={13} color={GREEN} />}
               </button>
               <button onClick={() => remove(img)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer", marginLeft: "auto" }}>
-                <Trash2 size={13} color="#C81E2C" />
+                <Trash2 size={13} color="var(--c-c81e2c)" />
               </button>
             </div>
           </Card>
@@ -4551,12 +5023,266 @@ function NalaSocoPostForm({ initial, onSave, onCancel }) {
           Published (visible on the Customer App feed)
         </label>
       </Field>
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
         <Button variant="secondary" onClick={onCancel} disabled={saving}>Cancel</Button>
         <Button onClick={submit} disabled={saving} spin={saving}>{saving ? "Saving..." : "Save"}</Button>
       </div>
     </Modal>
+  );
+}
+
+// ---------------- Ciyaaraha (football prediction contests) ----------------
+// Agents run contests day to day in the Agent App; this is the overview and
+// the place for the exceptions only an Admin handles: disputes, agent
+// access, the reward ledger and cleanup health.
+const FOOTBALL_STATUS_META = {
+  draft: { label: "Draft", tone: "gray" },
+  open: { label: "Predictions open", tone: "green" },
+  closed: { label: "Predictions closed", tone: "blue" },
+  awaiting_result: { label: "Awaiting result", tone: "amber" },
+  verification: { label: "Winner verification", tone: "amber" },
+  completed: { label: "Completed", tone: "green" },
+  no_winner: { label: "No winner", tone: "gray" },
+  cancelled: { label: "Cancelled", tone: "gray" },
+  disputed: { label: "Disputed", tone: "red" },
+};
+const FOOTBALL_WINNER_META = {
+  winner_confirmed: { label: "Winner confirmed", tone: "blue" },
+  reward_pending: { label: "Reward pending", tone: "amber" },
+  reward_paid: { label: "Reward paid", tone: "green" },
+  reward_failed: { label: "Reward failed", tone: "red" },
+  disputed: { label: "Disputed", tone: "red" },
+  revoked: { label: "Revoked", tone: "gray" },
+};
+
+function CiyaarahaAdmin() {
+  const [tab, setTab] = useState("contests");
+  const tabs = [["contests", "Contests"], ["rewards", "Rewards"], ["agents", "Agent access"], ["cleanup", "Cleanup"]];
+  return (
+    <div>
+      <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Ciyaaraha</div>
+      <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2, marginBottom: 14 }}>
+        Football exact-score predictions. Agents create contests, enter the official score and confirm the earliest correct prediction; Admin handles disputes and access.
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+        {tabs.map(([id, label]) => (
+          <button key={id} onClick={() => setTab(id)} style={{ padding: "8px 14px", borderRadius: 10, cursor: "pointer", fontWeight: 700, fontSize: 13, border: `1px solid ${tab === id ? INDIGO : BORDER}`, background: tab === id ? INDIGO : "var(--c-surface)", color: tab === id ? "#fff" : SLATE }}>{label}</button>
+        ))}
+      </div>
+      {tab === "contests" && <CiyaarahaContests />}
+      {tab === "rewards" && <CiyaarahaRewards />}
+      {tab === "agents" && <CiyaarahaAgents />}
+      {tab === "cleanup" && <CiyaarahaCleanup />}
+    </div>
+  );
+}
+
+function useAdminFetch(fn, deps = []) {
+  const [state, setState] = useState({ loading: true, error: "", data: null });
+  const load = async () => {
+    setState((s) => ({ ...s, loading: true, error: "" }));
+    try {
+      setState({ loading: false, error: "", data: await fn() });
+    } catch (err) {
+      setState({ loading: false, error: err.message || "Could not load.", data: null });
+    }
+  };
+  useEffect(() => { load(); }, deps); // eslint-disable-line react-hooks/exhaustive-deps
+  return [state, load];
+}
+
+function CiyaarahaContests() {
+  const [status, setStatus] = useState("");
+  const [state, reload] = useAdminFetch(() => DalabAdminApi.getFootballContests(status), [status]);
+  const [openId, setOpenId] = useState(null);
+  const rows = state.data || [];
+  const counts = rows.reduce((m, c) => ({ ...m, [c.status]: (m[c.status] || 0) + 1 }), {});
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+        <select style={{ ...inputStyle, width: 220 }} value={status} onChange={(e) => setStatus(e.target.value)}>
+          <option value="">All statuses</option>
+          {Object.entries(FOOTBALL_STATUS_META).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+        </select>
+        <Button variant="ghost" icon={RefreshCw} onClick={reload}>Refresh</Button>
+        {!status && counts.disputed > 0 && <Badge tone="red">{counts.disputed} disputed</Badge>}
+        {!status && counts.verification > 0 && <Badge tone="amber">{counts.verification} awaiting winner confirmation</Badge>}
+      </div>
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        {state.loading && <div style={{ padding: 18, color: MUTE, fontSize: 13 }}>Loading…</div>}
+        {state.error && <div style={{ padding: 18, color: "var(--c-c81e2c)", fontSize: 13 }}>{state.error}</div>}
+        {!state.loading && !state.error && rows.length === 0 && <div style={{ padding: 18, color: MUTE, fontSize: 13 }}>No contests yet. Agents create them in the Agent App (Ciyaaraha).</div>}
+        {rows.length > 0 && (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: "var(--c-fafbff)", color: MUTE, textAlign: "left" }}>
+                  {["Match", "Kickoff", "Reward", "Players", "Result", "Status", "Winner", ""].map((h) => <th key={h} style={{ padding: "10px 12px", fontWeight: 700, fontSize: 11.5 }}>{h}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((c) => (
+                  <tr key={c.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                    <td style={{ padding: "10px 12px", color: INK, fontWeight: 700 }}>{c.homeTeam.name} vs {c.awayTeam.name}<div style={{ fontWeight: 500, color: MUTE, fontSize: 11.5 }}>{c.league}</div></td>
+                    <td style={{ padding: "10px 12px", color: SLATE }}>{formatDateTime(c.kickoffAt)}</td>
+                    <td style={{ padding: "10px 12px", color: SLATE }}>{c.rewardLabel} · {c.rewardCompany?.name}</td>
+                    <td style={{ padding: "10px 12px", color: SLATE }}>{c.participants}</td>
+                    <td style={{ padding: "10px 12px", color: INK, fontWeight: 700 }}>{c.officialScore ? `${c.officialScore.home} - ${c.officialScore.away}` : "—"}</td>
+                    <td style={{ padding: "10px 12px" }}><Badge tone={(FOOTBALL_STATUS_META[c.status] || {}).tone}>{(FOOTBALL_STATUS_META[c.status] || {}).label || c.status}</Badge></td>
+                    <td style={{ padding: "10px 12px", color: SLATE }}>{c.winner ? <>{c.winner.name} <span style={{ color: MUTE }}>{c.winner.phoneMasked}</span><div><Badge tone={(FOOTBALL_WINNER_META[c.winner.status] || {}).tone}>{(FOOTBALL_WINNER_META[c.winner.status] || {}).label}</Badge></div></> : c.status === "verification" ? "Candidate ready" : "—"}</td>
+                    <td style={{ padding: "10px 12px" }}><Button variant="ghost" onClick={() => setOpenId(c.id)}>Details</Button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+      {openId && <CiyaarahaContestModal id={openId} onClose={() => setOpenId(null)} onChanged={reload} />}
+    </div>
+  );
+}
+
+function CiyaarahaContestModal({ id, onClose, onChanged }) {
+  const [state, reload] = useAdminFetch(() => DalabAdminApi.getFootballContest(id), [id]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [score, setScore] = useState({ home: "", away: "" });
+  const c = state.data;
+  const act = async (fn) => {
+    setBusy(true); setErr("");
+    try { await fn(); await reload(); onChanged(); } catch (e) { setErr(e.message || "Action failed."); } finally { setBusy(false); }
+  };
+  return (
+    <Modal title="Contest details" onClose={onClose} width={640}>
+      {state.loading && <div style={{ color: MUTE, fontSize: 13 }}>Loading…</div>}
+      {state.error && <div style={{ color: "var(--c-c81e2c)", fontSize: 13 }}>{state.error}</div>}
+      {c && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, fontSize: 13 }}>
+          <div>
+            <div style={{ fontWeight: 800, color: INK, fontSize: 15 }}>{c.homeTeam.name} vs {c.awayTeam.name}</div>
+            <div style={{ color: MUTE }}>{c.league} · Kickoff {formatDateTime(c.kickoffAt)} · Predictions close {formatDateTime(c.predictionsCloseAt)}</div>
+            <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <Badge tone={(FOOTBALL_STATUS_META[c.status] || {}).tone}>{(FOOTBALL_STATUS_META[c.status] || {}).label || c.status}</Badge>
+              <Badge>{c.rewardLabel} · {c.rewardCompany?.name}</Badge>
+              <Badge>{c.participants} predictions</Badge>
+            </div>
+            {c.statusReason && <div style={{ marginTop: 6, color: SLATE }}>Reason: {c.statusReason}</div>}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
+            <Card style={{ padding: 12 }}><div style={{ color: MUTE, fontSize: 11.5, fontWeight: 700 }}>OFFICIAL RESULT</div><div style={{ fontWeight: 800, fontSize: 18, color: INK }}>{c.officialScore ? `${c.officialScore.home} - ${c.officialScore.away}` : "Not entered"}</div>{c.exactScoreCount != null && <div style={{ color: MUTE }}>{c.exactScoreCount} exact predictions</div>}</Card>
+            <Card style={{ padding: 12 }}><div style={{ color: MUTE, fontSize: 11.5, fontWeight: 700 }}>CANDIDATE (EARLIEST CORRECT)</div>{c.candidate ? <><div style={{ fontWeight: 700, color: INK }}>{c.candidate.customerName}</div><div style={{ color: MUTE }}>{c.candidate.phoneMasked} · {formatDateTime(c.candidate.submittedAt)}</div></> : <div style={{ color: MUTE }}>—</div>}</Card>
+            <Card style={{ padding: 12 }}><div style={{ color: MUTE, fontSize: 11.5, fontWeight: 700 }}>CONFIRMED WINNER</div>{c.winner ? <><div style={{ fontWeight: 700, color: INK }}>{c.winner.customerName}</div><div style={{ color: MUTE }}>{c.winner.phone}</div><Badge tone={(FOOTBALL_WINNER_META[c.winner.status] || {}).tone}>{(FOOTBALL_WINNER_META[c.winner.status] || {}).label}</Badge></> : <div style={{ color: MUTE }}>—</div>}</Card>
+          </div>
+          {c.rewards.length > 0 && (
+            <div>
+              <div style={{ fontSize: 11.5, fontWeight: 700, color: MUTE, marginBottom: 4 }}>REWARD ATTEMPTS</div>
+              {c.rewards.map((r) => <div key={r.id} style={{ color: SLATE }}>#{r.attemptNo} · <b style={{ color: r.status === "paid" ? GREEN : "var(--c-c81e2c)" }}>{r.status}</b> · {r.transactionRef || "no ref"} · {formatDateTime(r.createdAt)}{r.note ? ` · ${r.note}` : ""}</div>)}
+            </div>
+          )}
+          {c.status !== "disputed" && !["draft", "cancelled"].includes(c.status) && (
+            <div><Button variant="danger" disabled={busy} onClick={() => { const reason = window.prompt("Why is this contest disputed?"); if (reason) act(() => DalabAdminApi.disputeFootballContest(id, reason)); }}>Mark disputed</Button></div>
+          )}
+          {c.status === "disputed" && (
+            <Card style={{ padding: 12 }}>
+              <div style={{ fontWeight: 700, color: INK, marginBottom: 6 }}>Resolve dispute</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                <Button disabled={busy} onClick={() => act(() => DalabAdminApi.resolveFootballContest(id, { action: "uphold" }))}>Uphold (keep result and winner)</Button>
+                <span style={{ color: MUTE }}>or correct the score:</span>
+                <input style={{ ...inputStyle, width: 64 }} inputMode="numeric" placeholder="Home" value={score.home} onChange={(e) => setScore({ ...score, home: e.target.value })} />
+                <input style={{ ...inputStyle, width: 64 }} inputMode="numeric" placeholder="Away" value={score.away} onChange={(e) => setScore({ ...score, away: e.target.value })} />
+                <Button variant="ghost" disabled={busy || score.home === "" || score.away === ""} onClick={() => {
+                  if (!window.confirm(`Set the official score to ${score.home} - ${score.away}? Any confirmed winner is revoked (kept in history) and the earliest correct prediction becomes the new candidate.`)) return;
+                  act(() => DalabAdminApi.resolveFootballContest(id, { action: "correct_result", homeGoals: Number(score.home), awayGoals: Number(score.away) }));
+                }}>Correct result</Button>
+              </div>
+            </Card>
+          )}
+          {err && <div style={{ color: "var(--c-c81e2c)" }}>{err}</div>}
+          <div>
+            <div style={{ fontSize: 11.5, fontWeight: 700, color: MUTE, marginBottom: 4 }}>AUDIT TRAIL</div>
+            <div style={{ maxHeight: 220, overflowY: "auto" }}>
+              {c.events.map((e, i) => <div key={i} style={{ color: SLATE, padding: "3px 0", borderTop: i ? `1px solid ${BORDER}` : "none" }}>{formatDateTime(e.createdAt)} · <b>{e.action.replace(/_/g, " ")}</b> · {e.actorType}{e.newValue ? ` · ${JSON.stringify(e.newValue)}` : ""}</div>)}
+            </div>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function CiyaarahaRewards() {
+  const [state, reload] = useAdminFetch(() => DalabAdminApi.getFootballRewards(), []);
+  const rows = state.data || [];
+  return (
+    <Card style={{ padding: 0, overflow: "hidden" }}>
+      <div style={{ padding: 12, display: "flex", justifyContent: "space-between" }}><b style={{ color: INK }}>Reward ledger</b><Button variant="ghost" icon={RefreshCw} onClick={reload}>Refresh</Button></div>
+      {state.error && <div style={{ padding: 12, color: "var(--c-c81e2c)" }}>{state.error}</div>}
+      {!state.loading && rows.length === 0 && <div style={{ padding: 12, color: MUTE, fontSize: 13 }}>No rewards recorded yet.</div>}
+      {rows.length > 0 && (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead><tr style={{ background: "var(--c-fafbff)", color: MUTE, textAlign: "left" }}>{["Date", "Match", "Reward", "Winner", "Attempt", "Status", "Reference", "Agent"].map((h) => <th key={h} style={{ padding: "10px 12px", fontSize: 11.5 }}>{h}</th>)}</tr></thead>
+            <tbody>{rows.map((t) => (
+              <tr key={t.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 12px", color: SLATE }}>{formatDateTime(t.createdAt)}</td>
+                <td style={{ padding: "10px 12px", color: INK }}>{t.match}</td>
+                <td style={{ padding: "10px 12px", color: SLATE }}>{t.rewardLabel} · {t.companyId}</td>
+                <td style={{ padding: "10px 12px", color: SLATE }}>{t.recipientPhoneMasked}</td>
+                <td style={{ padding: "10px 12px", color: SLATE }}>#{t.attemptNo}</td>
+                <td style={{ padding: "10px 12px" }}><Badge tone={t.status === "paid" ? "green" : "red"}>{t.status === "paid" ? "Paid" : "Failed"}</Badge></td>
+                <td style={{ padding: "10px 12px", color: SLATE, fontFamily: "monospace" }}>{t.transactionRef || "—"}</td>
+                <td style={{ padding: "10px 12px", color: SLATE }}>{t.agentName || "—"}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function CiyaarahaAgents() {
+  const [state, reload] = useAdminFetch(() => DalabAdminApi.getFootballAgents(), []);
+  const [err, setErr] = useState("");
+  const toggle = async (a) => {
+    setErr("");
+    try { await DalabAdminApi.setFootballAgent(a.id, !a.ciyaarahaEnabled); await reload(); } catch (e) { setErr(e.message || "Could not update."); }
+  };
+  return (
+    <Card style={{ padding: 16 }}>
+      <div style={{ fontWeight: 700, color: INK }}>Who can run Ciyaaraha</div>
+      <div style={{ fontSize: 12.5, color: MUTE, margin: "2px 0 10px" }}>Only these agents can create contests, enter official results, confirm winners and record rewards in the Agent App.</div>
+      {err && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 8 }}>{err}</div>}
+      {(state.data || []).map((a) => (
+        <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderTop: `1px solid ${BORDER}`, flexWrap: "wrap" }}>
+          <div><div style={{ fontWeight: 700, color: INK, fontSize: 13 }}>{a.name}</div><div style={{ fontSize: 12, color: MUTE }}>{a.phone}{a.status !== "active" ? ` · ${a.status}` : ""}</div></div>
+          <Button variant={a.ciyaarahaEnabled ? "primary" : "ghost"} onClick={() => toggle(a)}>{a.ciyaarahaEnabled ? "Enabled" : "Off"}</Button>
+        </div>
+      ))}
+    </Card>
+  );
+}
+
+function CiyaarahaCleanup() {
+  const [state, reload] = useAdminFetch(() => DalabAdminApi.getCleanupRuns(), []);
+  const rows = state.data || [];
+  const last = rows[0];
+  return (
+    <Card style={{ padding: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div><div style={{ fontWeight: 700, color: INK }}>Image cleanup</div><div style={{ fontSize: 12.5, color: MUTE }}>Runs hourly. Removes only unused, expired or orphaned images; predictions, winners and rewards are never deleted.</div></div>
+        <Button variant="ghost" icon={RefreshCw} onClick={reload}>Refresh</Button>
+      </div>
+      {last && last.errors > 0 && <div style={{ marginTop: 10 }}><Badge tone="red">Last run had {last.errors} error(s)</Badge></div>}
+      {!state.loading && rows.length === 0 && <div style={{ marginTop: 10, color: MUTE, fontSize: 13 }}>No runs yet.</div>}
+      {rows.map((r) => (
+        <div key={r.id} style={{ fontSize: 12.5, color: SLATE, padding: "6px 0", borderTop: `1px solid ${BORDER}`, marginTop: 6 }}>
+          {formatDateTime(r.startedAt)} · processed {r.processed} · deleted {r.deleted} · errors <b style={{ color: r.errors ? "var(--c-c81e2c)" : SLATE }}>{r.errors}</b>{r.finishedAt ? "" : " · running"}
+        </div>
+      ))}
+    </Card>
   );
 }
 
@@ -4622,7 +5348,7 @@ function NalaSoco() {
         <Button icon={Plus} onClick={() => setEditing({})}>New post</Button>
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14 }}>
         {posts.map((post) => (
@@ -4644,7 +5370,7 @@ function NalaSoco() {
                   <Pencil size={13} color={INDIGO} />
                 </button>
                 <button onClick={() => remove(post)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
-                  <Trash2 size={13} color="#C81E2C" />
+                  <Trash2 size={13} color="var(--c-c81e2c)" />
                 </button>
               </div>
             </div>
@@ -4898,7 +5624,7 @@ function VipNumberSettingsPanel() {
                 style={{
                   padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer",
                   border: `1px solid ${draft.workingDays.includes(d) ? INDIGO : BORDER}`,
-                  background: draft.workingDays.includes(d) ? INDIGO : "#fff",
+                  background: draft.workingDays.includes(d) ? INDIGO : "var(--c-surface)",
                   color: draft.workingDays.includes(d) ? "#fff" : MUTE,
                 }}
               >
@@ -4921,7 +5647,7 @@ function VipNumberSettingsPanel() {
           </div>
         </div>
 
-        {error && <div style={{ color: "#C81E2C", fontSize: 12, marginTop: 4, marginBottom: 8 }}>{error}</div>}
+        {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12, marginTop: 4, marginBottom: 8 }}>{error}</div>}
         <div style={{ marginTop: 10 }}>
           <Button onClick={save} disabled={saving} spin={saving}>Save</Button>
         </div>
@@ -4988,7 +5714,7 @@ function VipNumbersInventoryPanel({ companies }) {
         <Button icon={Plus} onClick={() => setEditing({})}>Add VIP number</Button>
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 14 }}>
         {numbers.map((n) => (
@@ -5000,7 +5726,7 @@ function VipNumbersInventoryPanel({ companies }) {
                   <Pencil size={15} color={INDIGO} />
                 </button>
                 <button onClick={(e) => { e.stopPropagation(); remove(n); }} title="Delete" style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}>
-                  <Trash2 size={15} color="#C81E2C" />
+                  <Trash2 size={15} color="var(--c-c81e2c)" />
                 </button>
               </div>
             </div>
@@ -5111,7 +5837,7 @@ function VipNumberModal({ number, companies, onClose, onSaved, onDelete }) {
         <input type="number" min="0" step="0.01" value={form.price} onChange={(e) => setForm((f) => ({ ...f, price: e.target.value }))} style={inputStyle} />
       </Field>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         {onDelete && number.status === "available" ? (
@@ -5176,7 +5902,7 @@ function VipNumberPackagesPanel({ companies }) {
         <Button icon={Plus} onClick={() => setEditing({})}>Add package</Button>
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14 }}>
         {packages.map((p) => (
@@ -5189,7 +5915,7 @@ function VipNumberPackagesPanel({ companies }) {
                   <Pencil size={15} color={INDIGO} />
                 </button>
                 <button onClick={(e) => { e.stopPropagation(); remove(p); }} title="Delete" style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}>
-                  <Trash2 size={15} color="#C81E2C" />
+                  <Trash2 size={15} color="var(--c-c81e2c)" />
                 </button>
               </div>
             </div>
@@ -5369,7 +6095,7 @@ function VipNumberPackageModal({ pkg, companies, onClose, onSaved, onDelete }) {
         </div>
       )}
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, margin: "12px 0" }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, margin: "12px 0" }}>{error}</div>}
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 14 }}>
         {onDelete ? <Button variant="danger" icon={Trash2} onClick={onDelete}>Delete</Button> : <div />}
@@ -5408,7 +6134,7 @@ function VipNumberPackageOrdersPanel() {
         <input placeholder="Search order id, name, phone..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 200, width: "auto" }} />
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {orders.map((o) => (
@@ -5493,7 +6219,7 @@ function VipNumberPackageOrderDetailModal({ orderId, onClose, onChanged }) {
   if (!order) {
     return (
       <Modal title="Order" onClose={onClose}>
-        {error ? <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div> : <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>}
+        {error ? <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5 }}>{error}</div> : <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>}
       </Modal>
     );
   }
@@ -5553,7 +6279,7 @@ function VipNumberPackageOrderDetailModal({ orderId, onClose, onChanged }) {
         </div>
       )}
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5 }}>{error}</div>}
     </Modal>
   );
 }
@@ -5585,7 +6311,7 @@ function VipNumbersOrdersPanel() {
         <input placeholder="Search order id, name, phone..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 200, width: "auto" }} />
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {orders.map((o) => (
@@ -5674,7 +6400,7 @@ function VipNumberOrderDetailModal({ orderId, onClose, onChanged }) {
   if (!order) {
     return (
       <Modal title="Order" onClose={onClose}>
-        {error ? <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div> : <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>}
+        {error ? <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5 }}>{error}</div> : <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>}
       </Modal>
     );
   }
@@ -5736,7 +6462,7 @@ function VipNumberOrderDetailModal({ orderId, onClose, onChanged }) {
         </div>
       )}
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5 }}>{error}</div>}
     </Modal>
   );
 }
@@ -5887,7 +6613,7 @@ function ShopCategoriesPanel() {
         <div style={{ fontSize: 11.5, color: MUTE, marginTop: 8 }}>An image can be added after the category is created. The emoji is always shown as a fallback where no image is set.</div>
       </Card>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <input ref={fileInputRef} type="file" accept="image/*" onChange={onImageSelected} style={{ display: "none" }} />
 
@@ -5913,7 +6639,7 @@ function ShopCategoriesPanel() {
                   </button>
                   {cat.hasImage && (
                     <button title="Remove image" onClick={() => removeImage(cat)} disabled={busy} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: busy ? "default" : "pointer" }}>
-                      <X size={13} color="#C81E2C" />
+                      <X size={13} color="var(--c-c81e2c)" />
                     </button>
                   )}
                 </div>
@@ -5955,7 +6681,7 @@ function ShopCategoriesPanel() {
                     {cat.active ? <EyeOff size={13} color={SLATE} /> : <Eye size={13} color={GREEN} />}
                   </button>
                   <button onClick={() => remove(cat)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
-                    <Trash2 size={13} color="#C81E2C" />
+                    <Trash2 size={13} color="var(--c-c81e2c)" />
                   </button>
                 </div>
               </div>
@@ -6031,7 +6757,7 @@ function ShopSubcategoriesModal({ category, onClose }) {
         <input placeholder="e.g. Phone Covers" value={name} onChange={(e) => setName(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
         <Button onClick={add} disabled={saving || !name.trim()} icon={Plus} spin={saving}>Add</Button>
       </div>
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {subcategories.map((sub) => (
           <div key={sub.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "8px 12px" }}>
@@ -6042,7 +6768,7 @@ function ShopSubcategoriesModal({ category, onClose }) {
                 {sub.active ? <EyeOff size={12} color={SLATE} /> : <Eye size={12} color={GREEN} />}
               </button>
               <button onClick={() => remove(sub)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 5, cursor: "pointer" }}>
-                <Trash2 size={12} color="#C81E2C" />
+                <Trash2 size={12} color="var(--c-c81e2c)" />
               </button>
             </div>
           </div>
@@ -6101,7 +6827,7 @@ function ShopProductsPanel() {
         <Button icon={Plus} onClick={() => setEditing({})}>Add product</Button>
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 14 }}>
         {products.map((p) => (
@@ -6145,7 +6871,7 @@ function ShopProductsPanel() {
                   onClick={(e) => { e.stopPropagation(); remove(p); }}
                   style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}
                 >
-                  <Trash2 size={13} color="#C81E2C" />
+                  <Trash2 size={13} color="var(--c-c81e2c)" />
                 </button>
               </div>
             </div>
@@ -6437,7 +7163,7 @@ function ShopProductModal({ product, categories, onClose, onSaved, onDelete }) {
                 ? pendingImages.map((img) => (
                     <div key={img.tempId} style={{ position: "relative", width: 64, height: 64 }}>
                       <img src={img.dataUrl} alt="" style={{ width: 64, height: 64, borderRadius: 8, objectFit: "cover", border: `1px solid ${BORDER}` }} />
-                      <button onClick={() => removePendingImage(img.tempId)} style={{ position: "absolute", top: -6, right: -6, background: "#C81E2C", border: "none", borderRadius: "50%", width: 18, height: 18, color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <button onClick={() => removePendingImage(img.tempId)} style={{ position: "absolute", top: -6, right: -6, background: "var(--c-c81e2c)", border: "none", borderRadius: "50%", width: 18, height: 18, color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
                         <X size={11} />
                       </button>
                     </div>
@@ -6446,7 +7172,7 @@ function ShopProductModal({ product, categories, onClose, onSaved, onDelete }) {
                     <div key={img.id} style={{ position: "relative", width: 64, height: 64 }}>
                       <img src={DalabAdminApi.shopProductImageUrl(product.id, img.id)} alt="" style={{ width: 64, height: 64, borderRadius: 8, objectFit: "cover", border: `1px solid ${BORDER}` }} />
                       {images.length > MIN_SHOP_PRODUCT_IMAGES && (
-                        <button onClick={() => removeImage(img.id)} style={{ position: "absolute", top: -6, right: -6, background: "#C81E2C", border: "none", borderRadius: "50%", width: 18, height: 18, color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <button onClick={() => removeImage(img.id)} style={{ position: "absolute", top: -6, right: -6, background: "var(--c-c81e2c)", border: "none", borderRadius: "50%", width: 18, height: 18, color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
                           <X size={11} />
                         </button>
                       )}
@@ -6454,7 +7180,7 @@ function ShopProductModal({ product, categories, onClose, onSaved, onDelete }) {
                   ))}
             </div>
             {count < MIN_SHOP_PRODUCT_IMAGES && (
-              <div style={{ fontSize: 11.5, color: "#C81E2C", marginBottom: 8 }}>
+              <div style={{ fontSize: 11.5, color: "var(--c-c81e2c)", marginBottom: 8 }}>
                 Add {MIN_SHOP_PRODUCT_IMAGES - count} more image{MIN_SHOP_PRODUCT_IMAGES - count > 1 ? "s" : ""} — {MIN_SHOP_PRODUCT_IMAGES} minimum, customers see this product's photo gallery.
               </div>
             )}
@@ -6495,7 +7221,7 @@ function ShopProductModal({ product, categories, onClose, onSaved, onDelete }) {
                       </button>
                     )}
                     <button onClick={() => removeVariant(v)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
-                      <Trash2 size={13} color="#C81E2C" />
+                      <Trash2 size={13} color="var(--c-c81e2c)" />
                     </button>
                   </div>
                 );
@@ -6513,11 +7239,11 @@ function ShopProductModal({ product, categories, onClose, onSaved, onDelete }) {
         </Field>
       )}
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
 
       <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
         {onDelete ? (
-          <Button variant="secondary" icon={Trash2} onClick={onDelete} style={{ color: "#C81E2C" }}>Delete</Button>
+          <Button variant="secondary" icon={Trash2} onClick={onDelete} style={{ color: "var(--c-c81e2c)" }}>Delete</Button>
         ) : <div />}
         <div style={{ display: "flex", gap: 10 }}>
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
@@ -6555,7 +7281,7 @@ function ShopOrdersPanel() {
         <input placeholder="Search order id, customer, phone..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 200, width: "auto" }} />
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {orders.map((o) => (
@@ -6648,7 +7374,7 @@ function ShopOrderDetailModal({ orderId, onClose, onChanged }) {
   if (!order) {
     return (
       <Modal title="Order" onClose={onClose}>
-        {error ? <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div> : <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>}
+        {error ? <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5 }}>{error}</div> : <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>}
       </Modal>
     );
   }
@@ -6713,7 +7439,7 @@ function ShopOrderDetailModal({ orderId, onClose, onChanged }) {
         </div>
       )}
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5 }}>{error}</div>}
     </Modal>
   );
 }
@@ -6813,7 +7539,7 @@ function ShopFlashSalesPanel() {
         </div>
       </Card>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {sales.map((sale) => {
@@ -6831,7 +7557,7 @@ function ShopFlashSalesPanel() {
                     {sale.active ? <EyeOff size={13} color={SLATE} /> : <Eye size={13} color={GREEN} />}
                   </button>
                   <button onClick={() => remove(sale)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
-                    <Trash2 size={13} color="#C81E2C" />
+                    <Trash2 size={13} color="var(--c-c81e2c)" />
                   </button>
                 </div>
               </div>
@@ -6945,7 +7671,7 @@ function ShopBundlesPanel() {
         </div>
       </Card>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 14 }}>
         {bundles.map((bundle) => {
@@ -6972,7 +7698,7 @@ function ShopBundlesPanel() {
                     {bundle.active ? <EyeOff size={13} color={SLATE} /> : <Eye size={13} color={GREEN} />}
                   </button>
                   <button onClick={() => remove(bundle)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
-                    <Trash2 size={13} color="#C81E2C" />
+                    <Trash2 size={13} color="var(--c-c81e2c)" />
                   </button>
                 </div>
               </div>
@@ -7058,7 +7784,7 @@ function ShopDeliveryZonesPanel() {
         </div>
       </Card>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {zones.map((zone) => (
@@ -7081,7 +7807,7 @@ function ShopDeliveryZonesPanel() {
                 {zone.active ? <EyeOff size={13} color={SLATE} /> : <Eye size={13} color={GREEN} />}
               </button>
               <button onClick={() => remove(zone)} style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, cursor: "pointer" }}>
-                <Trash2 size={13} color="#C81E2C" />
+                <Trash2 size={13} color="var(--c-c81e2c)" />
               </button>
             </div>
           </Card>
@@ -7123,7 +7849,7 @@ function ShopLowStockPanel() {
       <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 16 }}>
         Active products at or below their own low-stock threshold (set per-product when editing a product — defaults to 5).
       </div>
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
       {products === null ? (
         <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>
       ) : (
@@ -7161,7 +7887,7 @@ function ShopAnalyticsPanel() {
     DalabAdminApi.getShopAnalytics().then(setData).catch((err) => setError(err.message || "Could not load analytics."));
   }, []);
 
-  if (error) return <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div>;
+  if (error) return <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5 }}>{error}</div>;
   if (!data) return <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>;
 
   const revenueSeries = (data.dailyRevenue || []).map((d) => ({
@@ -7193,7 +7919,7 @@ function ShopAnalyticsPanel() {
         <div style={{ fontWeight: 800, color: INK, fontSize: 14, marginBottom: 8 }}>Revenue, last 30 days (paid orders)</div>
         <ResponsiveContainer width="100%" height={220}>
           <LineChart data={revenueSeries}>
-            <CartesianGrid stroke="#EEF0FB" vertical={false} />
+            <CartesianGrid stroke="var(--c-eef0fb)" vertical={false} />
             <XAxis dataKey="day" tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
             <YAxis tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
             <Tooltip />
@@ -7287,7 +8013,7 @@ function ShopPaymentMethodsPanel() {
               <Field label="USSD template (must include {amount})">
                 <input value={draft.ussdTemplate ?? row.ussdTemplate} onChange={(e) => setEdits((m) => ({ ...m, [row.method]: { ...draft, ussdTemplate: e.target.value } }))} style={inputStyle} />
               </Field>
-              {error[row.method] && <div style={{ color: "#C81E2C", fontSize: 12, marginBottom: 8 }}>{error[row.method]}</div>}
+              {error[row.method] && <div style={{ color: "var(--c-c81e2c)", fontSize: 12, marginBottom: 8 }}>{error[row.method]}</div>}
               <Button onClick={() => save(row)} disabled={saving === row.method} spin={saving === row.method}>Save</Button>
             </Card>
           );
@@ -7372,8 +8098,8 @@ function isHeartbeatStale(iso) {
 
 function BatteryIcon({ percent, size = 14, color }) {
   if (percent == null) return <BatteryWarning size={size} color={color || MUTE} />;
-  if (percent <= 15) return <BatteryLow size={size} color={color || "#C81E2C"} />;
-  if (percent <= 50) return <BatteryMedium size={size} color={color || "#A9720A"} />;
+  if (percent <= 15) return <BatteryLow size={size} color={color || "var(--c-c81e2c)"} />;
+  if (percent <= 50) return <BatteryMedium size={size} color={color || "var(--c-a9720a)"} />;
   return <BatteryFull size={size} color={color || GREEN} />;
 }
 
@@ -7464,15 +8190,15 @@ function DevicesPanel({ canManage }) {
         {canManage && <Button icon={Plus} onClick={openNew}>Add device</Button>}
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 14, marginBottom: 24 }}>
         {devices.map((d) => (
           <Card key={d.id} style={{ padding: 16 }}>
             <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <div style={{ width: 34, height: 34, borderRadius: 10, background: d.enabled ? INDIGO_SOFT : "#F5E6E6", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  <Smartphone size={16} color={d.enabled ? INDIGO : "#C81E2C"} />
+                <div style={{ width: 34, height: 34, borderRadius: 10, background: d.enabled ? INDIGO_SOFT : "var(--c-f5e6e6)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <Smartphone size={16} color={d.enabled ? INDIGO : "var(--c-c81e2c)"} />
                 </div>
                 <div>
                   <div style={{ fontWeight: 700, fontSize: 13.5, color: INK }}>{d.name}</div>
@@ -7488,7 +8214,7 @@ function DevicesPanel({ canManage }) {
                 <span style={{ fontSize: 11.5, color: MUTE }}>{d.batteryPercent != null ? `${d.batteryPercent}%` : "No data"}</span>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                {d.networkOnline ? <Wifi size={13} color={GREEN} /> : <WifiOff size={13} color="#C81E2C" />}
+                {d.networkOnline ? <Wifi size={13} color={GREEN} /> : <WifiOff size={13} color="var(--c-c81e2c)" />}
                 <span style={{ fontSize: 11.5, color: MUTE }}>{d.networkOnline ? "Online" : "Offline"}</span>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -7501,6 +8227,24 @@ function DevicesPanel({ canManage }) {
                 <Badge tone="amber"><AlertTriangle size={11} style={{ marginRight: 4, verticalAlign: -1 }} />No heartbeat in over 5 minutes</Badge>
               </div>
             )}
+            {/* What stops this phone from working on its own (from its heartbeat). */}
+            {(d.healthIssues || []).filter((i) => i.code !== "offline").length > 0 && (
+              <div style={{ marginTop: 8, display: "grid", gap: 4 }}>
+                {(d.healthIssues || []).filter((i) => i.code !== "offline").map((i) => (
+                  <div key={i.code} style={{ fontSize: 11.5, color: i.severity === "error" ? "var(--c-c81e2c)" : "var(--c-92400e)", display: "flex", gap: 4 }}>
+                    <AlertTriangle size={12} style={{ flexShrink: 0, marginTop: 1 }} />
+                    <span>{i.message}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {(d.appVersion || d.pendingSmsCount != null || d.lastSmsUploadAt) && (
+              <div style={{ marginTop: 6, fontSize: 11, color: MUTE }}>
+                {d.appVersion ? `App ${d.appVersion}` : ""}
+                {d.pendingSmsCount != null ? ` · ${d.pendingSmsCount} SMS waiting to upload` : ""}
+                {d.lastSmsUploadAt ? ` · last SMS upload ${minutesAgoLabel(d.lastSmsUploadAt)}` : ""}
+              </div>
+            )}
 
             <div style={{ marginTop: 10, fontSize: 11.5, color: MUTE }}>
               {(d.sims || []).length > 0
@@ -7510,13 +8254,13 @@ function DevicesPanel({ canManage }) {
             {canManage && (
               <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
                 <button onClick={() => toggleEnabled(d)} title={d.enabled ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer" }}>
-                  <Power size={14} color={d.enabled ? GREEN : "#C81E2C"} />
+                  <Power size={14} color={d.enabled ? GREEN : "var(--c-c81e2c)"} />
                 </button>
                 <button onClick={() => openEdit(d)} style={{ background: "none", border: "none", cursor: "pointer" }}>
                   <Pencil size={14} color={INDIGO} />
                 </button>
                 <button onClick={() => remove(d)} style={{ background: "none", border: "none", cursor: "pointer" }}>
-                  <Trash2 size={14} color="#C81E2C" />
+                  <Trash2 size={14} color="var(--c-c81e2c)" />
                 </button>
               </div>
             )}
@@ -7531,7 +8275,7 @@ function DevicesPanel({ canManage }) {
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Agent", "Phone", "Assigned device", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -7783,12 +8527,12 @@ function UssdTemplatesPanel({ companies, canManage, onPackagesChanged }) {
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
         <button onClick={() => setCompanyFilter("all")} style={{
           padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
-          border: `1px solid ${companyFilter === "all" ? INDIGO : BORDER}`, background: companyFilter === "all" ? INDIGO : "#fff", color: companyFilter === "all" ? "#fff" : SLATE,
+          border: `1px solid ${companyFilter === "all" ? INDIGO : BORDER}`, background: companyFilter === "all" ? INDIGO : "var(--c-surface)", color: companyFilter === "all" ? "#fff" : SLATE,
         }}>All providers</button>
         {companies.map((c) => (
           <button key={c.id} onClick={() => setCompanyFilter(c.id)} style={{
             padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
-            border: `1px solid ${companyFilter === c.id ? c.color : BORDER}`, background: companyFilter === c.id ? c.color : "#fff", color: companyFilter === c.id ? "#fff" : SLATE,
+            border: `1px solid ${companyFilter === c.id ? c.color : BORDER}`, background: companyFilter === c.id ? c.color : "var(--c-surface)", color: companyFilter === c.id ? "#fff" : SLATE,
           }}>{c.name}</button>
         ))}
       </div>
@@ -7802,7 +8546,7 @@ function UssdTemplatesPanel({ companies, canManage, onPackagesChanged }) {
           <Card style={{ padding: 0, overflow: "hidden" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
-                <tr style={{ background: "#FAFBFF" }}>
+                <tr style={{ background: "var(--c-fafbff)" }}>
                   {["Service Name", "USSD Code", "Device & SIM", "Status", "Notes", "Created", "Last Updated", ""].map((h) => (
                     <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
                   ))}
@@ -7824,7 +8568,7 @@ function UssdTemplatesPanel({ companies, canManage, onPackagesChanged }) {
                       {canManage && (
                         <>
                           <button onClick={() => toggleStatus(t)} title={t.status === "enabled" ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
-                            <Power size={14} color={t.status === "enabled" ? GREEN : "#C81E2C"} />
+                            <Power size={14} color={t.status === "enabled" ? GREEN : "var(--c-c81e2c)"} />
                           </button>
                           <button onClick={() => openEdit(t)} title="Edit" style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
                             <Pencil size={14} color={INDIGO} />
@@ -7833,7 +8577,7 @@ function UssdTemplatesPanel({ companies, canManage, onPackagesChanged }) {
                             <Copy size={14} color={SLATE} />
                           </button>
                           <button onClick={() => remove(t)} title="Delete" style={{ background: "none", border: "none", cursor: "pointer" }}>
-                            <Trash2 size={14} color="#C81E2C" />
+                            <Trash2 size={14} color="var(--c-c81e2c)" />
                           </button>
                         </>
                       )}
@@ -7992,11 +8736,11 @@ function SimRoutingPanel({ companies, canManage }) {
         additional devices act as a backup if you've physically provisioned a second SIM for that provider. Each route also picks which physical SIM slot (1 or 2) on that device to use.
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       {unassigned.length > 0 && (
-        <Card style={{ padding: 16, marginBottom: 16, background: "#FFF8E8", border: "1px solid #F4E3B0" }}>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#A9720A", marginBottom: 8 }}>Not yet routed — no Agent App device can auto-dial for these until assigned:</div>
+        <Card style={{ padding: 16, marginBottom: 16, background: "var(--c-fff8e8)", border: "1px solid var(--c-f4e3b0)" }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--c-a9720a)", marginBottom: 8 }}>Not yet routed — no Agent App device can auto-dial for these until assigned:</div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {unassigned.map((c) => (
               <Badge key={c.id} tone="amber">{c.name}</Badge>
@@ -8025,7 +8769,7 @@ function SimRoutingPanel({ companies, canManage }) {
                   const key = `${r.companyId}:${r.deviceId}`;
                   return (
                     <div key={r.deviceId} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, border: `1px solid ${BORDER}` }}>
-                      <Badge tone={idx === 0 ? "blue" : "gray"}>{idx === 0 ? "Primary" : `Backup ${idx}`}</Badge>
+                      <Badge tone={idx === 0 ? "blue" : "gray"} title={idx === 0 ? "Dials every order for this provider" : "Not used automatically — an order never moves here unless you make this the primary"}>{idx === 0 ? "Primary" : `Backup ${idx} (manual)`}</Badge>
                       <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: INK }}>{r.deviceName || "Unknown device"}</span>
                       {device && (device.enabled === false || isHeartbeatStale(device.lastHeartbeatAt)) && (
                         <Badge tone="amber"><AlertTriangle size={11} style={{ marginRight: 4, verticalAlign: -1 }} />{device.enabled === false ? "Disabled" : "No recent heartbeat"}</Badge>
@@ -8045,7 +8789,7 @@ function SimRoutingPanel({ companies, canManage }) {
                       {savingKey === key && <Loader2 size={13} className="animate-spin" color={MUTE} />}
                       {canManage && (
                         <button onClick={() => remove(r.companyId, r.deviceId)} style={{ background: "none", border: "none", cursor: "pointer" }}>
-                          <Trash2 size={14} color="#C81E2C" />
+                          <Trash2 size={14} color="var(--c-c81e2c)" />
                         </button>
                       )}
                     </div>
@@ -8145,13 +8889,13 @@ function ProviderPinsPanel({ companies, canManage }) {
         <br />
         <b>This must be the provider's real secret PIN — not any fixed digits that already appear in that provider's USSD Template pattern</b> (e.g. a service short-code). If a template looks like <code>*737*{"{receiverNumber}"}*{"{amount}"}*{"{pin}"}#</code>, the PIN you set here fills in <code>{"{pin}"}</code> only.
       </div>
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
       {message && <div style={{ color: GREEN, fontSize: 12.5, marginBottom: 14 }}>{message}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden", marginBottom: 16 }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Provider", "PIN status", "New PIN", "Auto-processing"].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -8185,10 +8929,10 @@ function ProviderPinsPanel({ companies, canManage }) {
                     style={{
                       display: "flex", alignItems: "center", gap: 6, border: "none", background: "none",
                       cursor: canManage ? "pointer" : "default", fontSize: 12, fontWeight: 700,
-                      color: autoProcess[c.id] ? GREEN : "#A9720A",
+                      color: autoProcess[c.id] ? GREEN : "var(--c-a9720a)",
                     }}
                   >
-                    {autoProcess[c.id] ? <Power size={14} color={GREEN} /> : <AlertTriangle size={14} color="#A9720A" />}
+                    {autoProcess[c.id] ? <Power size={14} color={GREEN} /> : <AlertTriangle size={14} color="var(--c-a9720a)" />}
                     {autoProcess[c.id] ? "Automatic" : "Manual approval"}
                   </button>
                 </td>
@@ -8478,7 +9222,7 @@ function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged
         </div>
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
       {message && <div style={{ color: GREEN, fontSize: 12.5, marginBottom: 14 }}>{message}</div>}
       {!canManageSecrets && <Badge tone="amber">View only — Payment Number, Provider Number, USSD PIN, Sender Number/SIM Slot, and USSD Templates are Super Admin only</Badge>}
 
@@ -8576,7 +9320,7 @@ function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged
                     )}
                   </div>
                 ) : (
-                  <div style={{ fontSize: 12.5, color: "#A9720A", display: "flex", alignItems: "center", gap: 6 }}>
+                  <div style={{ fontSize: 12.5, color: "var(--c-a9720a)", display: "flex", alignItems: "center", gap: 6 }}>
                     <AlertTriangle size={13} />
                     No device routed yet — the Agent App can't auto-dial for {c.name} until one is assigned.
                   </div>
@@ -8622,13 +9366,13 @@ function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged
                       {canManageSecrets && (
                         <>
                           <button onClick={() => toggleMethodStatus(c.id, m)} title={m.enabled ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer" }}>
-                            <Power size={14} color={m.enabled ? GREEN : "#C81E2C"} />
+                            <Power size={14} color={m.enabled ? GREEN : "var(--c-c81e2c)"} />
                           </button>
                           <button onClick={() => openEditMethod(c.id, m)} title="Edit" style={{ background: "none", border: "none", cursor: "pointer" }}>
                             <Pencil size={14} color={INDIGO} />
                           </button>
                           <button onClick={() => removeMethod(c.id, m)} title="Delete" style={{ background: "none", border: "none", cursor: "pointer" }}>
-                            <Trash2 size={14} color="#C81E2C" />
+                            <Trash2 size={14} color="var(--c-c81e2c)" />
                           </button>
                         </>
                       )}
@@ -8654,13 +9398,13 @@ function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged
                       {canManageSecrets && (
                         <>
                           <button onClick={() => toggleTemplateStatus(t)} title={t.status === "enabled" ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer" }}>
-                            <Power size={14} color={t.status === "enabled" ? GREEN : "#C81E2C"} />
+                            <Power size={14} color={t.status === "enabled" ? GREEN : "var(--c-c81e2c)"} />
                           </button>
                           <button onClick={() => openEditTemplate(t)} title="Edit" style={{ background: "none", border: "none", cursor: "pointer" }}>
                             <Pencil size={14} color={INDIGO} />
                           </button>
                           <button onClick={() => removeTemplate(t)} title="Delete" style={{ background: "none", border: "none", cursor: "pointer" }}>
-                            <Trash2 size={14} color="#C81E2C" />
+                            <Trash2 size={14} color="var(--c-c81e2c)" />
                           </button>
                         </>
                       )}
@@ -8976,12 +9720,12 @@ function PaymentTransactionsPanel({ companies }) {
         <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ ...inputStyle, width: 150 }} title="To date" />
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <SortHeader label="Order ID" sortKeyName="orderId" />
               <SortHeader label="Customer Phone" sortKeyName="customerPhone" />
               <SortHeader label="Amount" sortKeyName="amount" />
@@ -9000,7 +9744,7 @@ function PaymentTransactionsPanel({ companies }) {
                 <tr key={`skeleton-${i}`} style={{ borderTop: `1px solid ${BORDER}` }}>
                   {Array.from({ length: 8 }).map((__, j) => (
                     <td key={j} style={{ padding: "12px 14px" }}>
-                      <div style={{ height: 12, borderRadius: 4, background: "#EEF0FB", width: j === 0 ? 90 : "70%" }} />
+                      <div style={{ height: 12, borderRadius: 4, background: "var(--c-eef0fb)", width: j === 0 ? 90 : "70%" }} />
                     </td>
                   ))}
                 </tr>
@@ -9038,7 +9782,7 @@ function PaymentTransactionsPanel({ companies }) {
       {selectedTxId && (
         <Modal title="Payment history" onClose={() => setSelectedTxId(null)} width={560}>
           {timelineLoading && <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>}
-          {timelineError && <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{timelineError}</div>}
+          {timelineError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5 }}>{timelineError}</div>}
           {timeline && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               <div>
@@ -9063,7 +9807,7 @@ function PaymentTransactionsPanel({ companies }) {
                   <div style={{ fontSize: 12.5, color: MUTE, marginTop: 4 }}>
                     No linked order.
                     {timeline.smsLog?.matchFailureReason && (
-                      <div style={{ color: "#C81E2C", fontWeight: 600, marginTop: 4 }}>
+                      <div style={{ color: "var(--c-c81e2c)", fontWeight: 600, marginTop: 4 }}>
                         {timeline.smsLog.matchFailureReason}
                       </div>
                     )}
@@ -9079,16 +9823,19 @@ function PaymentTransactionsPanel({ companies }) {
                   </div>
                 )}
                 {timeline.dialAttempts.length === 0 && timeline.order?.ussdGenerationFailedReason && (
-                  <div style={{ fontSize: 12.5, color: "#C81E2C", marginTop: 4, fontWeight: 600 }}>
+                  <div style={{ fontSize: 12.5, color: "var(--c-c81e2c)", marginTop: 4, fontWeight: 600 }}>
                     USSD generation failed: {timeline.order.ussdGenerationFailedReason}
                   </div>
                 )}
                 {timeline.dialAttempts.map((a) => (
-                  <div key={a.id} style={{ fontSize: 12.5, color: INK, marginTop: 4, display: "flex", gap: 8, alignItems: "center" }}>
-                    <Badge tone={a.status === "success" ? "green" : a.status === "failed" ? "red" : "amber"}>Attempt {a.attemptNumber}</Badge>
-                    <span>SIM {a.simSlot ?? "?"}</span>
-                    <span style={{ color: MUTE }}>{formatDateTime(a.createdAt)}</span>
-                    {a.responseMessage && <span style={{ color: MUTE }}>— {a.responseMessage}</span>}
+                  <div key={a.id} style={{ marginTop: 4 }}>
+                    <div style={{ fontSize: 12.5, color: INK, display: "flex", gap: 8, alignItems: "center" }}>
+                      <Badge tone={a.status === "success" ? "green" : a.status === "failed" ? "red" : "amber"}>Attempt {a.attemptNumber}</Badge>
+                      <span>SIM {a.simSlot ?? "?"}</span>
+                      <span style={{ color: MUTE }}>{formatDateTime(a.createdAt)}</span>
+                      {a.responseMessage && <span style={{ color: MUTE }}>— {a.responseMessage}</span>}
+                    </div>
+                    <ResolveDialAttempt attempt={a} onResolved={() => openTimeline(selectedTxId)} />
                   </div>
                 ))}
               </div>
@@ -9280,7 +10027,7 @@ function OfflinePaymentMethodsPanel() {
               <Field label={'USSD template (must include "$" as the amount placeholder)'}>
                 <input value={draft.ussdTemplate ?? row.ussdTemplate} onChange={(e) => setEdits((m) => ({ ...m, [row.method]: { ...draft, ussdTemplate: e.target.value } }))} style={inputStyle} />
               </Field>
-              {error[row.method] && <div style={{ color: "#C81E2C", fontSize: 12, marginBottom: 8 }}>{error[row.method]}</div>}
+              {error[row.method] && <div style={{ color: "var(--c-c81e2c)", fontSize: 12, marginBottom: 8 }}>{error[row.method]}</div>}
               <Button onClick={() => save(row)} disabled={saving === row.method} spin={saving === row.method}>Save</Button>
             </Card>
           );
@@ -9397,16 +10144,16 @@ function OfflineOrdersTab({ companies, initialSearch, onOpenOrder }) {
       </div>
 
       {statusFilter === "SYNC_PENDING" && (
-        <div style={{ fontSize: 12, color: MUTE, marginBottom: 12, background: "#FAFBFF", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "8px 12px" }}>
+        <div style={{ fontSize: 12, color: MUTE, marginBottom: 12, background: "var(--c-fafbff)", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "8px 12px" }}>
           Sync Pending describes a result still sitting on an Agent device's own local queue, not yet uploaded — the backend has no visibility into that by design, so this is always empty here. Check the device's own Diagnostics screen for anything queued locally.
         </div>
       )}
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Order ID", "Customer", "Operator", "Package", "Amount", "Status", "Agent / Device", "SIM", "Dial Attempts", "Created", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -9488,12 +10235,12 @@ function OfflineCustomersTab({ onViewOrders }) {
         </div>
         <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={fetchRows} disabled={loading}>Refresh</Button>
       </div>
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Customer", "Number", "Sender / Payment #", "Operator", "Package", "Payment Method", "Profile Since", "Orders", "Last Payment", "Status", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -9590,12 +10337,12 @@ function OfflinePaymentTransactionsTab({ companies, onViewOrder }) {
         <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ ...inputStyle, width: 150 }} title="To date" />
         <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={fetchRows} disabled={loading}>Refresh</Button>
       </div>
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Transaction Ref", "Customer #", "Amount", "Operator", "Payment Method", "SMS Received", "Status", "Matched Order", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -9638,10 +10385,50 @@ function OfflinePaymentTransactionsTab({ companies, onViewOrder }) {
 // Transaction, and a real timeline assembled from the actual timestamps
 // each piece already carries — never a separately-invented "timeline"
 // data source.
+/**
+ * A dial whose result is unknown ('pending' with no report, or an unclear
+ * 'ambiguous' carrier reply) blocks every new dial for its order, because the
+ * money may already have gone out. After checking with the customer/carrier,
+ * staff record what happened here: Delivered completes the order; Not
+ * delivered lets the Agent App dial it again automatically.
+ */
+function ResolveDialAttempt({ attempt, onResolved }) {
+  const [busy, setBusy] = useState(false);
+  if (!attempt || !["pending", "ambiguous"].includes(attempt.status)) return null;
+  const resolve = async (delivered) => {
+    const question = delivered
+      ? "Confirm the customer RECEIVED this package? The order will be completed."
+      : "Confirm the customer did NOT receive it and no money left the SIM for it? The order will be dialed again.";
+    if (!window.confirm(question)) return;
+    const note = window.prompt("Optional note (who you checked with):", "") ?? "";
+    setBusy(true);
+    try {
+      await DalabAdminApi.resolveDialAttempt(attempt.id, delivered, note);
+      onResolved?.();
+    } catch (err) {
+      window.alert(err.message || "Could not save the decision.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div style={{ marginTop: 6, padding: "6px 8px", borderRadius: 8, background: "rgba(245,158,11,0.10)", fontSize: 11.5 }}>
+      <div style={{ color: "var(--c-92400e)", fontWeight: 600 }}>
+        Result unknown — the money may already have been sent. Automation won't dial this order again until you decide.
+      </div>
+      <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+        <button disabled={busy} onClick={() => resolve(true)} style={{ padding: "4px 10px", borderRadius: 6, border: "none", background: GREEN, color: "#fff", cursor: "pointer", fontSize: 11.5 }}>Delivered</button>
+        <button disabled={busy} onClick={() => resolve(false)} style={{ padding: "4px 10px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "var(--c-surface)", cursor: "pointer", fontSize: 11.5 }}>Not delivered — dial again</button>
+      </div>
+    </div>
+  );
+}
+
 function OfflineOrderDetailDrawer({ orderId, onClose }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -9653,7 +10440,7 @@ function OfflineOrderDetailDrawer({ orderId, onClose }) {
       .catch((err) => { if (!cancelled) setError(err.message || "Could not load this Offline order."); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [orderId]);
+  }, [orderId, reloadKey]);
 
   const row = (label, value, mono) => (
     <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderTop: `1px solid ${BORDER}`, gap: 12 }}>
@@ -9692,7 +10479,7 @@ function OfflineOrderDetailDrawer({ orderId, onClose }) {
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        style={{ width: 460, maxWidth: "100%", background: "#fff", height: "100%", overflowY: "auto", padding: 24 }}
+        style={{ width: 460, maxWidth: "100%", background: "var(--c-surface)", height: "100%", overflowY: "auto", padding: 24 }}
       >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div>
@@ -9705,7 +10492,7 @@ function OfflineOrderDetailDrawer({ orderId, onClose }) {
         </div>
 
         {loading && <div style={{ padding: 20, fontSize: 12.5, color: MUTE }}>Loading…</div>}
-        {error && <div style={{ padding: 20, fontSize: 12.5, color: "#C81E2C" }}>{error}</div>}
+        {error && <div style={{ padding: 20, fontSize: 12.5, color: "var(--c-c81e2c)" }}>{error}</div>}
 
         {data && (
           <>
@@ -9726,7 +10513,7 @@ function OfflineOrderDetailDrawer({ orderId, onClose }) {
             {row("Created", formatDateTime(data.order.createdAt), true)}
             {data.order.completedAt && row("Completed", formatDateTime(data.order.completedAt), true)}
             {data.order.ussdGenerationFailedReason && (
-              <div style={{ fontSize: 12.5, color: "#C81E2C", fontWeight: 600, marginTop: 6 }}>
+              <div style={{ fontSize: 12.5, color: "var(--c-c81e2c)", fontWeight: 600, marginTop: 6 }}>
                 USSD generation failed: {data.order.ussdGenerationFailedReason}
               </div>
             )}
@@ -9734,7 +10521,7 @@ function OfflineOrderDetailDrawer({ orderId, onClose }) {
             {section("PAYMENT TRANSACTIONS")}
             {data.paymentTransactions.length === 0 && <div style={{ fontSize: 12, color: MUTE, marginTop: 6 }}>No payment transaction linked yet.</div>}
             {data.paymentTransactions.map((t) => (
-              <div key={t.id} style={{ padding: "8px 10px", marginTop: 6, borderRadius: 8, border: `1px solid ${t.status === "duplicate_blocked" ? "#F4E3B0" : BORDER}`, background: t.status === "duplicate_blocked" ? "#FFFBEF" : "transparent" }}>
+              <div key={t.id} style={{ padding: "8px 10px", marginTop: 6, borderRadius: 8, border: `1px solid ${t.status === "duplicate_blocked" ? "var(--c-f4e3b0)" : BORDER}`, background: t.status === "duplicate_blocked" ? "var(--c-fffbef)" : "transparent" }}>
                 <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 11.5 }}>
                   <Badge tone={{ pending: "amber", processing: "blue", completed: "green", failed: "red", duplicate_blocked: "red" }[t.status] || "neutral"}>{t.status}</Badge>
                   <span style={{ color: MUTE, fontFamily: "monospace" }}>{t.transactionRef || "no ref"}</span>
@@ -9778,7 +10565,8 @@ function OfflineOrderDetailDrawer({ orderId, onClose }) {
                 <div style={{ color: MUTE, marginTop: 3 }}>Agent: {a.agentName || "—"} · Device: {a.deviceName || "—"} · SIM {a.simSlot ?? "—"}</div>
                 {a.ussdString && <div style={{ color: SLATE, fontFamily: "monospace", marginTop: 3, wordBreak: "break-all" }}>{a.ussdString}</div>}
                 {a.responseMessage && <div style={{ color: MUTE, marginTop: 3 }}>Network response: {a.responseMessage}</div>}
-                {explainFailure(a.responseMessage) && <div style={{ color: "#C81E2C", fontWeight: 600, marginTop: 3 }}>{explainFailure(a.responseMessage)}</div>}
+                {explainFailure(a.responseMessage) && <div style={{ color: "var(--c-c81e2c)", fontWeight: 600, marginTop: 3 }}>{explainFailure(a.responseMessage)}</div>}
+                <ResolveDialAttempt attempt={a} onResolved={() => setReloadKey((k) => k + 1)} />
               </div>
             ))}
 
@@ -9999,7 +10787,7 @@ function CommissionsPanel({ companies, packages, admin }) {
       <Card style={{ padding: 0, overflow: "hidden", marginBottom: 22 }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Name</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Scope</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Type / Value</th>
@@ -10027,7 +10815,7 @@ function CommissionsPanel({ companies, packages, admin }) {
                       <Pencil size={15} color={SLATE} />
                     </button>
                     <button onClick={() => toggleRuleStatus(r)} style={{ background: "none", border: "none", cursor: "pointer" }} title={r.enabled ? "Disable" : "Enable"}>
-                      <Power size={15} color={r.enabled ? "#C81E2C" : GREEN} />
+                      <Power size={15} color={r.enabled ? "var(--c-c81e2c)" : GREEN} />
                     </button>
                   </td>
                 )}
@@ -10093,7 +10881,7 @@ function CommissionsPanel({ companies, packages, admin }) {
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
-              <tr style={{ background: "#FAFBFF" }}>
+              <tr style={{ background: "var(--c-fafbff)" }}>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Order ID</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Provider</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Package</th>
@@ -10109,7 +10897,7 @@ function CommissionsPanel({ companies, packages, admin }) {
                   <tr key={`skeleton-${i}`} style={{ borderTop: `1px solid ${BORDER}` }}>
                     {Array.from({ length: 7 }).map((__, j) => (
                       <td key={j} style={{ padding: "12px 14px" }}>
-                        <div style={{ height: 12, borderRadius: 4, background: "#EEF0FB", width: j === 0 ? 90 : "70%" }} />
+                        <div style={{ height: 12, borderRadius: 4, background: "var(--c-eef0fb)", width: j === 0 ? 90 : "70%" }} />
                       </td>
                     ))}
                   </tr>
@@ -10121,7 +10909,7 @@ function CommissionsPanel({ companies, packages, admin }) {
                   <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{r.companyName || "—"}</td>
                   <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>{r.packageName || "—"}</td>
                   <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK }}>${Number(r.orderAmount).toFixed(2)}</td>
-                  <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: Number(r.commissionAmount) < 0 ? "#C81E2C" : GREEN }}>
+                  <td style={{ padding: "10px 14px", fontSize: 12.5, fontWeight: 700, color: Number(r.commissionAmount) < 0 ? "var(--c-c81e2c)" : GREEN }}>
                     ${Number(r.commissionAmount).toFixed(2)}
                   </td>
                   <td style={{ padding: "10px 14px" }}>
@@ -10186,7 +10974,7 @@ function CommissionsPanel({ companies, packages, admin }) {
               onChange={(e) => setRuleForm({ ...ruleForm, value: e.target.value })}
             />
           </Field>
-          {ruleError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{ruleError}</div>}
+          {ruleError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{ruleError}</div>}
           <Button onClick={saveRule} disabled={ruleSaving} style={{ width: "100%", justifyContent: "center" }}>
             {ruleSaving ? "Saving…" : "Save Rule"}
           </Button>
@@ -10445,7 +11233,14 @@ function MoneyExchangePanel({ admin }) {
   // go through) must never be a dead end — retryExchangePayout puts it back
   // in_progress so the agent can safely dial again, and reverseExchangeOrder
   // (below) is the alternative when the admin decides to refund instead.
+  // An attempt that got past step 1 had the PIN entered: the money may
+  // already be with the customer even though the phone couldn't confirm it.
+  const payoutReachedPin = (d) => (d?.dialAttempts || []).some((a) => a.completedAt || a.status === "step1_success");
   const retryPayout = async () => {
+    if (payoutReachedPin(detail) && !window.confirm(
+      "The PIN was already entered on an earlier attempt, so this money may already have been sent.\n\n" +
+      "Check the payout SIM's SMS first. If it shows the transfer, use \"Money was sent\" instead — retrying would pay the customer twice.\n\nRetry the payout anyway?"
+    )) return;
     setDetailActing(true);
     setDetailActionError("");
     try {
@@ -10458,6 +11253,23 @@ function MoneyExchangePanel({ admin }) {
       fetchOrders();
     } catch (err) {
       setDetailActionError(err.message || "Could not retry this payout.");
+    } finally {
+      setDetailActing(false);
+    }
+  };
+  const markPaid = async () => {
+    if (!window.confirm(
+      `Only do this if the payout SIM's SMS shows $${Number(detail.amountReceived).toFixed(2)} was sent to ${detail.receiverPhone}.\n\nMark this exchange Completed?`
+    )) return;
+    setDetailActing(true);
+    setDetailActionError("");
+    try {
+      await DalabAdminApi.markExchangePaid(detailId);
+      setDetail(await DalabAdminApi.getExchangeOrder(detailId));
+      fetchPending();
+      fetchOrders();
+    } catch (err) {
+      setDetailActionError(err.message || "Could not mark this exchange as paid.");
     } finally {
       setDetailActing(false);
     }
@@ -10532,7 +11344,7 @@ function MoneyExchangePanel({ admin }) {
       <Card style={{ padding: 0, overflow: "hidden", marginBottom: 22 }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Wallet</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Phone Number</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Device / SIM</th>
@@ -10579,7 +11391,7 @@ function MoneyExchangePanel({ admin }) {
       <Card style={{ padding: 0, overflow: "hidden", marginBottom: 22 }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>From</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>To</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Rate</th>
@@ -10610,7 +11422,7 @@ function MoneyExchangePanel({ admin }) {
                       <Pencil size={15} color={SLATE} />
                     </button>
                     <button onClick={() => toggleCorridor(c)} style={{ background: "none", border: "none", cursor: "pointer" }} title={c.enabled ? "Disable" : "Enable"}>
-                      <Power size={15} color={c.enabled ? "#C81E2C" : GREEN} />
+                      <Power size={15} color={c.enabled ? "var(--c-c81e2c)" : GREEN} />
                     </button>
                   </td>
                 )}
@@ -10634,7 +11446,7 @@ function MoneyExchangePanel({ admin }) {
       <Card style={{ padding: 0, overflow: "hidden", marginBottom: 22 }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Order</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Corridor</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Sent / Received</th>
@@ -10652,7 +11464,7 @@ function MoneyExchangePanel({ admin }) {
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, fontFamily: "monospace" }}>{o.receiverPhone}</td>
                 <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(o.createdAt)}</td>
                 <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
-                  {actionError[o.id] && <div style={{ color: "#C81E2C", fontSize: 11, marginBottom: 4 }}>{actionError[o.id]}</div>}
+                  {actionError[o.id] && <div style={{ color: "var(--c-c81e2c)", fontSize: 11, marginBottom: 4 }}>{actionError[o.id]}</div>}
                   {canManage && (
                     <Button variant="primary" disabled={actingId === o.id} onClick={() => verifyOrder(o)}>
                       {actingId === o.id ? "Verifying…" : "Verify Payment"}
@@ -10686,7 +11498,7 @@ function MoneyExchangePanel({ admin }) {
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
-              <tr style={{ background: "#FAFBFF" }}>
+              <tr style={{ background: "var(--c-fafbff)" }}>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Order</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Corridor</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Sent / Received</th>
@@ -10743,7 +11555,7 @@ function MoneyExchangePanel({ admin }) {
               <option value="2">SIM 2</option>
             </select>
           </Field>
-          {payoutWalletError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{payoutWalletError}</div>}
+          {payoutWalletError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{payoutWalletError}</div>}
           <Button onClick={savePayoutWallet} disabled={payoutWalletSaving} style={{ width: "100%", justifyContent: "center" }}>
             {payoutWalletSaving ? "Saving…" : "Save"}
           </Button>
@@ -10759,7 +11571,7 @@ function MoneyExchangePanel({ admin }) {
           <Field label="New PIN (4-8 digits)">
             <input type="password" inputMode="numeric" style={inputStyle} value={pinValue} onChange={(e) => setPinValue(e.target.value)} maxLength={8} />
           </Field>
-          {pinError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{pinError}</div>}
+          {pinError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{pinError}</div>}
           <Button onClick={savePin} disabled={pinSaving} style={{ width: "100%", justifyContent: "center" }}>
             {pinSaving ? "Saving…" : "Save PIN"}
           </Button>
@@ -10812,7 +11624,7 @@ function MoneyExchangePanel({ admin }) {
               ))}
             </select>
             {corridorForm.toWalletId && payoutWallets.every((w) => w.walletId !== corridorForm.toWalletId) && (
-              <div style={{ color: "#A9720A", fontSize: 12, marginTop: 4 }}>
+              <div style={{ color: "var(--c-a9720a)", fontSize: 12, marginTop: 4 }}>
                 No payout wallet configured for this "To" currency yet — add one above first.
               </div>
             )}
@@ -10823,7 +11635,7 @@ function MoneyExchangePanel({ admin }) {
           <Field label="Max amount (optional)">
             <input type="number" min="0" step="0.01" style={inputStyle} value={corridorForm.maxAmount} onChange={(e) => setCorridorForm({ ...corridorForm, maxAmount: e.target.value })} />
           </Field>
-          {corridorError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{corridorError}</div>}
+          {corridorError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{corridorError}</div>}
           <Button onClick={saveCorridor} disabled={corridorSaving} style={{ width: "100%", justifyContent: "center" }}>
             {corridorSaving ? "Saving…" : "Save Corridor"}
           </Button>
@@ -10861,8 +11673,22 @@ function MoneyExchangePanel({ admin }) {
                 ))}
               </div>
               <div style={{ fontSize: 11, color: MUTE, fontStyle: "italic" }}>The payout PIN is never shown here or anywhere in the dashboard.</div>
+              {detail.status === "failed" && payoutReachedPin(detail) && (
+                <div style={{ display: "flex", gap: 8, alignItems: "flex-start", background: "var(--c-fff4d9)", color: "var(--c-92400e)", borderRadius: 10, padding: "10px 12px", fontSize: 12.5, lineHeight: 1.45 }}>
+                  <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+                  <div>
+                    <b>Check before retrying.</b> The PIN was entered, so the money may already have been sent. Look at the payout SIM's SMS for a
+                    ${Number(detail.amountReceived).toFixed(2)} transfer to {detail.receiverPhone}. If it's there, press <b>Money was sent</b>; Retry would pay twice.
+                  </div>
+                </div>
+              )}
               {canManage && ["pending", "in_progress", "failed"].includes(detail.status) && (
-                <div style={{ display: "flex", gap: 8, paddingTop: 10, borderTop: `1px solid ${BORDER}` }}>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 10, borderTop: `1px solid ${BORDER}` }}>
+                  {detail.status === "failed" && payoutReachedPin(detail) && (
+                    <Button icon={CheckCircle2} onClick={markPaid} disabled={detailActing} style={{ background: GREEN }}>
+                      Money was sent
+                    </Button>
+                  )}
                   {detail.status === "failed" && (
                     <Button icon={RotateCcw} onClick={retryPayout} disabled={detailActing}>
                       {detailActing ? "Retrying…" : "Retry Payout"}
@@ -10873,7 +11699,7 @@ function MoneyExchangePanel({ admin }) {
                   </Button>
                 </div>
               )}
-              {detailActionError && <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{detailActionError}</div>}
+              {detailActionError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5 }}>{detailActionError}</div>}
             </div>
           )}
         </Modal>
@@ -10891,9 +11717,9 @@ function MoneyExchangePanel({ admin }) {
           <Field label="Amount sent">
             <input type="number" min="0" step="0.01" style={inputStyle} value={createForm.amount} onChange={(e) => setCreateForm({ ...createForm, amount: e.target.value })} />
           </Field>
-          {createQuoteError && <div style={{ color: "#C81E2C", fontSize: 12, marginBottom: 10 }}>{createQuoteError}</div>}
+          {createQuoteError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12, marginBottom: 10 }}>{createQuoteError}</div>}
           {createQuote && (
-            <div style={{ background: "#FAFBFF", border: `1px solid ${BORDER}`, borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 12.5 }}>
+            <div style={{ background: "var(--c-fafbff)", border: `1px solid ${BORDER}`, borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 12.5 }}>
               <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ color: MUTE }}>Rate</span><span>{createQuote.rate}</span></div>
               <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ color: MUTE }}>Fee</span><span>${Number(createQuote.fee).toFixed(2)}</span></div>
               <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, color: GREEN }}><span>Amount received</span><span>${Number(createQuote.amountReceived).toFixed(2)}</span></div>
@@ -10908,7 +11734,7 @@ function MoneyExchangePanel({ admin }) {
           <Field label="Customer phone (optional — links this to a customer account)">
             <input style={inputStyle} value={createForm.customerPhone} onChange={(e) => setCreateForm({ ...createForm, customerPhone: e.target.value })} />
           </Field>
-          {createError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{createError}</div>}
+          {createError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{createError}</div>}
           <Button onClick={saveCreate} disabled={createSaving} style={{ width: "100%", justifyContent: "center" }}>
             {createSaving ? "Saving…" : "Log Exchange"}
           </Button>
@@ -10980,7 +11806,7 @@ function ResellerManagement({ admin, companies }) {
             style={{
               padding: "8px 14px", borderRadius: 10, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
               border: `1px solid ${tab === t.id ? INDIGO : BORDER}`,
-              background: tab === t.id ? INDIGO_SOFT : "#fff",
+              background: tab === t.id ? INDIGO_SOFT : "var(--c-surface)",
               color: tab === t.id ? INDIGO : SLATE,
             }}
           >
@@ -11085,7 +11911,7 @@ function ResellersTab({ canManage, isSuperAdmin }) {
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Reseller ID</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Name</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Wallet Balance</th>
@@ -11125,7 +11951,7 @@ function ResellersTab({ canManage, isSuperAdmin }) {
           <Field label="Name"><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
           <Field label="Phone (optional)"><input style={inputStyle} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></Field>
           <Field label="Notes (optional)"><input style={inputStyle} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></Field>
-          {formError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{formError}</div>}
+          {formError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{formError}</div>}
           <Button onClick={saveCreate} disabled={saving} style={{ width: "100%", justifyContent: "center" }}>
             {saving ? "Creating…" : "Create Reseller"}
           </Button>
@@ -11148,7 +11974,7 @@ function ResellersTab({ canManage, isSuperAdmin }) {
           <Field label="Amount (negative to debit)">
             <input type="number" step="0.01" style={inputStyle} value={adjustAmount} onChange={(e) => setAdjustAmount(e.target.value)} />
           </Field>
-          {adjustError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{adjustError}</div>}
+          {adjustError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{adjustError}</div>}
           <Button onClick={saveAdjust} disabled={saving} style={{ width: "100%", justifyContent: "center" }}>
             {saving ? "Saving…" : "Apply Adjustment"}
           </Button>
@@ -11218,7 +12044,7 @@ function ResellerNumbersTab({ canManage, companies }) {
         <Card style={{ padding: 0, overflow: "hidden" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
-              <tr style={{ background: "#FAFBFF" }}>
+              <tr style={{ background: "var(--c-fafbff)" }}>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Role</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Number</th>
@@ -11267,7 +12093,7 @@ function ResellerNumbersTab({ canManage, companies }) {
           </Field>
           <Field label="Payment Number"><input style={inputStyle} value={form.paymentNumber} onChange={(e) => setForm({ ...form, paymentNumber: e.target.value })} /></Field>
           <Field label="Label (optional)"><input style={inputStyle} value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} /></Field>
-          {formError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{formError}</div>}
+          {formError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{formError}</div>}
           <Button onClick={saveCreate} disabled={saving} style={{ width: "100%", justifyContent: "center" }}>
             {saving ? "Saving…" : "Register Number"}
           </Button>
@@ -11439,7 +12265,7 @@ function ResellerPaymentTab({ canManage, isSuperAdmin, companies }) {
       <Card style={{ padding: 0, overflow: "hidden", marginBottom: 24 }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Method</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Label</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payment Number</th>
@@ -11469,7 +12295,7 @@ function ResellerPaymentTab({ canManage, isSuperAdmin, companies }) {
                       <Button variant="subtle" disabled={savingMethod === row.method} onClick={() => saveMethod(row)}>
                         {savingMethod === row.method ? "Saving…" : "Save"}
                       </Button>
-                      {methodError[row.method] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{methodError[row.method]}</div>}
+                      {methodError[row.method] && <div style={{ color: "var(--c-c81e2c)", fontSize: 11.5, marginTop: 4 }}>{methodError[row.method]}</div>}
                     </td>
                   </>
                 ) : (
@@ -11492,7 +12318,7 @@ function ResellerPaymentTab({ canManage, isSuperAdmin, companies }) {
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payout USSD Template</th>
               {canManage && <th style={{ padding: "10px 14px" }} />}
@@ -11519,7 +12345,7 @@ function ResellerPaymentTab({ canManage, isSuperAdmin, companies }) {
                     <Button variant="subtle" disabled={savingPayout === c.id} onClick={() => savePayout(c)}>
                       {savingPayout === c.id ? "Saving…" : "Save"}
                     </Button>
-                    {payoutError[c.id] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{payoutError[c.id]}</div>}
+                    {payoutError[c.id] && <div style={{ color: "var(--c-c81e2c)", fontSize: 11.5, marginTop: 4 }}>{payoutError[c.id]}</div>}
                   </td>
                 )}
               </tr>
@@ -11535,7 +12361,7 @@ function ResellerPaymentTab({ canManage, isSuperAdmin, companies }) {
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Initial Dial</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Reply Steps (PIN sent last unless a {"{pin}"} step is included)</th>
@@ -11571,7 +12397,7 @@ function ResellerPaymentTab({ canManage, isSuperAdmin, companies }) {
                             {savingSteps === c.id ? "Saving…" : "Save Steps"}
                           </Button>
                         </div>
-                        {stepsError[c.id] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{stepsError[c.id]}</div>}
+                        {stepsError[c.id] && <div style={{ color: "var(--c-c81e2c)", fontSize: 11.5, marginTop: 4 }}>{stepsError[c.id]}</div>}
                       </td>
                     </>
                   ) : (
@@ -11594,7 +12420,7 @@ function ResellerPaymentTab({ canManage, isSuperAdmin, companies }) {
                             {savingPin === c.id ? "Saving…" : "Save PIN"}
                           </Button>
                         </div>
-                        {pinError[c.id] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{pinError[c.id]}</div>}
+                        {pinError[c.id] && <div style={{ color: "var(--c-c81e2c)", fontSize: 11.5, marginTop: 4 }}>{pinError[c.id]}</div>}
                       </div>
                     ) : (
                       <span style={{ fontSize: 12, color: MUTE }}>
@@ -11617,7 +12443,7 @@ function ResellerPaymentTab({ canManage, isSuperAdmin, companies }) {
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Commission %</th>
               {canManage && <th style={{ padding: "10px 14px" }} />}
@@ -11645,7 +12471,7 @@ function ResellerPaymentTab({ canManage, isSuperAdmin, companies }) {
                     <Button variant="subtle" disabled={savingCommission === row.companyId} onClick={() => saveCommission(row)}>
                       {savingCommission === row.companyId ? "Saving…" : "Save"}
                     </Button>
-                    {commissionError[row.companyId] && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: 4 }}>{commissionError[row.companyId]}</div>}
+                    {commissionError[row.companyId] && <div style={{ color: "var(--c-c81e2c)", fontSize: 11.5, marginTop: 4 }}>{commissionError[row.companyId]}</div>}
                   </td>
                 )}
               </tr>
@@ -11689,7 +12515,7 @@ function ResellerOrdersTab({ canManage }) {
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Order #</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Reseller</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Company</th>
@@ -11721,7 +12547,7 @@ function ResellerOrdersTab({ canManage }) {
                     {(o.status === "pending" || o.status === "payment_sent") && (
                       <Button variant="danger" style={{ marginLeft: 6 }} disabled={actingId === o.id} onClick={() => act(o, DalabAdminApi.cancelResellerOrder, "cancel")}>Cancel</Button>
                     )}
-                    {actionError[o.id] && <div style={{ color: "#C81E2C", fontSize: 11, marginTop: 4 }}>{actionError[o.id]}</div>}
+                    {actionError[o.id] && <div style={{ color: "var(--c-c81e2c)", fontSize: 11, marginTop: 4 }}>{actionError[o.id]}</div>}
                   </td>
                 )}
               </tr>
@@ -11771,7 +12597,7 @@ function ResellerDepositsTab({ canManage }) {
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Ref #</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Reseller</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payment Method</th>
@@ -11810,7 +12636,7 @@ function ResellerDepositsTab({ canManage }) {
                     {d.status === "verified" && (
                       <Button variant="subtle" disabled={actingId === d.id} onClick={() => act(d, DalabAdminApi.completeResellerDeposit, "complete")}>Complete</Button>
                     )}
-                    {actionError[d.id] && <div style={{ color: "#C81E2C", fontSize: 11, marginTop: 4 }}>{actionError[d.id]}</div>}
+                    {actionError[d.id] && <div style={{ color: "var(--c-c81e2c)", fontSize: 11, marginTop: 4 }}>{actionError[d.id]}</div>}
                   </td>
                 )}
               </tr>
@@ -11863,7 +12689,7 @@ function ResellerWithdrawalsTab({ canManage }) {
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Ref #</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Reseller</th>
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Payout Company</th>
@@ -11922,7 +12748,7 @@ function ResellerWithdrawalsTab({ canManage }) {
                         <Button variant="danger" style={{ marginLeft: 6 }} disabled={actingId === w.id} onClick={() => act(w, DalabAdminApi.failResellerWithdrawal, "fail")}>Fail</Button>
                       </>
                     )}
-                    {actionError[w.id] && <div style={{ color: "#C81E2C", fontSize: 11, marginTop: 4 }}>{actionError[w.id]}</div>}
+                    {actionError[w.id] && <div style={{ color: "var(--c-c81e2c)", fontSize: 11, marginTop: 4 }}>{actionError[w.id]}</div>}
                   </td>
                 )}
               </tr>
@@ -12016,11 +12842,11 @@ function ResellerWithdrawSimRoutingTab({ companies, canManage }) {
         The mobile number is a label you enter for your own records — it isn't read from the SIM itself, so keep it matched to whatever card is actually inserted in that slot.
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       {unassigned.length > 0 && (
-        <Card style={{ padding: 16, marginBottom: 16, background: "#FFF8E8", border: "1px solid #F4E3B0" }}>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#A9720A", marginBottom: 8 }}>No withdrawal payout SIM routed yet — that company's Reseller Withdraw requests will stay unpaid until assigned:</div>
+        <Card style={{ padding: 16, marginBottom: 16, background: "var(--c-fff8e8)", border: "1px solid var(--c-f4e3b0)" }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--c-a9720a)", marginBottom: 8 }}>No withdrawal payout SIM routed yet — that company's Reseller Withdraw requests will stay unpaid until assigned:</div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {unassigned.map((c) => (
               <Badge key={c.id} tone="amber">{c.name}</Badge>
@@ -12049,7 +12875,7 @@ function ResellerWithdrawSimRoutingTab({ companies, canManage }) {
                   const key = `${r.companyId}:${r.deviceId}`;
                   return (
                     <div key={r.deviceId} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, border: `1px solid ${BORDER}` }}>
-                      <Badge tone={idx === 0 ? "blue" : "gray"}>{idx === 0 ? "Primary" : `Backup ${idx}`}</Badge>
+                      <Badge tone={idx === 0 ? "blue" : "gray"} title={idx === 0 ? "Dials every order for this provider" : "Not used automatically — an order never moves here unless you make this the primary"}>{idx === 0 ? "Primary" : `Backup ${idx} (manual)`}</Badge>
                       <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: INK }}>{r.deviceName || "Unknown device"}</span>
                       {device && (device.enabled === false || isHeartbeatStale(device.lastHeartbeatAt)) && (
                         <Badge tone="amber"><AlertTriangle size={11} style={{ marginRight: 4, verticalAlign: -1 }} />{device.enabled === false ? "Disabled" : "No recent heartbeat"}</Badge>
@@ -12085,7 +12911,7 @@ function ResellerWithdrawSimRoutingTab({ companies, canManage }) {
                       {savingKey === key && <Loader2 size={13} className="animate-spin" color={MUTE} />}
                       {canManage && (
                         <button onClick={() => remove(r.companyId, r.deviceId)} style={{ background: "none", border: "none", cursor: "pointer" }}>
-                          <Trash2 size={14} color="#C81E2C" />
+                          <Trash2 size={14} color="var(--c-c81e2c)" />
                         </button>
                       )}
                     </div>
@@ -12284,7 +13110,7 @@ function FeedbackPanel({ admin }) {
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
-              <tr style={{ background: "#FAFBFF" }}>
+              <tr style={{ background: "var(--c-fafbff)" }}>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Submitted</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Category</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Customer</th>
@@ -12300,7 +13126,7 @@ function FeedbackPanel({ admin }) {
                   <tr key={`skeleton-${i}`} style={{ borderTop: `1px solid ${BORDER}` }}>
                     {Array.from({ length: 7 }).map((__, j) => (
                       <td key={j} style={{ padding: "12px 14px" }}>
-                        <div style={{ height: 12, borderRadius: 4, background: "#EEF0FB", width: j === 0 ? 90 : "70%" }} />
+                        <div style={{ height: 12, borderRadius: 4, background: "var(--c-eef0fb)", width: j === 0 ? 90 : "70%" }} />
                       </td>
                     ))}
                   </tr>
@@ -12341,7 +13167,7 @@ function FeedbackPanel({ admin }) {
             {editing.customerName || "Unknown customer"} {editing.customerPhone ? `— ${editing.customerPhone}` : ""}
           </div>
           {editing.deviceInfo && <div style={{ fontSize: 11.5, color: MUTE, marginBottom: 10 }}>Device: {editing.deviceInfo}</div>}
-          <div style={{ fontSize: 13, color: INK, background: "#FAFBFF", border: `1px solid ${BORDER}`, borderRadius: 10, padding: 12, marginBottom: 14, whiteSpace: "pre-wrap" }}>
+          <div style={{ fontSize: 13, color: INK, background: "var(--c-fafbff)", border: `1px solid ${BORDER}`, borderRadius: 10, padding: 12, marginBottom: 14, whiteSpace: "pre-wrap" }}>
             {editing.message}
           </div>
           <Field label="Status">
@@ -12361,7 +13187,7 @@ function FeedbackPanel({ admin }) {
               disabled={!canManage}
             />
           </Field>
-          {saveError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{saveError}</div>}
+          {saveError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{saveError}</div>}
           {canManage ? (
             <Button onClick={saveItem} disabled={saving} style={{ width: "100%", justifyContent: "center" }}>
               {saving ? "Saving…" : "Save"}
@@ -12560,7 +13386,7 @@ function SupportQueuePanel({ admin }) {
       </div>
 
       {actionError && (
-        <div style={{ background: "#FEF2F2", border: "1px solid #FCA5A5", color: "#C81E2C", borderRadius: 10, padding: "10px 14px", fontSize: 12.5, marginBottom: 14 }}>
+        <div style={{ background: "var(--c-fef2f2)", border: "1px solid var(--c-fca5a5)", color: "var(--c-c81e2c)", borderRadius: 10, padding: "10px 14px", fontSize: 12.5, marginBottom: 14 }}>
           {actionError}
         </div>
       )}
@@ -12780,7 +13606,7 @@ function ReferralRewardsPanel({ admin }) {
           <input type="checkbox" checked={draft.enabled} onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })} disabled={!canManage} />
           Enabled — new referral purchases earn points
         </label>
-        {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginTop: 10 }}>{error}</div>}
+        {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginTop: 10 }}>{error}</div>}
         {canManage ? (
           <Button onClick={saveRule} disabled={saving} style={{ marginTop: 14 }}>{saving ? "Saving…" : "Save Rule"}</Button>
         ) : (
@@ -12796,7 +13622,7 @@ function ReferralRewardsPanel({ admin }) {
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
-              <tr style={{ background: "#FAFBFF" }}>
+              <tr style={{ background: "var(--c-fafbff)" }}>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Referrer</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Total Referrals</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Converted (Purchased)</th>
@@ -12936,13 +13762,13 @@ function PendingRecoveryPanel() {
         <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={fetchRows} disabled={loading}>Refresh</Button>
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
-              <tr style={{ background: "#FAFBFF" }}>
+              <tr style={{ background: "var(--c-fafbff)" }}>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Order ID</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Customer</th>
                 <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Package</th>
@@ -12967,7 +13793,7 @@ function PendingRecoveryPanel() {
                     <td style={{ padding: "10px 14px" }}><Badge tone={meta.tone}>{meta.label}</Badge></td>
                     <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap" }}>{formatDateTime(o.createdAt)}</td>
                     <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
-                      {actionError[o.id] && <div style={{ color: "#C81E2C", fontSize: 11, marginBottom: 4 }}>{actionError[o.id]}</div>}
+                      {actionError[o.id] && <div style={{ color: "var(--c-c81e2c)", fontSize: 11, marginBottom: 4 }}>{actionError[o.id]}</div>}
                       {o.companyFulfillmentMethod === "somlink" ? (
                         <Button variant="primary" disabled={actingId === o.id} onClick={() => retrySomlink(o)}>
                           {actingId === o.id ? "Retrying..." : "Retry SOMLINK"}
@@ -13125,12 +13951,12 @@ function ExecutionLogs({ companies }) {
         </select>
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Transaction ID", "Customer Phone", "Provider", "Service/Package", "USSD Code", "Device / SIM", "Start Time", "End Time", "Duration", "Status", "Attempts", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -13158,7 +13984,7 @@ function ExecutionLogs({ companies }) {
                         {latest.status === "success" ? "Success" : latest.status === "failed" ? "Failed (not final — may retry)" : "Pending"}
                       </Badge>
                       {latest.status === "failed" && latest.responseMessage && (
-                        <div style={{ fontSize: 10.5, color: "#C81E2C", marginTop: 3, maxWidth: 180 }}>
+                        <div style={{ fontSize: 10.5, color: "var(--c-c81e2c)", marginTop: 3, maxWidth: 180 }}>
                           {explainFailure(latest.responseMessage) || latest.responseMessage}
                         </div>
                       )}
@@ -13167,14 +13993,14 @@ function ExecutionLogs({ companies }) {
                     <td style={{ padding: "10px 14px" }}>{isOpen ? <ChevronDown size={15} color={MUTE} /> : <ChevronRight size={15} color={MUTE} />}</td>
                   </tr>
                   {isOpen && attempts.map((a) => (
-                    <tr key={a.id} style={{ background: "#FAFBFF" }}>
+                    <tr key={a.id} style={{ background: "var(--c-fafbff)" }}>
                       <td colSpan={12} style={{ padding: "8px 14px 8px 34px" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 14, fontSize: 11.5, flexWrap: "wrap" }}>
                           <Badge tone={a.status === "success" ? "green" : a.status === "failed" ? "red" : "amber"}>{a.status}</Badge>
                           <span style={{ color: MUTE }}>attempt #{a.attemptNumber}</span>
                           <span style={{ color: MUTE }}>{a.deviceName ? `${a.deviceName} — SIM ${a.simSlot ?? "?"}` : `SIM ${a.simSlot ?? "—"}`}</span>
                           <span style={{ color: SLATE, fontFamily: "monospace" }}>{a.ussdString}</span>
-                          {a.responseMessage && <span style={{ color: "#C81E2C" }}>{explainFailure(a.responseMessage) || a.responseMessage}</span>}
+                          {a.responseMessage && <span style={{ color: "var(--c-c81e2c)" }}>{explainFailure(a.responseMessage) || a.responseMessage}</span>}
                           <span style={{ color: MUTE }}>{formatDateTime(a.createdAt)} → {a.completedAt ? formatDateTime(a.completedAt) : "—"}</span>
                           <span style={{ color: MUTE, marginLeft: "auto" }}>{formatDurationMs(a.completedAt ? new Date(a.completedAt) - new Date(a.createdAt) : null)}</span>
                         </div>
@@ -13198,6 +14024,178 @@ function ExecutionLogs({ companies }) {
 // matched a pending order — separate from ExecutionLogs, which only shows
 // USSD dial attempts (i.e. SMS that already matched and moved on to
 // dialing). This is the "did we even see the SMS" view.
+// Agent App Release APK: the newest Agent App APK that is safe to install,
+// read live from the project's GitHub Releases by the server
+// (agentAppReleases.routes.ts) -- only a successful CI build whose APK
+// signature and version were verified, with its download link checked.
+// Nothing here is typed by hand.
+function formatBytes(n) {
+  if (!n) return "—";
+  return n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`;
+}
+
+function AgentAppReleasePanel() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState("");
+  const [checkNote, setCheckNote] = useState("");
+
+  const load = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      setData(await DalabAdminApi.getAgentAppReleases());
+    } catch (err) {
+      setError(err.message || "Could not load Agent App releases.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
+    if (DALAB_API_ENABLED) load();
+  }, []);
+
+  const check = async () => {
+    setChecking(true);
+    setError("");
+    setCheckNote("");
+    const before = data?.latest?.runNumber ?? null;
+    try {
+      const next = await DalabAdminApi.checkAgentAppRelease();
+      setData(next);
+      const now = next.latest?.runNumber ?? null;
+      setCheckNote(
+        now && now !== before
+          ? `New release found: ${next.latest.versionName} (build ${now}).`
+          : now
+            ? "You already have the newest verified release."
+            : "No verified release is available yet."
+      );
+    } catch (err) {
+      setError(err.message || "Could not check for a new release.");
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const latest = data?.latest;
+  const ready = latest && latest.downloadVerified === true;
+  const btn = (primary) => ({
+    display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, padding: primary ? "12px 18px" : "10px 14px",
+    borderRadius: 10, border: primary ? "none" : `1px solid ${BORDER}`, background: primary ? INDIGO : "var(--c-surface)",
+    color: primary ? "#fff" : INK, fontWeight: 700, fontSize: primary ? 14 : 13, cursor: "pointer", textDecoration: "none",
+  });
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div>
+        <div style={{ fontSize: 20, fontWeight: 800, color: INK }}>Agent App Release APK</div>
+        <div style={{ fontSize: 13, color: MUTE, marginTop: 4 }}>
+          The newest DALAB Agent App build that passed CI, with its signature and version verified — install it on the agent phones.
+        </div>
+      </div>
+
+      {error && <Card style={{ padding: 14, color: "var(--c-c81e2c)", fontSize: 13 }}>{error}</Card>}
+
+      <Card style={{ padding: 18 }}>
+        {loading && !data ? (
+          <div style={{ fontSize: 13, color: MUTE }}>Loading the latest release…</div>
+        ) : latest ? (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 18, alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ minWidth: 220 }}>
+              <Badge tone={ready ? "green" : "amber"}>{ready ? "Latest release · ready" : "Latest release · download not confirmed"}</Badge>
+              <div style={{ fontSize: 26, fontWeight: 800, color: INK, marginTop: 8 }}>
+                v{latest.versionName} <span style={{ fontSize: 15, color: MUTE, fontWeight: 600 }}>({latest.versionCode})</span>
+              </div>
+              <div style={{ fontSize: 13, color: MUTE, marginTop: 6, display: "flex", flexDirection: "column", gap: 3 }}>
+                <span>Released: {latest.publishedAt ? formatDateTime(latest.publishedAt) : "—"}</span>
+                <span>Build number: <b style={{ color: INK }}>{latest.runNumber}</b>{latest.commit ? ` · commit ${String(latest.commit).slice(0, 7)}` : ""}</span>
+                <span>File size: <b style={{ color: INK }}>{formatBytes(latest.sizeBytes)}</b></span>
+                <span>Signature verified in CI{latest.downloadCheckedAt ? ` · link checked ${formatDateTime(latest.downloadCheckedAt)}` : ""}</span>
+              </div>
+              {latest.downloadError && <div style={{ fontSize: 12.5, color: "var(--c-c81e2c)", marginTop: 6, fontWeight: 600 }}>{latest.downloadError}</div>}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 220 }}>
+              {ready ? (
+                <a href={latest.downloadUrl} style={btn(true)} rel="noopener noreferrer">
+                  <Download size={18} /> Download Latest Release APK
+                </a>
+              ) : (
+                <div style={{ fontSize: 12.5, color: "var(--c-a9720a)", fontWeight: 600 }}>
+                  The download link hasn't been confirmed — tap Check for New Release to re-check it.
+                </div>
+              )}
+              <button type="button" onClick={check} disabled={checking} style={btn(false)}>
+                <RefreshCw size={15} /> {checking ? "Checking…" : "Check for New Release"}
+              </button>
+            </div>
+          </div>
+        ) : data ? (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ fontSize: 13.5, color: "var(--c-a9720a)", fontWeight: 600 }}>{data.message || "No verified Agent App release is available yet."}</div>
+            <button type="button" onClick={check} disabled={checking} style={btn(false)}>
+              <RefreshCw size={15} /> {checking ? "Checking…" : "Check for New Release"}
+            </button>
+          </div>
+        ) : null}
+        {checkNote && <div style={{ fontSize: 12.5, color: INK, marginTop: 12, fontWeight: 600 }}>{checkNote}</div>}
+      </Card>
+
+      {data?.releases?.length > 0 && (
+        <Card style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ padding: "14px 16px", display: "flex", alignItems: "center", gap: 8, fontWeight: 800, color: INK }}>
+            <History size={16} /> Release history
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+              <thead>
+                <tr style={{ background: "var(--c-f7f8fc)", color: MUTE, textAlign: "left" }}>
+                  {["Version", "Build", "Released", "Size", "Status", ""].map((h) => <th key={h} style={{ padding: "8px 12px", fontWeight: 700 }}>{h}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {data.releases.map((r) => (
+                  <tr key={r.tag} style={{ borderTop: `1px solid ${BORDER}` }}>
+                    <td style={{ padding: "8px 12px", fontWeight: 700, color: INK }}>{r.versionName ? `v${r.versionName} (${r.versionCode})` : "—"}</td>
+                    <td style={{ padding: "8px 12px" }}>{r.runNumber}</td>
+                    <td style={{ padding: "8px 12px" }}>{r.publishedAt ? formatDateTime(r.publishedAt) : "—"}</td>
+                    <td style={{ padding: "8px 12px" }}>{formatBytes(r.sizeBytes)}</td>
+                    <td style={{ padding: "8px 12px" }}>
+                      {latest && r.tag === latest.tag ? (
+                        <Badge tone="green">Latest</Badge>
+                      ) : r.verified ? (
+                        <Badge tone="gray">Previous</Badge>
+                      ) : (
+                        <span title={r.notVerifiedReason || ""}><Badge tone="amber">Not verified</Badge></span>
+                      )}
+                    </td>
+                    <td style={{ padding: "8px 12px" }}>
+                      {r.verified ? (
+                        <a href={r.downloadUrl} rel="noopener noreferrer" style={{ color: INDIGO, fontWeight: 700, textDecoration: "none" }}>Download</a>
+                      ) : (
+                        <span style={{ color: MUTE }}>{r.notVerifiedReason}</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      <Card style={{ padding: 14, display: "flex", gap: 10, alignItems: "flex-start", background: "var(--c-f2fbf5)" }}>
+        <ShieldCheck size={18} color={GREEN} />
+        <div style={{ fontSize: 12.5, color: INK }}>
+          This is the official release-signed Agent App, the same key as earlier release builds, so it installs over them as an update.
+          Install it only on the DALAB agent phones.
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 function SmsLogs({ companies }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -13360,7 +14358,7 @@ function SmsLogs({ companies }) {
           {[{ id: "all", label: "All" }, { id: "true", label: "Matched" }, { id: "false", label: "Unmatched" }].map((f) => (
             <button key={f.id} onClick={() => setMatchedFilter(f.id)} style={{
               padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
-              border: `1px solid ${matchedFilter === f.id ? INDIGO : BORDER}`, background: matchedFilter === f.id ? INDIGO : "#fff", color: matchedFilter === f.id ? "#fff" : SLATE,
+              border: `1px solid ${matchedFilter === f.id ? INDIGO : BORDER}`, background: matchedFilter === f.id ? INDIGO : "var(--c-surface)", color: matchedFilter === f.id ? "#fff" : SLATE,
             }}>{f.label}</button>
           ))}
         </div>
@@ -13372,12 +14370,12 @@ function SmsLogs({ companies }) {
         <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ ...inputStyle, width: 150 }} title="To date" />
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               <SortHeader label="Received" sortKeyName="receivedAt" />
               <SortHeader label="Sender" sortKeyName="sender" />
               <th style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>Body</th>
@@ -13394,7 +14392,7 @@ function SmsLogs({ companies }) {
                 <tr key={`skeleton-${i}`} style={{ borderTop: `1px solid ${BORDER}` }}>
                   {Array.from({ length: 8 }).map((__, j) => (
                     <td key={j} style={{ padding: "12px 14px" }}>
-                      <div style={{ height: 12, borderRadius: 4, background: "#EEF0FB", width: j === 0 ? 90 : "70%" }} />
+                      <div style={{ height: 12, borderRadius: 4, background: "var(--c-eef0fb)", width: j === 0 ? 90 : "70%" }} />
                     </td>
                   ))}
                 </tr>
@@ -13429,7 +14427,7 @@ function SmsLogs({ companies }) {
                         </Button>
                       )}
                       {linkState[r.id].sendError && (
-                        <span style={{ fontSize: 11, color: "#C81E2C", maxWidth: 200 }}>{linkState[r.id].sendError}</span>
+                        <span style={{ fontSize: 11, color: "var(--c-c81e2c)", maxWidth: 200 }}>{linkState[r.id].sendError}</span>
                       )}
                     </div>
                   ) : (
@@ -13451,7 +14449,7 @@ function SmsLogs({ companies }) {
                         </Button>
                       </div>
                       {linkState[r.id]?.error && (
-                        <span style={{ fontSize: 11, color: "#C81E2C", maxWidth: 200 }}>{linkState[r.id].error}</span>
+                        <span style={{ fontSize: 11, color: "var(--c-c81e2c)", maxWidth: 200 }}>{linkState[r.id].error}</span>
                       )}
                     </div>
                   )}
@@ -13567,9 +14565,9 @@ function Notifications() {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1.3fr", gap: 14, alignItems: "start" }}>
         <Card style={{ padding: 18 }}>
           <div style={{ fontWeight: 700, fontSize: 13, color: INK, marginBottom: 10 }}>Compose</div>
-          {sendError && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 10 }}>{sendError}</div>}
+          {sendError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{sendError}</div>}
           {sendResult && (
-            <div style={{ background: "#E4F7EA", color: "#137A3B", fontSize: 12.5, fontWeight: 600, padding: "10px 12px", borderRadius: 10, marginBottom: 12 }}>
+            <div style={{ background: "var(--c-e4f7ea)", color: "var(--c-137a3b)", fontSize: 12.5, fontWeight: 600, padding: "10px 12px", borderRadius: 10, marginBottom: 12 }}>
               Sent to {sendResult.recipientCount} customer{sendResult.recipientCount === 1 ? "" : "s"} — {sendResult.deliveredCount} delivered, {sendResult.failedCount} failed (no registered device or push disabled).
             </div>
           )}
@@ -13588,7 +14586,7 @@ function Notifications() {
                   style={{
                     padding: "7px 12px", borderRadius: 20, fontSize: 12, fontWeight: 700, cursor: "pointer",
                     border: `1px solid ${targetType === value ? INDIGO : BORDER}`,
-                    background: targetType === value ? INDIGO : "#fff", color: targetType === value ? "#fff" : SLATE,
+                    background: targetType === value ? INDIGO : "var(--c-surface)", color: targetType === value ? "#fff" : SLATE,
                   }}
                 >
                   {label}
@@ -13628,7 +14626,7 @@ function Notifications() {
                         <div
                           key={c.id}
                           onClick={() => toggleCustomer(c)}
-                          style={{ padding: "8px 10px", fontSize: 12.5, cursor: "pointer", display: "flex", justifyContent: "space-between", background: checked ? INDIGO_SOFT : "#fff", borderBottom: `1px solid ${BORDER}` }}
+                          style={{ padding: "8px 10px", fontSize: 12.5, cursor: "pointer", display: "flex", justifyContent: "space-between", background: checked ? INDIGO_SOFT : "var(--c-surface)", borderBottom: `1px solid ${BORDER}` }}
                         >
                           <span style={{ color: INK, fontWeight: 600 }}>{c.name || "—"} <span style={{ color: MUTE, fontWeight: 400 }}>{c.phone}</span></span>
                           {checked && <Check size={14} color={INDIGO} />}
@@ -13664,7 +14662,7 @@ function Notifications() {
           {!DALAB_API_ENABLED ? (
             <div style={{ padding: 16, fontSize: 12.5, color: MUTE }}>Connect DALAB_API_BASE_URL to a deployed backend to view sent history.</div>
           ) : historyError ? (
-            <div style={{ padding: 16, color: "#C81E2C", fontSize: 12.5 }}>{historyError}</div>
+            <div style={{ padding: 16, color: "var(--c-c81e2c)", fontSize: 12.5 }}>{historyError}</div>
           ) : loadingHistory ? (
             <div style={{ padding: 16, fontSize: 12.5, color: MUTE }}>Loading…</div>
           ) : campaigns.length === 0 ? (
@@ -13755,7 +14753,7 @@ function Reports() {
         {["Daily", "Weekly", "Monthly", "Yearly"].map((r) => (
           <button key={r} onClick={() => setRange(r)} style={{
             padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
-            border: `1px solid ${range === r ? INDIGO : BORDER}`, background: range === r ? INDIGO : "#fff", color: range === r ? "#fff" : SLATE,
+            border: `1px solid ${range === r ? INDIGO : BORDER}`, background: range === r ? INDIGO : "var(--c-surface)", color: range === r ? "#fff" : SLATE,
           }}>{r}</button>
         ))}
       </div>
@@ -13764,7 +14762,7 @@ function Reports() {
         {!DALAB_API_ENABLED ? (
           <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to load real report data.</div>
         ) : error ? (
-          <div style={{ color: "#C81E2C", fontSize: 12.5 }}>{error}</div>
+          <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5 }}>{error}</div>
         ) : loading ? (
           <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Loading…</div>
         ) : series.length === 0 ? (
@@ -13772,7 +14770,7 @@ function Reports() {
         ) : (
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={series}>
-              <CartesianGrid stroke="#EEF0FB" vertical={false} />
+              <CartesianGrid stroke="var(--c-eef0fb)" vertical={false} />
               <XAxis dataKey="day" tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fontSize: 12, fill: MUTE }} axisLine={false} tickLine={false} />
               <Tooltip />
@@ -13912,7 +14910,7 @@ function SocialMediaLinksPanel() {
       <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 16 }}>
         These power the "Follow us" section and support buttons in the Customer App's Profile screen. A link left blank, or switched off here, is hidden from customers automatically — no app update needed. Every change here is recorded in the Activity Log.
       </div>
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
       {loading && !loaded ? (
         <div style={{ fontSize: 12.5, color: MUTE }}>Loading…</div>
       ) : (
@@ -13925,13 +14923,13 @@ function SocialMediaLinksPanel() {
             <div key={def.key} style={{ marginBottom: 16, paddingBottom: 16, borderBottom: i < SOCIAL_LINK_DEFS.length - 1 ? `1px solid ${BORDER}` : "none" }}>
               <Field label={def.label}>
                 <input
-                  style={{ ...inputStyle, ...(fieldError ? { borderColor: "#C81E2C" } : {}) }}
+                  style={{ ...inputStyle, ...(fieldError ? { borderColor: "var(--c-c81e2c)" } : {}) }}
                   placeholder={def.placeholder}
                   value={value}
                   onChange={(e) => setDrafts((d) => ({ ...d, [def.valueKey]: e.target.value }))}
                 />
               </Field>
-              {fieldError && <div style={{ color: "#C81E2C", fontSize: 11.5, marginTop: -8, marginBottom: 10 }}>{fieldError}</div>}
+              {fieldError && <div style={{ color: "var(--c-c81e2c)", fontSize: 11.5, marginTop: -8, marginBottom: 10 }}>{fieldError}</div>}
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
                 <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: SLATE, cursor: "pointer" }}>
                   <input
@@ -14042,7 +15040,7 @@ function GeneralSettingsPanel() {
 
   return (
     <Card style={{ padding: 18, maxWidth: 480 }}>
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
       <Field label="App name">
         <input style={inputStyle} value={drafts.app_name} onChange={(e) => setDrafts((d) => ({ ...d, app_name: e.target.value }))} />
       </Field>
@@ -14138,7 +15136,7 @@ function OtpSettingsPanel() {
 
   return (
     <Card style={{ padding: 18, maxWidth: 480 }}>
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
       <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 16 }}>
         No SMS gateway is connected yet, so the Customer App currently shows the OTP code directly for testing. These settings still control the real code length and expiry once a gateway is wired up.
       </div>
@@ -14241,7 +15239,7 @@ function ServiceVisibilityPanel() {
 
   return (
     <Card style={{ padding: 18, maxWidth: 480 }}>
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
       <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 16 }}>
         Controls which service cards the Customer App shows on its home screen. Turning a service off only hides it from customers -- it never deletes or disables anything in the backend, and every other service keeps working normally.
       </div>
@@ -14287,7 +15285,7 @@ function SettingsPanel() {
         ].map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)} style={{
             padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
-            border: `1px solid ${tab === t.id ? INDIGO : BORDER}`, background: tab === t.id ? INDIGO : "#fff", color: tab === t.id ? "#fff" : SLATE,
+            border: `1px solid ${tab === t.id ? INDIGO : BORDER}`, background: tab === t.id ? INDIGO : "var(--c-surface)", color: tab === t.id ? "#fff" : SLATE,
           }}>{t.label}</button>
         ))}
       </div>
@@ -14397,12 +15395,12 @@ function RolesPermissions({ admin }) {
         <Button icon={Plus} onClick={openNew}>Add admin</Button>
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Email", "Role", "Permissions", "Last login", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -14423,7 +15421,7 @@ function RolesPermissions({ admin }) {
                     <ShieldCheck size={14} color={u.role === "super_admin" ? GREEN : MUTE} />
                   </button>
                   <button onClick={() => remove(u)} style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
-                    <Trash2 size={14} color="#C81E2C" />
+                    <Trash2 size={14} color="var(--c-c81e2c)" />
                   </button>
                 </td>
               </tr>
@@ -14561,17 +15559,17 @@ function ActivityLogPanel() {
         ].map((f) => (
           <button key={f.id} onClick={() => setEntityFilter(f.id)} style={{
             padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
-            border: `1px solid ${entityFilter === f.id ? INDIGO : BORDER}`, background: entityFilter === f.id ? INDIGO : "#fff", color: entityFilter === f.id ? "#fff" : SLATE,
+            border: `1px solid ${entityFilter === f.id ? INDIGO : BORDER}`, background: entityFilter === f.id ? INDIGO : "var(--c-surface)", color: entityFilter === f.id ? "#fff" : SLATE,
           }}>{f.label}</button>
         ))}
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Time", "Admin", "Action", "Entity", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -14603,18 +15601,18 @@ function ActivityLogPanel() {
                     <td style={{ padding: "10px 14px", verticalAlign: "top" }}>{isOpen ? <ChevronDown size={15} color={MUTE} /> : <ChevronRight size={15} color={MUTE} />}</td>
                   </tr>
                   {isOpen && (
-                    <tr style={{ background: "#FAFBFF" }}>
+                    <tr style={{ background: "var(--c-fafbff)" }}>
                       <td colSpan={5} style={{ padding: "10px 14px 14px 14px" }}>
                         <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
                           <div style={{ flex: "1 1 240px" }}>
                             <div style={{ fontSize: 11, fontWeight: 700, color: MUTE, marginBottom: 4 }}>BEFORE</div>
-                            <pre style={{ fontSize: 11, background: "#fff", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 10, overflowX: "auto", margin: 0 }}>
+                            <pre style={{ fontSize: 11, background: "var(--c-surface)", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 10, overflowX: "auto", margin: 0 }}>
                               {JSON.stringify(r.oldValue, null, 2) ?? "—"}
                             </pre>
                           </div>
                           <div style={{ flex: "1 1 240px" }}>
                             <div style={{ fontSize: 11, fontWeight: 700, color: MUTE, marginBottom: 4 }}>AFTER</div>
-                            <pre style={{ fontSize: 11, background: "#fff", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 10, overflowX: "auto", margin: 0 }}>
+                            <pre style={{ fontSize: 11, background: "var(--c-surface)", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 10, overflowX: "auto", margin: 0 }}>
                               {JSON.stringify(r.newValue, null, 2) ?? "—"}
                             </pre>
                           </div>
@@ -14719,12 +15717,12 @@ function PaymentWalletsPanel({ companies }) {
         </div>
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Wallet", "Provider", "Dial Prefix", "Logo Key", "Color", "Status", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -14734,7 +15732,7 @@ function PaymentWalletsPanel({ companies }) {
             {wallets.map((w) => (
               <tr key={w.id} style={{ borderTop: `1px solid ${BORDER}` }}>
                 <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{w.name}</td>
-                <td style={{ padding: "10px 14px", fontSize: 12.5, color: w.companyId ? SLATE : "#C81E2C" }}>
+                <td style={{ padding: "10px 14px", fontSize: 12.5, color: w.companyId ? SLATE : "var(--c-c81e2c)" }}>
                   {w.companyId ? (companies.find((c) => c.id === w.companyId)?.name || w.companyId) : (w.providerLabel ? `${w.providerLabel} (unlinked!)` : "— unlinked —")}
                 </td>
                 <td style={{ padding: "10px 14px", fontSize: 12, color: SLATE, fontFamily: "monospace" }}>{w.dialPrefix}</td>
@@ -14748,13 +15746,13 @@ function PaymentWalletsPanel({ companies }) {
                 <td style={{ padding: "10px 14px" }}><Badge tone={w.enabled ? "green" : "gray"}>{w.enabled ? "Enabled" : "Disabled"}</Badge></td>
                 <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
                   <button onClick={() => toggleStatus(w)} title={w.enabled ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
-                    <Power size={14} color={w.enabled ? GREEN : "#C81E2C"} />
+                    <Power size={14} color={w.enabled ? GREEN : "var(--c-c81e2c)"} />
                   </button>
                   <button onClick={() => openEdit(w)} title="Edit" style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
                     <Pencil size={14} color={INDIGO} />
                   </button>
                   <button onClick={() => remove(w)} title="Delete" style={{ background: "none", border: "none", cursor: "pointer" }}>
-                    <Trash2 size={14} color="#C81E2C" />
+                    <Trash2 size={14} color="var(--c-c81e2c)" />
                   </button>
                 </td>
               </tr>
@@ -14819,6 +15817,1545 @@ function PaymentWalletsPanel({ companies }) {
 // payout. Sender identity is a property of the telecom network itself, not
 // of any individual number/wallet, so this is intentionally a small global
 // table rather than a field on Payment Wallets / Provider Numbers.
+// ---------------- SMS Format Update ----------------
+// When a payment provider changes its SMS wording, the Super Admin pastes
+// one real SMS here, tests what the system reads from it, and activates it.
+// The server learns a reading rule from the SMS (smsFormats.routes.ts), the
+// Agent App downloads active rules without an app update, and every saved
+// version stays in history so an older one can be restored. Reading an SMS
+// never marks an order paid -- the normal matching/verification still does.
+const SMS_FORMAT_PROVIDERS = [
+  { key: "edahab", label: "eDahab" },
+  { key: "evc_plus", label: "EVC Plus" },
+  { key: "hormuud", label: "Hormuud" },
+  { key: "somtel", label: "Somtel" },
+  { key: "somnet", label: "Somnet" },
+  { key: "amtel", label: "Amtel" },
+  { key: "jeeb", label: "Jeeb" },
+];
+const SMS_FORMAT_ACTION_LABEL = { created: "Saved", activated: "Activated", restored: "Restored", deactivated: "Turned off" };
+
+const splitList = (text) => String(text || "").split(",").map((s) => s.trim()).filter(Boolean);
+
+function SmsFormatUpdatePanel() {
+  const [provider, setProvider] = useState("edahab");
+  const [sms, setSms] = useState("");
+  const [adjust, setAdjust] = useState(null); // null = let the server choose
+  const [advanced, setAdvanced] = useState(false);
+  const [result, setResult] = useState(null);
+  const [testedParams, setTestedParams] = useState(null);
+  const [dirty, setDirty] = useState(true);
+  const [testing, setTesting] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [note, setNote] = useState("");
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(null);
+  const [data, setData] = useState({ providers: [], rules: [], events: [] });
+  const [historyProvider, setHistoryProvider] = useState("edahab");
+  const [loading, setLoading] = useState(false);
+
+  const load = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setLoading(true);
+    try {
+      setData(await DalabAdminApi.getSmsFormats());
+    } catch (err) {
+      setError(err.message || "Could not load SMS formats.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { load(); }, []);
+
+  const resetTest = () => {
+    setResult(null);
+    setAdjust(null);
+    setAdvanced(false);
+    setDirty(true);
+    setSaved(null);
+    setError("");
+  };
+
+  const buildParams = () => {
+    const params = { provider, sms };
+    if (adjust) {
+      params.choice = adjust.choice;
+      params.keywords = splitList(adjust.keywords);
+      params.senders = splitList(adjust.senders);
+      if (advanced) {
+        params.pattern = adjust.pattern;
+        params.amountGroup = adjust.amountGroup === "" ? null : Number(adjust.amountGroup);
+        params.senderGroup = adjust.senderGroup === "" ? null : Number(adjust.senderGroup);
+        params.referenceGroup = adjust.referenceGroup === "" ? null : Number(adjust.referenceGroup);
+        params.recipientGroup = adjust.recipientGroup === "" ? null : Number(adjust.recipientGroup);
+      }
+    }
+    return params;
+  };
+
+  const runTest = async () => {
+    if (!sms.trim()) { setError("Paste the full SMS first."); return; }
+    setTesting(true);
+    setError("");
+    setSaved(null);
+    const params = buildParams();
+    try {
+      const res = await DalabAdminApi.testSmsFormat(params);
+      setResult(res);
+      setTestedParams({ ...params, choice: res.choice, keywords: res.rule.keywords, senders: res.rule.senders });
+      setAdjust({
+        choice: res.choice,
+        keywords: res.rule.keywords.join(", "),
+        senders: res.rule.senders.join(", "),
+        pattern: res.rule.pattern,
+        amountGroup: res.rule.amountGroup ?? "",
+        senderGroup: res.rule.senderGroup ?? "",
+        referenceGroup: res.rule.referenceGroup ?? "",
+        recipientGroup: res.rule.recipientGroup ?? "",
+      });
+      setDirty(false);
+    } catch (err) {
+      setResult(null);
+      setError(err.message || "The test could not be run.");
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const updateAdjust = (patch) => {
+    setAdjust((prev) => ({ ...prev, ...patch }));
+    setDirty(true);
+  };
+  const updateChoice = (patch) => updateAdjust({ choice: { ...adjust.choice, ...patch } });
+
+  const saveAndActivate = async () => {
+    if (!result?.ok || dirty || !testedParams) return;
+    const label = SMS_FORMAT_PROVIDERS.find((p) => p.key === provider)?.label;
+    if (!window.confirm(`Activate this SMS format for ${label}? The Agent App will use it to read ${label} payment SMS from now on.`)) return;
+    setSaving(true);
+    setError("");
+    try {
+      const res = await DalabAdminApi.saveSmsFormat({ ...testedParams, note: note.trim() || undefined });
+      setSaved(res);
+      setNote("");
+      setHistoryProvider(provider);
+      await load();
+    } catch (err) {
+      setError(err.message || "Could not save this format.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const restore = async (rule) => {
+    if (!window.confirm(`Restore ${providerLabel(rule.provider)} format version ${rule.version}? It replaces the currently active one.`)) return;
+    try {
+      await DalabAdminApi.activateSmsFormat(rule.id);
+      await load();
+    } catch (err) {
+      alert(err.message || "Could not restore this format.");
+    }
+  };
+
+  const turnOff = async (key) => {
+    if (!window.confirm(`Turn off the custom SMS format for ${providerLabel(key)}? The Agent App goes back to its built-in reading for this provider.`)) return;
+    try {
+      await DalabAdminApi.deactivateSmsFormat(key);
+      await load();
+    } catch (err) {
+      alert(err.message || "Could not turn this format off.");
+    }
+  };
+
+  const providerLabel = (key) => SMS_FORMAT_PROVIDERS.find((p) => p.key === key)?.label || key;
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage SMS formats.</div>;
+  }
+
+  const activeRules = data.rules.filter((r) => r.status === "active");
+  const history = data.rules.filter((r) => r.provider === historyProvider);
+  const events = data.events.filter((e) => e.provider === historyProvider);
+  const candidates = result?.candidates;
+  const extractedRows = result?.extracted
+    ? [
+        ["Amount", `$${result.extracted.amount}`],
+        ["Sender number", result.extracted.senderPhone],
+        ["Transaction reference", result.extracted.reference || "Not in this SMS"],
+        ["Recipient number", result.extracted.recipientPhone || "Not in this SMS"],
+        ["Recorded as provider", result.parsedProvider],
+      ]
+    : [];
+  const selectStyle = { ...inputStyle, padding: "8px 10px" };
+  const th = { textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 };
+  const td = { padding: "10px 14px", fontSize: 12.5, color: SLATE, verticalAlign: "top" };
+
+  return (
+    <div>
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>SMS Format Update</div>
+        <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2, maxWidth: 760 }}>
+          When a payment provider changes how its SMS is written, paste one real SMS here exactly as received, test it, and activate it.
+          The Agent App starts reading that provider's SMS with the new format within about a minute, without an app update.
+          Reading an SMS never marks an order as paid on its own; payments still go through the normal verification checks.
+        </div>
+      </div>
+
+      <Card style={{ padding: 18, marginBottom: 16 }}>
+        <Field label="Payment provider">
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {SMS_FORMAT_PROVIDERS.map((p) => (
+              <button
+                key={p.key}
+                onClick={() => { setProvider(p.key); resetTest(); }}
+                style={{
+                  padding: "8px 14px", borderRadius: 20, fontSize: 13, fontWeight: 700, cursor: "pointer",
+                  border: `1px solid ${provider === p.key ? INDIGO : BORDER}`,
+                  background: provider === p.key ? INDIGO : "var(--c-surface)",
+                  color: provider === p.key ? "#fff" : INK,
+                }}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </Field>
+        <Field label="Original SMS (paste the whole message without changing anything)">
+          <textarea
+            value={sms}
+            onChange={(e) => { setSms(e.target.value); resetTest(); }}
+            rows={7}
+            spellCheck={false}
+            placeholder="0.09 Dollar Ayaad ka Heshay ... (620346060). Tix: PP261009.1511.117314. ..."
+            style={{ ...inputStyle, fontFamily: "monospace", fontSize: 13, resize: "vertical", lineHeight: 1.5 }}
+          />
+        </Field>
+        <Button icon={testing ? Loader2 : PlayCircle} spin={testing} onClick={runTest} disabled={testing || !sms.trim()}>
+          {result ? "Test again" : "Test SMS"}
+        </Button>
+        {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginTop: 12 }}>{error}</div>}
+      </Card>
+
+      {result && (
+        <Card style={{ padding: 18, marginBottom: 16 }}>
+          {result.ok ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, color: GREEN, fontWeight: 800, fontSize: 14, marginBottom: 12 }}>
+              <CheckCircle2 size={18} /> The SMS was read successfully
+            </div>
+          ) : (
+            <div style={{ background: "var(--c-fce7e8)", color: "var(--c-c81e2c)", borderRadius: 10, padding: "10px 12px", fontSize: 13, marginBottom: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 800 }}><XCircle size={16} /> The SMS could not be used yet</div>
+              {result.error && <div style={{ marginTop: 6 }}>{result.error}</div>}
+              {result.conflicts.map((c) => <div key={c} style={{ marginTop: 6 }}>{c}</div>)}
+              <div style={{ marginTop: 6, color: SLATE }}>Adjust the fields below and test again.</div>
+            </div>
+          )}
+          {result.warnings.map((w) => (
+            <div key={w} style={{ display: "flex", gap: 8, background: "var(--c-fff4d9)", color: "var(--c-a9720a)", borderRadius: 10, padding: "8px 12px", fontSize: 12.5, marginBottom: 8 }}>
+              <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} /> {w}
+            </div>
+          ))}
+
+          {extractedRows.length > 0 && (
+            <table style={{ width: "100%", borderCollapse: "collapse", margin: "6px 0 16px" }}>
+              <tbody>
+                {extractedRows.map(([label, value]) => (
+                  <tr key={label} style={{ borderTop: `1px solid ${BORDER}` }}>
+                    <td style={{ ...td, width: 200, color: MUTE }}>{label}</td>
+                    <td style={{ ...td, color: INK, fontWeight: 700, fontFamily: "monospace" }}>{value}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          {adjust && (
+            <div style={{ borderTop: `1px solid ${BORDER}`, paddingTop: 14 }}>
+              <div style={{ fontWeight: 800, fontSize: 13.5, color: INK, marginBottom: 10 }}>Adjust the format</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
+                <Field label="Amount">
+                  <select style={selectStyle} disabled={advanced} value={adjust.choice.amountIndex} onChange={(e) => updateChoice({ amountIndex: Number(e.target.value) })}>
+                    {candidates.amounts.length === 0 && <option value={-1}>None found</option>}
+                    {candidates.amounts.map((v, i) => <option key={i} value={i}>{v}</option>)}
+                  </select>
+                </Field>
+                <Field label="Sender number">
+                  <select style={selectStyle} disabled={advanced} value={adjust.choice.senderIndex} onChange={(e) => updateChoice({ senderIndex: Number(e.target.value) })}>
+                    {candidates.phones.length === 0 && <option value={-1}>None found</option>}
+                    {candidates.phones.map((v, i) => <option key={i} value={i}>{v}</option>)}
+                  </select>
+                </Field>
+                <Field label="Transaction reference">
+                  <select style={selectStyle} disabled={advanced} value={adjust.choice.referenceIndex} onChange={(e) => updateChoice({ referenceIndex: Number(e.target.value) })}>
+                    <option value={-1}>None</option>
+                    {candidates.references.map((v, i) => <option key={i} value={i}>{v}</option>)}
+                  </select>
+                </Field>
+                <Field label="Recipient number">
+                  <select style={selectStyle} disabled={advanced} value={adjust.choice.recipientIndex} onChange={(e) => updateChoice({ recipientIndex: Number(e.target.value) })}>
+                    <option value={-1}>None</option>
+                    {candidates.phones.map((v, i) => <option key={i} value={i}>{v}</option>)}
+                  </select>
+                </Field>
+              </div>
+              <Field label="Keywords every SMS of this format contains (comma separated)">
+                <input style={inputStyle} value={adjust.keywords} onChange={(e) => updateAdjust({ keywords: e.target.value })} />
+              </Field>
+              <Field label="SMS sender IDs this provider sends from (comma separated)">
+                <input style={{ ...inputStyle, fontFamily: "monospace" }} value={adjust.senders} onChange={(e) => updateAdjust({ senders: e.target.value })} />
+              </Field>
+              <button
+                onClick={() => { setAdvanced(!advanced); setDirty(true); }}
+                style={{ background: "none", border: "none", color: INDIGO, fontWeight: 700, fontSize: 12.5, cursor: "pointer", padding: 0, marginBottom: 10, display: "flex", alignItems: "center", gap: 4 }}
+              >
+                {advanced ? <ChevronDown size={14} /> : <ChevronRight size={14} />} Advanced: edit the reading pattern
+              </button>
+              {advanced && (
+                <div>
+                  <Field label="Pattern (regular expression, case-insensitive)">
+                    <textarea
+                      rows={3}
+                      spellCheck={false}
+                      style={{ ...inputStyle, fontFamily: "monospace", fontSize: 12.5 }}
+                      value={adjust.pattern}
+                      onChange={(e) => updateAdjust({ pattern: e.target.value })}
+                    />
+                  </Field>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12 }}>
+                    {[["amountGroup", "Amount group"], ["senderGroup", "Sender group"], ["referenceGroup", "Reference group"], ["recipientGroup", "Recipient group"]].map(([key, label]) => (
+                      <Field key={key} label={label}>
+                        <input style={inputStyle} inputMode="numeric" value={adjust[key]} onChange={(e) => updateAdjust({ [key]: e.target.value.replace(/\D/g, "") })} />
+                      </Field>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <Button variant="ghost" icon={testing ? Loader2 : PlayCircle} spin={testing} onClick={runTest} disabled={testing}>Test again</Button>
+                <input
+                  style={{ ...inputStyle, width: 260 }}
+                  placeholder="Note (optional), e.g. new wording from Oct 2026"
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                />
+                <Button icon={saving ? Loader2 : CheckCircle2} spin={saving} onClick={saveAndActivate} disabled={!result.ok || dirty || saving}>
+                  Save & Activate
+                </Button>
+                {dirty && <span style={{ fontSize: 12, color: MUTE }}>Test again to use your changes.</span>}
+              </div>
+            </div>
+          )}
+          {saved && (
+            <div style={{ background: "var(--c-e4f7ea)", color: GREEN, borderRadius: 10, padding: "10px 12px", fontSize: 13, marginTop: 14, fontWeight: 700 }}>
+              Version {saved.version} is now active for {providerLabel(saved.provider)}. The Agent App picks it up within about a minute.
+              {saved.recentSmsRead > 0 && ` ${saved.recentSmsRead} recent SMS that couldn't be read before were read now and go through the normal payment checks.`}
+            </div>
+          )}
+        </Card>
+      )}
+
+      <Card style={{ padding: 0, overflow: "hidden", marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px" }}>
+          <div style={{ fontWeight: 800, fontSize: 14, color: INK }}>Active formats</div>
+          <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={load} disabled={loading}>Refresh</Button>
+        </div>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "var(--c-fafbff)" }}>
+              {["Provider", "Format", "Activated by", "Activated", ""].map((h) => <th key={h} style={th}>{h}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {SMS_FORMAT_PROVIDERS.map((p) => {
+              const rule = activeRules.find((r) => r.provider === p.key);
+              return (
+                <tr key={p.key} style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <td style={{ ...td, fontWeight: 700, color: INK }}>{p.label}</td>
+                  <td style={td}>{rule ? <Badge tone="green">Version {rule.version}</Badge> : <Badge tone="gray">Built-in</Badge>}</td>
+                  <td style={td}>{rule?.activatedByEmail || "—"}</td>
+                  <td style={td}>{rule?.activatedAt ? formatDateTime(rule.activatedAt) : "—"}</td>
+                  <td style={{ ...td, textAlign: "right" }}>
+                    {rule && <Button variant="danger" icon={Power} onClick={() => turnOff(p.key)}>Turn off</Button>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </Card>
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ fontWeight: 800, fontSize: 14, color: INK }}>History</div>
+          <select style={{ ...selectStyle, width: 180 }} value={historyProvider} onChange={(e) => setHistoryProvider(e.target.value)}>
+            {SMS_FORMAT_PROVIDERS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+          </select>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+            <thead>
+              <tr style={{ background: "var(--c-fafbff)" }}>
+                {["Version", "Status", "Reads", "Sample SMS", "Saved by", "Saved", ""].map((h) => <th key={h} style={th}>{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {history.map((r) => (
+                <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <td style={{ ...td, fontWeight: 700, color: INK }}>v{r.version}{r.note && <div style={{ fontWeight: 400, color: MUTE, fontSize: 11.5 }}>{r.note}</div>}</td>
+                  <td style={td}><Badge tone={r.status === "active" ? "green" : "gray"}>{r.status === "active" ? "Active" : "Inactive"}</Badge></td>
+                  <td style={{ ...td, fontFamily: "monospace", fontSize: 11.5 }}>
+                    ${r.extracted?.amount} · {r.extracted?.senderPhone}{r.extracted?.reference ? ` · ${r.extracted.reference}` : ""}
+                  </td>
+                  <td style={{ ...td, fontFamily: "monospace", fontSize: 11.5, maxWidth: 320, wordBreak: "break-word" }}>{r.sampleSms}</td>
+                  <td style={td}>{r.createdByEmail || "—"}</td>
+                  <td style={td}>{formatDateTime(r.createdAt)}</td>
+                  <td style={{ ...td, textAlign: "right" }}>
+                    {r.status !== "active" && <Button variant="ghost" icon={RotateCcw} onClick={() => restore(r)}>Restore</Button>}
+                  </td>
+                </tr>
+              ))}
+              {history.length === 0 && (
+                <tr><td colSpan={7} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>No saved formats for {providerLabel(historyProvider)} yet. The Agent App uses its built-in reading.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        {events.length > 0 && (
+          <div style={{ borderTop: `1px solid ${BORDER}`, padding: "12px 16px" }}>
+            <div style={{ fontWeight: 700, fontSize: 12, color: SLATE, marginBottom: 8 }}>Changes</div>
+            {events.map((e) => (
+              <div key={e.id} style={{ fontSize: 12.5, color: SLATE, padding: "4px 0" }}>
+                <span style={{ color: MUTE }}>{formatDateTime(e.createdAt)}</span> · {SMS_FORMAT_ACTION_LABEL[e.action] || e.action} v{e.version} · {e.adminEmail || "—"}
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+// ---------------- Shirkadda Xisaab (per-company accounts) ----------------
+// Each telecom company's books for a period, from GET
+// /admin/finance/company-accounts: company money (what DALAB pays the
+// company), sales (what customers paid), discount off the list price,
+// commission and profit = sales - company money + commission. Money counts
+// completed, non-reversed orders only; the order list shows every status.
+const ACCOUNT_PERIODS = [
+  { key: "today", label: "Today" },
+  { key: "yesterday", label: "Yesterday" },
+  { key: "1m", label: "1 Month" },
+  { key: "3m", label: "3 Months" },
+  { key: "6m", label: "6 Months" },
+  { key: "1y", label: "1 Year" },
+  { key: "custom", label: "Custom Date" },
+];
+const ACCOUNT_STATUS_OPTIONS = [
+  { value: "", label: "All Status" },
+  { value: "completed", label: "Completed" },
+  { value: "pending", label: "Pending" },
+  { value: "in_progress", label: "In progress" },
+  { value: "failed", label: "Failed" },
+  { value: "cancelled", label: "Cancelled" },
+];
+const ACCOUNT_STATUS_TONE = { completed: "green", pending: "amber", in_progress: "blue", failed: "red", cancelled: "gray", reversed: "gray" };
+const SOMALIA_OFFSET_MS = 3 * 3600_000; // Africa/Mogadishu is UTC+3 all year
+
+// Start of a Somalia calendar day, as a real instant.
+function somaliaDayStart(date) {
+  const shifted = new Date(date.getTime() + SOMALIA_OFFSET_MS);
+  return new Date(Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate()) - SOMALIA_OFFSET_MS);
+}
+
+function accountRange(period, customFrom, customTo) {
+  const now = new Date();
+  const today = somaliaDayStart(now);
+  const monthsAgo = (m) => {
+    const d = new Date(now);
+    d.setMonth(d.getMonth() - m);
+    return somaliaDayStart(d);
+  };
+  switch (period) {
+    case "today": return { from: today, to: now };
+    case "yesterday": return { from: new Date(today.getTime() - 86400_000), to: new Date(today.getTime() - 1) };
+    case "1m": return { from: monthsAgo(1), to: now };
+    case "3m": return { from: monthsAgo(3), to: now };
+    case "6m": return { from: monthsAgo(6), to: now };
+    case "1y": return { from: monthsAgo(12), to: now };
+    default: {
+      if (!customFrom) return null;
+      const from = new Date(Date.parse(`${customFrom}T00:00:00Z`) - SOMALIA_OFFSET_MS);
+      const to = new Date(Date.parse(`${customTo || customFrom}T00:00:00Z`) - SOMALIA_OFFSET_MS + 86400_000 - 1);
+      return { from, to };
+    }
+  }
+}
+
+const usd = (v) => {
+  const n = Number(v ?? 0);
+  return `${n < 0 ? "-" : ""}$${Math.abs(n).toFixed(2)}`;
+};
+const profitColor = (v) => (Number(v) < 0 ? "var(--c-c81e2c)" : GREEN);
+
+// ---------------- USSD Services (menu USSD services) ----------------
+// Menu-driven USSD services (e.g. Somtel Dhameys Plus: *101# > 4 > package >
+// 2 > number > PIN), each with its own first code, menu steps, packages and
+// on/off switch. A Super Admin can add, edit, duplicate and delete services
+// (backend: interactiveServices.routes.ts, which validates everything again
+// on save); packages.manage turns services on/off and manages packages with
+// the normal package routes. A new or duplicated service starts OFF.
+
+const MENU_STEP_TYPES = [
+  { value: "menu", label: "Menu number" },
+  { value: "{packageCode}", label: "Package option" },
+  { value: "{number}", label: "Receiver number" },
+  { value: "{amount}", label: "Amount" },
+  { value: "{pin}", label: "Provider PIN" },
+  { value: "text", label: "Custom reply / text" },
+];
+const MENU_STEP_TOKENS = ["{packageCode}", "{number}", "{amount}", "{pin}"];
+
+/** Which of MENU_STEP_TYPES a saved step is. */
+function menuStepType(step) {
+  if (step.kind === "text") return "text";
+  if (MENU_STEP_TOKENS.includes(step.reply)) return step.reply;
+  return "menu";
+}
+
+/** A safe starting menu for a new service: menu number > package > number > PIN. */
+function defaultMenuSteps() {
+  return [
+    { reply: "1", expectText: "" },
+    { reply: "{packageCode}", expectText: "", checkMenuPrice: true },
+    { reply: "{number}", expectText: "" },
+    { reply: "{pin}", expectText: "", checkAmount: true, checkNumber: true },
+  ];
+}
+
+/** Editor rows -> the API's replySteps. */
+function menuStepsForApi(steps) {
+  return steps.map((s) => ({
+    reply: String(s.reply || "").trim(),
+    ...(s.kind === "text" ? { kind: "text" } : {}),
+    expect: String(s.expectText || "").split(",").map((t) => t.trim()).filter(Boolean),
+    checkMenuPrice: s.reply === "{packageCode}" && Boolean(s.checkMenuPrice),
+    checkAmount: Boolean(s.checkAmount),
+    checkNumber: Boolean(s.checkNumber),
+  }));
+}
+
+function menuStepsFromApi(steps) {
+  return (steps || []).map((s) => ({ ...s, expectText: (s.expect || []).join(", ") }));
+}
+
+const MENU_SERVICE_TYPES = [
+  { value: "data", label: "Data" },
+  { value: "call", label: "Calls" },
+  { value: "wifi", label: "WiFi" },
+  { value: "wireless", label: "Wireless" },
+];
+
+const PACKAGE_FILTERS = [
+  { value: "all", label: "All packages" },
+  { value: "active", label: "Active" },
+  { value: "inactive", label: "Inactive" },
+  { value: "unavailable", label: "Temporarily unavailable" },
+  { value: "hidden", label: "Hidden from an app" },
+];
+
+const PACKAGE_SORTS = [
+  { value: "order", label: "Display order" },
+  { value: "price", label: "Price" },
+  { value: "name", label: "Name" },
+  { value: "updated", label: "Last modified" },
+];
+
+function emptyMenuPackage(service) {
+  return {
+    name: "", description: "", price: "", validity: "", code: "",
+    sortOrder: (service?.packages?.length || 0) + 1,
+    visibleCustomerApp: true, visibleAgentApp: true, ordersEnabled: true, active: true,
+  };
+}
+
+const menuTh = { textAlign: "left", padding: "9px 10px", fontSize: 11, color: MUTE, fontWeight: 700, whiteSpace: "nowrap" };
+const menuTd = { padding: "9px 10px", fontSize: 12.5, color: INK, verticalAlign: "top" };
+function MenuCheck({ label, value, onChange, disabled }) {
+  return (
+    <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: INK, cursor: disabled ? "default" : "pointer" }}>
+      <input type="checkbox" checked={Boolean(value)} disabled={disabled} onChange={(e) => onChange(e.target.checked)} /> {label}
+    </label>
+  );
+}
+
+/** The ordered menu steps of a service: type, value, "screen must show"
+ * and checks, with add / delete / move up / move down. */
+function UssdStepsEditor({ steps, onChange, disabled }) {
+  const update = (i, patch) => onChange(steps.map((st, j) => (j === i ? { ...st, ...patch } : st)));
+  const move = (i, dir) => {
+    const j = i + dir;
+    if (j < 0 || j >= steps.length) return;
+    const next = [...steps];
+    [next[i], next[j]] = [next[j], next[i]];
+    onChange(next);
+  };
+  const setType = (i, type) => {
+    const { kind, ...rest } = steps[i];
+    if (type === "menu") update(i, { ...rest, kind: undefined, reply: /^[0-9]{1,3}$/.test(rest.reply) ? rest.reply : "1" });
+    else if (type === "text") update(i, { ...rest, kind: "text", reply: MENU_STEP_TOKENS.includes(rest.reply) ? "" : rest.reply });
+    else update(i, { ...rest, kind: undefined, reply: type, checkMenuPrice: type === "{packageCode}" ? true : rest.checkMenuPrice });
+  };
+  return (
+    <div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "var(--c-fafbff)" }}>
+              {["Step", "Reply", "Screen must show", "Checks", ""].map((h) => <th key={h} style={menuTh}>{h}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {steps.map((s, i) => {
+              const type = menuStepType(s);
+              return (
+                <tr key={i} style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <td style={{ ...menuTd, color: MUTE }}>{i + 1}</td>
+                  <td style={{ ...menuTd, whiteSpace: "nowrap" }}>
+                    <select style={{ ...inputStyle, width: 180, padding: "6px 8px" }} disabled={disabled} value={type} onChange={(e) => setType(i, e.target.value)}>
+                      {MENU_STEP_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                    </select>
+                    {type === "menu" && (
+                      <input style={{ ...inputStyle, width: 60, padding: "6px 8px", marginLeft: 6, fontFamily: "monospace" }} disabled={disabled} value={s.reply}
+                        onChange={(e) => update(i, { reply: e.target.value.replace(/[^0-9]/g, "").slice(0, 3) })} placeholder="4" />
+                    )}
+                    {type === "text" && (
+                      <input style={{ ...inputStyle, width: 120, padding: "6px 8px", marginLeft: 6, fontFamily: "monospace" }} disabled={disabled} value={s.reply}
+                        onChange={(e) => update(i, { reply: e.target.value.slice(0, 30) })} placeholder="e.g. Y" />
+                    )}
+                  </td>
+                  <td style={menuTd}>
+                    <input style={{ ...inputStyle, width: 200, padding: "6px 8px" }} disabled={disabled} value={s.expectText || ""} placeholder="e.g. Dhameys"
+                      onChange={(e) => update(i, { expectText: e.target.value })} />
+                  </td>
+                  <td style={menuTd}>
+                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                      {type === "{packageCode}" && <MenuCheck label="Menu price" value={s.checkMenuPrice} disabled={disabled} onChange={(v) => update(i, { checkMenuPrice: v })} />}
+                      <MenuCheck label="Amount" value={s.checkAmount} disabled={disabled} onChange={(v) => update(i, { checkAmount: v })} />
+                      <MenuCheck label="Number" value={s.checkNumber} disabled={disabled} onChange={(v) => update(i, { checkNumber: v })} />
+                    </div>
+                  </td>
+                  <td style={{ ...menuTd, whiteSpace: "nowrap" }}>
+                    {!disabled && (
+                      <div style={{ display: "flex", gap: 4 }}>
+                        <Button variant="ghost" onClick={() => move(i, -1)} disabled={i === 0}>↑</Button>
+                        <Button variant="ghost" onClick={() => move(i, 1)} disabled={i === steps.length - 1}>↓</Button>
+                        <Button variant="danger" icon={Trash2} onClick={() => onChange(steps.filter((_, j) => j !== i))} />
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {!disabled && (
+        <div style={{ marginTop: 10 }}>
+          <Button variant="ghost" icon={Plus} onClick={() => onChange([...steps, { reply: "1", expectText: "" }])}>Add step</Button>
+        </div>
+      )}
+      <div style={{ fontSize: 11.5, color: MUTE, marginTop: 8, lineHeight: 1.5 }}>
+        The first code is dialed, then each step's reply is sent in order. "Screen must show" words are checked on the carrier's screen before that reply.
+        The PIN must be the last step and must check the amount and number. A service needs a Package option step (which must check the menu price) or an Amount step.
+        Custom replies may use letters, digits, spaces and * # + . - (up to 30). Amount and custom replies need the latest Agent App.
+      </div>
+    </div>
+  );
+}
+
+function MenuUssdServicesSection({ admin }) {
+  const isSuper = admin?.role === "super_admin";
+  const canManage = hasPermission(admin, "packages.manage");
+  const [services, setServices] = useState([]);
+  const [companies, setCompanies] = useState([]);
+  const [providerFilter, setProviderFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [serviceId, setServiceId] = useState("");
+  const [service, setService] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [listLoading, setListLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [sort, setSort] = useState("order");
+  const [editing, setEditing] = useState(null); // { id|null, form }
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState("");
+  const [settings, setSettings] = useState(null); // editable copy of the USSD settings
+  const [settingsError, setSettingsError] = useState("");
+  const [creating, setCreating] = useState(null); // new-service form
+  const [createError, setCreateError] = useState("");
+
+  const loadServices = async () => {
+    if (!DALAB_API_ENABLED) return;
+    setListLoading(true);
+    try {
+      setServices(await DalabAdminApi.listInteractiveServices());
+    } catch (err) {
+      setError(err.message || "Could not load the USSD services.");
+    } finally {
+      setListLoading(false);
+    }
+  };
+  const loadService = async (id = serviceId) => {
+    if (!DALAB_API_ENABLED || !id) return;
+    setLoading(true);
+    setError("");
+    try {
+      const res = await DalabAdminApi.getInteractiveService(id);
+      setService(res);
+      setSettings({
+        serviceName: res.serviceName,
+        initialDial: res.ussdCode,
+        replySteps: menuStepsFromApi(res.replySteps),
+        successText: (res.successKeywords || []).join(", "),
+        balanceSource: res.balanceSource || "",
+      });
+    } catch (err) {
+      setError(err.message || "Could not load this service.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
+    loadServices();
+    if (DALAB_API_ENABLED) DalabAdminApi.getCompanies().then((list) => setCompanies((list || []).filter((c) => !c.deletedAt))).catch(() => {});
+  }, []);
+  useEffect(() => { if (serviceId) loadService(serviceId); else setService(null); }, [serviceId]);
+
+  // One timer at a time, so an older message's timer never clears a newer one.
+  const flashTimer = useRef(null);
+  const flash = (msg) => {
+    clearTimeout(flashTimer.current);
+    setNotice(msg);
+    flashTimer.current = setTimeout(() => setNotice(""), 5000);
+  };
+  useEffect(() => () => clearTimeout(flashTimer.current), []);
+  const openService = (id) => { setError(""); setSearch(""); setFilter("all"); setServiceId(id); };
+  const backToList = () => { setServiceId(""); setService(null); setSettings(null); setEditing(null); loadServices(); };
+
+  const providers = useMemo(() => {
+    const seen = new Map();
+    services.forEach((s) => seen.set(s.companyId, s.companyName));
+    return [...seen.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
+  }, [services]);
+  const shownServices = useMemo(() => services.filter((s) => {
+    if (providerFilter && s.companyId !== providerFilter) return false;
+    if (statusFilter === "on") return s.categoryStatus === "enabled";
+    if (statusFilter === "off") return s.categoryStatus !== "enabled";
+    return true;
+  }), [services, providerFilter, statusFilter]);
+
+  const packages = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    let list = (service?.packages || []).filter((p) => {
+      if (q && !`${p.name} ${p.description || ""} ${p.validity || ""} ${p.code || ""}`.toLowerCase().includes(q)) return false;
+      if (filter === "active") return p.active;
+      if (filter === "inactive") return !p.active;
+      if (filter === "unavailable") return p.active && !p.ordersEnabled;
+      if (filter === "hidden") return !p.visibleCustomerApp || !p.visibleAgentApp;
+      return true;
+    });
+    const by = {
+      order: (a, b) => (a.sortOrder - b.sortOrder) || (Number(a.price) - Number(b.price)),
+      price: (a, b) => Number(a.price) - Number(b.price),
+      name: (a, b) => a.name.localeCompare(b.name),
+      updated: (a, b) => new Date(b.updatedAt) - new Date(a.updatedAt),
+    }[sort];
+    return [...list].sort(by);
+  }, [service, search, filter, sort]);
+
+  // ----- whole-service actions (list and detail) -----
+  const setServiceActive = async (svc, next) => {
+    if (!next && !window.confirm(`Turn off ${svc.serviceName}? Customers and agents can't order any of its packages until you turn it back on. Existing orders are not affected.`)) return;
+    if (next && !window.confirm(`Turn on ${svc.serviceName}? Its active packages become orderable. Make sure every agent phone for ${svc.companyName} runs the latest Agent App first.`)) return;
+    try {
+      await DalabAdminApi.setInteractiveServiceActive(svc.id, next);
+      flash(next ? `${svc.serviceName} turned on.` : `${svc.serviceName} turned off.`);
+      loadServices();
+      if (service?.id === svc.id) loadService(svc.id);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+  const duplicateService = async (svc) => {
+    if (!window.confirm(`Duplicate ${svc.serviceName}? The copy gets the same menu settings and copies of its packages, all turned OFF. ${svc.serviceName} itself is not changed.`)) return;
+    try {
+      const res = await DalabAdminApi.duplicateInteractiveService(svc.id, {});
+      flash(`Created ${res.serviceName} (${res.packagesCopied} package${res.packagesCopied === 1 ? "" : "s"} copied, all off).`);
+      await loadServices();
+      openService(res.id);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+  const deleteService = async (svc) => {
+    if (!window.confirm(`Delete ${svc.serviceName} and its ${svc.packageCount} package(s) permanently? This is only allowed because nothing was ever ordered from it.`)) return;
+    try {
+      await DalabAdminApi.deleteInteractiveService(svc.id);
+      flash(`${svc.serviceName} deleted.`);
+      if (service?.id === svc.id) backToList();
+      else loadServices();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  // ----- new service -----
+  const openCreate = () => {
+    setCreateError("");
+    setCreating({
+      companyId: providerFilter || companies[0]?.id || "", serviceName: "", serviceType: "data", initialDial: "", successText: "", balanceSource: "",
+      replySteps: defaultMenuSteps(),
+    });
+  };
+  const saveCreate = async () => {
+    const f = creating;
+    setCreateError("");
+    if (!f.companyId) return setCreateError("Choose the provider.");
+    if (!f.serviceName.trim()) return setCreateError("Enter the service name.");
+    setSaving(true);
+    try {
+      const res = await DalabAdminApi.createInteractiveService({
+        companyId: f.companyId,
+        serviceName: f.serviceName.trim(),
+        serviceType: f.serviceType,
+        initialDial: f.initialDial.trim(),
+        replySteps: menuStepsForApi(f.replySteps),
+        successKeywords: f.successText.split(",").map((t) => t.trim()).filter(Boolean),
+        balanceSource: f.balanceSource || null,
+      });
+      setCreating(null);
+      flash(`${res.serviceName} created. It is OFF — add its packages, check them, then turn it on.`);
+      await loadServices();
+      openService(res.id);
+    } catch (err) {
+      setCreateError(err.message || "Could not create the service.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // ----- packages -----
+  const selectsByOption = (service?.replySteps || []).some((s) => s.reply === "{packageCode}");
+  const savePackage = async () => {
+    const f = editing.form;
+    setFormError("");
+    if (!f.name.trim()) return setFormError("Enter the package name.");
+    if (!(Number(f.price) > 0)) return setFormError("Enter a price greater than 0.");
+    if (selectsByOption && !/^[0-9]{1,2}$/.test(String(f.code).trim())) return setFormError("Menu option must be the package's number on the provider's menu (for example 3).");
+    const body = {
+      name: f.name.trim(), description: f.description, price: Number(f.price), providerAmount: Number(f.price),
+      validity: f.validity, code: String(f.code).trim(), sortOrder: Number(f.sortOrder) || 0,
+      visibleCustomerApp: f.visibleCustomerApp, visibleAgentApp: f.visibleAgentApp, ordersEnabled: f.ordersEnabled, active: f.active,
+    };
+    setSaving(true);
+    try {
+      if (editing.id) {
+        await DalabAdminApi.updatePackage(editing.id, body);
+      } else {
+        await DalabAdminApi.createPackage({
+          ...body, companyId: service.companyId, categoryId: service.category?.slug, ussdTemplateId: service.id, mb: 0, minutes: 0, sms: 0,
+        });
+      }
+      setEditing(null);
+      flash(editing.id ? "Package saved." : "Package added.");
+      loadService();
+    } catch (err) {
+      setFormError(err.message || "Could not save the package.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const setActive = async (p, active) => {
+    try {
+      if (active) await DalabAdminApi.updatePackage(p.id, { active: true });
+      else await DalabAdminApi.deletePackage(p.id); // soft deactivate
+      flash(active ? `${p.name} restored.` : `${p.name} deactivated.`);
+      loadService();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const deleteForGood = async (p) => {
+    if (!window.confirm(`Delete "${p.name}" permanently? This is only allowed because it was never ordered.`)) return;
+    try {
+      await DalabAdminApi.deletePackagePermanent(p.id);
+      flash(`${p.name} deleted.`);
+      loadService();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const saveSettings = async () => {
+    setSettingsError("");
+    try {
+      await DalabAdminApi.updateInteractiveService(service.id, {
+        serviceName: settings.serviceName,
+        initialDial: settings.initialDial,
+        replySteps: menuStepsForApi(settings.replySteps),
+        successKeywords: settings.successText.split(",").map((t) => t.trim()).filter(Boolean),
+        balanceSource: settings.balanceSource || null,
+      });
+      flash("USSD settings saved. Orders already placed keep the menu they were created with.");
+      loadService();
+    } catch (err) {
+      setSettingsError(err.message || "Could not save the USSD settings.");
+    }
+  };
+
+  const paidFromSelect = (value, onChange, disabled) => (
+    <select style={{ ...inputStyle, width: 240 }} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
+      <option value="">Company SIM balance (Send Data)</option>
+      <option value="edahab">eDahab wallet on the dialing SIM</option>
+      <option value="evc_plus">EVC Plus wallet on the dialing SIM</option>
+    </select>
+  );
+
+  if (!DALAB_API_ENABLED) return <Card style={{ padding: 18 }}>Connect the dashboard to the backend to manage USSD services.</Card>;
+
+  const messages = (
+    <>
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+      {notice && <div style={{ color: GREEN, fontSize: 12.5, marginBottom: 12, fontWeight: 700 }}>{notice}</div>}
+    </>
+  );
+
+  const createModal = creating && (
+    <Modal title="Add New USSD Service" onClose={() => setCreating(null)} width={860}>
+      <div style={{ display: "grid", gap: 12 }}>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <Field label="Provider">
+            <select style={{ ...inputStyle, width: 180 }} value={creating.companyId} onChange={(e) => setCreating({ ...creating, companyId: e.target.value })}>
+              <option value="">Choose…</option>
+              {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Service name"><input style={{ ...inputStyle, width: 220 }} value={creating.serviceName} placeholder="e.g. Hormuud Bundles" onChange={(e) => setCreating({ ...creating, serviceName: e.target.value })} /></Field>
+          <Field label="Service type">
+            <select style={{ ...inputStyle, width: 130 }} value={creating.serviceType} onChange={(e) => setCreating({ ...creating, serviceType: e.target.value })}>
+              {MENU_SERVICE_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+            </select>
+          </Field>
+          <Field label="First USSD code"><input style={{ ...inputStyle, width: 130, fontFamily: "monospace" }} value={creating.initialDial} placeholder="*101#" onChange={(e) => setCreating({ ...creating, initialDial: e.target.value })} /></Field>
+        </div>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <Field label="Success words (comma separated)"><input style={{ ...inputStyle, width: 320 }} value={creating.successText} placeholder="e.g. guuleysatay" onChange={(e) => setCreating({ ...creating, successText: e.target.value })} /></Field>
+          <Field label="Paid from (balance checked before each dial)">{paidFromSelect(creating.balanceSource, (v) => setCreating({ ...creating, balanceSource: v }), false)}</Field>
+        </div>
+        <div style={{ fontWeight: 800, fontSize: 13, color: INK }}>USSD menu steps</div>
+        <UssdStepsEditor steps={creating.replySteps} onChange={(replySteps) => setCreating({ ...creating, replySteps })} disabled={false} />
+        <div style={{ fontSize: 11.5, color: MUTE }}>The service is created OFF. Add its packages, check them, then turn it on. No other service is changed.</div>
+        {createError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5 }}>{createError}</div>}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <Button variant="ghost" onClick={() => setCreating(null)}>Cancel</Button>
+          <Button icon={saving ? Loader2 : Check} spin={saving} onClick={saveCreate} disabled={saving}>Create service</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+
+  // ================= List of all services =================
+  if (!serviceId) {
+    return (
+      <div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 14 }}>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>USSD Services</div>
+            <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Menu USSD services, each with its own code, menu steps, packages and on/off switch</div>
+          </div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <select style={{ ...inputStyle, width: 170, padding: "8px 10px" }} value={providerFilter} onChange={(e) => setProviderFilter(e.target.value)}>
+              <option value="">All providers</option>
+              {providers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+            <select style={{ ...inputStyle, width: 140, padding: "8px 10px" }} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+              <option value="all">All statuses</option>
+              <option value="on">On</option>
+              <option value="off">Off</option>
+            </select>
+            <Button variant="ghost" icon={listLoading ? Loader2 : RefreshCw} spin={listLoading} onClick={loadServices} disabled={listLoading}>Refresh</Button>
+            {isSuper && <Button icon={Plus} onClick={openCreate}>Add New USSD Service</Button>}
+          </div>
+        </div>
+        {messages}
+        <Card style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ background: "var(--c-fafbff)" }}>
+                  {["Service", "Provider", "First code", "Status", "Packages", "Orders", ""].map((h) => <th key={h} style={menuTh}>{h}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {shownServices.map((svc) => {
+                  const on = svc.categoryStatus === "enabled";
+                  return (
+                    <tr key={svc.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                      <td style={menuTd}>
+                        <button onClick={() => openService(svc.id)} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontWeight: 800, color: INK, fontSize: 13, textAlign: "left" }}>{svc.serviceName}</button>
+                      </td>
+                      <td style={menuTd}>{svc.companyName}</td>
+                      <td style={{ ...menuTd, fontFamily: "monospace" }}>{svc.ussdCode}</td>
+                      <td style={menuTd}><Badge tone={on ? "green" : "red"}>{on ? "On" : "Off"}</Badge></td>
+                      <td style={menuTd}>{svc.activePackageCount} active / {svc.packageCount}</td>
+                      <td style={menuTd}>{svc.orderCount}</td>
+                      <td style={{ ...menuTd, whiteSpace: "nowrap" }}>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          <Button variant="ghost" icon={Pencil} onClick={() => openService(svc.id)}>Edit</Button>
+                          {isSuper && <Button variant="ghost" icon={Copy} onClick={() => duplicateService(svc)}>Duplicate</Button>}
+                          {canManage && svc.categoryStatus && (
+                            <Button variant={on ? "danger" : "primary"} icon={Power} onClick={() => setServiceActive(svc, !on)}>{on ? "Deactivate" : "Activate"}</Button>
+                          )}
+                          {isSuper && svc.menuCategorySlug && svc.orderCount === 0 && <Button variant="danger" icon={Trash2} onClick={() => deleteService(svc)}>Delete</Button>}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {shownServices.length === 0 && (
+                  <tr><td colSpan={7} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>
+                    {listLoading ? "Loading…" : services.length === 0 ? "No USSD service yet." + (isSuper ? " Use Add New USSD Service to create one." : "") : "No service matches these filters."}
+                  </td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+        <div style={{ fontSize: 11.5, color: MUTE, marginTop: 10 }}>
+          Built-in services (like Dhameys Plus) and services that have orders can't be deleted — turn them off instead, so their history stays. New and duplicated services start off.
+        </div>
+        {createModal}
+      </div>
+    );
+  }
+
+  // ================= One service =================
+  const serviceActive = service?.category?.status === "enabled";
+  const listRow = services.find((s) => s.id === serviceId);
+
+  return (
+    <div>
+      <div style={{ marginBottom: 10 }}>
+        <Button variant="ghost" icon={ArrowLeft} onClick={backToList}>All USSD Services</Button>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 14 }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>{service?.serviceName || "USSD service"}</div>
+          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>
+            {service ? `${service.companyName} · menu USSD ${service.ussdCode}` : "Loading…"}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          {service && <Badge tone={serviceActive ? "green" : "red"}>{serviceActive ? "Service on" : "Service off"}</Badge>}
+          {service && canManage && service.category && (
+            <Button variant={serviceActive ? "danger" : "primary"} icon={Power} onClick={() => setServiceActive(service, !serviceActive)}>{serviceActive ? "Turn off" : "Turn on"}</Button>
+          )}
+          {service && isSuper && <Button variant="ghost" icon={Copy} onClick={() => duplicateService(service)}>Duplicate</Button>}
+          {service && isSuper && service.menuCategorySlug && listRow && listRow.orderCount === 0 && (
+            <Button variant="danger" icon={Trash2} onClick={() => deleteService({ ...service, packageCount: service.packages.length })}>Delete</Button>
+          )}
+          <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={() => loadService()} disabled={loading}>Refresh</Button>
+        </div>
+      </div>
+
+      {messages}
+
+      {service && !service.pinIsSet && (
+        <Card style={{ padding: 14, marginBottom: 14, background: "var(--c-fff6e3)", border: "1px solid var(--c-f5dfb0)" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5, color: "var(--c-7a5200)" }}>
+            <AlertTriangle size={16} /> {service.companyName} has no PIN set yet — orders can't be delivered. Set it in Device &amp; USSD.
+          </div>
+        </Card>
+      )}
+      {service && (
+        <Card style={{ padding: 14, marginBottom: 14, background: "var(--c-eef3ff)", border: "1px solid var(--c-d6e0ff)" }}>
+          <div style={{ fontSize: 12.5, color: SLATE, lineHeight: 1.5 }}>
+            Packages are delivered by the Agent App stepping through the {service.companyName} menu. Before turning packages on, make sure every agent phone that
+            handles {service.companyName} runs the latest Agent App and has <b>Dalab Agent</b> enabled under Settings &gt; Accessibility.
+            The Agent App checks each menu screen (the package price, then the amount and number on the confirmation) and cancels before the PIN if anything doesn't match.
+          </div>
+        </Card>
+      )}
+
+      {service && (
+        <Card style={{ padding: 0, overflow: "hidden", marginBottom: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "12px 14px", flexWrap: "wrap" }}>
+            <div style={{ fontWeight: 800, fontSize: 14, color: INK }}>Packages ({packages.length} of {service.packages.length})</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <div style={{ position: "relative" }}>
+                <Search size={14} color={MUTE} style={{ position: "absolute", left: 10, top: 11 }} />
+                <input style={{ ...inputStyle, width: 200, padding: "8px 10px 8px 30px" }} placeholder="Search packages..." value={search} onChange={(e) => setSearch(e.target.value)} />
+              </div>
+              <select style={{ ...inputStyle, width: 190, padding: "8px 10px" }} value={filter} onChange={(e) => setFilter(e.target.value)}>
+                {PACKAGE_FILTERS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+              <select style={{ ...inputStyle, width: 150, padding: "8px 10px" }} value={sort} onChange={(e) => setSort(e.target.value)}>
+                {PACKAGE_SORTS.map((o) => <option key={o.value} value={o.value}>Sort: {o.label}</option>)}
+              </select>
+              {canManage && (
+                <Button icon={Plus} onClick={() => { setFormError(""); setEditing({ id: null, form: emptyMenuPackage(service) }); }} disabled={!service.category}>Add package</Button>
+              )}
+            </div>
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ background: "var(--c-fafbff)" }}>
+                  {["Order", "Package", "Menu option", "Price", "Validity", "Status", "Orders", "Created", "Last modified", ""].map((h) => <th key={h} style={menuTh}>{h}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {packages.map((p) => (
+                  <tr key={p.id} style={{ borderTop: `1px solid ${BORDER}`, opacity: p.active ? 1 : 0.6 }}>
+                    <td style={{ ...menuTd, color: MUTE }}>{p.sortOrder}</td>
+                    <td style={menuTd}>
+                      <div style={{ fontWeight: 700 }}>{p.name}</div>
+                      {p.description && <div style={{ fontSize: 11, color: MUTE }}>{p.description}</div>}
+                    </td>
+                    <td style={{ ...menuTd, fontFamily: "monospace" }}>{p.code || "—"}</td>
+                    <td style={{ ...menuTd, fontWeight: 700, color: GREEN }}>{usd(p.price)}</td>
+                    <td style={menuTd}>{p.validity || "—"}</td>
+                    <td style={menuTd}>
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        <Badge tone={p.active ? "green" : "gray"}>{p.active ? "Active" : "Inactive"}</Badge>
+                        {p.active && !p.ordersEnabled && <Badge tone="amber">Unavailable</Badge>}
+                        {!p.visibleCustomerApp && <Badge tone="blue">Hidden: Customer App</Badge>}
+                        {!p.visibleAgentApp && <Badge tone="blue">Hidden: Agent App</Badge>}
+                      </div>
+                    </td>
+                    <td style={menuTd}>{p.orderCount}</td>
+                    <td style={{ ...menuTd, whiteSpace: "nowrap", color: SLATE }}>{formatDateTime(p.createdAt)}</td>
+                    <td style={{ ...menuTd, whiteSpace: "nowrap", color: SLATE }}>{formatDateTime(p.updatedAt)}</td>
+                    <td style={{ ...menuTd, whiteSpace: "nowrap" }}>
+                      {canManage && (
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <Button variant="ghost" icon={Pencil} onClick={() => {
+                            setFormError("");
+                            setEditing({ id: p.id, form: {
+                              name: p.name, description: p.description || "", price: p.price, validity: p.validity || "", code: p.code || "",
+                              sortOrder: p.sortOrder, visibleCustomerApp: p.visibleCustomerApp, visibleAgentApp: p.visibleAgentApp, ordersEnabled: p.ordersEnabled, active: p.active,
+                            } });
+                          }}>Edit</Button>
+                          {p.active
+                            ? <Button variant="danger" icon={Power} onClick={() => setActive(p, false)}>Deactivate</Button>
+                            : <Button variant="subtle" icon={RotateCcw} onClick={() => setActive(p, true)}>Restore</Button>}
+                          {p.orderCount === 0 && <Button variant="danger" icon={Trash2} onClick={() => deleteForGood(p)}>Delete</Button>}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {packages.length === 0 && (
+                  <tr><td colSpan={10} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>
+                    {service.packages.length === 0 ? "No packages yet — add the first one." : "No packages match."}
+                  </td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {service && settings && (
+        <Card style={{ padding: 18 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 6 }}>
+            <div style={{ fontWeight: 800, fontSize: 14, color: INK }}>USSD menu settings</div>
+            {!isSuper && <Badge tone="gray">Super Admin only</Badge>}
+          </div>
+          <div style={{ fontSize: 12, color: MUTE, marginBottom: 14 }}>
+            Changes apply to new orders only — orders already placed keep the menu they were created with.
+          </div>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+            <Field label="Service name"><input style={{ ...inputStyle, width: 220 }} value={settings.serviceName} disabled={!isSuper} onChange={(e) => setSettings({ ...settings, serviceName: e.target.value })} /></Field>
+            <Field label="First USSD code"><input style={{ ...inputStyle, width: 140, fontFamily: "monospace" }} value={settings.initialDial} disabled={!isSuper} onChange={(e) => setSettings({ ...settings, initialDial: e.target.value })} /></Field>
+            <Field label="Success words (comma separated)"><input style={{ ...inputStyle, width: 320 }} value={settings.successText} disabled={!isSuper} onChange={(e) => setSettings({ ...settings, successText: e.target.value })} /></Field>
+            <Field label="Paid from (balance checked before each dial)">{paidFromSelect(settings.balanceSource, (v) => setSettings({ ...settings, balanceSource: v }), !isSuper)}</Field>
+          </div>
+          <UssdStepsEditor steps={settings.replySteps} onChange={(replySteps) => setSettings({ ...settings, replySteps })} disabled={!isSuper} />
+          {settingsError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginTop: 10 }}>{settingsError}</div>}
+          {isSuper && (
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <Button icon={Check} onClick={saveSettings}>Save USSD settings</Button>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {editing && (
+        <Modal title={editing.id ? "Edit package" : `Add ${service?.serviceName || ""} package`} onClose={() => setEditing(null)} width={520}>
+          {(() => {
+            const f = editing.form;
+            const set = (patch) => setEditing((e) => ({ ...e, form: { ...e.form, ...patch } }));
+            return (
+              <div style={{ display: "grid", gap: 12 }}>
+                <Field label="Package name"><input style={inputStyle} value={f.name} onChange={(e) => set({ name: e.target.value })} placeholder={`${service?.serviceName || "Package"} — Daily`} /></Field>
+                <Field label="Description"><input style={inputStyle} value={f.description} onChange={(e) => set({ description: e.target.value })} placeholder="Unlimited data & calls for 24 hours" /></Field>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <Field label="Price ($)"><input style={inputStyle} type="number" step="0.01" min="0" value={f.price} onChange={(e) => set({ price: e.target.value })} /></Field>
+                  <Field label="Validity"><input style={inputStyle} value={f.validity} onChange={(e) => set({ validity: e.target.value })} placeholder="24 hours" /></Field>
+                  <Field label={selectsByOption ? `Menu option (number on the ${service?.companyName || "provider"} menu)` : "Menu option (not used by this service)"}>
+                    <input style={{ ...inputStyle, fontFamily: "monospace" }} value={f.code} disabled={!selectsByOption} onChange={(e) => set({ code: e.target.value })} placeholder="3" />
+                  </Field>
+                  <Field label="Display order"><input style={inputStyle} type="number" min="0" value={f.sortOrder} onChange={(e) => set({ sortOrder: e.target.value })} /></Field>
+                </div>
+                <div style={{ display: "grid", gap: 8 }}>
+                  <MenuCheck label="Show in the Customer App" value={f.visibleCustomerApp} onChange={(v) => set({ visibleCustomerApp: v })} />
+                  <MenuCheck label="Show in the Agent App" value={f.visibleAgentApp} onChange={(v) => set({ visibleAgentApp: v })} />
+                  <MenuCheck label="Accept new orders (off = temporarily unavailable)" value={f.ordersEnabled} onChange={(v) => set({ ordersEnabled: v })} />
+                  <MenuCheck label="Active" value={f.active} onChange={(v) => set({ active: v })} />
+                </div>
+                <div style={{ fontSize: 11.5, color: MUTE }}>
+                  The price is what customers pay and what the Agent App expects to see on the {service?.companyName || "provider"} menu and confirmation — keep it equal to the provider's own price.
+                  {selectsByOption && " Each menu option can be used by only one active package in this service."} Changing it never changes orders already placed.
+                </div>
+                {formError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5 }}>{formError}</div>}
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                  <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
+                  <Button icon={saving ? Loader2 : Check} spin={saving} onClick={savePackage} disabled={saving}>{editing.id ? "Save" : "Add package"}</Button>
+                </div>
+              </div>
+            );
+          })()}
+        </Modal>
+      )}
+      {createModal}
+    </div>
+  );
+}
+
+function CompanyAccountsSection() {
+  const [period, setPeriod] = useState("today");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const [companyId, setCompanyId] = useState("");
+  const [status, setStatus] = useState("");
+  const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [data, setData] = useState(null);
+  const [extraOrders, setExtraOrders] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [error, setError] = useState("");
+
+  const range = accountRange(period, customFrom, customTo);
+
+  const request = (extra = {}) => {
+    const r = accountRange(period, customFrom, customTo);
+    return DalabAdminApi.getCompanyAccounts({
+      from: r?.from.toISOString(),
+      to: r?.to.toISOString(),
+      companyId: companyId || undefined,
+      status: status || undefined,
+      q: search || undefined,
+      ...extra,
+    });
+  };
+
+  const load = async () => {
+    if (!DALAB_API_ENABLED || (period === "custom" && !customFrom)) return;
+    setLoading(true);
+    setError("");
+    try {
+      const res = await request();
+      setData(res);
+      setExtraOrders([]);
+      if (!companyId && res.company) setCompanyId(res.company.id);
+    } catch (err) {
+      setError(err.message || "Could not load the company accounts.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  // Re-fetch when the period (to the minute, for "today"), company, status or search changes.
+  useEffect(() => { load(); }, [period, customFrom, customTo, companyId, status, search]);
+
+  useEffect(() => {
+    const t = setTimeout(() => setSearch(searchInput.trim()), 400);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+
+  const loadMore = async () => {
+    if (!data) return;
+    try {
+      const res = await request({ offset: data.orders.length + extraOrders.length, limit: 50 });
+      setExtraOrders((prev) => [...prev, ...res.orders]);
+    } catch (err) {
+      setError(err.message || "Could not load more orders.");
+    }
+  };
+
+  const exportCsv = async () => {
+    if (!data?.company) return;
+    setExporting(true);
+    try {
+      const res = await request({ limit: 5000, offset: 0 });
+      const label = ACCOUNT_PERIODS.find((p) => p.key === period)?.label || period;
+      exportToCsv(
+        `shirkadda-xisaab-${res.company.name}-${label.replace(/\s+/g, "-").toLowerCase()}.csv`,
+        [
+          { label: "Taariikh", value: (o) => formatDateTime(o.createdAt) },
+          { label: "Order ID", value: (o) => o.id },
+          { label: "Adeegga", value: (o) => o.category },
+          { label: "Package", value: (o) => o.packageName },
+          { label: "Qiimaha Shirkadda", value: (o) => o.companyAmount.toFixed(2) },
+          { label: "Qiimaha Iibka", value: (o) => o.saleAmount.toFixed(2) },
+          { label: "Qiimo-dhimis", value: (o) => o.discount.toFixed(2) },
+          { label: "Komishan", value: (o) => o.commission.toFixed(2) },
+          { label: "Faa'iido / Khasaaro", value: (o) => o.profit.toFixed(2) },
+          { label: "Status", value: (o) => o.status },
+        ],
+        res.orders
+      );
+    } catch (err) {
+      alert(err.message || "Could not export.");
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  if (!DALAB_API_ENABLED) {
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to see company accounts.</div>;
+  }
+
+  const company = data?.company;
+  const companies = data?.companies || [];
+  const orders = [...(data?.orders || []), ...extraOrders];
+  const categories = data?.categories || [];
+  const periodText = period === "custom"
+    ? (customFrom ? `${customFrom}${customTo && customTo !== customFrom ? ` → ${customTo}` : ""}` : "Dooro taariikh")
+    : `${ACCOUNT_PERIODS.find((p) => p.key === period)?.label}${range ? ` · ${range.from.toLocaleDateString(undefined, { timeZone: SOMALIA_TIME_ZONE, day: "2-digit", month: "short", year: "numeric" })}` : ""}`;
+  const chip = (active) => ({
+    padding: "9px 16px", borderRadius: 10, fontSize: 13, fontWeight: 700, cursor: "pointer",
+    border: `1px solid ${active ? INDIGO : BORDER}`, background: active ? INDIGO : "var(--c-surface)", color: active ? "#fff" : INK,
+  });
+  const th = { textAlign: "left", padding: "9px 10px", fontSize: 11, color: MUTE, fontWeight: 700, whiteSpace: "nowrap" };
+  const td = { padding: "9px 10px", fontSize: 12.5, color: INK, whiteSpace: "nowrap" };
+  const stats = company ? [
+    { label: "Orders La Dhammeeyay", value: company.orders, sub: "Total orders", color: "var(--c-1d4ed8)", bg: "var(--c-eef3ff)" },
+    { label: "Lacagta Shirkadda", value: usd(company.companyAmount), sub: "Shirkadda ku iibisay", color: GREEN, bg: "var(--c-eef9f1)" },
+    { label: "Lacagta Iibka", value: usd(company.saleAmount), sub: "Macaamiisha laga helay", color: "var(--c-c81e2c)", bg: "var(--c-fdeff0)" },
+    { label: "Qiimo-dhimista", value: usd(company.discount), sub: "Kaa baxday", color: "var(--c-a9720a)", bg: "var(--c-fff6e3)" },
+    { label: "Komishanka", value: usd(company.commission), sub: "Haddii uu jiro", color: "var(--c-6d28d9)", bg: "var(--c-f3eeff)" },
+    { label: "Faa'iidada / Khasaaraha", value: usd(company.profit), sub: Number(company.profit) < 0 ? "Khasaaro" : "Faa'iido", color: profitColor(company.profit), bg: Number(company.profit) < 0 ? "var(--c-fdeff0)" : "var(--c-eef9f1)" },
+  ] : [];
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 14 }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Shirkadda Xisaab</div>
+          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Order walbo si gaar ah ayaa loo xisaabiyaa. Adeeg walbo, shirkad walbo, qiimo walbo.</div>
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Button variant="ghost" icon={exporting ? Loader2 : Download} spin={exporting} onClick={exportCsv} disabled={!company || exporting}>Export</Button>
+          <Button variant="ghost" icon={loading ? Loader2 : RefreshCw} spin={loading} onClick={load} disabled={loading}>Refresh</Button>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14, alignItems: "center" }}>
+        {ACCOUNT_PERIODS.map((p) => (
+          <button key={p.key} style={chip(period === p.key)} onClick={() => setPeriod(p.key)}>{p.label}</button>
+        ))}
+        {period === "custom" && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input type="date" style={{ ...inputStyle, width: 160, padding: "8px 10px" }} value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />
+            <span style={{ color: MUTE, fontSize: 12.5 }}>→</span>
+            <input type="date" style={{ ...inputStyle, width: 160, padding: "8px 10px" }} value={customTo} min={customFrom || undefined} onChange={(e) => setCustomTo(e.target.value)} />
+          </div>
+        )}
+      </div>
+
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 14 }}>
+        {companies.map((c) => {
+          const active = company?.id === c.id;
+          return (
+            <button
+              key={c.id}
+              onClick={() => setCompanyId(c.id)}
+              style={{
+                padding: "12px 14px", borderRadius: 12, fontSize: 15, fontWeight: 800, cursor: "pointer", color: "#fff",
+                background: c.colorHex || INDIGO, border: active ? `3px solid ${INK}` : "3px solid transparent",
+                boxShadow: active ? "0 4px 14px rgba(11,18,64,0.25)" : "none",
+              }}
+            >
+              {c.name}
+            </button>
+          );
+        })}
+      </div>
+
+      {company && (
+        <Card style={{ padding: 18, marginBottom: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ width: 44, height: 44, borderRadius: 22, background: company.colorHex || INDIGO, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 18 }}>
+                {company.name.slice(0, 1)}
+              </div>
+              <div>
+                <div style={{ fontWeight: 800, fontSize: 17, color: company.colorHex || INK }}>{company.name}</div>
+                <div style={{ fontSize: 12, color: MUTE }}>Xogta Maaliyadeed ee Adeegyada {company.name}</div>
+              </div>
+            </div>
+            <div style={{ fontSize: 12.5, color: SLATE, border: `1px solid ${BORDER}`, borderRadius: 10, padding: "8px 12px" }}>{periodText}</div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
+            {stats.map((s) => (
+              <div key={s.label} style={{ background: s.bg, borderRadius: 12, padding: "12px 14px" }}>
+                <div style={{ fontSize: 11.5, fontWeight: 700, color: SLATE }}>{s.label}</div>
+                <div style={{ fontSize: 24, fontWeight: 800, color: s.color, marginTop: 4 }}>{s.value}</div>
+                <div style={{ fontSize: 11, color: MUTE, marginTop: 2 }}>{s.sub}</div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {company && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginBottom: 14, alignItems: "flex-start" }}>
+          <Card style={{ padding: 0, overflow: "hidden", flex: "3 1 600px", minWidth: 0 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "12px 14px", flexWrap: "wrap" }}>
+              <div style={{ fontWeight: 800, fontSize: 14, color: INK }}>Orders – {company.name} ({data.totalOrders})</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <div style={{ position: "relative" }}>
+                  <Search size={14} color={MUTE} style={{ position: "absolute", left: 10, top: 11 }} />
+                  <input style={{ ...inputStyle, width: 220, padding: "8px 10px 8px 30px" }} placeholder="Raadi Order ID, Package, Number..." value={searchInput} onChange={(e) => setSearchInput(e.target.value)} />
+                </div>
+                <select style={{ ...inputStyle, width: 140, padding: "8px 10px" }} value={status} onChange={(e) => setStatus(e.target.value)}>
+                  {ACCOUNT_STATUS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+            </div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ background: "var(--c-fafbff)" }}>
+                    {["#", "Taariikh", "Order ID", "Adeegga / Package", "Qiimaha Shirkadda", "Qiimaha Iibka", "Qiimo-dhimis", "Faa'iido / Khasaaro", "Status"].map((h) => <th key={h} style={th}>{h}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {orders.map((o, i) => (
+                    <tr key={o.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                      <td style={{ ...td, color: MUTE }}>{i + 1}</td>
+                      <td style={td}>{period === "today" || period === "yesterday" ? new Date(o.createdAt).toLocaleTimeString(undefined, { timeZone: SOMALIA_TIME_ZONE, hour: "2-digit", minute: "2-digit" }) : formatDateTime(o.createdAt)}</td>
+                      <td style={{ ...td, fontFamily: "monospace" }}>{o.id}</td>
+                      <td style={td}>{o.packageName}<div style={{ fontSize: 11, color: MUTE }}>{o.category}</div></td>
+                      <td style={{ ...td, color: "var(--c-1d4ed8)", fontWeight: 700 }}>{usd(o.companyAmount)}</td>
+                      <td style={{ ...td, color: GREEN, fontWeight: 700 }}>{usd(o.saleAmount)}</td>
+                      <td style={{ ...td, color: "var(--c-c81e2c)" }}>{usd(o.discount)}</td>
+                      <td style={{ ...td, color: profitColor(o.profit), fontWeight: 700 }}>{usd(o.profit)}</td>
+                      <td style={td}><Badge tone={ACCOUNT_STATUS_TONE[o.status] || "gray"}>{o.status}</Badge></td>
+                    </tr>
+                  ))}
+                  {orders.length === 0 && !loading && (
+                    <tr><td colSpan={9} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>Orders ma jiraan muddadan.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            {orders.length < (data?.totalOrders || 0) && (
+              <div style={{ padding: 12, textAlign: "center", borderTop: `1px solid ${BORDER}` }}>
+                <Button variant="ghost" onClick={loadMore}>Load more ({data.totalOrders - orders.length})</Button>
+              </div>
+            )}
+          </Card>
+
+          <Card style={{ padding: 0, overflow: "hidden", flex: "2 1 380px", minWidth: 0 }}>
+            <div style={{ padding: "12px 14px", fontWeight: 800, fontSize: 14, color: INK }}>Adeegyada {company.name}</div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ background: "var(--c-fafbff)" }}>
+                    {["Adeegga", "Orders", "Shirkadda", "Iibka", "Qiimo-dhimis", "Faa'iido / Khasaaro"].map((h) => <th key={h} style={th}>{h}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {categories.map((c) => (
+                    <tr key={c.name} style={{ borderTop: `1px solid ${BORDER}` }}>
+                      <td style={{ ...td, fontWeight: 700 }}>{c.name}</td>
+                      <td style={td}>{c.orders}</td>
+                      <td style={{ ...td, color: "var(--c-1d4ed8)" }}>{usd(c.companyAmount)}</td>
+                      <td style={{ ...td, color: GREEN }}>{usd(c.saleAmount)}</td>
+                      <td style={{ ...td, color: "var(--c-c81e2c)" }}>{usd(c.discount)}</td>
+                      <td style={{ ...td, color: profitColor(c.profit), fontWeight: 700 }}>{usd(c.profit)}</td>
+                    </tr>
+                  ))}
+                  {categories.length > 0 && (
+                    <tr style={{ borderTop: `2px solid ${BORDER}`, background: "var(--c-fafbff)" }}>
+                      <td style={{ ...td, fontWeight: 800 }}>Total</td>
+                      <td style={{ ...td, fontWeight: 800 }}>{company.orders}</td>
+                      <td style={{ ...td, color: "var(--c-1d4ed8)", fontWeight: 800 }}>{usd(company.companyAmount)}</td>
+                      <td style={{ ...td, color: GREEN, fontWeight: 800 }}>{usd(company.saleAmount)}</td>
+                      <td style={{ ...td, color: "var(--c-c81e2c)", fontWeight: 800 }}>{usd(company.discount)}</td>
+                      <td style={{ ...td, color: profitColor(company.profit), fontWeight: 800 }}>{usd(company.profit)}</td>
+                    </tr>
+                  )}
+                  {categories.length === 0 && !loading && (
+                    <tr><td colSpan={6} style={{ padding: 24, textAlign: "center", fontSize: 12.5, color: MUTE }}>Orders la dhammeeyay ma jiraan muddadan.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+        {companies.map((c) => {
+          const pct = Math.min(Math.abs(Number(c.profitPercent) || 0), 100);
+          return (
+            <Card key={c.id} style={{ padding: 0, overflow: "hidden", cursor: "pointer" }}>
+              <div onClick={() => setCompanyId(c.id)}>
+                <div style={{ background: c.colorHex || INDIGO, color: "#fff", padding: "10px 14px", fontWeight: 800, display: "flex", justifyContent: "space-between" }}>
+                  <span>{c.name}</span><ChevronRight size={16} />
+                </div>
+                <div style={{ padding: "10px 14px", fontSize: 12.5 }}>
+                  {[
+                    ["Orders", c.orders, INK],
+                    ["Shirkadda", usd(c.companyAmount), "var(--c-1d4ed8)"],
+                    ["Iibka", usd(c.saleAmount), GREEN],
+                    ["Qiimo-dhimis", usd(c.discount), "var(--c-c81e2c)"],
+                    ["Faa'iido / Khasaaro", usd(c.profit), profitColor(c.profit)],
+                  ].map(([label, value, color]) => (
+                    <div key={label} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}>
+                      <span style={{ color: SLATE }}>{label}:</span><span style={{ fontWeight: 800, color }}>{value}</span>
+                    </div>
+                  ))}
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+                    <div style={{ flex: 1, height: 6, borderRadius: 3, background: "var(--c-eef0f6)", overflow: "hidden" }}>
+                      <div style={{ width: `${pct}%`, height: "100%", background: profitColor(c.profit) }} />
+                    </div>
+                    <span style={{ fontSize: 11.5, fontWeight: 700, color: profitColor(c.profit) }}>{Number(c.profitPercent).toFixed(2)}%</span>
+                  </div>
+                </div>
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+      <div style={{ fontSize: 11.5, color: MUTE, marginTop: 12 }}>
+        Faa'iido = Lacagta Iibka − Lacagta Shirkadda + Komishan. Lacagta waxaa lagu xisaabiyaa orders la dhammeeyay oo aan la celin (reversed) oo kaliya.
+      </div>
+    </div>
+  );
+}
+
 function SmsSenderIdsPanel() {
   const [senders, setSenders] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -14895,12 +17432,12 @@ function SmsSenderIdsPanel() {
         </div>
       </div>
 
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#FAFBFF" }}>
+            <tr style={{ background: "var(--c-fafbff)" }}>
               {["Provider Key", "Sender", "Label", "Status", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
@@ -14915,10 +17452,10 @@ function SmsSenderIdsPanel() {
                 <td style={{ padding: "10px 14px" }}><Badge tone={s.enabled ? "green" : "gray"}>{s.enabled ? "Enabled" : "Disabled"}</Badge></td>
                 <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
                   <button onClick={() => toggleStatus(s)} title={s.enabled ? "Disable" : "Enable"} style={{ background: "none", border: "none", cursor: "pointer", marginRight: 8 }}>
-                    <Power size={14} color={s.enabled ? GREEN : "#C81E2C"} />
+                    <Power size={14} color={s.enabled ? GREEN : "var(--c-c81e2c)"} />
                   </button>
                   <button onClick={() => remove(s)} title="Delete" style={{ background: "none", border: "none", cursor: "pointer" }}>
-                    <Trash2 size={14} color="#C81E2C" />
+                    <Trash2 size={14} color="var(--c-c81e2c)" />
                   </button>
                 </td>
               </tr>
@@ -15007,7 +17544,7 @@ function ChangePasswordCard() {
       <Field label="Confirm new password">
         <input type="password" style={inputStyle} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} placeholder="••••••••" autoComplete="new-password" />
       </Field>
-      {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+      {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
       {success && <div style={{ color: GREEN, fontSize: 12.5, marginBottom: 12 }}>{success}</div>}
       <Button icon={Check} onClick={submit} disabled={saving}>{saving ? "Updating..." : "Update password"}</Button>
     </Card>
@@ -15070,14 +17607,15 @@ function AdminLoginScreen({ onLoggedIn }) {
   };
 
   return (
-    <div style={{ minHeight: "100vh", background: INK, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter','Segoe UI',system-ui,-apple-system,sans-serif", padding: 20 }}>
+    <div style={{ minHeight: "100vh", background: "var(--sidebar-bg)", position: "relative", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter','Segoe UI',system-ui,-apple-system,sans-serif", padding: "72px 20px 20px" }}>
+      <div style={{ position: "absolute", top: 12, right: 12 }}><PrefsControls onDark /></div>
       <div style={{ width: "100%", maxWidth: 400 }}>
         <div style={{ textAlign: "center", marginBottom: 22 }}>
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,0.06)", padding: "6px 14px", borderRadius: 20, marginBottom: 18 }}>
-            <Lock size={13} color="#7C86C4" />
-            <span style={{ color: "#7C86C4", fontSize: 11.5, fontWeight: 700, letterSpacing: 1 }}>RESTRICTED PORTAL</span>
+            <Lock size={13} color="var(--c-7c86c4)" />
+            <span style={{ color: "var(--c-7c86c4)", fontSize: 11.5, fontWeight: 700, letterSpacing: 1 }}>RESTRICTED PORTAL</span>
           </div>
-          <Logo size={56} />
+          <div><Logo size={56} /></div>
         </div>
 
         <Card style={{ padding: 30 }}>
@@ -15135,7 +17673,7 @@ function AdminLoginScreen({ onLoggedIn }) {
                 </button>
               </div>
 
-              {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14, textAlign: "center" }}>{error}</div>}
+              {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14, textAlign: "center" }}>{error}</div>}
 
               <Button onClick={submitLogin} disabled={loading} style={{ width: "100%", justifyContent: "center" }}>
                 {loading ? "Signing in..." : "Sign in"}
@@ -15158,7 +17696,7 @@ function AdminLoginScreen({ onLoggedIn }) {
               </div>
 
               {forgotSent ? (
-                <div style={{ background: "#E4F7EA", border: "1px solid #CFEEDA", borderRadius: 12, padding: 16, fontSize: 13, color: "#0B1240" }}>
+                <div style={{ background: "var(--c-e4f7ea)", border: "1px solid var(--c-cfeeda)", borderRadius: 12, padding: 16, fontSize: 13, color: "var(--c-0b1240)" }}>
                   If that email has an account, a reset link has been sent. Check your inbox.
                 </div>
               ) : (
@@ -15176,7 +17714,7 @@ function AdminLoginScreen({ onLoggedIn }) {
                       />
                     </div>
                   </Field>
-                  {error && <div style={{ color: "#C81E2C", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
+                  {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
                   <Button onClick={submitForgot} disabled={loading} style={{ width: "100%", justifyContent: "center" }}>
                     {loading ? "Sending..." : "Send reset link"}
                   </Button>
@@ -15192,14 +17730,59 @@ function AdminLoginScreen({ onLoggedIn }) {
 
 // ---------------- Shell ----------------
 
+// Light/dark and English/Somali switches (top bar and login screen). Both are
+// saved in this browser and apply to every page.
+function PrefsControls({ onDark = false }) {
+  const theme = useTheme();
+  const lang = useLang();
+  const isDark = theme === "dark";
+  const btn = {
+    display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6,
+    minWidth: 44, minHeight: 44, padding: "0 10px", borderRadius: 10, cursor: "pointer", fontSize: 12.5, fontWeight: 700,
+    background: onDark ? "rgba(255,255,255,0.08)" : "transparent",
+    border: onDark ? "1px solid rgba(255,255,255,0.18)" : `1px solid ${BORDER}`,
+    color: onDark ? "#E6E9F5" : SLATE,
+  };
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <button
+        type="button"
+        className="dl-theme-toggle"
+        onClick={() => setTheme(isDark ? "light" : "dark")}
+        style={btn}
+        aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
+        title={isDark ? "Light mode" : "Dark mode"}
+      >
+        {isDark ? <Sun size={17} /> : <Moon size={17} />}
+      </button>
+      <button
+        type="button"
+        className="dl-lang-toggle"
+        onClick={() => setLang(lang === "so" ? "en" : "so")}
+        style={btn}
+        aria-label="Language: English / Soomaali"
+        title={lang === "so" ? "English" : "Soomaali"}
+        translate="no"
+      >
+        <Languages size={16} />
+        <span>{lang === "so" ? "SO" : "EN"}</span>
+      </button>
+    </div>
+  );
+}
+
 function AdminDashboardShell({ admin, onLogout }) {
   const [active, setActive] = useState("overview");
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return window.localStorage.getItem("dalab-admin-sidebar-collapsed") === "1"; } catch { return false; }
+  });
   const [companies, setCompanies] = useState(initialCompanies);
   const [packages, setPackages] = useState(initialPackages);
   const [orders, setOrders] = useState(initialOrders);
   const [customers, setCustomers] = useState(initialCustomers);
   const [stuckCount, setStuckCount] = useState(0);
+  const [unmatchedPaymentSmsCount, setUnmatchedPaymentSmsCount] = useState(0);
+  const [deviceErrorCount, setDeviceErrorCount] = useState(0);
   const [stalledProcessingCount, setStalledProcessingCount] = useState(0);
   const [duplicateBlockedCount, setDuplicateBlockedCount] = useState(0);
   const [lowBalanceCount, setLowBalanceCount] = useState(0);
@@ -15240,6 +17823,10 @@ function AdminDashboardShell({ admin, onLogout }) {
   // already subscribes to, so it's genuinely real-time, not a new poll loop.
   const refreshStuckCount = async () => {
     if (!DALAB_API_ENABLED) return;
+    // Payment SMS that matched no order, and phones that can't work on their
+    // own -- both silent failures without these badges.
+    DalabAdminApi.getUnmatchedPaymentSmsCount().then((r) => setUnmatchedPaymentSmsCount(r.count ?? 0)).catch(() => {});
+    DalabAdminApi.getDeviceHealthIssues().then((r) => setDeviceErrorCount(r.errorCount ?? 0)).catch(() => {});
     try {
       const res = await DalabAdminApi.getStuckPaymentCount();
       setStuckCount(res.count);
@@ -15381,18 +17968,68 @@ function AdminDashboardShell({ admin, onLogout }) {
   }, []);
 
   const activeLabel = NAV.find((n) => n.id === active)?.label;
+  // Phones and tablets: the sidebar is a drawer behind the menu button and
+  // never covers the page until opened. Laptops and up: a fixed sidebar that
+  // can be collapsed to icons (remembered in this browser).
+  // A touch screen under 1200px also gets the drawer: a phone browser in
+  // "Desktop site" mode reports a ~980px window but is still a phone.
+  const isNarrow = useIsMobile(900);
+  const isTouchTablet = useIsMobile(1200) && typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches;
+  const isMobile = isNarrow || isTouchTablet;
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const showLabels = isMobile || !collapsed;
+  const lang = useLang();
+  useEffect(() => { if (!isMobile) setDrawerOpen(false); }, [isMobile]);
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const onKey = (e) => { if (e.key === "Escape") setDrawerOpen(false); };
+    window.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { window.removeEventListener("keydown", onKey); document.body.style.overflow = prevOverflow; };
+  }, [drawerOpen]);
+  const toggleCollapsed = () => {
+    setCollapsed((c) => {
+      try { window.localStorage.setItem("dalab-admin-sidebar-collapsed", c ? "0" : "1"); } catch { /* ignore */ }
+      return !c;
+    });
+  };
+  const pick = (id) => {
+    setActive(id);
+    setDrawerOpen(false);
+    window.scrollTo?.(0, 0);
+  };
+  const today = new Date().toLocaleDateString(lang === "so" ? "so-SO" : "en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
 
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: BG, fontFamily: "'Inter','Segoe UI',system-ui,-apple-system,sans-serif" }}>
+      {isMobile && drawerOpen && <div className="dl-backdrop" onClick={() => setDrawerOpen(false)} aria-hidden="true" />}
       {/* Sidebar */}
-      <div style={{ width: collapsed ? 74 : 240, background: INK, transition: "width .2s", flexShrink: 0, display: "flex", flexDirection: "column" }}>
+      <nav
+        aria-label="Main menu"
+        id="dl-sidebar"
+        style={isMobile ? {
+          position: "fixed", top: 0, bottom: 0, left: 0, width: 272, maxWidth: "86vw", zIndex: 80,
+          background: "var(--sidebar-bg)", display: "flex", flexDirection: "column",
+          transform: drawerOpen ? "translateX(0)" : "translateX(-100%)", transition: "transform .2s ease-out",
+          boxShadow: drawerOpen ? "8px 0 24px rgba(0,0,0,0.3)" : "none", visibility: drawerOpen ? "visible" : "hidden",
+        } : {
+          width: collapsed ? 74 : 240, background: "var(--sidebar-bg)", transition: "width .2s", flexShrink: 0, display: "flex", flexDirection: "column",
+          position: "sticky", top: 0, height: "100vh",
+        }}
+      >
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "20px 18px" }}>
           <Logo />
-          {!collapsed && (
-            <div>
+          {showLabels && (
+            <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ color: "#fff", fontWeight: 800, fontSize: 14, letterSpacing: 0.5 }}>DALAB INTERNET</div>
-              <div style={{ color: "#7C86C4", fontSize: 10.5, fontWeight: 600 }}>SUPER ADMIN</div>
+              <div style={{ color: "var(--c-7c86c4)", fontSize: 10.5, fontWeight: 600 }}>SUPER ADMIN</div>
             </div>
+          )}
+          {isMobile && (
+            <button onClick={() => setDrawerOpen(false)} aria-label="Close menu" style={{ background: "none", border: "none", color: "#C9CEEA", cursor: "pointer", minWidth: 44, minHeight: 44, display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <X size={20} />
+            </button>
           )}
         </div>
         <div style={{ flex: 1, padding: "8px 10px", overflowY: "auto" }}>
@@ -15408,26 +18045,39 @@ function AdminDashboardShell({ admin, onLogout }) {
             return (
               <button
                 key={n.id}
-                onClick={() => setActive(n.id)}
+                onClick={() => pick(n.id)}
+                className="dl-nav-btn"
+                title={showLabels ? undefined : n.label}
+                aria-current={isActive ? "page" : undefined}
                 style={{
-                  width: "100%", display: "flex", alignItems: "center", gap: 12,
+                  width: "100%", display: "flex", alignItems: "center", gap: 12, textAlign: "left", minHeight: 44,
                   padding: "10px 12px", borderRadius: 10, marginBottom: 4, border: "none",
                   background: isActive ? "rgba(255,255,255,0.08)" : "transparent",
-                  color: isActive ? "#fff" : "#9AA1D4", cursor: "pointer", fontSize: 13, fontWeight: isActive ? 700 : 500,
+                  color: isActive ? "#fff" : "var(--c-9aa1d4)", cursor: "pointer", fontSize: 13, fontWeight: isActive ? 700 : 500,
                   borderLeft: isActive ? `3px solid ${GREEN}` : "3px solid transparent",
                 }}
               >
-                <Icon size={17} />
-                {!collapsed && n.label}
-                {!collapsed && n.id === "payment-transactions" && (stuckCount > 0 || stalledProcessingCount > 0 || duplicateBlockedCount > 0) && (
+                <Icon size={17} style={{ flexShrink: 0 }} />
+                {showLabels && n.label}
+                {showLabels && n.id === "devices" && deviceErrorCount > 0 && (
+                  <span style={{ marginLeft: "auto" }} title="Agent phones that can't work on their own right now (open Device & USSD)">
+                    <Badge tone="red">{deviceErrorCount}</Badge>
+                  </span>
+                )}
+                {showLabels && n.id === "payment-transactions" && (stuckCount > 0 || stalledProcessingCount > 0 || duplicateBlockedCount > 0 || unmatchedPaymentSmsCount > 0) && (
                   <span style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+                    {unmatchedPaymentSmsCount > 0 && (
+                      <span title="Payment SMS received that matched no order (last 7 days) — check SMS Monitor">
+                        <Badge tone="amber">{unmatchedPaymentSmsCount}</Badge>
+                      </span>
+                    )}
                     {stuckCount > 0 && (
                       <span title="Verified but never dialed">
                         <Badge tone="red">{stuckCount}</Badge>
                       </span>
                     )}
                     {stalledProcessingCount > 0 && (
-                      <span title="Dialed, but no result ever reported — check manually before retrying">
+                      <span title="Dial result unknown (no report, or an unclear carrier reply) — resolve it in the order before anything is dialed again">
                         <Badge tone="red">{stalledProcessingCount}</Badge>
                       </span>
                     )}
@@ -15438,27 +18088,27 @@ function AdminDashboardShell({ admin, onLogout }) {
                     )}
                   </span>
                 )}
-                {!collapsed && n.id === "balance-dashboard" && lowBalanceCount > 0 && (
+                {showLabels && n.id === "balance-dashboard" && lowBalanceCount > 0 && (
                   <span style={{ marginLeft: "auto" }} title="SIMs below their low-balance threshold">
                     <Badge tone="red">{lowBalanceCount}</Badge>
                   </span>
                 )}
-                {!collapsed && n.id === "pending-recovery" && pendingRecoveryCount > 0 && (
+                {showLabels && n.id === "pending-recovery" && pendingRecoveryCount > 0 && (
                   <span style={{ marginLeft: "auto" }} title="Orders awaiting manual recovery">
                     <Badge tone="amber">{pendingRecoveryCount}</Badge>
                   </span>
                 )}
-                {!collapsed && n.id === "packages" && missingTemplateCount > 0 && (
+                {showLabels && n.id === "packages" && missingTemplateCount > 0 && (
                   <span style={{ marginLeft: "auto" }} title="Packages with no matching USSD template">
                     <Badge tone="amber">{missingTemplateCount}</Badge>
                   </span>
                 )}
-                {!collapsed && n.id === "feedback" && pendingFeedbackCount > 0 && (
+                {showLabels && n.id === "feedback" && pendingFeedbackCount > 0 && (
                   <span style={{ marginLeft: "auto" }} title="Feedback/suggestions awaiting review">
                     <Badge tone="amber">{pendingFeedbackCount}</Badge>
                   </span>
                 )}
-                {!collapsed && n.id === "support" && pendingSupportCount > 0 && (
+                {showLabels && n.id === "support" && pendingSupportCount > 0 && (
                   <span style={{ marginLeft: "auto" }} title="Customers waiting for an agent">
                     <Badge tone="red">{pendingSupportCount}</Badge>
                   </span>
@@ -15467,39 +18117,53 @@ function AdminDashboardShell({ admin, onLogout }) {
             );
           })}
         </div>
-        <button onClick={() => setCollapsed(!collapsed)} style={{ background: "none", border: "none", color: "#7C86C4", padding: 16, cursor: "pointer", display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
-          <Menu size={16} /> {!collapsed && "Collapse"}
-        </button>
-      </div>
+        {!isMobile && (
+          <button onClick={toggleCollapsed} aria-expanded={!collapsed} aria-controls="dl-sidebar" style={{ background: "none", border: "none", color: "var(--c-7c86c4)", padding: 16, minHeight: 44, cursor: "pointer", display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+            <Menu size={16} /> {!collapsed && "Collapse"}
+          </button>
+        )}
+      </nav>
 
       {/* Main */}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ background: "#fff", borderBottom: `1px solid ${BORDER}`, padding: "16px 26px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <div style={{ fontWeight: 800, fontSize: 18, color: INK }}>{activeLabel}</div>
-            <div style={{ fontSize: 12, color: MUTE }}>Saturday, 25 July 2026</div>
+      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+        <header style={{ background: "var(--c-surface)", borderBottom: `1px solid ${BORDER}`, padding: isMobile ? "10px 12px" : "14px 26px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, position: "sticky", top: 0, zIndex: 40 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+            {isMobile && (
+              <button className="dl-icon-btn" onClick={() => setDrawerOpen(true)} aria-label="Open menu" aria-expanded={drawerOpen} aria-controls="dl-sidebar" style={{ minWidth: 44, minHeight: 44, flexShrink: 0 }}>
+                <Menu size={20} />
+              </button>
+            )}
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 800, fontSize: isMobile ? 16 : 18, color: INK, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{activeLabel}</div>
+              <div className="dl-hide-xs" translate="no" style={{ fontSize: 12, color: MUTE, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{today}</div>
+            </div>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-            <div style={{ textAlign: "right" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 12, flexShrink: 0 }}>
+            <PrefsControls />
+            <div style={{ textAlign: "right", display: isMobile ? "none" : "block" }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: INK }}>{admin?.email}</div>
               <div style={{ fontSize: 10.5, color: MUTE }}>{admin?.role === "super_admin" ? "Super Admin" : "Admin"}</div>
             </div>
-            <div style={{ width: 34, height: 34, borderRadius: 17, background: INDIGO_SOFT, display: "flex", alignItems: "center", justifyContent: "center", color: INDIGO, fontWeight: 800, fontSize: 13 }}>
+            <div className="dl-hide-xs" title={admin?.email} style={{ width: 34, height: 34, borderRadius: 17, background: INDIGO_SOFT, display: "flex", alignItems: "center", justifyContent: "center", color: INDIGO, fontWeight: 800, fontSize: 13, flexShrink: 0 }}>
               {admin?.role === "super_admin" ? "SA" : "AD"}
             </div>
             <button
               onClick={onLogout}
               title="Log out"
-              style={{ background: "none", border: `1px solid ${BORDER}`, borderRadius: 10, padding: 8, cursor: "pointer", display: "flex", alignItems: "center" }}
+              aria-label="Log out"
+              className="dl-icon-btn"
+              style={{ minWidth: isMobile ? 44 : 38, minHeight: isMobile ? 44 : 38 }}
             >
               <LogOut size={16} color={SLATE} />
             </button>
           </div>
-        </div>
+        </header>
         {admin?.role === "super_admin" && <ConnectionStatusBar />}
-        <div style={{ padding: 22 }}>
+        <main className="dl-content" style={{ padding: 22, flex: 1, minWidth: 0 }}>
           {active === "overview" && <Overview companies={companies} orders={orders} />}
           {active === "financial-overview" && <FinancialOverview admin={admin} />}
+          {active === "company-accounts" && <CompanyAccountsSection />}
+          {active === "dhameys-plus" && <MenuUssdServicesSection admin={admin} />}
           {active === "balance-dashboard" && <BalanceDashboard admin={admin} />}
           {active === "companies" && <Companies companies={companies} setCompanies={setCompanies} refreshCompanies={refreshCompanies} admin={admin} />}
           {active === "payment-numbers" && <PaymentNumbers companies={companies} setCompanies={setCompanies} refreshCompanies={refreshCompanies} admin={admin} />}
@@ -15511,9 +18175,12 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "offline" && <OfflinePanel companies={companies} />}
           {active === "customers" && <Customers customers={customers} setCustomers={setCustomers} refreshCustomers={refreshCustomers} admin={admin} />}
           {active === "agents" && <AgentsSection companies={companies} admin={admin} />}
+          {active === "device-activation" && <DeviceActivationSection admin={admin} />}
           {active === "notifications" && <Notifications />}
           {active === "promo-images" && <PromoImages />}
           {active === "nala-soco" && <NalaSoco />}
+          {active === "ciyaaraha" && <CiyaarahaAdmin />}
+          {active === "agent-app-release" && <AgentAppReleasePanel />}
           {active === "devices" && <DeviceUssdModule companies={companies} admin={admin} onPackagesChanged={refreshMissingTemplateCount} />}
           {active === "sms-logs" && <SmsLogs companies={companies} />}
           {active === "payment-transactions" && <PaymentTransactionsPanel companies={companies} />}
@@ -15523,6 +18190,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "shop" && <ShopManagement />}
           {active === "vip-numbers" && <VipNumbersManagement companies={companies} />}
           {active === "sms-sender-ids" && <SmsSenderIdsPanel />}
+          {active === "sms-format-update" && <SmsFormatUpdatePanel />}
           {active === "feedback" && <FeedbackPanel admin={admin} />}
           {active === "support" && <SupportQueuePanel admin={admin} />}
           {active === "referrals" && <ReferralRewardsPanel admin={admin} />}
@@ -15532,7 +18200,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "roles" && <RolesPermissions admin={admin} />}
           {active === "activity-log" && <ActivityLogPanel />}
           {active === "settings" && <SettingsPanel />}
-        </div>
+        </main>
       </div>
     </div>
   );
@@ -15545,6 +18213,16 @@ function AdminDashboardShell({ admin, onLogout }) {
 // this client-side gate is a UX convenience, not the actual security boundary.
 export default function AdminDashboard() {
   const [admin, setAdmin] = useState(null);
+  // Opened from the Admin Hub: exchange its one-time hand-off for a session.
+  const [hubAssertion] = useState(takeHubAssertion);
+  const [hubStatus, setHubStatus] = useState(hubAssertion ? "signing-in" : null);
+  const [hubError, setHubError] = useState("");
+  const [showLocalLogin, setShowLocalLogin] = useState(!HUB_URL);
+  // Super Admins opened from the hub: their annual payment, shown above everything.
+  const { data: payment, refresh: refreshPayment } = usePaymentStatus(loadHubPayment);
+  // Set when this system's API says the Platform Owner has suspended it.
+  const [suspendedMessage, setSuspendedMessage] = useState("");
+  useEffect(() => watchSystemSuspension((message) => setSuspendedMessage(message || "System temporarily suspended. Please contact support.")), []);
 
   // Lets the module-level request helper (dalabAdminApiRequest) drop the
   // admin back to the login screen when a token refresh itself fails — the
@@ -15557,18 +18235,102 @@ export default function AdminDashboard() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!hubAssertion) return;
+    let cancelled = false;
+    DalabAdminApi.hubSso(hubAssertion)
+      .then((result) => {
+        if (cancelled) return;
+        dalabAdminAccessToken = result.accessToken;
+        dalabAdminRefreshToken = result.refreshToken;
+        setAdmin({ ...result.admin, viaHub: true });
+        setHubStatus(null);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setHubError(err.message || "Couldn't sign in from the Admin Hub.");
+        setHubStatus("failed");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [hubAssertion]);
+
+  if (suspendedMessage) {
+    return <HubNotice title="System suspended" message={suspendedMessage} isError onLocalLogin={HUB_URL ? null : undefined} />;
+  }
+
+  if (!admin && hubStatus === "signing-in") {
+    return <HubNotice title="Signing you in…" message="Opening this dashboard from the Admin Hub." />;
+  }
+
+  if (!admin && !showLocalLogin) {
+    return (
+      <HubNotice
+        title="Sign in through the Admin Hub"
+        message={hubError || "Admins open this dashboard from the Admin Hub with their own account."}
+        isError={Boolean(hubError)}
+        onLocalLogin={() => setShowLocalLogin(true)}
+      />
+    );
+  }
+
   if (!admin) {
     return <AdminLoginScreen onLoggedIn={setAdmin} />;
   }
 
   return (
-    <AdminDashboardShell
-      admin={admin}
-      onLogout={() => {
-        dalabAdminAccessToken = null;
-        dalabAdminRefreshToken = null;
-        setAdmin(null);
-      }}
-    />
+    <>
+      {admin.viaHub && admin.role === "super_admin" && (
+        <HubPaymentBanner data={payment} onAcknowledge={() => acknowledgeHubPayment().finally(refreshPayment)} onPayNow={payNowHubPayment} />
+      )}
+      <AdminDashboardShell
+        admin={admin}
+        onLogout={() => {
+          dalabAdminAccessToken = null;
+          dalabAdminRefreshToken = null;
+          setAdmin(null);
+          if (admin.viaHub && HUB_URL) signOutToHub();
+        }}
+      />
+      {admin.viaHub && HUB_URL && hubNav() && <HubSwitchButton label={hubNav() === "switch" ? "Switch system" : "Admin Hub"} />}
+    </>
+  );
+}
+
+/** Small way back to the Admin Hub for people who have something to do there. */
+function HubSwitchButton({ label }) {
+  return (
+    <button
+      onClick={openHub}
+      title="Back to the WAAPRO Admin Hub"
+      style={{ position: "fixed", left: 12, bottom: 12, zIndex: 9999, display: "flex", alignItems: "center", gap: 6, minHeight: 36, padding: "0 14px", borderRadius: 18, border: "1px solid rgba(255,255,255,0.25)", background: "#0B1240", color: "#FFFFFF", fontSize: 12.5, fontWeight: 700, fontFamily: "'Inter','Segoe UI',system-ui,-apple-system,sans-serif", boxShadow: "0 6px 18px rgba(0,0,0,0.25)", cursor: "pointer", opacity: 0.92 }}
+    >
+      <span aria-hidden="true">⇄</span> {label}
+    </button>
+  );
+}
+
+function HubNotice({ title, message, isError = false, onLocalLogin }) {
+  // Self-contained colours: this panel must render in every system's
+  // dashboard, whatever theme constants or CSS variables that app defines.
+  return (
+    <div style={{ minHeight: "100vh", background: "var(--sidebar-bg, #0B1240)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "'Inter','Segoe UI',system-ui,-apple-system,sans-serif" }}>
+      <div style={{ width: "100%", maxWidth: 400, background: "#FFFFFF", borderRadius: 16, padding: 28, textAlign: "center", boxShadow: "0 12px 40px rgba(0,0,0,0.25)" }}>
+        <img src={`${import.meta.env.BASE_URL}logo.png`} alt="" width={56} height={56} style={{ borderRadius: 14, marginBottom: 14 }} onError={(e) => { e.currentTarget.style.display = "none"; }} />
+        <h1 style={{ fontSize: 20, margin: "0 0 8px", color: "#0F172A" }}>{title}</h1>
+        <p style={{ fontSize: 14, margin: "0 0 18px", color: isError ? "#B91C1C" : "#475569" }}>{message}</p>
+        {HUB_URL && onLocalLogin !== undefined && (
+          <button onClick={goToHub} style={{ width: "100%", minHeight: 44, borderRadius: 10, border: "none", background: "#1E3A8A", color: "#FFFFFF", fontWeight: 700, cursor: "pointer" }}>
+            Go to the Admin Hub
+          </button>
+        )}
+        {onLocalLogin && (
+          <button onClick={onLocalLogin} style={{ marginTop: 12, background: "none", border: "none", color: "#475569", fontSize: 12.5, cursor: "pointer", textDecoration: "underline" }}>
+            Use a local account instead
+          </button>
+        )}
+      </div>
+    </div>
   );
 }

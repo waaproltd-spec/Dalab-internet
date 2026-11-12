@@ -3,19 +3,24 @@ import { randomUUID } from "node:crypto";
 import { query, queryOne, withTransaction } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
+import { packageUnavailableReason } from "../utils/packageAvailability.js";
 import { sendJson } from "../utils/camelCase.js";
 import { generateUssdForOrder } from "./ussd.routes.js";
-import { deliverViaSomlink, classifySomlinkStuckReason } from "./somlink.routes.js";
+import { deliverViaSomlinkAll, classifySomlinkStuckReason } from "./somlink.routes.js";
 import { subscribe, broadcast } from "../realtime/orderEvents.js";
 import { recordActivity } from "../utils/activityLog.js";
 import { creditCommissionIfNeeded, reverseCommissionIfNeeded } from "../utils/commissions.js";
 import { creditReferralBonusIfNeeded, reverseReferralBonusIfNeeded } from "../utils/referrals.js";
 import { refundRedeemedPointsIfNeeded } from "../utils/loyaltyPoints.js";
-import { isAlreadyCompleted, createPaymentTransaction } from "../utils/paymentTransactions.js";
+import { isAlreadyCompleted, createPaymentTransaction, markPaymentFinal } from "../utils/paymentTransactions.js";
 import { rateLimit } from "../auth/rateLimit.js";
 import { DEVICE_ONLINE_SQL } from "../utils/deviceStatus.js";
+import { routeStatusFor, SIM_ROUTING_PRIMARY_ORDER } from "../utils/orderRouting.js";
+import { checkSimBalanceForOrder, isInsufficientBalanceReply, unverifiedBalancePolicy } from "../utils/simBalanceCheck.js";
 import { notifyCustomer } from "../services/customerNotify.js";
+import { allDeliveriesDone } from "../services/deliveries.js";
 import { validateMobileNumber, companyKeyFromLabel } from "../lib/phoneValidation.js";
+import { findCustomerByPhone, findOrCreateCustomerByPhone } from "../lib/customerPhone.js";
 
 export const ordersRouter = Router();
 
@@ -41,8 +46,41 @@ const ORDER_LIST_SELECT = `
   JOIN packages p ON p.id = o.package_id
   LEFT JOIN service_categories sc ON sc.company_id = p.company_id AND sc.slug = p.category_id`;
 
+// Single-order loads also carry Extra Package delivery progress (migration
+// 114): how many of the order's send_count deliveries are confirmed, and
+// the next free dial attempt number, so the Agent App can resume an
+// interrupted multi-delivery order without reusing an attempt row.
+/** Audit trail for a re-checkout that changed a pending order's numbers or
+ * payment method (only ever an order with no payment linked yet). */
+async function recordOrderContactEdit(
+  orderId: string,
+  before: { sender_phone: string | null; receiver_phone: string | null; payment_method_id: string | null } | null
+) {
+  const after = await queryOne<{ sender_phone: string | null; receiver_phone: string | null; payment_method_id: string | null }>(
+    `SELECT sender_phone, receiver_phone, payment_method_id FROM orders WHERE id=$1`,
+    [orderId]
+  );
+  if (!before || !after) return;
+  if (before.sender_phone === after.sender_phone && before.receiver_phone === after.receiver_phone && before.payment_method_id === after.payment_method_id) return;
+  await recordActivity({
+    adminId: undefined,
+    action: "order_contact_edited",
+    entityType: "order",
+    entityId: orderId,
+    oldValue: before,
+    newValue: after,
+  });
+}
+
 async function loadOrder(id: string) {
-  return queryOne(`${ORDER_LIST_SELECT} WHERE o.id=$1`, [id]);
+  return queryOne(
+    `SELECT x.*,
+       ((SELECT COUNT(*) FROM ussd_dial_attempts a WHERE a.order_id = x.id AND a.status = 'success')
+        + (SELECT COUNT(*) FROM somlink_transactions t WHERE t.order_id = x.id AND t.status = 'success'))::int AS deliveries_done,
+       (SELECT COALESCE(MAX(a.attempt_number), 0) + 1 FROM ussd_dial_attempts a WHERE a.order_id = x.id)::int AS next_attempt_number
+     FROM (${ORDER_LIST_SELECT} WHERE o.id=$1) x`,
+    [id]
+  );
 }
 
 // Admin/staff-only variant of ORDER_LIST_SELECT, adding the company's
@@ -77,6 +115,10 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
   if (!pkg) return sendJson(res, 404, { error: "Package not found" });
   if (pkg.company_id !== companyId) {
     return sendJson(res, 400, { error: "Package does not belong to the selected company" });
+  }
+  {
+    const unavailable = await packageUnavailableReason(pkg, "customer");
+    if (unavailable) return sendJson(res, 409, { error: unavailable, code: "package_unavailable" });
   }
 
   // When the customer picked one of this company's configured payment
@@ -193,10 +235,19 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
         [req.auth!.sub, companyId, packageId, finalAmount]
       );
       if (existing) {
-        await query(
+        const before = await queryOne<{ sender_phone: string | null; receiver_phone: string | null; payment_method_id: string | null }>(
+          `SELECT sender_phone, receiver_phone, payment_method_id FROM orders WHERE id=$1`,
+          [existing.id]
+        );
+        const edited = await query(
           `UPDATE orders SET sender_phone=$1, receiver_phone=$2, payment_method=$3, payment_method_id=$4,
              payment_number_used=$5, payment_ussd_template_used=$6, updated_at=now()
-           WHERE id=$7 AND status='pending'`,
+           WHERE id=$7 AND status='pending'
+             -- Never once a payment SMS is linked: the payment was made for
+             -- the numbers it was placed with (a re-checkout must not
+             -- redirect a paid order's delivery or break its SIM match).
+             AND NOT EXISTS (SELECT 1 FROM payment_transactions pt WHERE pt.order_id=orders.id AND pt.status NOT IN ('failed','duplicate_blocked'))
+           RETURNING id`,
           [
             senderPhone || customer?.phone || null,
             receiverPhone || customer?.phone || null,
@@ -207,6 +258,7 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
             existing.id,
           ]
         );
+        if (edited.length > 0) await recordOrderContactEdit(existing.id, before);
         return sendJson(res, 200, maskOrder(await loadOrder(existing.id)));
       }
     }
@@ -274,6 +326,10 @@ ordersRouter.post("/guest/orders", rateLimit("guest-order-create", 20, 15 * 60 *
   if (pkg.company_id !== companyId) {
     return sendJson(res, 400, { error: "Package does not belong to the selected company" });
   }
+  {
+    const unavailable = await packageUnavailableReason(pkg, "customer");
+    if (unavailable) return sendJson(res, 409, { error: unavailable, code: "package_unavailable" });
+  }
 
   let selectedMethod: { id: string; label: string; payment_number: string | null; ussd_template: string | null } | null = null;
   if (paymentMethodId) {
@@ -298,10 +354,8 @@ ordersRouter.post("/guest/orders", rateLimit("guest-order-create", 20, 15 * 60 *
     if (!check.valid) return sendJson(res, 400, { error: check.error });
   }
 
-  let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
-  if (!customer) {
-    customer = await queryOne(`INSERT INTO customers (id, phone) VALUES ($1,$2) RETURNING *`, [randomUUID(), phone]);
-  }
+  // Any spelling of the number is the same customer (lib/customerPhone.ts).
+  let { customer } = await findOrCreateCustomerByPhone(phone);
   if (customer!.status === "blocked") return sendJson(res, 403, { error: "This account has been blocked" });
 
   const id = orderRef();
@@ -342,10 +396,19 @@ ordersRouter.post("/guest/orders", rateLimit("guest-order-create", 20, 15 * 60 *
         [customer!.id, companyId, packageId, pkg.price]
       );
       if (existing) {
-        await query(
+        const before = await queryOne<{ sender_phone: string | null; receiver_phone: string | null; payment_method_id: string | null }>(
+          `SELECT sender_phone, receiver_phone, payment_method_id FROM orders WHERE id=$1`,
+          [existing.id]
+        );
+        const edited = await query(
           `UPDATE orders SET sender_phone=$1, receiver_phone=$2, payment_method=$3, payment_method_id=$4,
              payment_number_used=$5, payment_ussd_template_used=$6, updated_at=now()
-           WHERE id=$7 AND status='pending'`,
+           WHERE id=$7 AND status='pending'
+             -- Never once a payment SMS is linked: the payment was made for
+             -- the numbers it was placed with (a re-checkout must not
+             -- redirect a paid order's delivery or break its SIM match).
+             AND NOT EXISTS (SELECT 1 FROM payment_transactions pt WHERE pt.order_id=orders.id AND pt.status NOT IN ('failed','duplicate_blocked'))
+           RETURNING id`,
           [
             senderPhone || phone,
             receiverPhone || phone,
@@ -356,6 +419,7 @@ ordersRouter.post("/guest/orders", rateLimit("guest-order-create", 20, 15 * 60 *
             existing.id,
           ]
         );
+        if (edited.length > 0) await recordOrderContactEdit(existing.id, before);
         return sendJson(res, 200, maskOrder(await loadOrder(existing.id)));
       }
     }
@@ -382,7 +446,7 @@ ordersRouter.get("/guest/orders/stream", (req, res) => {
 ordersRouter.get("/guest/orders/by-phone/:phone", rateLimit("guest-order-lookup", 20, 15 * 60 * 1000), async (req, res) => {
   const phone = String(req.params.phone ?? "").trim();
   if (!/^\+?\d{6,15}$/.test(phone)) return sendJson(res, 400, { error: "Provide a valid phone number" });
-  const customer = await queryOne<{ id: string }>(`SELECT id FROM customers WHERE phone=$1`, [phone]);
+  const customer = await findCustomerByPhone<{ id: string }>(phone, "id");
   if (!customer) return sendJson(res, 200, []);
   const rows = await query(
     `${ORDER_LIST_SELECT} WHERE o.customer_id=$1 ORDER BY o.created_at DESC LIMIT 20`,
@@ -418,6 +482,10 @@ ordersRouter.post("/agent/orders", requireAuth("agent"), async (req, res) => {
   if (pkg.company_id !== companyId) {
     return sendJson(res, 400, { error: "Package does not belong to the selected company" });
   }
+  {
+    const unavailable = await packageUnavailableReason(pkg, "agent");
+    if (unavailable) return sendJson(res, 409, { error: unavailable, code: "package_unavailable" });
+  }
 
   // receiverPhone (who actually gets the package, if different from the
   // customer's own phone above) must belong to the selected company's carrier.
@@ -426,10 +494,8 @@ ordersRouter.post("/agent/orders", requireAuth("agent"), async (req, res) => {
     if (!check.valid) return sendJson(res, 400, { error: check.error });
   }
 
-  let customer = await queryOne(`SELECT * FROM customers WHERE phone=$1`, [phone]);
-  if (!customer) {
-    customer = await queryOne(`INSERT INTO customers (id, phone) VALUES ($1,$2) RETURNING *`, [randomUUID(), phone]);
-  }
+  // Any spelling of the number is the same customer (lib/customerPhone.ts).
+  let { customer } = await findOrCreateCustomerByPhone(phone);
   if (customer!.status === "blocked") return sendJson(res, 403, { error: "This customer's account has been blocked" });
 
   const id = orderRef();
@@ -483,12 +549,31 @@ ordersRouter.get("/agent/orders/stream", requireAuth("agent"), async (req, res) 
 // underlying template/PIN, with zero manual "Dial Now" tap required.
 // Registered before "/agent/orders/:id" so "self-heal-candidates" isn't
 // swallowed as an :id param (same reasoning as "/agent/orders/stream" above).
-ordersRouter.get("/agent/orders/self-heal-candidates", requireAuth("agent"), async (_req, res) => {
+//
+// Only the orders assigned to the CALLING phone (its template pin, else the
+// company's primary SIM Routing entry -- utils/orderRouting.ts): a backup or
+// any other phone never sees them, so it can't dial them. An order whose
+// assigned phone is offline simply waits here for that phone.
+ordersRouter.get("/agent/orders/self-heal-candidates", requireAuth("agent"), async (req, res) => {
+  const agent = await queryOne<{ device_id: string | null }>(`SELECT device_id FROM agents WHERE id=$1`, [req.auth!.sub]);
+  if (!agent?.device_id) return sendJson(res, 200, []);
   const rows = await query(
-    `${ORDER_LIST_SELECT}
-     WHERE o.status='in_progress' AND o.ussd_generated IS NOT NULL
-       AND EXISTS (SELECT 1 FROM payment_transactions pt WHERE pt.order_id = o.id AND pt.status='pending')
-     ORDER BY o.updated_at ASC`
+    `SELECT * FROM (
+       SELECT x.*,
+              CASE WHEN x.ussd_device_id IS NOT NULL AND x.ussd_sim_slot IS NOT NULL THEN x.ussd_device_id ELSE pr.device_id END AS assigned_device_id,
+              CASE WHEN x.ussd_device_id IS NOT NULL AND x.ussd_sim_slot IS NOT NULL THEN x.ussd_sim_slot ELSE pr.sim_slot END AS assigned_sim_slot
+         FROM (${ORDER_LIST_SELECT}
+               WHERE o.status='in_progress' AND o.ussd_generated IS NOT NULL
+                 AND EXISTS (SELECT 1 FROM payment_transactions pt WHERE pt.order_id = o.id AND pt.status='pending')) x
+         LEFT JOIN LATERAL (
+           SELECT device_id, sim_slot FROM sim_routing
+            WHERE company_id = x.company_id AND device_id IS NOT NULL
+            ORDER BY ${SIM_ROUTING_PRIMARY_ORDER} LIMIT 1
+         ) pr ON true
+     ) c
+     WHERE c.assigned_device_id = $1
+     ORDER BY c.updated_at ASC`,
+    [agent.device_id]
   );
   sendJson(res, 200, rows);
 });
@@ -558,7 +643,9 @@ export async function verifyOrderAndGenerateUssd(
     [order.company_id]
   );
   if (company?.fulfillment_method === "somlink") {
-    const result = await deliverViaSomlink(order);
+    // Every delivery the order owes (Extra Packages: send_count of them),
+    // completing only once all succeeded.
+    const result = await deliverViaSomlinkAll(order);
     if (result.ok) await completeOrderById(order.id);
     broadcast({ type: "order.updated", orderId: order.id });
     return { ok: true };
@@ -594,7 +681,13 @@ ordersRouter.post("/agent/orders/:id/verify-payment", requireAuth("agent"), asyn
   if (!order) return sendJson(res, 404, { error: "Order not found" });
 
   if (req.body.smsLogId) {
-    await query(`UPDATE sms_logs SET matched_order_id=$1 WHERE id=$2`, [order.id, req.body.smsLogId]);
+    // Only links an SMS not yet linked to anything (or already to this
+    // order): an SMS that paid for one order must never be re-pointed at
+    // another one.
+    await query(
+      `UPDATE sms_logs SET matched_order_id=$1 WHERE id=$2 AND (matched_order_id IS NULL OR matched_order_id=$1)`,
+      [order.id, req.body.smsLogId]
+    );
   }
 
   // Ensure this order has a payment_transactions ledger row BEFORE ever
@@ -664,9 +757,20 @@ async function creditMacaashIfNeeded(order: any) {
  * crediting + activity log + broadcast path every other completion route
  * already goes through, rather than a parallel copy of it.
  */
-export async function completeOrderById(orderId: string): Promise<{ order: any; success: boolean; alreadyCompleted: boolean } | null> {
+export async function completeOrderById(
+  orderId: string,
+  { force = false }: { force?: boolean } = {}
+): Promise<{ order: any; success: boolean; alreadyCompleted: boolean } | null> {
   const order = await queryOne(`SELECT * FROM orders WHERE id=$1`, [orderId]);
   if (!order) return null;
+
+  // An Extra Package order (send_count > 1) is only complete once every
+  // delivery is confirmed -- e.g. the carrier's voucher SMS for the first
+  // of 3 deliveries must not complete it. A person's explicit "mark
+  // complete" (force) still can. Single-delivery orders are unaffected.
+  if (!force && order.status === "in_progress" && !(await allDeliveriesDone(order))) {
+    return { order, success: false, alreadyCompleted: false };
+  }
 
   const result = await query(
     `UPDATE orders SET status='completed', completed_at=now(), updated_at=now() WHERE id=$1 AND status='in_progress' RETURNING id`,
@@ -714,7 +818,9 @@ export async function completeOrderById(orderId: string): Promise<{ order: any; 
 }
 
 ordersRouter.post("/agent/orders/:id/complete", requireAuth("agent"), async (req, res) => {
-  const result = await completeOrderById(req.params.id);
+  // The agent's own deliberate "mark complete" tap -- a person's decision,
+  // so it isn't held back by an Extra Package's remaining deliveries.
+  const result = await completeOrderById(req.params.id, { force: true });
   if (!result) return sendJson(res, 404, { error: "Order not found" });
   if (!result.success) {
     return sendJson(res, 409, { error: `Cannot complete an order in status '${result.order.status}'` });
@@ -782,6 +888,76 @@ ordersRouter.get("/agent/transactions", requireAuth("agent"), async (req, res) =
      FROM orders o JOIN customers c ON c.id=o.customer_id JOIN companies co ON co.id=o.company_id
      WHERE o.agent_id=$1 AND o.status='completed' ORDER BY o.completed_at DESC`,
     [req.auth!.sub]
+  );
+  sendJson(res, 200, rows);
+});
+
+// Agent App "Transaction History": this agent's orders (every status), each
+// with the customer's Payment Number (sender_phone) and the Internet
+// Destination Number (receiver_phone) kept as separate fields. Filters work
+// together: a date range (or one calendar day), one company, and a search
+// over customer name, either phone number and the reference. Phone search
+// matches on the digits, so 0612345678, 612345678 and +252612345678 all find
+// the same order. Read-only; /agent/transactions above is unchanged.
+const TX_HISTORY_RANGES: Record<string, string | null> = {
+  today: `o.created_at >= date_trunc('day', now())`,
+  yesterday: `o.created_at >= date_trunc('day', now()) - interval '1 day' AND o.created_at < date_trunc('day', now())`,
+  "1week": `o.created_at >= now() - interval '7 days'`,
+  "1month": `o.created_at >= now() - interval '1 month'`,
+  "3months": `o.created_at >= now() - interval '3 months'`,
+  "6months": `o.created_at >= now() - interval '6 months'`,
+  "1year": `o.created_at >= now() - interval '1 year'`,
+  all: null,
+};
+
+ordersRouter.get("/agent/transactions/history", requireAuth("agent"), async (req, res) => {
+  const { range, date, companyId, search } = req.query as Record<string, string | undefined>;
+  const args: unknown[] = [req.auth!.sub];
+  const where = [`o.agent_id=$1`];
+  if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    args.push(date);
+    where.push(`o.created_at >= $${args.length}::date AND o.created_at < $${args.length}::date + 1`);
+  } else {
+    const key = range && range in TX_HISTORY_RANGES ? range : "today";
+    const clause = TX_HISTORY_RANGES[key];
+    if (clause) where.push(clause);
+  }
+  if (companyId && companyId !== "all") {
+    args.push(companyId);
+    where.push(`o.company_id=$${args.length}`);
+  }
+  const term = (search ?? "").trim();
+  if (term) {
+    args.push(`%${term}%`);
+    const text = args.length;
+    const conds = [`o.id ILIKE $${text}`, `c.name ILIKE $${text}`];
+    // Local numbers start with 0 and stored ones may carry 252: compare
+    // without either prefix.
+    const digits = term.replace(/\D/g, "").replace(/^(252|0)/, "");
+    if (digits.length >= 3) {
+      args.push(`%${digits}%`);
+      const d = args.length;
+      conds.push(
+        `regexp_replace(COALESCE(o.sender_phone,''), '\\D', '', 'g') LIKE $${d}`,
+        `regexp_replace(COALESCE(o.receiver_phone,''), '\\D', '', 'g') LIKE $${d}`
+      );
+    }
+    where.push(`(${conds.join(" OR ")})`);
+  }
+  const rows = await query(
+    `SELECT o.id AS order_id, COALESCE(c.name, c.phone) AS customer_name, c.phone AS customer_phone,
+            o.company_id, co.name AS company_name, co.color_hex,
+            p.name AS package_name, p.validity AS package_validity,
+            o.sender_phone AS payment_number, o.receiver_phone AS destination_number,
+            o.amount, o.status, o.payment_method, o.created_at, o.completed_at, o.reversed_at
+     FROM orders o
+     JOIN customers c ON c.id=o.customer_id
+     JOIN companies co ON co.id=o.company_id
+     LEFT JOIN packages p ON p.id=o.package_id
+     WHERE ${where.join(" AND ")}
+     ORDER BY o.created_at DESC
+     LIMIT 500`,
+    args
   );
   sendJson(res, 200, rows);
 });
@@ -889,8 +1065,12 @@ async function classifyStuckReason(order: any): Promise<string | null> {
 ordersRouter.get("/admin/orders/pending-recovery", requireStaff(), async (_req, res) => {
   const candidates = await query<any>(
     `${ADMIN_ORDER_LIST_SELECT}
-     WHERE o.status IN ('pending','in_progress')
-       AND o.created_at < now() - interval '5 minutes'
+     WHERE o.created_at < now() - interval '5 minutes'
+       -- Filtered in SQL before the LIMIT: an unpaid abandoned 'pending'
+       -- order is never stuck, and hundreds of them must not push real
+       -- stuck orders off this list.
+       AND (o.status = 'in_progress'
+            OR (o.status = 'pending' AND EXISTS (SELECT 1 FROM payment_transactions pt WHERE pt.order_id = o.id)))
      ORDER BY o.created_at ASC
      LIMIT 200`
   );
@@ -937,23 +1117,47 @@ ordersRouter.get("/admin/orders/:id/somlink-status", requireStaff(), async (req,
 // online-status check in the backend, so this never disagrees with the
 // Devices panel's own badge for the same device.
 ordersRouter.get("/admin/orders/:id/delivery-status", requireStaff(), async (req, res) => {
-  const order = await queryOne(`SELECT company_id FROM orders WHERE id=$1`, [req.params.id]);
+  const order = await queryOne(`SELECT id, company_id, status, ussd_device_id, ussd_sim_slot FROM orders WHERE id=$1`, [req.params.id]);
   if (!order) return sendJson(res, 404, { error: "Order not found" });
 
-  const devices = await query(
-    `SELECT d.name, d.last_heartbeat_at, ${DEVICE_ONLINE_SQL} AS online
-     FROM sim_routing sr JOIN agent_devices d ON d.id = sr.device_id
-     WHERE sr.company_id=$1
-     ORDER BY sr.priority ASC`,
-    [order.company_id]
+  // The ONE phone + SIM responsible for this order (utils/orderRouting.ts):
+  // its state alone explains a wait -- the order is never handed to a
+  // backup device, so "Waiting for Assigned SIM" is the honest answer.
+  const { assigned, waitingReason: routeWait } = await routeStatusFor(order);
+  const balance = assigned ? await checkSimBalanceForOrder(order.id, { deviceId: assigned.deviceId, simSlot: assigned.simSlot }) : null;
+  const lastAttempt = await queryOne(
+    `SELECT a.id, a.attempt_number, a.status, a.sim_slot, a.ussd_string_masked, LEFT(a.response_message, 300) AS response_message,
+            a.created_at, a.completed_at, d.name AS device_name
+       FROM ussd_dial_attempts a
+       LEFT JOIN agents ag ON ag.id = a.agent_id
+       LEFT JOIN agent_devices d ON d.id = ag.device_id
+      WHERE a.order_id=$1 ORDER BY a.created_at DESC LIMIT 1`,
+    [order.id]
   );
-  if (devices.length === 0) {
-    return sendJson(res, 200, { hasRouting: false, device: null });
+  let waitingReason = routeWait;
+  if (!waitingReason && order.status === "in_progress") {
+    if (lastAttempt && (lastAttempt.status === "pending" || lastAttempt.status === "ambiguous")) {
+      waitingReason = "Needs verification — the last dial's result is unknown; the money may already have been sent. Check the carrier SMS, then mark it Delivered or Not delivered.";
+    } else if (lastAttempt?.status === "failed" && isInsufficientBalanceReply(lastAttempt.response_message)) {
+      waitingReason = `The last dial failed: the carrier reported an insufficient SIM balance ("${lastAttempt.response_message}"). Nothing was sent. Recharge the SIM, then retry.`;
+    } else if (balance?.status === "insufficient") {
+      waitingReason = balance.message ?? "Insufficient balance on the assigned SIM.";
+    } else if (balance && (balance.status === "unknown" || balance.status === "outdated") && unverifiedBalancePolicy() === "confirm") {
+      waitingReason = balance.message ?? "The assigned SIM's balance isn't known yet.";
+    }
+    // An unknown/outdated balance alone doesn't hold the order (the dial is
+    // attempted and the carrier's reply decides): it stays a warning on
+    // the balance badge, not the reason the order is waiting.
   }
-  const top = devices[0];
   sendJson(res, 200, {
-    hasRouting: true,
-    device: { name: top.name, lastHeartbeatAt: top.last_heartbeat_at, stale: !top.online },
+    hasRouting: Boolean(assigned),
+    // Kept for older dashboard builds.
+    device: assigned ? { name: assigned.deviceName ?? assigned.deviceId, lastHeartbeatAt: assigned.lastHeartbeatAt, stale: !assigned.online } : null,
+    orderStatus: order.status,
+    assigned,
+    balance: balance ? { status: balance.status, availableBalance: balance.availableBalance, requestedAmount: balance.requestedAmount, message: balance.message } : null,
+    lastAttempt,
+    waitingReason,
   });
 });
 
@@ -1066,6 +1270,58 @@ ordersRouter.put("/admin/orders/:id/status", requirePermission("orders.manage"),
 // existing guards) picks it up and dials it, so this endpoint never pushes
 // a dial command itself and never duplicates anything already guaranteed
 // duplicate-safe elsewhere.
+/**
+ * Resolves a dial attempt whose result is unknown ('pending' with no report
+ * -- e.g. the app died mid-dial -- or 'ambiguous'), after a person checked
+ * with the carrier/customer whether the money actually went out. Until this
+ * runs, POST /agent/orders/:id/dial-attempts refuses any new dial for the
+ * order, so nothing can be sent twice by automation.
+ *  - delivered=true: the attempt becomes 'success' and the order completes
+ *    (same crediting/notification path as any completion).
+ *  - delivered=false: the attempt becomes 'failed' and the payment goes
+ *    back to 'pending', so the Agent App's self-heal sweep dials it again.
+ */
+ordersRouter.post("/admin/dial-attempts/:id/resolve", requirePermission("orders.manage"), async (req, res) => {
+  if (typeof req.body?.delivered !== "boolean") return sendJson(res, 400, { error: "delivered must be true or false" });
+  const delivered: boolean = req.body.delivered;
+  const note = typeof req.body.note === "string" ? req.body.note.trim().slice(0, 300) : "";
+  const label = delivered ? "Checked by staff: delivered" : "Checked by staff: NOT delivered";
+  const updated = await query<{ id: string; order_id: string; status: string; attempt_number: number }>(
+    `UPDATE ussd_dial_attempts
+        SET status=$1, completed_at=COALESCE(completed_at, now()),
+            response_message=TRIM(BOTH ' ' FROM COALESCE(response_message,'') || ' [' || $2 || ']')
+      WHERE id=$3 AND status IN ('pending','ambiguous')
+      RETURNING id, order_id, status, attempt_number`,
+    [delivered ? "success" : "failed", note ? `${label}: ${note}` : label, req.params.id]
+  );
+  if (updated.length === 0) {
+    return sendJson(res, 409, { error: "This dial attempt isn't waiting for a decision (it already has a confirmed result)." });
+  }
+  const orderId = updated[0].order_id;
+  if (delivered) {
+    const done = await completeOrderById(orderId, { force: true });
+    await markPaymentFinal(orderId, "completed");
+    if (!done?.success) {
+      // e.g. the order was cancelled meanwhile -- the attempt is recorded,
+      // the order is left as it is for a person to look at.
+      await recordActivity({ adminId: req.auth!.sub, action: "dial_attempt_resolved", entityType: "order", entityId: orderId, oldValue: null, newValue: { attemptId: req.params.id, delivered, orderCompleted: false } });
+      return sendJson(res, 200, { attempt: updated[0], order: await loadOrder(orderId) });
+    }
+  } else {
+    await query(`UPDATE payment_transactions SET status='pending', updated_at=now() WHERE order_id=$1 AND status='processing'`, [orderId]);
+  }
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "dial_attempt_resolved",
+    entityType: "order",
+    entityId: orderId,
+    oldValue: null,
+    newValue: { attemptId: req.params.id, attemptNumber: updated[0].attempt_number, delivered, note: note || null },
+  });
+  broadcast({ type: "order.updated", orderId });
+  sendJson(res, 200, { attempt: updated[0], order: await loadOrder(orderId) });
+});
+
 ordersRouter.post("/admin/orders/:id/recover", requirePermission("orders.manage"), async (req, res) => {
   const order = await queryOne<any>(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
   if (!order) return sendJson(res, 404, { error: "Order not found" });
@@ -1167,29 +1423,62 @@ ordersRouter.post("/agent/orders/:id/reverse", requireAuth("agent"), async (req,
 });
 
 ordersRouter.get("/admin/dashboard/stats", requireStaff(), async (_req, res) => {
-  const totals = await queryOne<{
-    total_sales: string;
-    pending_orders: string;
-    successful_orders: string;
-    failed_orders: string;
-  }>(
+  // Sales = completed, never-reversed orders (same rule as Financial
+  // Overview's REAL_ORDER_FILTER). Day/week/month/year buckets use the
+  // session TimeZone (Africa/Mogadishu, db/pool.ts), so "today" is Somalia's
+  // today. "Week" is the last 7 days including today.
+  const REAL = `status='completed' AND reversed_at IS NULL`;
+  const totals = await queryOne<Record<string, string>>(
     `SELECT
-       COALESCE(SUM(amount) FILTER (WHERE status='completed'), 0) AS total_sales,
+       COALESCE(SUM(amount) FILTER (WHERE ${REAL}), 0) AS total_sales,
+       COALESCE(SUM(amount) FILTER (WHERE ${REAL} AND created_at >= date_trunc('day', now())), 0) AS daily_sales,
+       COALESCE(SUM(amount) FILTER (WHERE ${REAL} AND created_at >= date_trunc('day', now()) - interval '6 days'), 0) AS weekly_sales,
+       COALESCE(SUM(amount) FILTER (WHERE ${REAL} AND created_at >= date_trunc('month', now())), 0) AS monthly_sales,
+       COALESCE(SUM(amount) FILTER (WHERE ${REAL} AND created_at >= date_trunc('year', now())), 0) AS yearly_sales,
+       COALESCE(SUM(provider_amount) FILTER (WHERE ${REAL}), 0) AS data_cost,
        COUNT(*) FILTER (WHERE status='pending') AS pending_orders,
        COUNT(*) FILTER (WHERE status='completed') AS successful_orders,
        COUNT(*) FILTER (WHERE status='failed') AS failed_orders
      FROM orders`
   );
+  const expenses = await queryOne<{ total: string }>(`SELECT COALESCE(SUM(amount), 0) AS total FROM finance_expenses`);
   const activeCustomers = await queryOne<{ n: string }>(`SELECT COUNT(*) AS n FROM customers WHERE status='active'`);
+  const week = await query<{ day: string; sales: string; orders: string }>(
+    `SELECT to_char(d, 'YYYY-MM-DD') AS day,
+            COALESCE(SUM(o.amount), 0) AS sales,
+            COUNT(o.id) AS orders
+       FROM generate_series(date_trunc('day', now()) - interval '6 days', date_trunc('day', now()), interval '1 day') d
+       LEFT JOIN orders o ON o.status='completed' AND o.reversed_at IS NULL
+                         AND o.created_at >= d AND o.created_at < d + interval '1 day'
+      GROUP BY d ORDER BY d`
+  );
+  const byCompany = await query<{ company_id: string; name: string; orders: string }>(
+    `SELECT c.id AS company_id, c.name, COUNT(o.id) AS orders
+       FROM companies c
+       LEFT JOIN orders o ON o.company_id = c.id AND o.status='completed' AND o.reversed_at IS NULL
+      WHERE c.deleted_at IS NULL
+      GROUP BY c.id, c.name, c.group_number, c.sort_order
+      ORDER BY c.group_number, c.sort_order, c.name`
+  );
+  const n = (k: string) => Number(totals?.[k] ?? 0);
   // Postgres returns numeric/count columns as strings via node-postgres (to avoid
   // precision loss on bigint) — the dashboard expects real numbers (it calls
   // .toFixed()/.toLocaleString() on these), and camelCase keys, not the raw
   // snake_case column names, or it crashes right after this resolves.
   sendJson(res, 200, {
-    totalSales: Number(totals?.total_sales ?? 0),
-    pendingOrders: Number(totals?.pending_orders ?? 0),
-    successfulOrders: Number(totals?.successful_orders ?? 0),
-    failedOrders: Number(totals?.failed_orders ?? 0),
+    totalSales: n("total_sales"),
+    dailySales: n("daily_sales"),
+    weeklySales: n("weekly_sales"),
+    monthlySales: n("monthly_sales"),
+    yearlySales: n("yearly_sales"),
+    // Same as Financial Overview's all-time Profit: money received minus
+    // data cost (provider_amount) minus recorded other expenses.
+    profit: n("total_sales") - n("data_cost") - Number(expenses?.total ?? 0),
+    pendingOrders: n("pending_orders"),
+    successfulOrders: n("successful_orders"),
+    failedOrders: n("failed_orders"),
     activeCustomers: Number(activeCustomers?.n ?? 0),
+    salesLast7Days: week.map((w) => ({ day: w.day, sales: Number(w.sales), orders: Number(w.orders) })),
+    completedOrdersByCompany: byCompany.map((c) => ({ companyId: c.company_id, name: c.name, orders: Number(c.orders) })),
   });
 });

@@ -200,8 +200,22 @@ notificationsRouter.get("/admin/notifications", requireStaff(), async (_req, res
   sendJson(res, 200, await query(`SELECT * FROM notifications ORDER BY sent_at DESC LIMIT 100`));
 });
 
+// The agent's inbox: notices sent to everyone (Admin → Notifications →
+// Send; customer_id IS NULL). Each customer's own copy of a broadcast, order
+// update or feedback reply (notifyCustomer writes one row per customer) is
+// that customer's, not the agent's -- listing them showed one broadcast
+// once per recipient (same text and time) and leaked customers' private
+// updates into the Agent App.
 notificationsRouter.get("/agent/notifications", requireAuth("agent"), async (_req, res) => {
-  sendJson(res, 200, await query(`SELECT * FROM notifications ORDER BY sent_at DESC LIMIT 50`));
+  sendJson(
+    res,
+    200,
+    await query(
+      `SELECT id, type, title, body, sent_at FROM notifications
+       WHERE customer_id IS NULL
+       ORDER BY sent_at DESC, id LIMIT 50`
+    )
+  );
 });
 
 // A customer sees every broadcast (customer_id IS NULL, unchanged) plus

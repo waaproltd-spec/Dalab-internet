@@ -281,6 +281,14 @@ fun classifyRechargeUssdResponse(text: String): DialOutcome {
     val lower = trimmed.lowercase()
     if (FAILURE_RESPONSE_KEYWORDS.any { lower.contains(it) }) return DialOutcome.FAILED
     if (SUCCESS_RESPONSE_KEYWORDS_RECHARGE.any { lower.contains(it) }) return DialOutcome.SUCCESS
+    // Hormuud EVC Plus recharge confirmation (English variant), confirmed
+    // live 2026-09-20 order DLB108047593: "You have transferred $0.25 ...
+    // Transaction ID: ...". Requires BOTH markers together (not
+    // "transferred" alone) since payout/withdrawal confirmations also use
+    // "transferred" and must not collide with recharge here.
+    if (lower.contains("transferred") && lower.contains("transaction id")) {
+        return DialOutcome.SUCCESS
+    }
     return DialOutcome.AMBIGUOUS
 }
 

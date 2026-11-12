@@ -1600,3 +1600,100 @@ test("GET /exchange/wallets exposes each wallet's dial prefix for the customer's
   assert.equal(evc?.dialPrefix, "712");
   assert.equal(edahab?.dialPrefix, "110");
 });
+
+// ---- Payout SMS that arrives while the phone is still on the PIN step ----
+// Live: "$16.67 ayaad uwareejisay ..." arrived at 06:15:47 while the
+// attempt was still step1_success; the server ignored it, the phone then
+// timed out ("No final confirmation received after entering the PIN") and
+// the order went to Failed with a Retry button for money already sent.
+
+async function verifiedOrderAtPinStep(amount: number, senderPhone: string): Promise<{ orderId: string; attemptId: string }> {
+  const orderId = await insertExchangeOrder({ corridorId: corridorEdahabToEvc, fromWalletId: "edahab", toWalletId: "evc_plus", amountSent: amount, senderPhone });
+  await ingestPaymentSms({ agentId: AGENT_ID, sender: "eDahab", body: `Lacag $${amount}.00 ah`, parsedAmount: amount, parsedPhone: senderPhone, simSlot: 2, transactionRef: nextRef() });
+  const start = await asJson(await fetch(`${payoutBaseUrl}/agent/exchange/orders/${orderId}/dial-attempts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ attemptNumber: 1 }),
+  }));
+  await fetch(`${payoutBaseUrl}/agent/exchange/dial-attempts/${start.id}/step1`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ status: "step1_success", responseMessage: "Uwareeji ... Fadlan..Geli..PIN-kaaga" }),
+  });
+  return { orderId, attemptId: start.id };
+}
+
+async function step2(attemptId: string, status: string, responseMessage: string) {
+  return fetch(`${payoutBaseUrl}/agent/exchange/dial-attempts/${attemptId}/step2`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ status, responseMessage, isFinalAttempt: true }),
+  });
+}
+
+test("a payout SMS that arrives while the PIN step is still running completes the exchange, and the later timeout can't fail it", async () => {
+  const { orderId, attemptId } = await verifiedOrderAtPinStep(181, "252611131081");
+  const res = await fetch(`${payoutBaseUrl}/agent/exchange/orders/payout-confirmation`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ receiverPhone: "688000000", amount: 181, rawText: "[-EVCPLUS-] $181 ayaad uwareejisay YASIIN (688000000), Tar: 15/10/26 06:15:47" }),
+  });
+  const body = await asJson(res);
+  assert.equal(body.completed, true, "the SMS proves the transfer went out");
+  assert.equal((await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]))?.status, "completed");
+
+  // The phone's own timeout report afterwards changes nothing.
+  await step2(attemptId, "ambiguous", "No final confirmation received after entering the PIN.");
+  assert.equal((await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]))?.status, "completed");
+  assert.equal((await queryOne<{ status: string }>(`SELECT status FROM exchange_dial_attempts WHERE id=$1`, [attemptId]))?.status, "success");
+});
+
+test("a step-2 timeout with the payout SMS already uploaded completes the exchange instead of failing it", async () => {
+  const { orderId, attemptId } = await verifiedOrderAtPinStep(182, "252611131082");
+  await ingestPaymentSms({
+    agentId: AGENT_ID, sender: "192",
+    body: "[-EVCPLUS-] $182 ayaad uwareejisay YASIIN MAXAMED AADAN(688000000), Tar: 15/10/26 06:15:47, Haraagaagu waa $18.915.",
+    parsedAmount: 182, parsedPhone: "688000000", simSlot: 1, transactionRef: nextRef(),
+  });
+  await step2(attemptId, "ambiguous", "No final confirmation received after entering the PIN.");
+  assert.equal((await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]))?.status, "completed");
+  assert.ok(await activityFor(orderId, "exchange_completed_via_payout_sms"));
+});
+
+test("a step-2 timeout with no payout SMS still fails the exchange (incoming SMS of the same amount doesn't count)", async () => {
+  const { orderId, attemptId } = await verifiedOrderAtPinStep(183, "252611131083");
+  // An INCOMING payment of the same amount from the receiver's number is not a payout confirmation.
+  await ingestPaymentSms({
+    agentId: AGENT_ID, sender: "192", body: "[-EVCPLUS-] waxaad $183 ka heshay 0688000000, Tar: 15/10/26",
+    parsedAmount: 183, parsedPhone: "688000000", simSlot: 1, transactionRef: nextRef(),
+  });
+  await step2(attemptId, "ambiguous", "No final confirmation received after entering the PIN.");
+  assert.equal((await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]))?.status, "failed");
+});
+
+test("mark-paid completes a failed exchange whose PIN step was reached, and refuses one where no PIN was entered", async () => {
+  const { orderId, attemptId } = await verifiedOrderAtPinStep(184, "252611131084");
+  await step2(attemptId, "ambiguous", "No final confirmation received after entering the PIN.");
+  assert.equal((await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]))?.status, "failed");
+
+  const ok = await fetch(`${payoutBaseUrl}/admin/exchange/orders/${orderId}/mark-paid`, { method: "POST", headers: { Authorization: `Bearer ${superAdminToken}` } });
+  assert.equal(ok.status, 200);
+  assert.equal((await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [orderId]))?.status, "completed");
+  assert.equal((await queryOne<{ status: string }>(`SELECT status FROM exchange_dial_attempts WHERE id=$1`, [attemptId]))?.status, "success");
+  assert.ok(await activityFor(orderId, "exchange_marked_paid"));
+  const again = await fetch(`${payoutBaseUrl}/admin/exchange/orders/${orderId}/mark-paid`, { method: "POST", headers: { Authorization: `Bearer ${superAdminToken}` } });
+  assert.equal(again.status, 409, "a completed exchange can't be marked again");
+
+  // Step 1 failed: the PIN was never entered, so nothing can have been sent.
+  const noPin = await insertExchangeOrder({ corridorId: corridorEdahabToEvc, fromWalletId: "edahab", toWalletId: "evc_plus", amountSent: 185, senderPhone: "252611131085" });
+  await ingestPaymentSms({ agentId: AGENT_ID, sender: "eDahab", body: "Lacag $185.00 ah", parsedAmount: 185, parsedPhone: "252611131085", simSlot: 2, transactionRef: nextRef() });
+  const start = await asJson(await fetch(`${payoutBaseUrl}/agent/exchange/orders/${noPin}/dial-attempts`, {
+    method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` }, body: JSON.stringify({ attemptNumber: 1 }),
+  }));
+  await fetch(`${payoutBaseUrl}/agent/exchange/dial-attempts/${start.id}/step1`, {
+    method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` }, body: JSON.stringify({ status: "failed", responseMessage: "USSD session ended" }),
+  });
+  const refused = await fetch(`${payoutBaseUrl}/admin/exchange/orders/${noPin}/mark-paid`, { method: "POST", headers: { Authorization: `Bearer ${superAdminToken}` } });
+  assert.equal(refused.status, 409);
+  assert.equal((await queryOne<{ status: string }>(`SELECT status FROM exchange_orders WHERE id=$1`, [noPin]))?.status, "failed");
+});

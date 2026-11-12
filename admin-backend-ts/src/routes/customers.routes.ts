@@ -1,5 +1,4 @@
 import { Router } from "express";
-import { randomUUID } from "node:crypto";
 import { query, queryOne } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
@@ -7,6 +6,7 @@ import { sendJson } from "../utils/camelCase.js";
 import { hashPassword, verifyPassword, isValidPin } from "../auth/crypto.js";
 import { parseDataUri } from "../utils/dataUri.js";
 import { validateMobileNumber, companyKeyFromLabel, normalizeMobileDigits } from "../lib/phoneValidation.js";
+import { canonicalCustomerPhone, findCustomerByPhone, findOrCreateCustomerByPhone } from "../lib/customerPhone.js";
 
 export const customersRouter = Router();
 
@@ -96,13 +96,15 @@ customersRouter.put("/admin/customers/:id", requirePermission("customers.manage"
   const existing = await queryOne(`SELECT * FROM customers WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Customer not found" });
   const name = req.body.name ?? existing.name;
-  const phone = req.body.phone ?? existing.phone;
-  if (phone !== existing.phone) {
-    const phoneCheck = validateMobileNumber(String(phone));
+  // A changed number is stored as "252" + 9 digits and must not be any
+  // spelling of another customer's number (lib/customerPhone.ts).
+  const changed = req.body.phone != null && canonicalCustomerPhone(req.body.phone) !== canonicalCustomerPhone(existing.phone);
+  const phone = changed ? canonicalCustomerPhone(req.body.phone) : existing.phone;
+  if (changed) {
+    const phoneCheck = validateMobileNumber(String(req.body.phone));
     if (!phoneCheck.valid) return sendJson(res, 400, { error: phoneCheck.error });
-  }
-  if (phone !== existing.phone && (await queryOne(`SELECT id FROM customers WHERE phone=$1`, [phone]))) {
-    return sendJson(res, 409, { error: "A customer with this phone already exists" });
+    const other = await findCustomerByPhone<{ id: string }>(req.body.phone, "id");
+    if (other && other.id !== existing.id) return sendJson(res, 409, { error: "A customer with this phone already exists" });
   }
   await query(`UPDATE customers SET name=$1, phone=$2 WHERE id=$3`, [name, phone, req.params.id]);
   sendJson(res, 200, await queryOne(`SELECT ${ADMIN_CUSTOMER_COLUMNS} FROM customers WHERE id=$1`, [req.params.id]));
@@ -231,6 +233,26 @@ customersRouter.put("/admin/customers/:id/exchange-limits", requirePermission("c
 // a customer who still has access to their own account is a separate,
 // later-added set of routes below ("Customer: own profile" section), which
 // operate on this same pin_hash column but never touch the OTP login flow.
+// The PIN is also the Customer App login (POST /auth/customer/enter): a new
+// PIN signs the customer out everywhere -- the old one may be known to
+// someone else -- and lifts any wrong-PIN lock on the number.
+async function afterCustomerPinChange(customerId: string) {
+  await query(`UPDATE refresh_tokens SET revoked=true, rotated_at=NULL WHERE subject_id=$1 AND revoked=false`, [customerId]);
+  await query(
+    `DELETE FROM customer_login_failures WHERE phone_local = (SELECT regexp_replace(regexp_replace(phone, '\\D', '', 'g'), '^252(\\d{9})$', '\\1') FROM customers WHERE id=$1)`,
+    [customerId]
+  );
+}
+
+// A PIN-only account (made on the Customer App's Number + PIN screen) has
+// no password: removing its PIN would leave it with no credential at all,
+// and the next person to type that number would get it. Removal is only
+// allowed while a password still protects the account.
+async function customerHasPassword(customerId: string): Promise<boolean> {
+  const row = await queryOne<{ password_hash: string | null }>(`SELECT password_hash FROM customers WHERE id=$1`, [customerId]);
+  return Boolean(row?.password_hash);
+}
+
 customersRouter.get("/admin/customers/:id/pin-status", requireAuth("super_admin"), async (req, res) => {
   const customer = await queryOne<{ pin_hash: string | null }>(`SELECT pin_hash FROM customers WHERE id=$1`, [req.params.id]);
   if (!customer) return sendJson(res, 404, { error: "Customer not found" });
@@ -246,6 +268,7 @@ customersRouter.put("/admin/customers/:id/pin", requireAuth("super_admin"), asyn
   if (!existing) return sendJson(res, 404, { error: "Customer not found" });
   const pinHash = await hashPassword(String(pin));
   await query(`UPDATE customers SET pin_hash=$1 WHERE id=$2`, [pinHash, req.params.id]);
+  await afterCustomerPinChange(req.params.id);
   sendJson(res, 200, { message: "PIN saved", isSet: true });
 });
 
@@ -265,7 +288,8 @@ customersRouter.post("/admin/customers/:id/pin/generate", requireAuth("super_adm
   const pin = generateRandomPin();
   const pinHash = await hashPassword(pin);
   await query(`UPDATE customers SET pin_hash=$1 WHERE id=$2`, [pinHash, req.params.id]);
-  sendJson(res, 200, { message: "New Recovery PIN generated", pin, isSet: true });
+  await afterCustomerPinChange(req.params.id);
+  sendJson(res, 200, { message: "New PIN generated", pin, isSet: true });
 });
 
 // "Reset" clears the PIN back to unset (optional) rather than assigning a
@@ -275,6 +299,7 @@ customersRouter.post("/admin/customers/:id/pin/generate", requireAuth("super_adm
 customersRouter.delete("/admin/customers/:id/pin", requireAuth("super_admin"), async (req, res) => {
   const existing = await queryOne(`SELECT id FROM customers WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Customer not found" });
+  if (!(await customerHasPassword(req.params.id))) return sendJson(res, 409, { error: "This PIN is how the customer signs in, so it can't be removed. Set or generate a new PIN instead.", code: "pin_is_login" });
   await query(`UPDATE customers SET pin_hash=NULL WHERE id=$1`, [req.params.id]);
   sendJson(res, 200, { message: "PIN reset", isSet: false });
 });
@@ -358,12 +383,11 @@ customersRouter.post("/agent/customers", requireAuth("agent"), async (req, res) 
   if (!phoneCheck.valid) return sendJson(res, 400, { error: phoneCheck.error });
   const name = req.body.name ? String(req.body.name).trim() : null;
 
-  const existing = await queryOne(`SELECT ${AGENT_CUSTOMER_COLUMNS} FROM customers WHERE phone=$1`, [phone]);
-  if (existing) return sendJson(res, 409, { error: "A customer with this phone already exists", customer: existing });
-
-  const id = randomUUID();
-  await query(`INSERT INTO customers (id, phone, name) VALUES ($1,$2,$3)`, [id, phone, name]);
-  sendJson(res, 201, await queryOne(`SELECT ${AGENT_CUSTOMER_COLUMNS} FROM customers WHERE id=$1`, [id]));
+  // Any spelling of the number is the same customer (lib/customerPhone.ts).
+  const { customer, created } = await findOrCreateCustomerByPhone<{ id: string }>(phone, { name }, "id");
+  const row = await queryOne(`SELECT ${AGENT_CUSTOMER_COLUMNS} FROM customers WHERE id=$1`, [customer.id]);
+  if (!created) return sendJson(res, 409, { error: "A customer with this phone already exists", customer: row });
+  sendJson(res, 201, row);
 });
 
 // Single-customer detail: the same list columns plus pinSet (never the PIN
@@ -417,13 +441,15 @@ customersRouter.put("/agent/customers/:id", requireAuth("agent"), async (req, re
   const existing = await queryOne(`SELECT * FROM customers WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Customer not found" });
   const name = req.body.name ?? existing.name;
-  const phone = req.body.phone ?? existing.phone;
-  if (phone !== existing.phone) {
-    const phoneCheck = validateMobileNumber(String(phone));
+  // A changed number is stored as "252" + 9 digits and must not be any
+  // spelling of another customer's number (lib/customerPhone.ts).
+  const changed = req.body.phone != null && canonicalCustomerPhone(req.body.phone) !== canonicalCustomerPhone(existing.phone);
+  const phone = changed ? canonicalCustomerPhone(req.body.phone) : existing.phone;
+  if (changed) {
+    const phoneCheck = validateMobileNumber(String(req.body.phone));
     if (!phoneCheck.valid) return sendJson(res, 400, { error: phoneCheck.error });
-  }
-  if (phone !== existing.phone && (await queryOne(`SELECT id FROM customers WHERE phone=$1`, [phone]))) {
-    return sendJson(res, 409, { error: "A customer with this phone already exists" });
+    const other = await findCustomerByPhone<{ id: string }>(req.body.phone, "id");
+    if (other && other.id !== existing.id) return sendJson(res, 409, { error: "A customer with this phone already exists" });
   }
   await query(`UPDATE customers SET name=$1, phone=$2 WHERE id=$3`, [name, phone, req.params.id]);
   sendJson(res, 200, await queryOne(`SELECT ${AGENT_CUSTOMER_COLUMNS} FROM customers WHERE id=$1`, [req.params.id]));
@@ -547,6 +573,7 @@ customersRouter.put("/agent/customers/:id/pin", requireAuth("agent"), async (req
   if (!existing) return sendJson(res, 404, { error: "Customer not found" });
   const pinHash = await hashPassword(String(pin));
   await query(`UPDATE customers SET pin_hash=$1 WHERE id=$2`, [pinHash, req.params.id]);
+  await afterCustomerPinChange(req.params.id);
   sendJson(res, 200, { message: "PIN saved", isSet: true });
 });
 
@@ -560,12 +587,14 @@ customersRouter.post("/agent/customers/:id/pin/generate", requireAuth("agent"), 
   const pin = generateRandomPin();
   const pinHash = await hashPassword(pin);
   await query(`UPDATE customers SET pin_hash=$1 WHERE id=$2`, [pinHash, req.params.id]);
-  sendJson(res, 200, { message: "New Recovery PIN generated", pin, isSet: true });
+  await afterCustomerPinChange(req.params.id);
+  sendJson(res, 200, { message: "New PIN generated", pin, isSet: true });
 });
 
 customersRouter.delete("/agent/customers/:id/pin", requireAuth("agent"), async (req, res) => {
   const existing = await queryOne(`SELECT id FROM customers WHERE id=$1`, [req.params.id]);
   if (!existing) return sendJson(res, 404, { error: "Customer not found" });
+  if (!(await customerHasPassword(req.params.id))) return sendJson(res, 409, { error: "This PIN is how the customer signs in, so it can't be removed. Set or generate a new PIN instead.", code: "pin_is_login" });
   await query(`UPDATE customers SET pin_hash=NULL WHERE id=$1`, [req.params.id]);
   sendJson(res, 200, { message: "PIN reset", isSet: false });
 });
@@ -591,6 +620,15 @@ customersRouter.get("/customer/profile", requireAuth("customer"), async (req, re
   const customer = await queryOne(`SELECT ${CUSTOMER_PROFILE_COLUMNS} FROM customers WHERE id=$1`, [req.auth!.sub]);
   if (!customer) return sendJson(res, 404, { error: "Customer not found" });
   sendJson(res, 200, customer);
+});
+
+// The language chosen in the Customer App ('so' / 'en'), so messages the
+// server sends (e.g. Ciyaaraha result notifications) match it.
+customersRouter.put("/customer/language", requireAuth("customer"), async (req, res) => {
+  const language = String(req.body?.language ?? "");
+  if (language !== "so" && language !== "en") return sendJson(res, 400, { error: "language must be 'so' or 'en'" });
+  await query(`UPDATE customers SET app_language=$1 WHERE id=$2`, [language, req.auth!.sub]);
+  sendJson(res, 200, { language });
 });
 
 customersRouter.put("/customer/profile", requireAuth("customer"), async (req, res) => {
@@ -847,7 +885,7 @@ customersRouter.delete("/customer/profile", requireAuth("customer"), async (req,
     // usable to mint new access tokens for an identity that no longer
     // exists -- revoke it the same instant the row is gone, not left to
     // expire naturally.
-    await query(`UPDATE refresh_tokens SET revoked=true WHERE subject_id=$1 AND subject_role='customer'`, [req.auth!.sub]);
+    await query(`UPDATE refresh_tokens SET revoked=true, rotated_at=NULL WHERE subject_id=$1 AND subject_role='customer'`, [req.auth!.sub]);
     sendJson(res, 200, { deleted: true });
   } catch (err: any) {
     // A blocked ON DELETE RESTRICT can surface as either 23503
@@ -905,6 +943,7 @@ customersRouter.put("/customer/pin", requireAuth("customer"), async (req, res) =
 // and the app stops prompting for a PIN on future logins, same as if they
 // had never created one.
 customersRouter.delete("/customer/pin", requireAuth("customer"), async (req, res) => {
+  if (!(await customerHasPassword(req.auth!.sub))) return sendJson(res, 409, { error: "You sign in with this PIN, so it can't be removed. You can change it instead.", code: "pin_is_login" });
   await query(`UPDATE customers SET pin_hash=NULL WHERE id=$1`, [req.auth!.sub]);
   sendJson(res, 200, { message: "PIN removed", isSet: false });
 });

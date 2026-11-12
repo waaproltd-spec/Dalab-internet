@@ -59,6 +59,12 @@ test("extracts eDahab/Somtel's own distinct 'Cusubi Waa' balance phrase", () => 
   assert.deepEqual(extractBalanceFromSms(body), { balance: 31.34 });
 });
 
+test("extracts eDahab's top-up purchase balance ('Hadhaagaagu Cusubi waa'), the wallet Dhameys Plus is paid from", () => {
+  const body =
+    "0.5 Dollar Ayaad u Dirtay Somtel End Used TopUp (629908877). Code:(094713).TXN ID: CO261014.1446.185359. Khidmadaha adeegga: 0. Hadhaagaagu Cusubi waa: 0.18 Dollar. Date: 14-10-2026 14:46 PM. [eDahab Service-Dollar] La soo dag App-ka DahabPlus https://onelink.to/dahabpluss";
+  assert.deepEqual(extractBalanceFromSms(body), { balance: 0.18 });
+});
+
 test("extracts eDahab's own OUTGOING-transfer 'Haraaga:' balance phrase, distinct from 'Cusubi Waa'", () => {
   const body =
     "21 Dollar ayad u warejisay Nur Abdulkadir Adan. No: 625859634.Tixrac: PP260827.2236.D28363 Haraaga: 0.34 Dollar Kharashyada Adeegga:0 Dollar Tariikh:27-08-2026[-eDahab-Service-]";

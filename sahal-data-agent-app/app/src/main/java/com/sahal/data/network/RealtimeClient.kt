@@ -71,9 +71,42 @@ class RealtimeClient(private val path: String, private val onOrderEvent: () -> U
                     onOrderEvent()
                 }
 
-                override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
+                override fun onFailure(
+                    eventSource: EventSource,
+                    t: Throwable?,
+                    response: Response?
+                ) {
+                    val failedToken = token
                     _state.value = ConnectionState.DISCONNECTED
-                    scheduleReconnect(scope)
+
+                    if (response?.code == 401) {
+                        // SSE uses its own OkHttp client, so Retrofit's
+                        // Authenticator cannot handle this 401 automatically.
+                        // Refresh the session first, then reopen SSE with the
+                        // new access token.
+                        scope.launch {
+                            _state.value = ConnectionState.CONNECTING
+
+                            val refreshed =
+                                ApiClient.refreshSession(failedToken)
+
+                            if (!isActive) return@launch
+
+                            if (refreshed) {
+                                retryDelayMs = 2_000L
+                                open(this)
+                            } else {
+                                // Refresh token is invalid/expired/revoked.
+                                // Stop instead of looping forever:
+                                // 401 -> reconnect -> 401 -> reconnect.
+                                _state.value = ConnectionState.DISCONNECTED
+                            }
+                        }
+                    } else {
+                        // Network/server failure: retain normal exponential
+                        // reconnect behavior.
+                        scheduleReconnect(scope)
+                    }
                 }
 
                 override fun onClosed(eventSource: EventSource) {

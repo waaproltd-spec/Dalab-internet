@@ -492,3 +492,68 @@ test("a payment SMS outside the 24h match window does not match a stale pending 
   });
   assert.equal(result.body.matchedOrderId, null);
 });
+
+// ==================== Agent App SMS recovery: the same SMS sent twice ====================
+// The Agent App now re-reads its SMS inbox for anything its live receiver
+// missed, and retries any upload whose reply never came back. The same
+// real payment SMS can therefore reach the server more than once: with the
+// identical timestamp (a retry after a lost acknowledgement) or a different
+// one (live receiver vs. inbox recovery). The server must pay the order once.
+
+test("SMS recovery: the same payment SMS uploaded again after a lost acknowledgement is answered as a duplicate, never re-matched", async () => {
+  const orderId = await insertOrder({ companyId: COMPANY_HORMUUD, packageId: pkgHormuud, amount: 0.55, senderPhone: "619991299" });
+  const sms = {
+    agentId: AGENT_ID,
+    sender: "192",
+    body: "[-EVCPLUS-] waxaad $0.55 ka heshay 0619991299, Tar: 14/10/26 13:04:52 haraagagu waa $58.805.",
+    parsedProvider: "Hormuud",
+    parsedAmount: 0.55,
+    parsedPhone: "0619991299",
+    simSlot: 1,
+    receivedAt: new Date(Date.now() + 1000).toISOString(),
+  };
+  const first = await ingestPaymentSms(sms);
+  assert.equal(first.body.matchedOrderId, orderId);
+  const retry = await ingestPaymentSms(sms);
+  assert.equal(retry.body.duplicate, true, "a retried upload of the same SMS is a duplicate");
+  const rows = await queryOne<{ n: number }>(`SELECT COUNT(*)::int AS n FROM payment_transactions WHERE order_id=$1 AND status <> 'duplicate_blocked'`, [orderId]);
+  assert.equal(rows?.n, 1, "exactly one payment for the order");
+  const blocked = await queryOne<{ n: number }>(`SELECT COUNT(*)::int AS n FROM payment_transactions WHERE order_id=$1 AND status='duplicate_blocked'`, [orderId]);
+  assert.ok((blocked?.n ?? 0) <= 1, "a blocked copy is only an audit record");
+});
+
+test("SMS recovery: the same payment SMS found by the live receiver and later by inbox recovery (different timestamps) pays the order only once", async () => {
+  const orderId = await insertOrder({ companyId: COMPANY_HORMUUD, packageId: pkgHormuud, amount: 0.65, senderPhone: "619991298" });
+  const base = {
+    agentId: AGENT_ID,
+    sender: "192",
+    body: "[-EVCPLUS-] waxaad $0.65 ka heshay 0619991298, Tar: 14/10/26 13:05:59 haraagagu waa $59.455.",
+    parsedProvider: "Hormuud",
+    parsedAmount: 0.65,
+    parsedPhone: "0619991298",
+    simSlot: 1,
+  };
+  // Live receiver stamps it at :59; recovery uses the inbox time, 2s later -> next minute.
+  const t0 = new Date();
+  t0.setUTCSeconds(59, 0);
+  if (t0.getTime() < Date.now()) t0.setUTCMinutes(t0.getUTCMinutes() + 1);
+  const live = await ingestPaymentSms({ ...base, receivedAt: t0.toISOString() });
+  assert.equal(live.body.matchedOrderId, orderId);
+  // Recovery reads the inbox's own timestamp, which can fall in the next minute.
+  const recovered = await ingestPaymentSms({ ...base, receivedAt: new Date(t0.getTime() + 2000).toISOString() });
+  assert.notEqual(recovered.body.duplicate, false, "the second copy must not be treated as a fresh payment");
+  const rows = await queryOne<{ n: number }>(`SELECT COUNT(*)::int AS n FROM payment_transactions WHERE order_id=$1 AND status <> 'duplicate_blocked'`, [orderId]);
+  assert.equal(rows?.n, 1, "exactly one payment for the order");
+
+  // After the order moved on, a third copy still can't pay anything.
+  const verifyRes = await fetch(`${baseUrl}/agent/orders/${orderId}/verify-payment`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ smsLogId: live.body.id }),
+  });
+  assert.equal(verifyRes.status, 200);
+  const late = await ingestPaymentSms({ ...base, receivedAt: new Date(t0.getTime() + 180_000).toISOString() });
+  assert.notEqual(late.body.matchedOrderId === orderId && late.body.duplicate === false, true, "a late copy never pays the order again");
+  const after = await queryOne<{ n: number }>(`SELECT COUNT(*)::int AS n FROM payment_transactions WHERE order_id=$1 AND status <> 'duplicate_blocked'`, [orderId]);
+  assert.equal(after?.n, 1);
+});

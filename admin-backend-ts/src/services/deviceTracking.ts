@@ -4,7 +4,7 @@
 // the list back (GET /customer/devices) and removing one (DELETE) live in
 // devices.routes.ts.
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { query, queryOne } from "../db/pool.js";
 import { notifyCustomer } from "./customerNotify.js";
 
@@ -15,6 +15,14 @@ export interface DeviceInfo {
   platform?: string;
   osVersion?: string;
   appVersion?: string;
+  /** SHA-256 of the phone's Android ID (see hashHardwareId); never the raw value. */
+  hardwareId?: string;
+}
+
+/** The raw Android ID never reaches the database -- only a hash, enough to
+ * tell "the same phone again" apart from a different one. */
+export function hashHardwareId(raw: string): string {
+  return createHash("sha256").update(`dalab-device:${raw}`).digest("hex");
 }
 
 /** The Customer App sends an optional `device` object on every login/
@@ -34,6 +42,7 @@ export function parseDeviceInfo(raw: unknown): DeviceInfo | null {
     platform: str("platform"),
     osVersion: str("osVersion"),
     appVersion: str("appVersion"),
+    hardwareId: str("hardwareId") ? hashHardwareId(str("hardwareId")!.slice(0, 200)) : undefined,
   };
 }
 
@@ -46,10 +55,29 @@ export function parseDeviceInfo(raw: unknown): DeviceInfo | null {
 export async function registerCustomerDeviceLogin(customerId: string, info: DeviceInfo | null): Promise<void> {
   if (!info) return;
   try {
-    const existing = await queryOne<{ id: string }>(
+    let existing = await queryOne<{ id: string }>(
       `SELECT id FROM customer_devices WHERE customer_id=$1 AND device_id=$2`,
       [customerId, info.deviceId]
     );
+    // A new install (reinstall / cleared data) on a phone already listed:
+    // keep its one entry, now under the new install's device_id, and move
+    // that phone's sessions along so "Remove device" still signs it out.
+    if (!existing && info.hardwareId) {
+      const samePhone = await queryOne<{ id: string; device_id: string }>(
+        `SELECT id, device_id FROM customer_devices
+          WHERE customer_id=$1 AND hardware_id=$2 AND revoked_at IS NULL
+          ORDER BY last_active_at DESC LIMIT 1`,
+        [customerId, info.hardwareId]
+      );
+      if (samePhone) {
+        await query(`UPDATE customer_devices SET device_id=$1 WHERE id=$2`, [info.deviceId, samePhone.id]);
+        await query(
+          `UPDATE refresh_tokens SET device_id=$1 WHERE subject_id=$2 AND subject_role='customer' AND device_id=$3`,
+          [info.deviceId, customerId, samePhone.device_id]
+        );
+        existing = { id: samePhone.id };
+      }
+    }
     const hadAnyOtherDevice = existing
       ? false
       : Boolean(await queryOne(`SELECT id FROM customer_devices WHERE customer_id=$1 LIMIT 1`, [customerId]));
@@ -59,16 +87,17 @@ export async function registerCustomerDeviceLogin(customerId: string, info: Devi
       deviceRowId = existing.id;
       await query(
         `UPDATE customer_devices
-         SET last_active_at=now(), revoked_at=NULL, device_name=$1, device_type=$2, platform=$3, os_version=$4, app_version=$5
+         SET last_active_at=now(), revoked_at=NULL, device_name=$1, device_type=$2, platform=$3, os_version=$4, app_version=$5,
+             hardware_id=COALESCE($7, hardware_id)
          WHERE id=$6`,
-        [info.deviceName ?? "Unknown Device", info.deviceType ?? "unknown", info.platform ?? "unknown", info.osVersion ?? null, info.appVersion ?? null, deviceRowId]
+        [info.deviceName ?? "Unknown Device", info.deviceType ?? "unknown", info.platform ?? "unknown", info.osVersion ?? null, info.appVersion ?? null, deviceRowId, info.hardwareId ?? null]
       );
     } else {
       deviceRowId = randomUUID();
       await query(
-        `INSERT INTO customer_devices (id, customer_id, device_id, device_name, device_type, platform, os_version, app_version)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [deviceRowId, customerId, info.deviceId, info.deviceName ?? "Unknown Device", info.deviceType ?? "unknown", info.platform ?? "unknown", info.osVersion ?? null, info.appVersion ?? null]
+        `INSERT INTO customer_devices (id, customer_id, device_id, device_name, device_type, platform, os_version, app_version, hardware_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [deviceRowId, customerId, info.deviceId, info.deviceName ?? "Unknown Device", info.deviceType ?? "unknown", info.platform ?? "unknown", info.osVersion ?? null, info.appVersion ?? null, info.hardwareId ?? null]
       );
     }
     await query(`INSERT INTO customer_device_activity (id, device_id, type) VALUES ($1,$2,'login')`, [randomUUID(), deviceRowId]);

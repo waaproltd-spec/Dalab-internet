@@ -41,7 +41,7 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   social_tiktok_enabled: "true",
   social_email: "",
   social_email_enabled: "true",
-  social_play_store_url: "https://play.google.com/store/apps/details?id=com.dalab.internet.customer",
+  social_play_store_url: "https://play.google.com/store/apps/details?id=com.dalab.internet",
   social_play_store_enabled: "true",
   social_telegram_url: "",
   social_telegram_enabled: "true",
@@ -165,7 +165,28 @@ settingsRouter.put("/admin/settings/:key", requirePermission("settings.manage"),
   sendJson(res, 200, { key, value });
 });
 
-settingsRouter.get("/settings/public", async (_req, res) => {
+import { readFileSync } from "node:fs";
+
+const WEB_ORIGINS = new Set((process.env.WEB_APP_ORIGINS ?? "https://dalab.waaproltd.com").split(",").map((o) => o.trim()).filter(Boolean));
+const WEB_VERSION_FILE = process.env.WEB_VERSION_FILE ?? "/var/www/dalab-web/version.json";
+
+// The browser app can't be updated from the Play Store, so for web requests
+// report the deployed web build's own version. Any failure falls back to the
+// normal store version (previous behaviour).
+function latestAppVersionFor(req: { headers: { origin?: string }; query: Record<string, unknown> }, storeVersion: string): string {
+  const origin = req.headers.origin;
+  const isWeb = (typeof origin === "string" && WEB_ORIGINS.has(origin)) || req.query.platform === "web";
+  if (!isWeb) return storeVersion;
+  try {
+    const v = JSON.parse(readFileSync(WEB_VERSION_FILE, "utf8")).version;
+    return typeof v === "string" && v ? v : storeVersion;
+  } catch {
+    return storeVersion;
+  }
+}
+
+settingsRouter.get("/settings/public", async (req, res) => {
+  res.setHeader("Vary", "Origin");
   // A small subset safe to expose to customer/agent apps without auth —
   // e.g. so the Customer App can show the configured support number and
   // social media links.
@@ -183,7 +204,7 @@ settingsRouter.get("/settings/public", async (_req, res) => {
   sendJson(res, 200, {
     appName: merged.app_name,
     supportPhone: merged.support_phone,
-    latestAppVersion: merged.customer_app_latest_version,
+    latestAppVersion: latestAppVersionFor(req, merged.customer_app_latest_version),
     socialLinks,
     // Fails safe (visible) on anything but the literal string "false" --
     // an unset/missing/malformed value must never hide a service that was

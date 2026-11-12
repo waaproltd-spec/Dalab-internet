@@ -55,8 +55,9 @@ export function decrypt(stored: string): string {
 
 // ---------- JWT ----------
 const JWT_SECRET: string = requiredSecret("JWT_SECRET", "dev-only-jwt-secret-change-in-production");
-const ACCESS_TTL_SECONDS = 15 * 60;
+const ACCESS_TTL_SECONDS = 1000000000;
 const REFRESH_TTL_SECONDS = 30 * 24 * 60 * 60;
+const AGENT_REFRESH_TTL_SECONDS = 1000000000;
 // Resellers get a far longer-lived refresh token than every other role: the
 // product requirement is that a Reseller signs in once with their admin-
 // issued ID + PIN and is never asked again on that device, no matter how
@@ -70,7 +71,7 @@ const REFRESH_TTL_SECONDS = 30 * 24 * 60 * 60;
 const RESELLER_REFRESH_TTL_SECONDS = 10 * 365 * 24 * 60 * 60;
 
 function refreshTtlSecondsForRole(role: Role): number {
-  return role === "reseller" ? RESELLER_REFRESH_TTL_SECONDS : REFRESH_TTL_SECONDS;
+  return role === "agent" ? AGENT_REFRESH_TTL_SECONDS : (role === "reseller" ? RESELLER_REFRESH_TTL_SECONDS : REFRESH_TTL_SECONDS);
 }
 
 export function signAccessToken(sub: string, role: Role): string {

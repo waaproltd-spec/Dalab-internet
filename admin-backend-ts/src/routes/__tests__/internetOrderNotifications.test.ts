@@ -121,7 +121,9 @@ function reportDialAttempt(attemptId: string, status: string, isFinalAttempt: bo
   return fetch(`${baseUrl}/agent/dial-attempts/${attemptId}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` },
-    body: JSON.stringify({ status, isFinalAttempt }),
+    // A real carrier failure carries its text; a bare "failed" is recorded as
+    // result-unknown (effectiveDialStatus in ussd.routes.ts).
+    body: JSON.stringify({ status, isFinalAttempt, responseMessage: status === "failed" ? "USSD failure code: -1" : null }),
   });
 }
 

@@ -11,10 +11,9 @@ export function registerCustomerRoutes(app, db) {
   });
 
   app.put("/admin/customers/:id/block", requireAuth("super_admin"), async (ctx) => {
-    const customer = db.prepare(`SELECT * FROM customers WHERE id = ?`).get(ctx.params.id);
-    if (!customer) return ctx.json(404, { error: "Customer not found" });
-    const nextStatus = customer.status === "active" ? "blocked" : "active";
-    db.prepare(`UPDATE customers SET status = ? WHERE id = ?`).run(nextStatus, ctx.params.id);
+    const existing = db.prepare(`SELECT id FROM customers WHERE id = ?`).get(ctx.params.id);
+    if (!existing) return ctx.json(404, { error: "Customer not found" });
+    db.prepare(`UPDATE customers SET status = CASE WHEN status = 'active' THEN 'blocked' ELSE 'active' END WHERE id = ?`).run(ctx.params.id);
     ctx.json(200, db.prepare(`SELECT * FROM customers WHERE id = ?`).get(ctx.params.id));
   });
 }

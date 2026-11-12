@@ -4,6 +4,7 @@ import { query, queryOne } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
+import { isValidPackageOption } from "../utils/interactiveUssd.js";
 import { recordActivity } from "../utils/activityLog.js";
 import { parseDataUri } from "../utils/dataUri.js";
 import { matchTemplateByName, selfHealStuckOrders } from "./ussd.routes.js";
@@ -23,8 +24,8 @@ const COMPANY_COLUMNS = `id, name, group_number, color_hex, logo_url, status, ga
 // pattern as COMPANY_COLUMNS/has_logo just above. One image (icon) per
 // package, not a gallery — mirrors companies.logo_data/logo_mime_type
 // exactly rather than shop_product_images' multi-image shape.
-const PACKAGE_COLUMNS = `id, company_id, category_id, name, old_price, price, mb, minutes, sms, validity, active, created_at, code, provider_amount, ussd_template_id, somlink_bundle_id, (image_data IS NOT NULL) AS has_image`;
-const PACKAGE_COLUMNS_P = `p.id, p.company_id, p.category_id, p.name, p.old_price, p.price, p.mb, p.minutes, p.sms, p.validity, p.active, p.created_at, p.code, p.provider_amount, p.ussd_template_id, p.somlink_bundle_id, (p.image_data IS NOT NULL) AS has_image`;
+const PACKAGE_COLUMNS = `id, company_id, category_id, name, old_price, price, mb, minutes, sms, validity, active, created_at, code, provider_amount, ussd_template_id, somlink_bundle_id, send_count, sort_order, visible_customer_app, visible_agent_app, orders_enabled, description, updated_at, (image_data IS NOT NULL) AS has_image`;
+const PACKAGE_COLUMNS_P = `p.id, p.company_id, p.category_id, p.name, p.old_price, p.price, p.mb, p.minutes, p.sms, p.validity, p.active, p.created_at, p.code, p.provider_amount, p.ussd_template_id, p.somlink_bundle_id, p.send_count, p.sort_order, p.visible_customer_app, p.visible_agent_app, p.orders_enabled, p.description, p.updated_at, (p.image_data IS NOT NULL) AS has_image`;
 
 // Also called by the Agent App (NewSaleScreen/PackagesScreen) for its own
 // unrelated "create a sale" flow, so the default (no ?audience=) stays
@@ -73,14 +74,25 @@ companiesRouter.get("/companies/:id/packages", async (req, res) => {
   // so a package whose category_id doesn't match any current category slug
   // still returns, with category_name simply null -- never dropped from
   // the list over this.
+  // ?audience=customer / ?audience=agent additionally hide packages the
+  // admin hid from that app (no audience: unfiltered, as before, so an
+  // older app keeps seeing what it always did -- ordering a hidden or
+  // unavailable package is refused server-side either way, see
+  // utils/packageAvailability.ts). Packages of a disabled service category
+  // are never listed. ordersEnabled=false packages are still listed (shown
+  // as temporarily unavailable).
+  const audience = req.query.audience;
+  const visibilityFilter =
+    audience === "customer" ? "AND p.visible_customer_app=true" : audience === "agent" ? "AND p.visible_agent_app=true" : "";
   const rows = await query(
     `SELECT p.id, p.company_id, p.category_id, p.name, p.old_price, p.price, p.mb, p.minutes, p.sms, p.validity, p.active, p.code, p.created_at,
+            p.description, p.orders_enabled, p.sort_order,
             (p.image_data IS NOT NULL) AS has_image,
             sc.name AS category_name
      FROM packages p
      LEFT JOIN service_categories sc ON sc.company_id = p.company_id AND sc.slug = p.category_id
-     WHERE p.company_id=$1 AND p.active=true
-     ORDER BY p.category_id, p.price`,
+     WHERE p.company_id=$1 AND p.active=true AND (sc.status IS NULL OR sc.status='enabled') ${visibilityFilter}
+     ORDER BY p.category_id, p.sort_order, p.price`,
     [req.params.id]
   );
   sendJson(res, 200, rows);
@@ -288,8 +300,12 @@ companiesRouter.put("/admin/companies/:id/auto-process", requirePermission("devi
 // the Customer/Agent apps and every dashboard section right away.
 companiesRouter.delete("/admin/companies/:id", requirePermission("companies.manage"), async (req, res) => {
   try {
-    const result = await query(`DELETE FROM companies WHERE id=$1 AND deleted_at IS NULL RETURNING id`, [req.params.id]);
+    const result = await query(`DELETE FROM companies WHERE id=$1 AND deleted_at IS NULL RETURNING id, name`, [req.params.id]);
     if (result.length === 0) return sendJson(res, 404, { error: "Company not found" });
+    await recordActivity({
+      adminId: req.auth!.sub, action: "delete_company", entityType: "company", entityId: req.params.id,
+      oldValue: { name: result[0].name }, newValue: { deleted: true },
+    });
     broadcast({ type: "catalog.updated" });
     return sendJson(res, 200, { deleted: true });
   } catch (err: any) {
@@ -302,12 +318,23 @@ companiesRouter.delete("/admin/companies/:id", requirePermission("companies.mana
     // cause of a live 500).
     if (err?.code !== "23503" && err?.code !== "23001") throw err;
   }
+  // Kept for the activity log, so a mistaken delete can be put back
+  // exactly as it was (status and app visibility are overwritten below).
+  const before = await queryOne<{ name: string; status: string; visible_customer_app: boolean; visible_agent_app: boolean }>(
+    `SELECT name, status, visible_customer_app, visible_agent_app FROM companies WHERE id=$1 AND deleted_at IS NULL`,
+    [req.params.id]
+  );
   const result = await query(
     `UPDATE companies SET deleted_at=now(), status='offline', visible_customer_app=false, visible_agent_app=false, updated_at=now()
      WHERE id=$1 AND deleted_at IS NULL RETURNING id`,
     [req.params.id]
   );
   if (result.length === 0) return sendJson(res, 404, { error: "Company not found" });
+  await recordActivity({
+    adminId: req.auth!.sub, action: "delete_company", entityType: "company", entityId: req.params.id,
+    oldValue: before ? { name: before.name, status: before.status, visibleCustomerApp: before.visible_customer_app, visibleAgentApp: before.visible_agent_app } : null,
+    newValue: { deleted: true, softDeleted: true },
+  });
   broadcast({ type: "catalog.updated" });
   sendJson(res, 200, { deleted: true, softDeleted: true });
 });
@@ -416,11 +443,86 @@ function numOrDefault(value: unknown, fallback: number | null): number | null {
   return value === "" || value == null ? fallback : (value as number);
 }
 
+// MB / Minutes / SMS are whole-number columns. A label typed after the
+// number ("8 Daqiiq") keeps the number; text with no number is a 400 with
+// a clear message, never a database error (500).
+const COUNT_FIELD_ERROR = "MB, Minutes and SMS must be whole numbers (for example 8)";
+function readCount(value: unknown): number | null {
+  if (value === "" || value == null) return 0;
+  if (typeof value === "number") return Number.isInteger(value) && value >= 0 ? value : null;
+  const m = /^\s*(\d+)(?:\s*\D*)?$/.exec(String(value));
+  return m ? Number(m[1]) : null;
+}
+
+// Extra Packages (migration 114): how many times one paid order delivers
+// the package. Optional -- absent means 1, today's single delivery.
+const MAX_SEND_COUNT = 50;
+function readSendCount(value: unknown): number | null | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1 || n > MAX_SEND_COUNT) return null;
+  return n;
+}
+const SEND_COUNT_ERROR = `sendCount must be a whole number from 1 to ${MAX_SEND_COUNT}`;
+
+// Migration 118 package settings. Each is optional on create (defaults keep
+// today's behavior) and absent-means-unchanged on edit.
+function readBool(value: unknown): boolean | null | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "boolean") return value;
+  return null;
+}
+function readSortOrder(value: unknown): number | null | undefined {
+  if (value === undefined || value === "" || value === null) return undefined;
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 0 && n <= 9999 ? n : null;
+}
+const PRICE_ERROR = "price must be a number greater than 0 and at most 10000";
+function isValidPrice(value: unknown): boolean {
+  const n = Number(value);
+  return value !== "" && value !== null && Number.isFinite(n) && n > 0 && n <= 10000;
+}
+
+/** A package linked to a menu (interactive) template that picks the
+ * package by option needs a valid, unique option among that template's
+ * active packages -- two packages on the same option would buy the same
+ * Somtel package. Returns an error message or undefined. */
+async function packageOptionError(templateId: string | null, code: unknown, packageId: string | null, active: boolean): Promise<string | undefined> {
+  if (!templateId) return undefined;
+  const template = await queryOne<{ dial_mode: string; reply_steps: any[] }>(
+    `SELECT dial_mode, reply_steps FROM ussd_templates WHERE id=$1`,
+    [templateId]
+  );
+  if (template?.dial_mode !== "interactive") return undefined;
+  if (!(template.reply_steps ?? []).some((s: any) => String(s?.reply ?? "").trim() === "{packageCode}")) return undefined;
+  if (!isValidPackageOption(code)) return "Menu option must be the package's number on the provider's menu (1 to 99).";
+  if (!active) return undefined;
+  const clash = await queryOne<{ name: string }>(
+    `SELECT name FROM packages WHERE ussd_template_id=$1 AND active=true AND TRIM(code)=$2 AND ($3::uuid IS NULL OR id<>$3)`,
+    [templateId, String(code).trim(), packageId]
+  );
+  return clash ? `Menu option ${String(code).trim()} is already used by "${clash.name}" in this USSD service.` : undefined;
+}
+
 packagesRouter.post("/admin/packages", requirePermission("packages.manage"), async (req, res) => {
   const { companyId, categoryId, name, oldPrice, price, providerAmount, mb, minutes, sms, validity, code, ussdTemplateId, somlinkBundleId } = req.body;
   if (!companyId || !categoryId || !name || price == null) {
     return sendJson(res, 400, { error: "companyId, categoryId, name, price are required" });
   }
+  if (typeof name !== "string" || !name.trim() || name.length > 120) return sendJson(res, 400, { error: "name must be 1 to 120 characters" });
+  if (!isValidPrice(price)) return sendJson(res, 400, { error: PRICE_ERROR });
+  const sortOrder = readSortOrder(req.body.sortOrder);
+  const visibleCustomerApp = readBool(req.body.visibleCustomerApp);
+  const visibleAgentApp = readBool(req.body.visibleAgentApp);
+  const ordersEnabled = readBool(req.body.ordersEnabled);
+  const createActive = readBool(req.body.active);
+  if (sortOrder === null) return sendJson(res, 400, { error: "sortOrder must be a whole number from 0 to 9999" });
+  if (visibleCustomerApp === null || visibleAgentApp === null || ordersEnabled === null || createActive === null) {
+    return sendJson(res, 400, { error: "visibleCustomerApp, visibleAgentApp, ordersEnabled and active must be true or false" });
+  }
+  const description = req.body.description == null || req.body.description === "" ? null : String(req.body.description).slice(0, 300);
+  const sendCount = readSendCount(req.body.sendCount);
+  if (sendCount === null) return sendJson(res, 400, { error: SEND_COUNT_ERROR });
   // categoryId is the category's slug, not its id — packages.category_id is
   // free text with no DB-level FK (a category rename must never risk
   // breaking existing packages), so this is the one place that actually
@@ -432,6 +534,8 @@ packagesRouter.post("/admin/packages", requirePermission("packages.manage"), asy
   }
   const templateError = await validateUssdTemplateId(companyId, ussdTemplateId);
   if (templateError) return sendJson(res, 400, { error: templateError });
+  const optionError = await packageOptionError(ussdTemplateId || null, code, null, createActive ?? true);
+  if (optionError) return sendJson(res, 400, { error: optionError });
   const id = randomUUID();
   // "" (an intentionally-cleared/never-filled-in form field) must become
   // NULL, not be sent to Postgres as an empty string literal for a NUMERIC
@@ -439,10 +543,14 @@ packagesRouter.post("/admin/packages", requirePermission("packages.manage"), asy
   const providerAmountValue = providerAmount === "" || providerAmount == null ? null : providerAmount;
   const ussdTemplateIdValue = ussdTemplateId || null;
   const somlinkBundleIdValue = numOrDefault(somlinkBundleId, null);
+  const [mbValue, minutesValue, smsValue] = [readCount(mb), readCount(minutes), readCount(sms)];
+  if (mbValue === null || minutesValue === null || smsValue === null) return sendJson(res, 400, { error: COUNT_FIELD_ERROR });
   await query(
-    `INSERT INTO packages (id, company_id, category_id, name, old_price, price, provider_amount, mb, minutes, sms, validity, code, ussd_template_id, somlink_bundle_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-    [id, companyId, categoryId, name, numOrDefault(oldPrice, price), price, providerAmountValue, numOrDefault(mb, 0), numOrDefault(minutes, 0), numOrDefault(sms, 0), validity ?? "", code ?? null, ussdTemplateIdValue, somlinkBundleIdValue]
+    `INSERT INTO packages (id, company_id, category_id, name, old_price, price, provider_amount, mb, minutes, sms, validity, code, ussd_template_id, somlink_bundle_id, send_count,
+                           sort_order, visible_customer_app, visible_agent_app, orders_enabled, description, active)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+    [id, companyId, categoryId, name.trim(), numOrDefault(oldPrice, price), price, providerAmountValue, mbValue, minutesValue, smsValue, validity ?? "", code == null || code === "" ? null : String(code).trim(), ussdTemplateIdValue, somlinkBundleIdValue, sendCount ?? 1,
+     sortOrder ?? 0, visibleCustomerApp ?? true, visibleAgentApp ?? true, ordersEnabled ?? true, description, createActive ?? true]
   );
   const created = await queryOne(`SELECT ${PACKAGE_COLUMNS} FROM packages WHERE id=$1`, [id]);
   await recordActivity({
@@ -472,10 +580,27 @@ packagesRouter.put("/admin/packages/:id", requirePermission("packages.manage"), 
   const name = req.body.name !== undefined ? req.body.name : existing.name;
   const categoryId = req.body.categoryId !== undefined ? req.body.categoryId : existing.category_id;
   const price = req.body.price !== undefined ? req.body.price : existing.price;
+  if (typeof name !== "string" || !name.trim() || name.length > 120) return sendJson(res, 400, { error: "name must be 1 to 120 characters" });
+  if (req.body.price !== undefined && !isValidPrice(price)) return sendJson(res, 400, { error: PRICE_ERROR });
+  const reqSortOrder = readSortOrder(req.body.sortOrder);
+  const reqVisibleCustomer = readBool(req.body.visibleCustomerApp);
+  const reqVisibleAgent = readBool(req.body.visibleAgentApp);
+  const reqOrdersEnabled = readBool(req.body.ordersEnabled);
+  if (reqSortOrder === null) return sendJson(res, 400, { error: "sortOrder must be a whole number from 0 to 9999" });
+  if (reqVisibleCustomer === null || reqVisibleAgent === null || reqOrdersEnabled === null) {
+    return sendJson(res, 400, { error: "visibleCustomerApp, visibleAgentApp and ordersEnabled must be true or false" });
+  }
+  const sortOrder = req.body.sortOrder === undefined ? existing.sort_order : reqSortOrder ?? 0;
+  const visibleCustomerApp = reqVisibleCustomer ?? existing.visible_customer_app;
+  const visibleAgentApp = reqVisibleAgent ?? existing.visible_agent_app;
+  const ordersEnabled = reqOrdersEnabled ?? existing.orders_enabled;
+  const description =
+    req.body.description === undefined ? existing.description : req.body.description == null || req.body.description === "" ? null : String(req.body.description).slice(0, 300);
   const oldPrice = numOrDefault(req.body.oldPrice !== undefined ? req.body.oldPrice : existing.old_price, price);
-  const mb = numOrDefault(req.body.mb !== undefined ? req.body.mb : existing.mb, 0);
-  const minutes = numOrDefault(req.body.minutes !== undefined ? req.body.minutes : existing.minutes, 0);
-  const sms = numOrDefault(req.body.sms !== undefined ? req.body.sms : existing.sms, 0);
+  const mb = readCount(req.body.mb !== undefined ? req.body.mb : existing.mb);
+  const minutes = readCount(req.body.minutes !== undefined ? req.body.minutes : existing.minutes);
+  const sms = readCount(req.body.sms !== undefined ? req.body.sms : existing.sms);
+  if (mb === null || minutes === null || sms === null) return sendJson(res, 400, { error: COUNT_FIELD_ERROR });
   const validity = req.body.validity !== undefined ? req.body.validity : existing.validity;
   const active = req.body.active !== undefined ? req.body.active : existing.active;
   const code = req.body.code !== undefined ? req.body.code : existing.code;
@@ -484,6 +609,10 @@ packagesRouter.put("/admin/packages/:id", requirePermission("packages.manage"), 
   const ussdTemplateId = req.body.ussdTemplateId !== undefined ? (req.body.ussdTemplateId || null) : existing.ussd_template_id;
   const rawSomlinkBundleId = req.body.somlinkBundleId !== undefined ? req.body.somlinkBundleId : existing.somlink_bundle_id;
   const somlinkBundleId = numOrDefault(rawSomlinkBundleId, null);
+  const requestedSendCount = readSendCount(req.body.sendCount);
+  if (requestedSendCount === null) return sendJson(res, 400, { error: SEND_COUNT_ERROR });
+  // Absent keeps the current value; "" resets to a single delivery.
+  const sendCount = req.body.sendCount === undefined ? existing.send_count : requestedSendCount ?? 1;
   if (
     req.body.categoryId !== undefined &&
     !(await queryOne(`SELECT id FROM service_categories WHERE company_id=$1 AND slug=$2`, [existing.company_id, categoryId]))
@@ -494,9 +623,13 @@ packagesRouter.put("/admin/packages/:id", requirePermission("packages.manage"), 
     const templateError = await validateUssdTemplateId(existing.company_id, ussdTemplateId);
     if (templateError) return sendJson(res, 400, { error: templateError });
   }
+  const optionError = await packageOptionError(ussdTemplateId, code, req.params.id, Boolean(active));
+  if (optionError) return sendJson(res, 400, { error: optionError });
   await query(
-    `UPDATE packages SET name=$1, category_id=$2, old_price=$3, price=$4, provider_amount=$5, mb=$6, minutes=$7, sms=$8, validity=$9, active=$10, code=$11, ussd_template_id=$12, somlink_bundle_id=$13 WHERE id=$14`,
-    [name, categoryId, oldPrice, price, providerAmount, mb, minutes, sms, validity, Boolean(active), code ?? null, ussdTemplateId, somlinkBundleId, req.params.id]
+    `UPDATE packages SET name=$1, category_id=$2, old_price=$3, price=$4, provider_amount=$5, mb=$6, minutes=$7, sms=$8, validity=$9, active=$10, code=$11, ussd_template_id=$12, somlink_bundle_id=$13, send_count=$14,
+                         sort_order=$15, visible_customer_app=$16, visible_agent_app=$17, orders_enabled=$18, description=$19 WHERE id=$20`,
+    [name.trim(), categoryId, oldPrice, price, providerAmount, mb, minutes, sms, validity, Boolean(active), code == null || code === "" ? null : String(code).trim(), ussdTemplateId, somlinkBundleId, sendCount,
+     sortOrder, visibleCustomerApp, visibleAgentApp, ordersEnabled, description, req.params.id]
   );
   const updated = await queryOne(`SELECT ${PACKAGE_COLUMNS} FROM packages WHERE id=$1`, [req.params.id]);
   await recordActivity({
@@ -565,6 +698,41 @@ packagesRouter.delete("/admin/packages/:id", requirePermission("packages.manage"
   });
   broadcast({ type: "catalog.updated" });
   sendJson(res, 200, { deactivated: true });
+});
+
+// Permanent delete -- only for a package that was never ordered, so no
+// order, receipt or report ever loses its package. Anything already
+// ordered must be deactivated instead (DELETE /admin/packages/:id).
+packagesRouter.delete("/admin/packages/:id/permanent", requirePermission("packages.manage"), async (req, res) => {
+  const existing = await queryOne(`SELECT ${PACKAGE_COLUMNS} FROM packages WHERE id=$1`, [req.params.id]);
+  if (!existing) return sendJson(res, 404, { error: "Package not found" });
+  const referenced = await queryOne(
+    `SELECT 1 FROM orders WHERE package_id=$1
+     UNION ALL SELECT 1 FROM customers WHERE offline_package_id=$1 LIMIT 1`,
+    [req.params.id]
+  );
+  if (referenced) {
+    return sendJson(res, 409, { error: "This package has orders (or a customer's saved Offline package) — it can't be deleted. Deactivate it instead to keep its history." });
+  }
+  try {
+    await query(`DELETE FROM packages WHERE id=$1`, [req.params.id]);
+  } catch (e: any) {
+    // Any other table still pointing at it (commissions, ...) -- keep it.
+    if (e?.code === "23503") {
+      return sendJson(res, 409, { error: "This package is still referenced by other records — deactivate it instead to keep its history." });
+    }
+    throw e;
+  }
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "delete_package",
+    entityType: "package",
+    entityId: req.params.id,
+    oldValue: existing,
+    newValue: null,
+  });
+  broadcast({ type: "catalog.updated" });
+  sendJson(res, 200, { deleted: true });
 });
 
 // Proactive: every active package that generateUssdForOrder cannot

@@ -38,6 +38,10 @@ import { signAccessToken, encrypt } from "../../auth/crypto.js";
 import { ordersRouter } from "../orders.routes.js";
 import { ussdRouter } from "../ussd.routes.js";
 
+// These tests are about other behaviour, not SIM balances: an unknown balance
+// only warns here (simBalanceCheck.test.ts covers the blocking itself).
+process.env.SIM_BALANCE_UNVERIFIED_POLICY ??= "warn";
+
 const COMPANY_ID = "test-tsot-co";
 const CATEGORY_ID = randomUUID();
 const CUSTOMER_ID = randomUUID();

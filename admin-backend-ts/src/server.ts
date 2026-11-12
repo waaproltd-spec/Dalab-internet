@@ -3,6 +3,8 @@
 // error-handling middleware below via next(err) instead of leaving the
 // request hanging forever with no response (Express 4 doesn't do this on its
 // own; Express 5 does, but that's a larger upgrade than this fix warrants).
+import { hubRouter, cleanupHubTokens } from "./routes/hub.routes.js";
+import { systemSuspensionMiddleware } from "./auth/systemStatus.js";
 import "express-async-errors";
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
@@ -36,6 +38,7 @@ import { referralsRouter } from "./routes/referrals.routes.js";
 import { financeRouter } from "./routes/finance.routes.js";
 import { exchangeRouter } from "./routes/exchange.routes.js";
 import { smsSenderIdsRouter } from "./routes/smsSenderIds.routes.js";
+import { agentAppReleasesRouter } from "./routes/agentAppReleases.routes.js";
 import { somlinkRouter } from "./routes/somlink.routes.js";
 import { resellersRouter } from "./routes/resellers.routes.js";
 import { resellerOrdersRouter } from "./routes/resellerOrders.routes.js";
@@ -48,10 +51,14 @@ import { vipNumbersRouter } from "./routes/vipNumbers.routes.js";
 import { vipNumberPackagesRouter } from "./routes/vipNumberPackages.routes.js";
 import { nalaSocoRouter } from "./routes/nalaSoco.routes.js";
 import { devicesRouter } from "./routes/devices.routes.js";
+import { footballRouter } from "./routes/football.routes.js";
 import { pool, queryOne } from "./db/pool.js";
 import { seedAll } from "./db/seed.js";
 import { sendJson } from "./utils/camelCase.js";
-import { customerSuspensionMiddleware } from "./auth/middleware.js";
+import { customerSuspensionMiddleware, staffStatusMiddleware } from "./auth/middleware.js";
+import { deviceActivationRouter, agentDeviceActivationMiddleware } from "./routes/deviceActivation.routes.js";
+import { smsFormatsRouter } from "./routes/smsFormats.routes.js";
+import { interactiveServicesRouter } from "./routes/interactiveServices.routes.js";
 
 // Express 4 route handlers here are plain `async (req, res) => {...}` with no
 // wrapper — a promise rejection inside one (e.g. an uncaught DB error) never
@@ -264,12 +271,21 @@ app.use(async (req: Request, res: Response, next: NextFunction) => {
 });
 
 app.use(customerSuspensionMiddleware);
+// Device Activation: every agent API call must come from an approved app install.
+app.use(agentDeviceActivationMiddleware);
 
+// System Control (Admin Hub): a suspended system refuses every request but the hub's own.
+app.use(systemSuspensionMiddleware);
+app.use(staffStatusMiddleware);
 app.use(authRouter);
+app.use(hubRouter);
+app.use(deviceActivationRouter);
+app.use(smsFormatsRouter);
 app.use(usersRouter);
 app.use(companiesRouter);
 app.use(companyPaymentMethodsRouter);
 app.use(packagesRouter);
+app.use(interactiveServicesRouter);
 app.use(categoriesRouter);
 app.use(ordersRouter);
 app.use(customersRouter);
@@ -295,6 +311,7 @@ app.use(referralsRouter);
 app.use(financeRouter);
 app.use(exchangeRouter);
 app.use(smsSenderIdsRouter);
+app.use(agentAppReleasesRouter);
 app.use(somlinkRouter);
 app.use(resellersRouter);
 app.use(resellerOrdersRouter);
@@ -307,6 +324,7 @@ app.use(vipNumbersRouter);
 app.use(vipNumberPackagesRouter);
 app.use(nalaSocoRouter);
 app.use(devicesRouter);
+app.use(footballRouter);
 app.use(whatsappAutoReplyRouter);
 
 app.use((_req: Request, res: Response) => {
@@ -332,6 +350,9 @@ async function start() {
     // eslint-disable-next-line no-console
     console.error("Seeding failed (has `npm run migrate` been run?):", err);
   }
+  setInterval(() => {
+    cleanupHubTokens().catch(() => undefined);
+  }, 10 * 60 * 1000);
   app.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(`DALAB Admin API listening on port ${PORT}`);

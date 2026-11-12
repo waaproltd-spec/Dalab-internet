@@ -18,7 +18,7 @@ object ApiClient {
     // Android emulator, use "http://10.0.2.2:4000/" (the emulator's alias
     // for the host's localhost); from a physical device on the same LAN,
     // use the host machine's LAN IP instead.
-    const val BASE_URL = "https://sahal-data-2.onrender.com/"
+    const val BASE_URL = "https://dalab-api.waaproltd.com/"
 
     private val authInterceptor = Interceptor { chain ->
         val token = SessionManager.accessToken()
@@ -53,32 +53,30 @@ object ApiClient {
     // logout for no actual reason (the session was never really dead).
     private val refreshLock = Any()
 
-    // Real 401 handling: on a 401, attempt exactly one token refresh (never an
-    // infinite loop — responseCount guards that), retry the original request
-    // with the new access token, and only fall back to forcing re-login if the
-    // refresh itself fails (refresh token expired/revoked).
-    private val refreshAuthenticator = Authenticator { _, response ->
-        if (responseCount(response) >= 2) {
-            SessionManager.clear()
-            AgentEventBus.emitSessionExpired()
-            return@Authenticator null
-        }
+    /**
+     * Shared token refresh used by normal API requests and the SSE client.
+     *
+     * If another request already refreshed the session while this request
+     * was waiting for the lock, reuse the newer access token instead of
+     * consuming the single-use refresh token a second time.
+     */
+    fun refreshSession(failedAccessToken: String?): Boolean {
         synchronized(refreshLock) {
-            // Another concurrent request may have already refreshed the
-            // token while this one was waiting for the lock — reuse it
-            // instead of burning a second, already-invalid refresh token.
-            val requestedWithToken = response.request.header("Authorization")?.removePrefix("Bearer ")
             val storedToken = SessionManager.accessToken()
-            if (storedToken != null && storedToken != requestedWithToken) {
-                return@synchronized response.request.newBuilder()
-                    .header("Authorization", "Bearer $storedToken")
-                    .build()
+
+            if (
+                storedToken != null &&
+                failedAccessToken != null &&
+                storedToken != failedAccessToken
+            ) {
+                return true
             }
 
             val refreshToken = SessionManager.refreshToken()
             if (refreshToken == null) {
                 SessionManager.clear()
-                return@synchronized null
+                AgentEventBus.emitSessionExpired()
+                return false
             }
 
             val newTokens = runBlocking {
@@ -93,14 +91,38 @@ object ApiClient {
             if (newTokens == null) {
                 SessionManager.clear()
                 AgentEventBus.emitSessionExpired()
-                return@synchronized null
+                return false
             }
 
-            SessionManager.updateTokens(newTokens.accessToken, newTokens.refreshToken)
-            response.request.newBuilder()
-                .header("Authorization", "Bearer ${newTokens.accessToken}")
-                .build()
+            SessionManager.updateTokens(
+                newTokens.accessToken,
+                newTokens.refreshToken
+            )
+            return true
         }
+    }
+
+    // Normal Retrofit requests use the same shared refresh path as SSE.
+    private val refreshAuthenticator = Authenticator { _, response ->
+        if (responseCount(response) >= 2) {
+            SessionManager.clear()
+            AgentEventBus.emitSessionExpired()
+            return@Authenticator null
+        }
+
+        val failedAccessToken =
+            response.request.header("Authorization")?.removePrefix("Bearer ")
+
+        if (!refreshSession(failedAccessToken)) {
+            return@Authenticator null
+        }
+
+        val newAccessToken = SessionManager.accessToken()
+            ?: return@Authenticator null
+
+        response.request.newBuilder()
+            .header("Authorization", "Bearer $newAccessToken")
+            .build()
     }
 
     private fun responseCount(response: Response): Int {

@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { loadActiveFormats, parseWithFormats } from "../utils/smsFormats.js";
 import { randomUUID } from "node:crypto";
 import { query, queryOne, withTransaction } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
@@ -113,6 +114,11 @@ type OrderMatch = {
  *    this lock only protects the candidate SELECT itself.
  */
 const MATCH_WINDOW_HOURS = 24;
+
+/** True for an sms_logs row (alias sl) linked to nothing at all. */
+const SMS_UNMATCHED_SQL = `(sl.matched_order_id IS NULL AND sl.matched_exchange_order_id IS NULL AND sl.matched_reseller_deposit_id IS NULL
+  AND sl.matched_reseller_withdrawal_id IS NULL AND sl.matched_vip_number_order_id IS NULL
+  AND sl.matched_vip_number_package_order_id IS NULL AND sl.matched_shop_order_id IS NULL)`;
 
 type MatchResult = { order: OrderMatch | null; reason: string | null };
 
@@ -518,8 +524,33 @@ export type IngestSmsParams = {
  * verify endpoint).
  */
 export async function ingestPaymentSms(params: IngestSmsParams): Promise<IngestSmsResult> {
-  const { agentId, sender, body, parsedProvider, parsedAmount, parsedPhone, transactionRef, simSlot } = params;
+  const { agentId, sender, body, simSlot } = params;
+  let { parsedProvider, parsedAmount, parsedPhone, transactionRef } = params;
   const effectiveReceivedAt = params.receivedAt ?? new Date().toISOString();
+
+  // SMS Format Update: an SMS the Agent App couldn't read (an older app, or
+  // a provider wording change it doesn't know yet) is read here with the
+  // Super Admin's active formats -- only for that provider's own senders.
+  // This only fills in amount/phone/reference; matching and verification
+  // below are exactly the same as for any other payment SMS.
+  if ((parsedAmount == null || !parsedPhone) && sender && body) {
+    // Best-effort: if the formats can't be loaded (e.g. their table isn't
+    // migrated yet), the SMS is still stored and processed unparsed exactly
+    // as before this feature existed -- never rejected.
+    let read: ReturnType<typeof parseWithFormats> = null;
+    try {
+      read = parseWithFormats(await loadActiveFormats(), String(sender), String(body));
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("SMS formats unavailable while reading an uploaded SMS:", (err as Error).message);
+    }
+    if (read) {
+      parsedProvider = read.parsedProvider;
+      parsedAmount = read.amount;
+      parsedPhone = read.senderPhone;
+      transactionRef = transactionRef || read.reference;
+    }
+  }
 
   // A telecom's own per-transaction reference code (e.g. Somtel eDahab's
   // "Aqanoosiga" field) is a stronger, authoritative duplicate-payment
@@ -1073,7 +1104,10 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
       if (exchangeMatch) {
         const alreadyLinked = await queryOne<{ id: string }>(`SELECT id FROM sms_logs WHERE matched_exchange_order_id=$1 LIMIT 1`, [exchangeMatch.id]);
         if (alreadyLinked) {
-          await query(`UPDATE sms_logs SET match_failure_reason=$1 WHERE id=$2`, [
+          // Only written when the note changes: this runs every 15s for
+          // every unmatched SMS, and rewriting an identical value just
+          // takes row locks for nothing.
+          await query(`UPDATE sms_logs SET match_failure_reason=$1 WHERE id=$2 AND match_failure_reason IS DISTINCT FROM $1`, [
             `Exchange order ${exchangeMatch.id} already has a matched payment SMS`,
             sms.id,
           ]);
@@ -1161,7 +1195,8 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
         sms.parsed_phone ?? undefined
       );
       if (!shopMatch) {
-        await query(`UPDATE sms_logs SET match_failure_reason=$1 WHERE id=$2`, [
+        // Same as above: skip the write when the reason hasn't changed.
+        await query(`UPDATE sms_logs SET match_failure_reason=$1 WHERE id=$2 AND match_failure_reason IS DISTINCT FROM $1`, [
           [
             reason,
             offlineAutoReason ? `Offline Auto-Order: ${offlineAutoReason}` : null,
@@ -1195,12 +1230,84 @@ export async function resweepUnmatchedSmsLogs(): Promise<{ relinked: number; sti
 // one" trigger from every place that could unblock it. Bounded to
 // MATCH_WINDOW_HOURS worth of rows and best-effort (never throws), so this
 // can't grow unbounded or take the process down.
+//
+// A pass can take longer than 15s when many SMS are unmatched; the next
+// tick then skips instead of starting a second, overlapping pass over the
+// same rows (overlapping passes waited on each other's row locks until
+// the statement timeout).
+let resweepRunning = false;
+let autoVerifyRunning = false;
 setInterval(() => {
-  resweepUnmatchedSmsLogs().catch((err) => {
-    // eslint-disable-next-line no-console
-    console.error("resweepUnmatchedSmsLogs sweep failed:", (err as Error).message);
-  });
+  if (!resweepRunning) {
+    resweepRunning = true;
+    resweepUnmatchedSmsLogs()
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error("resweepUnmatchedSmsLogs sweep failed:", (err as Error).message);
+      })
+      .finally(() => {
+        resweepRunning = false;
+      });
+  }
+  if (!autoVerifyRunning) {
+    autoVerifyRunning = true;
+    autoVerifyMatchedPendingOrders()
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error("autoVerifyMatchedPendingOrders sweep failed:", (err as Error).message);
+      })
+      .finally(() => {
+        autoVerifyRunning = false;
+      });
+  }
 }, 15_000);
+
+/**
+ * A payment SMS matched an order at upload time, but the order was never
+ * verified: verify-payment is the Agent App's next call, and the phone went
+ * offline, was wiped, or died before it ran. Without this the order sits
+ * 'pending' with a real payment forever. After a grace period (the phone's
+ * own call normally lands within seconds), the server verifies it itself
+ * -- the same atomic pending -> in_progress step the agent call uses, so it
+ * can never run twice -- and the order then reaches the Agent App's
+ * self-heal sweep for dialing. Companies with automation switched off are
+ * left for a person, as before.
+ */
+export async function autoVerifyMatchedPendingOrders(graceMinutes = 3): Promise<number> {
+  const orders = await query<any>(
+    `SELECT o.* FROM orders o JOIN companies c ON c.id = o.company_id
+      WHERE o.status = 'pending' AND c.auto_process_enabled
+        AND EXISTS (
+          SELECT 1 FROM payment_transactions pt
+           WHERE pt.order_id = o.id AND pt.status = 'pending'
+             AND pt.created_at < now() - ($1 || ' minutes')::interval
+        )
+      ORDER BY o.created_at ASC LIMIT 20`,
+    [graceMinutes]
+  );
+  let verified = 0;
+  for (const order of orders) {
+    try {
+      const result = await verifyOrderAndGenerateUssd(order, null);
+      if (result.ok) {
+        verified++;
+        await recordActivity({
+          adminId: undefined,
+          action: "payment_auto_verified",
+          entityType: "order",
+          entityId: order.id,
+          oldValue: { status: "pending" },
+          newValue: { status: "in_progress", reason: "Matched payment not verified by any agent phone within the grace period." },
+        });
+        broadcast({ type: "order.updated", orderId: order.id });
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`autoVerifyMatchedPendingOrders failed for order ${order.id}:`, (err as Error).message);
+    }
+  }
+  return verified;
+}
 
 /** Shared tail for both the proactive check and the unique-index backstop:
  * records this specific attempt as its own 'duplicate_blocked' ledger row
@@ -1284,8 +1391,11 @@ smsLogsRouter.get("/admin/sms-logs", requireStaff(), async (req, res) => {
     WHERE 1=1`;
   const args: unknown[] = [];
   if (agentId) { args.push(agentId); sql += ` AND sl.agent_id=$${args.length}`; }
-  if (matched === "true") sql += ` AND (sl.matched_order_id IS NOT NULL OR sl.matched_exchange_order_id IS NOT NULL)`;
-  if (matched === "false") sql += ` AND sl.matched_order_id IS NULL AND sl.matched_exchange_order_id IS NULL`;
+  // Matched to anything (store order, exchange, reseller deposit/withdrawal,
+  // VIP number/package, shop) -- the old filter only looked at two of the
+  // seven, so SMS matched elsewhere showed as "unmatched".
+  if (matched === "true") sql += ` AND NOT (${SMS_UNMATCHED_SQL})`;
+  if (matched === "false") sql += ` AND ${SMS_UNMATCHED_SQL}`;
   if (companyId) { args.push(companyId); sql += ` AND o.company_id=$${args.length}`; }
   if (search) {
     args.push(`%${search}%`);
@@ -1494,6 +1604,22 @@ smsLogsRouter.get("/agent/payment-transactions/:id/timeline", requireAuth("agent
 // 'pending' while its order has already flipped to 'in_progress' (proving
 // verify-payment succeeded) means the automatic dial never happened — the
 // exact failure mode this endpoint surfaces for the dashboard.
+// A payment-looking SMS (an amount was read from it) that matched nothing
+// at all. The 15s resweep keeps retrying these for 24h; this count does NOT
+// stop at 24h, so a payment nobody could match never disappears silently.
+smsLogsRouter.get("/admin/sms-logs/unmatched-payment-count", requireStaff(), async (req, res) => {
+  const minutes = Math.min(Math.max(Number(req.query.minutes) || 10, 1), 1440);
+  const days = Math.min(Math.max(Number(req.query.days) || 7, 1), 90);
+  const row = await queryOne<{ count: string; oldest: string | null }>(
+    `SELECT COUNT(*) AS count, MIN(sl.received_at) AS oldest FROM sms_logs sl
+      WHERE sl.parsed_amount IS NOT NULL AND ${SMS_UNMATCHED_SQL}
+        AND sl.received_at < now() - ($1 || ' minutes')::interval
+        AND sl.received_at > now() - ($2 || ' days')::interval`,
+    [minutes, days]
+  );
+  sendJson(res, 200, { count: Number(row?.count ?? 0), oldestReceivedAt: row?.oldest ?? null, minutes, days });
+});
+
 smsLogsRouter.get("/admin/payment-transactions/stuck-count", requireStaff(), async (req, res) => {
   const thresholdMinutes = Math.min(Number(req.query.minutes) || 5, 1440);
   const row = await queryOne<{ count: string }>(
@@ -1517,15 +1643,20 @@ smsLogsRouter.get("/admin/payment-transactions/stuck-count", requireStaff(), asy
   // double-charge if the original dial actually went through).
   const stalledMinutes = Math.min(Number(req.query.stalledMinutes) || 10, 1440);
   const stalledRow = await queryOne<{ count: string }>(
+    // Any in-progress order with a dial whose result is unknown -- no
+    // report at all ('pending', e.g. the app died mid-dial) or an unclear
+    // carrier reply ('ambiguous') -- older than the threshold, even after
+    // earlier failed attempts. Automation never re-dials these (the money
+    // may have gone out); a person resolves them (Resolve dial attempt).
     `SELECT COUNT(*) AS count
-     FROM payment_transactions pt
-     JOIN orders o ON o.id = pt.order_id
-     WHERE pt.status = 'processing' AND o.status = 'in_progress'
-       AND NOT EXISTS (
-         SELECT 1 FROM ussd_dial_attempts da WHERE da.order_id = o.id AND da.status IN ('success','failed')
+     FROM orders o
+     WHERE o.status = 'in_progress'
+       AND EXISTS (
+         SELECT 1 FROM ussd_dial_attempts da
+          WHERE da.order_id = o.id AND da.status IN ('pending','ambiguous')
+            AND da.created_at < now() - ($1 || ' minutes')::interval
        )
-       AND (SELECT MAX(da.created_at) FROM ussd_dial_attempts da WHERE da.order_id = o.id)
-           < now() - ($1 || ' minutes')::interval`,
+       AND NOT EXISTS (SELECT 1 FROM ussd_dial_attempts da WHERE da.order_id = o.id AND da.status = 'success')`,
     [stalledMinutes]
   );
   sendJson(res, 200, {

@@ -1,0 +1,121 @@
+/*
+ * DALAB Admin Dashboard theme.
+ * Every colour in App.jsx is a CSS variable named after its light-mode hex
+ * (--c-c81e2c is the light #C81E2C) so the same markup renders in both
+ * themes; [data-theme="dark"] on <html> swaps the values. White text on a
+ * coloured fill stays a literal #fff in App.jsx and is the same in both.
+ */
+:root {
+  color-scheme: light;
+  --sidebar-bg: #0B1240;
+  --c-surface: #ffffff;
+  --c-003152: #003152;
+  --c-0b1240: #0B1240;
+  --c-137a3b: #137A3B;
+  --c-16a34a: #16A34A;
+  --c-1d4ed8: #1D4ED8;
+  --c-22b24c: #22B24C;
+  --c-2a3fc0: #2A3FC0;
+  --c-5b6389: #5B6389;
+  --c-6d28d9: #6D28D9;
+  --c-7a5200: #7A5200;
+  --c-7c86c4: #7C86C4;
+  --c-8791b5: #8791B5;
+  --c-8a6100: #8A6100;
+  --c-92400e: #92400E;
+  --c-9aa1d4: #9AA1D4;
+  --c-a9720a: #A9720A;
+  --c-b45309: #B45309;
+  --c-c81e2c: #C81E2C;
+  --c-cfeeda: #CFEEDA;
+  --c-d6e0ff: #D6E0FF;
+  --c-e4f7ea: #E4F7EA;
+  --c-e5e8f4: #E5E8F4;
+  --c-e5ebff: #E5EBFF;
+  --c-e7eaf6: #E7EAF6;
+  --c-eef0f6: #EEF0F6;
+  --c-eef0fb: #EEF0FB;
+  --c-eef3fa: #EEF3FA;
+  --c-eef3ff: #EEF3FF;
+  --c-eef9f1: #EEF9F1;
+  --c-f0f1f5: #F0F1F5;
+  --c-f2c200: #F2C200;
+  --c-f2f8ff: #F2F8FF;
+  --c-f2fbf5: #F2FBF5;
+  --c-f3d3d6: #F3D3D6;
+  --c-f3eeff: #F3EEFF;
+  --c-f3fbf5: #F3FBF5;
+  --c-f4e3b0: #F4E3B0;
+  --c-f5c451: #F5C451;
+  --c-f5dfb0: #F5DFB0;
+  --c-f5e6e6: #F5E6E6;
+  --c-f5f6fb: #F5F6FB;
+  --c-f7f8fc: #F7F8FC;
+  --c-fafbff: #FAFBFF;
+  --c-fca5a5: #FCA5A5;
+  --c-fce7e8: #FCE7E8;
+  --c-fdeff0: #FDEFF0;
+  --c-fef2f2: #FEF2F2;
+  --c-fff4d9: #FFF4D9;
+  --c-fff6e3: #FFF6E3;
+  --c-fff6e5: #FFF6E5;
+  --c-fff8e8: #FFF8E8;
+  --c-fffbef: #FFFBEF;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --sidebar-bg: #070C1F;
+  --c-surface: #121A2E;
+  --c-003152: #3B82C4;
+  --c-0b1240: #E6E9F5;
+  --c-137a3b: #4ADE80;
+  --c-16a34a: #34D27A;
+  --c-1d4ed8: #7AA2FF;
+  --c-22b24c: #34D27A;
+  --c-2a3fc0: #5B7BE0;
+  --c-5b6389: #A9B1D6;
+  --c-6d28d9: #B794F6;
+  --c-7a5200: #E8C15A;
+  --c-7c86c4: #8F99D8;
+  --c-8791b5: #8A93B8;
+  --c-8a6100: #E8C15A;
+  --c-92400e: #E8B04A;
+  --c-9aa1d4: #9AA1D4;
+  --c-a9720a: #E8B04A;
+  --c-b45309: #F0B35A;
+  --c-c81e2c: #F06A73;
+  --c-cfeeda: #1D3425;
+  --c-d6e0ff: #1D2335;
+  --c-e4f7ea: #1D3524;
+  --c-e5e8f4: #26304A;
+  --c-e5ebff: #1D2235;
+  --c-e7eaf6: #26304A;
+  --c-eef0f6: #1E2740;
+  --c-eef0fb: #1B2742;
+  --c-eef3fa: #1D2735;
+  --c-eef3ff: #1D2435;
+  --c-eef9f1: #1D3523;
+  --c-f0f1f5: #1E2740;
+  --c-f2c200: #F2C200;
+  --c-f2f8ff: #1D2835;
+  --c-f2fbf5: #1D3525;
+  --c-f3d3d6: #351D1F;
+  --c-f3eeff: #241D35;
+  --c-f3fbf5: #1D3523;
+  --c-f4e3b0: #352F1D;
+  --c-f5c451: #F5C451;
+  --c-f5dfb0: #352D1D;
+  --c-f5e6e6: #331E1E;
+  --c-f5f6fb: #0B1220;
+  --c-f7f8fc: #172036;
+  --c-fafbff: #172036;
+  --c-fca5a5: #FCA5A5;
+  --c-fce7e8: #351D1E;
+  --c-fdeff0: #351D1E;
+  --c-fef2f2: #351D1D;
+  --c-fff4d9: #352E1D;
+  --c-fff6e3: #352D1D;
+  --c-fff6e5: #352D1D;
+  --c-fff8e8: #352E1D;
+  --c-fffbef: #352F1D;
+}

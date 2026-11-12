@@ -52,7 +52,7 @@ devicesRouter.delete("/customer/devices/:id", requireAuth("customer"), async (re
   await query(`UPDATE customer_devices SET revoked_at=now() WHERE id=$1`, [device.id]);
   await query(`INSERT INTO customer_device_activity (device_id, type) VALUES ($1,'removed')`, [device.id]);
   await query(
-    `UPDATE refresh_tokens SET revoked=true WHERE subject_id=$1 AND subject_role='customer' AND device_id=$2`,
+    `UPDATE refresh_tokens SET revoked=true, rotated_at=NULL WHERE subject_id=$1 AND subject_role='customer' AND device_id=$2`,
     [req.auth!.sub, device.device_id]
   );
   sendJson(res, 200, { removed: true });

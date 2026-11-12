@@ -1,3 +1,4 @@
+import { packageUnavailableReason } from "../utils/packageAvailability.js";
 import { query, queryOne } from "../db/pool.js";
 import { broadcast } from "../realtime/orderEvents.js";
 
@@ -281,12 +282,16 @@ export async function matchOrCreateOfflineAutoOrder(
   if (!company) return { order: null, reason: "Offline Profile's saved company no longer exists" };
   if (company.status === "offline") return { order: null, reason: `${company.name} is currently offline` };
 
-  const pkg = await queryOne<{ id: string; price: string; provider_amount: string | null; company_id: string }>(
-    `SELECT id, price, provider_amount, company_id FROM packages WHERE id=$1 AND active=true`,
+  const pkg = await queryOne<{ id: string; price: string; provider_amount: string | null; company_id: string; category_id: string; orders_enabled: boolean; visible_customer_app: boolean }>(
+    `SELECT id, price, provider_amount, company_id, category_id, orders_enabled, visible_customer_app FROM packages WHERE id=$1 AND active=true`,
     [profile.offline_package_id]
   );
   if (!pkg || pkg.company_id !== company.id) {
     return { order: null, reason: "Offline Profile's saved package is no longer valid for its company" };
+  }
+  {
+    const unavailable = await packageUnavailableReason(pkg, "customer");
+    if (unavailable) return { order: null, reason: unavailable };
   }
 
   // Package + amount matching (spec requirement 10) — the package is
