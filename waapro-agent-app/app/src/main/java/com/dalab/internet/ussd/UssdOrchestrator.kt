@@ -344,7 +344,7 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
                 // it's never confused with an actually-empty SIM tray again.
                 SubscriptionLookupResult.PermissionMissing -> DialResult(
                     DialOutcome.PERMISSION_DENIED,
-                    "Required phone permissions aren't granted on this device — check Settings > Apps > Agent App > Permissions.",
+                    "Required phone permissions aren't granted on this device — check Settings > Apps > WAAPRO LTD AGENT > Permissions.",
                 )
                 SubscriptionLookupResult.NotPresent -> DialResult(DialOutcome.NO_SIM_PRESENT, "SIM $simSlot isn't physically inserted on this device.")
                 is SubscriptionLookupResult.Found -> {

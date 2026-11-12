@@ -203,11 +203,11 @@ private fun AgentHomeHeader(
                 Image(
                     painter = painterResource(com.dalab.internet.auth.SystemBrand.logo()),
                     contentDescription = null,
-                    modifier = Modifier.size(36.dp).clip(RoundedCornerShape(10.dp)),
+                    modifier = Modifier.size(36.dp).clip(RoundedCornerShape(10.dp)).background(Color.White).padding(2.dp),
                 )
                 Spacer(Modifier.width(10.dp))
                 Column {
-                    Text((com.dalab.internet.auth.SystemSession.systemName() ?: "Agent App").uppercase(), color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Text(com.dalab.internet.ui.WAAPRO_APP_NAME, color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                     Text(
                         agentName?.let { "Welcome back, $it" } ?: "Welcome back",
                         color = Color.White.copy(alpha = 0.85f),

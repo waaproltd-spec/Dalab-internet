@@ -45,7 +45,7 @@ fun ReliabilitySetupScreen(onContinue: () -> Unit) {
     val oemAutostartIntent = remember { resolveOemAutostartIntent(context) }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("Keep Agent App Running") }) }
+        topBar = { TopAppBar(title = { Text("Keep WAAPRO LTD AGENT Running") }) }
     ) { padding ->
         Column(
             modifier = Modifier

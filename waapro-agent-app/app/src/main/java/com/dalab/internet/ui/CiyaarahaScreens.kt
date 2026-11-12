@@ -777,7 +777,7 @@ private fun ContestDetailPage(id: String, onBack: () -> Unit, onEdit: (FootballC
                     "delete" -> AlertDialog(
                         onDismissRequest = { if (!busy) dialog = null },
                         title = { Text("Delete this contest?") },
-                        text = { Text("It disappears from the Agent App and the Customer App. Only a contest nobody has predicted can be deleted.") },
+                        text = { Text("It disappears from the WAAPRO LTD AGENT and the Customer App. Only a contest nobody has predicted can be deleted.") },
                         confirmButton = {
                             TextButton(onClick = {
                                 busy = true

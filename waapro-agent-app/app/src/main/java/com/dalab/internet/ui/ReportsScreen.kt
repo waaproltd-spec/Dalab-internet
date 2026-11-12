@@ -272,10 +272,10 @@ private fun BrandHeader(onBack: () -> Unit) {
             Image(
                 painter = painterResource(com.dalab.internet.auth.SystemBrand.logo()),
                 contentDescription = null,
-                modifier = Modifier.size(34.dp).clip(RoundedCornerShape(8.dp)),
+                modifier = Modifier.size(34.dp).clip(RoundedCornerShape(8.dp)).background(Color.White).padding(2.dp),
             )
             Spacer(Modifier.width(10.dp))
-            Text((com.dalab.internet.auth.SystemSession.systemName() ?: "Agent App").uppercase(), color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Black)
+            Text(com.dalab.internet.ui.WAAPRO_APP_NAME, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Black)
         }
     }
 }
@@ -418,7 +418,7 @@ private fun LegendRow(color: Color, label: String, count: Int, pct: Double) {
 private fun CompanyLogo(companyId: String, brand: Color, size: androidx.compose.ui.unit.Dp) {
     val res = logoResFor(companyId)
     Box(
-        Modifier.size(size).clip(RoundedCornerShape(12.dp)).background(if (res == com.dalab.internet.auth.SystemBrand.logo()) brand else Color.White),
+        Modifier.size(size).clip(RoundedCornerShape(12.dp)).background(Color.White),
         contentAlignment = Alignment.Center,
     ) {
         Image(

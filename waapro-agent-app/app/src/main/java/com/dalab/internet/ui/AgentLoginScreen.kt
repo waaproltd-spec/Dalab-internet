@@ -49,13 +49,9 @@ import com.dalab.internet.auth.HubLoginResult
 import com.dalab.internet.auth.SignedInSystem
 import kotlinx.coroutines.launch
 
-// WAAPRO LTD colours (the logo's navy and gold).
-private val WaaproNavy = Color(0xFF0B2A6B)
-private val WaaproBlue = Color(0xFF1565D8)
-private val WaaproGold = Color(0xFFF5B800)
-private val LoginBg = Color(0xFFF4F7FC)
-private val FieldBorder = Color(0xFFD5DCE8)
-private val Muted = Color(0xFF5B6475)
+private val LoginBg = WaaproBg
+private val FieldBorder = WaaproBorder
+private val Muted = WaaproMuted
 
 /**
  * The phone number as the agent types it: digits only, at most 9, with the
@@ -116,7 +112,7 @@ fun AgentLoginScreen(onSignedIn: (SignedInSystem) -> Unit) {
     }
 
     Box(Modifier.fillMaxSize().background(LoginBg)) {
-        LoginWaves()
+        WaaproWaves()
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -125,28 +121,11 @@ fun AgentLoginScreen(onSignedIn: (SignedInSystem) -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Spacer(Modifier.height(24.dp))
-            // The official WAAPRO LTD logo, unchanged (res/drawable/waapro_ltd_logo.png).
-            Image(
-                painter = painterResource(R.drawable.waapro_ltd_logo),
-                contentDescription = "WAAPRO LTD",
-                modifier = Modifier.size(132.dp),
-            )
-            Text("WAAPRO LTD", color = WaaproNavy, fontSize = 30.sp, fontWeight = FontWeight.Black, letterSpacing = 0.5.sp)
+            WaaproLogoBlock(logoSize = 132.dp)
             Spacer(Modifier.height(8.dp))
             Box(Modifier.width(72.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(WaaproGold))
             Spacer(Modifier.height(20.dp))
-
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(50))
-                    .background(Brush.horizontalGradient(listOf(WaaproNavy, WaaproBlue)))
-                    .padding(horizontal = 26.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Filled.SupportAgent, contentDescription = null, tint = Color.White, modifier = Modifier.size(28.dp))
-                Spacer(Modifier.width(10.dp))
-                Text("Agent App", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-            }
+            WaaproAgentPill()
             Spacer(Modifier.height(14.dp))
             Text("Sign in with your phone number and PIN.", color = Color(0xFF1B2333), fontSize = 15.sp, textAlign = TextAlign.Center)
             Spacer(Modifier.height(22.dp))
@@ -303,41 +282,5 @@ fun AgentLoginScreen(onSignedIn: (SignedInSystem) -> Unit) {
             }
             Spacer(Modifier.height(60.dp))
         }
-    }
-}
-
-/** The navy-and-gold curves at the top-left and bottom of the sign-in screen. */
-@Composable
-private fun LoginWaves() {
-    Canvas(Modifier.fillMaxSize()) {
-        val w = size.width
-        val h = size.height
-        // Top-left
-        val top = Path().apply {
-            moveTo(0f, 0f)
-            lineTo(w * 0.62f, 0f)
-            cubicTo(w * 0.40f, h * 0.02f, w * 0.22f, h * 0.10f, 0f, h * 0.13f)
-            close()
-        }
-        drawPath(top, Brush.linearGradient(listOf(WaaproNavy, WaaproBlue), Offset(0f, 0f), Offset(w * 0.6f, h * 0.12f)))
-        val topGold = Path().apply {
-            moveTo(w * 0.62f, 0f)
-            cubicTo(w * 0.40f, h * 0.02f, w * 0.22f, h * 0.10f, 0f, h * 0.13f)
-        }
-        drawPath(topGold, WaaproGold, style = Stroke(width = 5.dp.toPx()))
-        // Bottom
-        val bottom = Path().apply {
-            moveTo(0f, h)
-            lineTo(0f, h * 0.93f)
-            cubicTo(w * 0.35f, h * 0.99f, w * 0.65f, h * 0.84f, w, h * 0.86f)
-            lineTo(w, h)
-            close()
-        }
-        drawPath(bottom, Brush.linearGradient(listOf(WaaproBlue, WaaproNavy), Offset(0f, h * 0.86f), Offset(w, h)))
-        val bottomGold = Path().apply {
-            moveTo(0f, h * 0.93f)
-            cubicTo(w * 0.35f, h * 0.99f, w * 0.65f, h * 0.84f, w, h * 0.86f)
-        }
-        drawPath(bottomGold, WaaproGold, style = Stroke(width = 5.dp.toPx()))
     }
 }

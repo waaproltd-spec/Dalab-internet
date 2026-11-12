@@ -65,7 +65,7 @@ fun ExchangeAccessibilitySetupScreen(onBack: () -> Unit) {
             Text(
                 "Money Exchange payouts use a two-step USSD flow: the carrier asks for a PIN " +
                     "after the amount and receiving number are sent. To complete that step " +
-                    "automatically instead of typing the PIN by hand each time, Agent App needs " +
+                    "automatically instead of typing the PIN by hand each time, WAAPRO LTD AGENT needs " +
                     "the Accessibility permission — it's the only way Android lets an app read and " +
                     "reply to that on-screen carrier prompt.",
                 style = MaterialTheme.typography.bodyMedium,
@@ -86,7 +86,7 @@ fun ExchangeAccessibilitySetupScreen(onBack: () -> Unit) {
                         Text("Not enabled", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onErrorContainer)
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "Tap below, find \"Agent App\" in the list, and turn it on. Some phones show " +
+                            "Tap below, find \"WAAPRO LTD AGENT\" in the list, and turn it on. Some phones show " +
                                 "a \"Restricted setting\" warning first for sideloaded apps — tap it, then " +
                                 "follow the prompt to allow this setting.",
                             style = MaterialTheme.typography.bodySmall,

@@ -113,7 +113,7 @@ fun PermissionsStatusScreen(onBack: () -> Unit) {
                 Spacer(Modifier.height(8.dp))
                 Text(
                     "Without this, Android may stop payment monitoring after a few minutes " +
-                        "in the background. Tap below to allow Agent App to run unrestricted — " +
+                        "in the background. Tap below to allow WAAPRO LTD AGENT to run unrestricted — " +
                         "the system will ask you to confirm.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -151,7 +151,7 @@ fun PermissionsStatusScreen(onBack: () -> Unit) {
                 Text(
                     "${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} devices have their own separate battery/app manager " +
                         "that can silently stop background SMS monitoring even with battery optimization above disabled. " +
-                        "Find Agent App in the screen that opens and allow \"Auto-start\" / remove it from any \"Protected\"/restricted list.",
+                        "Find WAAPRO LTD AGENT in the screen that opens and allow \"Auto-start\" / remove it from any \"Protected\"/restricted list.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

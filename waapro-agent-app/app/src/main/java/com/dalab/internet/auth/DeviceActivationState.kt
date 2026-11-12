@@ -150,7 +150,7 @@ object DeviceActivationState {
             context, NOTIFICATION_ID, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val text = "Open the Agent App to see this phone's activation code, then ask an admin to approve it."
+        val text = "Open WAAPRO LTD AGENT to see this phone's activation code, then ask an admin to approve it."
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("Device activation required")

@@ -94,7 +94,7 @@ fun ResellerWithdrawalInteractiveAccessibilitySetupScreen(onBack: () -> Unit) {
                         Text("Not enabled", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onErrorContainer)
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "Tap below, find \"Agent App\" in the list, and turn it on. Some phones show " +
+                            "Tap below, find \"WAAPRO LTD AGENT\" in the list, and turn it on. Some phones show " +
                                 "a \"Restricted setting\" warning first for sideloaded apps — tap it, then " +
                                 "follow the prompt to allow this setting.",
                             style = MaterialTheme.typography.bodySmall,

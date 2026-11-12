@@ -26,8 +26,8 @@ android {
         applicationId = "com.waaproltd.agent"
         minSdk = 26
         targetSdk = 34
-        versionCode = 6
-        versionName = "1.0.5"
+        versionCode = 7
+        versionName = "1.0.6"
     }
 
     signingConfigs {
@@ -84,7 +84,7 @@ android {
             // com.waaproltd.agent only, and a suffixed package would fail the
             // Firebase plugin. Debug and release are signed with different
             // keys, so install one or the other, not both.
-            resValue("string", "app_name", "Agent App Debug")
+            resValue("string", "app_name", "WAAPRO LTD AGENT Debug")
         }
     }
 

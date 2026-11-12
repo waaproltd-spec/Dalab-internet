@@ -272,7 +272,7 @@ class AgentBackgroundService : Service() {
                 DiagnosticsLog.record(
                     "background_service_foreground",
                     "Couldn't run as a foreground service (${e.javaClass.simpleName}); stopping cleanly so Android doesn't crash the app. " +
-                        "If this repeats, set Agent App's battery use to Unrestricted.",
+                        "If this repeats, set WAAPRO LTD AGENT's battery use to Unrestricted.",
                 )
                 stopSelf()
                 return START_NOT_STICKY
@@ -682,7 +682,7 @@ class AgentBackgroundService : Service() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Agent App")
+            .setContentTitle("WAAPRO LTD AGENT")
             .setContentText("Monitoring payments and orders")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(openApp)
@@ -775,7 +775,7 @@ class AgentBackgroundService : Service() {
                 // optimisation (or it's a boot/update broadcast).
                 DiagnosticsLog.record(
                     "background_service_start_blocked",
-                    "Android refused to start the background service (${e.javaClass.simpleName}). Set Agent App's battery use to Unrestricted so it can restart itself.",
+                    "Android refused to start the background service (${e.javaClass.simpleName}). Set WAAPRO LTD AGENT's battery use to Unrestricted so it can restart itself.",
                 )
             }
             // Single choke point: every call site that starts this service

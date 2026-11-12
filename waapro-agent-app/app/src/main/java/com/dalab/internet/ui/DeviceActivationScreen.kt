@@ -108,7 +108,7 @@ fun DeviceActivationScreen(onContinue: () -> Unit) {
         // Header: brand, device number, copy device number.
         Box(modifier = Modifier.fillMaxWidth().background(ActHeader).statusBarsPadding().padding(vertical = 16.dp, horizontal = 16.dp)) {
             Column(modifier = Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text((com.dalab.internet.auth.SystemSession.systemName() ?: "Agent App").uppercase(), color = ActText, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
+                Text(com.dalab.internet.ui.WAAPRO_APP_NAME, color = ActText, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
                 Spacer(Modifier.height(4.dp))
                 Text(if (deviceNumber != null) "ID $deviceNumber" else "ID …", color = ActText, fontSize = 15.sp, fontWeight = FontWeight.Medium)
             }

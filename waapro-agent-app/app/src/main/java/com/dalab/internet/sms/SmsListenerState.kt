@@ -55,7 +55,7 @@ object SmsListenerState {
             } else {
                 DiagnosticsLog.record(
                     "sms_permission_missing",
-                    "SMS permission is not granted — payment SMS can't be received. Open the app and allow SMS, or grant it in Android Settings > Apps > Agent App > Permissions.",
+                    "SMS permission is not granted — payment SMS can't be received. Open the app and allow SMS, or grant it in Android Settings > Apps > WAAPRO LTD AGENT > Permissions.",
                 )
                 if (previous) DiagnosticsLog.record("sms_listener_stopped", "Stopped receiving payment SMS (SMS permission was removed).")
             }

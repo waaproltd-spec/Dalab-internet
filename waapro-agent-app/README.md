@@ -1,4 +1,4 @@
-# Waapro Agent App (one app for every system)
+# WAAPRO LTD AGENT (one Agent App for every system)
 
 One Android app for the agents of every system (stage 1: DALAB and
 Danwadaag; stage 2 adds Fududeeye and Sahal). There is **no system picker**:

@@ -1216,7 +1216,7 @@ private fun NotificationHealthRows() {
     ListItem(
         headlineContent = { Text("Notifications allowed") },
         supportingContent = {
-            Text(if (notificationsOn) "Yes" else "No — tap to allow notifications for Agent App")
+            Text(if (notificationsOn) "Yes" else "No — tap to allow notifications for WAAPRO LTD AGENT")
         },
         leadingContent = { Icon(Icons.Filled.Notifications, contentDescription = null) },
         modifier = Modifier.clickable {
