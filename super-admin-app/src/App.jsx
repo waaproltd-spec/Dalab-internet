@@ -18243,6 +18243,7 @@ function AdminDashboardShell({ admin, onLogout }) {
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 12, flexShrink: 0 }}>
+            <AgentAppDownloadButton admin={admin} compact={isMobile} />
             <PrefsControls />
             <div style={{ textAlign: "right", display: isMobile ? "none" : "block" }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: INK }}>{admin?.email}</div>
@@ -18448,6 +18449,36 @@ function HubSwitchButton({ label }) {
     {/* Room under the side menu so this button never covers its last item. */}
     <style>{'nav[aria-label="Main menu"]{padding-bottom:64px !important;box-sizing:border-box}'}</style>
     </>
+  );
+}
+
+// The AGENT APP (one app for every WAAPRO LTD system). This link always
+// serves the newest RELEASE-signed APK -- the Agent App build updates it on
+// every release; it never points at a debug build.
+const AGENT_APP_LATEST_URL = "https://github.com/waaproltd-spec/Dalab-internet/releases/download/waapro-agent-app-latest/AGENT-APP.apk";
+
+/** "Download Agent App" in the top bar, for Super Admins and Admins. */
+function AgentAppDownloadButton({ admin, compact = false }) {
+  if (!admin || (admin.role !== "super_admin" && admin.role !== "admin")) return null;
+  return (
+    <a
+      href={AGENT_APP_LATEST_URL}
+      download
+      target="_blank"
+      rel="noopener noreferrer"
+      title="Download the latest Agent App (release APK)"
+      aria-label="Download Agent App"
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0,
+        minHeight: compact ? 44 : 38, padding: compact ? "0 12px" : "0 14px", borderRadius: 12,
+        background: "linear-gradient(135deg, #0B2A6B, #1565D8)", color: "#FFFFFF",
+        fontSize: 12.5, fontWeight: 700, textDecoration: "none", whiteSpace: "nowrap",
+        boxShadow: "0 4px 12px rgba(11,42,107,0.25)",
+      }}
+    >
+      <Download size={16} color="#F5B800" />
+      {!compact && <span>Download Agent App</span>}
+    </a>
   );
 }
 
