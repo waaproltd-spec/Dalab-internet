@@ -18321,7 +18321,7 @@ export default function AdminDashboard() {
   const [hubAssertion] = useState(takeHubAssertion);
   const [hubStatus, setHubStatus] = useState(hubAssertion ? "signing-in" : null);
   const [hubError, setHubError] = useState("");
-  const [showLocalLogin, setShowLocalLogin] = useState(!HUB_URL);
+  const [showLocalLogin, setShowLocalLogin] = useState(!HUB_URL || WANTS_LOCAL_LOGIN);
   // "Use a local account instead" is its own step in the browser history:
   // the Back button on the form, and Android's / the browser's Back, return
   // to the "Sign in through the Admin Hub" screen instead of leaving.
@@ -18386,6 +18386,10 @@ export default function AdminDashboard() {
   }
 
   if (!admin && !showLocalLogin) {
+    // No in-between screen: someone who isn't signed in goes straight to the
+    // Admin Hub's sign-in. The notice below shows only when signing in from
+    // the hub failed, so a problem never turns into an endless redirect.
+    if (!hubError) return <HubRedirect />;
     return (
       <HubNotice
         title="Sign in through the Admin Hub"
@@ -18430,6 +18434,23 @@ function HubSwitchButton({ label }) {
       <span aria-hidden="true">⇄</span> {label}
     </button>
   );
+}
+
+/** ?local=1 opens this system's own admin sign-in instead of the Admin Hub. */
+const WANTS_LOCAL_LOGIN = (() => {
+  try { return new URLSearchParams(window.location.search).has("local"); } catch { return false; }
+})();
+
+/**
+ * Sends someone who isn't signed in straight to the Admin Hub's sign-in.
+ * location.replace keeps this page out of the Back history, so Back on the
+ * hub's sign-in returns to wherever the admin was before, with no bouncing.
+ */
+function HubRedirect() {
+  useEffect(() => {
+    if (HUB_URL) window.location.replace(`${HUB_URL}/`);
+  }, []);
+  return <div style={{ minHeight: "100vh", background: "var(--sidebar-bg, #0B1240)" }} aria-busy="true" />;
 }
 
 function HubNotice({ title, message, isError = false, onLocalLogin }) {
