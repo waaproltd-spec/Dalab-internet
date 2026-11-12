@@ -18461,7 +18461,7 @@ function HubNotice({ title, message, isError = false, onLocalLogin }) {
       <div style={{ width: "100%", maxWidth: 400, background: "#FFFFFF", borderRadius: 16, padding: 28, textAlign: "center", boxShadow: "0 12px 40px rgba(0,0,0,0.25)", position: "relative" }}>
         <button
           type="button"
-          onClick={() => { if (window.history.length > 1) window.history.back(); else if (HUB_URL) goToHub(); }}
+          onClick={() => { if (HUB_URL) goToHub(); else window.history.back(); }}
           style={{ position: "absolute", top: 12, left: 12, display: "inline-flex", alignItems: "center", gap: 6, minHeight: 40, padding: "6px 12px", borderRadius: 999, border: "1px solid #CBD5E1", background: "#F8FAFC", color: "#0F172A", fontSize: 14, fontWeight: 700, cursor: "pointer" }}
         >
           <span aria-hidden="true">←</span> Back
