@@ -13,6 +13,8 @@ internal val SomaliStrings: Map<String, String> = hashMapOf(
     "Show PIN" to "Muuji PIN-ka",
     "Hide PIN" to "Qari PIN-ka",
     "Sign in" to "Gal",
+    "Sent from" to "Kaso dir",
+    "Sent to" to "Kan loo diray",
     "Order Actions" to "Hawlaha Dalabka",
     "Dial" to "Garaac",
     "This order was reversed. It is final: it can't be retried, cancelled or dialed." to "Dalabkan waa la celiyay. Waa kama dambays: dib looma isku dayi karo, lama joojin karo, lamana garaaci karo.",
@@ -857,6 +859,8 @@ internal val SomaliStrings: Map<String, String> = hashMapOf(
  * order, so a more specific pattern must come before a general one.
  */
 internal val SomaliPatterns: List<Pair<Regex, String>> = listOf(
+    Regex("This order was completed at (.+)\\.") to "Dalabkan waxaa la dhammaystiray {1}.",
+    Regex("This order was completed\\.") to "Dalabkan waa la dhammaystiray.",
     Regex("Assigned SIM: SIM (\\d) on this phone \\(Admin → SIM Routing\\)\\.") to
         "SIM-ka loo qoondeeyay: SIM {1} ee taleefankan (Admin → SIM Routing).",
     Regex("SIM Balance Outdated — (.+)\\. The (.+) SIM showed (\\\$[\\d.]+) at its last update, which may no longer be correct\\. Check the (.+) SIM balance before processing this (\\\$[\\d.]+) order\\.") to

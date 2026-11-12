@@ -230,7 +230,10 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
 
             DetailCard(Icons.Filled.Person, "Customer") {
                 DetailRow("Name", current.customerName ?: "Not provided")
-                DetailRow("Phone", current.customerPhone ?: "Not provided", Icons.Filled.Phone)
+                // Both numbers: the one that paid (sent from) and the one
+                // that receives the package (sent to).
+                DetailRow("Sent from", current.senderPhone ?: current.customerPhone ?: "Not provided", Icons.Filled.Phone)
+                DetailRow("Sent to", current.receiverPhone ?: current.senderPhone ?: current.customerPhone ?: "Not provided", Icons.Filled.Phone)
             }
 
             DetailCard(Icons.Filled.Inventory2, "Package") {
