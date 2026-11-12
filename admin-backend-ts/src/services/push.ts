@@ -133,13 +133,8 @@ const UNREGISTERED_ERROR_CODES = new Set([
  * (network error, bad credentials) comes back as failureCount === tokens.length
  * with an empty invalidTokens list, since that failure says nothing about
  * whether any individual token is actually bad. */
-export async function sendPushToTokens(
-  tokens: string[],
-  payload: PushPayload,
-  audience: "customer" | "agent" = "customer"
-): Promise<SendResult> {
+async function sendWith(messaging: Messaging | null, tokens: string[], payload: PushPayload, mismatched: string[]): Promise<SendResult> {
   if (tokens.length === 0) return { invalidTokens: [], successCount: 0, failureCount: 0 };
-  const messaging = audience === "agent" ? agentMessaging() : ensureInitialized() ? getMessaging() : null;
   if (!messaging) return { invalidTokens: [], successCount: 0, failureCount: tokens.length };
 
   const invalidTokens: string[] = [];
@@ -177,6 +172,7 @@ export async function sendPushToTokens(
           console.error(
             `FCM send failed for token ...${batch[idx].slice(-10)}: ${r.error?.code ?? "unknown"} - ${r.error?.message ?? "no message"}`
           );
+          if (r.error?.code === "messaging/mismatched-credential") mismatched.push(batch[idx]);
           if (r.error && UNREGISTERED_ERROR_CODES.has(r.error.code)) {
             invalidTokens.push(batch[idx]);
           }
@@ -190,6 +186,29 @@ export async function sendPushToTokens(
   }
 
   return { invalidTokens, successCount, failureCount };
+}
+
+/** Sends to raw FCM tokens. Agent devices are tried with the AGENT APP's
+ * project first; a token refused as belonging to another project (an agent
+ * still on a system's older agent app) is retried with the system's own
+ * project, so old and new agent apps both get the alert. */
+export async function sendPushToTokens(
+  tokens: string[],
+  payload: PushPayload,
+  audience: "customer" | "agent" = "customer"
+): Promise<SendResult> {
+  const own = ensureInitialized() ? getMessaging() : null;
+  if (audience !== "agent") return sendWith(own, tokens, payload, []);
+  const agent = agentMessaging();
+  const mismatched: string[] = [];
+  const first = await sendWith(agent, tokens, payload, mismatched);
+  if (mismatched.length === 0 || !own || own === agent) return first;
+  const retry = await sendWith(own, mismatched, payload, []);
+  return {
+    invalidTokens: [...first.invalidTokens, ...retry.invalidTokens],
+    successCount: first.successCount + retry.successCount,
+    failureCount: first.failureCount - mismatched.length + retry.failureCount,
+  };
 }
 
 /** Looks up every device token registered for a customer, sends to all of
