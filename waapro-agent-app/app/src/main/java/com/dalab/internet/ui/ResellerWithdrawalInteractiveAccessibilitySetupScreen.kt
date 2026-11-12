@@ -73,7 +73,7 @@ fun ResellerWithdrawalInteractiveAccessibilitySetupScreen(onBack: () -> Unit) {
                 "Some Reseller Withdraw payout providers (like eDahab) use a multi-step USSD " +
                     "menu instead of a single combined code: select Transfer, enter the number, " +
                     "enter the amount, then enter the reseller PIN once the carrier asks for it. " +
-                    "To complete that automatically instead of typing each step by hand, DALAB " +
+                    "To complete that automatically instead of typing each step by hand, WAAPRO LTD " +
                     "Agent needs the Accessibility permission — it's the only way Android lets an " +
                     "app read and reply to that on-screen carrier prompt.",
                 style = MaterialTheme.typography.bodyMedium,

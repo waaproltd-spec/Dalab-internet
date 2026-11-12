@@ -57,17 +57,19 @@ data class AgentPalette(
     val dark: Boolean = false,
 )
 
-/** DALAB Navy in Light mode -- exactly the original colors. */
+/** WAAPRO LTD Navy in Light mode: the WAAPRO LTD brand (WaaproBrand.kt) --
+ * navy #0B2A6B, blue #1565D8, gold #F5B800, the same colours as the sign-in
+ * screen and the Admin Hub. */
 val AgentLightPalette = AgentPalette(
-    blue = Color(0xFF003152),
-    brandFill = Color(0xFF003152),
-    brandFillLight = Color(0xFFADDFF1),
-    softBlue = Color(0xFFADDFF1),
+    blue = Color(0xFF0B2A6B),
+    brandFill = Color(0xFF0B2A6B),
+    brandFillLight = Color(0xFFC9DCF8),
+    softBlue = Color(0xFFE3EEFD),
     white = Color(0xFFFFFFFF),
-    surfaceTint = Color(0xFFF3F8FB),
-    outline = Color(0xFFB9CBD6),
+    surfaceTint = Color(0xFFF4F7FC),
+    outline = Color(0xFFD5DCE8),
     success = Color(0xFF16A34A),
-    warning = Color(0xFFF2C200),
+    warning = Color(0xFFF5B800),
     danger = Color(0xFFC81E2C),
     dangerContainer = Color(0xFFFEE2E2),
     info = Color(0xFF1D4ED8),
@@ -75,17 +77,17 @@ val AgentLightPalette = AgentPalette(
     faint = Color(0xFF9CA3AF),
 )
 
-/** DALAB Navy in Dark mode. */
+/** WAAPRO LTD Navy in Dark mode. */
 val AgentDarkPalette = AgentPalette(
-    blue = Color(0xFFCFE3F7),
-    brandFill = Color(0xFF1B5A93),
-    brandFillLight = Color(0xFF2E78B8),
-    softBlue = Color(0xFF2A4A6E),
-    white = Color(0xFF0F1626),
-    surfaceTint = Color(0xFF18233A),
-    outline = Color(0xFF3A4A66),
+    blue = Color(0xFFD6E4FB),
+    brandFill = Color(0xFF1565D8),
+    brandFillLight = Color(0xFF2E7BE6),
+    softBlue = Color(0xFF1E3A6B),
+    white = Color(0xFF0B1530),
+    surfaceTint = Color(0xFF13224A),
+    outline = Color(0xFF2C3F6E),
     success = Color(0xFF34D399),
-    warning = Color(0xFFF2C200),
+    warning = Color(0xFFF5B800),
     danger = Color(0xFFF87171),
     dangerContainer = Color(0xFF3B1219),
     info = Color(0xFF60A5FA),
@@ -143,8 +145,8 @@ val isAgentDark: Boolean get() = AgentSettings.isDark
  * accent colors the Customer App offers.
  */
 enum class AgentAccent(val label: String, val color: Color) {
-    DALAB_NAVY("DALAB Navy", Color(0xFF003152)),
-    DALAB_BLUE("DALAB Blue", Color(0xFF0D72C4)),
+    DALAB_NAVY("WAAPRO Navy", Color(0xFF0B2A6B)),
+    DALAB_BLUE("WAAPRO Blue", Color(0xFF1565D8)),
     ROYAL_BLUE("Royal Blue", Color(0xFF2563EB)),
     VIOLET("Violet", Color(0xFF7C3AED)),
     DEEP_PURPLE("Deep Purple", Color(0xFF673AB7)),

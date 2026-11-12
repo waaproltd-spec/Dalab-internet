@@ -1255,7 +1255,7 @@ private fun NotificationHealthRows() {
     )
     ListItem(
         headlineContent = { Text("Test alert") },
-        supportingContent = { Text("Shows a sample customer request with the DALAB alert sound") },
+        supportingContent = { Text("Shows a sample customer request with the alert sound") },
         leadingContent = { Icon(Icons.Filled.Campaign, contentDescription = null) },
         modifier = Modifier.clickable { com.dalab.internet.notifications.SupportAlerts.sendTestAlert() },
     )
