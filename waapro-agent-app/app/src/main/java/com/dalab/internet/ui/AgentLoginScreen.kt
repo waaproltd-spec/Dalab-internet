@@ -117,18 +117,19 @@ fun AgentLoginScreen(onSignedIn: (SignedInSystem) -> Unit) {
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp, vertical = 40.dp),
+                .padding(horizontal = 24.dp, vertical = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Spacer(Modifier.height(24.dp))
-            WaaproLogoBlock(logoSize = 132.dp)
-            Spacer(Modifier.height(8.dp))
-            Box(Modifier.width(72.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(WaaproGold))
-            Spacer(Modifier.height(20.dp))
+            // Logo and the AGENT pill only -- fits on one screen.
+            Spacer(Modifier.height(36.dp))
+            androidx.compose.foundation.Image(
+                painter = androidx.compose.ui.res.painterResource(com.dalab.internet.R.drawable.waapro_ltd_logo),
+                contentDescription = "WAAPRO LTD",
+                modifier = Modifier.size(120.dp),
+            )
+            Spacer(Modifier.height(16.dp))
             WaaproAgentPill()
-            Spacer(Modifier.height(14.dp))
-            Text("Sign in with your phone number and PIN.", color = Color(0xFF1B2333), fontSize = 15.sp, textAlign = TextAlign.Center)
-            Spacer(Modifier.height(22.dp))
+            Spacer(Modifier.height(28.dp))
 
             // Phone: +252 fixed, then exactly 9 digits.
             val showPhoneError = phoneTouched && phone.isNotEmpty() && !phoneOk
@@ -176,20 +177,14 @@ fun AgentLoginScreen(onSignedIn: (SignedInSystem) -> Unit) {
                     modifier = Modifier.weight(1f),
                 )
             }
-            Spacer(Modifier.height(6.dp))
-            Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Filled.Info,
-                    contentDescription = null,
-                    tint = if (showPhoneError) MaterialTheme.colorScheme.error else WaaproNavy,
-                    modifier = Modifier.size(16.dp),
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    if (showPhoneError) "The phone number must be exactly 9 digits." else "Enter your Somali phone number (9 digits) after +252.",
-                    color = if (showPhoneError) MaterialTheme.colorScheme.error else WaaproNavy,
-                    fontSize = 13.sp,
-                )
+            // Only shown when the number is wrong (the field already says "9 digit phone number").
+            if (showPhoneError) {
+                Spacer(Modifier.height(6.dp))
+                Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Info, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("The phone number must be exactly 9 digits.", color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+                }
             }
             Spacer(Modifier.height(14.dp))
 
