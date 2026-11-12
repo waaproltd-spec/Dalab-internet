@@ -52,6 +52,11 @@ object DeviceActivationState {
     /** Last check failed to reach the server (no internet, timeout). */
     var connectionError by mutableStateOf(false)
         private set
+    /** Display only: the HTTP status of the last failed check when the
+     * server did answer (null after a success or when it couldn't be
+     * reached), so the screen can tell "no internet" from a server error. */
+    var lastHttpError by mutableStateOf<Int?>(null)
+        private set
 
     fun init(context: Context) {
         if (prefs != null) return
@@ -86,6 +91,7 @@ object DeviceActivationState {
             // it again, and its 403 DEVICE_NOT_ACTIVATED still applies.
             if (response.code() == 404) {
                 connectionError = false
+                lastHttpError = null
                 code = null
                 status = Status.APPROVED
                 DiagnosticsLog.record("device_activation", "Server has no Device Activation yet (HTTP 404) — opening the app.", isError = false)
@@ -93,10 +99,12 @@ object DeviceActivationState {
             }
             if (!response.isSuccessful || body == null) {
                 connectionError = response.code() >= 500
+                lastHttpError = response.code()
                 DiagnosticsLog.record("device_activation", "Status check failed: HTTP ${response.code()}")
                 return status
             }
             connectionError = false
+            lastHttpError = null
             body.deviceNumber?.let {
                 deviceNumber = it
                 prefs?.edit()?.putString(KEY_DEVICE_NUMBER, it)?.apply()
@@ -113,6 +121,7 @@ object DeviceActivationState {
             status
         } catch (e: Exception) {
             connectionError = true
+            lastHttpError = null
             DiagnosticsLog.record("device_activation", "Status check failed: ${e.message}")
             status
         }

@@ -12,7 +12,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.AccessTime
+import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ErrorOutline
@@ -22,6 +28,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -41,16 +49,6 @@ import com.dalab.internet.util.formatApiDateTime
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-// Fixed dark look from the reference design, independent of the app theme.
-private val ActBg = Color(0xFF121418)
-private val ActHeader = Color(0xFF1A1D23)
-private val ActCard = Color(0xFF1E2128)
-private val ActText = Color(0xFFF3F4F6)
-private val ActMuted = Color(0xFFB4B9C4)
-private val ActRed = Color(0xFFF2405C)
-private val ActGreen = Color(0xFF22C55E)
-private val ActAmber = Color(0xFFF59E0B)
-
 /**
  * Device Activation: shown instead of the app until an admin approves this
  * install. Displays the device number and the 4-character code the agent
@@ -69,6 +67,7 @@ fun DeviceActivationScreen(onContinue: () -> Unit) {
     var checkedOnce by remember { mutableStateOf(false) }
     var copiedCode by remember { mutableStateOf(false) }
     var copiedId by remember { mutableStateOf(false) }
+    var copiedAgent by remember { mutableStateOf(false) }
 
     fun check() {
         if (checking) return
@@ -89,7 +88,12 @@ fun DeviceActivationScreen(onContinue: () -> Unit) {
         DeviceActivationState.refresh()
         while (true) {
             delay(10_000)
-            if (DeviceActivationState.status != Status.APPROVED) DeviceActivationState.refresh()
+            // Skipped while a Check Again is running: one request at a time.
+            if (DeviceActivationState.status != Status.APPROVED && !checking) {
+                checking = true
+                DeviceActivationState.refresh()
+                checking = false
+            }
         }
     }
     // Sent back to "not activated" without a code (the server refused a
@@ -99,156 +103,250 @@ fun DeviceActivationScreen(onContinue: () -> Unit) {
     }
     LaunchedEffect(copiedCode) { if (copiedCode) { delay(2000); copiedCode = false } }
     LaunchedEffect(copiedId) { if (copiedId) { delay(2000); copiedId = false } }
+    LaunchedEffect(copiedAgent) { if (copiedAgent) { delay(2000); copiedAgent = false } }
 
     fun copy(label: String, value: String) {
         context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText(label, value))
     }
 
-    Column(modifier = Modifier.fillMaxSize().background(ActBg)) {
-        // Header: brand, device number, copy device number.
-        Box(modifier = Modifier.fillMaxWidth().background(ActHeader).statusBarsPadding().padding(vertical = 16.dp, horizontal = 16.dp)) {
-            Column(modifier = Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(com.dalab.internet.ui.WAAPRO_APP_NAME, color = ActText, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
-                Spacer(Modifier.height(4.dp))
-                Text(if (deviceNumber != null) "ID $deviceNumber" else "ID …", color = ActText, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-            }
-            if (deviceNumber != null) {
-                IconButton(
-                    onClick = { copy("Device ID", deviceNumber); copiedId = true },
-                    modifier = Modifier.align(Alignment.CenterEnd),
-                ) {
-                    Icon(
-                        if (copiedId) Icons.Filled.CheckCircle else Icons.Filled.ContentCopy,
-                        contentDescription = "Copy device ID",
-                        tint = if (copiedId) ActGreen else ActText,
-                    )
-                }
-            }
-        }
+    // Agent ID (AGT-xxxxxxxx, as the dashboard shows it) read once.
+    val agentId = remember {
+        com.dalab.internet.auth.SessionManager.currentAgent()?.id?.takeIf { it.isNotBlank() }?.let { "AGT-" + it.take(8).uppercase() }
+    }
 
-        Column(
-            modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 18.dp),
-        ) {
-            if (status == Status.APPROVED) {
-                ActivatedState()
-            } else {
-            Text("Device activation", color = ActText, fontWeight = FontWeight.Bold, fontSize = 20.sp)
-            Spacer(Modifier.height(10.dp))
-            val lead = tr("For security purposes, please contact your account manager and provide the following activation code:")
-            androidx.compose.material3.Text(
-                buildAnnotatedString {
-                    append(lead)
-                    if (code != null) {
-                        append(" ")
-                        withStyle(SpanStyle(fontWeight = FontWeight.ExtraBold, color = ActText)) { append(code) }
-                    }
-                },
-                color = ActMuted,
-                fontSize = 15.sp,
-                lineHeight = 22.sp,
-            )
-            Spacer(Modifier.height(18.dp))
-
-            if (status == Status.PENDING && code != null) {
-                // The code, large, with copy.
-                Box(
-                    modifier = Modifier.fillMaxWidth().background(ActCard, RoundedCornerShape(16.dp))
-                        .clickable { copy("Activation code", code); copiedCode = true }
-                        .padding(vertical = 18.dp, horizontal = 18.dp),
-                ) {
-                    androidx.compose.material3.Text(
-                        code,
-                        color = ActText,
-                        fontSize = 40.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontFamily = FontFamily.Monospace,
-                        letterSpacing = 4.sp,
-                        modifier = Modifier.align(Alignment.Center),
-                    )
-                    Icon(Icons.Filled.ContentCopy, contentDescription = "Copy code", tint = ActText, modifier = Modifier.align(Alignment.CenterEnd))
-                }
-                DeviceActivationState.codeExpiresAt?.let {
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        tr("Code expires") + ": " + formatApiDateTime(it),
-                        color = ActMuted,
-                        fontSize = 12.sp,
-                        modifier = Modifier.fillMaxWidth(),
-                        textAlign = TextAlign.Center,
-                    )
-                }
-                if (copiedCode) {
-                    Spacer(Modifier.height(12.dp))
-                    Row(
-                        modifier = Modifier.align(Alignment.CenterHorizontally).background(ActGreen, RoundedCornerShape(12.dp)).padding(horizontal = 16.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = Color.White)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Code copied!", color = Color.White, fontWeight = FontWeight.Bold)
-                    }
-                }
+    Box(Modifier.fillMaxSize().background(WaaproBg)) {
+        WaaproWaves()
+        Column(Modifier.fillMaxSize().systemBarsPadding()) {
+            Column(
+                modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 18.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                WaaproLogoBlock(logoSize = 64.dp, nameSize = 24.sp)
+                Spacer(Modifier.height(8.dp))
+                WaaproAgentPill(textSize = 18.sp)
+                Spacer(Modifier.height(8.dp))
+                WaaproTagline()
                 Spacer(Modifier.height(18.dp))
-            }
 
-            when {
-                DeviceActivationState.connectionError -> StatusCard(
-                    icon = Icons.Filled.WifiOff,
-                    tint = ActRed,
-                    title = "No internet connection",
-                    body = "Couldn't reach the server. Check your connection and tap Check to try again.",
-                )
-                status == Status.REJECTED -> StatusCard(
-                    icon = Icons.Filled.ErrorOutline,
-                    tint = ActRed,
-                    title = "Device activation was rejected. Please contact your administrator.",
-                    body = null,
-                )
-                status == Status.PENDING && checkedOnce -> StatusCard(
-                    icon = Icons.Filled.AccessTime,
-                    tint = ActAmber,
-                    title = "Your device is waiting for admin approval.",
-                    body = "Please wait. Your device hasn't been approved yet.",
-                )
-                status == Status.UNKNOWN -> Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = ActText)
+                // Agent / device information, each with copy.
+                InfoCard {
+                    if (agentId != null) {
+                        IdRow(label = "Agent ID", value = agentId, copied = copiedAgent) { copy("Agent ID", agentId); copiedAgent = true }
+                    }
+                    if (agentId != null && deviceNumber != null) {
+                        Box(Modifier.fillMaxWidth().padding(vertical = 8.dp).height(1.dp).background(WaaproBorder))
+                    }
+                    IdRow(label = "Device ID", value = deviceNumber?.let { "ID $it" } ?: "ID …", copied = copiedId) {
+                        if (deviceNumber != null) { copy("Device ID", deviceNumber); copiedId = true }
+                    }
                 }
-                else -> ActivationIllustration()
-            }
-            }
-        }
+                Spacer(Modifier.height(14.dp))
 
-        // Bottom action: Check, or Continue once approved.
-        Box(modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 20.dp, vertical = 16.dp)) {
+                if (status == Status.APPROVED) {
+                    ActivatedState()
+                } else {
+                    InfoCard {
+                        Row(verticalAlignment = Alignment.Top) {
+                            Icon(Icons.Filled.VerifiedUser, contentDescription = null, tint = WaaproBlue, modifier = Modifier.size(48.dp))
+                            Spacer(Modifier.width(12.dp))
+                            Box(Modifier.width(2.dp).height(48.dp).background(WaaproNavy))
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text("Device Activation", color = WaaproNavy, fontSize = 24.sp, fontWeight = FontWeight.Black)
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    "For security purposes, please contact your account manager and provide the following activation code:",
+                                    color = WaaproInk,
+                                    fontSize = 15.sp,
+                                    lineHeight = 21.sp,
+                                )
+                            }
+                        }
+                        if (status == Status.PENDING && code != null) {
+                            Spacer(Modifier.height(16.dp))
+                            // The code, large, with copy.
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(18.dp))
+                                    .background(Brush.horizontalGradient(listOf(WaaproBlue, WaaproNavy)))
+                                    .clickable { copy("Activation code", code); copiedCode = true }
+                                    .padding(start = 18.dp, end = 10.dp, top = 14.dp, bottom = 14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                androidx.compose.material3.Text(
+                                    code,
+                                    color = Color.White,
+                                    fontSize = 52.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    letterSpacing = 6.sp,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Box(Modifier.width(1.dp).height(48.dp).background(Color.White.copy(alpha = 0.4f)))
+                                Spacer(Modifier.width(10.dp))
+                                Box(
+                                    Modifier.size(52.dp).clip(RoundedCornerShape(14.dp)).background(Color.White.copy(alpha = 0.15f)),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(
+                                        if (copiedCode) Icons.Filled.CheckCircle else Icons.Filled.ContentCopy,
+                                        contentDescription = tr("Copy code"),
+                                        tint = Color.White,
+                                        modifier = Modifier.size(28.dp),
+                                    )
+                                }
+                            }
+                            if (copiedCode) {
+                                Spacer(Modifier.height(8.dp))
+                                Text("Code copied!", color = Color(0xFF16A34A), fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            }
+                            DeviceActivationState.codeExpiresAt?.let {
+                                Spacer(Modifier.height(10.dp))
+                                Row(
+                                    modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(WaaproSoft).padding(horizontal = 14.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Icon(Icons.Filled.CalendarMonth, contentDescription = null, tint = WaaproNavy, modifier = Modifier.size(20.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(tr("Code expires") + ": ", color = WaaproInk, fontSize = 14.sp)
+                                    androidx.compose.material3.Text(formatApiDateTime(it), color = WaaproNavy, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(14.dp))
+
+                    val httpError = DeviceActivationState.lastHttpError
+                    when {
+                        DeviceActivationState.connectionError && httpError == null -> StatusCard(
+                            icon = Icons.Filled.WifiOff,
+                            tint = ErrorRed,
+                            title = "No internet connection",
+                            body = "Couldn't reach the server. Check your connection and tap Check Again to try again.",
+                        )
+                        httpError != null && httpError >= 500 -> StatusCard(
+                            icon = Icons.Filled.CloudOff,
+                            tint = ErrorRed,
+                            title = "Server not responding",
+                            body = tr("The server couldn't check this phone right now. Tap Check Again in a minute.") + " (HTTP $httpError)",
+                        )
+                        httpError != null -> StatusCard(
+                            icon = Icons.Filled.ErrorOutline,
+                            tint = ErrorRed,
+                            title = "Couldn't check activation",
+                            body = tr("The server refused the check. Tap Check Again; if it keeps happening, contact your admin.") + " (HTTP $httpError)",
+                        )
+                        status == Status.REJECTED -> StatusCard(
+                            icon = Icons.Filled.ErrorOutline,
+                            tint = ErrorRed,
+                            title = "Device activation was rejected. Please contact your administrator.",
+                            body = null,
+                        )
+                        status == Status.PENDING && checkedOnce -> StatusCard(
+                            icon = Icons.Filled.AccessTime,
+                            tint = WaitAmber,
+                            title = "Your device is waiting for admin approval.",
+                            body = "Please wait. Your device hasn't been approved yet.",
+                        )
+                        status == Status.UNKNOWN -> Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(color = WaaproBlue)
+                        }
+                        else -> {}
+                    }
+                }
+                Spacer(Modifier.height(40.dp))
+            }
+
+            // Bottom action: Check Again (one check at a time), or Continue once approved.
             Button(
                 onClick = { if (status == Status.APPROVED) onContinue() else check() },
                 enabled = !checking,
-                colors = ButtonDefaults.buttonColors(containerColor = ActRed, contentColor = Color.White, disabledContainerColor = ActRed.copy(alpha = 0.6f)),
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth().height(54.dp),
+                shape = RoundedCornerShape(50),
+                contentPadding = PaddingValues(0.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent, disabledContainerColor = Color.Transparent),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp).height(58.dp),
             ) {
-                if (checking) {
-                    CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
-                } else {
-                    Text(if (status == Status.APPROVED) "Continue" else "Check", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                Box(
+                    Modifier.fillMaxSize().background(Brush.horizontalGradient(listOf(WaaproBlue, WaaproNavy))),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (checking) {
+                            CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(22.dp))
+                            Spacer(Modifier.width(10.dp))
+                            Text("Checking...", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                        } else if (status == Status.APPROVED) {
+                            Text("Continue", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                            Spacer(Modifier.width(10.dp))
+                            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = Color.White)
+                        } else {
+                            Icon(Icons.Filled.Refresh, contentDescription = null, tint = Color.White)
+                            Spacer(Modifier.width(10.dp))
+                            Text("Check Again", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                        }
+                    }
                 }
             }
         }
     }
 }
 
+private val ErrorRed = Color(0xFFD6203A)
+private val WaitAmber = Color(0xFFD97706)
+private val ActGreen = Color(0xFF16A34A)
+
+@Composable
+private fun InfoCard(content: @Composable ColumnScope.() -> Unit) {
+    Surface(
+        color = Color.White,
+        shape = RoundedCornerShape(20.dp),
+        shadowElevation = 2.dp,
+        border = BorderStroke(1.dp, WaaproSoft),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally, content = content)
+    }
+}
+
+@Composable
+private fun IdRow(label: String, value: String, copied: Boolean, onCopy: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        Box(Modifier.size(48.dp).clip(RoundedCornerShape(14.dp)).background(WaaproSoft), contentAlignment = Alignment.Center) {
+            Icon(Icons.Filled.PhoneAndroid, contentDescription = null, tint = WaaproNavy, modifier = Modifier.size(26.dp))
+        }
+        Spacer(Modifier.width(12.dp))
+        Box(Modifier.width(1.dp).height(40.dp).background(WaaproBorder))
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(label, color = WaaproMuted, fontSize = 14.sp)
+            androidx.compose.material3.Text(value, color = WaaproNavy, fontSize = 22.sp, fontWeight = FontWeight.Black)
+        }
+        IconButton(
+            onClick = onCopy,
+            modifier = Modifier.size(48.dp).clip(RoundedCornerShape(14.dp)).background(WaaproSoft),
+        ) {
+            Icon(
+                if (copied) Icons.Filled.CheckCircle else Icons.Filled.ContentCopy,
+                contentDescription = tr("Copy") + " " + tr(label),
+                tint = if (copied) ActGreen else WaaproNavy,
+            )
+        }
+    }
+}
+
 @Composable
 private fun ActivatedState() {
-    Column(modifier = Modifier.fillMaxWidth().padding(top = 40.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(modifier = Modifier.fillMaxWidth().padding(top = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Box(modifier = Modifier.size(72.dp).background(ActGreen, CircleShape), contentAlignment = Alignment.Center) {
             Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = Color.White, modifier = Modifier.size(48.dp))
         }
         Spacer(Modifier.height(20.dp))
-        Text("Device activated!", color = ActText, fontWeight = FontWeight.Bold, fontSize = 22.sp)
+        Text("Device activated!", color = WaaproNavy, fontWeight = FontWeight.Bold, fontSize = 22.sp)
         Spacer(Modifier.height(8.dp))
         Text(
             "Your device has been approved. Tap Continue to open the app.",
-            color = ActMuted,
+            color = WaaproMuted,
             fontSize = 15.sp,
             textAlign = TextAlign.Center,
         )
@@ -271,41 +369,8 @@ private fun StatusCard(icon: ImageVector, tint: Color, title: String, body: Stri
             }
             if (body != null) {
                 Spacer(Modifier.height(10.dp))
-                Text(body, color = ActMuted, fontSize = 14.sp)
+                Text(body, color = WaaproInk, fontSize = 14.sp)
             }
-        }
-    }
-}
-
-/** Phone + support agent + "****" bubble, as in the reference design. */
-@Composable
-private fun ActivationIllustration() {
-    Box(modifier = Modifier.fillMaxWidth().padding(top = 12.dp), contentAlignment = Alignment.Center) {
-        Box(
-            modifier = Modifier.size(width = 130.dp, height = 190.dp)
-                .border(BorderStroke(3.dp, Color(0xFFB8C2E0)), RoundedCornerShape(22.dp))
-                .background(Color(0xFF2A2F3A), RoundedCornerShape(22.dp)),
-        ) {
-            Box(
-                modifier = Modifier.align(Alignment.TopCenter).padding(top = 10.dp).size(8.dp).background(Color(0xFFB8C2E0), CircleShape),
-            )
-        }
-        Row(
-            modifier = Modifier.offset(x = (-30).dp, y = (-20).dp).background(Color(0xFF7C86B4), RoundedCornerShape(14.dp)).padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Filled.SupportAgent, contentDescription = null, tint = Color.White, modifier = Modifier.size(30.dp))
-            Spacer(Modifier.width(8.dp))
-            Column {
-                Box(Modifier.size(width = 40.dp, height = 4.dp).background(Color.White, RoundedCornerShape(2.dp)))
-                Spacer(Modifier.height(5.dp))
-                Box(Modifier.size(width = 28.dp, height = 4.dp).background(Color.White, RoundedCornerShape(2.dp)))
-            }
-        }
-        Box(
-            modifier = Modifier.offset(x = 30.dp, y = 40.dp).background(Color(0xFFE5E7EB), RoundedCornerShape(12.dp)).padding(horizontal = 14.dp, vertical = 8.dp),
-        ) {
-            androidx.compose.material3.Text("* * * *", color = Color(0xFF1F2937), fontWeight = FontWeight.ExtraBold, fontSize = 22.sp)
         }
     }
 }
