@@ -108,6 +108,20 @@ class PackageInteractiveUssdTest {
         assertNotNull(planProblem(plan.copy(steps = plan.steps.dropLast(1))))
         assertNotNull(planProblem(plan.copy(steps = listOf(plan.steps.last()) + plan.steps.dropLast(1))))
         assertNotNull(planProblem(plan.copy(steps = plan.steps.dropLast(1) + plan.steps.last().copy(amount = null))))
+        // An unrendered token or unsafe characters are never typed.
+        assertNotNull(planProblem(plan.copy(steps = listOf(plan.steps[0].copy(reply = "{amount}")) + plan.steps.drop(1))))
+        assertNotNull(planProblem(plan.copy(steps = listOf(plan.steps[0].copy(reply = "a;b")) + plan.steps.drop(1))))
+        assertNotNull(planProblem(plan.copy(steps = listOf(plan.steps[0].copy(reply = "x".repeat(31))) + plan.steps.drop(1))))
+    }
+
+    @Test
+    fun `a dashboard-made service may reply with an amount or custom text`() {
+        val steps = listOf(
+            plan.steps[0].copy(reply = "Y"),
+            plan.steps[0].copy(reply = "0.55"),
+            plan.steps[0].copy(reply = "1*2"),
+        ) + plan.steps.drop(3)
+        assertNull(planProblem(plan.copy(steps = steps)))
     }
 
     @Test

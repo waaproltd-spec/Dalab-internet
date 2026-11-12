@@ -123,9 +123,17 @@ internal fun planProblem(plan: UssdPlan): String? {
     if (pinSteps.size != 1 || pinSteps[0].index != plan.steps.lastIndex) return "the PIN must be the single last step"
     val pin = plan.steps.last()
     if (pin.amount == null || pin.number == null) return "the PIN step must check the amount and number"
-    if (plan.steps.dropLast(1).any { !Regex("""^[0-9]{1,15}$""").matches(it.reply) }) return "a menu reply is not a number"
+    if (plan.steps.dropLast(1).any { !SAFE_REPLY.matches(it.reply) }) return "a menu reply is not a number, amount or plain text"
     return null
 }
+
+/**
+ * What a non-PIN reply may be: a menu number, the receiver number, an
+ * amount ("0.55") or a short custom text an admin set up for the menu
+ * ("Y", "1*2"). Never braces, so an unrendered token like "{pin}" can
+ * never be typed into the carrier's menu.
+ */
+private val SAFE_REPLY = Regex("""^[0-9A-Za-z*#+.\- ]{1,30}$""")
 
 /**
  * Drives one attempt of a plan. The caller ([UssdOrchestrator]) already
@@ -182,7 +190,7 @@ class PackageInteractiveUssdRunner(private val context: Context) {
                     DiagnosticsLog.record("package_menu_mismatch", "Order $orderId, $label: $reason. Screen: \"${screen.text}\"", isError = true)
                     return DialResult(
                         DialOutcome.FAILED,
-                        "Stopped at $label: $reason. Cancelled before the PIN — nothing was paid. Check the Dhameys Plus settings in the dashboard.",
+                        "Stopped at $label: $reason. Cancelled before the PIN — nothing was paid. Check this USSD service's settings in the dashboard.",
                         noRetry = true,
                     )
                 }

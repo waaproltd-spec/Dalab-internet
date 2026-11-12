@@ -11,6 +11,9 @@
 
 export interface ReplyStepConfig {
   reply: string;
+  /** "text": a custom reply typed as-is (letters, digits, * # + . - and
+   * spaces), so the dashboard can tell it apart from a menu number. */
+  kind?: "text";
   expect?: string[];
   checkMenuPrice?: boolean;
   checkAmount?: boolean;
@@ -41,7 +44,11 @@ export interface UssdPlan {
   successKeywords: string[];
 }
 
-const ALLOWED_TOKENS = ["{packageCode}", "{number}", "{pin}"] as const;
+const ALLOWED_TOKENS = ["{packageCode}", "{number}", "{amount}", "{pin}"] as const;
+/** A custom text reply: what an admin may type for a carrier prompt that
+ * isn't a menu number (e.g. "Y", "1*2"). No braces, so it can never be
+ * mistaken for a token; no PIN-like secrets belong here. */
+const CUSTOM_TEXT = /^[0-9A-Za-z*#+.\- ]{1,30}$/;
 const MAX_STEPS = 10;
 const MAX_EXPECT_LENGTH = 60;
 
@@ -57,6 +64,7 @@ export function validateInteractiveTemplate(initialDial: unknown, steps: unknown
   let pinIndex = -1;
   let numberIndex = -1;
   let packageCodeIndex = -1;
+  let amountIndex = -1;
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i] as ReplyStepConfig;
     const label = `Step ${i + 1}`;
@@ -64,7 +72,12 @@ export function validateInteractiveTemplate(initialDial: unknown, steps: unknown
     const reply = typeof step.reply === "string" ? step.reply.trim() : "";
     if (!reply) return `${label}: enter what to reply.`;
     const isToken = (ALLOWED_TOKENS as readonly string[]).includes(reply);
-    if (!isToken && !/^[0-9]{1,3}$/.test(reply)) {
+    if (step.kind !== undefined && step.kind !== "text") return `${label}: unknown step type.`;
+    if (step.kind === "text") {
+      if (isToken || !CUSTOM_TEXT.test(reply)) {
+        return `${label}: a custom reply must be 1 to 30 letters, digits, spaces or * # + . - characters.`;
+      }
+    } else if (!isToken && !/^[0-9]{1,3}$/.test(reply)) {
       return `${label}: the reply must be a menu number (like 4) or one of ${ALLOWED_TOKENS.join(", ")}.`;
     }
     if (reply === "{pin}") {
@@ -78,6 +91,10 @@ export function validateInteractiveTemplate(initialDial: unknown, steps: unknown
     if (reply === "{packageCode}") {
       if (packageCodeIndex !== -1) return "The package option can only be chosen once.";
       packageCodeIndex = i;
+    }
+    if (reply === "{amount}") {
+      if (amountIndex !== -1) return "The amount can only be entered once.";
+      amountIndex = i;
     }
     if (step.expect !== undefined) {
       if (!Array.isArray(step.expect) || step.expect.some((e) => typeof e !== "string" || !e.trim() || e.length > MAX_EXPECT_LENGTH)) {
@@ -94,12 +111,14 @@ export function validateInteractiveTemplate(initialDial: unknown, steps: unknown
   if (pinIndex === -1) return "The PIN step ({pin}) is required.";
   if (pinIndex !== steps.length - 1) return "The PIN must be the last step, so nothing is entered after paying.";
   if (numberIndex === -1) return "The receiver number step ({number}) is required.";
-  if (packageCodeIndex === -1) return "The package option step ({packageCode}) is required, so each package selects its own option.";
+  if (packageCodeIndex === -1 && amountIndex === -1) {
+    return "Add a package option step ({packageCode}) or an amount step ({amount}), so each package selects its own option or pays its own price.";
+  }
   const pinStep = steps[pinIndex] as ReplyStepConfig;
   if (!pinStep.checkAmount || !pinStep.checkNumber) {
     return "The PIN step must check both the amount and the receiver number on the confirmation screen before paying.";
   }
-  if ((steps[packageCodeIndex] as ReplyStepConfig).checkMenuPrice !== true) {
+  if (packageCodeIndex !== -1 && (steps[packageCodeIndex] as ReplyStepConfig).checkMenuPrice !== true) {
     return "The package option step must check the price shown on the menu, so a changed menu can't select the wrong package.";
   }
   if (successKeywords !== undefined) {
@@ -120,6 +139,18 @@ export function plainAmount(amount: number | string): string {
   return (Math.round(Number(amount) * 100) / 100).toFixed(2);
 }
 
+/** The amount as typed into a carrier prompt: whole dollars without
+ * decimals ("15"), anything else with two ("0.55"). */
+export function typedAmount(amount: number | string): string {
+  const plain = plainAmount(amount);
+  return plain.endsWith(".00") ? plain.slice(0, -3) : plain;
+}
+
+/** Whether a template's steps select packages by menu option. */
+export function usesPackageOption(steps: ReplyStepConfig[] | null | undefined): boolean {
+  return (steps ?? []).some((s) => String(s?.reply ?? "").trim() === "{packageCode}");
+}
+
 /** Renders an order's plan from its template. Never includes the PIN. */
 export function renderUssdPlan(
   template: { ussd_code: string; reply_steps: ReplyStepConfig[]; success_keywords?: string[] | null },
@@ -129,7 +160,13 @@ export function renderUssdPlan(
   const steps: PlanStep[] = template.reply_steps.map((cfg) => {
     const reply = cfg.reply.trim();
     const rendered =
-      reply === "{packageCode}" ? ctx.packageCode.trim() : reply === "{number}" ? ctx.number : reply;
+      reply === "{packageCode}"
+        ? ctx.packageCode.trim()
+        : reply === "{number}"
+          ? ctx.number
+          : reply === "{amount}"
+            ? typedAmount(ctx.amount)
+            : reply;
     const step: PlanStep = { reply: rendered, expect: (cfg.expect ?? []).map((e) => e.trim()) };
     if (reply === "{pin}") step.secret = true;
     if (cfg.checkMenuPrice && reply === "{packageCode}") step.menuOption = { option: ctx.packageCode.trim(), amount };
