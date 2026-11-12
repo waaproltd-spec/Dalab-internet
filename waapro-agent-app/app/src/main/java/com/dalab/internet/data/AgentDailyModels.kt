@@ -52,3 +52,22 @@ data class AgentNotice(
     val endsAt: String? = null,
     val phase: String = "active",
 )
+
+/** GET /agent/agents -- the other active agents of this system. phone is
+ * null when the system hides work numbers (phoneVisible = false). */
+data class OtherAgentsResponse(
+    val agents: List<OtherAgent> = emptyList(),
+    val phoneVisible: Boolean = false,
+    val onlineWindowSeconds: Int = 180,
+    val onlineCount: Int = 0,
+    val serverTime: String? = null,
+)
+
+data class OtherAgent(
+    val id: String,
+    val name: String,
+    val phone: String? = null,
+    val online: Boolean = false,
+    val status: String = "OFFLINE",
+    val lastSeenAt: String? = null,
+)

@@ -61,9 +61,15 @@ jobs:
           if-no-files-found: ignore
 
       - name: Build debug APK
+        # APKs are built only on the release branch (owner's policy: no APK
+        # without approval); other branches compile and run the unit tests.
+        if: github.ref_name == 'claude/unified-agent-app'
         run: gradle assembleDebug --no-daemon
 
       - name: Upload debug APK
+        # APKs are built only on the release branch (owner's policy: no APK
+        # without approval); other branches compile and run the unit tests.
+        if: github.ref_name == 'claude/unified-agent-app'
         uses: actions/upload-artifact@v4
         with:
           name: waapro-agent-debug-apk
@@ -71,6 +77,9 @@ jobs:
           if-no-files-found: error
 
       - name: Decode release keystore
+        # APKs are built only on the release branch (owner's policy: no APK
+        # without approval); other branches compile and run the unit tests.
+        if: github.ref_name == 'claude/unified-agent-app'
         id: keystore
         env:
           AGENT_KEYSTORE_BASE64: ${{ secrets.AGENT_KEYSTORE_BASE64 }}
@@ -89,6 +98,9 @@ jobs:
       # Play Console requires for a Play Store upload/update -- Google no
       # longer accepts a raw APK for a new upload.
       - name: Build release APK and AAB
+        # APKs are built only on the release branch (owner's policy: no APK
+        # without approval); other branches compile and run the unit tests.
+        if: github.ref_name == 'claude/unified-agent-app'
         env:
           AGENT_KEYSTORE_PATH: ${{ steps.keystore.outputs.path }}
           AGENT_KEYSTORE_PASSWORD: ${{ secrets.AGENT_KEYSTORE_PASSWORD }}
@@ -97,6 +109,9 @@ jobs:
         run: gradle assembleRelease bundleRelease --no-daemon
 
       - name: Upload release APK
+        # APKs are built only on the release branch (owner's policy: no APK
+        # without approval); other branches compile and run the unit tests.
+        if: github.ref_name == 'claude/unified-agent-app'
         uses: actions/upload-artifact@v4
         with:
           name: waapro-agent-release-apk
@@ -104,6 +119,9 @@ jobs:
           if-no-files-found: error
 
       - name: Upload release AAB
+        # APKs are built only on the release branch (owner's policy: no APK
+        # without approval); other branches compile and run the unit tests.
+        if: github.ref_name == 'claude/unified-agent-app'
         uses: actions/upload-artifact@v4
         with:
           name: waapro-agent-release-aab
@@ -118,6 +136,9 @@ jobs:
       # releases that carry it. Any failure here stops the run, so no
       # release is created for an APK that wouldn't install.
       - name: Verify release APK
+        # APKs are built only on the release branch (owner's policy: no APK
+        # without approval); other branches compile and run the unit tests.
+        if: github.ref_name == 'claude/unified-agent-app'
         id: verify
         run: |
           set -euo pipefail

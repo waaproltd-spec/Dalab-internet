@@ -799,6 +799,10 @@ interface ApiService {
     @GET("agent/notices")
     suspend fun getAgentNotices(): Response<List<com.dalab.internet.data.AgentNotice>>
 
+    // Other Agents: this system's other agents with ONLINE/OFFLINE status.
+    @GET("agent/agents")
+    suspend fun getOtherAgents(@Query("search") search: String? = null): Response<com.dalab.internet.data.OtherAgentsResponse>
+
     @GET("agent/reports/dashboard/companies/{id}")
     suspend fun getCompanyReport(@Path("id") companyId: String, @Query("range") range: String): Response<CompanyReport>
 
