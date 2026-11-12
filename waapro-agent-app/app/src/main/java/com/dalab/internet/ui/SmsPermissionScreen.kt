@@ -60,19 +60,18 @@ fun SmsPermissionScreen(
     Box(modifier = Modifier.fillMaxSize().background(WaaproBg)) {
         WaaproWaves()
         Column(
-            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 28.dp),
+            // Sized to fit one phone screen without scrolling (it still
+            // scrolls on a very small screen or with large system fonts).
+            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 14.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Spacer(Modifier.height(12.dp))
-            WaaproLogoBlock(logoSize = 92.dp, nameSize = 26.sp)
+            WaaproLogoBlock(logoSize = 60.dp, nameSize = 20.sp)
+            Spacer(Modifier.height(6.dp))
+            WaaproAgentPill(textSize = 15.sp)
             Spacer(Modifier.height(10.dp))
-            WaaproAgentPill(textSize = 19.sp)
-            Spacer(Modifier.height(10.dp))
-            WaaproTagline()
-            Spacer(Modifier.height(18.dp))
 
             SmsIllustration()
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(10.dp))
 
             // "SMS Permission Required" banner
             Row(
@@ -80,17 +79,17 @@ fun SmsPermissionScreen(
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(50))
                     .background(Brush.horizontalGradient(listOf(WaaproNavy, WaaproBlue)))
-                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                    .padding(horizontal = 16.dp, vertical = 9.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.Center,
             ) {
-                Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null, tint = Color.White, modifier = Modifier.size(24.dp))
-                Spacer(Modifier.width(10.dp))
-                Text("SMS Permission", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("SMS Permission", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.width(6.dp))
-                Text("Required", color = WaaproGold, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text("Required", color = WaaproGold, fontSize = 17.sp, fontWeight = FontWeight.Bold)
             }
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(10.dp))
 
             // What the app reads, and what it never reads.
             Column(
@@ -99,19 +98,19 @@ fun SmsPermissionScreen(
                     .clip(RoundedCornerShape(18.dp))
                     .background(Color.White)
                     .border(1.dp, WaaproSoft, RoundedCornerShape(18.dp))
-                    .padding(14.dp),
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(
-                    "$WAAPRO_APP_NAME reads payment-confirmation SMS (from Hormuud, Somtel, Somnet and Amtel) — both new messages as they arrive and any already in your inbox from the last 24 hours — so you can verify a customer's payment without leaving the app.",
+                    "The app reads payment-confirmation SMS from Hormuud, Somtel, Somnet and Amtel (new ones and the last 24 hours), so you can verify a customer's payment without leaving the app.",
                     color = WaaproInk,
-                    fontSize = 14.sp,
+                    fontSize = 13.sp,
                     textAlign = TextAlign.Center,
-                    lineHeight = 20.sp,
+                    lineHeight = 18.sp,
                 )
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(8.dp))
                 Row(
-                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(WaaproSoft).padding(horizontal = 12.dp, vertical = 8.dp),
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(WaaproSoft).padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center,
                 ) {
@@ -120,7 +119,7 @@ fun SmsPermissionScreen(
                     Text("It never reads or uploads any other message.", color = WaaproNavy, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                 }
             }
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(10.dp))
 
             // The four networks
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
@@ -129,7 +128,7 @@ fun SmsPermissionScreen(
                 NetworkCard(companyId = "somnet", label = "Somnet", modifier = Modifier.weight(1f))
                 NetworkCard(companyId = "amtel", label = "Amtel", modifier = Modifier.weight(1f))
             }
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(10.dp))
 
             // Privacy indicators
             Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min), verticalAlignment = Alignment.CenterVertically) {
@@ -139,7 +138,7 @@ fun SmsPermissionScreen(
                 Box(Modifier.width(1.dp).fillMaxHeight().padding(vertical = 8.dp).background(WaaproBorder))
                 PrivacyPoint(Icons.Filled.Shield, "Your privacy\nis protected", Modifier.weight(1f))
             }
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(14.dp))
 
             if (permanentlyDenied) {
                 Surface(color = MaterialTheme.colorScheme.error.copy(alpha = 0.08f), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
@@ -161,7 +160,7 @@ fun SmsPermissionScreen(
             } else {
                 BigButton(icon = Icons.Filled.VerifiedUser, text = "Grant Permissions", onClick = onRequestPermissions)
             }
-            Spacer(Modifier.height(70.dp))
+            Spacer(Modifier.height(16.dp))
         }
     }
 }
@@ -170,21 +169,21 @@ fun SmsPermissionScreen(
 @Composable
 private fun SmsIllustration() {
     Box(
-        modifier = Modifier.size(150.dp).background(WaaproSoft, CircleShape),
+        modifier = Modifier.size(96.dp).background(WaaproSoft, CircleShape),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(Icons.Filled.Smartphone, contentDescription = null, tint = WaaproNavy, modifier = Modifier.size(112.dp))
+        Icon(Icons.Filled.Smartphone, contentDescription = null, tint = WaaproNavy, modifier = Modifier.size(72.dp))
         Box(
-            modifier = Modifier.size(44.dp).clip(RoundedCornerShape(8.dp)).background(Color.White),
+            modifier = Modifier.size(28.dp).clip(RoundedCornerShape(6.dp)).background(Color.White),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(Icons.Filled.Email, contentDescription = null, tint = WaaproBlue, modifier = Modifier.size(32.dp))
+            Icon(Icons.Filled.Email, contentDescription = null, tint = WaaproBlue, modifier = Modifier.size(20.dp))
         }
         Box(
-            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 22.dp, bottom = 18.dp).size(40.dp).background(Color.White, CircleShape),
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 10.dp).size(28.dp).background(Color.White, CircleShape),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = Color(0xFF16A34A), modifier = Modifier.size(38.dp))
+            Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = Color(0xFF16A34A), modifier = Modifier.size(26.dp))
         }
     }
 }
@@ -196,16 +195,16 @@ private fun NetworkCard(companyId: String, label: String, modifier: Modifier = M
             .shadow(2.dp, RoundedCornerShape(14.dp))
             .clip(RoundedCornerShape(14.dp))
             .background(Color.White)
-            .padding(vertical = 10.dp, horizontal = 4.dp),
+            .padding(vertical = 7.dp, horizontal = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Image(
             painter = painterResource(logoResFor(companyId)),
             contentDescription = label,
             contentScale = ContentScale.Fit,
-            modifier = Modifier.height(34.dp).fillMaxWidth(),
+            modifier = Modifier.height(26.dp).fillMaxWidth(),
         )
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(4.dp))
         Text(label, color = WaaproNavy, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
     }
 }
@@ -213,11 +212,11 @@ private fun NetworkCard(companyId: String, label: String, modifier: Modifier = M
 @Composable
 private fun PrivacyPoint(icon: ImageVector, text: String, modifier: Modifier = Modifier) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = modifier.padding(horizontal = 4.dp)) {
-        Box(modifier = Modifier.size(40.dp).background(WaaproSoft, CircleShape), contentAlignment = Alignment.Center) {
-            Icon(icon, contentDescription = null, tint = WaaproNavy, modifier = Modifier.size(20.dp))
+        Box(modifier = Modifier.size(32.dp).background(WaaproSoft, CircleShape), contentAlignment = Alignment.Center) {
+            Icon(icon, contentDescription = null, tint = WaaproNavy, modifier = Modifier.size(17.dp))
         }
-        Spacer(Modifier.height(6.dp))
-        Text(text, color = WaaproInk, fontSize = 13.sp, textAlign = TextAlign.Center, lineHeight = 17.sp)
+        Spacer(Modifier.height(4.dp))
+        Text(text, color = WaaproInk, fontSize = 12.sp, textAlign = TextAlign.Center, lineHeight = 15.sp)
     }
 }
 
@@ -228,7 +227,7 @@ private fun BigButton(icon: ImageVector, text: String, onClick: () -> Unit) {
         shape = RoundedCornerShape(50),
         contentPadding = PaddingValues(0.dp),
         colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
-        modifier = Modifier.fillMaxWidth().height(58.dp),
+        modifier = Modifier.fillMaxWidth().height(52.dp),
     ) {
         Box(
             Modifier.fillMaxSize().background(Brush.horizontalGradient(listOf(WaaproNavy, WaaproBlue))),
@@ -237,7 +236,7 @@ private fun BigButton(icon: ImageVector, text: String, onClick: () -> Unit) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(icon, contentDescription = null, tint = Color.White)
                 Spacer(Modifier.width(10.dp))
-                Text(text, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text(text, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.width(10.dp))
                 Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = Color.White)
             }
