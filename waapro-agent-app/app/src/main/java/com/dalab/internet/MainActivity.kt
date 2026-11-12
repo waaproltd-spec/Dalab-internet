@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.FactCheck
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.CurrencyExchange
@@ -100,6 +101,7 @@ import com.dalab.internet.ui.PromoAdManagementScreen
 import com.dalab.internet.ui.NewSaleScreen
 import com.dalab.internet.ui.NotificationsScreen
 import com.dalab.internet.ui.OrderDetailScreen
+import com.dalab.internet.ui.ManageOrdersScreen
 import com.dalab.internet.ui.OrdersListScreen
 import com.dalab.internet.ui.PackagesScreen
 import com.dalab.internet.ui.PermissionsStatusScreen
@@ -253,7 +255,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP, SALES, CUSTOMERS, CUSTOMER_DETAIL, REPORTS, RESELLER, AGENT_SHOP_ORDER_DETAIL, AGENT_VIP_ORDER_DETAIL, AGENT_VIP_PACKAGE_ORDER_DETAIL, NALA_SOCO, PROMO_ADS, CIYAARAHA }
+private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP, SALES, CUSTOMERS, CUSTOMER_DETAIL, REPORTS, RESELLER, AGENT_SHOP_ORDER_DETAIL, AGENT_VIP_ORDER_DETAIL, AGENT_VIP_PACKAGE_ORDER_DETAIL, MANAGE_ORDERS, NALA_SOCO, PROMO_ADS, CIYAARAHA }
 // Bottom nav is exactly 5 tabs: Home, Orders, Support Agent, Broadcast, More --
 // Sales/Customers/Reports (formerly their own tabs) moved under More as
 // ordinary Screen.X destinations instead (see MoreScreen's "My Work"
@@ -572,6 +574,7 @@ private fun AgentApp() {
             onOpenNalaSoco = { navigate(Screen.NALA_SOCO) },
             onOpenPromoAds = { navigate(Screen.PROMO_ADS) },
             onOpenCiyaaraha = { navigate(Screen.CIYAARAHA) },
+            onOpenManageOrders = { navigate(Screen.MANAGE_ORDERS) },
         )
 
         Screen.ORDER_DETAIL -> selectedOrder?.let { order ->
@@ -581,6 +584,11 @@ private fun AgentApp() {
                 onOrderUpdated = { selectedOrder = it },
             )
         }
+
+        Screen.MANAGE_ORDERS -> ManageOrdersScreen(
+            onOpenOrder = { order -> selectedOrder = order; navigate(Screen.ORDER_DETAIL) },
+            onBack = { goBack() },
+        )
 
         Screen.PACKAGES -> PackagesScreen(onBack = { goBack() })
 
@@ -699,6 +707,7 @@ private fun AgentHome(
     onOpenNalaSoco: () -> Unit,
     onOpenPromoAds: () -> Unit,
     onOpenCiyaaraha: () -> Unit,
+    onOpenManageOrders: () -> Unit,
 ) {
 
     // A support push tapped while this composable already exists (warm
@@ -794,6 +803,7 @@ private fun AgentHome(
                     onOpenNalaSoco = onOpenNalaSoco,
                     onOpenPromoAds = onOpenPromoAds,
                     onOpenCiyaaraha = onOpenCiyaaraha,
+                    onOpenManageOrders = onOpenManageOrders,
                 )
             }
         }
@@ -935,6 +945,7 @@ private fun MoreScreen(
     onOpenNalaSoco: () -> Unit,
     onOpenPromoAds: () -> Unit,
     onOpenCiyaaraha: () -> Unit,
+    onOpenManageOrders: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         // Sales/Customers/Reports were their own bottom-nav tabs before the
@@ -985,6 +996,12 @@ private fun MoreScreen(
             NotificationHealthRows()
         }
         MoreSection(title = "My Work") {
+            MoreItem(
+                title = "Manage Orders",
+                subtitle = "Approve, reject, cancel, retry or reverse orders",
+                icon = Icons.Filled.FactCheck,
+                onClick = onOpenManageOrders,
+            )
             MoreItem(
                 title = "Sales",
                 subtitle = "Start a new sale for a walk-in customer",
