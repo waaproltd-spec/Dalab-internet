@@ -30,38 +30,63 @@ object SessionManager {
         prefs = SecurePrefs.createOrFallback(context, PREFS, "session_init")
     }
 
+    // Every read used to decrypt from EncryptedSharedPreferences (Keystore),
+    // and these are read on the main thread by many screens and on every API
+    // call. One in-memory copy, loaded once and kept in step with each write.
+    private class Snapshot(val access: String?, val refresh: String?, val agent: AgentProfile?)
+    @Volatile private var snapshot: Snapshot? = null
+
+    private fun current(): Snapshot {
+        snapshot?.let { return it }
+        synchronized(this) {
+            snapshot?.let { return it }
+            if (!::prefs.isInitialized) return Snapshot(null, null, null)
+            val id = prefs.getString(KEY_AGENT_ID, null)
+            val agent = id?.let {
+                AgentProfile(
+                    id = it,
+                    name = prefs.getString(KEY_AGENT_NAME, "") ?: "",
+                    phone = prefs.getString(KEY_AGENT_PHONE, "") ?: "",
+                )
+            }
+            return Snapshot(prefs.getString(KEY_ACCESS, null), prefs.getString(KEY_REFRESH, null), agent).also { snapshot = it }
+        }
+    }
+
     fun saveSession(accessToken: String, refreshToken: String, profile: AgentProfile) {
-        prefs.edit()
-            .putString(KEY_ACCESS, accessToken)
-            .putString(KEY_REFRESH, refreshToken)
-            .putString(KEY_AGENT_ID, profile.id)
-            .putString(KEY_AGENT_NAME, profile.name)
-            .putString(KEY_AGENT_PHONE, profile.phone)
-            .apply()
+        synchronized(this) {
+            snapshot = Snapshot(accessToken, refreshToken, AgentProfile(id = profile.id, name = profile.name, phone = profile.phone))
+            prefs.edit()
+                .putString(KEY_ACCESS, accessToken)
+                .putString(KEY_REFRESH, refreshToken)
+                .putString(KEY_AGENT_ID, profile.id)
+                .putString(KEY_AGENT_NAME, profile.name)
+                .putString(KEY_AGENT_PHONE, profile.phone)
+                .apply()
+        }
     }
 
     /** Used by the refresh flow, which rotates both tokens but doesn't touch the profile. */
     fun updateTokens(accessToken: String, refreshToken: String) {
-        prefs.edit()
-            .putString(KEY_ACCESS, accessToken)
-            .putString(KEY_REFRESH, refreshToken)
-            .apply()
+        synchronized(this) {
+            snapshot = Snapshot(accessToken, refreshToken, current().agent)
+            prefs.edit()
+                .putString(KEY_ACCESS, accessToken)
+                .putString(KEY_REFRESH, refreshToken)
+                .apply()
+        }
     }
 
-    fun accessToken(): String? = prefs.getString(KEY_ACCESS, null)
-    fun refreshToken(): String? = prefs.getString(KEY_REFRESH, null)
+    fun accessToken(): String? = current().access
+    fun refreshToken(): String? = current().refresh
     fun isLoggedIn(): Boolean = accessToken() != null
 
-    fun currentAgent(): AgentProfile? {
-        val id = prefs.getString(KEY_AGENT_ID, null) ?: return null
-        return AgentProfile(
-            id = id,
-            name = prefs.getString(KEY_AGENT_NAME, "") ?: "",
-            phone = prefs.getString(KEY_AGENT_PHONE, "") ?: "",
-        )
-    }
+    fun currentAgent(): AgentProfile? = current().agent
 
     fun clear() {
-        prefs.edit().clear().apply()
+        synchronized(this) {
+            snapshot = Snapshot(null, null, null)
+            prefs.edit().clear().apply()
+        }
     }
 }

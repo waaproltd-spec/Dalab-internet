@@ -58,6 +58,8 @@ class DalabAgentApp : Application() {
         // not a realistic throw site the way EncryptedSharedPreferences is.
         DiagnosticsLog.init(this)
         installCrashHandler()
+        // Off the main thread: reading the last freeze's thread dump is file work.
+        Thread({ com.dalab.internet.diagnostics.AnrRecorder.recordPastAnrs(this) }, "anr-recorder").start()
 
         initSafely("agent_settings_init") { com.dalab.internet.ui.theme.AgentSettings.init(this) }
         initSafely("support_alerts_init") { com.dalab.internet.notifications.SupportAlerts.init(this) }
