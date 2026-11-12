@@ -18382,7 +18382,13 @@ export default function AdminDashboard() {
   }
 
   if (!admin && hubStatus === "signing-in") {
-    return <HubNotice title="Signing you in…" message="Opening this dashboard from the Admin Hub." />;
+    // No card while the hub's sign-in completes: just the dashboard's colour and a small spinner.
+    return (
+      <div style={{ minHeight: "100vh", background: "var(--sidebar-bg, #0B1240)", display: "flex", alignItems: "center", justifyContent: "center" }} aria-busy="true" aria-label="Signing you in">
+        <span style={{ width: 30, height: 30, border: "3px solid rgba(255,255,255,0.25)", borderTopColor: "#FFFFFF", borderRadius: "50%", animation: "hubSignInSpin 0.8s linear infinite" }} />
+        <style>{"@keyframes hubSignInSpin{to{transform:rotate(360deg)}}"}</style>
+      </div>
+    );
   }
 
   if (!admin && !showLocalLogin) {
