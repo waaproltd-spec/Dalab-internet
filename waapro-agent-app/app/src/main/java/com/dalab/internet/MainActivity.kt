@@ -270,7 +270,7 @@ private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILI
 // Money Exchange/Reseller Withdrawal already follow.
 // ORDERS = the Shop/VIP queue (More > My Work, and order notifications);
 // MANAGE = Manage Orders, the second tab in the bottom bar.
-private enum class HomeTab { HOME, MANAGE, ORDERS, SUPPORT, BROADCAST, MORE }
+private enum class HomeTab { HOME, MANAGE, AGENT_INFO, ORDERS, SUPPORT, BROADCAST, MORE }
 
 @Composable
 private fun AgentApp() {
@@ -826,6 +826,8 @@ private fun AgentHome(
                     onOpenVipOrder = onOpenAgentVipOrder,
                     onOpenVipPackageOrder = onOpenAgentVipPackageOrder,
                 )
+                // Today's figures and the other agents (moved off Home).
+                HomeTab.AGENT_INFO -> com.dalab.internet.ui.AgentInfoScreen(onOpenOtherAgents = onOpenOtherAgents)
                 HomeTab.SUPPORT -> SupportScreen(onBack = { onTabChange(HomeTab.HOME) })
                 HomeTab.BROADCAST -> NotificationsScreen(onBack = { onTabChange(HomeTab.HOME) })
                 HomeTab.MORE -> MoreScreen(
@@ -865,6 +867,7 @@ private data class BottomNavTab(
 private val BOTTOM_NAV_TABS = listOf(
     BottomNavTab(HomeTab.HOME, Icons.Filled.Home, "Home"),
     BottomNavTab(HomeTab.MANAGE, Icons.Filled.FactCheck, "Manage Orders"),
+    BottomNavTab(HomeTab.AGENT_INFO, Icons.Filled.Groups, "Agent Info"),
     BottomNavTab(HomeTab.SUPPORT, Icons.Filled.SupportAgent, "Support Agent"),
     BottomNavTab(HomeTab.BROADCAST, Icons.Filled.Notifications, "Broadcast"),
     BottomNavTab(HomeTab.MORE, Icons.Filled.MoreHoriz, "More"),
@@ -974,8 +977,8 @@ private fun DalabBottomNavigation(
                             spec.label,
                             color = if (selected) com.dalab.internet.ui.WaaproBlue else iconColor,
                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                            fontSize = 11.sp,
-                            lineHeight = 13.sp,
+                            fontSize = 10.5.sp,
+                            lineHeight = 12.5.sp,
                             maxLines = 2,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                         )

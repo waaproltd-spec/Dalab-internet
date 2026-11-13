@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
@@ -328,5 +330,63 @@ private fun StatusStrip(icon: ImageVector, bg: Color, ink: Color, title: String,
             Text(title, color = ink, fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
             Text(body, color = ink, fontSize = 12.sp)
         }
+    }
+}
+
+// ---------------------------------------------------------------- Agent Info tab
+
+/**
+ * The "Agent Info" bottom tab: today's figures (Orders Created Today, My
+ * Performance, Daily Revenue) and how many of the other agents are online,
+ * which opens the full Other Agents list.
+ */
+@Composable
+fun AgentInfoScreen(onOpenOtherAgents: () -> Unit) {
+    var online by remember { mutableStateOf<Int?>(null) }
+    var total by remember { mutableStateOf<Int?>(null) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            try {
+                val body = com.dalab.internet.network.ApiClient.service.getOtherAgents(null).body()
+                if (body != null) {
+                    online = body.onlineCount
+                    total = body.agents.size
+                }
+            } catch (_: Exception) {
+                // Keep the last counts while offline.
+            }
+            delay(30_000L)
+        }
+    }
+    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+        WaaproScreenHeader("Agent Info", "Today's work and the other agents")
+        AgentTodaySection()
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = Color.White,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .border(1.dp, WaaproBorder, RoundedCornerShape(16.dp))
+                .clickable(onClick = onOpenOtherAgents),
+        ) {
+            Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.Person, contentDescription = null, tint = WaaproNavy, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Other Agents", color = WaaproNavy, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text(
+                        if (online != null && total != null) "$online online · $total agents" else "Who is ONLINE or OFFLINE in this system",
+                        color = WaaproMuted, fontSize = 12.sp,
+                    )
+                }
+                if (online != null) {
+                    Box(Modifier.size(9.dp).background(GreenInk, androidx.compose.foundation.shape.CircleShape))
+                    Spacer(Modifier.width(6.dp))
+                    Text("$online", color = GreenInk, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp)
+                }
+            }
+        }
+        Spacer(Modifier.height(16.dp))
     }
 }
