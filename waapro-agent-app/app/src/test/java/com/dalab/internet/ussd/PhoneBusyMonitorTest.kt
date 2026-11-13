@@ -42,7 +42,7 @@ class PhoneBusyMonitorTest {
     }
 
     @Test
-    fun `window changes: owner's USSD sets busy, leaving to another app starts the quiet pause`() {
+    fun `window changes - owner's USSD sets busy, leaving to another app starts the quiet pause`() {
         PhoneBusyMonitor.resetForTest()
         UssdSimLock.phoneFreeGate = null
         val t = 50_000_000L
