@@ -123,10 +123,75 @@ test("reject and cancel need a reason, end the order once, and are refused once 
   assert.equal(blocked.status, 409);
   assert.equal(blocked.body.code, "ALREADY_SENT");
 
-  const unknown = await newOrder("in_progress");
-  await query(`INSERT INTO ussd_dial_attempts (id, order_id, ussd_string, status) VALUES ($1,$2,'*1#','ambiguous')`, [randomUUID(), unknown]);
-  assert.equal((await post(`/agent/orders/${unknown}/reject-payment`, { reason: "unsure" })).body.code, "DIAL_UNCONFIRMED");
-  assert.equal(await statusOf(unknown), "in_progress");
+});
+
+const attemptOf = (id: string) =>
+  queryOne<{ status: string; response_message: string | null }>(`SELECT status, response_message FROM ussd_dial_attempts WHERE id=$1`, [id]);
+
+test("the agent decides when a dial's result is unknown: reject and cancel go through and are recorded", async () => {
+  // Reject: an old 'ambiguous' attempt (the red warning) no longer blocks.
+  const rej = await newOrder("in_progress");
+  const a1 = randomUUID();
+  await query(`INSERT INTO ussd_dial_attempts (id, order_id, ussd_string, status, created_at) VALUES ($1,$2,'*1#','ambiguous', now() - interval '10 minutes')`, [a1, rej]);
+  const rejected = await post(`/agent/orders/${rej}/reject-payment`, { reason: "checked: not received" });
+  assert.equal(rejected.status, 200, JSON.stringify(rejected.body));
+  assert.equal(await statusOf(rej), "failed");
+  const closed1 = (await attemptOf(a1))!;
+  assert.equal(closed1.status, "failed", "the open attempt is closed as not delivered");
+  assert.match(closed1.response_message ?? "", /Agent .* chose "Reject payment" without a confirmed result/);
+  const log1 = (await logsFor(rej)).at(-1)!;
+  assert.equal(log1.action, "agent_payment_rejected");
+  assert.equal(log1.agent_id, AGENT);
+  assert.equal(log1.new_value.decidedWithoutConfirmedDial, true);
+  assert.deepEqual(log1.new_value.closedDialAttempts.map((c: any) => c.previousStatus), ["ambiguous"]);
+
+  // Cancel: a 'pending' attempt that started just now may still be running
+  // on the phone -> wait; once it's older, the agent can cancel.
+  const can = await newOrder("in_progress");
+  const a2 = randomUUID();
+  await query(`INSERT INTO ussd_dial_attempts (id, order_id, ussd_string, status) VALUES ($1,$2,'*1#','pending')`, [a2, can]);
+  const wait = await post(`/agent/orders/${can}/cancel`, { reason: "stop" });
+  assert.equal(wait.status, 409);
+  assert.equal(wait.body.code, "DIAL_IN_PROGRESS");
+  assert.equal(await statusOf(can), "in_progress");
+  assert.equal((await attemptOf(a2))!.status, "pending", "nothing changed while it may be running");
+  await query(`UPDATE ussd_dial_attempts SET created_at = now() - interval '4 minutes' WHERE id=$1`, [a2]);
+  const cancelled = await post(`/agent/orders/${can}/cancel`, { reason: "stop" });
+  assert.equal(cancelled.status, 200, JSON.stringify(cancelled.body));
+  assert.equal(await statusOf(can), "cancelled");
+  assert.equal((await attemptOf(a2))!.status, "failed");
+  assert.equal((await logsFor(can)).at(-1)!.new_value.decidedWithoutConfirmedDial, true);
+
+  // Data confirmed sent: still never cancelled (Reverse is for that).
+  const sentOk = await newOrder("in_progress");
+  await query(`INSERT INTO ussd_dial_attempts (id, order_id, ussd_string, status, created_at) VALUES ($1,$2,'*1#','success', now() - interval '1 hour')`, [randomUUID(), sentOk]);
+  assert.equal((await post(`/agent/orders/${sentOk}/cancel`, { reason: "x".repeat(5) })).body.code, "ALREADY_SENT");
+});
+
+test("the agent can retry an order whose dial result is unknown; the old attempt is closed so it dials once more", async () => {
+  const id = await newOrder();
+  await post(`/agent/orders/${id}/approve-payment`, { reason: "checked" });
+  await query(`UPDATE payment_transactions SET status='processing' WHERE order_id=$1`, [id]);
+  const a = randomUUID();
+  await query(`INSERT INTO ussd_dial_attempts (id, order_id, ussd_string, status, created_at) VALUES ($1,$2,'*1#','ambiguous', now() - interval '20 minutes')`, [a, id]);
+  const retried = await post(`/agent/orders/${id}/retry`);
+  assert.equal(retried.status, 200, JSON.stringify(retried.body));
+  assert.equal(await statusOf(id), "in_progress");
+  assert.equal((await queryOne<{ status: string }>(`SELECT status FROM payment_transactions WHERE order_id=$1`, [id]))!.status, "pending", "ready for one new dial");
+  assert.equal((await attemptOf(a))!.status, "failed");
+  assert.match((await attemptOf(a))!.response_message ?? "", /chose "Retry"/);
+  const log = (await logsFor(id)).at(-1)!;
+  assert.equal(log.action, "agent_order_retried");
+  assert.equal(log.new_value.decidedWithoutConfirmedDial, true);
+  // No open attempt is left, so a new dial is allowed exactly once more.
+  const open = await queryOne<{ n: string }>(`SELECT count(*) AS n FROM ussd_dial_attempts WHERE order_id=$1 AND status IN ('pending','ambiguous')`, [id]);
+  assert.equal(Number(open!.n), 0);
+
+  // A dial that started a moment ago may still be running: wait.
+  const running = await newOrder();
+  await post(`/agent/orders/${running}/approve-payment`, { reason: "checked" });
+  await query(`INSERT INTO ussd_dial_attempts (id, order_id, ussd_string, status) VALUES ($1,$2,'*1#','pending')`, [randomUUID(), running]);
+  assert.equal((await post(`/agent/orders/${running}/retry`)).body.code, "DIAL_IN_PROGRESS");
 });
 
 test("retry puts a failed order with a verified payment back to processing, ready to dial", async () => {

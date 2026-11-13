@@ -1480,6 +1480,52 @@ async function dialMayHaveSent(orderId: string): Promise<"success" | "unknown" |
   return row.status === "success" ? "success" : "unknown";
 }
 
+/** A dial younger than this may still be running on the phone right now
+ * (every session ends within its 3-minute limit, see the Agent App's
+ * UssdSimLock), so an agent's override waits until it's past this. */
+const DIAL_MAY_BE_RUNNING_SECONDS = 180;
+
+/**
+ * The agent decided to act although a dial's result is unknown (they saw
+ * the warning). Closes every unresolved attempt the same way the admin
+ * "resolve: not delivered" does -- the attempt becomes 'failed' with a note
+ * naming the agent and the action -- so the order history shows who decided
+ * what and when. A late result from the phone can't overwrite it (that
+ * report only updates a still-'pending' attempt). Returns the attempts it
+ * closed, or "running" when one may still be dialing right now.
+ */
+async function closeUnconfirmedDialsByAgent(
+  orderId: string,
+  agentId: string,
+  actionLabel: string
+): Promise<"running" | { id: string; attemptNumber: number; previousStatus: string }[]> {
+  const open = await query<{ id: string; attempt_number: number; status: string; running: boolean }>(
+    `SELECT id, attempt_number, status, (created_at > now() - ($2 || ' seconds')::interval) AS running
+       FROM ussd_dial_attempts WHERE order_id=$1 AND status IN ('pending','ambiguous')`,
+    [orderId, String(DIAL_MAY_BE_RUNNING_SECONDS)]
+  );
+  if (open.some((a) => a.running)) return "running";
+  const agent = await queryOne<{ name: string }>(`SELECT name FROM agents WHERE id=$1`, [agentId]);
+  const note = `Agent ${agent?.name ?? agentId} chose "${actionLabel}" without a confirmed result -- recorded as not delivered`;
+  const closed: { id: string; attemptNumber: number; previousStatus: string }[] = [];
+  for (const a of open) {
+    const done = await query(
+      `UPDATE ussd_dial_attempts
+          SET status='failed', completed_at=COALESCE(completed_at, now()),
+              response_message=TRIM(BOTH ' ' FROM COALESCE(response_message,'') || ' [' || $1 || ']')
+        WHERE id=$2 AND status IN ('pending','ambiguous') RETURNING id`,
+      [note, a.id]
+    );
+    if (done.length > 0) closed.push({ id: a.id, attemptNumber: a.attempt_number, previousStatus: a.status });
+  }
+  return closed;
+}
+
+const DIAL_RUNNING = {
+  error: "A USSD dial for this order started less than 3 minutes ago and may still be running. Wait a minute, then try again.",
+  code: "DIAL_IN_PROGRESS",
+};
+
 const ALREADY_HANDLED = (status: string) => ({
   error: `This order is already ${status.replace("_", " ")} -- someone handled it first. Refresh to see it.`,
   code: "ALREADY_HANDLED",
@@ -1542,11 +1588,14 @@ async function endOrderByAgent(req: any, res: any, newStatus: "failed" | "cancel
   if (dial === "success") {
     return sendJson(res, 409, { error: "The data was already sent for this order. Use Reverse once it is completed.", code: "ALREADY_SENT" });
   }
+  // Unknown dial result: the agent saw the warning and decides. A dial that
+  // may still be running right now is the only thing that waits.
   if (dial === "unknown") {
-    return sendJson(res, 409, {
-      error: "A USSD dial for this order has no confirmed result yet -- the data may have been sent. Check with the carrier first.",
-      code: "DIAL_UNCONFIRMED",
-    });
+    const running = await queryOne<{ n: string }>(
+      `SELECT count(*) AS n FROM ussd_dial_attempts WHERE order_id=$1 AND status IN ('pending','ambiguous') AND created_at > now() - ($2 || ' seconds')::interval`,
+      [order.id, String(DIAL_MAY_BE_RUNNING_SECONDS)]
+    );
+    if (Number(running?.n ?? 0) > 0) return sendJson(res, 409, DIAL_RUNNING);
   }
   const changed = await query(
     `UPDATE orders SET status=$1, updated_at=now() WHERE id=$2 AND status = ANY($3::text[]) RETURNING id`,
@@ -1555,6 +1604,11 @@ async function endOrderByAgent(req: any, res: any, newStatus: "failed" | "cancel
   if (changed.length === 0) {
     const now = await queryOne<{ status: string }>(`SELECT status FROM orders WHERE id=$1`, [order.id]);
     return sendJson(res, 409, ALREADY_HANDLED(now?.status ?? order.status));
+  }
+  let closedDials: unknown[] = [];
+  if (dial === "unknown") {
+    const closed = await closeUnconfirmedDialsByAgent(order.id, req.auth!.sub, newStatus === "failed" ? "Reject payment" : "Cancel order");
+    closedDials = closed === "running" ? [] : closed;
   }
   await markPaymentFinal(order.id, "failed");
   await refundRedeemedPointsIfNeeded(order.id);
@@ -1567,7 +1621,11 @@ async function endOrderByAgent(req: any, res: any, newStatus: "failed" | "cancel
       : "Dalabkaagii waa la joojiyay. Fadlan la xiriir taageerada haddii aad su'aalo qabto.",
     { screen: "notifications", orderId: order.id }
   );
-  await recordAgentAction(req.auth!.sub, action, order.id, { status: order.status }, { status: newStatus, reason });
+  await recordAgentAction(req.auth!.sub, action, order.id, { status: order.status }, {
+    status: newStatus,
+    reason,
+    ...(closedDials.length > 0 ? { decidedWithoutConfirmedDial: true, closedDialAttempts: closedDials } : {}),
+  });
   broadcast({ type: "order.updated", orderId: order.id });
   sendJson(res, 200, maskOrder(await loadOrder(order.id)));
 }
@@ -1593,15 +1651,19 @@ ordersRouter.post("/agent/orders/:id/retry", requireAuth("agent"), async (req, r
   if (await isAlreadyCompleted(order.id)) {
     return sendJson(res, 409, { error: "This order's payment has already completed -- nothing to retry.", code: "ALREADY_SENT" });
   }
-  if ((await dialMayHaveSent(order.id)) === "unknown") {
-    return sendJson(res, 409, {
-      error: "A USSD dial for this order has no confirmed result yet -- the data may have been sent. Check with the carrier first.",
-      code: "DIAL_UNCONFIRMED",
-    });
-  }
   const hasPayment = await queryOne(`SELECT id FROM payment_transactions WHERE order_id=$1 LIMIT 1`, [order.id]);
   if (!hasPayment) {
     return sendJson(res, 400, { error: "No verified payment for this order. Approve the payment instead.", code: "NO_PAYMENT" });
+  }
+  // Unknown dial result: the agent saw the warning and decides to send
+  // again. The open attempt is closed as "not delivered" by this agent (so
+  // a new dial is allowed and the decision is on record); only a dial that
+  // may still be running right now makes them wait.
+  let closedDials: { id: string; attemptNumber: number; previousStatus: string }[] = [];
+  if ((await dialMayHaveSent(order.id)) === "unknown") {
+    const closed = await closeUnconfirmedDialsByAgent(order.id, req.auth!.sub, "Retry");
+    if (closed === "running") return sendJson(res, 409, DIAL_RUNNING);
+    closedDials = closed;
   }
   if (order.status === "failed") {
     const flipped = await query(`UPDATE orders SET status='in_progress', updated_at=now() WHERE id=$1 AND status='failed' RETURNING id`, [order.id]);
@@ -1621,7 +1683,11 @@ ordersRouter.post("/agent/orders/:id/retry", requireAuth("agent"), async (req, r
     genError = gen.error ?? null;
     await query(`UPDATE orders SET ussd_generation_failed_reason=$1 WHERE id=$2`, [genError, order.id]);
   }
-  await recordAgentAction(req.auth!.sub, "agent_order_retried", order.id, { status: order.status }, { status: "in_progress", ussdGenerationError: genError });
+  await recordAgentAction(req.auth!.sub, "agent_order_retried", order.id, { status: order.status }, {
+    status: "in_progress",
+    ussdGenerationError: genError,
+    ...(closedDials.length > 0 ? { decidedWithoutConfirmedDial: true, closedDialAttempts: closedDials } : {}),
+  });
   broadcast({ type: "order.updated", orderId: order.id });
   sendJson(res, 200, maskOrder(await loadOrder(order.id)));
 });
