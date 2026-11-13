@@ -15,6 +15,8 @@ export const settingsRouter = Router();
  * is just a new row, not a migration.
  */
 const DEFAULT_SETTINGS: Record<string, string> = {
+  // Other Agents (Agent App): show agents' work phone numbers to each other.
+  agent_directory_show_phone: "true",
   app_name: "DALAB INTERNET",
   app_slogan: "Internet you can trust.",
   support_phone: "",
@@ -105,6 +107,7 @@ const PHONE_PATTERN = /^\+?\d{6,15}$/;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function validateSettingValue(key: string, value: string): string | null {
+  if (key === "agent_directory_show_phone" && value !== "true" && value !== "false") return "Use true or false.";
   const trimmed = value.trim();
   if (!trimmed) return null;
   if (PHONE_SETTING_KEYS.has(key) && !PHONE_PATTERN.test(trimmed)) {

@@ -21,6 +21,9 @@ import { offlinePaymentMethodsRouter } from "./routes/offlinePaymentMethods.rout
 import { agentsRouter } from "./routes/agents.routes.js";
 import { smsLogsRouter } from "./routes/smsLogs.routes.js";
 import { reportsRouter } from "./routes/reports.routes.js";
+import { agentDailyRouter } from "./routes/agentDaily.routes.js";
+import { agentDirectoryRouter, agentPresenceMiddleware } from "./routes/agentDirectory.routes.js";
+import { agentSimBalancesRouter } from "./routes/agentSimBalances.routes.js";
 import { settingsRouter } from "./routes/settings.routes.js";
 import { ussdRouter } from "./routes/ussd.routes.js";
 import { macaashRouter } from "./routes/macaash.routes.js";
@@ -274,6 +277,8 @@ app.use(async (req: Request, res: Response, next: NextFunction) => {
 app.use(customerSuspensionMiddleware);
 // Device Activation: every agent API call must come from an approved app install.
 app.use(agentDeviceActivationMiddleware);
+// Other Agents: any request with an agent token marks that agent as seen.
+app.use(agentPresenceMiddleware);
 
 // System Control (Admin Hub): a suspended system refuses every request but the hub's own.
 app.use(systemSuspensionMiddleware);
@@ -296,6 +301,9 @@ app.use(offlinePaymentMethodsRouter);
 app.use(agentsRouter);
 app.use(smsLogsRouter);
 app.use(reportsRouter);
+app.use(agentDailyRouter);
+app.use(agentDirectoryRouter);
+app.use(agentSimBalancesRouter);
 app.use(settingsRouter);
 app.use(ussdRouter);
 app.use(macaashRouter);

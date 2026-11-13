@@ -49,9 +49,11 @@ async function insertCompletedOrderWithPoints(points: number): Promise<string> {
 }
 
 function reverseAsAgent(orderId: string) {
+  // A reason is required (agent operations: every reversal is logged with one).
   return fetch(`${baseUrl}/agent/orders/${orderId}/reverse`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${agentToken}` },
+    headers: { Authorization: `Bearer ${agentToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ reason: "customer asked" }),
   });
 }
 

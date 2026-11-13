@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { touchAgentPresence } from "./agentDirectory.routes.js";
 import { randomUUID } from "node:crypto";
 import { query, queryOne, withTransaction } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
@@ -535,7 +536,15 @@ ordersRouter.get("/agent/orders", requireAuth("agent"), async (req, res) => {
 // swallowed as an :id param.
 ordersRouter.get("/agent/orders/stream", requireAuth("agent"), async (req, res) => {
   const unsubscribe = subscribe(res);
-  req.on("close", unsubscribe);
+  // Other Agents: while this live connection stays open the agent is
+  // online -- refresh their last-seen time every minute.
+  const agentId = req.auth!.sub;
+  void touchAgentPresence(agentId);
+  const presence = setInterval(() => void touchAgentPresence(agentId), 60_000);
+  req.on("close", () => {
+    clearInterval(presence);
+    unsubscribe();
+  });
 });
 
 // Self-heal target list for the Agent App: an order that reached in_progress
@@ -1412,13 +1421,292 @@ ordersRouter.post("/admin/orders/:id/reverse", requirePermission("orders.reverse
   sendJson(res, 200, maskOrder(await loadOrder(req.params.id)));
 });
 
-// Identical to POST /admin/orders/:id/reverse above, just agent-authenticated
-// -- part of full Customer-order-management parity (cancel/claw-back an
-// order for a customer, same as Admin can).
+// ---------------------------------------------------------------------------
+// Agent operations (WAAPRO LTD AGENT app). An authorized agent runs the daily
+// order workflow without an admin: approve or reject a payment, cancel,
+// retry a failed/stuck order, reverse a completed one. Rules for all of them:
+//  - only while the agent's operational access is on (agents.operations_enabled,
+//    on by default; an admin switches it off in Dashboard > Agents);
+//  - every state change is an atomic compare-and-swap on the order's status,
+//    so a double tap, a retry or two agents at once can't approve, refund or
+//    notify twice -- the loser gets 409 ALREADY_HANDLED;
+//  - every action is written to the Activity Log with the agent's id;
+//  - money-safety: nothing is rejected or cancelled while a USSD dial for it
+//    may have gone out (a successful or still-unknown dial) -- that needs a
+//    person to check with the carrier first.
+// ---------------------------------------------------------------------------
+
+/** 403 unless this agent's operational access is on. */
+async function agentOperationsAllowed(req: any, res: any): Promise<boolean> {
+  const agent = await queryOne<{ operations_enabled: boolean; status: string }>(
+    `SELECT operations_enabled, status FROM agents WHERE id=$1`,
+    [req.auth!.sub]
+  );
+  if (!agent || agent.status !== "active" || !agent.operations_enabled) {
+    sendJson(res, 403, {
+      error: "Your operational access is switched off. Ask your admin to turn it on.",
+      code: "AGENT_OPERATIONS_DISABLED",
+    });
+    return false;
+  }
+  return true;
+}
+
+/** One Activity Log row for an agent's action (best-effort, like recordActivity). */
+async function recordAgentAction(agentId: string, action: string, orderId: string, oldValue: unknown, newValue: unknown): Promise<void> {
+  try {
+    await query(
+      `INSERT INTO admin_activity_log (id, admin_id, agent_id, action, entity_type, entity_id, old_value, new_value)
+       VALUES ($1, NULL, $2, $3, 'order', $4, $5, $6)`,
+      [randomUUID(), agentId, action, orderId, JSON.stringify(oldValue ?? null), JSON.stringify(newValue ?? null)]
+    );
+  } catch (err) {
+    console.error("Failed to record agent action:", (err as Error).message);
+  }
+}
+
+function actionReason(req: any): string {
+  return typeof req.body?.reason === "string" ? req.body.reason.trim().slice(0, 300) : "";
+}
+
+/** A dial that sent (or may have sent) the data: rejecting/cancelling now could lose money. */
+async function dialMayHaveSent(orderId: string): Promise<"success" | "unknown" | null> {
+  const row = await queryOne<{ status: string }>(
+    `SELECT status FROM ussd_dial_attempts WHERE order_id=$1 AND status IN ('success','pending','ambiguous')
+      ORDER BY (status='success') DESC LIMIT 1`,
+    [orderId]
+  );
+  if (!row) return null;
+  return row.status === "success" ? "success" : "unknown";
+}
+
+/** A dial younger than this may still be running on the phone right now
+ * (every session ends within its 3-minute limit, see the Agent App's
+ * UssdSimLock), so an agent's override waits until it's past this. */
+const DIAL_MAY_BE_RUNNING_SECONDS = 180;
+
+/**
+ * The agent decided to act although a dial's result is unknown (they saw
+ * the warning). Closes every unresolved attempt the same way the admin
+ * "resolve: not delivered" does -- the attempt becomes 'failed' with a note
+ * naming the agent and the action -- so the order history shows who decided
+ * what and when. A late result from the phone can't overwrite it (that
+ * report only updates a still-'pending' attempt). Returns the attempts it
+ * closed, or "running" when one may still be dialing right now.
+ */
+async function closeUnconfirmedDialsByAgent(
+  orderId: string,
+  agentId: string,
+  actionLabel: string
+): Promise<"running" | { id: string; attemptNumber: number; previousStatus: string }[]> {
+  const open = await query<{ id: string; attempt_number: number; status: string; running: boolean }>(
+    `SELECT id, attempt_number, status, (created_at > now() - ($2 || ' seconds')::interval) AS running
+       FROM ussd_dial_attempts WHERE order_id=$1 AND status IN ('pending','ambiguous')`,
+    [orderId, String(DIAL_MAY_BE_RUNNING_SECONDS)]
+  );
+  if (open.some((a) => a.running)) return "running";
+  const agent = await queryOne<{ name: string }>(`SELECT name FROM agents WHERE id=$1`, [agentId]);
+  const note = `Agent ${agent?.name ?? agentId} chose "${actionLabel}" without a confirmed result -- recorded as not delivered`;
+  const closed: { id: string; attemptNumber: number; previousStatus: string }[] = [];
+  for (const a of open) {
+    const done = await query(
+      `UPDATE ussd_dial_attempts
+          SET status='failed', completed_at=COALESCE(completed_at, now()),
+              response_message=TRIM(BOTH ' ' FROM COALESCE(response_message,'') || ' [' || $1 || ']')
+        WHERE id=$2 AND status IN ('pending','ambiguous') RETURNING id`,
+      [note, a.id]
+    );
+    if (done.length > 0) closed.push({ id: a.id, attemptNumber: a.attempt_number, previousStatus: a.status });
+  }
+  return closed;
+}
+
+const DIAL_RUNNING = {
+  error: "A USSD dial for this order started less than 3 minutes ago and may still be running. Wait a minute, then try again.",
+  code: "DIAL_IN_PROGRESS",
+};
+
+const ALREADY_HANDLED = (status: string) => ({
+  error: `This order is already ${status.replace("_", " ")} -- someone handled it first. Refresh to see it.`,
+  code: "ALREADY_HANDLED",
+  status,
+});
+
+/**
+ * Approve a pending payment: the order moves to processing and its USSD is
+ * generated (or SOMLINK delivers), exactly like an SMS-matched payment.
+ * Without a matched payment SMS the agent must give a reason (e.g. the
+ * transaction ID they checked); that approval is flagged in the log.
+ */
+ordersRouter.post("/agent/orders/:id/approve-payment", requireAuth("agent"), async (req, res) => {
+  if (!(await agentOperationsAllowed(req, res))) return;
+  const order = await queryOne<any>(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
+  if (!order) return sendJson(res, 404, { error: "Order not found" });
+  if (order.status !== "pending") return sendJson(res, 409, ALREADY_HANDLED(order.status));
+
+  const sms = await queryOne<{ id: string }>(`SELECT id FROM sms_logs WHERE matched_order_id=$1 ORDER BY received_at ASC LIMIT 1`, [order.id]);
+  const reason = actionReason(req);
+  if (!sms && reason.length < 3) {
+    return sendJson(res, 400, {
+      error: "No payment SMS is matched to this order. Enter the reason you are approving it (for example the transaction ID you checked).",
+      code: "REASON_REQUIRED",
+    });
+  }
+  const hasPayment = await queryOne(`SELECT id FROM payment_transactions WHERE order_id=$1 LIMIT 1`, [order.id]);
+  if (!hasPayment) {
+    await createPaymentTransaction({
+      smsLogId: sms?.id ?? null,
+      orderId: order.id,
+      transactionRef: null,
+      customerPhone: order.sender_phone ?? null,
+      amount: order.amount ?? null,
+      paymentTimestamp: new Date().toISOString(),
+      status: "pending",
+    });
+  }
+  const result = await verifyOrderAndGenerateUssd(order, req.auth!.sub);
+  if (!result.ok) {
+    const now = await queryOne<{ status: string }>(`SELECT status FROM orders WHERE id=$1`, [order.id]);
+    return sendJson(res, 409, ALREADY_HANDLED(now?.status ?? order.status));
+  }
+  await recordAgentAction(req.auth!.sub, sms ? "agent_payment_approved" : "agent_payment_approved_without_sms", order.id,
+    { status: "pending" },
+    { status: "in_progress", smsLogId: sms?.id ?? null, withoutSms: !sms, reason: reason || null, amount: order.amount });
+  sendJson(res, 200, maskOrder(await loadOrder(order.id)));
+});
+
+/** Ends a not-yet-delivered order as failed (reject) or cancelled, with the customer told once. */
+async function endOrderByAgent(req: any, res: any, newStatus: "failed" | "cancelled", action: string) {
+  if (!(await agentOperationsAllowed(req, res))) return;
+  const reason = actionReason(req);
+  if (reason.length < 3) return sendJson(res, 400, { error: "Enter a reason.", code: "REASON_REQUIRED" });
+  const order = await queryOne<any>(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
+  if (!order) return sendJson(res, 404, { error: "Order not found" });
+  const allowedFrom = newStatus === "failed" ? ["pending", "in_progress"] : ["pending", "in_progress", "failed"];
+  if (!allowedFrom.includes(order.status)) return sendJson(res, 409, ALREADY_HANDLED(order.status));
+  const dial = await dialMayHaveSent(order.id);
+  if (dial === "success") {
+    return sendJson(res, 409, { error: "The data was already sent for this order. Use Reverse once it is completed.", code: "ALREADY_SENT" });
+  }
+  // Unknown dial result: the agent saw the warning and decides. A dial that
+  // may still be running right now is the only thing that waits.
+  if (dial === "unknown") {
+    const running = await queryOne<{ n: string }>(
+      `SELECT count(*) AS n FROM ussd_dial_attempts WHERE order_id=$1 AND status IN ('pending','ambiguous') AND created_at > now() - ($2 || ' seconds')::interval`,
+      [order.id, String(DIAL_MAY_BE_RUNNING_SECONDS)]
+    );
+    if (Number(running?.n ?? 0) > 0) return sendJson(res, 409, DIAL_RUNNING);
+  }
+  const changed = await query(
+    `UPDATE orders SET status=$1, updated_at=now() WHERE id=$2 AND status = ANY($3::text[]) RETURNING id`,
+    [newStatus, order.id, allowedFrom]
+  );
+  if (changed.length === 0) {
+    const now = await queryOne<{ status: string }>(`SELECT status FROM orders WHERE id=$1`, [order.id]);
+    return sendJson(res, 409, ALREADY_HANDLED(now?.status ?? order.status));
+  }
+  let closedDials: unknown[] = [];
+  if (dial === "unknown") {
+    const closed = await closeUnconfirmedDialsByAgent(order.id, req.auth!.sub, newStatus === "failed" ? "Reject payment" : "Cancel order");
+    closedDials = closed === "running" ? [] : closed;
+  }
+  await markPaymentFinal(order.id, "failed");
+  await refundRedeemedPointsIfNeeded(order.id);
+  await notifyCustomer(
+    order.customer_id,
+    "order_update",
+    newStatus === "failed" ? "⚠️ Lacag-bixintu way ciladeysatay" : "Dalabkaaga waa la joojiyay",
+    newStatus === "failed"
+      ? "Macmiil, lacag-bixintaada cilad ayaa ku timid, Internet-kana lama dirin. Fadlan lacagta mar kale ha dirin. Haddii number-ka iyo xogta dalabka ay sax yihiin, la xiriir Agent-ka si uu kuu caawiyo. 🤝"
+      : "Dalabkaagii waa la joojiyay. Fadlan la xiriir taageerada haddii aad su'aalo qabto.",
+    { screen: "notifications", orderId: order.id }
+  );
+  await recordAgentAction(req.auth!.sub, action, order.id, { status: order.status }, {
+    status: newStatus,
+    reason,
+    ...(closedDials.length > 0 ? { decidedWithoutConfirmedDial: true, closedDialAttempts: closedDials } : {}),
+  });
+  broadcast({ type: "order.updated", orderId: order.id });
+  sendJson(res, 200, maskOrder(await loadOrder(order.id)));
+}
+
+/** Reject the payment: the order fails, nothing is sent. Pending or processing orders only. */
+ordersRouter.post("/agent/orders/:id/reject-payment", requireAuth("agent"), (req, res) => endOrderByAgent(req, res, "failed", "agent_payment_rejected"));
+
+/** Cancel an order that wasn't delivered (pending, processing or failed). A completed order is reversed instead. */
+ordersRouter.post("/agent/orders/:id/cancel", requireAuth("agent"), (req, res) => endOrderByAgent(req, res, "cancelled", "agent_order_cancelled"));
+
+/**
+ * Retry a failed or stuck order whose payment was verified: it goes back to
+ * processing with its USSD (re)generated, and the Agent App's self-heal
+ * sweep dials it -- the same path as the admin's "Send to Agent" recovery.
+ * Never while a previous dial's result is still unknown.
+ */
+ordersRouter.post("/agent/orders/:id/retry", requireAuth("agent"), async (req, res) => {
+  if (!(await agentOperationsAllowed(req, res))) return;
+  const order = await queryOne<any>(`SELECT * FROM orders WHERE id=$1`, [req.params.id]);
+  if (!order) return sendJson(res, 404, { error: "Order not found" });
+  if (!["failed", "in_progress"].includes(order.status)) return sendJson(res, 409, ALREADY_HANDLED(order.status));
+  if (order.reversed_at) return sendJson(res, 409, { error: "This order was reversed and can't be retried.", code: "REVERSED" });
+  if (await isAlreadyCompleted(order.id)) {
+    return sendJson(res, 409, { error: "This order's payment has already completed -- nothing to retry.", code: "ALREADY_SENT" });
+  }
+  const hasPayment = await queryOne(`SELECT id FROM payment_transactions WHERE order_id=$1 LIMIT 1`, [order.id]);
+  if (!hasPayment) {
+    return sendJson(res, 400, { error: "No verified payment for this order. Approve the payment instead.", code: "NO_PAYMENT" });
+  }
+  // Unknown dial result: the agent saw the warning and decides to send
+  // again. The open attempt is closed as "not delivered" by this agent (so
+  // a new dial is allowed and the decision is on record); only a dial that
+  // may still be running right now makes them wait.
+  let closedDials: { id: string; attemptNumber: number; previousStatus: string }[] = [];
+  if ((await dialMayHaveSent(order.id)) === "unknown") {
+    const closed = await closeUnconfirmedDialsByAgent(order.id, req.auth!.sub, "Retry");
+    if (closed === "running") return sendJson(res, 409, DIAL_RUNNING);
+    closedDials = closed;
+  }
+  if (order.status === "failed") {
+    const flipped = await query(`UPDATE orders SET status='in_progress', updated_at=now() WHERE id=$1 AND status='failed' RETURNING id`, [order.id]);
+    if (flipped.length === 0) {
+      const now = await queryOne<{ status: string }>(`SELECT status FROM orders WHERE id=$1`, [order.id]);
+      return sendJson(res, 409, ALREADY_HANDLED(now?.status ?? order.status));
+    }
+  }
+  // Ready to dial again: the self-heal sweep picks up in_progress orders
+  // with a 'pending' payment.
+  await query(`UPDATE payment_transactions SET status='pending', updated_at=now() WHERE order_id=$1 AND status IN ('failed','processing')`, [order.id]);
+  let genError: string | null = null;
+  if (order.status === "failed" || !order.ussd_generated) {
+    // No actor id: ussd_logs.admin_id references admin_users, not agents
+    // (the agent is in the Activity Log row below).
+    const gen = await generateUssdForOrder(order);
+    genError = gen.error ?? null;
+    await query(`UPDATE orders SET ussd_generation_failed_reason=$1 WHERE id=$2`, [genError, order.id]);
+  }
+  await recordAgentAction(req.auth!.sub, "agent_order_retried", order.id, { status: order.status }, {
+    status: "in_progress",
+    ussdGenerationError: genError,
+    ...(closedDials.length > 0 ? { decidedWithoutConfirmedDial: true, closedDialAttempts: closedDials } : {}),
+  });
+  broadcast({ type: "order.updated", orderId: order.id });
+  sendJson(res, 200, maskOrder(await loadOrder(order.id)));
+});
+
+// Reverse a COMPLETED order for a customer (cancel + claw back points,
+// commission and referral bonus) -- the same reversal as the admin's, with a
+// reason, the operations check and the Activity Log.
 ordersRouter.post("/agent/orders/:id/reverse", requireAuth("agent"), async (req, res) => {
+  if (!(await agentOperationsAllowed(req, res))) return;
+  const reason = actionReason(req);
+  if (reason.length < 3) return sendJson(res, 400, { error: "Enter a reason.", code: "REASON_REQUIRED" });
+  const before = await queryOne<{ status: string }>(`SELECT status FROM orders WHERE id=$1`, [req.params.id]);
+  if (before && before.status !== "completed") {
+    return sendJson(res, 409, { error: "Only a completed order can be reversed. Use Cancel for an order that wasn't delivered.", code: "NOT_COMPLETED" });
+  }
   const result = await reverseOrderInternal(req.params.id);
   if (!result.order) return sendJson(res, 404, { error: "Order not found" });
-  if (!result.ok) return sendJson(res, 409, { error: "Order has already been reversed" });
+  if (!result.ok) return sendJson(res, 409, { error: "Order has already been reversed", code: "ALREADY_HANDLED" });
+  await recordAgentAction(req.auth!.sub, "agent_order_reversed", req.params.id, { status: "completed" }, { status: "cancelled", reversed: true, reason });
   sendJson(res, 200, maskOrder(await loadOrder(req.params.id)));
 });
 

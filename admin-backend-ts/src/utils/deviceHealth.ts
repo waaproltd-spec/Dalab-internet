@@ -42,10 +42,10 @@ export function deviceHealthIssues(d: DeviceHealthRow, now: Date = new Date()): 
     issues.push({ code: "no_internet", severity: "error", message: "The phone reports no internet connection." });
   }
   if (d.sms_permission === false) {
-    issues.push({ code: "sms_permission", severity: "error", message: "SMS permission is off — payment SMS can't be received. Allow SMS for DALAB Agent in Android Settings." });
+    issues.push({ code: "sms_permission", severity: "error", message: "SMS permission is off — payment SMS can't be received. Allow SMS for AGENT APP in Android Settings." });
   }
   if (d.phone_permission === false) {
-    issues.push({ code: "phone_permission", severity: "error", message: "Phone permission is off — USSD can't be dialed. Allow Phone for DALAB Agent in Android Settings." });
+    issues.push({ code: "phone_permission", severity: "error", message: "Phone permission is off — USSD can't be dialed. Allow Phone for AGENT APP in Android Settings." });
   }
   const pending = Number(d.pending_sms_count ?? 0);
   const oldestSec = Number(d.oldest_pending_sms_age_sec ?? 0);
