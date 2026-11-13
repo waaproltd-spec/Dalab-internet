@@ -215,7 +215,7 @@ private fun AgentHomeHeader(
                 com.dalab.internet.ui.WaaproHeaderBrush,
                 shape = RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp),
             )
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -242,10 +242,10 @@ private fun AgentHomeHeader(
             }
         }
 
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(6.dp))
 
         Surface(color = Color.White.copy(alpha = 0.15f), shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
-            Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
                         .size(36.dp)
@@ -381,7 +381,7 @@ private fun AgentBalanceSection(cards: List<BalanceCardData>, loading: Boolean, 
     var expanded by remember { mutableStateOf<String?>(null) }
     val toggle: (String) -> Unit = { key -> expanded = if (expanded == key) null else key }
 
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp)) {
         GrandTotalBar(
             methods = methodCards.sumOf { it.amount ?: 0.0 },
             companies = companyCards.sumOf { it.amount ?: 0.0 },
@@ -391,14 +391,14 @@ private fun AgentBalanceSection(cards: List<BalanceCardData>, loading: Boolean, 
             Spacer(Modifier.height(6.dp))
             Text(it, color = Color(0xFFB42318), style = MaterialTheme.typography.labelMedium)
         }
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(6.dp))
         BalanceGroupHeader(
             title = "Payment Method (${methodCards.size})",
             totalBalance = methodCards.sumOf { it.amount ?: 0.0 },
             loading = loading,
             accentColor = DalabGreen,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(6.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
             methodCards.forEach { card ->
                 PaymentMethodCard(card = card, loading = loading, onClick = { toggle(card.providerKey) }, modifier = Modifier.weight(1f))
@@ -406,9 +406,7 @@ private fun AgentBalanceSection(cards: List<BalanceCardData>, loading: Boolean, 
         }
         methodCards.firstOrNull { it.providerKey == expanded }?.let { CardSims(it) }
 
-        Spacer(Modifier.height(10.dp))
-        HorizontalDivider(color = DalabSurfaceTint)
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(6.dp))
 
         BalanceGroupHeader(
             title = "Payment Company (${companyCards.size})",
@@ -416,9 +414,9 @@ private fun AgentBalanceSection(cards: List<BalanceCardData>, loading: Boolean, 
             loading = loading,
             accentColor = DalabBrandBlue,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(6.dp))
         companyCards.chunked(2).forEach { rowCards ->
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
                 rowCards.forEach { card ->
                     PaymentCompanyCard(card = card, loading = loading, onClick = { toggle(card.providerKey) }, modifier = Modifier.weight(1f))
                 }
@@ -456,7 +454,7 @@ private fun GrandTotalBar(methods: Double, companies: Double, loading: Boolean) 
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
             .background(com.dalab.internet.ui.WaaproHeaderBrush)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
+            .padding(horizontal = 14.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(modifier = Modifier.weight(1f)) {
@@ -471,37 +469,26 @@ private fun GrandTotalBar(methods: Double, companies: Double, loading: Boolean) 
             if (loading) "…" else "$ ${"%.2f".format(methods + companies)}",
             color = com.dalab.internet.ui.WaaproGold,
             fontWeight = FontWeight.Black,
-            style = MaterialTheme.typography.headlineSmall,
+            style = MaterialTheme.typography.titleLarge,
         )
     }
 }
 
 @Composable
 private fun BalanceGroupHeader(title: String, totalBalance: Double, loading: Boolean, accentColor: Color) {
+    // One line (title left, total right) so Home fits on one screen.
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = DalabIndigo)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier.size(26.dp).clip(CircleShape).background(accentColor),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(Icons.Filled.AccountBalanceWallet, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-            }
-            Spacer(Modifier.width(8.dp))
-            Column(horizontalAlignment = Alignment.End) {
-                Text("Total Balance", style = MaterialTheme.typography.labelSmall, color = DalabMuted)
-                Text(
-                    if (loading) "…" else "$ ${"%.2f".format(totalBalance)}",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = accentColor,
-                )
-            }
-        }
+        Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = DalabIndigo)
+        Text(
+            if (loading) "…" else "$ ${"%.2f".format(totalBalance)}",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            color = accentColor,
+        )
     }
 }
 
@@ -557,20 +544,20 @@ private fun PaymentMethodCard(card: BalanceCardData, loading: Boolean, onClick: 
                     .clip(CircleShape)
                     .background(accent.copy(alpha = 0.14f)),
             )
-            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)) {
                 Image(
                     painter = painterResource(logoResFor(card.providerKey)),
                     contentDescription = card.providerName,
                     contentScale = ContentScale.Fit,
                     alignment = Alignment.CenterStart,
-                    modifier = Modifier.height(20.dp).fillMaxWidth(0.72f),
+                    modifier = Modifier.height(18.dp).fillMaxWidth(0.72f),
                 )
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(3.dp))
                 Text(card.providerName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = DalabIndigo)
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(1.dp))
                 Text(
                     cardAmountText(card, loading),
-                    style = if (card.amount != null || loading) MaterialTheme.typography.titleLarge else MaterialTheme.typography.titleSmall,
+                    style = if (card.amount != null || loading) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
                     // eDahab's yellow is too light to read as text on a white
                     // card -- a deeper gold keeps the same hue, readable.
@@ -621,24 +608,24 @@ private fun PaymentCompanyCard(card: BalanceCardData, loading: Boolean, onClick:
                     .clip(CircleShape)
                     .background(Color.White.copy(alpha = 0.08f)),
             )
-            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)) {
                 Box(
-                    modifier = Modifier.size(30.dp).clip(RoundedCornerShape(10.dp)).background(Color.White),
+                    modifier = Modifier.size(26.dp).clip(RoundedCornerShape(8.dp)).background(Color.White),
                     contentAlignment = Alignment.Center,
                 ) {
                     Image(
                         painter = painterResource(logoResFor(card.providerKey)),
                         contentDescription = card.providerName,
                         contentScale = ContentScale.Fit,
-                        modifier = Modifier.size(24.dp).clip(RoundedCornerShape(6.dp)),
+                        modifier = Modifier.size(20.dp).clip(RoundedCornerShape(5.dp)),
                     )
                 }
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(3.dp))
                 Text(card.providerName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = onBrand)
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(1.dp))
                 Text(
                     cardAmountText(card, loading),
-                    style = if (card.amount != null || loading) MaterialTheme.typography.titleLarge else MaterialTheme.typography.titleSmall,
+                    style = if (card.amount != null || loading) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
                     color = onBrand,
                 )
