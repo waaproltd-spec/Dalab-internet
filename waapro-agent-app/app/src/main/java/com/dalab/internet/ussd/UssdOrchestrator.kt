@@ -358,11 +358,16 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
                     // re-acquires, so a different request queued for this
                     // slot in between isn't blocked behind this order's own
                     // retry backoff.
+                    // On disk while this attempt waits its turn in the USSD
+                    // queue: if the app is stopped now, nothing was sent, so
+                    // the next run closes this attempt as "not dialed" and
+                    // sends the order normally -- it is never left stuck.
+                    DialJournal.begin(appContext, DialJournal.Entry(orderId, attemptId, attemptNumber, simSlot, System.currentTimeMillis(), DialJournal.PHASE_QUEUED))
                     val ticket = UssdSimLock.acquire(simSlot, "internet_store:$orderId:attempt$attemptNumber", System.currentTimeMillis())
                     // On disk before the carrier is contacted: if the app
                     // dies from here on, the next run reports this dial as
                     // outcome-unknown instead of dialing again.
-                    DialJournal.begin(appContext, DialJournal.Entry(orderId, attemptId, attemptNumber, simSlot, System.currentTimeMillis()))
+                    DialJournal.begin(appContext, DialJournal.Entry(orderId, attemptId, attemptNumber, simSlot, System.currentTimeMillis(), DialJournal.PHASE_DIALING))
                     try {
                         // UssdDialer only catches SecurityException around the telephony
                         // call — other stack exceptions (e.g. IllegalStateException when
@@ -531,6 +536,23 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
      */
     private suspend fun interruptedDialResult(orderId: String): DialResult? {
         val entry = DialJournal.get(appContext, orderId) ?: return null
+        if (entry.phase == DialJournal.PHASE_QUEUED) {
+            // Stopped while still waiting in the USSD queue: the carrier was
+            // never contacted. Close that attempt as "not dialed" (not final,
+            // so the order stays open) and let this run send it normally.
+            val message = "The app stopped while attempt #${entry.attemptNumber} was still waiting in the USSD queue — nothing was sent to the carrier, so it is sent now."
+            DiagnosticsLog.record("dial_interrupted_before_dial", "Order $orderId: $message", isError = false)
+            if (entry.attemptId != null) {
+                val reported = try {
+                    ApiClient.service.reportDialResult(entry.attemptId, DialAttemptResultRequest("failed", message, false)).isSuccessful
+                } catch (_: Exception) {
+                    false
+                }
+                if (!reported) return DialResult(DialOutcome.NETWORK_UNAVAILABLE, "Couldn't reach the server to close an unsent attempt — will retry.", noRetry = true)
+            }
+            DialJournal.clear(appContext, orderId)
+            return null
+        }
         val message = "The app stopped while dial attempt #${entry.attemptNumber} (SIM ${entry.simSlot}) was running, so the carrier's result is unknown. " +
             "Check whether the customer received it before sending again."
         DiagnosticsLog.record("dial_interrupted", "Order $orderId: $message", isError = true)

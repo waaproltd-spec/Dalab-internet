@@ -25,7 +25,15 @@ object DialJournal {
         // The masked summary the server generated (one-shot strings carry
         // the PIN, so only the attempt id is needed to report it).
         val startedAt: Long,
+        // PHASE_QUEUED: the attempt was logged on the server but this phone
+        // was still waiting its turn in the USSD queue -- nothing was sent to
+        // the carrier. PHASE_DIALING (or null, from older versions): the
+        // carrier may have been contacted.
+        val phase: String? = null,
     )
+
+    const val PHASE_QUEUED = "queued"
+    const val PHASE_DIALING = "dialing"
 
     private val gson = Gson()
     private val type = object : TypeToken<MutableMap<String, Entry>>() {}.type

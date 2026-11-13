@@ -238,6 +238,17 @@ object SmsUploadFlow {
 
         val orchestrator = UssdOrchestrator(context)
         val result = orchestrator.processMatchedOrder(matchedOrderId, smsLogId)
+        if (keepsDurableEntry(result.outcome, matchedOrderId in inFlightOrderIds())) {
+            // Another run on this phone is delivering this same order right
+            // now and shares this durable entry: leave it for that run to
+            // clear when it finishes -- if the app is stopped first, the
+            // entry is what resumes the order. No notification: nothing new.
+            DiagnosticsLog.record("verify_payment", "Order $matchedOrderId is already being delivered on this phone — kept its recovery entry.", isError = false)
+            // RetryableVerify = "keep the entry": the SMS itself is settled
+            // as usual, and the queue drainer only retries the entry later
+            // (by then the live run has finished and removed it).
+            return UploadOutcome.RetryableVerify(matchedOrderId, smsLogId, "already being delivered on this phone")
+        }
         if (result.outcome == DialOutcome.NETWORK_UNAVAILABLE) {
             DiagnosticsLog.record("verify_payment", "Queued for retry (order $matchedOrderId): ${result.responseMessage}")
             // Entry from above stays in the queue — this IS the queued retry.
@@ -305,3 +316,15 @@ object SmsUploadFlow {
         NotificationManagerCompat.from(context).notify(orderId.hashCode(), notification)
     }
 }
+
+/** Order ids being delivered on this phone right now. */
+internal fun inFlightOrderIds(): Set<String> =
+    com.dalab.internet.ussd.UssdJobRegistry.activeKeys.value
+        .filter { it.startsWith("internet_store:") }
+        .map { it.removePrefix("internet_store:") }
+        .toSet()
+
+/** A duplicate run must not delete the recovery entry that the live run
+ * (on this same phone) still depends on. Pure; see NoLostOrdersTest. */
+internal fun keepsDurableEntry(outcome: DialOutcome, sameOrderRunningHere: Boolean): Boolean =
+    outcome == DialOutcome.DUPLICATE_SKIPPED && sameOrderRunningHere
