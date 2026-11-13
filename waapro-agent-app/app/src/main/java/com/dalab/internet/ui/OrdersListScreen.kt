@@ -11,6 +11,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
@@ -158,27 +159,33 @@ fun OrdersListScreen(
     // decision (superseded by the Shop/VIP order flow on the Orders tab);
     // onOpenOrder is kept as a parameter only because OrderDetailScreen's
     // navigation wiring in MainActivity still references it.
+    val header: @Composable () -> Unit = {
+        AgentHomeHeader(
+            agentName = remember { SessionManager.currentAgent()?.name },
+            listeningActive = listeningActive,
+            connectionState = connectionState,
+            lastSyncedAt = lastSyncedAt,
+            unreadAlerts = unreadAlerts,
+            onRefresh = { refreshDashboard(); refreshBalances() },
+            onOpenAlerts = onOpenAlerts,
+        )
+    }
+    val sims = simBalances
+    val cards = if (sims != null) balanceCardsFromSims(sims) else balances.map { BalanceCardData(it.providerKey, it.providerName, it.category, it.balance, null, false, emptyList(), configured = true) }
     Scaffold { padding ->
-        LazyColumn(modifier = Modifier.padding(padding).fillMaxSize()) {
-            item {
-                AgentHomeHeader(
-                    agentName = remember { SessionManager.currentAgent()?.name },
-                    listeningActive = listeningActive,
-                    connectionState = connectionState,
-                    lastSyncedAt = lastSyncedAt,
-                    unreadAlerts = unreadAlerts,
-                    onRefresh = { refreshDashboard(); refreshBalances() },
-                    onOpenAlerts = onOpenAlerts,
-                )
-            }
-
-            item {
-                val sims = simBalances
-                AgentBalanceSection(
-                    cards = if (sims != null) balanceCardsFromSims(sims) else balances.map { BalanceCardData(it.providerKey, it.providerName, it.category, it.balance, null, false, emptyList(), configured = true) },
-                    loading = balancesLoading,
-                    error = simBalancesError,
-                )
+        BoxWithConstraints(modifier = Modifier.padding(padding).fillMaxSize()) {
+            if (maxHeight >= HOME_FILL_MIN_HEIGHT) {
+                // One screen: the cards stretch to fill all the space.
+                Column(Modifier.fillMaxSize()) {
+                    header()
+                    AgentBalanceSection(cards = cards, loading = balancesLoading, error = simBalancesError, fill = true, modifier = Modifier.weight(1f))
+                }
+            } else {
+                // Very small screen: same content, scrolls.
+                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    item { header() }
+                    item { AgentBalanceSection(cards = cards, loading = balancesLoading, error = simBalancesError) }
+                }
             }
         }
     }
@@ -374,14 +381,32 @@ private fun cardAmountText(c: BalanceCardData, loading: Boolean): String = when 
     else -> "Unknown"
 }
 
+/** Below this the Home cards can't fill the screen readably: it scrolls instead. */
+private val HOME_FILL_MIN_HEIGHT = 560.dp
+
 @Composable
-private fun AgentBalanceSection(cards: List<BalanceCardData>, loading: Boolean, error: String? = null) {
+private fun AgentBalanceSection(cards: List<BalanceCardData>, loading: Boolean, error: String? = null, fill: Boolean = false, modifier: Modifier = Modifier) {
     val methodCards = cards.filter { it.category == "method" }
     val companyCards = cards.filter { it.category == "company" }
     var expanded by remember { mutableStateOf<String?>(null) }
+    // Filling the screen: a card's SIMs open in a pop-up (the screen never
+    // grows); otherwise they open underneath the card as before.
     val toggle: (String) -> Unit = { key -> expanded = if (expanded == key) null else key }
+    val rowMod: Modifier = if (fill) Modifier.fillMaxWidth() else Modifier.fillMaxWidth()
+    val cardMod: (RowScope) -> Modifier = { scope -> with(scope) { if (fill) Modifier.weight(1f).fillMaxHeight() else Modifier.weight(1f) } }
 
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp)) {
+    if (fill) {
+        cards.firstOrNull { it.providerKey == expanded }?.let { open ->
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { expanded = null },
+                confirmButton = { androidx.compose.material3.TextButton(onClick = { expanded = null }) { Text("Close") } },
+                title = { Text(open.providerName, fontWeight = FontWeight.Bold) },
+                text = { Column(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())) { CardSims(open) } },
+            )
+        }
+    }
+
+    Column(modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp)) {
         GrandTotalBar(
             methods = methodCards.sumOf { it.amount ?: 0.0 },
             companies = companyCards.sumOf { it.amount ?: 0.0 },
@@ -399,12 +424,12 @@ private fun AgentBalanceSection(cards: List<BalanceCardData>, loading: Boolean, 
             accentColor = DalabGreen,
         )
         Spacer(Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = if (fill) rowMod.weight(0.8f) else rowMod) {
             methodCards.forEach { card ->
-                PaymentMethodCard(card = card, loading = loading, onClick = { toggle(card.providerKey) }, modifier = Modifier.weight(1f))
+                PaymentMethodCard(card = card, loading = loading, onClick = { toggle(card.providerKey) }, modifier = cardMod(this))
             }
         }
-        methodCards.firstOrNull { it.providerKey == expanded }?.let { CardSims(it) }
+        if (!fill) methodCards.firstOrNull { it.providerKey == expanded }?.let { CardSims(it) }
 
         Spacer(Modifier.height(6.dp))
 
@@ -416,13 +441,13 @@ private fun AgentBalanceSection(cards: List<BalanceCardData>, loading: Boolean, 
         )
         Spacer(Modifier.height(6.dp))
         companyCards.chunked(2).forEach { rowCards ->
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = (if (fill) rowMod.weight(1f) else rowMod).padding(bottom = 8.dp)) {
                 rowCards.forEach { card ->
-                    PaymentCompanyCard(card = card, loading = loading, onClick = { toggle(card.providerKey) }, modifier = Modifier.weight(1f))
+                    PaymentCompanyCard(card = card, loading = loading, onClick = { toggle(card.providerKey) }, modifier = cardMod(this))
                 }
                 if (rowCards.size == 1) Spacer(modifier = Modifier.weight(1f))
             }
-            rowCards.firstOrNull { it.providerKey == expanded }?.let { CardSims(it) }
+            if (!fill) rowCards.firstOrNull { it.providerKey == expanded }?.let { CardSims(it) }
         }
     }
 }
@@ -535,7 +560,7 @@ private val ProviderNavy = Color(0xFF0A3B63)
 private fun PaymentMethodCard(card: BalanceCardData, loading: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val accent = providerBrandColor(card.providerKey)
     Surface(onClick = onClick, color = DalabWhite, shape = RoundedCornerShape(18.dp), shadowElevation = 1.dp, modifier = modifier) {
-        Box {
+        Box(Modifier.fillMaxSize()) {
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
@@ -544,7 +569,7 @@ private fun PaymentMethodCard(card: BalanceCardData, loading: Boolean, onClick: 
                     .clip(CircleShape)
                     .background(accent.copy(alpha = 0.14f)),
             )
-            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)) {
+            Column(modifier = Modifier.align(Alignment.CenterStart).padding(horizontal = 12.dp, vertical = 7.dp)) {
                 Image(
                     painter = painterResource(logoResFor(card.providerKey)),
                     contentDescription = card.providerName,
@@ -599,7 +624,7 @@ private fun PaymentCompanyCard(card: BalanceCardData, loading: Boolean, onClick:
     // Fixed navy (not the theme's text color, which turns light in Dark mode).
     val onBrand = if (card.providerKey == "somtel") ProviderNavy else Color.White
     Surface(onClick = onClick, color = brand, shape = RoundedCornerShape(18.dp), shadowElevation = 1.dp, modifier = modifier) {
-        Box {
+        Box(Modifier.fillMaxSize()) {
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
@@ -608,7 +633,7 @@ private fun PaymentCompanyCard(card: BalanceCardData, loading: Boolean, onClick:
                     .clip(CircleShape)
                     .background(Color.White.copy(alpha = 0.08f)),
             )
-            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)) {
+            Column(modifier = Modifier.align(Alignment.CenterStart).padding(horizontal = 12.dp, vertical = 7.dp)) {
                 Box(
                     modifier = Modifier.size(26.dp).clip(RoundedCornerShape(8.dp)).background(Color.White),
                     contentAlignment = Alignment.Center,
