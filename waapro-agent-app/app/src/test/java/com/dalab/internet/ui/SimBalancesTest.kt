@@ -31,20 +31,22 @@ class SimBalancesTest {
         assertNull(simUpdatedText(null, "sms", now))
     }
 
-    private fun sim(key: String, balance: Double?, status: String = "ok") =
-        com.dalab.internet.data.SimBalance(id = key + balance + status, providerKey = key, label = key, network = "N", balance = balance, status = status)
+    private fun sim(key: String, balance: Double?, status: String = "ok", slot: Int = 1, phone: String? = "610338686") =
+        com.dalab.internet.data.SimBalance(id = key + balance + status, providerKey = key, label = key, network = "N", balance = balance, status = status, simSlot = slot, phoneNumber = phone)
 
     @Test
     fun `logo cards add confirmed SIM balances per network and never invent 0`() {
         val cards = balanceCardsFromSims(listOf(
             sim("evc_plus", 1.76),
+            sim("edahab", 17.17, slot = 2, phone = "620338686"),
             sim("hormuud", 27.01), sim("hormuud_evoucher", 5.0),
             sim("somtel", 9.75, "stale"),
             sim("somnet", null, "no_balance_yet"),
         )).associateBy { it.providerKey }
         assertEquals(listOf("evc_plus", "edahab", "hormuud", "somnet", "somtel", "amtel"), balanceCardsFromSims(emptyList()).map { it.providerKey })
         assertEquals(1.76, cards["evc_plus"]!!.amount!!, 0.001)
-        assertEquals("1 SIM", cards["evc_plus"]!!.note)
+        assertEquals("610338686 · SIM 1", cards["evc_plus"]!!.note)
+        assertEquals("the card names the real slot", "620338686 · SIM 2", cards["edahab"]!!.note)
         assertEquals("Hormuud data only, E-Voucher listed but not added", 27.01, cards["hormuud"]!!.amount!!, 0.001)
         assertEquals(2, cards["hormuud"]!!.sims.size)
         assertEquals(9.75, cards["somtel"]!!.amount!!, 0.001)

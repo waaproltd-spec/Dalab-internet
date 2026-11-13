@@ -356,7 +356,9 @@ fun balanceCardsFromSims(sims: List<com.dalab.internet.data.SimBalance>): List<B
             note = when {
                 listed.isEmpty() -> null
                 needCheck > 0 -> if (needCheck == 1) "1 SIM needs check" else "$needCheck SIMs need check"
-                listed.size == 1 -> "1 SIM"
+                // One SIM: show WHICH one (its number and slot), not a count
+                // that reads like "SIM 1".
+                listed.size == 1 -> listOfNotNull(listed[0].phoneNumber, "SIM ${listed[0].simSlot}").joinToString(" · ")
                 else -> "${listed.size} SIMs"
             },
             attention = needCheck > 0,
