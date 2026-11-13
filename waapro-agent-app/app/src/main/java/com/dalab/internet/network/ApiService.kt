@@ -799,6 +799,11 @@ interface ApiService {
     @GET("agent/notices")
     suspend fun getAgentNotices(): Response<List<com.dalab.internet.data.AgentNotice>>
 
+    // Every admin-configured SIM's balance, separately (with the real
+    // reason when there's none). 404 on a system not updated yet.
+    @GET("agent/sim-balances")
+    suspend fun getSimBalances(): Response<com.dalab.internet.data.SimBalancesResponse>
+
     // Other Agents: this system's other agents with ONLINE/OFFLINE status.
     @GET("agent/agents")
     suspend fun getOtherAgents(@Query("search") search: String? = null): Response<com.dalab.internet.data.OtherAgentsResponse>

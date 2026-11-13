@@ -71,3 +71,29 @@ data class OtherAgent(
     val status: String = "OFFLINE",
     val lastSeenAt: String? = null,
 )
+
+/** GET /agent/sim-balances -- every admin-configured SIM, separately. */
+data class SimBalancesResponse(
+    val sims: List<SimBalance> = emptyList(),
+    val staleHours: Int = 24,
+    val generatedAt: String? = null,
+)
+
+/** One SIM's balance. balance is null when there's no confirmed balance;
+ * status/message then say why (never a made-up 0). status: ok |
+ * no_balance_yet | sim_missing | device_offline | stale. */
+data class SimBalance(
+    val id: String,
+    val providerKey: String,
+    val label: String,
+    val network: String,
+    val phoneNumber: String? = null,
+    val deviceId: String? = null,
+    val deviceName: String? = null,
+    val simSlot: Int = 1,
+    val balance: Double? = null,
+    val updatedAt: String? = null,
+    val source: String? = null,
+    val status: String = "ok",
+    val message: String? = null,
+)

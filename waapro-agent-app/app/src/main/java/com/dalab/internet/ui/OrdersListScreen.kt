@@ -82,6 +82,8 @@ fun OrdersListScreen(
     var lastSyncedAt by remember { mutableStateOf<Date?>(null) }
     var balances by remember { mutableStateOf<List<AgentBalanceEntry>>(emptyList()) }
     var balancesLoading by remember { mutableStateOf(true) }
+    var simBalances by remember { mutableStateOf<List<com.dalab.internet.data.SimBalance>?>(null) }
+    var simBalancesError by remember { mutableStateOf<String?>(null) }
     val connectionState by AgentEventBus.connectionState.collectAsState()
     val unreadAlerts by AgentAlertsState.unreadCount.collectAsState()
     val scope = rememberCoroutineScope()
@@ -122,10 +124,22 @@ fun OrdersListScreen(
     fun refreshBalances() {
         scope.launch {
             try {
-                balances = ApiClient.service.getAgentBalances().body().orEmpty()
+                // Per-SIM list first; a system not updated yet answers 404
+                // and the network totals below are shown as before.
+                val sims = ApiClient.service.getSimBalances()
+                if (sims.isSuccessful) {
+                    simBalances = sims.body()?.sims.orEmpty()
+                    simBalancesError = null
+                } else if (sims.code() == 404) {
+                    simBalances = null
+                    balances = ApiClient.service.getAgentBalances().body().orEmpty()
+                } else {
+                    simBalancesError = "Couldn't load SIM balances (HTTP ${sims.code()})."
+                }
                 lastSyncedAt = Date()
             } catch (_: Exception) {
-                // Cards just keep showing their last known balances on failure.
+                // Keep the last known balances; say they couldn't be refreshed.
+                simBalancesError = "No connection — showing the last balances received."
             }
             balancesLoading = false
         }
@@ -159,7 +173,9 @@ fun OrdersListScreen(
             }
 
             item {
-                AgentBalanceSection(balances = balances, loading = balancesLoading)
+                val sims = simBalances
+                if (sims != null) SimBalancesSection(sims = sims, loading = balancesLoading, error = simBalancesError)
+                else AgentBalanceSection(balances = balances, loading = balancesLoading)
             }
         }
     }
