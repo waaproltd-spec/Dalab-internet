@@ -990,7 +990,6 @@ const NAV = [
   { id: "promo-images", label: "Promo Images", icon: ImageIcon, superAdminOnly: true },
   { id: "nala-soco", label: "Nala Soco", icon: Share2, permission: "settings.manage" },
   { id: "ciyaaraha", label: "Ciyaaraha", icon: Trophy, permission: "football.manage" },
-  { id: "agent-app-release", label: "Agent App Release APK", icon: Download, permission: "devices.manage" },
   { id: "devices", label: "Device & USSD", icon: SmartphoneNfc, superAdminOnly: true },
   { id: "sms-logs", label: "SMS Monitor", icon: MessageSquare, permission: "devices.manage" },
   { id: "payment-transactions", label: "Payment Transactions", icon: Activity, permission: "orders.manage" },
@@ -18289,7 +18288,6 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "promo-images" && <PromoImages />}
           {active === "nala-soco" && <NalaSoco />}
           {active === "ciyaaraha" && <CiyaarahaAdmin />}
-          {active === "agent-app-release" && <AgentAppReleasePanel />}
           {active === "devices" && <DeviceUssdModule companies={companies} admin={admin} onPackagesChanged={refreshMissingTemplateCount} />}
           {active === "sms-logs" && <SmsLogs companies={companies} />}
           {active === "payment-transactions" && <PaymentTransactionsPanel companies={companies} />}
