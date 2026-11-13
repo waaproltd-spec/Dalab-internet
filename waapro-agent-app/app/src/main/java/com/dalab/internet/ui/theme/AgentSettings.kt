@@ -27,7 +27,8 @@ object AgentSettings {
 
     private var prefs: SharedPreferences? = null
 
-    var themeMode by mutableStateOf(AgentThemeMode.LIGHT)
+    // WAAPRO dark navy by default; an agent who already chose a theme keeps it.
+    var themeMode by mutableStateOf(AgentThemeMode.DARK)
         private set
 
     /** The phone's own dark setting, for [AgentThemeMode.SYSTEM] -- set by
@@ -57,7 +58,7 @@ object AgentSettings {
         if (prefs != null) return
         val p = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         prefs = p
-        themeMode = AgentThemeMode.entries.firstOrNull { it.name == p.getString(KEY_THEME, null) } ?: AgentThemeMode.LIGHT
+        themeMode = AgentThemeMode.entries.firstOrNull { it.name == p.getString(KEY_THEME, null) } ?: AgentThemeMode.DARK
         language = AgentLanguage.entries.firstOrNull { it.code == p.getString(KEY_LANGUAGE, null) } ?: AgentLanguage.ENGLISH
         accent = AgentAccent.entries.firstOrNull { it.name == p.getString(KEY_ACCENT, null) } ?: AgentAccent.DALAB_NAVY
         supportSounds = p.getBoolean(KEY_SUPPORT_SOUNDS, true)

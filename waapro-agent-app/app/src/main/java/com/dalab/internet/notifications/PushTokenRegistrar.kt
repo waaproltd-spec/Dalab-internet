@@ -6,6 +6,11 @@ import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.RegisterDeviceTokenRequest
 import com.google.firebase.FirebaseApp
 import com.google.firebase.messaging.FirebaseMessaging
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 
 /**
@@ -27,11 +32,24 @@ import kotlinx.coroutines.tasks.await
  * change needed.
  */
 object PushTokenRegistrar {
+    /** App-wide, not tied to any screen: leaving Home a moment after it
+     * opened used to cancel the registration ("The coroutine scope left the
+     * composition"), so that phone got no push alerts. */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** Starts the registration in the background and returns at once. */
+    fun registerInBackground(context: Context) {
+        val app = context.applicationContext
+        scope.launch { registerIfNeeded(app) }
+    }
+
     suspend fun registerIfNeeded(context: Context) {
         if (FirebaseApp.getApps(context).isEmpty()) return
         try {
             val token = FirebaseMessaging.getInstance().token.await()
             ApiClient.service.registerAgentDeviceToken(RegisterDeviceTokenRequest(token))
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             DiagnosticsLog.record("push_token_register", "Failed: ${e.message}")
         }

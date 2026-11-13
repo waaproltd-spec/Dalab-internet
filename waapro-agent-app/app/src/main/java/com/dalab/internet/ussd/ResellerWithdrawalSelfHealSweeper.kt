@@ -38,8 +38,18 @@ object ResellerWithdrawalSelfHealSweeper {
     private val inFlight = mutableSetOf<String>()
 
     suspend fun sweep(context: Context) {
+        // This system has no Reseller Withdraw (it answered 404): don't ask
+        // every minute -- re-checked hourly, see ServerFeatures.
+        if (com.dalab.internet.network.ServerFeatures.isSkipped(com.dalab.internet.network.ServerFeatures.RESELLER_WITHDRAW)) return
         val candidates = try {
-            RetryClassifier.requireSuccessful(ApiClient.service.getResellerWithdrawalsPendingPayout()).body().orEmpty()
+            val response = ApiClient.service.getResellerWithdrawalsPendingPayout()
+            if (response.code() == 404) {
+                if (com.dalab.internet.network.ServerFeatures.markMissing(com.dalab.internet.network.ServerFeatures.RESELLER_WITHDRAW)) {
+                    DiagnosticsLog.record("reseller_withdrawal_self_heal_sweep", "This system has no Reseller Withdraw — not checking again for an hour.", isError = false)
+                }
+                return
+            }
+            RetryClassifier.requireSuccessful(response).body().orEmpty()
         } catch (e: Exception) {
             DiagnosticsLog.record("reseller_withdrawal_self_heal_sweep", "Could not fetch pending payouts: ${e.message}", isError = false)
             return

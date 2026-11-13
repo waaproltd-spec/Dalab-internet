@@ -450,7 +450,7 @@ private fun AgentApp() {
             ) {
                 notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
-            PushTokenRegistrar.registerIfNeeded(context)
+            PushTokenRegistrar.registerInBackground(context)
         }
     }
 

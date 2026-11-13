@@ -54,6 +54,8 @@ object SessionManager {
     }
 
     fun saveSession(accessToken: String, refreshToken: String, profile: AgentProfile) {
+        // A new sign-in may be another system: re-learn its optional features.
+        com.dalab.internet.network.ServerFeatures.reset()
         synchronized(this) {
             snapshot = Snapshot(accessToken, refreshToken, AgentProfile(id = profile.id, name = profile.name, phone = profile.phone))
             prefs.edit()
@@ -89,5 +91,6 @@ object SessionManager {
             prefs.edit().clear().apply()
         }
         com.dalab.internet.network.AgentDayRepository.clear()
+        com.dalab.internet.network.ServerFeatures.reset()
     }
 }

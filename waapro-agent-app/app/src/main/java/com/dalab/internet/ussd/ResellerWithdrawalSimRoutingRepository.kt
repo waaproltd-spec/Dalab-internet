@@ -21,8 +21,21 @@ object ResellerWithdrawalSimRoutingRepository {
     private val refreshMutex = Mutex()
 
     suspend fun refresh(): Result<Unit> {
+        // No Reseller Withdraw on this system: nothing to route (re-checked
+        // hourly, see ServerFeatures) -- no failing request every minute.
+        if (com.dalab.internet.network.ServerFeatures.isSkipped(com.dalab.internet.network.ServerFeatures.RESELLER_WITHDRAW)) {
+            cache = emptyMap()
+            hasLoadedOnce = true
+            return Result.success(Unit)
+        }
         return try {
             val response = ApiClient.service.getResellerWithdrawalSimRouting(deviceId = DeviceIdentity.deviceId())
+            if (response.code() == 404) {
+                com.dalab.internet.network.ServerFeatures.markMissing(com.dalab.internet.network.ServerFeatures.RESELLER_WITHDRAW)
+                cache = emptyMap()
+                hasLoadedOnce = true
+                return Result.success(Unit)
+            }
             if (response.isSuccessful) {
                 cache = response.body()?.associate { it.companyId to ResellerWithdrawalSimRoute(it.simSlot, it.mobileNumber) } ?: emptyMap()
                 hasLoadedOnce = true
