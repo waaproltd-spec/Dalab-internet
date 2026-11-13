@@ -971,6 +971,7 @@ internal val SomaliPatterns: List<Pair<Regex, String>> = listOf(
     Regex("(\\d+) waiting to send") to "{1} sugaya in la diro",
     Regex("(\\d+) Numbers Package") to "Xirmada {1} Lambar",
     Regex("Waiting #(\\d+)") to "Sugaya #{1}",
+    Regex("Phone in use \\((.+)\\) — (.+) starts when it's free") to "Taleefanka waa la isticmaalayaa ({1}) — {2} wuu bilaabanayaa marka uu xor noqdo",
     Regex("(\\d+) online · (\\d+) agents") to "{1} online ah · {2} wakiil",
     Regex("(\\d+) online") to "{1} online ah",
     Regex("(\\d+) agents") to "{1} wakiil",

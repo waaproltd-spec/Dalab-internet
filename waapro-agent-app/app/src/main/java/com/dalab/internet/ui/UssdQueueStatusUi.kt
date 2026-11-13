@@ -69,7 +69,19 @@ fun UssdQueueBanner(modifier: Modifier = Modifier) {
                 Spacer(Modifier.width(8.dp))
                 Text("USSD", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 Spacer(Modifier.width(8.dp))
-                if (running != null) {
+                if (running != null && status.phoneBusy != null) {
+                    // Our turn, but the phone's owner is using it: not dialed yet.
+                    QueuePill("Waiting", WaitingBg, WaitingInk)
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "Phone in use (${status.phoneBusy}) — ${running.label} starts when it's free",
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                } else if (running != null) {
                     QueuePill("Running", RunningBg, RunningInk)
                     Spacer(Modifier.width(8.dp))
                     var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }

@@ -107,6 +107,16 @@ object UssdSimLock {
      * record it as an uncertain transaction. Must not throw. */
     @Volatile var onSessionTimeout: ((UssdQueueEntry) -> Unit)? = null
 
+    /**
+     * Waits until the PHONE itself is free before a granted session starts
+     * dialing -- e.g. the owner is sending money by hand, has the dialer
+     * open, or is on a call (PhoneBusyMonitor). The session keeps its turn
+     * (every other request stays queued behind it) and calls `onWaiting`
+     * with a reason ("a USSD session", ...) or null when free. Its time
+     * limit only starts once this returns. Null = no such check (tests).
+     */
+    @Volatile var phoneFreeGate: (suspend (onWaiting: suspend (String?) -> Unit) -> Unit)? = null
+
     private val guard = Mutex()
     private val waiters = mutableListOf<Waiter>()
     private var running: Waiter? = null
@@ -114,6 +124,7 @@ object UssdSimLock {
     private var runningSinceMs: Long = 0
     private var watchdog: Job? = null
     private var coolingDown = false
+    private var waitingForPhone: String? = null
     private val timedOut = ArrayDeque<UssdQueueEntry>()
     private val sequenceCounter = AtomicLong(0)
     private val ticketCounter = AtomicLong(0)
@@ -133,6 +144,7 @@ object UssdSimLock {
             running = null
             runningTicketId = -1
             coolingDown = false
+            waitingForPhone = null
             timedOut.clear()
             publishLocked()
         }
@@ -158,7 +170,30 @@ object UssdSimLock {
             }
         }
         try {
-            return waiter.signal.await()
+            val ticket = waiter.signal.await()
+            val gate = phoneFreeGate
+            if (gate != null) {
+                // Our turn -- but the phone may be in use by its owner. Wait
+                // (still holding the turn), then start the time limit.
+                gate { reason ->
+                    guard.withLock {
+                        if (runningTicketId == ticket.id && waitingForPhone != reason) {
+                            waitingForPhone = reason
+                            publishLocked()
+                        }
+                    }
+                }
+                guard.withLock {
+                    if (runningTicketId == ticket.id) {
+                        waitingForPhone = null
+                        runningSinceMs = System.currentTimeMillis()
+                        watchdog?.cancel()
+                        startWatchdogLocked(ticket)
+                        publishLocked()
+                    }
+                }
+            }
+            return ticket
         } catch (e: Throwable) {
             withContext(NonCancellable) {
                 guard.withLock {
@@ -192,6 +227,7 @@ object UssdSimLock {
         watchdog = null
         running = null
         runningTicketId = -1
+        waitingForPhone = null
         promoteNextLocked()
         publishLocked()
     }
@@ -207,7 +243,8 @@ object UssdSimLock {
         running = head
         runningTicketId = ticket.id
         runningSinceMs = System.currentTimeMillis()
-        startWatchdogLocked(ticket)
+        // With a phone-free check the limit starts after it (see acquire).
+        if (phoneFreeGate == null) startWatchdogLocked(ticket)
         publishLocked()
         head.signal.complete(ticket)
     }
@@ -251,6 +288,7 @@ object UssdSimLock {
             waiting = waiters.map { UssdQueueEntry(normalizeUssdJobKey(it.requestId), ussdJobLabel(it.requestId), it.simSlot, it.enqueuedAtMs) },
             timedOut = timedOut.toList(),
             runningLimitMs = now?.let { sessionLimitMs(it.requestId) } ?: 0L,
+            phoneBusy = if (now != null) waitingForPhone else null,
         )
     }
 }
@@ -267,6 +305,9 @@ data class UssdQueueStatus(
     val timedOut: List<UssdQueueEntry> = emptyList(),
     /** The running session's hard limit, for "1:10 of 3:00". */
     val runningLimitMs: Long = 0L,
+    /** Set while the next session waits because the phone is in use by
+     * its owner (e.g. "a USSD session"); it hasn't dialed yet. */
+    val phoneBusy: String? = null,
 ) {
     val isIdle: Boolean get() = running == null && waiting.isEmpty()
 

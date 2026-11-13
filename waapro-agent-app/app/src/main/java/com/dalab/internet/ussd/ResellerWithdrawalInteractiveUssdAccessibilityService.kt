@@ -60,6 +60,11 @@ class ResellerWithdrawalInteractiveUssdAccessibilityService : AccessibilityServi
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
+        // Same owner-activity signal as the Money Exchange service (either
+        // service being on is enough).
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            PhoneBusyMonitor.onWindowChanged(event.packageName?.toString(), event.className?.toString(), packageName)
+        }
         if (!ResellerWithdrawalInteractiveUssdBridge.armed) return
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
             event.eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED

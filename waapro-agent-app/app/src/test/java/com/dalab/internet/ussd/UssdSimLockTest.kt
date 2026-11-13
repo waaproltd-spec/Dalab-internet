@@ -30,6 +30,7 @@ class UssdSimLockTest {
         UssdSimLock.resetForTest()
         UssdSimLock.maxSessionOverrideMs = null
         UssdSimLock.timeoutCooldownMs = 5_000L
+        UssdSimLock.phoneFreeGate = null
     }
 
     /** Simulates one flow's full USSD session on [simSlot]: acquire -> hold
@@ -352,5 +353,57 @@ class UssdSimLockTest {
 
         assertEquals(listOf("exchange:DEX_ACTIVE", "reseller:WDR_QUEUED"), order)
         assertEquals(1, maxObservedActive.get())
+    }
+
+    @Test
+    fun `a granted session waits while the phone is in use, keeps its turn, and its time limit starts after`() = runBlocking {
+        val busy = java.util.concurrent.atomic.AtomicBoolean(true)
+        UssdSimLock.phoneFreeGate = { onWaiting ->
+            while (busy.get()) { onWaiting("a USSD session"); delay(10L) }
+            onWaiting(null)
+        }
+        UssdSimLock.maxSessionOverrideMs = 150L
+        try {
+            val first = async { UssdSimLock.acquire(1, "internet_store:G1:attempt1", arrivalTimeMs = 1_000L) }
+            delay(80L)
+            val second = async { UssdSimLock.acquire(2, "exchange:G2", arrivalTimeMs = 1_001L) }
+            delay(250L) // longer than the 150ms limit: must not time out while waiting for the phone
+            var s = UssdSimLock.status.value
+            assertEquals("internet_store:G1", s.running?.key)
+            assertEquals("a USSD session", s.phoneBusy)
+            assertEquals(listOf("exchange:G2"), s.waiting.map { it.key })
+            assertTrue("nothing timed out while the owner used the phone", s.timedOut.isEmpty())
+            assertFalse("the session hasn't started dialing yet", first.isCompleted)
+
+            busy.set(false)
+            val t1 = withTimeout(2_000L) { first.await() }
+            s = UssdSimLock.status.value
+            assertEquals(null, s.phoneBusy)
+            assertEquals("internet_store:G1", s.running?.key)
+            UssdSimLock.release(t1)
+            val t2 = withTimeout(2_000L) { second.await() }
+            assertEquals("exchange:G2", UssdSimLock.status.value.running?.key)
+            UssdSimLock.release(t2)
+        } finally {
+            UssdSimLock.phoneFreeGate = null
+            UssdSimLock.maxSessionOverrideMs = null
+        }
+    }
+
+    @Test
+    fun `a request cancelled while waiting for the phone gives its turn to the next one`() = runBlocking {
+        val busy = java.util.concurrent.atomic.AtomicBoolean(true)
+        UssdSimLock.phoneFreeGate = { onWaiting -> while (busy.get()) { onWaiting("the phone dialer"); delay(10L) } }
+        try {
+            val first = async { UssdSimLock.acquire(1, "exchange:C1", arrivalTimeMs = 1_000L) }
+            delay(80L)
+            first.cancel()
+            busy.set(false)
+            val t = withTimeout(2_000L) { UssdSimLock.acquire(1, "exchange:C2", arrivalTimeMs = 1_002L) }
+            assertEquals("exchange:C2", UssdSimLock.status.value.running?.key)
+            UssdSimLock.release(t)
+        } finally {
+            UssdSimLock.phoneFreeGate = null
+        }
     }
 }

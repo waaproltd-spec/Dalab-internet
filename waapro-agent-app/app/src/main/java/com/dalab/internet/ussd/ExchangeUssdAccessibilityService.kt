@@ -50,6 +50,11 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
+        // Notice the owner's own USSD / dialer use, so the Agent App waits
+        // instead of dialing over it (PhoneBusyMonitor). Read-only.
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            PhoneBusyMonitor.onWindowChanged(event.packageName?.toString(), event.className?.toString(), packageName)
+        }
         if (!ExchangeUssdBridge.armed) return // never look at/act on dialogs outside a live Money Exchange dial attempt
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
             event.eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED

@@ -75,6 +75,9 @@ class DalabAgentApp : Application() {
         initSafely("pending_queue_init") { PendingActionQueue.init(this) }
         initSafely("network_status_init") { com.dalab.internet.network.NetworkStatus.init(this) }
         initSafely("uncertain_ussd_init") { com.dalab.internet.ussd.UncertainUssdJobs.init(this) }
+        // Wait while the phone's owner uses USSD / the dialer / a call.
+        initSafely("phone_busy_init") { com.dalab.internet.ussd.PhoneBusyMonitor.init(this) }
+        initSafely("ussd_notice_init") { com.dalab.internet.ussd.UssdActivityNotifier.init(this) }
         initSafely("agent_alerts_init") { AgentAlertsState.init(this) }
         // Previously only initialized from MainActivity.kt, which never runs
         // for a process the OS started to host just the background service
