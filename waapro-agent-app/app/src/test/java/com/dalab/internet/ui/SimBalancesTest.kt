@@ -30,4 +30,29 @@ class SimBalancesTest {
         assertEquals("Updated 3 h ago · USSD reply", simUpdatedText("2026-11-13T09:00:00Z", "ussd_dial", now))
         assertNull(simUpdatedText(null, "sms", now))
     }
+
+    private fun sim(key: String, balance: Double?, status: String = "ok") =
+        com.dalab.internet.data.SimBalance(id = key + balance + status, providerKey = key, label = key, network = "N", balance = balance, status = status)
+
+    @Test
+    fun `logo cards add confirmed SIM balances per network and never invent 0`() {
+        val cards = balanceCardsFromSims(listOf(
+            sim("evc_plus", 1.76),
+            sim("hormuud", 27.01), sim("hormuud_evoucher", 5.0),
+            sim("somtel", 9.75, "stale"),
+            sim("somnet", null, "no_balance_yet"),
+        )).associateBy { it.providerKey }
+        assertEquals(listOf("evc_plus", "edahab", "hormuud", "somnet", "somtel", "amtel"), balanceCardsFromSims(emptyList()).map { it.providerKey })
+        assertEquals(1.76, cards["evc_plus"]!!.amount!!, 0.001)
+        assertEquals("1 SIM", cards["evc_plus"]!!.note)
+        assertEquals("Hormuud data only, E-Voucher listed but not added", 27.01, cards["hormuud"]!!.amount!!, 0.001)
+        assertEquals(2, cards["hormuud"]!!.sims.size)
+        assertEquals(9.75, cards["somtel"]!!.amount!!, 0.001)
+        assertEquals("1 SIM needs check", cards["somtel"]!!.note)
+        assertNull("configured but no confirmed balance: Unknown, not 0", cards["somnet"]!!.amount)
+        assertEquals(true, cards["somnet"]!!.configured)
+        assertNull(cards["amtel"]!!.amount)
+        assertEquals("no SIM set up", false, cards["amtel"]!!.configured)
+    }
 }
+

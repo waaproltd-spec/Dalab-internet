@@ -92,14 +92,14 @@ fun SimBalancesSection(sims: List<SimBalance>, loading: Boolean, error: String?)
                 if (sum.isNotEmpty()) Text(simBalanceText(sum.sum())!!, color = WaaproNavy, fontWeight = FontWeight.Bold, fontSize = 14.sp)
             }
             Spacer(Modifier.height(6.dp))
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { list.forEach { SimRow(it) } }
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { list.forEach { SimBalanceRow(it) } }
         }
         Spacer(Modifier.height(8.dp))
     }
 }
 
 @Composable
-private fun SimRow(s: SimBalance) {
+fun SimBalanceRow(s: SimBalance) {
     val problem = s.status != "ok"
     val hard = s.status == "sim_missing" || s.status == "no_balance_yet"
     Surface(shape = RoundedCornerShape(14.dp), color = Color.White, modifier = Modifier.fillMaxWidth().border(1.dp, WaaproBorder, RoundedCornerShape(14.dp))) {

@@ -174,8 +174,11 @@ fun OrdersListScreen(
 
             item {
                 val sims = simBalances
-                if (sims != null) SimBalancesSection(sims = sims, loading = balancesLoading, error = simBalancesError)
-                else AgentBalanceSection(balances = balances, loading = balancesLoading)
+                AgentBalanceSection(
+                    cards = if (sims != null) balanceCardsFromSims(sims) else balances.map { BalanceCardData(it.providerKey, it.providerName, it.category, it.balance, null, false, emptyList(), configured = true) },
+                    loading = balancesLoading,
+                    error = simBalancesError,
+                )
             }
         }
     }
@@ -314,49 +317,127 @@ private fun NotificationBellButton(unreadCount: Int, onClick: () -> Unit) {
 // airtime) are always shown as their own labeled group with its own Total
 // Balance summary, matching the reference design, regardless of which
 // ones this specific agent has ever dialed through.
+/** One logo card: a network's total from its admin-configured SIMs. amount
+ * is null when none of its SIMs has a confirmed balance (shown "Unknown",
+ * or "Not set up" when the admin configured no SIM for it) -- never $0. */
+data class BalanceCardData(
+    val providerKey: String,
+    val providerName: String,
+    val category: String,
+    val amount: Double?,
+    val note: String?,
+    val attention: Boolean,
+    val sims: List<com.dalab.internet.data.SimBalance>,
+    val configured: Boolean,
+)
+
+private val CARD_ORDER = listOf(
+    Triple("evc_plus", "EVC Plus", "method"),
+    Triple("edahab", "eDahab", "method"),
+    Triple("hormuud", "Hormuud", "company"),
+    Triple("somnet", "Somnet", "company"),
+    Triple("somtel", "Somtel", "company"),
+    Triple("amtel", "Amtel", "company"),
+)
+
+/** The six logo cards from the per-SIM list. Pure; unit-tested. Hormuud's
+ * E-Voucher stock is listed under Hormuud but not added to its data total. */
+fun balanceCardsFromSims(sims: List<com.dalab.internet.data.SimBalance>): List<BalanceCardData> =
+    CARD_ORDER.map { (key, name, category) ->
+        val own = sims.filter { it.providerKey == key }
+        val listed = if (key == "hormuud") own + sims.filter { it.providerKey == "hormuud_evoucher" } else own
+        val known = own.mapNotNull { it.balance }
+        val needCheck = listed.count { it.status != "ok" }
+        BalanceCardData(
+            providerKey = key,
+            providerName = name,
+            category = category,
+            amount = if (known.isEmpty()) null else known.sum(),
+            note = when {
+                listed.isEmpty() -> null
+                needCheck > 0 -> if (needCheck == 1) "1 SIM needs check" else "$needCheck SIMs need check"
+                listed.size == 1 -> "1 SIM"
+                else -> "${listed.size} SIMs"
+            },
+            attention = needCheck > 0,
+            sims = listed,
+            configured = listed.isNotEmpty(),
+        )
+    }
+
+private fun cardAmountText(c: BalanceCardData, loading: Boolean): String = when {
+    loading -> "…"
+    c.amount != null -> "$ ${"%.2f".format(c.amount)}"
+    !c.configured -> "Not set up"
+    else -> "Unknown"
+}
+
 @Composable
-private fun AgentBalanceSection(balances: List<AgentBalanceEntry>, loading: Boolean) {
-    val methodBalances = balances.filter { it.category == "method" }
-    val companyBalances = balances.filter { it.category == "company" }
+private fun AgentBalanceSection(cards: List<BalanceCardData>, loading: Boolean, error: String? = null) {
+    val methodCards = cards.filter { it.category == "method" }
+    val companyCards = cards.filter { it.category == "company" }
+    var expanded by remember { mutableStateOf<String?>(null) }
+    val toggle: (String) -> Unit = { key -> expanded = if (expanded == key) null else key }
 
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
         GrandTotalBar(
-            methods = methodBalances.sumOf { it.balance },
-            companies = companyBalances.sumOf { it.balance },
+            methods = methodCards.sumOf { it.amount ?: 0.0 },
+            companies = companyCards.sumOf { it.amount ?: 0.0 },
             loading = loading,
         )
+        error?.let {
+            Spacer(Modifier.height(6.dp))
+            Text(it, color = Color(0xFFB42318), style = MaterialTheme.typography.labelMedium)
+        }
         Spacer(Modifier.height(10.dp))
         BalanceGroupHeader(
-            title = "Payment Method (${methodBalances.size})",
-            totalBalance = methodBalances.sumOf { it.balance },
+            title = "Payment Method (${methodCards.size})",
+            totalBalance = methodCards.sumOf { it.amount ?: 0.0 },
             loading = loading,
             accentColor = DalabGreen,
         )
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-            methodBalances.forEach { entry ->
-                PaymentMethodCard(entry = entry, loading = loading, modifier = Modifier.weight(1f))
+            methodCards.forEach { card ->
+                PaymentMethodCard(card = card, loading = loading, onClick = { toggle(card.providerKey) }, modifier = Modifier.weight(1f))
             }
         }
+        methodCards.firstOrNull { it.providerKey == expanded }?.let { CardSims(it) }
 
         Spacer(Modifier.height(10.dp))
         HorizontalDivider(color = DalabSurfaceTint)
         Spacer(Modifier.height(10.dp))
 
         BalanceGroupHeader(
-            title = "Payment Company (${companyBalances.size})",
-            totalBalance = companyBalances.sumOf { it.balance },
+            title = "Payment Company (${companyCards.size})",
+            totalBalance = companyCards.sumOf { it.amount ?: 0.0 },
             loading = loading,
             accentColor = DalabBrandBlue,
         )
         Spacer(Modifier.height(8.dp))
-        companyBalances.chunked(2).forEach { rowEntries ->
+        companyCards.chunked(2).forEach { rowCards ->
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
-                rowEntries.forEach { entry ->
-                    PaymentCompanyCard(entry = entry, loading = loading, modifier = Modifier.weight(1f))
+                rowCards.forEach { card ->
+                    PaymentCompanyCard(card = card, loading = loading, onClick = { toggle(card.providerKey) }, modifier = Modifier.weight(1f))
                 }
-                if (rowEntries.size == 1) Spacer(modifier = Modifier.weight(1f))
+                if (rowCards.size == 1) Spacer(modifier = Modifier.weight(1f))
             }
+            rowCards.firstOrNull { it.providerKey == expanded }?.let { CardSims(it) }
+        }
+    }
+}
+
+/** The tapped card's SIMs: number, phone, slot, last update, real errors. */
+@Composable
+private fun CardSims(card: BalanceCardData) {
+    Column(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (card.sims.isEmpty()) {
+            Text(
+                "No ${card.providerName} SIM has been set up by the admin (Balance Dashboard / SIM Routing).",
+                color = DalabMuted, style = MaterialTheme.typography.bodySmall,
+            )
+        } else {
+            card.sims.forEach { SimBalanceRow(it) }
         }
     }
 }
@@ -460,10 +541,11 @@ private val ProviderNavy = Color(0xFF0A3B63)
 // wash behind the logo and a colored balance figure -- these are the
 // balances an agent *receives* customer payments into, so they stay light
 // and read primarily through their logo, same as the reference design.
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PaymentMethodCard(entry: AgentBalanceEntry, loading: Boolean, modifier: Modifier = Modifier) {
-    val accent = providerBrandColor(entry.providerKey)
-    Surface(color = DalabWhite, shape = RoundedCornerShape(18.dp), shadowElevation = 1.dp, modifier = modifier) {
+private fun PaymentMethodCard(card: BalanceCardData, loading: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val accent = providerBrandColor(card.providerKey)
+    Surface(onClick = onClick, color = DalabWhite, shape = RoundedCornerShape(18.dp), shadowElevation = 1.dp, modifier = modifier) {
         Box {
             Box(
                 modifier = Modifier
@@ -475,23 +557,26 @@ private fun PaymentMethodCard(entry: AgentBalanceEntry, loading: Boolean, modifi
             )
             Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
                 Image(
-                    painter = painterResource(logoResFor(entry.providerKey)),
-                    contentDescription = entry.providerName,
+                    painter = painterResource(logoResFor(card.providerKey)),
+                    contentDescription = card.providerName,
                     contentScale = ContentScale.Fit,
                     alignment = Alignment.CenterStart,
                     modifier = Modifier.height(20.dp).fillMaxWidth(0.72f),
                 )
                 Spacer(Modifier.height(6.dp))
-                Text(entry.providerName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = DalabIndigo)
+                Text(card.providerName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = DalabIndigo)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    if (loading) "…" else "$ ${"%.2f".format(entry.balance)}",
-                    style = MaterialTheme.typography.titleLarge,
+                    cardAmountText(card, loading),
+                    style = if (card.amount != null || loading) MaterialTheme.typography.titleLarge else MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
                     // eDahab's yellow is too light to read as text on a white
                     // card -- a deeper gold keeps the same hue, readable.
-                    color = if (accent == ProviderYellow) Color(0xFFB8860B) else accent,
+                    color = if (card.amount == null && !loading) DalabMuted else if (accent == ProviderYellow) Color(0xFFB8860B) else accent,
                 )
+                card.note?.let {
+                    Text(it, style = MaterialTheme.typography.labelSmall, color = if (card.attention) Color(0xFFB42318) else DalabMuted)
+                }
             }
             Box(
                 modifier = Modifier
@@ -515,15 +600,16 @@ private fun PaymentMethodCard(entry: AgentBalanceEntry, loading: Boolean, modifi
 // match its own card rather than the single hardcoded green every card
 // used before, fixing the mismatch (e.g. a red Amtel card previously still
 // showing a green balance).
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PaymentCompanyCard(entry: AgentBalanceEntry, loading: Boolean, modifier: Modifier = Modifier) {
-    val brand = providerBrandColor(entry.providerKey)
+private fun PaymentCompanyCard(card: BalanceCardData, loading: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val brand = providerBrandColor(card.providerKey)
     // Somtel's brand color is a bright yellow -- white text on it reads
     // poorly, so it's the one company card using dark text instead of
     // white, matching the reference design's own contrast choice.
     // Fixed navy (not the theme's text color, which turns light in Dark mode).
-    val onBrand = if (entry.providerKey == "somtel") ProviderNavy else Color.White
-    Surface(color = brand, shape = RoundedCornerShape(18.dp), shadowElevation = 1.dp, modifier = modifier) {
+    val onBrand = if (card.providerKey == "somtel") ProviderNavy else Color.White
+    Surface(onClick = onClick, color = brand, shape = RoundedCornerShape(18.dp), shadowElevation = 1.dp, modifier = modifier) {
         Box {
             Box(
                 modifier = Modifier
@@ -539,21 +625,24 @@ private fun PaymentCompanyCard(entry: AgentBalanceEntry, loading: Boolean, modif
                     contentAlignment = Alignment.Center,
                 ) {
                     Image(
-                        painter = painterResource(logoResFor(entry.providerKey)),
-                        contentDescription = entry.providerName,
+                        painter = painterResource(logoResFor(card.providerKey)),
+                        contentDescription = card.providerName,
                         contentScale = ContentScale.Fit,
                         modifier = Modifier.size(24.dp).clip(RoundedCornerShape(6.dp)),
                     )
                 }
                 Spacer(Modifier.height(6.dp))
-                Text(entry.providerName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = onBrand)
+                Text(card.providerName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = onBrand)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    if (loading) "…" else "$ ${"%.2f".format(entry.balance)}",
-                    style = MaterialTheme.typography.titleLarge,
+                    cardAmountText(card, loading),
+                    style = if (card.amount != null || loading) MaterialTheme.typography.titleLarge else MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
                     color = onBrand,
                 )
+                card.note?.let {
+                    Text(if (card.attention) "⚠ $it" else it, style = MaterialTheme.typography.labelSmall, color = onBrand.copy(alpha = 0.9f))
+                }
             }
             Box(
                 modifier = Modifier
