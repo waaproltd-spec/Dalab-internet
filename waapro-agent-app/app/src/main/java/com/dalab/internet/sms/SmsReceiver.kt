@@ -13,6 +13,9 @@ import com.dalab.internet.diagnostics.DiagnosticsLog
 import com.dalab.internet.queue.PendingActionQueue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
@@ -38,6 +41,23 @@ import java.util.*
  * receiver's window silently dropping it.
  */
 class SmsReceiver : BroadcastReceiver() {
+
+    companion object {
+        /**
+         * Android gives an SMS broadcast only ~10s (it's delivered as a
+         * foreground broadcast), but the work below can take much longer: a
+         * matched order is dialed right away, and a USSD dial -- possibly
+         * waiting its turn in the app-wide USSD queue -- alone can take 30s+.
+         * Holding the broadcast that long made Android report "AGENT APP
+         * isn't responding" (seen live on DALAB). So the broadcast is held at
+         * most this long and the work carries on in this process-wide scope.
+         * Nothing is lost if the app is stopped afterwards: the SMS is put in
+         * the durable upload queue in the first milliseconds (SmsUploadFlow
+         * .intake), and QueueDrainer / the self-heal sweeps resume it.
+         */
+        internal const val BROADCAST_HOLD_MS = 8_000L
+        private val receiverScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    }
 
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
@@ -106,15 +126,14 @@ class SmsReceiver : BroadcastReceiver() {
                 val unparsedEntry = SmsLogEntry(sender = sender, body = body, receivedAt = receivedAt, simSlot = simSlot)
                 val pendingResult = goAsync()
                 val appContext = context.applicationContext
-                CoroutineScope(Dispatchers.IO).launch {
+                val job = receiverScope.launch {
                     try {
                         SmsUploadFlow.intake(appContext, unparsedEntry, "receiver")
                     } catch (e: Exception) {
                         DiagnosticsLog.record("sms_receiver_process", "Failed uploading unparsed payment SMS: ${e.stackTraceToString().take(2000)}")
-                    } finally {
-                        pendingResult.finish()
                     }
                 }
+                finishWhenDoneOrAfter(receiverScope, job, BROADCAST_HOLD_MS) { pendingResult.finish() }
             }
             return
         }
@@ -131,7 +150,7 @@ class SmsReceiver : BroadcastReceiver() {
         // pipeline runs on a background coroutine rather than blocking onReceive.
         val pendingResult = goAsync()
         val appContext = context.applicationContext
-        CoroutineScope(Dispatchers.IO).launch {
+        val job = receiverScope.launch {
             try {
                 if (voucherSent != null) {
                     // Flow 2: agent's own SIM confirmed it sent the top-up — a
@@ -234,10 +253,9 @@ class SmsReceiver : BroadcastReceiver() {
                 // match/dial pipeline propagated straight up and crashed the app
                 // with zero record of what happened.
                 DiagnosticsLog.record("sms_receiver_process", "Failed processing incoming SMS: ${e.stackTraceToString().take(2000)}")
-            } finally {
-                pendingResult.finish()
             }
         }
+        finishWhenDoneOrAfter(receiverScope, job, BROADCAST_HOLD_MS) { pendingResult.finish() }
     }
 }
 
@@ -322,3 +340,17 @@ internal fun looksLikePaymentSms(body: String): Boolean {
     val lower = body.lowercase()
     return lower.contains("$") || PAYMENT_LOOKING_KEYWORDS.any { lower.contains(it) }
 }
+
+/**
+ * Calls [finish] exactly once: as soon as [job] completes, or after [maxWaitMs]
+ * if it's still running (the job itself keeps running). Pure coroutine logic,
+ * unit-tested in SmsReceiverFinishTest.
+ */
+internal fun finishWhenDoneOrAfter(scope: CoroutineScope, job: Job, maxWaitMs: Long, finish: () -> Unit): Job =
+    scope.launch {
+        try {
+            withTimeoutOrNull(maxWaitMs) { job.join() }
+        } finally {
+            try { finish() } catch (_: IllegalStateException) { /* already finished */ }
+        }
+    }
