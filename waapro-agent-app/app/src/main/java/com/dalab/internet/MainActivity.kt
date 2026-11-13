@@ -1,0 +1,1466 @@
+package com.dalab.internet
+
+import com.dalab.internet.ui.i18n.Text
+import android.Manifest
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Bundle
+import androidx.lifecycle.lifecycleScope
+import android.os.PowerManager
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.shadow
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountBalanceWallet
+import androidx.compose.material.icons.filled.Assessment
+import androidx.compose.material.icons.filled.Groups
+import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.Logout
+import androidx.compose.material.icons.filled.Campaign
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.FactCheck
+import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.CurrencyExchange
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.LocalOffer
+import androidx.compose.material.icons.filled.SportsSoccer
+import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Sell
+import androidx.compose.material.icons.filled.ShoppingCart
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Storefront
+import androidx.compose.material.icons.filled.SupportAgent
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import com.dalab.internet.auth.DeviceIdentity
+import com.dalab.internet.auth.ResellerSessionManager
+import com.dalab.internet.auth.SessionManager
+import com.dalab.internet.data.ExchangeOrder
+import com.dalab.internet.data.Order
+import com.dalab.internet.data.ShopAgentOrder
+import com.dalab.internet.data.VipNumberAgentOrder
+import com.dalab.internet.data.VipPackageAgentOrder
+import com.dalab.internet.diagnostics.DiagnosticsLog
+import com.dalab.internet.diagnostics.HeartbeatStats
+import com.dalab.internet.network.ApiClient
+import com.dalab.internet.notifications.AgentAlertsState
+import com.dalab.internet.notifications.OrdersDeepLink
+import com.dalab.internet.notifications.PushTokenRegistrar
+import com.dalab.internet.notifications.SupportDeepLink
+import com.dalab.internet.notifications.SupportUnreadState
+import com.dalab.internet.queue.PendingActionQueue
+import com.dalab.internet.service.AgentBackgroundService
+import com.dalab.internet.sms.SmsInboxScanner
+import com.dalab.internet.sms.SmsListenerState
+import com.dalab.internet.ui.AgentOrdersScreen
+import com.dalab.internet.ui.OrdersTopTab
+import com.dalab.internet.ui.VipOrdersSubTab
+import com.dalab.internet.ui.AlertsScreen
+import com.dalab.internet.ui.AgentLoginScreen
+import com.dalab.internet.ui.CustomerDetailScreen
+import com.dalab.internet.ui.CustomersScreen
+import com.dalab.internet.ui.DeviceSetupScreen
+import com.dalab.internet.ui.DiagnosticsScreen
+import com.dalab.internet.ui.ExchangeAccessibilitySetupScreen
+import com.dalab.internet.ui.ExchangeOrderDetailScreen
+import com.dalab.internet.ui.ResellerWithdrawalInteractiveAccessibilitySetupScreen
+import com.dalab.internet.ui.ExchangeOrdersListScreen
+import com.dalab.internet.ui.CiyaarahaScreen
+import com.dalab.internet.ui.NalaSocoManagementScreen
+import com.dalab.internet.ui.PromoAdManagementScreen
+import com.dalab.internet.ui.NewSaleScreen
+import com.dalab.internet.ui.NotificationsScreen
+import com.dalab.internet.ui.OrderDetailScreen
+import com.dalab.internet.ui.ManageOrdersScreen
+import com.dalab.internet.ui.OrdersListScreen
+import com.dalab.internet.ui.PackagesScreen
+import com.dalab.internet.ui.PermissionsStatusScreen
+import com.dalab.internet.ui.ReliabilityDashboardScreen
+import com.dalab.internet.ui.ReliabilitySetupScreen
+import com.dalab.internet.ui.ReportsScreen
+import com.dalab.internet.ui.ResellerScreen
+import com.dalab.internet.ui.ShopAgentOrderDetailScreen
+import com.dalab.internet.ui.SmsPermissionScreen
+import com.dalab.internet.ui.SupportScreen
+import com.dalab.internet.ui.TransactionHistoryScreen
+import com.dalab.internet.ui.VipNumberAgentOrderDetailScreen
+import com.dalab.internet.ui.VipPackageAgentOrderDetailScreen
+import com.dalab.internet.ui.WalletDashboardScreen
+import com.dalab.internet.ui.theme.AgentAccent
+import com.dalab.internet.ui.theme.AgentLanguage
+import com.dalab.internet.ui.theme.AgentSettings
+import com.dalab.internet.ui.theme.AgentThemeMode
+import com.dalab.internet.ui.theme.DalabTheme
+import kotlinx.coroutines.launch
+
+private val SMS_PERMISSIONS = arrayOf(Manifest.permission.RECEIVE_SMS, Manifest.permission.READ_SMS)
+
+class MainActivity : ComponentActivity() {
+
+    // Coming back to the foreground is a moment an SMS may have been missed
+    // (e.g. the permission was just granted in Android Settings): re-check
+    // the SMS permission and run a missed-SMS recovery pass.
+    override fun onResume() {
+        super.onResume()
+        lifecycleScope.launch {
+            com.dalab.internet.sms.SmsInboxScanner.recover(applicationContext, "app_foreground")
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // DalabAgentApp.onCreate() already ran all of these once, each isolated
+        // in its own try/catch — these are defensive, idempotent no-ops in the
+        // normal case, but still guarded individually here too so a lingering
+        // failure in one can't prevent the screen from ever rendering.
+        safely("system_session_init") { com.dalab.internet.auth.SystemSession.init(this) }
+        safely("system_switch_init") { com.dalab.internet.auth.SystemSwitch.init(this) }
+        safely("session_init") { SessionManager.init(this) }
+        safely("sms_formats_init") { com.dalab.internet.sms.DynamicSmsFormats.init(this) }
+        safely("device_install_init") { com.dalab.internet.auth.DeviceInstall.init(this) }
+        safely("device_activation_init") { com.dalab.internet.auth.DeviceActivationState.init(this) }
+        safely("reseller_session_init") { ResellerSessionManager.init(this) }
+        safely("device_identity_init") { DeviceIdentity.init(this) }
+        safely("sms_listener_init") { SmsListenerState.init(this) }
+        safely("sms_ledger_init") { com.dalab.internet.sms.SmsFingerprintStore.init(this) }
+        safely("pending_queue_init") { PendingActionQueue.init(this) }
+        safely("diagnostics_init") { DiagnosticsLog.init(this) }
+        safely("heartbeat_stats_init") { HeartbeatStats.init(this) }
+        safely("agent_alerts_init") { AgentAlertsState.init(this) }
+        safely("notification_channel_init") { createNotificationChannel() }
+        safely("support_deep_link_init") { handleIntent(intent) }
+        safely("agent_settings_init") {
+            AgentSettings.init(this)
+            // For Theme → System: the phone's own dark setting (the Activity
+            // is recreated whenever the phone switches it).
+            val night = resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK
+            AgentSettings.updateSystemDark(night == android.content.res.Configuration.UI_MODE_NIGHT_YES)
+        }
+
+        val loggedIn = try { SessionManager.isLoggedIn() } catch (e: Exception) {
+            DiagnosticsLog.record("session_check", "isLoggedIn() failed: ${e.message}"); false
+        }
+        val deviceSet = try { DeviceIdentity.isSet() } catch (e: Exception) {
+            DiagnosticsLog.record("device_check", "isSet() failed: ${e.message}"); false
+        }
+        val systemSet = try { com.dalab.internet.auth.SystemSession.isSet() } catch (e: Exception) { false }
+        if (systemSet && loggedIn && deviceSet) {
+            safely("background_service_start") { AgentBackgroundService.start(this) }
+        }
+
+        setContent {
+            DalabTheme {
+                AgentApp()
+            }
+        }
+    }
+
+    private inline fun safely(tag: String, block: () -> Unit) {
+        try {
+            block()
+        } catch (e: Exception) {
+            DiagnosticsLog.record(tag, "Failed: ${e.stackTraceToString().take(2000)}")
+        }
+    }
+
+    // Cold start: the notification tap itself launched this Activity, so the
+    // extra is already on the very first Intent onCreate() sees.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        // Warm start: android:launchMode="singleTop" (manifest) routes a
+        // notification tap here instead of spawning a second instance, while
+        // this Activity is already showing some other screen.
+        safely("support_deep_link_new_intent") { handleIntent(intent) }
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        if (intent == null) return
+        // Two different tap paths land here with two different extra
+        // shapes:
+        //  - Foreground (AgentFcmService.onMessageReceived ran): the custom
+        //    EXTRA_OPEN_SUPPORT/EXTRA_OPEN_ORDERS/EXTRA_ORDER_* names below,
+        //    built explicitly by that code.
+        //  - Background/killed (FCM auto-displayed the notification itself,
+        //    onMessageReceived never ran): the system instead launches with
+        //    the RAW data-payload keys as extras, under their original
+        //    names ("screen"/"orderType"/"orderId") -- not the MainActivity
+        //    constants, since no app code executed to remap them. Checking
+        //    both is what makes "tap deep-links correctly" true regardless
+        //    of whether the app was alive when the push arrived.
+        val rawScreen = intent.getStringExtra("screen")
+        if (intent.getBooleanExtra(EXTRA_OPEN_SUPPORT, false) || rawScreen == "support_conversation") {
+            SupportDeepLink.pending = true
+        }
+        if (intent.getBooleanExtra(EXTRA_OPEN_ORDERS, false) || rawScreen == "agent_orders") {
+            // Set together, before pending -- AgentApp()'s effect reads
+            // orderType/orderId the moment pending flips true.
+            OrdersDeepLink.orderType = intent.getStringExtra(EXTRA_ORDER_TYPE) ?: intent.getStringExtra("orderType")
+            OrdersDeepLink.orderId = intent.getStringExtra(EXTRA_ORDER_ID) ?: intent.getStringExtra("orderId")
+            OrdersDeepLink.pending = true
+        }
+    }
+
+    companion object {
+        const val EXTRA_OPEN_SUPPORT = "open_support"
+        const val EXTRA_OPEN_ORDERS = "open_orders"
+        const val EXTRA_ORDER_TYPE = "order_type"
+        const val EXTRA_ORDER_ID = "order_id"
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                "payment_channel", "Payment detections", NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                // The one alert channel worth vibrating for — a payment/order
+                // update the agent needs to notice even with the phone in a
+                // pocket. The silent background-monitoring notification
+                // (AgentBackgroundService's own channel) deliberately does not.
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 250, 150, 250)
+            }
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        }
+    }
+}
+
+private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP, SALES, CUSTOMERS, CUSTOMER_DETAIL, REPORTS, RESELLER, AGENT_SHOP_ORDER_DETAIL, AGENT_VIP_ORDER_DETAIL, AGENT_VIP_PACKAGE_ORDER_DETAIL, MANAGE_ORDERS, OTHER_AGENTS, NALA_SOCO, PROMO_ADS, CIYAARAHA }
+// Bottom nav is exactly 5 tabs: Home, Orders, Support Agent, Broadcast, More --
+// Sales/Customers/Reports (formerly their own tabs) moved under More as
+// ordinary Screen.X destinations instead (see MoreScreen's "My Work"
+// section), and Support/Broadcast (formerly under More) became tabs here.
+// Orders is the real Shop/VIP Number order queue (see AgentOrdersScreen) --
+// distinct from Home's existing Internet Store recharge queue
+// (OrdersListScreen/Order), same "own tab per business line" pattern
+// Money Exchange/Reseller Withdrawal already follow.
+// ORDERS = the Shop/VIP queue (More > My Work, and order notifications);
+// MANAGE = Manage Orders, the second tab in the bottom bar.
+private enum class HomeTab { HOME, MANAGE, AGENT_INFO, ORDERS, SUPPORT, BROADCAST, MORE }
+
+@Composable
+private fun AgentApp() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val activity = context as ComponentActivity
+
+    fun smsGranted() = SMS_PERMISSIONS.all {
+        ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+    }
+
+    // Battery-optimization exemption is the #1 real-world cause of stale
+    // heartbeats / SMS monitoring silently stopping — this is checked once
+    // per cold start (not on every recomposition) so ReliabilitySetupScreen
+    // is shown once per app launch until it's actually granted.
+    fun batteryUnrestricted(): Boolean {
+        val powerManager = context.getSystemService(PowerManager::class.java) ?: return true
+        return powerManager.isIgnoringBatteryOptimizations(context.packageName)
+    }
+
+    // There is no login screen: once a device is chosen, the app authenticates
+    // itself against whichever agent is assigned to it (see AgentLoginScreen).
+    // A session normally outlives the app (it's only ever cleared by an
+    // explicit backend revocation), so on every subsequent open this resolves
+    // straight to HOME (or RELIABILITY_SETUP first, if still unexempted) with
+    // no network round-trip at all.
+    // One app for every system: the agent signs in first with phone number +
+    // PIN (the Admin Hub finds the system), and only then picks this phone's
+    // device -- the device list belongs to the system just signed in to.
+    fun nextScreen() = when {
+        !com.dalab.internet.auth.SystemSession.isSet() || !SessionManager.isLoggedIn() -> Screen.AUTHENTICATING
+        !DeviceIdentity.isSet() -> Screen.DEVICE_SETUP
+        !batteryUnrestricted() -> Screen.RELIABILITY_SETUP
+        else -> Screen.HOME
+    }
+
+    var hasSmsPermission by remember { mutableStateOf(smsGranted()) }
+    var permanentlyDenied by remember { mutableStateOf(false) }
+    var screen by remember {
+        mutableStateOf(
+            if (!hasSmsPermission) Screen.PERMISSIONS
+            else nextScreen()
+        )
+    }
+    var selectedOrder by remember { mutableStateOf<Order?>(null) }
+    var selectedExchangeOrder by remember { mutableStateOf<ExchangeOrder?>(null) }
+    var selectedAgentShopOrder by remember { mutableStateOf<ShopAgentOrder?>(null) }
+    var selectedAgentVipOrder by remember { mutableStateOf<VipNumberAgentOrder?>(null) }
+    var selectedAgentVipPackageOrder by remember { mutableStateOf<VipPackageAgentOrder?>(null) }
+    var selectedCustomerId by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    // Back navigation for every normal in-app destination -- a real stack of
+    // where `screen` has been, not a hardcoded "always return to Home".
+    // navigate() pushes the screen being left before switching; goBack()
+    // pops it. Every onBack callback below calls goBack() instead of
+    // hardcoding its own idea of "the" previous screen, so Back always
+    // lands wherever the agent actually came from (Orders tab, More tab,
+    // a list screen, etc.) -- see also homeTab/ordersTopTab/ordersVipSubTab
+    // below, hoisted out of AgentHome/AgentOrdersScreen for the same reason:
+    // their own local `remember` state would otherwise reset every time
+    // this composable leaves Screen.HOME and comes back.
+    val backStack = remember { mutableStateListOf<Screen>() }
+    fun navigate(to: Screen) {
+        backStack.add(screen)
+        screen = to
+    }
+    fun goBack() {
+        screen = backStack.removeLastOrNull() ?: Screen.HOME
+    }
+
+    // AgentHome's bottom-nav tab, and AgentOrdersScreen's own Shop/VIP
+    // Numbers top-tab + Numbers/Packages sub-tab -- hoisted here (rather
+    // than each screen's own local `remember`) so they survive navigating
+    // into an order's/Report's/etc. detail screen and back. Onboarding
+    // screens (PERMISSIONS/DEVICE_SETUP/AUTHENTICATING/RELIABILITY_SETUP)
+    // never touch these; they only matter once `screen` is Screen.HOME.
+    var homeTab by remember { mutableStateOf(HomeTab.HOME) }
+    var ordersTopTab by remember { mutableStateOf(OrdersTopTab.SHOP) }
+    var ordersVipSubTab by remember { mutableStateOf(VipOrdersSubTab.NUMBERS) }
+
+    // System back gesture/button mirrors the in-app Back arrows above: pop
+    // the stack if there's somewhere to pop to, otherwise fall back to the
+    // Home tab if on some other tab -- only truly exits the app (default,
+    // unhandled behavior) once at the real root, same as before this fix.
+    BackHandler(enabled = backStack.isNotEmpty() || homeTab != HomeTab.HOME) {
+        if (backStack.isNotEmpty()) goBack() else homeTab = HomeTab.HOME
+    }
+
+    // A support-request push (support.routes.ts's notifyAssignedAgent()/
+    // notifyAgentOfNewMessage()) was tapped -- jump to Home so AgentHome gets
+    // composed, which is where the flag is actually consumed (it switches its
+    // own Support tab -- see AgentHome's own LaunchedEffect below). Only
+    // forces navigation once logged in and past setup -- an agent who somehow
+    // taps a notification before finishing device setup just lands wherever
+    // setup leaves them; the flag stays set and is picked up the next time
+    // this effect re-runs, same as before.
+    LaunchedEffect(SupportDeepLink.pending) {
+        if (SupportDeepLink.pending && screen != Screen.HOME) {
+            screen = Screen.HOME
+        }
+    }
+
+    // A payment-confirmed order push was tapped -- same "get to Screen.HOME
+    // first, AgentHome's own effect below picks the tab" pattern as the
+    // support deep link above.
+    LaunchedEffect(OrdersDeepLink.pending) {
+        if (OrdersDeepLink.pending && screen != Screen.HOME) {
+            screen = Screen.HOME
+        }
+    }
+
+    // Once actually on Home (session resolved, setup done), a VIP Number/
+    // Package order push jumps straight to that order's own detail screen
+    // instead of leaving AgentHome's own effect open the Orders tab --
+    // this is the "tapping the notification opens the correct VIP Order
+    // Detail screen" requirement. Shop pushes (orderType "shop") and any
+    // push with no orderId (an older/unrecognized payload) are left alone
+    // here on purpose: pending stays true, so AgentHome's own effect below
+    // still runs its Orders-tab fallback exactly as before. Only clears
+    // pending/orderId/orderType on success -- a fetch failure (network
+    // drop, the order somehow 404s) also falls through to that same
+    // fallback rather than stranding the agent on a blank screen.
+    LaunchedEffect(OrdersDeepLink.pending, screen) {
+        if (!OrdersDeepLink.pending || screen != Screen.HOME) return@LaunchedEffect
+        val orderId = OrdersDeepLink.orderId
+        val orderType = OrdersDeepLink.orderType
+        if (orderId == null || (orderType != "vip_number" && orderType != "vip_package")) return@LaunchedEffect
+        // Only clear the deep link once navigation has actually happened --
+        // a non-exceptional but empty body (shouldn't happen, but isn't
+        // impossible) must still fall through to AgentHome's Orders-tab
+        // fallback rather than silently discarding the tap.
+        val navigated = try {
+            if (orderType == "vip_number") {
+                val order = ApiClient.service.getAgentVipNumberOrder(orderId).body()
+                if (order != null) {
+                    selectedAgentVipOrder = order
+                    screen = Screen.AGENT_VIP_ORDER_DETAIL
+                }
+                order != null
+            } else {
+                val order = ApiClient.service.getAgentVipPackageOrder(orderId).body()
+                if (order != null) {
+                    selectedAgentVipPackageOrder = order
+                    screen = Screen.AGENT_VIP_PACKAGE_ORDER_DETAIL
+                }
+                order != null
+            }
+        } catch (_: Exception) {
+            false
+        }
+        if (navigated) {
+            OrdersDeepLink.pending = false
+        } else {
+            // Fetch failed -- clear the order-specific fields (leaving
+            // pending=true) so AgentHome's own effect, keyed on orderType,
+            // re-evaluates and takes over as the Orders-tab fallback
+            // instead of this order staying silently un-openable.
+            OrdersDeepLink.orderType = null
+        }
+        OrdersDeepLink.orderId = null
+    }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* Best-effort -- a denial just means no system-tray notification, the
+          push itself still arrives and Support still shows the new
+          conversation once opened. */ }
+
+    // Registers this device's FCM token (and requests POST_NOTIFICATIONS on
+    // Android 13+) once the agent actually reaches Home -- covers both a
+    // fresh login and a resumed session, since a valid session skips
+    // AgentLoginScreen entirely on every subsequent cold start.
+    LaunchedEffect(screen == Screen.HOME) {
+        if (screen == Screen.HOME) {
+            if (Build.VERSION.SDK_INT >= 33 &&
+                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            ) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            PushTokenRegistrar.registerInBackground(context)
+        }
+    }
+
+    // Granting READ_SMS/RECEIVE_SMS previously only enabled the live receiver
+    // for messages from that moment forward — READ_SMS itself was requested
+    // but never actually used. This catches up on any payment SMS already
+    // sitting in the inbox the moment permission is granted (bounded lookback,
+    // see SmsInboxScanner), and also covers the case where permission was
+    // already granted in a previous session/app version before this existed.
+    LaunchedEffect(Unit) {
+        if (smsGranted()) {
+            SmsInboxScanner.scanRecentInboxOnce(context)
+        }
+    }
+
+    val permissionLauncher = rememberLauncherForSmsPermissions(
+        onResult = { grantedMap ->
+            hasSmsPermission = grantedMap.values.all { it }
+            if (hasSmsPermission) {
+                SmsListenerState.setListening(true)
+                scope.launch { SmsInboxScanner.recover(context, "permission_granted", force = true) }
+                screen = nextScreen()
+            } else {
+                // If the user denied without checking "don't ask again", Android will
+                // still show the rationale next time; shouldShowRequestPermissionRationale
+                // returns false only once truly "permanently" denied.
+                permanentlyDenied = SMS_PERMISSIONS.none {
+                    activity.shouldShowRequestPermissionRationale(it)
+                }
+            }
+        }
+    )
+
+    // Device Activation: once logged in, nothing opens until the backend
+    // says this install is approved. "Latched" keeps the screen up after an
+    // approval arrives so the agent sees "Device activated!" and taps
+    // Continue (a device that was already approved never sees it).
+    var activationLatched by remember { mutableStateOf(false) }
+    val activationStatus = com.dalab.internet.auth.DeviceActivationState.status
+    val activationGated = screen != Screen.PERMISSIONS && screen != Screen.DEVICE_SETUP && screen != Screen.AUTHENTICATING &&
+        SessionManager.isLoggedIn() &&
+        (activationStatus != com.dalab.internet.auth.DeviceActivationState.Status.APPROVED || activationLatched)
+    if (activationStatus == com.dalab.internet.auth.DeviceActivationState.Status.PENDING ||
+        activationStatus == com.dalab.internet.auth.DeviceActivationState.Status.REJECTED
+    ) {
+        SideEffect { if (activationGated) activationLatched = true }
+    }
+
+    // The session was revoked (refresh refused): back to phone number + PIN.
+    LaunchedEffect(Unit) {
+        com.dalab.internet.network.AgentEventBus.sessionExpired.collect {
+            if (!SessionManager.isLoggedIn()) screen = Screen.AUTHENTICATING
+        }
+    }
+
+    if (activationGated) {
+        com.dalab.internet.ui.DeviceActivationScreen(onContinue = { activationLatched = false })
+    } else when (screen) {
+        Screen.PERMISSIONS -> SmsPermissionScreen(
+            permanentlyDenied = permanentlyDenied,
+            onRequestPermissions = { permissionLauncher.launch(SMS_PERMISSIONS) },
+        )
+
+        Screen.DEVICE_SETUP -> DeviceSetupScreen(
+            onDeviceSelected = {
+                AgentBackgroundService.start(context)
+                screen = nextScreen()
+            },
+        )
+
+        Screen.AUTHENTICATING -> AgentLoginScreen(
+            onSignedIn = {
+                if (com.dalab.internet.auth.SystemSwitch.needsRestart) {
+                    // Signed in to a different system than before: its old
+                    // data is already wiped; restart so nothing of it stays
+                    // in memory either.
+                    restartApp(activity)
+                } else {
+                    // A fresh login (maybe another agent): check this install's approval anew.
+                    com.dalab.internet.auth.DeviceActivationState.reset()
+                    if (DeviceIdentity.isSet()) AgentBackgroundService.start(context)
+                    screen = nextScreen()
+                }
+            },
+        )
+
+        Screen.RELIABILITY_SETUP -> ReliabilitySetupScreen(onContinue = { screen = Screen.HOME })
+
+        Screen.HOME -> AgentHome(
+            tab = homeTab,
+            onTabChange = { homeTab = it },
+            ordersTopTab = ordersTopTab,
+            onOrdersTopTabChange = { ordersTopTab = it },
+            ordersVipSubTab = ordersVipSubTab,
+            onOrdersVipSubTabChange = { ordersVipSubTab = it },
+            onOpenOrder = { order -> selectedOrder = order; navigate(Screen.ORDER_DETAIL) },
+            onOpenAgentShopOrder = { order -> selectedAgentShopOrder = order; navigate(Screen.AGENT_SHOP_ORDER_DETAIL) },
+            onOpenAgentVipOrder = { order -> selectedAgentVipOrder = order; navigate(Screen.AGENT_VIP_ORDER_DETAIL) },
+            onOpenAgentVipPackageOrder = { order -> selectedAgentVipPackageOrder = order; navigate(Screen.AGENT_VIP_PACKAGE_ORDER_DETAIL) },
+            onOpenPackages = { navigate(Screen.PACKAGES) },
+            onOpenTransactions = { navigate(Screen.TRANSACTIONS) },
+            onOpenWallet = { navigate(Screen.WALLET) },
+            onOpenDeviceSetup = { navigate(Screen.DEVICE_SETUP) },
+            onSignOut = {
+                scope.launch {
+                    val refresh = SessionManager.refreshToken()
+                    if (refresh != null) {
+                        try { com.dalab.internet.network.ApiClient.service.logout(com.dalab.internet.network.RefreshRequest(refresh)) } catch (_: Exception) {}
+                    }
+                    AgentBackgroundService.stop(context)
+                    SessionManager.clear()
+                    ResellerSessionManager.clear()
+                    com.dalab.internet.auth.DeviceActivationState.reset()
+                    screen = Screen.AUTHENTICATING
+                }
+            },
+            onOpenDiagnostics = { navigate(Screen.DIAGNOSTICS) },
+            onOpenPermissionsStatus = { navigate(Screen.PERMISSIONS_STATUS) },
+            onOpenReliabilityDashboard = { navigate(Screen.RELIABILITY_DASHBOARD) },
+            onOpenMoneyExchange = { navigate(Screen.EXCHANGE_LIST) },
+            onOpenAlerts = { navigate(Screen.ALERTS) },
+            onOpenResellerWithdrawalSetup = { navigate(Screen.RESELLER_WITHDRAWAL_INTERACTIVE_SETUP) },
+            onOpenSales = { navigate(Screen.SALES) },
+            onOpenCustomers = { navigate(Screen.CUSTOMERS) },
+            onOpenReports = { navigate(Screen.REPORTS) },
+            onOpenReseller = { navigate(Screen.RESELLER) },
+            onOpenNalaSoco = { navigate(Screen.NALA_SOCO) },
+            onOpenPromoAds = { navigate(Screen.PROMO_ADS) },
+            onOpenCiyaaraha = { navigate(Screen.CIYAARAHA) },
+            onOpenManageOrders = { navigate(Screen.MANAGE_ORDERS) },
+            onOpenOtherAgents = { navigate(Screen.OTHER_AGENTS) },
+        )
+
+        Screen.ORDER_DETAIL -> selectedOrder?.let { order ->
+            OrderDetailScreen(
+                order = order,
+                onBack = { goBack() },
+                onOrderUpdated = { selectedOrder = it },
+            )
+        }
+
+        Screen.OTHER_AGENTS -> com.dalab.internet.ui.OtherAgentsScreen(onBack = { goBack() })
+
+        Screen.MANAGE_ORDERS -> ManageOrdersScreen(
+            onOpenOrder = { order -> selectedOrder = order; navigate(Screen.ORDER_DETAIL) },
+            onBack = { goBack() },
+        )
+
+        Screen.PACKAGES -> PackagesScreen(onBack = { goBack() })
+
+        Screen.TRANSACTIONS -> TransactionHistoryScreen(onBack = { goBack() })
+
+        Screen.WALLET -> WalletDashboardScreen(onBack = { goBack() })
+
+        Screen.DIAGNOSTICS -> DiagnosticsScreen(onBack = { goBack() })
+
+        Screen.PERMISSIONS_STATUS -> PermissionsStatusScreen(onBack = { goBack() })
+
+        Screen.RELIABILITY_DASHBOARD -> ReliabilityDashboardScreen(onBack = { goBack() })
+
+        Screen.EXCHANGE_LIST -> ExchangeOrdersListScreen(
+            onOpenOrder = { order -> selectedExchangeOrder = order; navigate(Screen.EXCHANGE_DETAIL) },
+            onOpenSetup = { navigate(Screen.EXCHANGE_SETUP) },
+            onBack = { goBack() },
+        )
+
+        Screen.EXCHANGE_DETAIL -> selectedExchangeOrder?.let { order ->
+            ExchangeOrderDetailScreen(
+                order = order,
+                onBack = { goBack() },
+                onOrderUpdated = { selectedExchangeOrder = it },
+            )
+        }
+
+        Screen.EXCHANGE_SETUP -> ExchangeAccessibilitySetupScreen(onBack = { goBack() })
+
+        Screen.ALERTS -> AlertsScreen(onBack = { goBack() })
+
+        Screen.NALA_SOCO -> NalaSocoManagementScreen(onBack = { goBack() })
+
+        Screen.PROMO_ADS -> PromoAdManagementScreen(onBack = { goBack() })
+
+        Screen.CIYAARAHA -> CiyaarahaScreen(onBack = { goBack() })
+
+        Screen.RESELLER_WITHDRAWAL_INTERACTIVE_SETUP -> ResellerWithdrawalInteractiveAccessibilitySetupScreen(onBack = { goBack() })
+
+        Screen.SALES -> NewSaleScreen(onBack = { goBack() })
+
+        Screen.CUSTOMERS -> CustomersScreen(
+            onBack = { goBack() },
+            onOpenCustomer = { customerId -> selectedCustomerId = customerId; navigate(Screen.CUSTOMER_DETAIL) },
+        )
+
+        Screen.CUSTOMER_DETAIL -> selectedCustomerId?.let { customerId ->
+            CustomerDetailScreen(customerId = customerId, onBack = { goBack() })
+        }
+
+        Screen.REPORTS -> ReportsScreen(onBack = { goBack() })
+
+        Screen.RESELLER -> ResellerScreen(onBack = { goBack() })
+
+        Screen.AGENT_SHOP_ORDER_DETAIL -> selectedAgentShopOrder?.let { order ->
+            ShopAgentOrderDetailScreen(
+                order = order,
+                onBack = { goBack() },
+                onOrderUpdated = { selectedAgentShopOrder = it },
+            )
+        }
+
+        Screen.AGENT_VIP_ORDER_DETAIL -> selectedAgentVipOrder?.let { order ->
+            VipNumberAgentOrderDetailScreen(
+                order = order,
+                onBack = { goBack() },
+                onOrderUpdated = { selectedAgentVipOrder = it },
+            )
+        }
+
+        Screen.AGENT_VIP_PACKAGE_ORDER_DETAIL -> selectedAgentVipPackageOrder?.let { order ->
+            VipPackageAgentOrderDetailScreen(
+                order = order,
+                onBack = { goBack() },
+                onOrderUpdated = { selectedAgentVipPackageOrder = it },
+            )
+        }
+    }
+}
+
+@Composable
+private fun rememberLauncherForSmsPermissions(
+    onResult: (Map<String, Boolean>) -> Unit
+) = androidx.activity.compose.rememberLauncherForActivityResult(
+    ActivityResultContracts.RequestMultiplePermissions(), onResult
+)
+
+/** Bottom-nav shell for the logged-in agent: Home, Support Agent, Broadcast, More. */
+@Composable
+private fun AgentHome(
+    tab: HomeTab,
+    onTabChange: (HomeTab) -> Unit,
+    ordersTopTab: OrdersTopTab,
+    onOrdersTopTabChange: (OrdersTopTab) -> Unit,
+    ordersVipSubTab: VipOrdersSubTab,
+    onOrdersVipSubTabChange: (VipOrdersSubTab) -> Unit,
+    onOpenOrder: (Order) -> Unit,
+    onOpenAgentShopOrder: (ShopAgentOrder) -> Unit,
+    onOpenAgentVipOrder: (VipNumberAgentOrder) -> Unit,
+    onOpenAgentVipPackageOrder: (VipPackageAgentOrder) -> Unit,
+    onOpenPackages: () -> Unit,
+    onOpenTransactions: () -> Unit,
+    onOpenWallet: () -> Unit,
+    onOpenDeviceSetup: () -> Unit,
+    onSignOut: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
+    onOpenPermissionsStatus: () -> Unit,
+    onOpenReliabilityDashboard: () -> Unit,
+    onOpenMoneyExchange: () -> Unit,
+    onOpenAlerts: () -> Unit,
+    onOpenResellerWithdrawalSetup: () -> Unit,
+    onOpenSales: () -> Unit,
+    onOpenCustomers: () -> Unit,
+    onOpenReports: () -> Unit,
+    onOpenReseller: () -> Unit,
+    onOpenNalaSoco: () -> Unit,
+    onOpenPromoAds: () -> Unit,
+    onOpenCiyaaraha: () -> Unit,
+    onOpenManageOrders: () -> Unit,
+    onOpenOtherAgents: () -> Unit = {},
+) {
+
+    // A support push tapped while this composable already exists (warm
+    // start, or the agent was mid-session on some other tab) -- AgentApp's
+    // own effect only gets the agent as far as Screen.HOME; this is what
+    // actually switches to the Support tab and clears the badge. `tab` is
+    // now hoisted up to AgentApp, so this goes through onTabChange.
+    LaunchedEffect(SupportDeepLink.pending) {
+        if (SupportDeepLink.pending) {
+            SupportDeepLink.pending = false
+            onTabChange(HomeTab.SUPPORT)
+            SupportUnreadState.clear()
+        }
+    }
+
+    // Same warm/cold-start coverage as the support deep link above, for a
+    // payment-confirmed Shop/VIP order push -- AgentApp's own effect can
+    // only get the agent as far as Screen.HOME, so this is what actually
+    // switches to the Orders tab. Skips (leaves pending untouched) for a
+    // VIP Number/Package push: AgentApp's own effect owns that case
+    // end-to-end (fetches the order, navigates straight to its detail
+    // screen, clears pending itself) -- clearing it here first would race
+    // that still-in-flight fetch and strand the agent on the Orders tab
+    // instead.
+    LaunchedEffect(OrdersDeepLink.pending, OrdersDeepLink.orderType) {
+        if (!OrdersDeepLink.pending) return@LaunchedEffect
+        val orderType = OrdersDeepLink.orderType
+        if (OrdersDeepLink.orderId != null && (orderType == "vip_number" || orderType == "vip_package")) return@LaunchedEffect
+        OrdersDeepLink.pending = false
+        onTabChange(HomeTab.ORDERS)
+    }
+
+    // Covers a support push that arrived while the app was backgrounded or
+    // killed -- the OS shows the system-tray notification straight from the
+    // FCM payload in that case, bypassing AgentFcmService.onMessageReceived
+    // (and therefore SupportUnreadState.markUnread()) entirely. If the agent
+    // reopens the app normally (tapping the launcher icon, not the
+    // notification) rather than through the deep link above, this is what
+    // still shows the badge for whatever's waiting.
+    LaunchedEffect(Unit) {
+        try {
+            val status = ApiClient.service.getSupportStatus().body()
+            if (status?.activeConversationId != null) SupportUnreadState.markUnread()
+        } catch (e: Exception) {
+            DiagnosticsLog.record("support_unread_check", "Failed: ${e.message}")
+        }
+    }
+
+    // Today figures and Maintenance Notices: on open, on every order change,
+    // every minute, and right after the internet comes back (which also
+    // refreshes every order screen -- nothing is dialed by this).
+    LaunchedEffect(Unit) {
+        while (true) {
+            com.dalab.internet.network.AgentDayRepository.refreshAll()
+            kotlinx.coroutines.delay(60_000L)
+        }
+    }
+    LaunchedEffect(Unit) {
+        com.dalab.internet.network.AgentEventBus.orderEvents.collect {
+            kotlinx.coroutines.delay(1_500L)
+            com.dalab.internet.network.AgentDayRepository.refreshToday()
+        }
+    }
+    LaunchedEffect(Unit) {
+        com.dalab.internet.network.NetworkStatus.reconnected.collect {
+            com.dalab.internet.network.AgentDayRepository.refreshAll()
+            com.dalab.internet.network.AgentEventBus.emitOrderEvent()
+        }
+    }
+
+    Scaffold(
+        bottomBar = {
+            DalabBottomNavigation(
+                selectedTab = tab,
+                onSelectTab = { newTab ->
+                    onTabChange(newTab)
+                    if (newTab == HomeTab.SUPPORT) SupportUnreadState.clear()
+                },
+                supportHasUnread = SupportUnreadState.hasUnread,
+            )
+        }
+    ) { padding ->
+        Column(modifier = Modifier.padding(padding)) {
+        // Offline / back online / transactions to check (never re-dialed).
+        com.dalab.internet.ui.ConnectionRecoveryBanner()
+        // Admin Maintenance Notices.
+        com.dalab.internet.ui.AgentNoticesBanner()
+        // App-wide USSD queue: what is Running and what is Waiting, on every tab.
+        com.dalab.internet.ui.UssdQueueBanner()
+        Box(modifier = Modifier.weight(1f)) {
+            when (tab) {
+                HomeTab.HOME -> OrdersListScreen(
+                    onOpenOrder = onOpenOrder,
+                    onOpenAlerts = onOpenAlerts,
+                )
+                HomeTab.MANAGE -> ManageOrdersScreen(
+                    onOpenOrder = onOpenOrder,
+                    onBack = { onTabChange(HomeTab.HOME) },
+                )
+                HomeTab.ORDERS -> AgentOrdersScreen(
+                    topTab = ordersTopTab,
+                    onTopTabChange = onOrdersTopTabChange,
+                    vipSubTab = ordersVipSubTab,
+                    onVipSubTabChange = onOrdersVipSubTabChange,
+                    onOpenShopOrder = onOpenAgentShopOrder,
+                    onOpenVipOrder = onOpenAgentVipOrder,
+                    onOpenVipPackageOrder = onOpenAgentVipPackageOrder,
+                )
+                // Today's figures and the other agents (moved off Home).
+                HomeTab.AGENT_INFO -> com.dalab.internet.ui.AgentInfoScreen(onOpenOtherAgents = onOpenOtherAgents)
+                HomeTab.SUPPORT -> SupportScreen(onBack = { onTabChange(HomeTab.HOME) })
+                HomeTab.BROADCAST -> NotificationsScreen(onBack = { onTabChange(HomeTab.HOME) })
+                HomeTab.MORE -> MoreScreen(
+                    onOpenPackages = onOpenPackages,
+                    onOpenTransactions = onOpenTransactions,
+                    onOpenWallet = onOpenWallet,
+                    onOpenDeviceSetup = onOpenDeviceSetup,
+                    onSignOut = onSignOut,
+                    onOpenDiagnostics = onOpenDiagnostics,
+                    onOpenPermissionsStatus = onOpenPermissionsStatus,
+                    onOpenReliabilityDashboard = onOpenReliabilityDashboard,
+                    onOpenMoneyExchange = onOpenMoneyExchange,
+                    onOpenResellerWithdrawalSetup = onOpenResellerWithdrawalSetup,
+                    onOpenSales = onOpenSales,
+                    onOpenCustomers = onOpenCustomers,
+                    onOpenReports = onOpenReports,
+                    onOpenReseller = onOpenReseller,
+                    onOpenNalaSoco = onOpenNalaSoco,
+                    onOpenPromoAds = onOpenPromoAds,
+                    onOpenCiyaaraha = onOpenCiyaaraha,
+                    onOpenManageOrders = onOpenManageOrders,
+                    onOpenOtherAgents = onOpenOtherAgents,
+                    onOpenShopVipOrders = { onTabChange(HomeTab.ORDERS) },
+                )
+            }
+        }
+        }
+    }
+}
+
+private data class BottomNavTab(
+    val tab: HomeTab,
+    val icon: androidx.compose.ui.graphics.vector.ImageVector,
+    val label: String,
+)
+
+private val BOTTOM_NAV_TABS = listOf(
+    BottomNavTab(HomeTab.HOME, Icons.Filled.Home, "Home"),
+    BottomNavTab(HomeTab.MANAGE, Icons.Filled.FactCheck, "Manage Orders"),
+    BottomNavTab(HomeTab.AGENT_INFO, Icons.Filled.Groups, "Agent Info"),
+    BottomNavTab(HomeTab.SUPPORT, Icons.Filled.SupportAgent, "Support Agent"),
+    BottomNavTab(HomeTab.BROADCAST, Icons.Filled.Notifications, "Broadcast"),
+    BottomNavTab(HomeTab.MORE, Icons.Filled.MoreHoriz, "More"),
+)
+
+/**
+ * Same 5 tabs, same routes/onClick logic, same colors as the plain
+ * NavigationBar this replaces -- every NavigationBarItem below still exists
+ * with its normal selected/onClick/label, so click targets, ripple, and
+ * TalkBack semantics (selected tab announced, etc.) are all exactly what
+ * they were. The only change is purely visual: instead of each item fading
+ * its own indicator in behind its own icon, a single shared circular
+ * indicator slides horizontally to whichever tab is selected and floats
+ * slightly above the bar's top edge, matching the reference animation
+ * (icon lifts into an elevated circular badge; the tab it leaves smoothly
+ * returns to a plain icon on the flat bar).
+ *
+ * How: each item's own icon is rendered fully transparent while selected
+ * (tint animates out) -- the floating circle overlay, drawn after
+ * (on top of) the NavigationBar, draws that same icon itself, in the
+ * selected color, inside the badge. Position math is plain division by
+ * BOTTOM_NAV_TABS.size (NavigationBar lays its items out in equal-width
+ * columns internally), not per-item position tracking, so there's no
+ * onGloballyPositioned/measurement coupling to get wrong or destabilize.
+ * Every animated value is a plain animateDpAsState/animateColorAsState --
+ * no custom Shape/Path math, no third-party animation library.
+ */
+@Composable
+private fun DalabBottomNavigation(
+    selectedTab: HomeTab,
+    onSelectTab: (HomeTab) -> Unit,
+    supportHasUnread: Boolean,
+) {
+    // Design "3": a rounded bar; the selected tab sits in a large raised
+    // circle (WAAPRO navy to blue) on a bump of the bar, its label under it.
+    // -1 = a screen that isn't in the bar (e.g. Shop & VIP Orders): no circle.
+    val selectedIndex = BOTTOM_NAV_TABS.indexOfFirst { it.tab == selectedTab }
+    val barColor = MaterialTheme.colorScheme.surface
+    val iconColor = if (com.dalab.internet.ui.theme.isAgentDark) MaterialTheme.colorScheme.onSurface else com.dalab.internet.ui.WaaproNavy
+    val circleSize = 56.dp
+    val bumpSize = 72.dp
+    val lift = 22.dp
+
+    Box(modifier = Modifier.fillMaxWidth().navigationBarsPadding()) {
+        Surface(
+            color = barColor,
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            shadowElevation = 12.dp,
+            modifier = Modifier.fillMaxWidth().padding(top = lift).height(72.dp),
+        ) {}
+
+        BoxWithConstraints(Modifier.fillMaxWidth().height(72.dp + lift)) {
+            val itemWidth = maxWidth / BOTTOM_NAV_TABS.size
+            if (selectedIndex >= 0) {
+                val centerX by animateDpAsState(
+                    targetValue = itemWidth * selectedIndex + itemWidth / 2,
+                    animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow),
+                    label = "navCenterX",
+                )
+                // The bump: a circle of the bar's colour behind the button.
+                Box(
+                    Modifier
+                        .offset(x = centerX - bumpSize / 2, y = lift - 14.dp)
+                        .size(bumpSize)
+                        .background(barColor, CircleShape),
+                )
+                // The raised button.
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .offset(x = centerX - circleSize / 2, y = lift - 6.dp)
+                        .size(circleSize)
+                        .shadow(8.dp, CircleShape)
+                        .background(com.dalab.internet.ui.WaaproHeaderBrush, CircleShape)
+                        .clickable { onSelectTab(BOTTOM_NAV_TABS[selectedIndex].tab) },
+                ) {
+                    Icon(BOTTOM_NAV_TABS[selectedIndex].icon, contentDescription = BOTTOM_NAV_TABS[selectedIndex].label, tint = Color.White, modifier = Modifier.size(28.dp))
+                }
+            }
+
+            Row(modifier = Modifier.fillMaxWidth().padding(top = lift).height(72.dp)) {
+                BOTTOM_NAV_TABS.forEachIndexed { index, spec ->
+                    val selected = index == selectedIndex
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = if (selected) Arrangement.Bottom else Arrangement.Center,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .clickable(
+                                onClickLabel = spec.label,
+                                role = androidx.compose.ui.semantics.Role.Tab,
+                            ) { onSelectTab(spec.tab) }
+                            .padding(bottom = if (selected) 8.dp else 0.dp),
+                    ) {
+                        if (!selected) {
+                            if (spec.tab == HomeTab.SUPPORT) {
+                                BadgedBox(badge = { if (supportHasUnread) Badge() }) {
+                                    Icon(spec.icon, contentDescription = null, tint = iconColor, modifier = Modifier.size(24.dp))
+                                }
+                            } else {
+                                Icon(spec.icon, contentDescription = null, tint = iconColor, modifier = Modifier.size(24.dp))
+                            }
+                            Spacer(Modifier.height(3.dp))
+                        }
+                        Text(
+                            spec.label,
+                            color = if (selected) com.dalab.internet.ui.WaaproBlue else iconColor,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                            fontSize = 10.5.sp,
+                            lineHeight = 12.5.sp,
+                            maxLines = 2,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Grouped into categories instead of one long flat list, so an agent
+ * scanning for something specific isn't reading past unrelated items — My
+ * Work first (Sales/Customers/Reports, demoted here from their own bottom-nav
+ * tabs when the bar was cut down to exactly 4), then Money, then Catalog &
+ * Sales, then Device & Diagnostics (setup/troubleshooting, checked least
+ * often). Agent Support and Customer Broadcast are no longer here at all —
+ * they're their own bottom-nav tabs now (Support Agent / Broadcast).
+ */
+@Composable
+private fun MoreScreen(
+    onOpenPackages: () -> Unit,
+    onOpenTransactions: () -> Unit,
+    onOpenWallet: () -> Unit,
+    onOpenDeviceSetup: () -> Unit,
+    onSignOut: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
+    onOpenPermissionsStatus: () -> Unit,
+    onOpenReliabilityDashboard: () -> Unit,
+    onOpenMoneyExchange: () -> Unit,
+    onOpenResellerWithdrawalSetup: () -> Unit,
+    onOpenSales: () -> Unit,
+    onOpenCustomers: () -> Unit,
+    onOpenReports: () -> Unit,
+    onOpenReseller: () -> Unit,
+    onOpenNalaSoco: () -> Unit,
+    onOpenPromoAds: () -> Unit,
+    onOpenCiyaaraha: () -> Unit,
+    onOpenManageOrders: () -> Unit,
+    onOpenOtherAgents: () -> Unit = {},
+    onOpenShopVipOrders: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        val moreContext = androidx.compose.ui.platform.LocalContext.current
+        val appVersion = remember {
+            runCatching { moreContext.packageManager.getPackageInfo(moreContext.packageName, 0).versionName }.getOrNull()
+        }
+        com.dalab.internet.ui.WaaproScreenHeader("More", "Settings, tools and your work", badge = appVersion?.let { "v$it" })
+        MoreTabs()
+        // Sales/Customers/Reports were their own bottom-nav tabs before the
+        // bar was cut down to exactly 4 (Home/Support Agent/Broadcast/More)
+        // to make room for Support Agent and Broadcast -- kept first and
+        // together here since they're still core, frequently-used agent
+        // work, not just occasional setup/diagnostics.
+        MoreSection(title = "Appearance & Language") {
+            SettingChoiceRow(
+                title = "Theme",
+                icon = Icons.Filled.DarkMode,
+                options = listOf(
+                    AgentThemeMode.LIGHT to "Light",
+                    AgentThemeMode.DARK to "Dark",
+                    AgentThemeMode.SYSTEM to "System",
+                ),
+                selected = AgentSettings.themeMode,
+                onSelect = { AgentSettings.updateThemeMode(it) },
+            )
+            HorizontalDivider()
+            AccentPickerRow()
+            HorizontalDivider()
+            SettingChoiceRow(
+                title = "Language",
+                icon = Icons.Filled.Language,
+                options = listOf(
+                    AgentLanguage.ENGLISH to "English",
+                    AgentLanguage.SOMALI to "Soomaali",
+                ),
+                selected = AgentSettings.language,
+                onSelect = { AgentSettings.updateLanguage(it) },
+            )
+        }
+        MoreSection(title = "Notifications") {
+            ListItem(
+                headlineContent = { Text("Agent Support sounds") },
+                supportingContent = { Text("Play a short tone for new customer messages and help requests") },
+                leadingContent = { com.dalab.internet.ui.BrandIconTile(Icons.Filled.Notifications) },
+                trailingContent = {
+                    Switch(
+                        checked = AgentSettings.supportSounds,
+                        onCheckedChange = { AgentSettings.updateSupportSounds(it) },
+                    )
+                },
+                modifier = Modifier.clickable { AgentSettings.updateSupportSounds(!AgentSettings.supportSounds) },
+            )
+            HorizontalDivider()
+            NotificationHealthRows()
+        }
+        MoreSection(title = "My Work") {
+            MoreItem(
+                title = "Other Agents",
+                subtitle = "Who is ONLINE or OFFLINE in this system",
+                icon = Icons.Filled.Groups,
+                onClick = onOpenOtherAgents,
+            )
+            MoreItem(
+                title = "Shop & VIP Orders",
+                subtitle = "Shop, VIP number and VIP package orders",
+                icon = Icons.Filled.ShoppingCart,
+                onClick = onOpenShopVipOrders,
+            )
+            MoreItem(
+                title = "Sales",
+                subtitle = "Start a new sale for a walk-in customer",
+                icon = Icons.Filled.Sell,
+                onClick = onOpenSales,
+            )
+            MoreItem(
+                title = "Customers",
+                subtitle = "Search or register customers",
+                icon = Icons.Filled.People,
+                onClick = onOpenCustomers,
+            )
+            MoreItem(
+                title = "Reports",
+                subtitle = "Your completed-sales totals and breakdown",
+                icon = Icons.Filled.Assessment,
+                onClick = onOpenReports,
+            )
+        }
+        MoreSection(title = "Money") {
+            MoreItem(
+                title = "Wallet Balances",
+                subtitle = "Provider balances and live payment transactions",
+                icon = Icons.Filled.AccountBalanceWallet,
+                onClick = onOpenWallet,
+            )
+            MoreItem(
+                title = "Money Exchange",
+                subtitle = "Verified exchanges waiting for payout",
+                icon = Icons.Filled.CurrencyExchange,
+                onClick = onOpenMoneyExchange,
+            )
+            MoreItem(
+                title = "Reseller Withdraw Setup",
+                subtitle = "Enable automated multi-step payouts (e.g. eDahab)",
+                icon = Icons.Filled.AccountBalanceWallet,
+                onClick = onOpenResellerWithdrawalSetup,
+            )
+            // Log in with a Reseller ID + PIN to see that reseller's own
+            // balance, orders, deposits, and withdrawals -- the exact same
+            // Admin Reseller system (see MainActivity's ResellerScreen /
+            // ui/ResellerScreens.kt), just reachable from here instead of
+            // only from the Admin Dashboard.
+            MoreItem(
+                title = "Reseller",
+                subtitle = "Log in as a Reseller: balance, orders, deposits, withdrawals",
+                icon = Icons.Filled.Storefront,
+                onClick = onOpenReseller,
+            )
+        }
+        MoreSection(title = "Catalog & Sales") {
+            MoreItem(
+                title = "Packages",
+                subtitle = "Browse the full catalog and pricing",
+                icon = Icons.Filled.List,
+                onClick = onOpenPackages,
+            )
+            MoreItem(
+                title = "Transaction History",
+                subtitle = "Orders you've completed",
+                icon = Icons.Filled.History,
+                onClick = onOpenTransactions,
+            )
+            // Same create/edit/publish/delete capability the Admin dashboard's
+            // own Nala Soco section has -- see NalaSocoManagementScreen's own
+            // doc comment.
+            MoreItem(
+                title = "Nala Soco",
+                subtitle = "Manage announcements shown in the Customer App",
+                icon = Icons.Filled.Campaign,
+                onClick = onOpenNalaSoco,
+            )
+            MoreItem(
+                title = "Promo Ads",
+                subtitle = "Manage the popup shown when the Customer App opens",
+                icon = Icons.Filled.LocalOffer,
+                onClick = onOpenPromoAds,
+            )
+            // Football score predictions -- the screen itself says so if an
+            // Admin hasn't switched this agent on (agents.ciyaaraha_enabled).
+            MoreItem(
+                title = "Ciyaaraha",
+                subtitle = "Football predictions: contests, winners and rewards",
+                icon = Icons.Filled.SportsSoccer,
+                onClick = onOpenCiyaaraha,
+            )
+        }
+        // Agent Support and Customer Broadcast moved to their own bottom-nav
+        // tabs (Support Agent / Broadcast) -- no longer listed here.
+        MoreSection(title = "Device & Diagnostics") {
+            MoreItem(
+                title = "Device",
+                subtitle = DeviceIdentity.deviceName() ?: "Choose which registered device this phone is",
+                icon = Icons.Filled.PhoneAndroid,
+                onClick = onOpenDeviceSetup,
+            )
+            MoreItem(
+                title = "Permissions",
+                subtitle = "SMS + background service status for this device",
+                icon = Icons.Filled.Security,
+                onClick = onOpenPermissionsStatus,
+            )
+            MoreItem(
+                title = "Reliability Dashboard",
+                subtitle = "Foreground service, heartbeat, SMS reader, connectivity, and offline queue — live",
+                icon = Icons.Filled.Speed,
+                onClick = onOpenReliabilityDashboard,
+            )
+            MoreItem(
+                title = "Diagnostics",
+                subtitle = "Recent errors and automatic retries on this device",
+                icon = Icons.Filled.BugReport,
+                onClick = onOpenDiagnostics,
+            )
+        }
+        var confirmSignOut by remember { mutableStateOf(false) }
+        // Read once (decrypting the session on every recomposition is slow).
+        val accountLine = remember {
+            listOfNotNull(
+                SessionManager.currentAgent()?.name?.takeIf { it.isNotBlank() },
+                com.dalab.internet.auth.SystemSession.systemName(),
+            ).joinToString(" · ").ifBlank { "Sign in again with phone number + PIN" }
+        }
+        MoreSection(title = "Account") {
+            MoreItem(
+                title = "Sign out",
+                subtitle = accountLine,
+                icon = Icons.Filled.Logout,
+                onClick = { confirmSignOut = true },
+            )
+        }
+        if (confirmSignOut) {
+            AlertDialog(
+                onDismissRequest = { confirmSignOut = false },
+                title = { Text("Sign out?") },
+                text = { Text("This phone stops processing payments and orders until an agent signs in again.") },
+                confirmButton = { TextButton(onClick = { confirmSignOut = false; onSignOut() }) { Text("Sign out") } },
+                dismissButton = { TextButton(onClick = { confirmSignOut = false }) { Text("Cancel") } },
+            )
+        }
+        Spacer(Modifier.height(16.dp))
+    }
+}
+
+/** More's tabs: short label -> the section it shows. */
+private val MORE_TABS = listOf(
+    "Theme" to "Appearance & Language",
+    "Notifications" to "Notifications",
+    "My Work" to "My Work",
+    "Money" to "Money",
+    "Catalog" to "Catalog & Sales",
+    "Device" to "Device & Diagnostics",
+    "Account" to "Account",
+)
+
+/** The open More tab; kept while the app runs so coming back keeps it. */
+private var moreTab by mutableStateOf("My Work")
+
+/** The row of tabs under the More header: one section at a time, no long scroll. */
+@Composable
+private fun MoreTabs() {
+    Row(
+        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        MORE_TABS.forEach { (label, section) ->
+            val selected = moreTab == section
+            Surface(
+                onClick = { moreTab = section },
+                shape = RoundedCornerShape(50),
+                color = if (selected) com.dalab.internet.ui.WaaproGold else MaterialTheme.colorScheme.surface,
+                border = if (selected) null else androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)),
+            ) {
+                Text(
+                    label,
+                    color = if (selected) com.dalab.internet.ui.WaaproNavy else MaterialTheme.colorScheme.onSurface,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MoreSection(title: String, content: @Composable ColumnScope.() -> Unit) {
+    // Only the section of the open tab is shown.
+    if (title != moreTab) return
+    // WAAPRO LTD look: gold section title, white card with a thin border.
+    Text(
+        title.uppercase(),
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = FontWeight.ExtraBold,
+        color = if (com.dalab.internet.ui.theme.isAgentDark) com.dalab.internet.ui.WaaproGold else com.dalab.internet.ui.WaaproGoldText,
+        letterSpacing = 0.8.sp,
+        modifier = Modifier.padding(start = 18.dp, top = 4.dp, bottom = 6.dp),
+    )
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+    ) {
+        Column(content = content)
+    }
+}
+
+/**
+ * Theme color: DALAB Navy (default) plus the Customer App's 12 accents. The
+ * pick recolors every screen at once (see DalabColors.kt) and is saved.
+ */
+@Composable
+private fun AccentPickerRow() {
+    val selected = AgentSettings.accent
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.Palette, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.width(16.dp))
+            Text("Theme color", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f))
+            Text(selected.label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+        }
+        Spacer(Modifier.height(12.dp))
+        AgentAccent.entries.chunked(7).forEach { rowItems ->
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                rowItems.forEach { accent ->
+                    val isSelected = accent == selected
+                    Box(
+                        modifier = Modifier
+                            .size(32.dp)
+                            .border(
+                                width = if (isSelected) 2.dp else 0.dp,
+                                color = if (isSelected) MaterialTheme.colorScheme.onSurface else Color.Transparent,
+                                shape = CircleShape,
+                            )
+                            .padding(3.dp)
+                            .background(accent.color, CircleShape)
+                            .clickable { AgentSettings.updateAccent(accent) },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (isSelected) {
+                            Icon(Icons.Filled.Check, contentDescription = accent.label, tint = Color.White, modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * What actually decides whether a support alert reaches this phone, shown
+ * plainly: Android notification permission, and whether Firebase push
+ * (needed while the app is fully closed) is set up in this build. "Test
+ * alert" posts a real alert through the same channel/tone a customer
+ * request uses.
+ */
+@Composable
+private fun NotificationHealthRows() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    var refreshKey by remember { mutableIntStateOf(0) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) refreshKey++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    val notificationsOn = remember(refreshKey) { androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled() }
+    val pushReady = remember(refreshKey) { com.google.firebase.FirebaseApp.getApps(context).isNotEmpty() }
+    ListItem(
+        headlineContent = { Text("Notifications allowed") },
+        supportingContent = {
+            Text(if (notificationsOn) "Yes" else "No — tap to allow notifications for WAAPRO LTD AGENT")
+        },
+        leadingContent = { com.dalab.internet.ui.BrandIconTile(Icons.Filled.Notifications) },
+        modifier = Modifier.clickable {
+            val intent = Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            try { context.startActivity(intent) } catch (_: Exception) {}
+        },
+    )
+    ListItem(
+        headlineContent = { Text("Alerts when the app is closed") },
+        supportingContent = {
+            Text(
+                if (pushReady) "Ready (Firebase push is set up)"
+                else "Not set up — Firebase isn't configured in this build. Alerts work while the app runs in the background; ask your admin to add the Firebase config.",
+            )
+        },
+        leadingContent = { com.dalab.internet.ui.BrandIconTile(Icons.Filled.Security) },
+    )
+    ListItem(
+        headlineContent = { Text("Test alert") },
+        supportingContent = { Text("Shows a sample customer request with the alert sound") },
+        leadingContent = { com.dalab.internet.ui.BrandIconTile(Icons.Filled.Campaign) },
+        modifier = Modifier.clickable { com.dalab.internet.notifications.SupportAlerts.sendTestAlert() },
+    )
+}
+
+/** One row of segmented choices (theme mode / language) in the More screen. */
+@Composable
+private fun <T> SettingChoiceRow(
+    title: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    options: List<Pair<T, String>>,
+    selected: T,
+    onSelect: (T) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.width(16.dp))
+            Text(title, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            options.forEach { (value, label) ->
+                val isSelected = value == selected
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .background(
+                            if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                            RoundedCornerShape(10.dp),
+                        )
+                        .clickable { onSelect(value) }
+                        .padding(vertical = 10.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                        color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MoreItem(title: String, subtitle: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
+    ListItem(
+        headlineContent = { Text(title) },
+        supportingContent = { Text(subtitle) },
+        leadingContent = { com.dalab.internet.ui.BrandIconTile(icon) },
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+        modifier = Modifier.clickable(onClick = onClick),
+    )
+}
+
+
+/** Relaunches the app in a fresh process (used after switching systems). */
+private fun restartApp(activity: android.app.Activity) {
+    val intent = activity.packageManager.getLaunchIntentForPackage(activity.packageName)
+        ?: android.content.Intent(activity, MainActivity::class.java)
+    intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK)
+    activity.startActivity(intent)
+    activity.finishAffinity()
+    Runtime.getRuntime().exit(0)
+}

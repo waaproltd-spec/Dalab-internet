@@ -1,0 +1,652 @@
+package com.dalab.internet.ussd
+
+import android.accessibilityservice.AccessibilityService
+import android.app.KeyguardManager
+import android.app.PendingIntent
+import android.content.Intent
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.PowerManager
+import android.util.Log
+import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import com.dalab.internet.MainActivity
+import com.dalab.internet.R
+import com.dalab.internet.diagnostics.DiagnosticsLog
+
+/**
+ * Reads Android's native "USSD message" reply dialog via the Accessibility
+ * API and can inject text/tap Send into it — the only way to drive a
+ * multi-step USSD session (Money Exchange's two-step PIN flow) since
+ * TelephonyManager.sendUssdRequest() (used for Internet Store, see
+ * UssdDialer.kt) is a single request/response API with no way to continue an
+ * already-open session. This service is completely separate from Internet
+ * Store's dialing path and never touches it.
+ *
+ * HONEST LIMITATION: the reply dialog's package name and node structure vary
+ * by OEM (stock AOSP is com.android.phone; Samsung/Xiaomi/Huawei/etc ship
+ * their own dialer UI). This service does not filter by package — it reads
+ * whatever window is foregrounded — but it only ever *acts* (fills text /
+ * taps a button) while [ExchangeUssdBridge.armed] is true, i.e. only for the
+ * seconds a deliberately started Money Exchange dial attempt is in flight.
+ * The heuristics below (longest text node = the dialog message, first
+ * editable node = the reply field, a Button whose text contains ok/send/dial
+ * = the submit action) are a reasonable default for a stock AlertDialog-style
+ * USSD prompt, but MUST be validated against the actual phone models used in
+ * the field before this is trusted with real money — see
+ * ExchangeAccessibilitySetupScreen for the manual fallback that always stays
+ * available regardless of whether this works on a given device.
+ */
+class ExchangeUssdAccessibilityService : AccessibilityService() {
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        instance = this
+        ExchangeUssdBridge.serviceConnected = true
+    }
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event == null) return
+        // Notice the owner's own USSD / dialer use, so the Agent App waits
+        // instead of dialing over it (PhoneBusyMonitor). Read-only.
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            PhoneBusyMonitor.onWindowChanged(event.packageName?.toString(), event.className?.toString(), packageName)
+        }
+        if (!ExchangeUssdBridge.armed) return // never look at/act on dialogs outside a live Money Exchange dial attempt
+        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+            event.eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+        ) {
+            return
+        }
+        scanAndAct()
+    }
+
+    /** Re-reads whatever window is currently foregrounded and either injects
+     * a pending PIN into it (if one is armed and this window has an input
+     * field) or reports it as a newly-seen dialog. Called both reactively
+     * (from onAccessibilityEvent) and proactively (by
+     * ExchangeUssdBridge.armPinInjection, in case the target dialog is
+     * already on screen and won't fire a fresh event of its own). */
+    internal fun scanAndAct() {
+        if (!ExchangeUssdBridge.armed) return
+        val root = findRelevantRoot() ?: return
+        try {
+            val messageText = findDialogMessageText(root) ?: return
+
+            val windowPackage = root.packageName?.toString()
+            // Second identity signal alongside windowPackage -- see
+            // ExchangeUssdBridge.lockedWindowId for why a window id is
+            // needed as a fallback (confirmed live, order DEX546004901:
+            // package name became unresolvable for every visible window
+            // once a self-heal-sweep dial's carrier dialog lost the
+            // foreground, even though the same window was still on screen).
+            val windowInfo = root.window
+            val windowId = windowInfo?.id
+            @Suppress("DEPRECATION")
+            windowInfo?.recycle()
+            val inputNode = findEditableNode(root)
+            // Whether this scan's content looks like a genuine USSD dialog
+            // at all -- used only to decide whether it's safe to *establish*
+            // the window lock on it (see ExchangeUssdBridge.isWindowAllowed).
+            // findPositiveButton(root) here does a second tree walk beyond
+            // the one later in this function when a confirm-tap is actually
+            // attempted -- an accepted small cost on a small dialog tree,
+            // not worth threading a cached node reference through for.
+            val looksLikeUssdDialog = inputNode != null || isTransientLoadingDialog(messageText) || findPositiveButton(root) != null
+            if (!ExchangeUssdBridge.isWindowAllowed(windowPackage, windowId, looksLikeUssdDialog, ownPackageName = packageName)) {
+                // Either the foreground drifted to a different app mid-attempt
+                // (e.g. Chrome) after a lock was already established --
+                // confirmed live: order DEX624960716 reported SUCCESS off a
+                // Chrome tab's text -- or no lock exists yet and this scan's
+                // content doesn't look like a dialog at all (confirmed live:
+                // order DEX426547905 locked onto an unrelated app's label as
+                // if it were the carrier's Step 1 response). Either way,
+                // never treat this content as carrier output and never
+                // inject the PIN into it. Leave any pending PIN untouched;
+                // the next poll retries once the real dialog is in front.
+                if (ExchangeUssdBridge.shouldLogWindowMismatch(windowPackage)) {
+                    val reason = if (ExchangeUssdBridge.lockedWindowPackageOrNull() == null) {
+                        "doesn't look like the carrier dialog yet (no input field, button, or loading text)"
+                    } else {
+                        "doesn't match the carrier dialog's window for this attempt"
+                    }
+                    DiagnosticsLog.record(
+                        "exchange_window_mismatch",
+                        "Ignored foreground window \"$windowPackage\" -- $reason.",
+                        isError = false,
+                    )
+                }
+                return
+            }
+
+            if (ExchangeUssdBridge.consumeCancelRequest()) {
+                // Lookup-only flow (WalletLookupUssdOrchestrator): the response
+                // text has already been read by this same scan (messageText,
+                // above) -- now back out of the carrier's USSD session instead
+                // of leaving it sitting on a live PIN prompt. Never touches
+                // inputNode (never types anything) and never taps the positive
+                // (Send/OK) button -- only ever the negative one.
+                val negativeButton = findNegativeButton(root)
+                if (negativeButton != null) {
+                    negativeButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    ExchangeUssdBridge.emit(UssdDialogEvent.DialogCancelled)
+                } else {
+                    // Button not renderable yet on this scan (or this OEM's
+                    // dialog doesn't expose one the way expected) -- put the
+                    // request back so the next poll tries again. The orchestrator
+                    // already has the name it needed from messageText regardless
+                    // of whether this ever succeeds; a lookup that can't be
+                    // actively cancelled is not itself unsafe (no PIN was ever
+                    // typed, so nothing can be sent from this dialog either way)
+                    // -- see WalletLookupUssdOrchestrator for its own timeout on
+                    // waiting for DialogCancelled.
+                    if (ExchangeUssdBridge.shouldLogPinFieldMiss()) {
+                        DiagnosticsLog.record(
+                            "exchange_lookup_cancel_button_miss",
+                            "Locked window \"$windowPackage\" has no recognizable Cancel/No button yet -- not cancelled on this poll. Dialog text: \"$messageText\".",
+                            isError = false,
+                        )
+                    }
+                    ExchangeUssdBridge.restoreCancelRequest()
+                }
+                return
+            }
+
+            val pendingPin = ExchangeUssdBridge.consumePendingPinToInject()
+            if (pendingPin != null) {
+                if (inputNode == null) {
+                    // Not the right window yet (or the field hasn't rendered) —
+                    // put it back for the next scan instead of dropping it, and
+                    // stop here: falling through to the DialogSeen emit below
+                    // would land a spurious event on the same conflated channel
+                    // ExchangeUssdOrchestrator's step2 awaitNextEvent() is
+                    // waiting on for PinSubmitted, making it give up within
+                    // seconds instead of waiting for a later scan (once the
+                    // field actually renders) to inject for real -- confirmed
+                    // live on order DEX176626979: STEP2_FAILED fired 6s after
+                    // dialing, well under the 15s timeout, dialog left sitting
+                    // untouched on screen with the PIN never actually typed.
+                    if (ExchangeUssdBridge.shouldLogPinFieldMiss()) {
+                        DiagnosticsLog.record(
+                            "exchange_pin_field_miss",
+                            "Locked window \"$windowPackage\" has no editable field yet -- PIN not injected on this poll. Dialog text: \"$messageText\".",
+                            isError = false,
+                        )
+                    }
+                    ExchangeUssdBridge.restorePendingPinToInject(pendingPin)
+                    return
+                } else {
+                    val args = Bundle()
+                    args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, pendingPin)
+                    inputNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+                    val submit = findPositiveButton(root) ?: inputNode
+                    submit.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    ExchangeUssdBridge.emit(UssdDialogEvent.PinSubmitted)
+                    return
+                }
+            }
+
+            if (isTransientLoadingDialog(messageText)) {
+                // Android's own "USSD code running…" placeholder, shown
+                // while waiting for the carrier -- not a real response.
+                // Emitting this as DialogSeen would make the orchestrator
+                // treat it as the final (PIN-less) answer and give up well
+                // before its actual timeout -- confirmed live on order
+                // DEX801871634 (STEP1_FAILED with response text literally
+                // "USSD code running…"). Skip it silently; a later scan
+                // (triggered once the real dialog replaces this one) will
+                // emit the actual response.
+                return
+            }
+
+            if (inputNode == null || ExchangeUssdBridge.isEligibleForPostPinConfirmTap()) {
+                // No PIN field yet, but this may be a legitimate
+                // intermediate step -- some carrier flows show a plain
+                // "confirm this transfer?" screen (message + Send/OK, no
+                // input) before the PIN prompt, not just an error. Auto-tap
+                // it and keep waiting instead of failing the whole attempt,
+                // exactly like a human agent manually pressing Send would.
+                // A dialog with no recognizable confirm button at all falls
+                // through to the ambiguous-failure DialogSeen below
+                // unchanged -- never taps something that isn't actually a
+                // confirm/dismiss action.
+                //
+                // The same applies after the PIN has been submitted: the
+                // native USSD dialog reuses one template with an EditText
+                // for the whole session, so a Step 3 "Send/Cancel" screen
+                // confirming the pending transfer still has a (now
+                // irrelevant) input field -- inputNode != null doesn't mean
+                // "still needs input" once the PIN is already in. Capped to
+                // one auto-tap per attempt (isEligibleForPostPinConfirmTap)
+                // so the carrier's real final receipt -- which can share the
+                // same template -- is never mistaken for another Step 3
+                // screen and tapped instead of being accepted as the result.
+                val confirmButton = findPositiveButton(root)
+                if (confirmButton != null) {
+                    if (ExchangeUssdBridge.shouldAutoConfirm(messageText)) {
+                        confirmButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        ExchangeUssdBridge.emit(UssdDialogEvent.ConfirmationAdvanced(ExchangeUssdBridge.currentConfirmationStage()))
+                    }
+                    // Else: already tapped this exact dialog on an earlier
+                    // scan (a repeat accessibility event can land before the
+                    // tap has visually dismissed it) -- do nothing rather
+                    // than re-emit this stale screen as a final answer.
+                    return
+                }
+            }
+
+            ExchangeUssdBridge.emit(UssdDialogEvent.DialogSeen(messageText, hasInput = inputNode != null))
+        } catch (e: Exception) {
+            Log.w(TAG, "scanAndAct failed: ${e.message}")
+        } finally {
+            @Suppress("DEPRECATION")
+            root.recycle()
+        }
+    }
+
+    /** Finds the window this attempt should read from and act on. Before a
+     * window is locked in for this attempt (the first time real dialog text
+     * is seen -- see ExchangeUssdBridge.isWindowAllowed), uses whatever
+     * window is currently active, exactly as before: right after dial()
+     * places the call, that's reliably the phone/dialer UI grabbing focus.
+     * Once a window is locked, searches *every* currently visible window
+     * (not just the active one) for the one belonging to the locked
+     * package, so the carrier dialog keeps being read -- and PIN/Send
+     * actions keep being dispatched to it -- even after the user navigates
+     * to the Home screen or another app. Android can keep a system-style
+     * USSD dialog visually on screen without it remaining the "active"
+     * window; before this, that meant the automation stalled the moment
+     * focus moved away, even with the real dialog still visible (confirmed
+     * live: exchange_window_mismatch firing against
+     * com.sec.android.app.launcher and com.anthropic.claude while the
+     * dialog was still on screen). This never widens *what* the automation
+     * is willing to act on -- it's still matched against the one window
+     * locked in for this attempt (by package name, or by window id as a
+     * fallback -- see ExchangeUssdBridge.lockedWindowId -- when the package
+     * name is no longer resolvable), nothing else is ever considered.
+     * Returns null once the locked window has genuinely closed. */
+    private fun findRelevantRoot(): AccessibilityNodeInfo? {
+        val locked = ExchangeUssdBridge.lockedWindowPackageOrNull() ?: return rootInActiveWindow
+        val lockedId = ExchangeUssdBridge.lockedWindowIdOrNull()
+        var found: AccessibilityNodeInfo? = null
+        var foundViaIdFallback = false
+        // Only collected for the miss-diagnostic below -- package+type+id of
+        // every window seen this scan, so a search miss is self-explanatory
+        // without needing a live device connection to inspect.
+        val seen = mutableListOf<String>()
+        for (window in windows) {
+            val windowRoot = window.root
+            val windowPackage = windowRoot?.packageName?.toString()
+            seen.add("${windowPackage ?: "?"}(type=${window.type}, id=${window.id})")
+            val matchesById = lockedId != null && window.id == lockedId
+            if (found == null && (windowPackage == locked || matchesById)) {
+                found = windowRoot
+                foundViaIdFallback = windowPackage != locked && matchesById
+            } else {
+                @Suppress("DEPRECATION")
+                windowRoot?.recycle()
+            }
+            @Suppress("DEPRECATION")
+            window.recycle()
+        }
+        if (found != null && foundViaIdFallback) {
+            // Self-verifying: confirms live whether the id-fallback theory
+            // (window persists, package name becomes unresolvable) is what's
+            // actually happening in the field, directly from this log line,
+            // without needing another diagnostic-only round trip.
+            DiagnosticsLog.record(
+                "exchange_window_id_fallback_match",
+                "Re-acquired locked window id=$lockedId via window id, not package name " +
+                    "(originally \"$locked\", now reports as \"${found.packageName ?: "?"}\").",
+                isError = false,
+            )
+        }
+        if (found == null) {
+            // Confirmed live (Samsung/One UI): the carrier dialog can stay
+            // visually on top of the Home screen after losing focus, yet
+            // genuinely not appear in this list at all -- the OS itself
+            // excludes it from the interactive window set once backgrounded,
+            // not a search-logic gap on our side. Nothing can be tapped or
+            // filled without the real window, so the safest response is to
+            // tell the user to come back rather than silently keep polling
+            // for the rest of this step's existing timeout.
+            val detectionAttempt = ExchangeUssdBridge.nextDetectionAttempt()
+            if (ExchangeUssdBridge.shouldLogWindowSearchMiss()) {
+                DiagnosticsLog.record(
+                    "exchange_window_search_miss",
+                    "${ExchangeUssdBridge.diagnosticsTag()} Detection attempt $detectionAttempt: window not found -- " +
+                        "locked window \"$locked\" not found among ${seen.size} visible window(s): ${seen.joinToString()}." +
+                        screenStateDiagnostics(),
+                    isError = false,
+                )
+                notifyWindowLost()
+            }
+            // Deliberately gated separately from the log/notification above --
+            // confirmed live (order DEX441787877): the window can be lost,
+            // recovered, then lost again multiple times within one step's
+            // timeout budget, and only the very first loss used to get a
+            // rescue attempt at all. See ExchangeUssdBridge.shouldAttemptWindowRecovery.
+            if (ExchangeUssdBridge.shouldAttemptWindowRecovery()) {
+                attemptForegroundRecovery()
+            }
+        }
+        return found
+    }
+
+    /** Best-effort, no-new-permission attempt to recover from the window-
+     * search-miss case above (confirmed live on real devices: the carrier's
+     * USSD dialog can stay visually on screen yet stop being reported by
+     * getWindows() once it's no longer the foreground-resumed activity --
+     * an OS/OEM exclusion, not something SYSTEM_ALERT_WINDOW can affect, since
+     * that permission only governs what THIS app's own windows can draw, not
+     * whether Android exposes another app's window to accessibility
+     * introspection). Supersedes the earlier GLOBAL_ACTION_RECENTS-based
+     * attempt (commit 50638bd), which live testing showed never found a
+     * matching Recents entry -- most likely because the carrier's USSD
+     * dialog has no backing Activity/Task and therefore no Recents card at
+     * all. This approach instead brings this app's own MainActivity back to
+     * the foreground (an ordinary, always-available action for this app's
+     * own task) and re-scans shortly after, on the theory that regaining
+     * top-level foreground status is what makes Android start reporting the
+     * still-visible carrier window via getWindows() again. Purely additive
+     * to notifyWindowLost() above, not a replacement -- this is experimental
+     * and its real-world hit rate is unknown; every outcome is logged so
+     * that can be measured from the field instead of assumed. Never
+     * redials/re-issues ACTION_CALL and never touches PIN injection or the
+     * confirmation logic -- those are entirely unchanged; this only affects
+     * whether a later scanAndAct() can find the window to act on. Can run
+     * more than once per attempt if the window keeps flickering in and out
+     * (each miss gets its own cycle, up to
+     * ExchangeUssdBridge.MAX_RECOVERY_ATTEMPTS) -- confirmed live (order
+     * DEX441787877) that a single recovery succeeding didn't mean the window
+     * stayed found for the rest of the step's timeout budget.
+     *
+     * ROOT CAUSE of the "recovery failed" line immediately followed by a
+     * "recovery succeeded" line: this used to schedule exactly one re-scan
+     * at a single fixed 500ms delay after bringing MainActivity forward.
+     * That foreground transition is an async OS operation with variable
+     * latency -- sometimes the still-visible carrier window is reported by
+     * getWindows() again well before 500ms, sometimes a beat after. A
+     * single point-in-time check turns detection into a timing coin flip:
+     * when the real latency landed just past 500ms, that check reported
+     * "failed", immediately freed the recovery slot, and the very next
+     * scanAndAct() (called right after) hit the same still-missing window,
+     * which was allowed to open a *second* whole recovery cycle -- and by
+     * the time *that* cycle's own foreground bring-up settled, the window
+     * really was there, logging "recovery succeeded" moments later. Same
+     * symptom either way: the outer step's real progress (PIN detection)
+     * was delayed by a whole extra recovery cycle for no reason other than
+     * unlucky timing on the first one.
+     *
+     * Fix: instead of one blind check, poll for the window at several
+     * short, closely-spaced points within this *same* cycle -- stopping
+     * the instant it's found -- rather than giving up after a single look
+     * and letting a fresh cycle re-pay the same foreground-bring-up cost.
+     * Total worst-case wait stays in the same ballpark as before
+     * (RECOVERY_POLL_COUNT * RECOVERY_POLL_INTERVAL_MS); this is still
+     * exactly one recovery cycle against
+     * ExchangeUssdBridge.shouldAttemptWindowRecovery's per-attempt cap, not
+     * an extra retry. */
+    private fun attemptForegroundRecovery() {
+        val tag = ExchangeUssdBridge.diagnosticsTag()
+        val attemptNo = ExchangeUssdBridge.recoveryAttemptNumber()
+        val maxAttempts = ExchangeUssdBridge.maxRecoveryAttempts()
+        DiagnosticsLog.record(
+            "exchange_window_recovery_attempt",
+            "$tag Recovery attempt $attemptNo/$maxAttempts started after window-search-miss.",
+            isError = false,
+        )
+        try {
+            val intent = Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+            }
+            startActivity(intent)
+        } catch (e: Exception) {
+            DiagnosticsLog.record(
+                "exchange_window_recovery_attempt",
+                "$tag Recovery attempt $attemptNo/$maxAttempts failed -- could not bring MainActivity to the foreground: ${e.message}",
+                isError = false,
+            )
+            ExchangeUssdBridge.recoveryAttemptFinished()
+            return
+        }
+        pollForRecoveredWindow(tag, attemptNo, maxAttempts, pollsLeft = RECOVERY_POLL_COUNT)
+    }
+
+    /** One re-scan point within a single [attemptForegroundRecovery] cycle --
+     * see that function's ROOT CAUSE note. Recurses up to RECOVERY_POLL_COUNT
+     * times, RECOVERY_POLL_INTERVAL_MS apart, returning as soon as the
+     * window is found; only the last, exhausted poll -- or a genuine find --
+     * ends the cycle (calls ExchangeUssdBridge.recoveryAttemptFinished() and
+     * resumes scanAndAct()). findRelevantRoot() is safe to call directly on
+     * every poll: ExchangeUssdBridge.shouldAttemptWindowRecovery() can't
+     * open a nested cycle while this one is still marked in-progress. */
+    private fun pollForRecoveredWindow(tag: String, attemptNo: Int, maxAttempts: Int, pollsLeft: Int) {
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (!ExchangeUssdBridge.armed) {
+                DiagnosticsLog.record(
+                    "exchange_window_recovery_attempt",
+                    "$tag Recovery attempt $attemptNo/$maxAttempts ended before its re-scan ran -- skipped.",
+                    isError = false,
+                )
+                ExchangeUssdBridge.recoveryAttemptFinished()
+                return@postDelayed
+            }
+            val recoveredRoot = findRelevantRoot()
+            val pollNumber = RECOVERY_POLL_COUNT - pollsLeft + 1
+            if (recoveredRoot != null) {
+                DiagnosticsLog.record(
+                    "exchange_window_recovery_attempt",
+                    "$tag Recovery attempt $attemptNo/$maxAttempts: carrier window found again on poll $pollNumber/$RECOVERY_POLL_COUNT -- recovery succeeded.",
+                    isError = false,
+                )
+                @Suppress("DEPRECATION")
+                recoveredRoot.recycle()
+                ExchangeUssdBridge.recoveryAttemptFinished()
+                scanAndAct()
+            } else if (pollsLeft > 1) {
+                pollForRecoveredWindow(tag, attemptNo, maxAttempts, pollsLeft - 1)
+            } else {
+                DiagnosticsLog.record(
+                    "exchange_window_recovery_attempt",
+                    "$tag Recovery attempt $attemptNo/$maxAttempts: carrier window still not found after $RECOVERY_POLL_COUNT polls -- recovery failed." + screenStateDiagnostics(),
+                    isError = false,
+                )
+                // Marked finished before the recursive scanAndAct() below so
+                // that if it hits another miss (the window flickered out
+                // again), a fresh recovery cycle is free to start -- up to
+                // the shared per-attempt cap in
+                // ExchangeUssdBridge.shouldAttemptWindowRecovery.
+                ExchangeUssdBridge.recoveryAttemptFinished()
+                scanAndAct()
+            }
+        }, RECOVERY_POLL_INTERVAL_MS)
+    }
+
+    /** Diagnostic-only snapshot of screen/lock/wake-lock state, appended to
+     * the window-search-miss and recovery-failure log lines above so a real
+     * miss shows directly whether the existing screen-on wake lock
+     * (ExchangeUssdOrchestrator's SCREEN_BRIGHT_WAKE_LOCK) was actually held
+     * at that moment -- distinguishing "the safeguard failed" from "the
+     * screen stayed on and the OS excluded the window anyway" without
+     * needing a live device connection to inspect. Never used for any
+     * decision -- purely appended text. */
+    private fun screenStateDiagnostics(): String {
+        val screenInteractive = getSystemService(PowerManager::class.java)?.isInteractive
+        val keyguardLocked = getSystemService(KeyguardManager::class.java)?.isKeyguardLocked
+        val wakeLockHeld = ExchangeUssdBridge.activeWakeLock?.isHeld
+        return " screenInteractive=$screenInteractive keyguardLocked=$keyguardLocked wakeLockHeld=$wakeLockHeld"
+    }
+
+    /** Fires at most once per attempt, the moment the locked carrier window
+     * can't be found among the currently visible windows -- e.g. the OS
+     * stopped exposing it to accessibility services once the user left it
+     * for Home or another app (see findRelevantRoot()). Purely
+     * informational: tells the user to come back so the in-flight attempt
+     * can still complete within its existing timeout. Does not change what
+     * the automation waits for, tries, or accepts as a result -- no PIN is
+     * entered and no outcome is reported here or anywhere else based on
+     * this notification. */
+    private fun notifyWindowLost() {
+        val openApp = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(this, "payment_channel")
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("Action needed: return to Money Exchange")
+            .setContentText("The USSD screen left the foreground -- return to it now to finish this payout.")
+            .setContentIntent(openApp)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
+        NotificationManagerCompat.from(this).notify(WINDOW_LOST_NOTIFICATION_ID, notification)
+    }
+
+    private fun isTransientLoadingDialog(text: String): Boolean {
+        // Android's built-in USSD "waiting for carrier" placeholder
+        // (com.android.phone's ussd_dialog_load string) -- "USSD code
+        // running…" on most builds, "Running USSD code…" on some
+        // OEM/locale variants. It never carries an input field of its own;
+        // the real carrier response replaces it in a later window.
+        val normalized = text.trim().lowercase()
+        return normalized.contains("ussd code running") || normalized.contains("running ussd code")
+    }
+
+    private fun findDialogMessageText(node: AccessibilityNodeInfo): String? {
+        // Heuristic: the longest plain text on screen — good enough for a
+        // stock AlertDialog message; OEM dialogs may need a per-device tweak.
+        var best: String? = null
+        fun walk(n: AccessibilityNodeInfo) {
+            val text = n.text?.toString()
+            if (!text.isNullOrBlank() && (best == null || text.length > best!!.length)) best = text
+            for (i in 0 until n.childCount) {
+                val child = n.getChild(i) ?: continue
+                walk(child)
+                @Suppress("DEPRECATION")
+                child.recycle()
+            }
+        }
+        walk(node)
+        return best
+    }
+
+    private fun findEditableNode(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        if (node.isEditable) return node
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findEditableNode(child)
+            if (found != null) return found
+            @Suppress("DEPRECATION")
+            child.recycle()
+        }
+        return null
+    }
+
+    private fun findPositiveButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        findPositiveButtonByText(node)?.let { return it }
+
+        // No clearly-labelled Send/OK/Dial/Yes button anywhere in this
+        // dialog. A textless button can only be safely treated as the
+        // confirm/submit action when it's the *only* clickable button
+        // present -- with more than one, there's no way to tell it apart
+        // from Cancel, and guessing risks tapping the wrong one and
+        // cancelling a live-money transfer instead of confirming it.
+        val clickableButtons = mutableListOf<AccessibilityNodeInfo>()
+        collectClickableButtons(node, clickableButtons)
+        if (clickableButtons.size == 1 && clickableButtons[0].text?.toString().isNullOrBlank()) {
+            return clickableButtons[0]
+        }
+        for (button in clickableButtons) {
+            @Suppress("DEPRECATION")
+            button.recycle()
+        }
+        return null
+    }
+
+    /** Finds the dialog's Cancel/No button — deliberately text-match only,
+     * unlike [findPositiveButton]'s "only clickable button" fallback: a
+     * wrong guess here risks tapping the positive (Send) button instead,
+     * and this is only ever called for a lookup, where declining to cancel
+     * is always safe (no PIN was ever typed into the dialog either way —
+     * see the call site's own comment) but tapping the wrong button is not
+     * a risk worth taking for a cosmetic cleanup step. Returns null rather
+     * than guess when no button text matches. */
+    private fun findNegativeButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        if (node.isClickable && node.className?.contains("Button") == true) {
+            val text = node.text?.toString()?.lowercase()
+            if (text != null && text.contains("cancel")) {
+                return node
+            }
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findNegativeButton(child)
+            if (found != null) return found
+            @Suppress("DEPRECATION")
+            child.recycle()
+        }
+        return null
+    }
+
+    private fun findPositiveButtonByText(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        if (node.isClickable && node.className?.contains("Button") == true) {
+            val text = node.text?.toString()?.lowercase()
+            if (text != null && (text.contains("ok") || text.contains("send") || text.contains("dial") || text.contains("yes"))) {
+                return node
+            }
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findPositiveButtonByText(child)
+            if (found != null) return found
+            @Suppress("DEPRECATION")
+            child.recycle()
+        }
+        return null
+    }
+
+    private fun collectClickableButtons(node: AccessibilityNodeInfo, out: MutableList<AccessibilityNodeInfo>) {
+        if (node.isClickable && node.className?.contains("Button") == true) {
+            out.add(node)
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            collectClickableButtons(child, out)
+        }
+    }
+
+    override fun onInterrupt() {
+        ExchangeUssdBridge.serviceConnected = false
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (instance === this) instance = null
+        ExchangeUssdBridge.serviceConnected = false
+    }
+
+    companion object {
+        private const val TAG = "ExchangeUssdA11y"
+
+        // Distinct from AgentBackgroundService's NOTIFICATION_ID (1001) and
+        // SESSION_EXPIRED_NOTIFICATION_ID (1002) -- notification IDs are
+        // shared across the whole app's notifications, not per-class.
+        private const val WINDOW_LOST_NOTIFICATION_ID = 2001
+
+        // See attemptForegroundRecovery()'s ROOT CAUSE note: several short
+        // polls spread across the same ~500ms window this used to check
+        // just once, so real (if slightly late) window latency is caught
+        // within the *same* recovery cycle instead of forcing a whole new
+        // one.
+        private const val RECOVERY_POLL_INTERVAL_MS = 150L
+        private const val RECOVERY_POLL_COUNT = 4
+
+        @Volatile
+        var instance: ExchangeUssdAccessibilityService? = null
+            private set
+    }
+}
