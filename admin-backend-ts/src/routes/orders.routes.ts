@@ -618,6 +618,20 @@ export async function verifyOrderAndGenerateUssd(
   // Atomic compare-and-swap: only ever one caller of two concurrent/retried
   // requests actually flips pending -> in_progress, so USSD generation can
   // never be double-triggered for the same order.
+  // Scheduled order (Agent "Schedule Transaction") whose time hasn't come:
+  // the payment is confirmed but nothing is dialed yet. It stays 'pending',
+  // marked paid, and releaseDueScheduledOrders() below sends it at
+  // scheduled_at through this same function.
+  const held = await query(
+    `UPDATE orders SET scheduled_paid_at=COALESCE(scheduled_paid_at, now()), agent_id=COALESCE(agent_id, $1), updated_at=now()
+      WHERE id=$2 AND status='pending' AND scheduled_at IS NOT NULL AND scheduled_at > now() RETURNING id`,
+    [agentId, order.id]
+  );
+  if (held.length > 0) {
+    broadcast({ type: "order.updated", orderId: order.id });
+    return { ok: true };
+  }
+
   const result = await query(
     `UPDATE orders SET status='in_progress', agent_id=$1, updated_at=now() WHERE id=$2 AND status='pending' RETURNING id`,
     [agentId, order.id]
@@ -1770,3 +1784,178 @@ ordersRouter.get("/admin/dashboard/stats", requireStaff(), async (_req, res) => 
     completedOrdersByCompany: byCompany.map((c) => ({ companyId: c.company_id, name: c.name, orders: Number(c.orders) })),
   });
 });
+
+// ---------------------------------------------------------------------------
+// Agent "Schedule Transaction": the agent registers a customer, picks a
+// package and the time it should be sent.
+//   prepaid           the agent confirms the payment now; the order is held
+//                     and sent automatically at the scheduled time.
+//   pay_at_execution  the order waits for the customer's payment SMS
+//                     (matched from customerPhone, like every order). Paid
+//                     early: held until the time. Not paid at the time: it
+//                     waits and is sent the moment the payment arrives.
+// The order is an ordinary 'pending' order with scheduled_at set, so the
+// existing cancel/approve/retry actions and the payment matcher all apply.
+// ---------------------------------------------------------------------------
+
+/** Furthest ahead an order can be scheduled. */
+const SCHEDULE_MAX_DAYS = 60;
+
+/** Networks and the packages an agent may schedule. */
+ordersRouter.get("/agent/scheduled-orders/options", requireAuth("agent"), async (_req, res) => {
+  const companies = await query<any>(
+    `SELECT id, name, status, color_hex FROM companies WHERE deleted_at IS NULL ORDER BY name ASC`
+  );
+  const packages = await query<any>(
+    `SELECT * FROM packages WHERE active=true ORDER BY price ASC, name ASC`
+  );
+  const out = [];
+  for (const c of companies) {
+    const list = [];
+    for (const p of packages.filter((x) => x.company_id === c.id)) {
+      if (await packageUnavailableReason(p, "agent")) continue;
+      list.push({ id: p.id, name: p.name, price: Number(p.price) });
+    }
+    if (list.length > 0) out.push({ id: c.id, name: c.name, status: c.status, colorHex: c.color_hex ?? null, packages: list });
+  }
+  sendJson(res, 200, { companies: out, maxDays: SCHEDULE_MAX_DAYS });
+});
+
+/** Scheduled orders: upcoming and waiting first, then the last week's. */
+ordersRouter.get("/agent/scheduled-orders", requireAuth("agent"), async (_req, res) => {
+  const rows = await query(
+    `${ORDER_LIST_SELECT}
+      WHERE o.scheduled_at IS NOT NULL
+        AND (o.status IN ('pending','in_progress') OR o.updated_at > now() - interval '7 days')
+      ORDER BY (o.status IN ('pending','in_progress')) DESC, o.scheduled_at ASC
+      LIMIT 200`
+  );
+  sendJson(res, 200, rows);
+});
+
+ordersRouter.post("/agent/scheduled-orders", requireAuth("agent"), async (req, res) => {
+  if (!(await agentOperationsAllowed(req, res))) return;
+  const { customerName, customerPhone, companyId, packageId, receiverPhone, scheduledAt, paymentMode, note, clientRequestId } = req.body ?? {};
+
+  const name = String(customerName ?? "").trim().slice(0, 120);
+  if (name.length < 2) return sendJson(res, 400, { error: "Enter the customer's full name." });
+  const phone = String(customerPhone ?? "").trim();
+  const phoneCheck = validateMobileNumber(phone);
+  if (!phoneCheck.valid) return sendJson(res, 400, { error: `Customer phone: ${phoneCheck.error}` });
+  const mode = paymentMode === "prepaid" ? "prepaid" : paymentMode === "pay_at_execution" ? "pay_at_execution" : null;
+  if (!mode) return sendJson(res, 400, { error: "Choose the payment mode." });
+
+  const when = new Date(String(scheduledAt ?? ""));
+  if (Number.isNaN(when.getTime())) return sendJson(res, 400, { error: "Choose the scheduled date and time." });
+  if (when.getTime() < Date.now() - 60_000) return sendJson(res, 400, { error: "The scheduled time has already passed." });
+  if (when.getTime() > Date.now() + SCHEDULE_MAX_DAYS * 86_400_000) {
+    return sendJson(res, 400, { error: `Schedule at most ${SCHEDULE_MAX_DAYS} days ahead.` });
+  }
+
+  const company = await queryOne<any>(`SELECT * FROM companies WHERE id=$1 AND deleted_at IS NULL`, [companyId]);
+  if (!company) return sendJson(res, 404, { error: "Network not found" });
+  const pkg = await queryOne<any>(`SELECT * FROM packages WHERE id=$1 AND active=true`, [packageId]);
+  if (!pkg) return sendJson(res, 404, { error: "Package not found" });
+  if (pkg.company_id !== companyId) return sendJson(res, 400, { error: "Package does not belong to the selected network" });
+  {
+    const unavailable = await packageUnavailableReason(pkg, "agent");
+    if (unavailable) return sendJson(res, 409, { error: unavailable, code: "package_unavailable" });
+  }
+  const receiver = String(receiverPhone ?? "").trim() || phone;
+  const receiverCheck = validateMobileNumber(receiver, companyKeyFromLabel(company.name));
+  if (!receiverCheck.valid) return sendJson(res, 400, { error: `Recipient phone: ${receiverCheck.error}` });
+
+  const { customer } = await findOrCreateCustomerByPhone(phone);
+  if (customer!.status === "blocked") return sendJson(res, 403, { error: "This customer's account has been blocked" });
+  // Keep a name the customer already has; fill it in when there's none.
+  await query(`UPDATE customers SET name=$1 WHERE id=$2 AND (name IS NULL OR btrim(name)='')`, [name, customer!.id]);
+
+  const id = orderRef();
+  const noteText = typeof note === "string" && note.trim() ? note.trim().slice(0, 500) : null;
+  try {
+    await query(
+      `INSERT INTO orders (id, customer_id, company_id, package_id, amount, provider_amount, status, sender_phone, receiver_phone,
+                           payment_method, channel, agent_id, macaash_earned, client_request_id, scheduled_at, payment_mode, schedule_note)
+       VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,'agent',$10,$11,$12,$13,$14,$15)`,
+      [
+        id, customer!.id, companyId, packageId, pkg.price, pkg.provider_amount ?? pkg.price,
+        phone, receiver, company.gateway || null, req.auth!.sub,
+        Math.round(Number(pkg.price) * MACAASH_POINTS_PER_DOLLAR),
+        clientRequestId ?? null, when.toISOString(), mode, noteText,
+      ]
+    );
+  } catch (err: any) {
+    if (err?.code !== "23505" || err?.constraint !== "idx_orders_client_request_id") throw err;
+    const existing = await queryOne<{ id: string }>(`SELECT id FROM orders WHERE client_request_id=$1`, [clientRequestId]);
+    return sendJson(res, 200, await loadOrder(existing!.id));
+  }
+
+  if (mode === "prepaid") {
+    await createPaymentTransaction({
+      smsLogId: null,
+      orderId: id,
+      transactionRef: null,
+      customerPhone: phone,
+      amount: Number(pkg.price),
+      paymentTimestamp: new Date().toISOString(),
+      status: "pending",
+    });
+    const order = await queryOne<any>(`SELECT * FROM orders WHERE id=$1`, [id]);
+    await verifyOrderAndGenerateUssd(order, req.auth!.sub);
+  }
+  await recordAgentAction(req.auth!.sub, "agent_order_scheduled", id, null, {
+    scheduledAt: when.toISOString(), paymentMode: mode, amount: Number(pkg.price), customerPhone: phone, receiverPhone: receiver,
+  });
+  broadcast({ type: "order.created", orderId: id });
+  sendJson(res, 201, await loadOrder(id));
+});
+
+/** Send a scheduled order now instead of waiting for its time. */
+ordersRouter.post("/agent/scheduled-orders/:id/run-now", requireAuth("agent"), async (req, res) => {
+  if (!(await agentOperationsAllowed(req, res))) return;
+  const changed = await query<{ id: string }>(
+    `UPDATE orders SET scheduled_at=now(), updated_at=now()
+      WHERE id=$1 AND status='pending' AND scheduled_at IS NOT NULL AND scheduled_at > now() RETURNING id`,
+    [req.params.id]
+  );
+  if (changed.length === 0) {
+    const now = await queryOne<{ status: string }>(`SELECT status FROM orders WHERE id=$1`, [req.params.id]);
+    if (!now) return sendJson(res, 404, { error: "Order not found" });
+    return sendJson(res, 409, ALREADY_HANDLED(now.status));
+  }
+  await recordAgentAction(req.auth!.sub, "agent_scheduled_run_now", req.params.id, null, null);
+  await releaseDueScheduledOrders();
+  broadcast({ type: "order.updated", orderId: req.params.id });
+  sendJson(res, 200, await loadOrder(req.params.id));
+});
+
+/**
+ * Sends every paid scheduled order whose time has come: the normal
+ * pending -> in_progress + USSD path (the hold above no longer applies once
+ * scheduled_at has passed). Runs every 30 seconds.
+ */
+export async function releaseDueScheduledOrders(): Promise<number> {
+  const due = await query<any>(
+    `SELECT * FROM orders WHERE status='pending' AND scheduled_paid_at IS NOT NULL AND scheduled_at <= now()
+      ORDER BY scheduled_at ASC LIMIT 50`
+  );
+  let released = 0;
+  for (const order of due) {
+    try {
+      const r = await verifyOrderAndGenerateUssd(order, order.agent_id ?? null);
+      if (r.ok) released++;
+    } catch (err) {
+      console.error(`Scheduled order ${order.id} release failed:`, (err as Error).message);
+    }
+  }
+  return released;
+}
+
+let scheduledReleaseRunning = false;
+setInterval(() => {
+  if (scheduledReleaseRunning) return;
+  scheduledReleaseRunning = true;
+  releaseDueScheduledOrders()
+    .catch((err) => console.error("Scheduled release sweep failed:", (err as Error).message))
+    .finally(() => { scheduledReleaseRunning = false; });
+}, 30_000);

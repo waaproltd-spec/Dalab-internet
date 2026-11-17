@@ -159,7 +159,12 @@ async function findMatchingOrder(
     client
       .query<OrderMatch>(
         `SELECT id, sender_phone, receiver_phone, amount, company_id, payment_method_id FROM orders
-         WHERE status='pending' AND ABS(amount - $1) < 0.01 AND updated_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
+         WHERE status='pending' AND ABS(amount - $1) < 0.01
+           AND (updated_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
+                -- A scheduled order may be paid days after it was registered.
+                OR (scheduled_at IS NOT NULL AND scheduled_at > now() - interval '${MATCH_WINDOW_HOURS} hours'))
+           -- Already paid, waiting for its scheduled time: never a second payment's target.
+           AND scheduled_paid_at IS NULL
            AND created_at <= $2::timestamptz + interval '2 minutes'
          ORDER BY created_at ASC
          FOR UPDATE SKIP LOCKED`,
