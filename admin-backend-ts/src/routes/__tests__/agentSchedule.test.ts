@@ -70,6 +70,9 @@ const due = (id: string) => query(`UPDATE orders SET scheduled_at = now() - inte
 before(async () => {
   await query(`INSERT INTO agents (id, phone, name, password_hash) VALUES ($1,'615550601','Schedule Agent','x')`, [AGENT]);
   await query(`INSERT INTO packages (id, company_id, category_id, name, price) VALUES ($1,'hormuud','internet','Anfac',0.09)`, [PACKAGE]);
+  // Payments for this network are processed automatically (on systems where a company can require manual approval).
+  const auto = await queryOne(`SELECT 1 FROM information_schema.columns WHERE table_name='companies' AND column_name='auto_process_enabled'`);
+  if (auto) await query(`UPDATE companies SET auto_process_enabled=true WHERE id='hormuud'`);
   token = signAccessToken(AGENT, "agent");
   server = http.createServer(app as unknown as http.RequestListener).listen(0);
   await new Promise<void>((r) => server.once("listening", r));
