@@ -57,6 +57,20 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
     private val packageMenuRunner = PackageInteractiveUssdRunner(context)
     private val appContext: Context = context.applicationContext
 
+    /**
+     * A scheduled order (Schedule Transaction) whose time hasn't come: the
+     * server confirmed the payment but holds it, so there is nothing to dial
+     * yet. At the scheduled time the server releases it and the self-heal
+     * sweep dials it then.
+     */
+    private fun scheduledHoldResult(order: Order): DialResult? {
+        if (order.status != OrderStatus.PENDING || order.scheduledAt == null) return null
+        return DialResult(
+            DialOutcome.HANDED_OFF,
+            "Scheduled for ${com.dalab.internet.ui.scheduleTimeText(order.scheduledAt)} -- it is sent automatically at that time.",
+        )
+    }
+
     suspend fun processMatchedOrder(orderId: String, smsLogId: String?): DialResult {
         if (!claimOrder(orderId)) {
             DiagnosticsLog.record(
@@ -99,6 +113,7 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         if (order.status == OrderStatus.COMPLETED) {
             return DialResult(DialOutcome.SUCCESS, "Order already completed — skipping redundant dial.")
         }
+        scheduledHoldResult(order)?.let { return it }
         handedOffResult(order.id, order.assignedDeviceId, order.assignedDeviceName)?.let { return it }
         val ussdString = order.ussdGenerated
             ?: return DialResult(DialOutcome.FAILED, "No USSD template matched this order — check USSD Services in the dashboard.")
@@ -190,6 +205,7 @@ class UssdOrchestrator(context: Context, private val maxAttempts: Int = 3) {
         if (order.status == OrderStatus.COMPLETED) {
             return DialResult(DialOutcome.SUCCESS, "Order already completed — skipping redundant dial.")
         }
+        scheduledHoldResult(order)?.let { return it }
         handedOffResult(order.id, order.assignedDeviceId, order.assignedDeviceName)?.let { return it }
         val ussdString = order.ussdGenerated
             ?: return DialResult(DialOutcome.FAILED, "No USSD template matched this order — check USSD Services in the dashboard.")

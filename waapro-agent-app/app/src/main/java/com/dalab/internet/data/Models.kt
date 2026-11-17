@@ -60,6 +60,13 @@ data class Order(
     // from older servers -- dialed exactly as before.
     val ussdDialMode: String? = null,
     val ussdPlan: com.dalab.internet.ussd.UssdPlan? = null,
+    // Schedule Transaction: when the order is to be sent, when its payment
+    // was confirmed (held until scheduledAt), "prepaid" / "pay_at_execution",
+    // and the agent's note. All null for an ordinary order / older servers.
+    val scheduledAt: String? = null,
+    val scheduledPaidAt: String? = null,
+    val paymentMode: String? = null,
+    val scheduleNote: String? = null,
 )
 
 enum class OrderStatus {

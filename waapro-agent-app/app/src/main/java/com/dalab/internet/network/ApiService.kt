@@ -804,6 +804,19 @@ interface ApiService {
     @GET("agent/sim-balances")
     suspend fun getSimBalances(): Response<com.dalab.internet.data.SimBalancesResponse>
 
+    // Schedule Transaction: register a customer and schedule a package.
+    @GET("agent/scheduled-orders/options")
+    suspend fun getScheduleOptions(): Response<com.dalab.internet.data.ScheduleOptions>
+
+    @GET("agent/scheduled-orders")
+    suspend fun getScheduledOrders(): Response<List<Order>>
+
+    @POST("agent/scheduled-orders")
+    suspend fun createScheduledOrder(@Body body: com.dalab.internet.data.ScheduleOrderRequest): Response<Order>
+
+    @POST("agent/scheduled-orders/{id}/run-now")
+    suspend fun runScheduledOrderNow(@Path("id") id: String, @Body body: Map<String, String> = emptyMap()): Response<Order>
+
     // Other Agents: this system's other agents with ONLINE/OFFLINE status.
     @GET("agent/agents")
     suspend fun getOtherAgents(@Query("search") search: String? = null): Response<com.dalab.internet.data.OtherAgentsResponse>
