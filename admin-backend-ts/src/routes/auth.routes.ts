@@ -721,7 +721,8 @@ authRouter.post("/auth/refresh", async (req, res) => {
   );
   if (!row) {
     // Reuse window (migration 124): a token revoked by rotation in the last
-    // 60s is accepted once more -- the app never got the new pair (lost
+    // 60s (5 minutes for an agent phone, which Android may pause mid-
+    // request) is accepted once more -- the app never got the new pair (lost
     // response, retry) or another tab rotated it a moment earlier. Claimed
     // atomically (rotated_at cleared) so it can't be used a third time.
     // Logout, password reset, device removal and every other revocation
@@ -729,7 +730,7 @@ authRouter.post("/auth/refresh", async (req, res) => {
     // below still run.
     row = await queryOne<any>(
       `UPDATE refresh_tokens SET rotated_at=NULL
-        WHERE token_hash=$1 AND revoked=true AND rotated_at > now() - interval '60 seconds' AND expires_at > now()
+        WHERE token_hash=$1 AND revoked=true AND rotated_at > now() - (CASE WHEN subject_role='agent' THEN interval '5 minutes' ELSE interval '60 seconds' END) AND expires_at > now()
         RETURNING *`,
       [tokenHash]
     );
