@@ -97,18 +97,31 @@ object ApiClient {
                 return@synchronized null
             }
 
+            // Renew the sign-in. Only a real "no" from the server (the key
+            // was rejected: account suspended/removed, or Logout) ends the
+            // session. No signal, a timeout or a server restart must never
+            // log the agent out -- that was the cause of agents being
+            // signed out after hours on mobile data. The session is kept and
+            // the next request simply tries again.
+            var rejectedCode: Int? = null
             val newTokens = runBlocking {
                 try {
                     val res = plainService.refresh(RefreshRequest(refreshToken))
-                    if (res.isSuccessful) res.body() else null
-                } catch (_: Exception) {
+                    if (res.isSuccessful) res.body() else { rejectedCode = res.code(); null }
+                } catch (e: Exception) {
+                    com.dalab.internet.diagnostics.DiagnosticsLog.record("session_refresh", "Couldn't renew the sign-in (${e.javaClass.simpleName}) -- still signed in, will retry.", isError = false)
                     null
                 }
             }
 
             if (newTokens == null) {
-                SessionManager.clear()
-                AgentEventBus.emitSessionExpired()
+                if (refreshFailureEndsSession(rejectedCode)) {
+                    com.dalab.internet.diagnostics.DiagnosticsLog.record("session_refresh", "The server refused the sign-in (HTTP $rejectedCode) -- signed out.", isError = true)
+                    SessionManager.clear()
+                    AgentEventBus.emitSessionExpired()
+                } else if (rejectedCode != null) {
+                    com.dalab.internet.diagnostics.DiagnosticsLog.record("session_refresh", "Server busy (HTTP $rejectedCode) while renewing the sign-in -- still signed in, will retry.", isError = false)
+                }
                 return@synchronized null
             }
 
@@ -164,3 +177,8 @@ internal class PerSystem<T : Any>(private val build: (String) -> T) {
         }
     }
 }
+
+/** Only the server's explicit refusal of the renewal key (401/403) signs the
+ * agent out; no answer (null), a server error or anything else keeps the
+ * session. Pure; unit-tested in SessionRefreshTest. */
+internal fun refreshFailureEndsSession(httpCode: Int?): Boolean = httpCode == 401 || httpCode == 403
