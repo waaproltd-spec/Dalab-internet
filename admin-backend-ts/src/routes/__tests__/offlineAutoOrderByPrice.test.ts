@@ -148,3 +148,26 @@ test("admins see each company's services that share a price", async () => {
     await new Promise<void>((r) => s.close(() => r()));
   }
 });
+
+test("several accounts with the same payment number: the newest saved setup is used, not refused", async () => {
+  const sender = "615550790";
+  const older = randomUUID();
+  const newer = randomUUID();
+  await query(`INSERT INTO customers (id, phone) VALUES ($1,'252615550791'), ($2,'252615550792')`, [older, newer]);
+  await query(
+    `UPDATE customers SET offline_sender_number=$1, offline_destination_number='615550793', offline_company_id=$2,
+       offline_profile_updated_at=now() - interval '2 days' WHERE id=$3`,
+    [sender, CO, older]
+  );
+  await query(
+    `UPDATE customers SET offline_sender_number=$1, offline_destination_number='615550794', offline_company_id=$2,
+       offline_profile_updated_at=now() WHERE id=$3`,
+    [sender, CO, newer]
+  );
+  const r = await pay(sender, 1.75);
+  assert.ok(r.body.matchedOrderId, JSON.stringify(r.body));
+  assert.equal((await ordersOf(older)).length, 0);
+  const o = await ordersOf(newer);
+  assert.equal(o.length, 1);
+  assert.equal(o[0].receiver_phone, "615550794", "sent to the newest setup's internet number");
+});

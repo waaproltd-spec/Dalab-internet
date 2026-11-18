@@ -298,7 +298,9 @@ export async function matchOrCreateOfflineAutoOrder(
      WHERE offline_sender_number IS NOT NULL AND offline_destination_number IS NOT NULL
        AND offline_company_id IS NOT NULL
        AND status='active'
-       AND RIGHT(regexp_replace(offline_sender_number, '\\D', '', 'g'), 9) = $1`,
+       AND RIGHT(regexp_replace(offline_sender_number, '\\D', '', 'g'), 9) = $1
+     -- The newest saved setup first (see below).
+     ORDER BY offline_profile_updated_at DESC NULLS LAST, id ASC`,
     [target]
   );
   // No Offline Profile registered for this sender -- always logged (never
@@ -306,9 +308,10 @@ export async function matchOrCreateOfflineAutoOrder(
   // simply hasn't set up Offline Auto-Order" apart from every other failure
   // reason, rather than seeing a blank Offline Auto-Order segment.
   if (candidates.length === 0) return { order: null, reason: `No Offline Profile registered for phone ...${target}` };
-  if (candidates.length > 1) {
-    return { order: null, reason: `${candidates.length} Offline Profiles are registered for phone ...${target} — ambiguous, refusing to auto-order` };
-  }
+  // One payment number, one Rukumo setup: when several accounts saved the
+  // same payment number (e.g. the customer re-registered, or test accounts),
+  // the most recently saved setup is the customer's current choice. Before,
+  // every such payment was refused as ambiguous and left unpaid-for.
   const profile = candidates[0];
 
   const company = await queryOne<{ id: string; name: string; status: string; payment_number: string | null; payment_ussd_template: string | null }>(
