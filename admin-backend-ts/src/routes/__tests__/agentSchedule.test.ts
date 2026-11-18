@@ -271,3 +271,25 @@ test("customer Schedule: the same checkout sent twice (retry) is one order", asy
   assert.equal(x.id, y.id);
   assert.equal((await query(`SELECT 1 FROM orders WHERE customer_id=$1`, [cust])).length, 1);
 });
+
+test("Prepaid, then the customer also pays by EVC: one delivery only, never a second (Rukumo) order", async () => {
+  const pkg = await freshPackage();
+  const phone = newPhone();
+  const r = await schedule(pkg, phone, { paymentMode: "prepaid", receiverPhone: "615550698" });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  // The same customer also has a Rukumo setup for this company.
+  const cust = (await row(r.body.id)).customer_id;
+  await query(
+    `UPDATE customers SET offline_sender_number=$1, offline_destination_number=$1, offline_company_id='hormuud', offline_profile_updated_at=now() WHERE id=$2`,
+    [phone, cust]
+  );
+  await customerPays(phone, price);
+  const orders = await query<{ id: string }>(`SELECT id FROM orders WHERE customer_id=$1`, [cust]);
+  assert.deepEqual(orders.map((o) => o.id), [r.body.id], "no second order created from the payment");
+  const sms = await queryOne<{ matched_order_id: string }>(`SELECT matched_order_id FROM sms_logs WHERE parsed_phone=$1`, [phone]);
+  assert.equal(sms!.matched_order_id, r.body.id, "the payment is linked to the scheduled order");
+  assert.equal((await row(r.body.id)).status, "pending", "still held until its time");
+  await due(r.body.id);
+  await releaseDueScheduledOrders();
+  assert.equal((await row(r.body.id)).status, "in_progress", "sent once, at its time");
+});

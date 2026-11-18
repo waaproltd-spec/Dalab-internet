@@ -163,8 +163,12 @@ async function findMatchingOrder(
            AND (updated_at > now() - interval '${MATCH_WINDOW_HOURS} hours'
                 -- A scheduled order may be paid days after it was registered.
                 OR (scheduled_at IS NOT NULL AND scheduled_at > now() - interval '${MATCH_WINDOW_HOURS} hours'))
-           -- Already paid, waiting for its scheduled time: never a second payment's target.
-           AND scheduled_paid_at IS NULL
+           -- Already paid by an SMS and waiting for its scheduled time: never a
+           -- second payment's target. A Prepaid one (paid by the agent, no SMS
+           -- yet) still is: the customer's own payment for it must land on it
+           -- (and be held as a duplicate there), never buy a second order
+           -- through Rukumo.
+           AND (scheduled_paid_at IS NULL OR NOT EXISTS (SELECT 1 FROM sms_logs s WHERE s.matched_order_id = orders.id))
            AND created_at <= $2::timestamptz + interval '2 minutes'
          ORDER BY created_at ASC
          FOR UPDATE SKIP LOCKED`,
