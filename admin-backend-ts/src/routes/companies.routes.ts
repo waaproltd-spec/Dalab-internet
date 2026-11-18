@@ -92,7 +92,7 @@ companiesRouter.get("/companies/:id/packages", async (req, res) => {
      FROM packages p
      LEFT JOIN service_categories sc ON sc.company_id = p.company_id AND sc.slug = p.category_id
      WHERE p.company_id=$1 AND p.active=true AND (sc.status IS NULL OR sc.status='enabled') ${visibilityFilter}
-     ORDER BY p.category_id, p.sort_order, p.price`,
+     ORDER BY COALESCE(sc.sort_order, 2147483647), p.category_id, p.sort_order, p.price`,
     [req.params.id]
   );
   sendJson(res, 200, rows);

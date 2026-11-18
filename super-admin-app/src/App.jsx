@@ -192,6 +192,8 @@ const DalabAdminApi = {
   updateCategory: (id, body) => dalabAdminApiRequest(`/admin/categories/${id}`, { method: "PUT", body }),
   toggleCategoryStatus: (id, status) => dalabAdminApiRequest(`/admin/categories/${id}/status`, { method: "PUT", body: { status } }),
   deleteCategory: (id) => dalabAdminApiRequest(`/admin/categories/${id}`, { method: "DELETE" }),
+  // The Admin's category order for one company (first to last).
+  reorderCategories: (companyId, categoryIds) => dalabAdminApiRequest(`/admin/companies/${companyId}/categories/order`, { method: "PUT", body: { categoryIds } }),
   // The logo/icon shown on this category's card in the Customer/Agent apps —
   // a dedicated sub-resource (same shape as companyLogoUrl/packageImageUrl
   // above) so re-uploading it never touches the category's name/status.
@@ -2758,6 +2760,27 @@ function Categories({ companies, admin }) {
   useEffect(() => { fetchCategories(); }, [companyFilter]);
   useEffect(() => { if (!companyFilter && companies[0]) setCompanyFilter(companies[0].id); }, [companies]);
 
+  // Move a category one place up or down; the order is saved at once and
+  // is the order customers see (Home, offline Rukumo, category screen).
+  const [moving, setMoving] = useState(false);
+  const move = async (index, delta) => {
+    const to = index + delta;
+    if (moving || to < 0 || to >= categories.length) return;
+    const next = [...categories];
+    [next[index], next[to]] = [next[to], next[index]];
+    setCategories(next);
+    setMoving(true);
+    setError("");
+    try {
+      setCategories(await DalabAdminApi.reorderCategories(companyFilter, next.map((c) => c.id)));
+    } catch (err) {
+      setError(err.message || "Could not save the order.");
+      fetchCategories();
+    } finally {
+      setMoving(false);
+    }
+  };
+
   const openNew = () => { setForm({ name: "", companyId: companyFilter, serviceTypes: [] }); setEditing("new"); setError(""); };
   const openEdit = (c) => { setForm({ ...c, serviceTypes: serviceTypesOf(c), iconBase64: null }); setEditing(c.id); setError(""); };
   const toggleType = (value) =>
@@ -2868,14 +2891,27 @@ function Categories({ companies, admin }) {
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: "var(--c-fafbff)" }}>
-              {["Icon", "Name", "Type", "Slug", "Status", ""].map((h) => (
+              {["Order", "Icon", "Name", "Type", "Slug", "Status", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {categories.map((c) => (
+            {categories.map((c, i) => (
               <tr key={c.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 10px", whiteSpace: "nowrap" }}>
+                  <span style={{ display: "inline-block", minWidth: 18, fontWeight: 700, color: INK, fontSize: 13 }}>{i + 1}</span>
+                  {canManage && (
+                    <>
+                      <button onClick={() => move(i, -1)} disabled={moving || i === 0} title="Move up" style={{ background: "none", border: "none", cursor: i === 0 ? "default" : "pointer", opacity: i === 0 ? 0.3 : 1, padding: 2 }}>
+                        <ArrowUp size={15} color={INDIGO} />
+                      </button>
+                      <button onClick={() => move(i, 1)} disabled={moving || i === categories.length - 1} title="Move down" style={{ background: "none", border: "none", cursor: i === categories.length - 1 ? "default" : "pointer", opacity: i === categories.length - 1 ? 0.3 : 1, padding: 2 }}>
+                        <ArrowDown size={15} color={INDIGO} />
+                      </button>
+                    </>
+                  )}
+                </td>
                 <td style={{ padding: "10px 14px" }}>
                   <div style={{ width: 34, height: 34, borderRadius: 8, border: `1px solid ${BORDER}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", background: "var(--c-fafbff)" }}>
                     {c.hasIcon ? (
@@ -2907,7 +2943,7 @@ function Categories({ companies, admin }) {
               </tr>
             ))}
             {categories.length === 0 && (
-              <tr><td colSpan={6} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No categories for this company yet.</td></tr>
+              <tr><td colSpan={7} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No categories for this company yet.</td></tr>
             )}
           </tbody>
         </table>
