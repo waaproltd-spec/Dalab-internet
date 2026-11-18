@@ -15650,6 +15650,9 @@ function ActivityLogPanel() {
   }, [entityFilter]);
 
   const actionLabel = (action) => ({
+    package_price_made_unique: "Price made unique (+$0.01, same price as another service)",
+    create_package: "Created service",
+    update_package: "Updated service",
     create_ussd_template: "Created USSD template",
     update_ussd_template: "Updated USSD template",
     update_ussd_template_status: "Changed USSD template status",
@@ -15703,6 +15706,7 @@ function ActivityLogPanel() {
           { id: "payment_wallet", label: "Payment Wallets" },
           { id: "payment_transaction", label: "Payment Transactions" },
           { id: "system_setting", label: "Support & Social Media" },
+          { id: "package", label: "Services & Prices" },
         ].map((f) => (
           <button key={f.id} onClick={() => setEntityFilter(f.id)} style={{
             padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
@@ -15729,9 +15733,15 @@ function ActivityLogPanel() {
                 <React.Fragment key={r.id}>
                   <tr style={{ borderTop: `1px solid ${BORDER}`, cursor: "pointer" }} onClick={() => setExpanded((prev) => ({ ...prev, [r.id]: !prev[r.id] }))}>
                     <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap", verticalAlign: "top" }}>{formatDateTime(r.createdAt)}</td>
-                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, verticalAlign: "top" }}>{r.agentName ? `Agent: ${r.agentName}${r.agentPhone ? ` (${r.agentPhone})` : ""}` : r.entityType === "payment_transaction" ? "Agent App" : (r.adminEmail || "Unknown admin")}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, verticalAlign: "top" }}>{r.agentName ? `Agent: ${r.agentName}${r.agentPhone ? ` (${r.agentPhone})` : ""}` : r.entityType === "payment_transaction" ? "Agent App" : (r.adminEmail || (r.action === "package_price_made_unique" ? "System (automatic)" : "Unknown admin"))}</td>
                     <td style={{ padding: "10px 14px", verticalAlign: "top" }}>
                       <div style={{ fontSize: 12.5, color: INK, fontWeight: 600 }}>{actionLabel(r.action)}</div>
+                      {r.action === "package_price_made_unique" && r.oldValue && r.newValue && (
+                        <div style={{ marginTop: 6, fontSize: 11.5, color: SLATE }}>
+                          <b>Price:</b> ${Number(r.oldValue.price).toFixed(2)} → <b>${Number(r.newValue.price).toFixed(2)}</b>
+                          {"  ·  "}<b>Carrier amount:</b> ${Number(r.newValue.providerAmount).toFixed(2)}
+                        </div>
+                      )}
                       {r.entityType === "payment_transaction" && r.newValue && (
                         <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 12, fontSize: 11.5, color: SLATE }}>
                           <span><b>Order:</b> {r.newValue.orderId || "—"}</span>
