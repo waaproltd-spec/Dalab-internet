@@ -2390,8 +2390,13 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
       // Confirms the save landed instantly, since the modal closes right
       // after — visible on the list page itself, not just inside the modal
       // that's about to disappear.
-      setSuccessMessage(`Package "${form.name}" ${wasNew ? "created" : "updated"} successfully.`);
-      setTimeout(() => setSuccessMessage(""), 4000);
+      // Every active service of a company has its own price: when this one
+      // clashed, the server moved it one cent up and says so here.
+      const moved = result?.priceAdjustedFrom != null
+        ? ` Its price was set to $${Number(result.price).toFixed(2)} (another service already costs $${Number(result.priceAdjustedFrom).toFixed(2)}).`
+        : "";
+      setSuccessMessage(`Package "${form.name}" ${wasNew ? "created" : "updated"} successfully.${moved}`);
+      setTimeout(() => setSuccessMessage(""), moved ? 9000 : 4000);
     } else if (editing === "new") {
       const companyName = companies.find((c) => c.id === form.companyId)?.name;
       setPackages((prev) => [...prev, { ...form, company: companyName, old: form.oldPrice, min: form.minutes, id: "pkg-" + Date.now() }]);
@@ -16804,15 +16809,21 @@ function MenuUssdServicesSection({ admin }) {
     };
     setSaving(true);
     try {
+      let saved;
       if (editing.id) {
-        await DalabAdminApi.updatePackage(editing.id, body);
+        saved = await DalabAdminApi.updatePackage(editing.id, body);
       } else {
-        await DalabAdminApi.createPackage({
+        saved = await DalabAdminApi.createPackage({
           ...body, companyId: service.companyId, categoryId: service.category?.slug, ussdTemplateId: service.id, mb: 0, minutes: 0, sms: 0,
         });
       }
       setEditing(null);
-      flash(editing.id ? "Package saved." : "Package added.");
+      flash(
+        (editing.id ? "Package saved." : "Package added.") +
+          (saved?.priceAdjustedFrom != null
+            ? ` Its price was set to $${Number(saved.price).toFixed(2)} (another service already costs $${Number(saved.priceAdjustedFrom).toFixed(2)}).`
+            : "")
+      );
       loadService();
     } catch (err) {
       setFormError(err.message || "Could not save the package.");
