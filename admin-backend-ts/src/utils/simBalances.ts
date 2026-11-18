@@ -231,6 +231,24 @@ export function isExpectedBalanceSender(providerIdentity: string, sender: string
   return String(sender ?? "").trim().toLowerCase() === expected.toLowerCase();
 }
 
+/**
+ * SQL condition: a balance row (its provider key, phone, SIM slot) is
+ * allowed by the Super Admin's chosen SIM for that balance -- true when the
+ * balance has no chosen SIM, or when the row is exactly that phone + SIM
+ * slot. Every reader of balances (dashboard, totals, finance, AGENT APP)
+ * uses it, so a SIM that isn't the chosen one is never shown or counted.
+ */
+export function selectedSimAllows(providerKey: string, deviceId: string, simSlot: string): string {
+  return `NOT EXISTS (SELECT 1 FROM balance_selected_sims sel
+                      WHERE sel.provider_key = ${providerKey}
+                        AND (sel.device_id <> ${deviceId} OR sel.sim_slot <> ${simSlot}))`;
+}
+
+/**
+ * Writes a balance. Returns false (and writes nothing) when the Super Admin
+ * chose another SIM for this balance: then only the chosen phone + SIM slot
+ * is read -- not the other SIM in the same phone, not another phone or agent.
+ */
 export async function applyBalanceUpdate(params: {
   deviceId: string;
   simSlot: number;
@@ -247,7 +265,14 @@ export async function applyBalanceUpdate(params: {
   // which real signal actually produced this reading.
   source: "sms" | "manual" | "ussd_dial";
   changedBy?: string | null;
-}): Promise<void> {
+}): Promise<boolean> {
+  if (params.providerKey) {
+    const chosen = await queryOne<{ device_id: string; sim_slot: number }>(
+      `SELECT device_id, sim_slot FROM balance_selected_sims WHERE provider_key=$1`,
+      [params.providerKey]
+    );
+    if (chosen && (chosen.device_id !== params.deviceId || Number(chosen.sim_slot) !== Number(params.simSlot))) return false;
+  }
   // A single physical SIM can report TWO genuinely separate balances via
   // two different carrier SMS types from the same number -- confirmed
   // live: Hormuud's Mobile 1/SIM 1 sends both its own Send Data balance
@@ -340,6 +365,7 @@ export async function applyBalanceUpdate(params: {
   );
 
   broadcast({ type: "sim_balance.updated", deviceId: params.deviceId, simSlot: params.simSlot });
+  return true;
 }
 
 export interface ProviderBalanceTotal {
@@ -372,6 +398,7 @@ export async function getProviderBalanceTotals(): Promise<ProviderBalanceTotal[]
     `SELECT COALESCE(sb.provider_key, sb.company_id) AS provider_key, COALESCE(SUM(sb.balance), 0) AS total,
             COUNT(*) AS sim_count, COUNT(sb.balance) AS known_sim_count
      FROM sim_balances sb
+     WHERE ${selectedSimAllows("COALESCE(sb.provider_key, sb.company_id)", "sb.device_id", "sb.sim_slot")}
      GROUP BY COALESCE(sb.provider_key, sb.company_id)
      ORDER BY total DESC`
   );

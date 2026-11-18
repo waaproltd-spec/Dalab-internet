@@ -4,7 +4,7 @@ import { requireAuth, requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { recordActivity } from "../utils/activityLog.js";
-import { applyBalanceUpdate, BALANCE_SENDER_ID, getProviderBalanceTotals } from "../utils/simBalances.js";
+import { selectedSimAllows, applyBalanceUpdate, BALANCE_SENDER_ID, getProviderBalanceTotals } from "../utils/simBalances.js";
 
 // The 6 provider_key values the Balance Dashboard recognizes — same set
 // BALANCE_SENDER_ID (simBalances.ts) is keyed by, so there's one single
@@ -34,6 +34,7 @@ simBalancesRouter.get("/agent/wallet-balances", requireAuth("agent"), async (req
        sb.updated_at AS balance_updated_at
      FROM (VALUES (1),(2)) AS slot(n)
      LEFT JOIN sim_balances sb ON sb.device_id = $1 AND sb.sim_slot = slot.n
+       AND ${selectedSimAllows("COALESCE(sb.provider_key, sb.company_id)", "sb.device_id", "sb.sim_slot")}
      LEFT JOIN sim_routing sr ON sr.device_id = $1 AND sr.sim_slot = slot.n
      LEFT JOIN companies c ON c.id = sr.company_id
      LEFT JOIN companies c2 ON c2.id = sb.company_id
@@ -127,7 +128,10 @@ export const SIM_BALANCE_LIST_SQL = `
   LEFT JOIN sim_routing sr ON sr.device_id = d.id AND sr.sim_slot = slot.n
   LEFT JOIN companies c ON c.id = sr.company_id
   LEFT JOIN companies c2 ON c2.id = sb.company_id
-  WHERE (slot.n = 1 AND d.sim1_present IS NOT FALSE) OR (slot.n = 2 AND d.sim2_present IS NOT FALSE)
+  WHERE ((slot.n = 1 AND d.sim1_present IS NOT FALSE) OR (slot.n = 2 AND d.sim2_present IS NOT FALSE))
+    -- The Super Admin's chosen SIM for a balance: that balance is listed
+    -- only on that phone + SIM slot (balance_selected_sims).
+    AND ${selectedSimAllows("COALESCE(sb.provider_key, sb.company_id)", "d.id", "slot.n")}
   ORDER BY d.name, slot.n
 `;
 
@@ -140,7 +144,8 @@ simBalancesRouter.get("/admin/sim-balances", requireStaff(), async (_req, res) =
 // delivered), "received" is any positive change (a top-up/reload landed).
 simBalancesRouter.get("/admin/sim-balances/summary", requireStaff(), async (_req, res) => {
   const totalRow = await queryOne<{ total: string }>(
-    `SELECT COALESCE(SUM(balance), 0) AS total FROM sim_balances`
+    `SELECT COALESCE(SUM(sb.balance), 0) AS total FROM sim_balances sb
+      WHERE ${selectedSimAllows("COALESCE(sb.provider_key, sb.company_id)", "sb.device_id", "sb.sim_slot")}`
   );
   // known_sim_count (COUNT ignores NULLs) lets the dashboard tell "$0 total
   // because every SIM confirmed a real $0 balance" apart from "$0 total
@@ -166,6 +171,7 @@ simBalancesRouter.get("/admin/sim-balances/summary", requireStaff(), async (_req
     `SELECT sb.device_id, d.name AS device_name, COALESCE(SUM(sb.balance), 0) AS total, COUNT(*) AS sim_count
      FROM sim_balances sb
      LEFT JOIN agent_devices d ON d.id = sb.device_id
+     WHERE ${selectedSimAllows("COALESCE(sb.provider_key, sb.company_id)", "sb.device_id", "sb.sim_slot")}
      GROUP BY sb.device_id, d.name
      ORDER BY total DESC`
   );
@@ -193,7 +199,8 @@ simBalancesRouter.get("/admin/sim-balances/summary", requireStaff(), async (_req
 
 simBalancesRouter.get("/admin/sim-balances/low-balance-count", requireStaff(), async (_req, res) => {
   const row = await queryOne<{ count: string }>(
-    `SELECT COUNT(*) AS count FROM sim_balances WHERE balance < low_balance_threshold`
+    `SELECT COUNT(*) AS count FROM sim_balances sb
+      WHERE sb.balance < sb.low_balance_threshold AND ${selectedSimAllows("COALESCE(sb.provider_key, sb.company_id)", "sb.device_id", "sb.sim_slot")}`
   );
   sendJson(res, 200, { count: Number(row?.count ?? 0) });
 });
@@ -203,6 +210,66 @@ simBalancesRouter.get("/admin/sim-balances/low-balance-count", requireStaff(), a
 // EVC Plus wallet, both on the same physical SIM) needs it to know which
 // row's history to return — omitting it just picks whichever row postgres
 // returns first, so the dashboard always passes its own row's providerKey.
+// ---- The one chosen SIM per balance (Balance Dashboard "Choose SIM") ----
+// The Super Admin's choice is the only thing that decides which SIM a
+// balance follows: once chosen, only that phone + SIM slot's balance
+// messages, USSD replies and manual entries are read and shown (see
+// selectedSimAllows). Registered before /admin/sim-balances/:deviceId/...
+simBalancesRouter.get("/admin/sim-balances/selected-sims", requireStaff(), async (_req, res) => {
+  sendJson(
+    res,
+    200,
+    await query(
+      `SELECT s.provider_key, s.device_id, d.name AS device_name, s.sim_slot, s.selected_at
+         FROM balance_selected_sims s JOIN agent_devices d ON d.id = s.device_id
+        ORDER BY s.provider_key`
+    )
+  );
+});
+
+simBalancesRouter.put("/admin/sim-balances/selected-sims/:providerKey", requirePermission("devices.manage"), async (req, res) => {
+  const providerKey = req.params.providerKey;
+  if (!KNOWN_PROVIDER_KEYS.includes(providerKey)) {
+    return sendJson(res, 400, { error: `providerKey must be one of: ${KNOWN_PROVIDER_KEYS.join(", ")}` });
+  }
+  const deviceId = String(req.body?.deviceId ?? "");
+  const simSlot = Number(req.body?.simSlot);
+  if (![1, 2].includes(simSlot)) return sendJson(res, 400, { error: "simSlot must be 1 or 2" });
+  const device = await queryOne(`SELECT id FROM agent_devices WHERE id=$1`, [deviceId]);
+  if (!device) return sendJson(res, 404, { error: "Device not found" });
+  const old = await queryOne(`SELECT device_id, sim_slot FROM balance_selected_sims WHERE provider_key=$1`, [providerKey]);
+  await query(
+    `INSERT INTO balance_selected_sims (provider_key, device_id, sim_slot, selected_by)
+     VALUES ($1,$2,$3,$4)
+     ON CONFLICT (provider_key) DO UPDATE SET device_id=$2, sim_slot=$3, selected_by=$4, selected_at=now()`,
+    [providerKey, deviceId, simSlot, req.auth!.sub]
+  );
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: "select_balance_sim",
+    entityType: "sim_balance",
+    entityId: providerKey,
+    oldValue: old,
+    newValue: { deviceId, simSlot },
+  });
+  sendJson(res, 200, { providerKey, deviceId, simSlot });
+});
+
+simBalancesRouter.delete("/admin/sim-balances/selected-sims/:providerKey", requirePermission("devices.manage"), async (req, res) => {
+  const old = await queryOne(`DELETE FROM balance_selected_sims WHERE provider_key=$1 RETURNING device_id, sim_slot`, [req.params.providerKey]);
+  if (old) {
+    await recordActivity({
+      adminId: req.auth!.sub,
+      action: "clear_balance_sim",
+      entityType: "sim_balance",
+      entityId: req.params.providerKey,
+      oldValue: old,
+      newValue: null,
+    });
+  }
+  sendJson(res, 200, { providerKey: req.params.providerKey, cleared: Boolean(old) });
+});
+
 simBalancesRouter.get("/admin/sim-balances/:deviceId/:simSlot/history", requireStaff(), async (req, res) => {
   const simSlot = Number(req.params.simSlot);
   const providerKey = typeof req.query.providerKey === "string" ? req.query.providerKey : null;
@@ -284,7 +351,7 @@ simBalancesRouter.put("/admin/sim-balances/:deviceId/:simSlot", requirePermissio
   if (balance !== undefined) {
     const num = Number(balance);
     if (!Number.isFinite(num)) return sendJson(res, 400, { error: "balance must be a number" });
-    await applyBalanceUpdate({
+    const written = await applyBalanceUpdate({
       deviceId: req.params.deviceId,
       simSlot,
       newBalance: num,
@@ -294,6 +361,9 @@ simBalancesRouter.put("/admin/sim-balances/:deviceId/:simSlot", requirePermissio
       source: "manual",
       changedBy: req.auth!.sub,
     });
+    if (!written) {
+      return sendJson(res, 409, { error: "Another SIM is chosen for this balance. Only the chosen SIM's balance can be set.", code: "not_selected_sim" });
+    }
   } else if (companyId || phoneNumber || providerKey) {
     // Metadata-only change (assign provider/phone without touching balance)
     // — upsert without writing a history row, since no balance actually

@@ -2,6 +2,7 @@ import { Router } from "express";
 import { query } from "../db/pool.js";
 import { requireAuth } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
+import { selectedSimAllows } from "../utils/simBalances.js";
 
 /**
  * AGENT APP "SIM balances": every SIM the admin has configured in this
@@ -63,12 +64,23 @@ const CONFIGURED_SIMS_SQL = `
            sb.balance, sb.updated_at, sb.last_source, COALESCE(sb.phone_number, c.payment_number) AS phone_number, c.name AS company_name
       FROM sim_balances sb LEFT JOIN companies c ON c.id = sb.company_id
      WHERE COALESCE(sb.provider_key, sb.company_id) IS NOT NULL
+       AND ${selectedSimAllows("COALESCE(sb.provider_key, sb.company_id)", "sb.device_id", "sb.sim_slot")}
     UNION ALL
     SELECT sr.device_id, sr.sim_slot, sr.company_id, NULL, NULL, NULL, NULL, c.payment_number, c.name
       FROM sim_routing sr JOIN companies c ON c.id = sr.company_id
      WHERE sr.device_id IS NOT NULL
        AND NOT EXISTS (SELECT 1 FROM sim_balances sb WHERE sb.device_id = sr.device_id AND sb.sim_slot = sr.sim_slot
                          AND COALESCE(sb.provider_key, sb.company_id) = sr.company_id)
+       AND ${selectedSimAllows("sr.company_id", "sr.device_id", "sr.sim_slot")}
+    UNION ALL
+    -- The Super Admin's chosen SIM is always listed, even before its first
+    -- balance message ("no balance yet").
+    SELECT sel.device_id, sel.sim_slot, sel.provider_key, NULL, NULL, NULL, NULL, NULL, NULL
+      FROM balance_selected_sims sel
+     WHERE NOT EXISTS (SELECT 1 FROM sim_balances sb WHERE sb.device_id = sel.device_id AND sb.sim_slot = sel.sim_slot
+                         AND COALESCE(sb.provider_key, sb.company_id) = sel.provider_key)
+       AND NOT EXISTS (SELECT 1 FROM sim_routing sr WHERE sr.device_id = sel.device_id AND sr.sim_slot = sel.sim_slot
+                         AND sr.company_id = sel.provider_key)
   )
   SELECT cf.*, d.name AS device_name, d.last_heartbeat_at,
          CASE cf.sim_slot WHEN 1 THEN d.sim1_present ELSE d.sim2_present END AS sim_present

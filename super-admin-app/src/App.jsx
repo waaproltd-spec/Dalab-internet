@@ -393,6 +393,9 @@ const DalabAdminApi = {
   // manual override for corrections and for providers (Amtel) that send no
   // payment SMS at all.
   getSimBalances: () => dalabAdminApiRequest("/admin/sim-balances"),
+  getSelectedSims: () => dalabAdminApiRequest("/admin/sim-balances/selected-sims"),
+  selectBalanceSim: (providerKey, body) => dalabAdminApiRequest(`/admin/sim-balances/selected-sims/${providerKey}`, { method: "PUT", body }),
+  clearBalanceSim: (providerKey) => dalabAdminApiRequest(`/admin/sim-balances/selected-sims/${providerKey}`, { method: "DELETE" }),
   getSimBalanceSummary: () => dalabAdminApiRequest("/admin/sim-balances/summary"),
   getSimBalanceHistory: (deviceId, simSlot, providerKey) =>
     dalabAdminApiRequest(`/admin/sim-balances/${deviceId}/${simSlot}/history${providerKey ? `?providerKey=${encodeURIComponent(providerKey)}` : ""}`),
@@ -1383,6 +1386,9 @@ const BALANCE_PROVIDER_LABELS = {
 const HIDDEN_PROVIDER_KEYS = new Set(["hormuud_evoucher"]);
 const VISIBLE_PROVIDER_ORDER = BALANCE_PROVIDER_ORDER.filter((id) => !HIDDEN_PROVIDER_KEYS.has(id));
 
+// The balances whose one SIM the admin chooses (the server's own six).
+const SINGLE_SIM_PROVIDER_KEYS = ["evc_plus", "edahab", "hormuud", "somtel", "somnet", "amtel"];
+
 function BalanceDashboard({ admin }) {
   const canManage = hasPermission(admin, "devices.manage");
 
@@ -1396,17 +1402,25 @@ function BalanceDashboard({ admin }) {
   const [historyFor, setHistoryFor] = useState(null); // row whose history modal is open
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  // The one SIM the admin chose per balance: only it is read and shown.
+  // { evc_plus: { deviceId, deviceName, simSlot }, ... }
+  const [selectedSims, setSelectedSims] = useState({});
+  const [choosing, setChoosing] = useState(null); // provider whose "Choose SIM" is open
+  const [chooseForm, setChooseForm] = useState({ deviceId: "", simSlot: "1" });
+  const [chooseError, setChooseError] = useState("");
 
   const fetchAll = async () => {
     if (!DALAB_API_ENABLED) return;
     setLoading(true);
     try {
-      const [balanceRows, summaryData] = await Promise.all([
+      const [balanceRows, summaryData, chosen] = await Promise.all([
         DalabAdminApi.getSimBalances(),
         DalabAdminApi.getSimBalanceSummary(),
+        DalabAdminApi.getSelectedSims().catch(() => []),
       ]);
       setRows(balanceRows);
       setSummary(summaryData);
+      setSelectedSims(Object.fromEntries((chosen || []).map((c) => [c.providerKey, c])));
     } catch (err) {
       console.error("Failed to load balance dashboard:", err.message);
     } finally {
@@ -1426,6 +1440,45 @@ function BalanceDashboard({ admin }) {
     const timer = setInterval(fetchAll, 15000);
     return () => clearInterval(timer);
   }, []);
+
+  // Every phone, for the "Choose SIM" picker.
+  const devices = useMemo(() => {
+    const m = new Map();
+    for (const r of rows) if (!m.has(r.deviceId)) m.set(r.deviceId, r.deviceName);
+    return [...m.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  }, [rows]);
+
+  const openChoose = (key) => {
+    const cur = selectedSims[key];
+    setChooseForm({ deviceId: cur?.deviceId ?? "", simSlot: String(cur?.simSlot ?? 1) });
+    setChooseError("");
+    setChoosing(key);
+  };
+  const saveChoose = async () => {
+    if (!chooseForm.deviceId) return setChooseError("Choose the phone (Mobile Agent).");
+    setSaving(true);
+    try {
+      await DalabAdminApi.selectBalanceSim(choosing, { deviceId: chooseForm.deviceId, simSlot: Number(chooseForm.simSlot) });
+      setChoosing(null);
+      fetchAll();
+    } catch (err) {
+      setChooseError(err.message || "Couldn't save the SIM.");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const clearChoose = async () => {
+    setSaving(true);
+    try {
+      await DalabAdminApi.clearBalanceSim(choosing);
+      setChoosing(null);
+      fetchAll();
+    } catch (err) {
+      setChooseError(err.message || "Couldn't clear the SIM.");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const grouped = useMemo(() => {
     const byProvider = new Map(VISIBLE_PROVIDER_ORDER.map((id) => [id, []]));
@@ -1540,7 +1593,23 @@ function BalanceDashboard({ admin }) {
         const label = { ...BALANCE_PROVIDER_LABELS, unassigned: "Not yet assigned to a provider" }[id];
         return (
           <Card key={id} style={{ padding: 18, marginTop: 14 }}>
-            <div style={{ fontWeight: 800, color: INK, fontSize: 14, marginBottom: 10 }}>{label}</div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+              <div style={{ fontWeight: 800, color: INK, fontSize: 14 }}>{label}</div>
+              {SINGLE_SIM_PROVIDER_KEYS.includes(id) && (
+                <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12 }}>
+                  {selectedSims[id] ? (
+                    <Badge tone="green">Only {selectedSims[id].deviceName} · SIM {selectedSims[id].simSlot}</Badge>
+                  ) : (
+                    <span style={{ color: MUTE }}>Every SIM is read — choose one SIM</span>
+                  )}
+                  {canManage && (
+                    <button onClick={() => openChoose(id)} style={{ background: "none", border: "none", color: INDIGO, fontWeight: 700, cursor: "pointer", fontSize: 12 }}>
+                      {selectedSims[id] ? "Change SIM" : "Choose SIM"}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
                 <thead>
@@ -1592,6 +1661,37 @@ function BalanceDashboard({ admin }) {
           </Card>
         );
       })}
+
+      {choosing && (
+        <Modal title={`Choose the SIM — ${BALANCE_PROVIDER_LABELS[choosing] ?? choosing}`} onClose={() => setChoosing(null)}>
+          <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 12, lineHeight: 1.5 }}>
+            Only this SIM's balance is read and shown — from its own phone (Mobile Agent). The other SIM in the
+            same phone, and every other phone or agent, are ignored for this balance.
+          </div>
+          <Field label="Phone (Mobile Agent)">
+            <select value={chooseForm.deviceId} onChange={(e) => setChooseForm((f) => ({ ...f, deviceId: e.target.value }))} style={inputStyle}>
+              <option value="">Choose the phone…</option>
+              {devices.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          </Field>
+          <Field label="SIM">
+            <select value={chooseForm.simSlot} onChange={(e) => setChooseForm((f) => ({ ...f, simSlot: e.target.value }))} style={inputStyle}>
+              <option value="1">SIM 1</option>
+              <option value="2">SIM 2</option>
+            </select>
+          </Field>
+          {chooseError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginTop: 8 }}>{chooseError}</div>}
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 16 }}>
+            {selectedSims[choosing] ? (
+              <Button variant="ghost" onClick={clearChoose} disabled={saving}>Read every SIM again</Button>
+            ) : <span />}
+            <div style={{ display: "flex", gap: 10 }}>
+              <Button variant="ghost" onClick={() => setChoosing(null)}>Cancel</Button>
+              <Button onClick={saveChoose} disabled={saving}>{saving ? "Saving…" : "Save"}</Button>
+            </div>
+          </div>
+        </Modal>
+      )}
 
       {editing && (
         <Modal title={`Edit Balance — ${editing.deviceName} · SIM ${editing.simSlot}`} onClose={() => setEditing(null)}>
