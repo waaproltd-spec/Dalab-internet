@@ -178,6 +178,27 @@ offlineAdminRouter.get("/admin/offline/orders", requireStaff(), async (req, res)
   sendJson(res, 200, await query(sql, outerArgs));
 });
 
+/**
+ * Rukumo identifies the service a customer bought offline by its price
+ * (the payment SMS carries only the amount and the sender). Services of
+ * one company sharing a price can't be told apart, so such a payment waits
+ * for an agent. This lists every such price per company, so an admin can
+ * give each service its own price.
+ */
+offlineAdminRouter.get("/admin/offline/price-conflicts", requireStaff(), async (_req, res) => {
+  const rows = await query<{ company_id: string; company_name: string; price: string; names: string[] }>(
+    `SELECT p.company_id, c.name AS company_name, p.price, array_agg(p.name ORDER BY p.name) AS names
+       FROM packages p JOIN companies c ON c.id = p.company_id AND c.deleted_at IS NULL
+      WHERE p.active = true
+        AND COALESCE(p.orders_enabled, true) = true
+        AND COALESCE(p.visible_customer_app, true) = true
+      GROUP BY p.company_id, c.name, p.price
+     HAVING COUNT(*) > 1
+      ORDER BY c.name, p.price`
+  );
+  sendJson(res, 200, rows.map((r) => ({ companyId: r.company_id, companyName: r.company_name, price: Number(r.price), services: r.names })));
+});
+
 offlineAdminRouter.get("/admin/offline/stats", requireStaff(), async (req, res) => {
   const { companyId } = req.query as Record<string, string | undefined>;
   const args: unknown[] = [];

@@ -128,3 +128,23 @@ test("an older app's saved package still works, and settles a same-price tie", a
   await pay(c.sender, 0.5);
   assert.ok((await ordersOf(c.id)).some((o) => o.package_id === PKG_DAY));
 });
+
+test("admins see each company's services that share a price", async () => {
+  const { offlineAdminRouter } = await import("../offlineAdmin.routes.js");
+  const admin = express();
+  admin.use(express.json());
+  admin.use(offlineAdminRouter);
+  const s = http.createServer(admin as unknown as http.RequestListener).listen(0);
+  await new Promise<void>((r) => s.once("listening", r));
+  try {
+    const res = await fetch(`http://127.0.0.1:${(s.address() as AddressInfo).port}/admin/offline/price-conflicts`, {
+      headers: { Authorization: `Bearer ${signAccessToken(randomUUID(), "super_admin")}` },
+    });
+    assert.equal(res.status, 200);
+    const rows = (await res.json()) as any[];
+    const mine = rows.filter((r) => r.companyId === CO);
+    assert.deepEqual(mine, [{ companyId: CO, companyName: "Hormuud", price: 3, services: ["Bil A", "Bil B"] }]);
+  } finally {
+    await new Promise<void>((r) => s.close(() => r()));
+  }
+});

@@ -344,6 +344,7 @@ const DalabAdminApi = {
     return dalabAdminApiRequest(`/admin/offline/payment-transactions${qs ? `?${qs}` : ""}`);
   },
   getOfflineStats: (companyId) => dalabAdminApiRequest(`/admin/offline/stats${companyId ? `?companyId=${companyId}` : ""}`),
+  getOfflinePriceConflicts: () => dalabAdminApiRequest(`/admin/offline/price-conflicts`),
   // Roles & Permissions (Super Admin only, enforced server-side too)
   getAdminUsers: () => dalabAdminApiRequest("/admin/users"),
   createAdminUser: (body) => dalabAdminApiRequest("/admin/users", { method: "POST", body }),
@@ -10129,6 +10130,9 @@ function OfflineOrdersTab({ companies, initialSearch, onOpenOrder }) {
   const [dateTo, setDateTo] = useState("");
   const [search, setSearch] = useState(initialSearch || "");
   const [devices, setDevices] = useState([]);
+  // Rukumo: services of one company with the same price (a payment for
+  // them can't pick the service by itself -- it waits for an agent).
+  const [priceConflicts, setPriceConflicts] = useState([]);
 
   // A handoff from another tab (e.g. "View Orders" for a specific
   // customer) should immediately take effect even if this tab was already
@@ -10140,6 +10144,7 @@ function OfflineOrdersTab({ companies, initialSearch, onOpenOrder }) {
   useEffect(() => {
     if (!DALAB_API_ENABLED) return;
     DalabAdminApi.getAgentDevices().then(setDevices).catch(() => {});
+    DalabAdminApi.getOfflinePriceConflicts().then(setPriceConflicts).catch(() => {});
   }, []);
 
   const fetchRows = async () => {
@@ -10182,6 +10187,19 @@ function OfflineOrdersTab({ companies, initialSearch, onOpenOrder }) {
 
   return (
     <div>
+      {priceConflicts.length > 0 && (
+        <div style={{ fontSize: 12.5, color: "#8A6200", background: "#FFF4D6", border: "1px solid #F2C94C", borderRadius: 8, padding: "10px 12px", marginBottom: 14 }}>
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>Rukumo: services with the same price</div>
+          <div style={{ marginBottom: 6 }}>
+            Rukumo knows which service a customer bought by its price. A payment for one of these prices waits for an agent to choose the service. Give each service its own price to send them automatically.
+          </div>
+          {priceConflicts.map((c) => (
+            <div key={`${c.companyId}-${c.price}`}>
+              <b>{c.companyName}</b> ${Number(c.price).toFixed(2)}: {c.services.join(", ")}
+            </div>
+          ))}
+        </div>
+      )}
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
         <StatusCountTile label="All" count={stats?.all ?? "—"} tone="neutral" active={statusFilter === "all"} onClick={() => setStatusFilter("all")} />
         {["SUCCESS", "FAILED", "RETRY", "USSD_PROCESSING", "WAITING_FOR_AGENT", "DUPLICATE"].map((s) => (
