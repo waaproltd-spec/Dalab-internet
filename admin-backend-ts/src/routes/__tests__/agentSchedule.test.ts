@@ -230,3 +230,44 @@ test("customer Schedule: the customer picks a time at checkout, pays now, and it
   assert.equal(now.status, 201);
   assert.equal((await row(now.body.id)).scheduled_at, null);
 });
+
+test("customer Schedule: unpaid at its time is never sent; paid is sent exactly once even if released twice at once", async () => {
+  const pkg = await freshPackage();
+  const cust = randomUUID();
+  const phone = newPhone();
+  await query(`INSERT INTO customers (id, phone) VALUES ($1,$2)`, [cust, phone]);
+  const res = await fetch(`${base}/orders`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${signAccessToken(cust, "customer")}` },
+    body: JSON.stringify({ companyId: "hormuud", packageId: pkg, senderPhone: phone, receiverPhone: phone, clientRequestId: randomUUID(), scheduledAt: inMinutes(30) }),
+  });
+  const { id } = (await res.json()) as any;
+
+  // Time reached, no payment: nothing is sent.
+  await due(id);
+  assert.equal(await releaseDueScheduledOrders(), 0);
+  let o = await row(id);
+  assert.equal(o.status, "pending");
+  assert.equal(o.ussd_generated, null, "nothing to dial without a verified payment");
+
+  // Payment verified after the time: sent once. Two releases racing never send it twice.
+  await customerPays(phone, price);
+  const [a, b] = await Promise.all([releaseDueScheduledOrders(), releaseDueScheduledOrders()]);
+  assert.ok(a + b <= 1, `released ${a + b} times`);
+  o = await row(id);
+  assert.equal(o.status, "in_progress");
+  assert.equal((await query(`SELECT 1 FROM payment_transactions WHERE order_id=$1`, [id])).length, 1, "one payment record");
+  assert.equal(await releaseDueScheduledOrders(), 0, "never sent again");
+});
+
+test("customer Schedule: the same checkout sent twice (retry) is one order", async () => {
+  const pkg = await freshPackage();
+  const cust = randomUUID();
+  const phone = newPhone();
+  await query(`INSERT INTO customers (id, phone) VALUES ($1,$2)`, [cust, phone]);
+  const body = JSON.stringify({ companyId: "hormuud", packageId: pkg, senderPhone: phone, receiverPhone: phone, clientRequestId: randomUUID(), scheduledAt: inMinutes(30) });
+  const post = () => fetch(`${base}/orders`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${signAccessToken(cust, "customer")}` }, body }).then((r) => r.json() as any);
+  const [x, y] = [await post(), await post()];
+  assert.equal(x.id, y.id);
+  assert.equal((await query(`SELECT 1 FROM orders WHERE customer_id=$1`, [cust])).length, 1);
+});
