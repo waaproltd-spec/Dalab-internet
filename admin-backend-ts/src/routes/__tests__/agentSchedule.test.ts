@@ -196,3 +196,37 @@ test("an agent whose operational access is off can't schedule", async () => {
     await query(`UPDATE agents SET operations_enabled=true WHERE id=$1`, [AGENT]);
   }
 });
+
+test("customer Schedule: the customer picks a time at checkout, pays now, and it is sent at that time", async () => {
+  const pkg = await freshPackage();
+  const cust = randomUUID();
+  const phone = newPhone();
+  await query(`INSERT INTO customers (id, phone, name) VALUES ($1,$2,'Schedule Customer')`, [cust, phone]);
+  const ctoken = signAccessToken(cust, "customer");
+  const order = (body: Record<string, unknown>) =>
+    fetch(`${base}/orders`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${ctoken}` },
+      body: JSON.stringify({ companyId: "hormuud", packageId: pkg, senderPhone: phone, receiverPhone: phone, clientRequestId: randomUUID(), ...body }),
+    }).then(async (r) => ({ status: r.status, body: (await r.json()) as any }));
+
+  assert.equal((await order({ scheduledAt: inMinutes(-10) })).status, 400, "time passed");
+  assert.equal((await order({ scheduledAt: inMinutes(61 * 24 * 60) })).status, 400, "too far ahead");
+
+  const r = await order({ scheduledAt: inMinutes(45) });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  assert.ok((await row(r.body.id)).scheduled_at, "scheduled");
+  await customerPays(phone, price);
+  let o = await row(r.body.id);
+  assert.equal(o.status, "pending", "paid but held until its time");
+  assert.ok(o.scheduled_paid_at);
+  await due(r.body.id);
+  await releaseDueScheduledOrders();
+  o = await row(r.body.id);
+  assert.equal(o.status, "in_progress", "sent at its time");
+
+  // Without a time: exactly today's behaviour (sent as soon as paid).
+  const now = await order({});
+  assert.equal(now.status, 201);
+  assert.equal((await row(now.body.id)).scheduled_at, null);
+});

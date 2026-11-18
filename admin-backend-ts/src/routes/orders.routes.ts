@@ -108,6 +108,11 @@ function maskOrders<T extends Record<string, any>>(orders: T[]): T[] {
 // ---------------- Customer ----------------
 ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
   const { companyId, packageId, senderPhone, receiverPhone, paymentMethod, paymentMethodId, clientRequestId, useLoyaltyPoints } = req.body;
+  // Optional: the customer chose when it should be sent (Schedule). They
+  // pay now as usual; the paid order is held and sent at that time
+  // (verifyOrderAndGenerateUssd / releaseDueScheduledOrders).
+  const schedule = parseCustomerSchedule(req.body?.scheduledAt);
+  if (schedule.error) return sendJson(res, 400, { error: schedule.error, code: "bad_schedule" });
   const company = await queryOne(`SELECT * FROM companies WHERE id=$1 AND deleted_at IS NULL`, [companyId]);
   if (!company) return sendJson(res, 404, { error: "Company not found" });
   if (company.status === "offline") return sendJson(res, 409, { error: `${company.name} is currently offline` });
@@ -181,8 +186,8 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
   const id = orderRef();
   try {
     await query(
-      `INSERT INTO orders (id, customer_id, company_id, package_id, amount, provider_amount, status, sender_phone, receiver_phone, payment_method, channel, macaash_earned, client_request_id, payment_number_used, payment_ussd_template_used, payment_method_id)
-       VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,'android',$10,$11,$12,$13,$14)`,
+      `INSERT INTO orders (id, customer_id, company_id, package_id, amount, provider_amount, status, sender_phone, receiver_phone, payment_method, channel, macaash_earned, client_request_id, payment_number_used, payment_ussd_template_used, payment_method_id, scheduled_at)
+       VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,'android',$10,$11,$12,$13,$14,$15)`,
       [
         id, req.auth!.sub, companyId, packageId, finalAmount, pkg.provider_amount ?? pkg.price,
         senderPhone || customer?.phone || null,
@@ -197,6 +202,7 @@ ordersRouter.post("/orders", requireAuth("customer"), async (req, res) => {
         selectedMethod?.payment_number || company.payment_number || null,
         selectedMethod?.ussd_template || company.payment_ussd_template || null,
         selectedMethod?.id ?? null,
+        schedule.at,
       ]
     );
     if (pointsToUse > 0) {
@@ -1800,6 +1806,22 @@ ordersRouter.get("/admin/dashboard/stats", requireStaff(), async (_req, res) => 
 
 /** Furthest ahead an order can be scheduled. */
 const SCHEDULE_MAX_DAYS = 60;
+
+/**
+ * A customer's optional "send at" time. Absent, empty, or within the next
+ * minute means "send as soon as paid" (null) -- exactly today's behaviour.
+ */
+function parseCustomerSchedule(raw: unknown): { at: string | null; error: string | null } {
+  if (raw == null || raw === "") return { at: null, error: null };
+  const when = new Date(String(raw));
+  if (Number.isNaN(when.getTime())) return { at: null, error: "Choose a valid date and time." };
+  if (when.getTime() < Date.now() - 60_000) return { at: null, error: "The scheduled time has already passed." };
+  if (when.getTime() > Date.now() + SCHEDULE_MAX_DAYS * 86_400_000) {
+    return { at: null, error: `Schedule at most ${SCHEDULE_MAX_DAYS} days ahead.` };
+  }
+  if (when.getTime() <= Date.now() + 60_000) return { at: null, error: null };
+  return { at: when.toISOString(), error: null };
+}
 
 /** Networks and the packages an agent may schedule. */
 ordersRouter.get("/agent/scheduled-orders/options", requireAuth("agent"), async (_req, res) => {
