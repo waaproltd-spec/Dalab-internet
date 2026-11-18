@@ -5,7 +5,7 @@ import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { hashPassword, verifyPassword, isValidPin } from "../auth/crypto.js";
 import { parseDataUri } from "../utils/dataUri.js";
-import { validateMobileNumber, companyKeyFromLabel, normalizeMobileDigits } from "../lib/phoneValidation.js";
+import { validateMobileNumber, companyKeyFromLabel, normalizeMobileDigits, companyForPrefix } from "../lib/phoneValidation.js";
 import { canonicalCustomerPhone, findCustomerByPhone, findOrCreateCustomerByPhone } from "../lib/customerPhone.js";
 
 export const customersRouter = Router();
@@ -768,7 +768,11 @@ async function serializeOfflineProfile(customerId: string) {
   // stored redundantly on the customer (spec requirement 5) — a later admin
   // price change is reflected here automatically, and offlineAutoOrder.ts
   // reads the same live package.price at match time, never a snapshot.
-  const company = row.offline_company_id ? await queryOne(`SELECT id, name, color_hex, logo_url FROM companies WHERE id=$1`, [row.offline_company_id]) : null;
+  // payment_ussd_template: the company's own pay code, Rukumo's last fallback
+  // when no payment method applies (the app reads it as paymentUssdTemplate).
+  const company = row.offline_company_id
+    ? await queryOne(`SELECT id, name, color_hex, logo_url, payment_ussd_template FROM companies WHERE id=$1`, [row.offline_company_id])
+    : null;
   const pkg = row.offline_package_id
     ? await queryOne(
         `SELECT id, company_id, category_id, name, old_price, price, mb, minutes, sms, validity FROM packages WHERE id=$1`,
@@ -777,12 +781,30 @@ async function serializeOfflineProfile(customerId: string) {
     : null;
   // Same shape PaymentMethodScreen's own list uses (companyPaymentMethods.routes.ts's
   // PUBLIC_METHOD_COLUMNS) — no device_id/sim_slot, those never reach the Customer App.
-  const paymentMethod = row.offline_payment_method_id
+  let paymentMethod = row.offline_payment_method_id
     ? await queryOne(
         `SELECT id, company_id, method, label, payment_number, ussd_template, enabled, sort_order, created_at, updated_at FROM company_payment_methods WHERE id=$1`,
         [row.offline_payment_method_id]
       )
     : null;
+  // No method saved with the setup (saved by an older app, or before the
+  // company's methods were configured): the company's enabled method for the
+  // payment number's own carrier (61/77 -> EVC Plus, 62 -> eDahab, ...), so
+  // Rukumo's pay buttons have a USSD code to dial. Only sent to the app --
+  // payment matching still uses only the saved method.
+  if (!paymentMethod && row.offline_company_id && row.offline_sender_number) {
+    const carrier = companyForPrefix(normalizeMobileDigits(row.offline_sender_number).replace(/^0+/, ""));
+    if (carrier) {
+      const methods = await query<any>(
+        `SELECT id, company_id, method, label, payment_number, ussd_template, enabled, sort_order, created_at, updated_at
+           FROM company_payment_methods WHERE company_id=$1 AND enabled=true AND ussd_template IS NOT NULL
+          ORDER BY sort_order ASC, created_at ASC`,
+        [row.offline_company_id]
+      );
+      paymentMethod =
+        methods.find((m) => companyKeyFromLabel(m.method) === carrier.key || companyKeyFromLabel(m.label) === carrier.key) ?? null;
+    }
+  }
   return {
     senderNumber: row.offline_sender_number,
     destinationNumber: row.offline_destination_number,

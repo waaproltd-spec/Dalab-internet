@@ -171,3 +171,25 @@ test("several accounts with the same payment number: the newest saved setup is u
   assert.equal(o.length, 1);
   assert.equal(o[0].receiver_phone, "615550794", "sent to the newest setup's internet number");
 });
+
+test("the Rukumo setup sent to the app always carries a pay code: the payment number's method when none was saved", async () => {
+  const id = randomUUID();
+  await query(`INSERT INTO customers (id, phone) VALUES ($1,'252615550795')`, [id]);
+  await query(
+    `INSERT INTO company_payment_methods (id, company_id, method, label, payment_number, ussd_template, enabled, sort_order)
+     VALUES ($1,$2,'evc_plus','EVC Plus','610000001','*712*610000001*{amount}#',true,1)`,
+    [randomUUID(), CO]
+  );
+  await query(`UPDATE companies SET payment_ussd_template='*712*610000009*{amount}#' WHERE id=$1`, [CO]);
+  // Saved without a payment method (e.g. by an older app), payment number with a leading 0.
+  await query(
+    `UPDATE customers SET offline_sender_number='0615550795', offline_destination_number='615550796', offline_company_id=$1,
+       offline_payment_method_id=NULL, offline_profile_updated_at=now() WHERE id=$2`,
+    [CO, id]
+  );
+  const res = await fetch(`${base}/customer/offline-profile`, { headers: { Authorization: `Bearer ${signAccessToken(id, "customer")}` } });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as any;
+  assert.equal(body.paymentMethod?.ussdTemplate, "*712*610000001*{amount}#", "EVC Plus for a 61 number");
+  assert.equal(body.company.paymentUssdTemplate, "*712*610000009*{amount}#", "the company's own code as last fallback");
+});
