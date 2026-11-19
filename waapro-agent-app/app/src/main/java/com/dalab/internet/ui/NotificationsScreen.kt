@@ -71,6 +71,15 @@ fun NotificationsScreen(onBack: () -> Unit) {
     var sending by remember { mutableStateOf(false) }
     var sendError by remember { mutableStateOf<String?>(null) }
     var sendResult by remember { mutableStateOf<BroadcastResponse?>(null) }
+    // When: now, or at a set date and time (Mogadishu).
+    var scheduleOn by remember { mutableStateOf(false) }
+    val defaultAt = remember { java.time.ZonedDateTime.now(MOGADISHU).plusMinutes(30).withSecond(0).withNano(0) }
+    var day by remember { mutableStateOf(defaultAt.toLocalDate()) }
+    var time by remember { mutableStateOf(defaultAt.toLocalTime()) }
+    var pickDay by remember { mutableStateOf(false) }
+    var pickTime by remember { mutableStateOf(false) }
+    var requestId by remember { mutableStateOf(java.util.UUID.randomUUID().toString()) }
+    var cancelling by remember { mutableStateOf<NotificationCampaign?>(null) }
 
     var campaigns by remember { mutableStateOf<List<NotificationCampaign>>(emptyList()) }
     var loadingHistory by remember { mutableStateOf(true) }
@@ -93,6 +102,17 @@ fun NotificationsScreen(onBack: () -> Unit) {
         }
     }
     LaunchedEffect(Unit) { fetchHistory() }
+    // While a message is being sent or waits for its time, keep the history fresh.
+    LaunchedEffect(campaigns) {
+        if (campaigns.any { it.status == "sending" || it.status == "scheduled" }) {
+            delay(15_000L)
+            try {
+                val response = ApiClient.service.getNotificationCampaigns()
+                if (response.isSuccessful) campaigns = response.body().orEmpty()
+            } catch (_: Exception) {
+            }
+        }
+    }
 
     // Debounced customer search, same 300ms debounce the Admin dashboard uses.
     LaunchedEffect(customerSearch, targetType) {
@@ -135,20 +155,28 @@ fun NotificationsScreen(onBack: () -> Unit) {
                         serviceFilter = serviceFilter,
                         title = title.trim(),
                         body = body.trim(),
+                        scheduledAt = if (scheduleOn) java.time.ZonedDateTime.of(day, time, MOGADISHU).toInstant().toString() else null,
+                        requestId = requestId,
                     )
                 )
                 if (response.isSuccessful && response.body() != null) {
                     sendResult = response.body()
+                    requestId = java.util.UUID.randomUUID().toString()
+                    scheduleOn = false
                     title = ""
                     body = ""
                     selectedCustomers = emptyList()
                     customerSearch = ""
                     fetchHistory()
                 } else {
-                    sendError = "Could not send notification."
+                    sendError = try {
+                        response.errorBody()?.string()?.let { org.json.JSONObject(it).optString("error").takeIf { e -> e.isNotBlank() } }
+                    } catch (_: Exception) { null } ?: "Could not send notification."
                 }
             } catch (_: Exception) {
-                sendError = "Could not send notification. Check your connection."
+                // Tapping Send again is safe: the same request id never sends twice.
+                sendError = "No answer from the server. Check Sent history before sending again."
+                fetchHistory()
             }
             sending = false
         }
@@ -295,6 +323,36 @@ fun NotificationsScreen(onBack: () -> Unit) {
                     modifier = Modifier.fillMaxWidth().padding(top = 4.dp, end = 4.dp),
                     textAlign = TextAlign.End,
                 )
+                Spacer(Modifier.height(12.dp))
+
+                Text("When", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    FilterChip(selected = !scheduleOn, onClick = { scheduleOn = false }, label = { Text("Send now") })
+                    FilterChip(
+                        selected = scheduleOn,
+                        onClick = { scheduleOn = true },
+                        label = { Text("Schedule") },
+                        leadingIcon = { Icon(Icons.Filled.Schedule, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    )
+                }
+                if (scheduleOn) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedButton(onClick = { pickDay = true }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(14.dp)) {
+                            Text(day.format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy")))
+                        }
+                        OutlinedButton(onClick = { pickTime = true }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(14.dp)) {
+                            Text(time.format(java.time.format.DateTimeFormatter.ofPattern("h:mm a")))
+                        }
+                    }
+                    Text(
+                        "Mogadishu time. You can cancel it in Sent history until it goes out.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
                 Spacer(Modifier.height(16.dp))
 
                 if (sendError != null) {
@@ -302,8 +360,13 @@ fun NotificationsScreen(onBack: () -> Unit) {
                     Spacer(Modifier.height(8.dp))
                 }
                 sendResult?.let { result ->
+                    val who = "${result.recipientCount} customer${if (result.recipientCount == 1) "" else "s"}"
                     Text(
-                        "Sent to ${result.recipientCount} customer${if (result.recipientCount == 1) "" else "s"} — ${result.deliveredCount} delivered, ${result.failedCount} failed.",
+                        when (result.status) {
+                            "scheduled" -> "Scheduled for ${scheduleTimeText(result.scheduledAt)} — $who."
+                            "sending" -> "Sending to $who. Sent history shows the progress."
+                            else -> "Sent to $who — ${result.deliveredCount} delivered, ${result.failedCount} failed."
+                        },
                         color = MaterialTheme.colorScheme.primary,
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -318,7 +381,7 @@ fun NotificationsScreen(onBack: () -> Unit) {
                 ) {
                     Icon(Icons.Filled.Send, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text(if (sending) "Sending..." else "Send notification", fontWeight = FontWeight.Bold)
+                    Text(if (sending) "Sending..." else if (scheduleOn) "Schedule notification" else "Send notification", fontWeight = FontWeight.Bold)
                 }
                 Spacer(Modifier.height(24.dp))
 
@@ -358,11 +421,58 @@ fun NotificationsScreen(onBack: () -> Unit) {
             } else if (campaigns.isEmpty()) {
                 item { Text("Nothing sent yet.", style = MaterialTheme.typography.bodySmall) }
             } else {
-                items(campaigns, key = { it.id }) { campaign -> CampaignRow(campaign) }
+                items(campaigns, key = { it.id }) { campaign -> CampaignRow(campaign, onCancel = { cancelling = campaign }) }
             }
 
             item { Spacer(Modifier.height(24.dp)) }
         }
+    }
+
+    if (pickDay) {
+        val utcMillis = day.atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
+        val state = rememberDatePickerState(initialSelectedDateMillis = utcMillis)
+        DatePickerDialog(
+            onDismissRequest = { pickDay = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    state.selectedDateMillis?.let { day = java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneOffset.UTC).toLocalDate() }
+                    pickDay = false
+                }) { Text("OK") }
+            },
+            dismissButton = { TextButton(onClick = { pickDay = false }) { Text("Cancel") } },
+        ) { DatePicker(state = state) }
+    }
+    if (pickTime) {
+        val state = rememberTimePickerState(initialHour = time.hour, initialMinute = time.minute, is24Hour = false)
+        AlertDialog(
+            onDismissRequest = { pickTime = false },
+            title = { Text("Send time (Mogadishu)") },
+            text = { TimePicker(state = state) },
+            confirmButton = { TextButton(onClick = { time = java.time.LocalTime.of(state.hour, state.minute); pickTime = false }) { Text("OK") } },
+            dismissButton = { TextButton(onClick = { pickTime = false }) { Text("Cancel") } },
+        )
+    }
+    cancelling?.let { c ->
+        AlertDialog(
+            onDismissRequest = { cancelling = null },
+            title = { Text("Cancel this message?") },
+            text = { Text("\"${c.title}\" will not be sent.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    cancelling = null
+                    scope.launch {
+                        try {
+                            val r = ApiClient.service.cancelNotificationCampaign(c.id)
+                            if (!r.isSuccessful) historyError = "Could not cancel: it may already have been sent."
+                        } catch (_: Exception) {
+                            historyError = "Could not cancel. Check your connection."
+                        }
+                        fetchHistory()
+                    }
+                }) { Text("Cancel message", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { cancelling = null }) { Text("Keep") } },
+        )
     }
 }
 
@@ -441,8 +551,23 @@ private fun FlowRowChips(customers: List<CustomerSummary>, onRemove: (CustomerSu
 }
 
 @Composable
-private fun CampaignRow(campaign: NotificationCampaign) {
+private fun CampaignRow(campaign: NotificationCampaign, onCancel: () -> Unit) {
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
+        when (campaign.status) {
+            "scheduled" -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    "Scheduled · ${scheduleTimeText(campaign.scheduledAt)}",
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onCancel) { Text("Cancel", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold) }
+            }
+            "sending" -> Text("Sending…", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+            "cancelled" -> Text("Cancelled", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+            else -> {}
+        }
         Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(campaign.title, fontWeight = FontWeight.Bold)

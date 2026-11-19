@@ -137,6 +137,10 @@ data class BroadcastRequest(
     val serviceFilter: String, // "all" | "internet" | "ebadal" | "reseller"
     val title: String,
     val body: String,
+    // Send at this time (ISO-8601) instead of now; null = now.
+    val scheduledAt: String? = null,
+    // One "Send" tap = one campaign, even if the request is retried.
+    val requestId: String? = null,
 )
 data class BroadcastResponse(
     val id: String,
@@ -144,6 +148,9 @@ data class BroadcastResponse(
     val sentCount: Int,
     val deliveredCount: Int,
     val failedCount: Int,
+    // "sending" | "sent" | "scheduled" | "cancelled" (null on an older server).
+    val status: String? = null,
+    val scheduledAt: String? = null,
 )
 data class NotificationCampaign(
     val id: String,
@@ -158,6 +165,8 @@ data class NotificationCampaign(
     val createdByName: String?,
     val createdByRole: String,
     val createdAt: String,
+    val status: String? = null,
+    val scheduledAt: String? = null,
 )
 
 // ---------------- Nala Soco ----------------
@@ -545,6 +554,10 @@ interface ApiService {
 
     @POST("notifications/broadcast")
     suspend fun broadcastNotification(@Body body: BroadcastRequest): Response<BroadcastResponse>
+
+    // Cancel a scheduled broadcast before it goes out.
+    @POST("notifications/campaigns/{id}/cancel")
+    suspend fun cancelNotificationCampaign(@Path("id") id: String, @Body body: Map<String, String> = emptyMap()): Response<BroadcastResponse>
 
     @GET("notifications/campaigns")
     suspend fun getNotificationCampaigns(): Response<List<NotificationCampaign>>
