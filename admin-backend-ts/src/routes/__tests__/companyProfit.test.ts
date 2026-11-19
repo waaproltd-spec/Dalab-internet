@@ -44,12 +44,16 @@ async function overview(period = "month") {
   return r.body;
 }
 const row = async (period = "month") => (await overview(period)).companies.find((c: any) => c.companyId === company);
-async function order(amount: number, status: string) {
+async function order(amount: number, status: string, opts: { provider?: number; sends?: number; agent?: string; reversed?: boolean } = {}) {
+  const id = "CP" + randomUUID().slice(0, 10);
   await query(
-    `INSERT INTO orders (id, customer_id, company_id, package_id, amount, status, completed_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-    ["CP" + randomUUID().slice(0, 10), customer, company, pkg, amount, status, status === "completed" ? new Date() : null]
+    `INSERT INTO orders (id, customer_id, company_id, package_id, amount, status, completed_at, provider_amount, agent_id, reversed_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [id, customer, company, pkg, amount, status, status === "completed" ? new Date() : null,
+      opts.provider ?? amount, opts.agent ?? null, opts.reversed ? new Date() : null]
   );
+  // send_count is copied from the package on insert; an Extra Package sends more than once.
+  await query(`UPDATE orders SET send_count=$2 WHERE id=$1`, [id, opts.sends ?? 1]);
 }
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -156,4 +160,65 @@ test("orders are only read: no order or payment changes", async () => {
   await put({ commissionPct: 15, discountPct: 10 });
   assert.deepEqual(await snap(), o1);
   assert.deepEqual(await pay(), p1);
+});
+
+test("commission is on what was SENT to the network (amount per send x sends), not what the customer paid", async () => {
+  await put({ commissionPct: 15, discountPct: 10 });
+  const before0 = await row("month");
+  // Customer paid $1.20; the agent sent $0.50 twice = $1.00 to the network.
+  await order(1.2, "completed", { provider: 0.5, sends: 2 });
+  // Reversed and failed orders never count.
+  await order(5, "completed", { provider: 5, reversed: true });
+  await order(3, "failed", { provider: 3 });
+  const after = await row("month");
+  assert.equal(after.orders - before0.orders, 1);
+  assert.equal(r2(after.sentAmount - before0.sentAmount), 1);
+  assert.equal(r2(after.sales - before0.sales), 1.2, "what customers paid is shown apart, not used");
+  assert.equal(r2(after.commission - before0.commission), 0.15);
+  assert.equal(r2(after.discount - before0.discount), 0.1);
+  assert.equal(r2(after.profit - before0.profit), 0.05);
+});
+
+test("Me / All agents: me counts only the signed-in agent's sends", async () => {
+  const meBefore = (await call("GET", `/agent/company-profit?period=month&scope=me`)).body.companies.find((c: any) => c.companyId === company);
+  const allBefore = (await call("GET", `/agent/company-profit?period=month&scope=all`)).body.companies.find((c: any) => c.companyId === company);
+  await order(2, "completed", { provider: 2, agent: AGENT });
+  await order(4, "completed", { provider: 4, agent: PLAIN });
+  const me = await call("GET", `/agent/company-profit?period=month&scope=me`);
+  const all = await call("GET", `/agent/company-profit?period=month`);
+  assert.equal(me.body.scope, "me");
+  assert.equal(all.body.scope, "all");
+  const m = me.body.companies.find((c: any) => c.companyId === company);
+  const a = all.body.companies.find((c: any) => c.companyId === company);
+  assert.equal(r2(m.sentAmount - meBefore.sentAmount), 2);
+  assert.equal(r2(a.sentAmount - allBefore.sentAmount), 6);
+});
+
+test("periods: yesterday, last month, 3 / 6 months, 1 year; unknown falls back to this month", async () => {
+  const at = async (when: string) => {
+    const id = "CP" + randomUUID().slice(0, 10);
+    await query(
+      `INSERT INTO orders (id, customer_id, company_id, package_id, amount, status, completed_at, provider_amount)
+       VALUES ($1,$2,$3,$4,10,'completed',${when},10)`,
+      [id, customer, company, pkg]
+    );
+  };
+  const sent = async (period: string) => {
+    const r = await call("GET", `/agent/company-profit?period=${period}`);
+    assert.equal(r.status, 200);
+    return { period: r.body.period, sent: r.body.companies.find((c: any) => c.companyId === company).sentAmount };
+  };
+  const before = Object.fromEntries(await Promise.all(["yesterday", "last_month", "3months", "6months", "year", "all"].map(async (p) => [p, (await sent(p)).sent])));
+  await at("date_trunc('day', now()) - interval '12 hours'");              // yesterday
+  await at("date_trunc('month', now()) - interval '10 days'");            // last month
+  await at("now() - interval '4 months'");                                 // within 6 months
+  await at("now() - interval '8 months'");                                 // within the year
+  await at("now() - interval '2 years'");                                  // only all time
+  const d = async (p: string) => Math.round(((await sent(p)).sent - before[p]) * 100) / 100;
+  assert.equal(await d("yesterday"), 10);
+  assert.ok((await d("last_month")) >= 10);
+  assert.equal(await d("6months"), (await d("3months")) + 10 + 0, "the 4-month-old order is in 6 months, not 3");
+  assert.equal(await d("year"), (await d("6months")) + 10);
+  assert.equal(await d("all"), (await d("year")) + 10);
+  assert.equal((await sent("nonsense")).period, "month");
 });

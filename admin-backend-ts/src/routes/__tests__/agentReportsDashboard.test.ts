@@ -199,8 +199,17 @@ test("Commission by provider: Commission % and Discount % over the report's succ
     assert.ok(h, "Hormuud has terms, so it is listed");
     const company = rep.companies.find((c: any) => c.companyId === "rpt-hormuud");
     assert.equal(h.sales, company.successfulValue, "same successful sales as the network card");
-    assert.equal(h.commission, Math.round(h.sales * 15) / 100);
-    assert.equal(h.discount, Math.round(h.sales * 10) / 100);
+    // The base is what was SENT to Hormuud (provider amount x sends), not what customers paid.
+    const sent = await queryOne<any>(
+      `SELECT COALESCE(SUM(COALESCE(provider_amount, amount) * COALESCE(send_count, 1)), 0)::float AS s
+         FROM orders WHERE company_id='rpt-hormuud' AND status='completed' AND reversed_at IS NULL
+          AND ($1::boolean OR agent_id = $2)`,
+      [rep.scope === "all", AGENT_ID]
+    );
+    assert.equal(h.sentAmount, Math.round(sent!.s * 100) / 100);
+    assert.notEqual(h.sentAmount, h.sales, "this data's sends differ from what customers paid");
+    assert.equal(h.commission, Math.round(h.sentAmount * 15) / 100);
+    assert.equal(h.discount, Math.round(h.sentAmount * 10) / 100);
     assert.equal(h.profit, Math.round((h.commission - h.discount) * 100) / 100);
     assert.equal(rep.commissionByProvider.some((c: any) => c.companyId === "rpt-amtel"), false, "no terms, not listed");
   }

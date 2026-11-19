@@ -13,49 +13,69 @@ import { sendJson } from "../utils/camelCase.js";
  *   Discount %    taken off the commission
  *   Profit %      what remains: Commission % - Discount %
  *
- * For the SUCCESSFUL orders of a network (completed and not reversed, as
- * in Reports) -- pending, failed, cancelled and reversed orders never
- * count -- with sales S:
- *   Commission = S x Commission%   Discount = S x Discount%
+ * The base is what the agents actually SENT to the network for its
+ * successful orders (completed and not reversed -- pending, failed,
+ * cancelled and reversed orders never count): the amount dialed per send
+ * x the number of sends (provider_amount x send_count, the order's own
+ * amount when it has no provider amount). Not what customers paid, and
+ * not total system sales. With that sent amount A:
+ *   Commission = A x Commission%   Discount = A x Discount%
  *   Profit     = Commission - Discount
- * e.g. Hormuud 15% / 10%: a $1 order -> $0.15 commission, $0.10 discount,
- * $0.05 profit.
+ * e.g. Hormuud 15% / 10%: $1 sent -> $0.15 commission, $0.10 discount,
+ * $0.05 profit. ?scope=me counts only the signed-in agent's orders;
+ * all (the default) every agent's.
  */
 export const companyProfitRouter = Router();
 
-type Period = "today" | "month" | "all";
-const PERIOD_SQL: Record<Period, string> = {
+// Periods by completion time (the server runs on Mogadishu time). Only
+// these fixed fragments ever reach the SQL, never the request's text.
+const PERIOD_SQL = {
   today: "o.completed_at >= date_trunc('day', now())",
+  yesterday: "o.completed_at >= date_trunc('day', now()) - interval '1 day' AND o.completed_at < date_trunc('day', now())",
   month: "o.completed_at >= date_trunc('month', now())",
+  last_month: "o.completed_at >= date_trunc('month', now()) - interval '1 month' AND o.completed_at < date_trunc('month', now())",
+  "3months": "o.completed_at >= now() - interval '3 months'",
+  "6months": "o.completed_at >= now() - interval '6 months'",
+  year: "o.completed_at >= now() - interval '1 year'",
   all: "true",
-};
+} as const;
+type Period = keyof typeof PERIOD_SQL;
 
 const money = (n: number) => Math.round(n * 100) / 100;
 const pct2 = (n: number) => Math.round(n * 100) / 100;
 
-async function overview(periodParam: unknown) {
-  const period: Period = periodParam === "today" || periodParam === "all" ? periodParam : "month";
+/** What was sent to the network for one order: amount per send x sends. */
+export const SENT_AMOUNT_SQL = `COALESCE(o.provider_amount, o.amount) * COALESCE(o.send_count, 1)`;
+
+async function overview(periodParam: unknown, scopeParam: unknown, agentId: string) {
+  const period: Period = typeof periodParam === "string" && periodParam in PERIOD_SQL ? (periodParam as Period) : "month";
+  const scope = scopeParam === "me" ? "me" : "all";
+  // Always mentions $1 so the parameter stays typed.
+  const who = scope === "me" ? "o.agent_id = $1" : "(o.agent_id = $1 OR true)";
   const rows = await query<any>(
     `SELECT c.id, c.name, c.color_hex, c.status,
             t.commission_pct, t.discount_pct, t.updated_at,
-            COALESCE(s.orders, 0)::int AS orders, COALESCE(s.sales, 0)::float AS sales
+            COALESCE(s.orders, 0)::int AS orders, COALESCE(s.sales, 0)::float AS sales,
+            COALESCE(s.sent, 0)::float AS sent
        FROM companies c
        LEFT JOIN company_profit_terms t ON t.company_id = c.id
        LEFT JOIN (
-         SELECT o.company_id, count(*) AS orders, sum(o.amount) AS sales
+         SELECT o.company_id, count(*) AS orders, sum(o.amount) AS sales, sum(${SENT_AMOUNT_SQL}) AS sent
            FROM orders o
-          WHERE o.status = 'completed' AND o.reversed_at IS NULL AND ${PERIOD_SQL[period]}
+          WHERE o.status = 'completed' AND o.reversed_at IS NULL AND ${PERIOD_SQL[period]} AND ${who}
           GROUP BY o.company_id
        ) s ON s.company_id = c.id
-      ORDER BY (t.company_id IS NULL), c.name`
+      ORDER BY (t.company_id IS NULL), c.name`,
+    [agentId]
   );
   const companies = rows.map((r) => {
     const commissionPct = r.commission_pct === null || r.commission_pct === undefined ? null : Number(r.commission_pct);
     const discountPct = commissionPct === null ? null : Number(r.discount_pct ?? 0);
     const profitPct = commissionPct === null ? null : pct2(commissionPct - (discountPct ?? 0));
     const sales = Number(r.sales);
-    const commission = commissionPct === null ? 0 : money((sales * commissionPct) / 100);
-    const discount = discountPct === null ? 0 : money((sales * discountPct) / 100);
+    const sent = Number(r.sent);
+    const commission = commissionPct === null ? 0 : money((sent * commissionPct) / 100);
+    const discount = discountPct === null ? 0 : money((sent * discountPct) / 100);
     return {
       companyId: r.id,
       name: r.name,
@@ -67,17 +87,19 @@ async function overview(periodParam: unknown) {
       profitPct,
       orders: r.orders,
       sales: money(sales),
+      sentAmount: money(sent),
       commission,
       discount,
       profit: money(commission - discount),
       updatedAt: r.updated_at ?? null,
     };
   });
-  const sum = (k: "orders" | "sales" | "commission" | "discount" | "profit") => money(companies.reduce((a, c) => a + Number(c[k]), 0));
+  const sum = (k: "orders" | "sales" | "sentAmount" | "commission" | "discount" | "profit") => money(companies.reduce((a, c) => a + Number(c[k]), 0));
   return {
     period,
+    scope,
     companies,
-    totals: { orders: sum("orders"), sales: sum("sales"), commission: sum("commission"), discount: sum("discount"), profit: sum("profit") },
+    totals: { orders: sum("orders"), sales: sum("sales"), sentAmount: sum("sentAmount"), commission: sum("commission"), discount: sum("discount"), profit: sum("profit") },
   };
 }
 
@@ -122,12 +144,12 @@ async function save(req: Request, res: Response) {
       [companyId, c.value, discount, pct2(c.value - discount), String(req.auth!.sub), req.auth!.role]
     );
   }
-  const data = await overview(req.query.period);
+  const data = await overview(req.query.period, req.query.scope, String(req.auth!.sub));
   sendJson(res, 200, data.companies.find((x) => x.companyId === companyId));
 }
 
 // Agent App (agents the Owner gave the "profit" service; agentServiceGate checks it).
 companyProfitRouter.get("/agent/company-profit", requireAuth("agent"), async (req, res) => {
-  sendJson(res, 200, await overview(req.query.period));
+  sendJson(res, 200, await overview(req.query.period, req.query.scope, String(req.auth!.sub)));
 });
 companyProfitRouter.put("/agent/company-profit/:companyId", requireAuth("agent"), save);
