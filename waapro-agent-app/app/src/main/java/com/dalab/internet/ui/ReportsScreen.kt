@@ -127,20 +127,22 @@ private fun <T> rememberReport(key: Any, fetch: suspend () -> retrofit2.Response
 @Composable
 fun ReportsScreen(onBack: () -> Unit) {
     var range by remember { mutableStateOf("all") }
+    // "all" = every agent's orders; "me" = only this agent's.
+    var scope by remember { mutableStateOf("all") }
     var openCompany by remember { mutableStateOf<ReportCompanyCard?>(null) }
 
     val company = openCompany
     if (company != null) {
         BackHandler { openCompany = null }
-        CompanyReportScreen(company = company, initialRange = range, onBack = { openCompany = null })
+        CompanyReportScreen(company = company, initialRange = range, scope = scope, onBack = { openCompany = null })
         return
     }
 
-    val (report, loading, error) = rememberReport(range) { ApiClient.service.getReportDashboard(range) }
+    val (report, loading, error) = rememberReport(range to scope) { ApiClient.service.getReportDashboard(range, scope) }
 
     Box(Modifier.fillMaxSize().background(RBg)) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 28.dp)) {
-            item { BrandHeader(onBack = onBack, range = range, onRange = { range = it }) }
+            item { BrandHeader(onBack = onBack, range = range, onRange = { range = it }, scope = scope, onScope = { scope = it }) }
             item { Spacer(Modifier.height(8.dp)) }
             if (error != null) item { ErrorLine(error) }
             val current = report
@@ -162,9 +164,9 @@ fun ReportsScreen(onBack: () -> Unit) {
 }
 
 @Composable
-private fun CompanyReportScreen(company: ReportCompanyCard, initialRange: String, onBack: () -> Unit) {
+private fun CompanyReportScreen(company: ReportCompanyCard, initialRange: String, scope: String, onBack: () -> Unit) {
     var range by remember { mutableStateOf(initialRange) }
-    val (report, loading, error) = rememberReport(range) { ApiClient.service.getCompanyReport(company.companyId, range) }
+    val (report, loading, error) = rememberReport(range) { ApiClient.service.getCompanyReport(company.companyId, range, scope) }
     val brand = parseColor(company.colorHex, DalabBlue)
 
     Box(Modifier.fillMaxSize().background(RBg)) {
@@ -248,7 +250,7 @@ private fun CompanyReportScreen(company: ReportCompanyCard, initialRange: String
 }
 
 @Composable
-private fun BrandHeader(onBack: () -> Unit, range: String, onRange: (String) -> Unit) {
+private fun BrandHeader(onBack: () -> Unit, range: String, onRange: (String) -> Unit, scope: String, onScope: (String) -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -259,7 +261,28 @@ private fun BrandHeader(onBack: () -> Unit, range: String, onRange: (String) -> 
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White) }
-            Text("Reports", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
+            Text("Reports", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.weight(1f))
+            // Whose orders: every agent's, or only mine.
+            Surface(shape = RoundedCornerShape(50), color = Color.White.copy(alpha = 0.14f)) {
+                Row(Modifier.padding(3.dp)) {
+                    listOf("all" to "All agents", "me" to "Me").forEach { (key, label) ->
+                        val on = scope == key
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = if (on) Color.White else Color.Transparent,
+                            modifier = Modifier.clip(RoundedCornerShape(50)).clickable { onScope(key) },
+                        ) {
+                            Text(
+                                label,
+                                color = if (on) WaaproNavy else Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.5.sp,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            )
+                        }
+                    }
+                }
+            }
         }
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(start = 8.dp)) {

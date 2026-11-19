@@ -806,7 +806,7 @@ interface ApiService {
     // ---------------- Reports ----------------
 
     @GET("agent/reports/dashboard")
-    suspend fun getReportDashboard(@Query("range") range: String): Response<AgentReportDashboard>
+    suspend fun getReportDashboard(@Query("range") range: String, @Query("scope") scope: String? = null): Response<AgentReportDashboard>
 
     // Home "Today": orders created today, this agent's performance, daily revenue.
     @GET("agent/today")
@@ -880,7 +880,7 @@ interface ApiService {
     suspend fun getOtherAgents(@Query("search") search: String? = null): Response<com.dalab.internet.data.OtherAgentsResponse>
 
     @GET("agent/reports/dashboard/companies/{id}")
-    suspend fun getCompanyReport(@Path("id") companyId: String, @Query("range") range: String): Response<CompanyReport>
+    suspend fun getCompanyReport(@Path("id") companyId: String, @Query("range") range: String, @Query("scope") scope: String? = null): Response<CompanyReport>
 
     // ---------------- Money Exchange ----------------
     // Deliberately separate endpoints/models from Internet Store's orders
