@@ -861,6 +861,16 @@ interface ApiService {
     @GET("agent/registered-payment-issues")
     suspend fun getRegisteredPaymentIssues(): Response<List<com.dalab.internet.data.RegistrationIssue>>
 
+    // Company Commission & Profit (the Owner-granted "profit" service).
+    @GET("agent/company-profit")
+    suspend fun getCompanyProfit(@Query("period") period: String): Response<com.dalab.internet.data.CompanyProfitOverview>
+
+    @PUT("agent/company-profit/{companyId}")
+    suspend fun updateCompanyProfit(
+        @Path("companyId") companyId: String,
+        @Body body: com.dalab.internet.data.CompanyProfitUpdate,
+    ): Response<com.dalab.internet.data.CompanyProfitRow>
+
     // The services the Owner allowed this agent. 404 on a system without them.
     @GET("agent/me/services")
     suspend fun getMyServices(): Response<com.dalab.internet.data.MyServicesResponse>

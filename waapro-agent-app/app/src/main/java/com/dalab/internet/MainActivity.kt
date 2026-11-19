@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.FactCheck
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.CurrencyExchange
+import androidx.compose.material.icons.filled.Percent
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.List
@@ -265,7 +266,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP, SALES, CUSTOMERS, CUSTOMER_DETAIL, REPORTS, RESELLER, AGENT_SHOP_ORDER_DETAIL, AGENT_VIP_ORDER_DETAIL, AGENT_VIP_PACKAGE_ORDER_DETAIL, MANAGE_ORDERS, OTHER_AGENTS, SCHEDULE_TRANSACTION, REGISTER_CUSTOMER, NALA_SOCO, PROMO_ADS, CIYAARAHA }
+private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP, SALES, CUSTOMERS, CUSTOMER_DETAIL, REPORTS, RESELLER, AGENT_SHOP_ORDER_DETAIL, AGENT_VIP_ORDER_DETAIL, AGENT_VIP_PACKAGE_ORDER_DETAIL, MANAGE_ORDERS, OTHER_AGENTS, SCHEDULE_TRANSACTION, REGISTER_CUSTOMER, NALA_SOCO, PROMO_ADS, CIYAARAHA, COMPANY_PROFIT }
 // Bottom nav is exactly 5 tabs: Home, Orders, Support Agent, Broadcast, More --
 // Sales/Customers/Reports (formerly their own tabs) moved under More as
 // ordinary Screen.X destinations instead (see MoreScreen's "My Work"
@@ -590,6 +591,7 @@ private fun AgentApp() {
             onOpenReseller = { navigate(Screen.RESELLER) },
             onOpenNalaSoco = { navigate(Screen.NALA_SOCO) },
             onOpenPromoAds = { navigate(Screen.PROMO_ADS) },
+            onOpenCompanyProfit = { navigate(Screen.COMPANY_PROFIT) },
             onOpenCiyaaraha = { navigate(Screen.CIYAARAHA) },
             onOpenManageOrders = { navigate(Screen.MANAGE_ORDERS) },
             onOpenOtherAgents = { navigate(Screen.OTHER_AGENTS) },
@@ -649,6 +651,8 @@ private fun AgentApp() {
         Screen.NALA_SOCO -> NalaSocoManagementScreen(onBack = { goBack() })
 
         Screen.PROMO_ADS -> PromoAdManagementScreen(onBack = { goBack() })
+
+        Screen.COMPANY_PROFIT -> CompanyProfitScreen(onBack = { goBack() })
 
         Screen.CIYAARAHA -> CiyaarahaScreen(onBack = { goBack() })
 
@@ -732,6 +736,7 @@ private fun AgentHome(
     onOpenReseller: () -> Unit,
     onOpenNalaSoco: () -> Unit,
     onOpenPromoAds: () -> Unit,
+    onOpenCompanyProfit: () -> Unit,
     onOpenCiyaaraha: () -> Unit,
     onOpenManageOrders: () -> Unit,
     onOpenOtherAgents: () -> Unit = {},
@@ -866,6 +871,7 @@ private fun AgentHome(
                     onOpenReseller = onOpenReseller,
                     onOpenNalaSoco = onOpenNalaSoco,
                     onOpenPromoAds = onOpenPromoAds,
+                    onOpenCompanyProfit = onOpenCompanyProfit,
                     onOpenCiyaaraha = onOpenCiyaaraha,
                     onOpenManageOrders = onOpenManageOrders,
                     onOpenOtherAgents = onOpenOtherAgents,
@@ -1037,6 +1043,7 @@ private fun MoreScreen(
     onOpenReseller: () -> Unit,
     onOpenNalaSoco: () -> Unit,
     onOpenPromoAds: () -> Unit,
+    onOpenCompanyProfit: () -> Unit,
     onOpenCiyaaraha: () -> Unit,
     onOpenManageOrders: () -> Unit,
     onOpenOtherAgents: () -> Unit = {},
@@ -1170,6 +1177,15 @@ private fun MoreScreen(
                     subtitle = "Provider balances and live payment transactions",
                     icon = Icons.Filled.AccountBalanceWallet,
                     onClick = onOpenWallet,
+                )
+            }
+            // Only agents the Owner gave the "Commission & profit" service.
+            if (com.dalab.internet.auth.AgentServices.granted?.contains("profit") == true) {
+                MoreItem(
+                    title = "Commission & Profit",
+                    subtitle = "Each network's Commission %, Discount % and Profit %",
+                    icon = Icons.Filled.Percent,
+                    onClick = onOpenCompanyProfit,
                 )
             }
             MoreItem(
