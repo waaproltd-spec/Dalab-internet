@@ -826,6 +826,12 @@ interface ApiService {
     @POST("agent/registered-customers")
     suspend fun registerCustomer(@Body body: com.dalab.internet.data.RegisterCustomerRequest): Response<com.dalab.internet.data.RegisteredCustomer>
 
+    @PUT("agent/registered-customers/{id}")
+    suspend fun updateRegisteredCustomer(@Path("id") id: String, @Body body: com.dalab.internet.data.RegisterCustomerRequest): Response<com.dalab.internet.data.RegisteredCustomer>
+
+    @DELETE("agent/registered-customers/{id}")
+    suspend fun removeRegisteredCustomer(@Path("id") id: String): Response<Map<String, Any>>
+
     @GET("agent/registered-customers")
     suspend fun getRegisteredCustomers(@Query("search") search: String? = null): Response<List<com.dalab.internet.data.RegisteredCustomer>>
 

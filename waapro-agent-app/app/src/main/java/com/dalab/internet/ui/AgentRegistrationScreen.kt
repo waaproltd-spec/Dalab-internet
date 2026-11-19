@@ -21,6 +21,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -35,6 +36,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -159,6 +161,10 @@ private fun IssueRow(i: RegistrationIssue, showCustomer: Boolean) {
 fun AgentRegistrationScreen(onBack: () -> Unit) {
     var showForm by remember { mutableStateOf(false) }
     var openId by remember { mutableStateOf<String?>(null) }
+    var editing by remember { mutableStateOf<RegisteredCustomer?>(null) }
+    var removing by remember { mutableStateOf<RegisteredCustomer?>(null) }
+    var removeBusy by remember { mutableStateOf(false) }
+    val listScope = rememberCoroutineScope()
     var tab by remember { mutableIntStateOf(0) }
     var search by remember { mutableStateOf("") }
     var customers by remember { mutableStateOf<List<RegisteredCustomer>>(emptyList()) }
@@ -193,6 +199,18 @@ fun AgentRegistrationScreen(onBack: () -> Unit) {
         }
     }
 
+    editing?.let { e ->
+        RegisterCustomerForm(
+            existing = e,
+            onCancel = { editing = null },
+            onRegistered = { c ->
+                editing = null
+                info = "${c.name ?: "Customer"} updated."
+                reload++
+            },
+        )
+        return
+    }
     if (showForm) {
         RegisterCustomerForm(
             onCancel = { showForm = false },
@@ -265,6 +283,10 @@ fun AgentRegistrationScreen(onBack: () -> Unit) {
                                 Text("Pays from ${local9(c.senderNumber)}  →  internet to ${local9(c.receiverNumber)}", fontSize = 13.sp)
                                 Text("${c.orders ?: 0} orders · ${c.delivered ?: 0} delivered · ${regMoney(c.totalPaid)} paid", fontSize = 12.sp, color = WaaproMuted)
                                 if ((c.openPaymentIssues ?: 0) > 0) BadgeChip(RegBadge("${c.openPaymentIssues} payment problem(s)", Color(0xFFDC2626), Color(0xFFFDE2E2)))
+                                Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                                    TextButton(onClick = { info = null; editing = c }) { Text("Edit", fontWeight = FontWeight.Bold) }
+                                    TextButton(onClick = { info = null; removing = c }) { Text("Remove", color = Color(0xFFDC2626), fontWeight = FontWeight.Bold) }
+                                }
                             }
                         }
                     }
@@ -280,17 +302,50 @@ fun AgentRegistrationScreen(onBack: () -> Unit) {
             }
         }
     }
+
+    removing?.let { c ->
+        AlertDialog(
+            onDismissRequest = { if (!removeBusy) removing = null },
+            title = { Text("Remove ${c.name ?: "this customer"}?") },
+            text = { Text("Payments from ${local9(c.senderNumber)} will no longer send internet automatically. The customer's past orders and payments are kept.") },
+            confirmButton = {
+                TextButton(
+                    enabled = !removeBusy,
+                    onClick = {
+                        removeBusy = true
+                        listScope.launch {
+                            try {
+                                val r = ApiClient.service.removeRegisteredCustomer(c.id)
+                                if (r.isSuccessful) {
+                                    customers = customers.filter { it.id != c.id }
+                                    info = "${c.name ?: "Customer"} removed."
+                                    error = null
+                                    reload++
+                                } else error = regServerError(r) ?: "Could not remove (${r.code()})."
+                            } catch (_: Exception) {
+                                error = "Could not remove. Check your connection."
+                            }
+                            removeBusy = false
+                            removing = null
+                        }
+                    },
+                ) { Text("Remove", color = Color(0xFFDC2626)) }
+            },
+            dismissButton = { TextButton(enabled = !removeBusy, onClick = { removing = null }) { Text("Keep") } },
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RegisterCustomerForm(onCancel: () -> Unit, onRegistered: (RegisteredCustomer) -> Unit) {
+private fun RegisterCustomerForm(existing: RegisteredCustomer? = null, onCancel: () -> Unit, onRegistered: (RegisteredCustomer) -> Unit) {
     var networks by remember { mutableStateOf<List<RegistrationNetwork>>(emptyList()) }
     var optionsError by remember { mutableStateOf<String?>(null) }
-    var name by remember { mutableStateOf("") }
-    var sender by remember { mutableStateOf("") }
-    var receiver by remember { mutableStateOf("") }
-    var receiverEdited by remember { mutableStateOf(false) }
+    // Editing: the form starts from the customer's current details.
+    var name by remember { mutableStateOf(existing?.name ?: "") }
+    var sender by remember { mutableStateOf(existing?.senderNumber?.let { local9(it) } ?: "") }
+    var receiver by remember { mutableStateOf(existing?.receiverNumber?.let { local9(it) } ?: "") }
+    var receiverEdited by remember { mutableStateOf(existing != null) }
     var network by remember { mutableStateOf<RegistrationNetwork?>(null) }
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -301,7 +356,7 @@ private fun RegisterCustomerForm(onCancel: () -> Unit, onRegistered: (Registered
             val r = ApiClient.service.getRegistrationOptions()
             if (r.isSuccessful) {
                 networks = r.body()?.networks.orEmpty()
-                network = networks.firstOrNull { it.status != "offline" }
+                network = networks.firstOrNull { it.id == existing?.companyId } ?: networks.firstOrNull { it.status != "offline" }
             } else optionsError = if (r.code() == 404) "This system is not updated for customer registration yet." else regServerError(r) ?: "Could not load networks (${r.code()})."
         } catch (_: Exception) {
             optionsError = "No connection — could not load the networks."
@@ -316,9 +371,10 @@ private fun RegisterCustomerForm(onCancel: () -> Unit, onRegistered: (Registered
         error = null
         scope.launch {
             try {
-                val r = ApiClient.service.registerCustomer(RegisterCustomerRequest(name.trim(), sender.trim(), receiver.trim(), n.id))
+                val body = RegisterCustomerRequest(name.trim(), sender.trim(), receiver.trim(), n.id)
+                val r = if (existing != null) ApiClient.service.updateRegisteredCustomer(existing.id, body) else ApiClient.service.registerCustomer(body)
                 if (r.isSuccessful) r.body()?.let(onRegistered) ?: run { error = "Registered, but the answer was empty. Refresh the list." }
-                else error = regServerError(r) ?: "Could not register (${r.code()})."
+                else error = regServerError(r) ?: (if (existing != null) "Could not save (${r.code()})." else "Could not register (${r.code()}).")
             } catch (_: Exception) {
                 error = "Could not register. Check your connection."
             }
@@ -329,7 +385,7 @@ private fun RegisterCustomerForm(onCancel: () -> Unit, onRegistered: (Registered
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Register customer", fontWeight = FontWeight.Bold) },
+                title = { Text(if (existing != null) "Edit customer" else "Register customer", fontWeight = FontWeight.Bold) },
                 navigationIcon = { IconButton(onClick = onCancel) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back") } },
             )
         },
@@ -385,7 +441,7 @@ private fun RegisterCustomerForm(onCancel: () -> Unit, onRegistered: (Registered
                     onClick = { submit() }, enabled = ready,
                     colors = ButtonDefaults.buttonColors(containerColor = WaaproNavy, contentColor = Color.White),
                     modifier = Modifier.weight(1f).height(52.dp),
-                ) { Text(if (saving) "Saving…" else "Register") }
+                ) { Text(if (saving) "Saving…" else if (existing != null) "Save" else "Register") }
             }
         }
     }
