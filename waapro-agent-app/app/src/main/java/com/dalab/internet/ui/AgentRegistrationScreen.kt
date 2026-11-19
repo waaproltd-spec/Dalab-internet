@@ -1,6 +1,8 @@
 package com.dalab.internet.ui
 
 import androidx.compose.foundation.border
+import androidx.compose.material.icons.filled.Receipt
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.foundation.background
@@ -63,7 +65,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -130,38 +131,81 @@ private fun RegCard(onClick: (() -> Unit)? = null, content: @Composable () -> Un
     ) { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) { content() } }
 }
 
+/** Card shell shared by History and Problems: rounded, soft shadow, thin border. */
+@Composable
+private fun HistoryCard(content: @Composable () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = 2.dp,
+        modifier = Modifier.fillMaxWidth().border(1.dp, WaaproBorder, RoundedCornerShape(20.dp)),
+    ) { Column(Modifier.padding(16.dp)) { content() } }
+}
+
+@Composable
+private fun HistoryTop(title: String, subtitle: String, amount: String, amountColor: Color, avatarTint: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(44.dp).clip(CircleShape).background(avatarTint.copy(alpha = 0.12f)), contentAlignment = Alignment.Center) {
+            Text((title.firstOrNull() ?: '?').uppercase(), color = avatarTint, fontWeight = FontWeight.ExtraBold, fontSize = 19.sp)
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(subtitle, color = WaaproMuted, fontSize = 12.5.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        Spacer(Modifier.width(8.dp))
+        Text(amount, fontWeight = FontWeight.ExtraBold, color = amountColor, fontSize = 18.sp)
+    }
+}
+
+/** One order: who, package, price, number / time / transaction, then its payment and delivery state. */
 @Composable
 private fun OrderRow(o: RegistrationOrder, showCustomer: Boolean) {
-    RegCard {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                if (showCustomer) (o.customerName ?: o.id) else (o.packageName ?: o.id),
-                fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
-            )
-            Text(regMoney(o.amount), fontWeight = FontWeight.ExtraBold, color = Color(0xFF137A3A))
+    HistoryCard {
+        HistoryTop(
+            title = if (showCustomer) (o.customerName ?: o.packageName ?: o.id) else (o.packageName ?: o.id),
+            subtitle = if (showCustomer) "${o.packageName ?: "-"} · ${o.companyName ?: "-"}" else (o.companyName ?: "-"),
+            amount = regMoney(o.amount), amountColor = Color(0xFF137A3A), avatarTint = WaaproNavy,
+        )
+        Spacer(Modifier.height(12.dp))
+        NumberLine(Icons.Filled.Wifi, "Internet to", local9(o.receiverPhone), WaaproNavy)
+        Spacer(Modifier.height(6.dp))
+        NumberLine(Icons.Filled.Schedule, "Time", scheduleTimeText(o.createdAt), WaaproNavy)
+        o.transactionRef?.takeIf { it.isNotBlank() }?.let {
+            Spacer(Modifier.height(6.dp))
+            NumberLine(Icons.Filled.Receipt, "Transaction", it, WaaproNavy)
         }
-        Text("${o.packageName ?: "-"} · ${o.companyName ?: "-"}", fontSize = 13.sp)
-        Text("To ${local9(o.receiverPhone)} · ${scheduleTimeText(o.createdAt)}", fontSize = 12.sp, color = WaaproMuted)
-        Text("Order ${o.id} · Transaction ${o.transactionRef ?: "-"}", fontSize = 12.sp, color = WaaproMuted, fontFamily = FontFamily.Monospace)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        HorizontalDivider(Modifier.padding(vertical = 12.dp), color = WaaproBorder)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             BadgeChip(paymentBadge(o.paymentState))
             BadgeChip(deliveryBadge(o.deliveryState))
+            Spacer(Modifier.weight(1f))
+            Text(o.id, color = WaaproMuted, fontSize = 11.sp, maxLines = 1)
         }
     }
 }
 
+/** A payment that could not be processed: who, why, the number it came from. */
 @Composable
 private fun IssueRow(i: RegistrationIssue, showCustomer: Boolean) {
-    RegCard {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(if (showCustomer) (i.customerName ?: "Customer") else "Payment not processed", fontWeight = FontWeight.Bold, fontSize = 15.sp, modifier = Modifier.weight(1f))
-            Text(regMoney(i.amount), fontWeight = FontWeight.ExtraBold, color = Color(0xFFDC2626))
+    val red = Color(0xFFDC2626)
+    HistoryCard {
+        HistoryTop(
+            title = if (showCustomer) (i.customerName ?: "Customer") else "Payment not processed",
+            subtitle = i.reason ?: "",
+            amount = regMoney(i.amount), amountColor = red, avatarTint = red,
+        )
+        Spacer(Modifier.height(12.dp))
+        NumberLine(Icons.Filled.Payments, "Paid from", local9(i.senderPhone), red)
+        Spacer(Modifier.height(6.dp))
+        NumberLine(Icons.Filled.Schedule, "Time", scheduleTimeText(i.createdAt), red)
+        i.transactionRef?.takeIf { it.isNotBlank() }?.let {
+            Spacer(Modifier.height(6.dp))
+            NumberLine(Icons.Filled.Receipt, "Transaction", it, red)
         }
-        Text(i.reason ?: "", fontSize = 13.sp, color = Color(0xFFDC2626))
-        Text("From ${local9(i.senderPhone)} · Transaction ${i.transactionRef ?: "-"}", fontSize = 12.sp, color = WaaproMuted)
-        Text(scheduleTimeText(i.createdAt), fontSize = 12.sp, color = WaaproMuted)
+        HorizontalDivider(Modifier.padding(vertical = 12.dp), color = WaaproBorder)
         if (i.resolvedAt != null) BadgeChip(RegBadge("Resolved by admin", Color(0xFF137A3A), Color(0xFFE6F6EC)))
-        else Text("No internet was sent. The admin has been told.", fontSize = 12.sp, color = WaaproMuted)
+        else BadgeChip(RegBadge("No internet sent · admin told", red, Color(0xFFFDE2E2)))
     }
 }
 
@@ -181,10 +225,7 @@ private fun RegHeader(onBack: () -> Unit, customers: Int, delivered: Int, proble
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White) }
-            Column {
-                Text("Register Customer", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 22.sp)
-                Text("They pay without the app; the internet is sent once the payment is verified", color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp)
-            }
+            Text("Register Customer", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 22.sp)
         }
         Spacer(Modifier.height(14.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(start = 8.dp)) {
@@ -228,7 +269,7 @@ private fun NumberLine(icon: androidx.compose.ui.graphics.vector.ImageVector, la
         ) { Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(17.dp)) }
         Spacer(Modifier.width(10.dp))
         Text(label, color = WaaproMuted, fontSize = 13.sp, modifier = Modifier.width(78.dp))
-        Text(number, fontWeight = FontWeight.Bold, fontSize = 15.sp, letterSpacing = 0.5.sp)
+        Text(number, fontWeight = FontWeight.Bold, fontSize = 15.sp, letterSpacing = 0.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
