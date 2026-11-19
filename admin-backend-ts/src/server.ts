@@ -33,7 +33,7 @@ import { bannersRouter } from "./routes/banners.routes.js";
 import { promoImagesRouter } from "./routes/promoImages.routes.js";
 import { promoAdsRouter } from "./routes/promoAds.routes.js";
 import { whatsappAutoReplyRouter } from "./routes/whatsappAutoReply.routes.js";
-import { notificationsRouter } from "./routes/notifications.routes.js";
+import { notificationsRouter, startCampaignScheduler } from "./routes/notifications.routes.js";
 import { executionLogsRouter } from "./routes/executionLogs.routes.js";
 import { activityLogRouter } from "./routes/activityLog.routes.js";
 import { paymentWalletsRouter } from "./routes/paymentWallets.routes.js";
@@ -369,6 +369,8 @@ async function start() {
     // eslint-disable-next-line no-console
     console.error("Seeding failed (has `npm run migrate` been run?):", err);
   }
+  // Scheduled customer broadcasts go out when due (and interrupted sends resume).
+  startCampaignScheduler();
   setInterval(() => {
     cleanupHubTokens().catch(() => undefined);
   }, 10 * 60 * 1000);
