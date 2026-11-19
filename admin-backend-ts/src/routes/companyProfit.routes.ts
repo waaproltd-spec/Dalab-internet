@@ -13,8 +13,9 @@ import { sendJson } from "../utils/camelCase.js";
  *   Discount %    taken off the commission
  *   Profit %      what remains: Commission % - Discount %
  *
- * For the SUCCESSFUL (completed) orders of a network -- pending, failed,
- * cancelled and reversed orders never count -- with sales S:
+ * For the SUCCESSFUL orders of a network (completed and not reversed, as
+ * in Reports) -- pending, failed, cancelled and reversed orders never
+ * count -- with sales S:
  *   Commission = S x Commission%   Discount = S x Discount%
  *   Profit     = Commission - Discount
  * e.g. Hormuud 15% / 10%: a $1 order -> $0.15 commission, $0.10 discount,
@@ -43,7 +44,7 @@ async function overview(periodParam: unknown) {
        LEFT JOIN (
          SELECT o.company_id, count(*) AS orders, sum(o.amount) AS sales
            FROM orders o
-          WHERE o.status = 'completed' AND ${PERIOD_SQL[period]}
+          WHERE o.status = 'completed' AND o.reversed_at IS NULL AND ${PERIOD_SQL[period]}
           GROUP BY o.company_id
        ) s ON s.company_id = c.id
       ORDER BY (t.company_id IS NULL), c.name`

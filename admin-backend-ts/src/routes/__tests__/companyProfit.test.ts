@@ -97,12 +97,15 @@ test("Hormuud 15% - 10% = 5%: a $1 order gives $0.15 commission, $0.10 discount,
   assert.equal(one.profit, r2(one.commission - one.discount));
 });
 
-test("only successful orders count: pending, failed and cancelled are left out", async () => {
+test("only successful orders count: pending, failed, cancelled and reversed are left out", async () => {
   const before0 = await row();
   await order(100, "completed");
   await order(50, "failed");
   await order(20, "pending");
   await order(30, "cancelled");
+  // A completed order that was reversed afterwards doesn't count either.
+  await order(40, "completed");
+  await query(`UPDATE orders SET reversed_at = now() WHERE company_id=$1 AND amount=40`, [company]);
   const after = await row();
   assert.equal(after.orders - before0.orders, 1);
   assert.equal(r2(after.sales - before0.sales), 100);
