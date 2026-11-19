@@ -1,6 +1,18 @@
 package com.dalab.internet.ui
 
 import androidx.compose.foundation.border
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Payments
+import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material.icons.filled.CellTower
+import androidx.compose.material.icons.filled.Inventory2
+import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.AccessTime
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -341,23 +353,31 @@ private fun ScheduleForm(onCancel: () -> Unit, onScheduled: (Order) -> Unit) {
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Schedule Transaction", fontWeight = FontWeight.Bold) },
-                navigationIcon = { IconButton(onClick = onCancel) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back") } },
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(WaaproHeaderBrush, RoundedCornerShape(bottomStart = 26.dp, bottomEnd = 26.dp))
+                    .padding(start = 8.dp, end = 16.dp, top = 10.dp, bottom = 14.dp),
+            ) {
+                IconButton(onClick = onCancel) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White) }
+                Text("Schedule Transaction", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 21.sp)
+            }
         },
     ) { padding ->
         Column(
-            Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Text("Register the customer, pick a package, and set when it should execute.", color = WaaproMuted, fontSize = 13.sp)
             optionsError?.let { Text(it, color = Color(0xFFDC2626), fontSize = 13.sp) }
-
-            Field("Customer Full Name") {
-                OutlinedTextField(value = name, onValueChange = { name = it.take(120) }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            }
-            Field("Customer Phone Number", hint = "The number the payment for this schedule will arrive from.") {
+            val shape = RoundedCornerShape(14.dp)
+            OutlinedTextField(
+                value = name, onValueChange = { name = it.take(120) }, singleLine = true,
+                label = { Text("Customer name") },
+                leadingIcon = { Icon(Icons.Filled.Person, contentDescription = null, tint = WaaproNavy) },
+                shape = shape, modifier = Modifier.fillMaxWidth(),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(
                     value = phone,
                     onValueChange = { v ->
@@ -365,87 +385,69 @@ private fun ScheduleForm(onCancel: () -> Unit, onScheduled: (Order) -> Unit) {
                         if (!recipientEdited) recipient = phone
                     },
                     singleLine = true,
+                    label = { Text("Pays from") },
+                    leadingIcon = { Icon(Icons.Filled.Payments, contentDescription = null, tint = WaaproNavy) },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                    modifier = Modifier.fillMaxWidth(),
+                    shape = shape, modifier = Modifier.weight(1f),
                 )
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Box(Modifier.weight(1f)) {
-                    Field("Network") {
-                        Picker(
-                            text = company?.name ?: "Choose",
-                            items = companies.map { it.name + if (it.status == "offline") " (offline)" else "" },
-                            onPick = { i -> company = companies[i]; pkg = null },
-                        )
-                    }
-                }
-                Box(Modifier.weight(1f)) {
-                    Field("Package") {
-                        val list = company?.packages.orEmpty()
-                        Picker(
-                            text = pkg?.let { "${it.name} — $${"%.2f".format(it.price)}" } ?: "Choose",
-                            items = list.map { "${it.name} — $${"%.2f".format(it.price)}" },
-                            onPick = { i -> pkg = list[i] },
-                        )
-                    }
-                }
-            }
-            Field("Recipient Phone Number", hint = "The number that receives the internet.") {
                 OutlinedTextField(
                     value = recipient,
                     onValueChange = { v -> recipient = v.filter { it.isDigit() || it == '+' }.take(15); recipientEdited = true },
                     singleLine = true,
+                    label = { Text("Internet to") },
+                    leadingIcon = { Icon(Icons.Filled.Wifi, contentDescription = null, tint = WaaproNavy) },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                    modifier = Modifier.fillMaxWidth(),
+                    shape = shape, modifier = Modifier.weight(1f),
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Box(Modifier.weight(1f)) { Field("Scheduled Date") { PickerBox(day.format(DAY_FMT)) { pickDay = true } } }
-                Box(Modifier.weight(1f)) { Field("Scheduled Time") { PickerBox(time.format(TIME_FMT)) { pickTime = true } } }
-            }
-            Text("Africa/Mogadishu time (UTC+3).", color = WaaproMuted, fontSize = 12.sp)
-
-            Text("Payment Mode", fontWeight = FontWeight.Bold)
-            ModeOption(
-                selected = mode == "prepaid",
-                title = "Prepaid",
-                body = "You have received the payment now. The system waits and executes automatically at the scheduled time.",
-            ) { mode = "prepaid" }
-            ModeOption(
-                selected = mode == "pay_at_execution",
-                title = "Pay at Execution",
-                body = "No payment yet. At the scheduled time the system checks for the customer's payment — if it hasn't arrived, it waits until it does.",
-            ) { mode = "pay_at_execution" }
-
-            Field("Internal Note (optional)") {
-                OutlinedTextField(
-                    value = note,
-                    onValueChange = { note = it.take(500) },
-                    placeholder = { Text("Visible only to agents and admins") },
-                    minLines = 2,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-
-            Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth().border(1.dp, WaaproBorder, RoundedCornerShape(14.dp))) {
-                Column(Modifier.padding(14.dp)) {
-                    Text("Review", color = WaaproMuted, fontSize = 12.sp)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("${pkg?.name ?: "—"} · ${company?.name ?: "—"}", fontWeight = FontWeight.Bold, fontSize = 16.sp, modifier = Modifier.weight(1f))
-                        pkg?.let { Text("$${"%.2f".format(it.price)}", fontWeight = FontWeight.ExtraBold, color = Color(0xFF137A3A), fontSize = 16.sp) }
-                    }
-                    Text("Executes ${day.format(DateTimeFormatter.ISO_LOCAL_DATE)} at ${time.format(DateTimeFormatter.ofPattern("HH:mm"))} (Mogadishu time)", color = WaaproMuted, fontSize = 12.sp)
+                Box(Modifier.weight(1f)) {
+                    CompactPicker(
+                        label = "Network", icon = Icons.Filled.CellTower,
+                        text = company?.name ?: "Choose",
+                        items = companies.map { it.name + if (it.status == "offline") " (offline)" else "" },
+                    ) { i -> company = companies[i]; pkg = null }
+                }
+                Box(Modifier.weight(1f)) {
+                    val list = company?.packages.orEmpty()
+                    CompactPicker(
+                        label = "Package", icon = Icons.Filled.Inventory2,
+                        text = pkg?.let { "${it.name} · $${"%.2f".format(it.price)}" } ?: "Choose",
+                        items = list.map { "${it.name} — $${"%.2f".format(it.price)}" },
+                    ) { i -> pkg = list[i] }
                 }
             }
-            error?.let { Text(it, color = Color(0xFFDC2626), fontWeight = FontWeight.Bold) }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
-                OutlinedButton(onClick = onCancel, enabled = !saving, modifier = Modifier.weight(1f)) { Text("Cancel") }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(Modifier.weight(1f)) { CompactBox("Date", Icons.Filled.CalendarMonth, day.format(DAY_FMT)) { pickDay = true } }
+                Box(Modifier.weight(1f)) { CompactBox("Time (Mogadishu)", Icons.Filled.AccessTime, time.format(TIME_FMT)) { pickTime = true } }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                ModeChip("Prepaid", Icons.Filled.CheckCircle, mode == "prepaid", Modifier.weight(1f)) { mode = "prepaid" }
+                ModeChip("Pay at execution", Icons.Filled.Schedule, mode == "pay_at_execution", Modifier.weight(1f)) { mode = "pay_at_execution" }
+            }
+            OutlinedTextField(
+                value = note, onValueChange = { note = it.take(500) }, singleLine = true,
+                label = { Text("Note (optional)") },
+                leadingIcon = { Icon(Icons.Filled.EditNote, contentDescription = null, tint = WaaproNavy) },
+                shape = shape, modifier = Modifier.fillMaxWidth(),
+            )
+            error?.let { Text(it, color = Color(0xFFDC2626), fontWeight = FontWeight.Bold, fontSize = 13.sp) }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 16.dp)) {
+                OutlinedButton(onClick = onCancel, enabled = !saving, shape = RoundedCornerShape(18.dp), modifier = Modifier.weight(1f).height(54.dp)) {
+                    Text("Cancel", fontWeight = FontWeight.Bold)
+                }
                 Button(
                     onClick = { submit() },
                     enabled = ready,
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3F6B21)),
-                    modifier = Modifier.weight(1.6f),
-                ) { Text(if (saving) "Scheduling…" else "Schedule Transaction") }
+                    shape = RoundedCornerShape(18.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = WaaproNavy, contentColor = Color.White),
+                    modifier = Modifier.weight(1.6f).height(54.dp),
+                ) {
+                    Text(
+                        if (saving) "Scheduling…" else pkg?.let { "Schedule · $${"%.2f".format(it.price)}" } ?: "Schedule",
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
             }
         }
     }
@@ -508,6 +510,61 @@ private fun Picker(text: String, items: List<String>, onPick: (Int) -> Unit) {
             items.forEachIndexed { i, label ->
                 DropdownMenuItem(text = { Text(label) }, onClick = { open = false; onPick(i) })
             }
+        }
+    }
+}
+
+/** A field-like box: small label, icon and value; opens a picker when tapped. */
+@Composable
+private fun CompactBox(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, text: String, onClick: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surface,
+        modifier = Modifier.fillMaxWidth().height(58.dp).border(1.dp, WaaproBorder, RoundedCornerShape(14.dp)).clickable(onClick = onClick),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 12.dp)) {
+            Icon(icon, contentDescription = null, tint = WaaproNavy, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(label, color = WaaproMuted, fontSize = 11.sp, maxLines = 1)
+                Text(text, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Icon(Icons.Filled.ArrowDropDown, contentDescription = null, tint = WaaproMuted)
+        }
+    }
+}
+
+@Composable
+private fun CompactPicker(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    text: String,
+    items: List<String>,
+    onPick: (Int) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        CompactBox(label, icon, text) { if (items.isNotEmpty()) open = true }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            items.forEachIndexed { i, item -> DropdownMenuItem(text = { Text(item) }, onClick = { open = false; onPick(i) }) }
+        }
+    }
+}
+
+/** One payment mode, side by side with the other: icon and name, outlined when chosen. */
+@Composable
+private fun ModeChip(title: String, icon: androidx.compose.ui.graphics.vector.ImageVector, selected: Boolean, modifier: Modifier, onSelect: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = if (selected) WaaproNavy.copy(alpha = 0.08f) else MaterialTheme.colorScheme.surface,
+        modifier = modifier.height(54.dp)
+            .border(if (selected) 2.dp else 1.dp, if (selected) WaaproNavy else WaaproBorder, RoundedCornerShape(14.dp))
+            .clickable(onClick = onSelect),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center, modifier = Modifier.padding(horizontal = 8.dp)) {
+            Icon(icon, contentDescription = null, tint = if (selected) WaaproNavy else WaaproMuted, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(title, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = if (selected) WaaproNavy else Color.Unspecified, maxLines = 1)
         }
     }
 }
