@@ -1,6 +1,18 @@
 package com.dalab.internet.ui
 
 import androidx.compose.foundation.border
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Payments
+import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -148,6 +160,134 @@ private fun IssueRow(i: RegistrationIssue, showCustomer: Boolean) {
     }
 }
 
+// ---------------- Design pieces ----------------
+
+private fun hexColor(hex: String?, fallback: Color): Color =
+    try { hex?.let { Color(android.graphics.Color.parseColor(it)) } ?: fallback } catch (_: Exception) { fallback }
+
+/** The brand header: back, title, and the agent's figures at a glance. */
+@Composable
+private fun RegHeader(onBack: () -> Unit, customers: Int, delivered: Int, problems: Int) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(WaaproHeaderBrush, RoundedCornerShape(bottomStart = 26.dp, bottomEnd = 26.dp))
+            .padding(start = 8.dp, end = 16.dp, top = 10.dp, bottom = 18.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White) }
+            Column {
+                Text("Register Customer", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 22.sp)
+                Text("They pay without the app; the internet is sent once the payment is verified", color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp)
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(start = 8.dp)) {
+            StatPill("Customers", customers.toString(), Modifier.weight(1f))
+            StatPill("Delivered", delivered.toString(), Modifier.weight(1f))
+            StatPill("Problems", problems.toString(), Modifier.weight(1f), alert = problems > 0)
+        }
+    }
+}
+
+@Composable
+private fun StatPill(label: String, value: String, modifier: Modifier, alert: Boolean = false) {
+    Surface(shape = RoundedCornerShape(16.dp), color = if (alert) Color(0xFFDC2626).copy(alpha = 0.85f) else Color.White.copy(alpha = 0.14f), modifier = modifier) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Text(value, color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
+            Text(label, color = Color.White.copy(alpha = 0.85f), fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+@Composable
+private fun RegEmpty(title: String, hint: String) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.fillMaxWidth().padding(top = 48.dp, start = 32.dp, end = 32.dp),
+    ) {
+        BrandIconTile(Icons.Filled.PersonAdd, size = 64.dp)
+        Spacer(Modifier.height(14.dp))
+        Text(title, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+        Spacer(Modifier.height(4.dp))
+        Text(hint, color = WaaproMuted, fontSize = 13.sp)
+    }
+}
+
+@Composable
+private fun NumberLine(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, number: String, tint: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier.size(30.dp).clip(CircleShape).background(tint.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center,
+        ) { Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(17.dp)) }
+        Spacer(Modifier.width(10.dp))
+        Text(label, color = WaaproMuted, fontSize = 13.sp, modifier = Modifier.width(78.dp))
+        Text(number, fontWeight = FontWeight.Bold, fontSize = 15.sp, letterSpacing = 0.5.sp)
+    }
+}
+
+@Composable
+private fun Figure(value: String, label: String, modifier: Modifier) {
+    Column(modifier) {
+        Text(value, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp)
+        Text(label, color = WaaproMuted, fontSize = 11.sp)
+    }
+}
+
+/** One registered customer: who, the two numbers, the network, figures, Edit / Remove. */
+@Composable
+private fun CustomerCard(c: RegisteredCustomer, onOpen: () -> Unit, onEdit: () -> Unit, onRemove: () -> Unit) {
+    val net = hexColor(c.companyColor, WaaproBlue)
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = 2.dp,
+        modifier = Modifier.fillMaxWidth().border(1.dp, WaaproBorder, RoundedCornerShape(20.dp)).clickable(onClick = onOpen),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier.size(46.dp).clip(CircleShape).background(net.copy(alpha = 0.15f)),
+                    contentAlignment = Alignment.Center,
+                ) { Text((c.name?.trim()?.firstOrNull() ?: '?').uppercase(), color = net, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp) }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(c.name ?: "-", fontWeight = FontWeight.ExtraBold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("Registered ${scheduleTimeText(c.registeredByAgentAt)}", color = WaaproMuted, fontSize = 11.5.sp, maxLines = 1)
+                }
+                Surface(shape = RoundedCornerShape(50), color = net) {
+                    Text(c.companyName ?: "", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp))
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            NumberLine(Icons.Filled.Payments, "Pays from", local9(c.senderNumber), WaaproNavy)
+            Spacer(Modifier.height(8.dp))
+            NumberLine(Icons.Filled.Wifi, "Internet to", local9(c.receiverNumber), net)
+            if ((c.openPaymentIssues ?: 0) > 0) {
+                Spacer(Modifier.height(10.dp))
+                BadgeChip(RegBadge("${c.openPaymentIssues} payment problem(s)", Color(0xFFDC2626), Color(0xFFFDE2E2)))
+            }
+            HorizontalDivider(Modifier.padding(vertical = 12.dp), color = WaaproBorder)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Figure("${c.orders ?: 0}", "orders", Modifier.weight(1f))
+                Figure("${c.delivered ?: 0}", "delivered", Modifier.weight(1f))
+                Figure(regMoney(c.totalPaid), "paid", Modifier.weight(1f))
+                TextButton(onClick = onEdit) {
+                    Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(18.dp), tint = WaaproBlue)
+                    Spacer(Modifier.width(4.dp))
+                    Text("Edit", color = WaaproBlue, fontWeight = FontWeight.Bold)
+                }
+                TextButton(onClick = onRemove) {
+                    Icon(Icons.Filled.Delete, contentDescription = null, modifier = Modifier.size(18.dp), tint = Color(0xFFDC2626))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Remove", color = Color(0xFFDC2626), fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
 // ---------------- Screen ----------------
 
 /**
@@ -235,28 +375,32 @@ fun AgentRegistrationScreen(onBack: () -> Unit) {
     }
     val openIssues = issues.count { it.resolvedAt == null }
 
+    val deliveredTotal = customers.sumOf { it.delivered ?: 0 }
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Register Customer", fontWeight = FontWeight.Bold) },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back") } },
+            RegHeader(
+                onBack = onBack,
+                customers = customers.size,
+                delivered = deliveredTotal,
+                problems = openIssues,
             )
         },
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = { info = null; showForm = true },
                 icon = { Icon(Icons.Filled.PersonAdd, contentDescription = null) },
-                text = { Text("Register customer") },
+                text = { Text("Register customer", fontWeight = FontWeight.Bold) },
                 containerColor = WaaproNavy,
                 contentColor = Color.White,
+                shape = RoundedCornerShape(18.dp),
             )
         },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
-            TabRow(selectedTabIndex = tab) {
-                Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Customers (${customers.size})") })
-                Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("History") })
-                Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text(if (openIssues > 0) "Problems ($openIssues)" else "Problems") })
+            TabRow(selectedTabIndex = tab, containerColor = MaterialTheme.colorScheme.surface, contentColor = WaaproNavy) {
+                Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Customers", fontWeight = FontWeight.Bold) })
+                Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("History", fontWeight = FontWeight.Bold) })
+                Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text(if (openIssues > 0) "Problems ($openIssues)" else "Problems", fontWeight = FontWeight.Bold) })
             }
             info?.let { Text(it, color = Color(0xFF137A3A), fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) }
             error?.let { Text(it, color = Color(0xFFDC2626), fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
@@ -266,36 +410,31 @@ fun AgentRegistrationScreen(onBack: () -> Unit) {
                 tab == 0 -> {
                     OutlinedTextField(
                         value = search, onValueChange = { search = it }, singleLine = true,
-                        label = { Text("Search name or number") },
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                        placeholder = { Text("Search name or number") },
+                        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, tint = WaaproMuted) },
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
                     )
-                    if (shown.isEmpty()) Text(
-                        if (customers.isEmpty()) "No customers yet. Tap Register customer." else "No customer matches.",
-                        color = WaaproMuted, modifier = Modifier.padding(16.dp),
+                    if (shown.isEmpty()) RegEmpty(
+                        if (customers.isEmpty()) "No customers yet" else "No customer matches",
+                        if (customers.isEmpty()) "Tap Register customer to add the first one." else "Try another name or number.",
                     )
-                    else LazyColumn(contentPadding = pad, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    else LazyColumn(contentPadding = pad, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         items(shown, key = { it.id }) { c ->
-                            RegCard(onClick = { openId = c.id }) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(c.name ?: "-", fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                                    Text(c.companyName ?: "", fontWeight = FontWeight.Bold, color = WaaproNavy, fontSize = 13.sp)
-                                }
-                                Text("Pays from ${local9(c.senderNumber)}  →  internet to ${local9(c.receiverNumber)}", fontSize = 13.sp)
-                                Text("${c.orders ?: 0} orders · ${c.delivered ?: 0} delivered · ${regMoney(c.totalPaid)} paid", fontSize = 12.sp, color = WaaproMuted)
-                                if ((c.openPaymentIssues ?: 0) > 0) BadgeChip(RegBadge("${c.openPaymentIssues} payment problem(s)", Color(0xFFDC2626), Color(0xFFFDE2E2)))
-                                Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                                    TextButton(onClick = { info = null; editing = c }) { Text("Edit", fontWeight = FontWeight.Bold) }
-                                    TextButton(onClick = { info = null; removing = c }) { Text("Remove", color = Color(0xFFDC2626), fontWeight = FontWeight.Bold) }
-                                }
-                            }
+                            CustomerCard(
+                                c,
+                                onOpen = { openId = c.id },
+                                onEdit = { info = null; editing = c },
+                                onRemove = { info = null; removing = c },
+                            )
                         }
                     }
                 }
-                tab == 1 -> if (history.isEmpty()) Text("No orders yet.", color = WaaproMuted, modifier = Modifier.padding(16.dp))
+                tab == 1 -> if (history.isEmpty()) RegEmpty("No orders yet", "When a customer pays, the order appears here.")
                 else LazyColumn(contentPadding = pad, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     items(history, key = { it.id }) { OrderRow(it, showCustomer = true) }
                 }
-                else -> if (issues.isEmpty()) Text("No payment problems.", color = WaaproMuted, modifier = Modifier.padding(16.dp))
+                else -> if (issues.isEmpty()) RegEmpty("No payment problems", "Payments that can't be processed show here.")
                 else LazyColumn(contentPadding = pad, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     items(issues, key = { it.id }) { IssueRow(it, showCustomer = true) }
                 }
