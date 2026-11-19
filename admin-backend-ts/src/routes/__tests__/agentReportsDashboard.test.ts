@@ -162,3 +162,27 @@ test("a company report lists its packages and a worked price example", async () 
     actualProfit: 7,
   });
 });
+
+test("scope=all counts every agent's orders; the default stays this agent's own", async () => {
+  const count = async (agentOnly: boolean) =>
+    (await queryOne<any>(
+      `SELECT count(*) FILTER (WHERE status='completed' AND reversed_at IS NULL)::int AS sent,
+              (count(*) FILTER (WHERE status='completed' AND reversed_at IS NULL) + count(*) FILTER (WHERE status IN ('failed','cancelled')))::int AS total
+         FROM orders WHERE ($1::uuid IS NULL OR agent_id = $1)`,
+      [agentOnly ? AGENT_ID : null]
+    ))!;
+  const mine = await get("/agent/reports/dashboard?range=all");
+  const all = await get("/agent/reports/dashboard?range=all&scope=all");
+  const [m, a] = [await count(true), await count(false)];
+  assert.equal(mine.scope, "me");
+  assert.equal(all.scope, "all");
+  assert.equal(mine.status.sent, m.sent);
+  assert.equal(all.status.sent, a.sent);
+  assert.ok(all.status.sent > mine.status.sent, "the other agent's successful orders are included");
+  assert.equal(all.totalOrders, a.total);
+
+  const hormuudMine = await get("/agent/reports/dashboard/companies/rpt-hormuud?range=all");
+  const hormuudAll = await get("/agent/reports/dashboard/companies/rpt-hormuud?range=all&scope=all");
+  assert.ok(hormuudAll.totalOrders > hormuudMine.totalOrders, "the other agent's Hormuud order is included");
+  assert.equal(hormuudAll.scope, "all");
+});
