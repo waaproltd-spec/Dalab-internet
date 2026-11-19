@@ -576,7 +576,7 @@ private fun PaymentMethodCard(card: BalanceCardData, loading: Boolean, onClick: 
                     .background(accent.copy(alpha = 0.14f)),
             )
             Column(modifier = Modifier.align(Alignment.CenterStart).padding(horizontal = 12.dp, vertical = 7.dp)) {
-                // The logo artwork has wide empty margins: crop it to fill a bigger tile.
+                // A bigger white tile so the whole logo is readable.
                 Box(
                     modifier = Modifier.height(34.dp).width(84.dp).clip(RoundedCornerShape(10.dp)).background(Color.White)
                         .border(1.dp, accent.copy(alpha = 0.35f), RoundedCornerShape(10.dp)),
@@ -585,8 +585,9 @@ private fun PaymentMethodCard(card: BalanceCardData, loading: Boolean, onClick: 
                     Image(
                         painter = painterResource(logoResFor(card.providerKey)),
                         contentDescription = card.providerName,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize().graphicsLayer(scaleX = 1.6f, scaleY = 1.6f),
+                        // Fit: the whole logo always shows, never cropped.
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp, vertical = 3.dp),
                     )
                 }
                 Spacer(Modifier.height(3.dp))
