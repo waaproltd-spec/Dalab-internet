@@ -22,7 +22,8 @@
     "express-async-errors": "^3.1.1",
     "firebase-admin": "^13.10.0",
     "jsonwebtoken": "^9.0.2",
-    "pg": "^8.11.5"
+    "pg": "^8.11.5",
+    "sharp": "0.34.4"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
