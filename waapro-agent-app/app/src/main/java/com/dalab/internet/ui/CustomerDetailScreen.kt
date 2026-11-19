@@ -2,6 +2,9 @@ package com.dalab.internet.ui
 
 import com.dalab.internet.ui.i18n.Text
 import androidx.compose.foundation.background
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -242,11 +245,18 @@ private fun formatDate(iso: String?): String {
 
 @Composable
 private fun DetailTopBar(title: String, onBack: () -> Unit) {
-    Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 12.dp)
+            .background(WaaproHeaderBrush, RoundedCornerShape(bottomStart = 26.dp, bottomEnd = 26.dp))
+            .padding(horizontal = 8.dp, vertical = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         IconButton(onClick = onBack) {
-            Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = DalabIndigo)
+            Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
         }
-        Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = DalabIndigo)
+        Text(title, color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 22.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -288,7 +298,7 @@ private fun CustomerDetailMain(
                                                 Spacer(Modifier.width(8.dp))
                                                 StatusPill(label = if (suspended) "Suspended" else "Active", danger = suspended)
                                             }
-                                            Text(detail.phone, style = MaterialTheme.typography.bodyMedium, color = DalabMuted)
+                                            Text(detail.phone.filter { it.isDigit() }.takeLast(9), style = MaterialTheme.typography.bodyMedium, color = DalabMuted)
                                         }
                                     }
                                     Spacer(Modifier.height(6.dp))
@@ -299,21 +309,18 @@ private fun CustomerDetailMain(
 
                         item {
                             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                                StatCard(icon = Icons.Filled.ShoppingCart, label = "Total Orders", value = "${detail.totalOrders}", modifier = Modifier.weight(1f))
-                                StatCard(icon = Icons.Filled.Savings, label = "Total Spent", value = "$${"%.2f".format(detail.totalSpent)}", modifier = Modifier.weight(1f))
-                                StatCard(icon = Icons.Filled.Stars, label = "Macaash Points", value = "${detail.macaashPoints}", modifier = Modifier.weight(1f))
+                                StatCard(icon = Icons.Filled.ShoppingCart, label = "Orders", value = "${detail.totalOrders}", modifier = Modifier.weight(1f))
+                                StatCard(icon = Icons.Filled.Savings, label = "Spent", value = "$${"%.2f".format(detail.totalSpent)}", modifier = Modifier.weight(1f))
+                                StatCard(icon = Icons.Filled.Stars, label = "Points", value = "${detail.macaashPoints}", modifier = Modifier.weight(1f))
                             }
                         }
 
                         item {
-                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                            Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                                 ActionButton(icon = Icons.Filled.Edit, label = "Edit", color = DalabIndigo, onClick = onEdit, modifier = Modifier.weight(1f))
-                                ActionButton(icon = Icons.Filled.Lock, label = "Reset PIN", color = DalabIndigo, onClick = onResetPin, modifier = Modifier.weight(1f))
+                                ActionButton(icon = Icons.Filled.Lock, label = "PIN", color = DalabIndigo, onClick = onResetPin, modifier = Modifier.weight(1f))
                                 ActionButton(icon = Icons.Filled.AccountBalanceWallet, label = "Wallet", color = DalabIndigo, onClick = onWallet, modifier = Modifier.weight(1f))
-                            }
-                        }
-                        item {
-                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                                ActionButton(icon = Icons.Filled.Receipt, label = "Orders", color = DalabIndigo, onClick = onViewOrders, modifier = Modifier.weight(1f))
                                 ActionButton(
                                     icon = if (suspended) Icons.Filled.CheckCircle else Icons.Filled.Block,
                                     label = if (suspended) "Activate" else "Suspend",
@@ -321,8 +328,6 @@ private fun CustomerDetailMain(
                                     onClick = onSuspendOrActivate,
                                     modifier = Modifier.weight(1f),
                                 )
-                                ActionButton(icon = Icons.Filled.Receipt, label = "View Orders", color = DalabIndigo, onClick = onViewOrders, modifier = Modifier.weight(1f))
-                                Spacer(Modifier.weight(1f))
                             }
                         }
 
@@ -344,8 +349,7 @@ private fun CustomerDetailMain(
                             Surface(color = DalabWhite, shape = RoundedCornerShape(14.dp), shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
                                 Column(modifier = Modifier.padding(vertical = 4.dp)) {
                                     InfoRow(Icons.Filled.Person, "Name", detail.name?.takeIf { it.isNotBlank() } ?: "—")
-                                    InfoRow(Icons.Filled.Phone, "Phone Number", detail.phone)
-                                    InfoRow(Icons.Filled.CheckCircle, "Account Status", if (suspended) "Suspended" else "Active")
+                                    InfoRow(Icons.Filled.Phone, "Phone", detail.phone.filter { it.isDigit() }.takeLast(9))
                                     InfoRow(
                                         Icons.Filled.AccountBalanceWallet,
                                         "EVC Plus",
@@ -356,7 +360,7 @@ private fun CustomerDetailMain(
                                         "eDahab",
                                         detail.edahabNumber?.takeIf { it.isNotBlank() } ?: "Not set",
                                     )
-                                    InfoRow(Icons.Filled.CalendarToday, "Joined Date", formatDate(detail.createdAt), showDivider = false)
+                                    InfoRow(Icons.Filled.CalendarToday, "Joined", formatDate(detail.createdAt), showDivider = false)
                                 }
                             }
                         }
@@ -398,33 +402,29 @@ private fun SectionLabel(text: String) {
 
 @Composable
 private fun StatCard(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, value: String, modifier: Modifier = Modifier) {
-    Surface(color = DalabSoftBlue.copy(alpha = 0.25f), shape = RoundedCornerShape(14.dp), modifier = modifier) {
-        Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(modifier = Modifier.size(34.dp).background(DalabWhite, CircleShape), contentAlignment = Alignment.Center) {
+    Surface(color = DalabSoftBlue.copy(alpha = 0.25f), shape = RoundedCornerShape(18.dp), modifier = modifier) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Box(modifier = Modifier.size(32.dp).background(DalabWhite, CircleShape), contentAlignment = Alignment.Center) {
                 Icon(icon, contentDescription = null, tint = DalabIndigo, modifier = Modifier.size(17.dp))
             }
-            Spacer(Modifier.width(10.dp))
-            Column {
-                Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = DalabIndigo)
-                Text(label, style = MaterialTheme.typography.labelSmall, color = DalabMuted)
-            }
+            Spacer(Modifier.height(8.dp))
+            Text(value, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = DalabIndigo, maxLines = 1)
+            Text(label, style = MaterialTheme.typography.labelSmall, color = DalabMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
 
 @Composable
 private fun ActionButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, color: Color, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    Surface(
-        color = color.copy(alpha = 0.10f),
-        contentColor = color,
-        shape = RoundedCornerShape(12.dp),
-        modifier = modifier.clickable(onClick = onClick),
+    Column(
+        modifier = modifier.clip(RoundedCornerShape(14.dp)).clickable(onClick = onClick).padding(vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Column(modifier = Modifier.padding(vertical = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.height(4.dp))
-            Text(label, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, maxLines = 1)
+        Box(Modifier.size(50.dp).background(color.copy(alpha = 0.14f), CircleShape), contentAlignment = Alignment.Center) {
+            Icon(icon, contentDescription = label, tint = color, modifier = Modifier.size(22.dp))
         }
+        Spacer(Modifier.height(6.dp))
+        Text(label, color = color, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, maxLines = 1)
     }
 }
 
@@ -478,7 +478,7 @@ private fun OrderStatusPill(status: String) {
 private fun CustomerOrderHistoryScreen(customerName: String, orders: List<CustomerOrderHistoryEntry>, onBack: () -> Unit) {
     Scaffold(containerColor = DalabWhite) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
-            DetailTopBar("$customerName's Orders", onBack)
+            DetailTopBar("Orders · ${customerName.filter { it.isDigit() }.takeLast(9).ifEmpty { customerName }}", onBack)
             if (orders.isEmpty()) {
                 Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                     Text("No orders yet.", modifier = Modifier.align(Alignment.Center), style = MaterialTheme.typography.bodyMedium)

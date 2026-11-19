@@ -3,6 +3,8 @@ package com.dalab.internet.ui
 import com.dalab.internet.ui.i18n.Text
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -229,7 +231,6 @@ private fun CustomersHeader(onBack: () -> Unit, onAddCustomer: () -> Unit) {
         }
         Column(modifier = Modifier.weight(1f)) {
             Text("Customers", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = Color.White)
-            Text("Manage your customers", style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.85f))
         }
         Surface(color = Color.White, shape = CircleShape, modifier = Modifier.clickable(onClick = onAddCustomer)) {
             Box(modifier = Modifier.size(44.dp), contentAlignment = Alignment.Center) {
@@ -294,12 +295,13 @@ private fun CustomerRow(customer: CustomerSummary, onClick: () -> Unit) {
 
 @Composable
 internal fun CustomerAvatar(name: String?, phone: String, size: Int = 40) {
-    val initial = (name?.trim()?.firstOrNull()?.takeIf { it.isLetter() } ?: phone.lastOrNull() ?: '?').uppercaseChar()
+    val initial = name?.trim()?.firstOrNull()?.takeIf { it.isLetter() }?.uppercaseChar()
     Box(
         modifier = Modifier.size(size.dp).background(DalabSoftBlue.copy(alpha = 0.5f), CircleShape),
         contentAlignment = Alignment.Center,
     ) {
-        Text(initial.toString(), fontWeight = FontWeight.Bold, color = DalabIndigo)
+        if (initial != null) Text(initial.toString(), fontWeight = FontWeight.ExtraBold, color = DalabIndigo, fontSize = (size * 0.42f).sp)
+        else Icon(Icons.Filled.Person, contentDescription = null, tint = DalabIndigo, modifier = Modifier.size((size * 0.55f).dp))
     }
 }
 
