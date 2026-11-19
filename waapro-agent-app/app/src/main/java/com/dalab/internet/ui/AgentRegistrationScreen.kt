@@ -1,6 +1,8 @@
 package com.dalab.internet.ui
 
 import androidx.compose.foundation.border
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
@@ -235,6 +237,31 @@ private fun Figure(value: String, label: String, modifier: Modifier) {
     Column(modifier) {
         Text(value, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp)
         Text(label, color = WaaproMuted, fontSize = 11.sp)
+    }
+}
+
+/** A network to pick: its colour, its name, a tick when chosen; greyed when offline. */
+@Composable
+private fun NetworkCard(n: RegistrationNetwork, selected: Boolean, modifier: Modifier, onPick: () -> Unit) {
+    val offline = n.status == "offline"
+    val net = hexColor(n.colorHex, WaaproBlue)
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = if (selected) net.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surface,
+        modifier = modifier
+            .height(64.dp)
+            .border(if (selected) 2.dp else 1.dp, if (selected) net else WaaproBorder, RoundedCornerShape(16.dp))
+            .clickable(enabled = !offline, onClick = onPick),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 14.dp)) {
+            Box(Modifier.size(14.dp).clip(CircleShape).background(if (offline) WaaproBorder else net))
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(n.name, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = if (offline) WaaproMuted else Color.Unspecified, maxLines = 1)
+                if (offline) Text("Offline", color = Color(0xFFDC2626), fontSize = 11.sp)
+            }
+            if (selected) Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = net, modifier = Modifier.size(20.dp))
+        }
     }
 }
 
@@ -536,20 +563,32 @@ private fun RegisterCustomerForm(existing: RegisteredCustomer? = null, onCancel:
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text(if (existing != null) "Edit customer" else "Register customer", fontWeight = FontWeight.Bold) },
-                navigationIcon = { IconButton(onClick = onCancel) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back") } },
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(WaaproHeaderBrush, RoundedCornerShape(bottomStart = 26.dp, bottomEnd = 26.dp))
+                    .padding(start = 8.dp, end = 16.dp, top = 12.dp, bottom = 16.dp),
+            ) {
+                IconButton(onClick = onCancel) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White) }
+                Text(
+                    if (existing != null) "Edit customer" else "Register customer",
+                    color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 22.sp,
+                )
+            }
         },
     ) { padding ->
         Column(
-            Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text("The customer does not need the app. They send the money from the payment number; once the payment is verified, the internet goes to the internet number.", fontSize = 13.sp, color = WaaproMuted)
+            val fieldShape = RoundedCornerShape(16.dp)
             OutlinedTextField(
                 value = name, onValueChange = { name = it.take(80) }, singleLine = true,
-                label = { Text("Customer name") }, modifier = Modifier.fillMaxWidth(),
+                label = { Text("Customer name") },
+                leadingIcon = { Icon(Icons.Filled.Person, contentDescription = null, tint = WaaproNavy) },
+                shape = fieldShape,
+                modifier = Modifier.fillMaxWidth(),
             )
             OutlinedTextField(
                 value = sender,
@@ -559,8 +598,9 @@ private fun RegisterCustomerForm(existing: RegisteredCustomer? = null, onCancel:
                 },
                 singleLine = true,
                 label = { Text("Payment sender number") },
-                supportingText = { Text("The number the customer pays from") },
+                leadingIcon = { Icon(Icons.Filled.Payments, contentDescription = null, tint = WaaproNavy) },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                shape = fieldShape,
                 modifier = Modifier.fillMaxWidth(),
             )
             OutlinedTextField(
@@ -568,32 +608,31 @@ private fun RegisterCustomerForm(existing: RegisteredCustomer? = null, onCancel:
                 onValueChange = { v -> receiver = v.filter { it.isDigit() }.take(12); receiverEdited = true },
                 singleLine = true,
                 label = { Text("Internet receiver number") },
-                supportingText = { Text("The number that gets the internet (must be on the network below)") },
+                leadingIcon = { Icon(Icons.Filled.Wifi, contentDescription = null, tint = WaaproNavy) },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                shape = fieldShape,
                 modifier = Modifier.fillMaxWidth(),
             )
-            Text("Network", fontWeight = FontWeight.Bold)
+            Text("Network", fontWeight = FontWeight.ExtraBold, fontSize = 16.sp, modifier = Modifier.padding(top = 4.dp))
             optionsError?.let { Text(it, color = Color(0xFFDC2626), fontSize = 13.sp) }
-            networks.forEach { n ->
-                val offline = n.status == "offline"
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth().selectable(selected = network?.id == n.id, enabled = !offline, onClick = { network = n }),
-                ) {
-                    RadioButton(selected = network?.id == n.id, onClick = { network = n }, enabled = !offline)
-                    Text(n.name, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                    if (offline) Text("Offline", color = Color(0xFFDC2626), fontSize = 12.sp)
+            networks.chunked(2).forEach { pair ->
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    pair.forEach { n -> NetworkCard(n, selected = network?.id == n.id, modifier = Modifier.weight(1f)) { network = n } }
+                    if (pair.size == 1) Spacer(Modifier.weight(1f))
                 }
             }
             error?.let { Text(it, color = Color(0xFFDC2626), fontSize = 13.sp) }
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(6.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(onClick = onCancel, enabled = !saving, modifier = Modifier.weight(1f).height(52.dp)) { Text("Cancel") }
+                OutlinedButton(
+                    onClick = onCancel, enabled = !saving, shape = RoundedCornerShape(18.dp),
+                    modifier = Modifier.weight(1f).height(54.dp),
+                ) { Text("Cancel", fontWeight = FontWeight.Bold) }
                 Button(
-                    onClick = { submit() }, enabled = ready,
+                    onClick = { submit() }, enabled = ready, shape = RoundedCornerShape(18.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = WaaproNavy, contentColor = Color.White),
-                    modifier = Modifier.weight(1f).height(52.dp),
-                ) { Text(if (saving) "Saving…" else if (existing != null) "Save" else "Register") }
+                    modifier = Modifier.weight(1f).height(54.dp),
+                ) { Text(if (saving) "Saving…" else if (existing != null) "Save" else "Register", fontWeight = FontWeight.Bold) }
             }
         }
     }
