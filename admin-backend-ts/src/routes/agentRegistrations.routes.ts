@@ -13,8 +13,8 @@ import { serializeOfflineProfile } from "./customers.routes.js";
  * Agent Customer Registration.
  *
  * An agent registers a customer with four details -- name, payment sender
- * number, internet receiver number and network (Hormuud, Somnet or
- * Somtel). The customer needs no app: this saves the customer's Rukumo
+ * number, internet receiver number and network (Hormuud, Somnet,
+ * Somtel or Amtel). The customer needs no app: this saves the customer's Rukumo
  * setup (the same customers.offline_* setup the Customer App saves), so
  * when that sender pays the company's payment number (on an agent phone),
  * the existing Rukumo pipeline (offlineAutoOrder.ts) verifies the payment
@@ -32,8 +32,8 @@ import { serializeOfflineProfile } from "./customers.routes.js";
 export const agentRegistrationsRouter = Router();
 
 /** The networks an agent can register a customer on. */
-// Hormuud (EVC Plus), Somnet (Jeeb), Somtel (eDahab), as companyKeyFromLabel names them.
-export const REGISTRATION_NETWORKS = ["evc_plus", "jeeb", "edahab"];
+// Hormuud (EVC Plus), Somnet (Jeeb), Somtel (eDahab), Amtel (Amtel Pay), as companyKeyFromLabel names them.
+export const REGISTRATION_NETWORKS = ["evc_plus", "jeeb", "edahab", "amtel_pay"];
 
 const digits = (raw: unknown) => normalizeMobileDigits(String(raw ?? "")).replace(/^0+/, "");
 
@@ -98,7 +98,7 @@ agentRegistrationsRouter.post("/agent/registered-customers", requireAuth("agent"
   );
   const networkKey = company ? companyKeyFromLabel(company.name) ?? company.id : null;
   if (!company || !REGISTRATION_NETWORKS.includes(String(networkKey))) {
-    return sendJson(res, 400, { error: "Choose Hormuud, Somnet or Somtel.", code: "network_not_allowed" });
+    return sendJson(res, 400, { error: "Choose Hormuud, Somnet, Somtel or Amtel.", code: "network_not_allowed" });
   }
   if (company.status === "offline") return sendJson(res, 409, { error: `${company.name} is currently offline`, code: "network_offline" });
 

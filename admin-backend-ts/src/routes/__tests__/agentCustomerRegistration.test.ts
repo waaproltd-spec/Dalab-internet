@@ -3,7 +3,7 @@
 //
 // Agent Customer Registration: an agent registers a customer with four
 // details (name, payment sender, internet receiver, network: Hormuud,
-// Somnet or Somtel). The customer pays from the sender number; the payment
+// Somnet, Somtel or Amtel). The customer pays from the sender number; the payment
 // SMS goes through the real pipeline (ingestPaymentSms -> Rukumo), which
 // verifies it and only then creates the order for the receiver number on
 // that network. A payment that can't be matched creates nothing and is
@@ -88,8 +88,12 @@ test("an agent registers a customer with name, sender, receiver and network", as
   assert.ok(log, "registration is in the Activity Log");
 });
 
-test("only Hormuud, Somnet or Somtel; the receiver must be a number of that network; a name is required", async () => {
-  assert.equal((await register({ name: "X Y", senderPhone: "615552011", receiverPhone: "715552012", companyId: AMTEL })).body.code, "network_not_allowed");
+test("Hormuud, Somnet, Somtel or Amtel only; the receiver must be a number of that network; a name is required", async () => {
+  const amtel = await register({ name: "Amtel Customer", senderPhone: "615552013", receiverPhone: "715552014", companyId: AMTEL });
+  assert.equal(amtel.status, 201, JSON.stringify(amtel.body));
+  assert.equal(amtel.body.receiverNumber, "252715552014");
+  assert.equal((await register({ name: "X Y", senderPhone: "615552015", receiverPhone: "615552016", companyId: AMTEL })).body.code, "invalid_receiver", "an Amtel receiver must be a 71 number");
+  assert.equal((await register({ name: "X Y", senderPhone: "615552011", receiverPhone: "615552012", companyId: "no-such-network" })).body.code, "network_not_allowed");
   assert.equal((await register({ name: "X Y", senderPhone: "615552011", receiverPhone: "625552012", companyId: HORMUUD })).body.code, "invalid_receiver");
   assert.equal((await register({ name: "X Y", senderPhone: "12", receiverPhone: "615552012", companyId: HORMUUD })).body.code, "invalid_sender");
   assert.equal((await register({ name: "", senderPhone: "615552011", receiverPhone: "615552012", companyId: HORMUUD })).body.code, "name_required");
