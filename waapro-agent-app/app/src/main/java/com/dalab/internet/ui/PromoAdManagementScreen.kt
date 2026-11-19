@@ -36,6 +36,8 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.border
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.dalab.internet.data.Company
 import com.dalab.internet.data.PackageItem
@@ -161,43 +163,19 @@ fun PromoAdManagementScreen(onBack: () -> Unit) {
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text("Promo Ads", fontWeight = FontWeight.Bold)
-                        Text(
-                            "Manage the popup shown when the Customer App opens",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back") }
-                },
-                actions = {
-                    Box(
-                        modifier = Modifier.padding(end = 4.dp)
-                            .size(40.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(MaterialTheme.colorScheme.primaryContainer),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            Icons.Filled.Campaign,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp),
-                        )
-                    }
-                },
+            ContentHeader(
+                "Promo Ads", onBack,
+                listOf("Ads" to ads.size.toString(), "Enabled" to ads.count { it.enabled }.toString(), "Disabled" to ads.count { !it.enabled }.toString()),
             )
         },
         floatingActionButton = {
-            ExtendedFloatingActionButton(onClick = { formMode = PromoAdFormMode.New }) {
+            ExtendedFloatingActionButton(
+                onClick = { formMode = PromoAdFormMode.New },
+                containerColor = WaaproNavy, contentColor = Color.White, shape = RoundedCornerShape(18.dp),
+            ) {
                 Icon(Icons.Filled.Add, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text("New ad")
+                Text("New ad", fontWeight = FontWeight.Bold)
             }
         },
     ) { padding ->
@@ -214,10 +192,10 @@ fun PromoAdManagementScreen(onBack: () -> Unit) {
                 }
                 loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                 ads.isEmpty() -> Box(Modifier.fillMaxSize().padding(20.dp), contentAlignment = Alignment.Center) {
-                    Text("No promo ads yet — tap \"New ad\" to create one.", style = MaterialTheme.typography.bodyMedium, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    Text("No promo ads yet", fontWeight = FontWeight.Bold, fontSize = 17.sp)
                 }
                 else -> LazyColumn(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-                    item { Spacer(Modifier.height(8.dp)) }
+                    item { Spacer(Modifier.height(12.dp)) }
                     items(ads, key = { it.id }) { ad ->
                         val index = ads.indexOfFirst { it.id == ad.id }
                         PromoAdCard(
@@ -232,7 +210,7 @@ fun PromoAdManagementScreen(onBack: () -> Unit) {
                             onEdit = { formMode = PromoAdFormMode.Edit(ad) },
                             onDelete = { deleteTarget = ad },
                         )
-                        Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(12.dp))
                     }
                     item { Spacer(Modifier.height(80.dp)) } // clears the FAB
                 }
@@ -282,67 +260,48 @@ private fun PromoAdCard(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    Card(shape = RoundedCornerShape(14.dp), elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Row(verticalAlignment = Alignment.Top) {
-                Column(
-                    verticalArrangement = Arrangement.Center,
-                ) {
-                    IconButton(onClick = onMoveUp, enabled = canMoveUp && !busy, modifier = Modifier.size(28.dp)) {
-                        Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Move up")
-                    }
-                    IconButton(onClick = onMoveDown, enabled = canMoveDown && !busy, modifier = Modifier.size(28.dp)) {
-                        Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Move down")
-                    }
-                }
-                Spacer(Modifier.width(6.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        ad.title?.takeIf { it.isNotBlank() } ?: "(No title)",
-                        fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.titleSmall,
-                    )
-                    if (!ad.body.isNullOrBlank()) {
-                        Spacer(Modifier.height(4.dp))
-                        Text(ad.body, style = MaterialTheme.typography.bodySmall, maxLines = 3)
+    ContentCard {
+        // The ad's 16:9 picture across the card.
+        Box {
+            RemoteThumb("${ApiClient.BASE_URL}promo-ads/${ad.id}/image", Modifier.fillMaxWidth().aspectRatio(16f / 9f))
+            Row(Modifier.align(Alignment.TopEnd).padding(6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Surface(shape = RoundedCornerShape(50), color = Color.Black.copy(alpha = 0.45f)) {
+                    Row {
+                        IconButton(onClick = onMoveUp, enabled = canMoveUp && !busy, modifier = Modifier.size(34.dp)) {
+                            Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Move up", tint = if (canMoveUp) Color.White else Color.White.copy(alpha = 0.35f))
+                        }
+                        IconButton(onClick = onMoveDown, enabled = canMoveDown && !busy, modifier = Modifier.size(34.dp)) {
+                            Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Move down", tint = if (canMoveDown) Color.White else Color.White.copy(alpha = 0.35f))
+                        }
                     }
                 }
-                Spacer(Modifier.width(10.dp))
-                Icon(Icons.Filled.ImageIcon, contentDescription = "Has image", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
             }
-            Spacer(Modifier.height(10.dp))
-            if (ad.effectiveDestinationType != null) {
-                Spacer(Modifier.height(6.dp))
-                val companyName = companies.find { it.id == ad.effectiveDestinationCompanyId }?.name ?: ad.effectiveDestinationCompanyId ?: "?"
-                Text(
-                    if (ad.effectiveDestinationType == "package") "→ $companyName (specific package)" else "→ $companyName packages",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.Bold,
-                )
-            }
-            Spacer(Modifier.height(10.dp))
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                AssistChip(
-                    onClick = {},
-                    label = { Text(if (ad.enabled) "Enabled" else "Disabled") },
-                    colors = AssistChipDefaults.assistChipColors(
-                        containerColor = if (ad.enabled) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                    ),
-                )
-                Spacer(Modifier.weight(1f))
-                if (busy) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                } else {
-                    IconButton(onClick = onToggleEnabled) {
-                        Icon(
-                            if (ad.enabled) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                            contentDescription = if (ad.enabled) "Disable" else "Enable",
-                        )
-                    }
-                    IconButton(onClick = onEdit) { Icon(Icons.Filled.Edit, contentDescription = "Edit") }
-                    IconButton(onClick = onDelete) { Icon(Icons.Filled.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error) }
+        }
+        Spacer(Modifier.height(12.dp))
+        Text(ad.title?.takeIf { it.isNotBlank() } ?: "(No title)", fontWeight = FontWeight.ExtraBold, fontSize = 17.sp, maxLines = 1)
+        if (!ad.body.isNullOrBlank()) {
+            Text(ad.body, color = WaaproMuted, fontSize = 13.sp, maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+        }
+        if (ad.effectiveDestinationType != null) {
+            val companyName = companies.find { it.id == ad.effectiveDestinationCompanyId }?.name ?: ad.effectiveDestinationCompanyId ?: "?"
+            Spacer(Modifier.height(6.dp))
+            Text(
+                if (ad.effectiveDestinationType == "package") "Opens: $companyName package" else "Opens: $companyName packages",
+                color = WaaproBlue, fontWeight = FontWeight.Bold, fontSize = 12.5.sp,
+            )
+        }
+        HorizontalDivider(Modifier.padding(vertical = 10.dp), color = WaaproBorder)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            ContentStatusPill(if (ad.enabled) "Enabled" else "Disabled", ad.enabled)
+            Spacer(Modifier.weight(1f))
+            if (busy) {
+                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+            } else {
+                IconButton(onClick = onToggleEnabled) {
+                    Icon(if (ad.enabled) Icons.Filled.VisibilityOff else Icons.Filled.Visibility, contentDescription = if (ad.enabled) "Disable" else "Enable", tint = WaaproNavy)
                 }
+                IconButton(onClick = onEdit) { Icon(Icons.Filled.Edit, contentDescription = "Edit", tint = WaaproNavy) }
+                IconButton(onClick = onDelete) { Icon(Icons.Filled.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error) }
             }
         }
     }
@@ -523,7 +482,7 @@ private fun PromoAdFormDialog(
     }
 
     Dialog(onDismissRequest = { if (!saving) onDismiss() }) {
-        Surface(shape = RoundedCornerShape(16.dp), color = DalabWhite) {
+        Surface(shape = RoundedCornerShape(24.dp), color = DalabWhite) {
             Column(
                 modifier = Modifier
                     .padding(20.dp)
@@ -539,7 +498,7 @@ private fun PromoAdFormDialog(
                 Text("Image" + if (existing == null) " (required)" else "", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    "Must be exactly ${PROMO_AD_IMAGE_WIDTH}x$PROMO_AD_IMAGE_HEIGHT px (16:9)",
+                    "${PROMO_AD_IMAGE_WIDTH} × $PROMO_AD_IMAGE_HEIGHT px",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -572,12 +531,6 @@ private fun PromoAdFormDialog(
                 Spacer(Modifier.height(16.dp))
 
                 Text("Tap destination", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    "Where tapping the ad (not the X or Sii wad button) sends the customer. Leave as \"No destination\" for the current behavior -- tapping just closes the popup.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
                 Spacer(Modifier.height(8.dp))
                 // Horizontally scrollable rather than a plain Row -- a
                 // plain Row has no way to give each FilterChip its natural

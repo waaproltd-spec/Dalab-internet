@@ -33,6 +33,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.network.NalaSocoCreateRequest
@@ -116,43 +117,19 @@ fun NalaSocoManagementScreen(onBack: () -> Unit) {
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text("Nala Soco", fontWeight = FontWeight.Bold)
-                        Text(
-                            "Manage announcements shown in the Customer App",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back") }
-                },
-                actions = {
-                    Box(
-                        modifier = Modifier.padding(end = 4.dp)
-                            .size(40.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(MaterialTheme.colorScheme.primaryContainer),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            Icons.Filled.Campaign,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp),
-                        )
-                    }
-                },
+            ContentHeader(
+                "Nala Soco", onBack,
+                listOf("Posts" to posts.size.toString(), "Published" to posts.count { it.published }.toString(), "Drafts" to posts.count { !it.published }.toString()),
             )
         },
         floatingActionButton = {
-            ExtendedFloatingActionButton(onClick = { formMode = NalaSocoFormMode.New }) {
+            ExtendedFloatingActionButton(
+                onClick = { formMode = NalaSocoFormMode.New },
+                containerColor = WaaproNavy, contentColor = Color.White, shape = RoundedCornerShape(18.dp),
+            ) {
                 Icon(Icons.Filled.Add, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text("New post")
+                Text("New post", fontWeight = FontWeight.Bold)
             }
         },
     ) { padding ->
@@ -169,10 +146,10 @@ fun NalaSocoManagementScreen(onBack: () -> Unit) {
                 }
                 loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                 posts.isEmpty() -> Box(Modifier.fillMaxSize().padding(20.dp), contentAlignment = Alignment.Center) {
-                    Text("No posts yet — tap \"New post\" to create one.", style = MaterialTheme.typography.bodyMedium, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    Text("No posts yet", fontWeight = FontWeight.Bold, fontSize = 17.sp)
                 }
                 else -> LazyColumn(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-                    item { Spacer(Modifier.height(8.dp)) }
+                    item { Spacer(Modifier.height(12.dp)) }
                     items(posts, key = { it.id }) { post ->
                         NalaSocoPostCard(
                             post = post,
@@ -181,7 +158,7 @@ fun NalaSocoManagementScreen(onBack: () -> Unit) {
                             onEdit = { formMode = NalaSocoFormMode.Edit(post) },
                             onDelete = { deleteTarget = post },
                         )
-                        Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(12.dp))
                     }
                     item { Spacer(Modifier.height(80.dp)) } // clears the FAB
                 }
@@ -225,41 +202,28 @@ private fun NalaSocoPostCard(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    Card(shape = RoundedCornerShape(14.dp), elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Row(verticalAlignment = Alignment.Top) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(post.title, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
-                    Spacer(Modifier.height(4.dp))
-                    Text(post.body, style = MaterialTheme.typography.bodySmall, maxLines = 3)
-                }
-                if (post.hasImage) {
-                    Spacer(Modifier.width(10.dp))
-                    Icon(Icons.Filled.ImageIcon, contentDescription = "Has image", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
-                }
+    ContentCard {
+        Row(verticalAlignment = Alignment.Top) {
+            RemoteThumb(if (post.hasImage) "${ApiClient.BASE_URL}nala-soco/${post.id}/image" else null, Modifier.size(72.dp))
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(post.title, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                Spacer(Modifier.height(2.dp))
+                Text(post.body, color = WaaproMuted, fontSize = 13.sp, maxLines = 3, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
             }
-            Spacer(Modifier.height(10.dp))
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                AssistChip(
-                    onClick = {},
-                    label = { Text(if (post.published) "Published" else "Draft") },
-                    colors = AssistChipDefaults.assistChipColors(
-                        containerColor = if (post.published) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                    ),
-                )
-                Spacer(Modifier.weight(1f))
-                if (busy) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                } else {
-                    IconButton(onClick = onTogglePublished) {
-                        Icon(
-                            if (post.published) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                            contentDescription = if (post.published) "Unpublish" else "Publish",
-                        )
-                    }
-                    IconButton(onClick = onEdit) { Icon(Icons.Filled.Edit, contentDescription = "Edit") }
-                    IconButton(onClick = onDelete) { Icon(Icons.Filled.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error) }
+        }
+        HorizontalDivider(Modifier.padding(vertical = 10.dp), color = WaaproBorder)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            ContentStatusPill(if (post.published) "Published" else "Draft", post.published)
+            Spacer(Modifier.weight(1f))
+            if (busy) {
+                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+            } else {
+                IconButton(onClick = onTogglePublished) {
+                    Icon(if (post.published) Icons.Filled.VisibilityOff else Icons.Filled.Visibility, contentDescription = if (post.published) "Unpublish" else "Publish", tint = WaaproNavy)
                 }
+                IconButton(onClick = onEdit) { Icon(Icons.Filled.Edit, contentDescription = "Edit", tint = WaaproNavy) }
+                IconButton(onClick = onDelete) { Icon(Icons.Filled.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error) }
             }
         }
     }
@@ -357,7 +321,7 @@ private fun NalaSocoFormDialog(
     }
 
     Dialog(onDismissRequest = { if (!saving) onDismiss() }) {
-        Surface(shape = RoundedCornerShape(16.dp), color = DalabWhite) {
+        Surface(shape = RoundedCornerShape(24.dp), color = DalabWhite) {
             Column(
                 modifier = Modifier
                     .padding(20.dp)
@@ -390,7 +354,7 @@ private fun NalaSocoFormDialog(
                 )
                 Spacer(Modifier.height(14.dp))
 
-                Text("Image (optional)", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                Text("Image", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(8.dp))
                 NalaSocoImagePicker(
                     existingPostId = existing?.id,
@@ -404,7 +368,7 @@ private fun NalaSocoFormDialog(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Switch(checked = published, onCheckedChange = { published = it })
                     Spacer(Modifier.width(10.dp))
-                    Text("Published (visible in the Customer App)", style = MaterialTheme.typography.bodyMedium)
+                    Text("Published", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
                 }
                 Spacer(Modifier.height(12.dp))
 
