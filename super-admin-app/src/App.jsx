@@ -2293,7 +2293,7 @@ function PaymentNumbers({ companies, setCompanies, refreshCompanies, admin }) {
       <div style={{ fontWeight: 800, fontSize: 17, color: INK, marginBottom: 4 }}>Agent Payment Gateway Numbers & USSD Format</div>
       <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>
         The Agent App stores the payment numbers used by customers to send funds. Customers dial these USSD templates. Changes apply instantly — no app update required.
-        {!canManage && " Only a Super Admin can add, edit, enable, or disable these settings — you can view them here."}
+        {!canManage && " Only the Owner can add, edit, enable, or disable these settings — you can view them here."}
       </div>
       {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
       <Card style={{ padding: 0, overflow: "hidden" }}>
@@ -2321,7 +2321,7 @@ function PaymentNumbers({ companies, setCompanies, refreshCompanies, admin }) {
                   <button
                     onClick={() => canManage && toggleStatus(c)}
                     disabled={!canManage || togglingId === c.id}
-                    title={canManage ? "Toggle Active/Inactive" : "Only a Super Admin can change this"}
+                    title={canManage ? "Toggle Active/Inactive" : "Only the Owner can change this"}
                     style={{
                       display: "flex", alignItems: "center", gap: 6, border: "none", background: "none",
                       cursor: canManage ? "pointer" : "default", fontSize: 12, fontWeight: 700,
@@ -5128,7 +5128,7 @@ function PromoImages() {
         <div>
           <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Promo Images</div>
           <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>
-            Up to {MAX_PROMO_IMAGES} promotional images shown as a swipeable carousel on the Customer App Home screen. Customers can only view these — uploading is Super Admin-only. Recommended size: 1280 × 400px (a short, wide banner — this keeps the carousel compact so provider logos stay visible on the first screen without scrolling).
+            Up to {MAX_PROMO_IMAGES} promotional images shown as a swipeable carousel on the Customer App Home screen. Customers can only view these — uploading is Owner-only. Recommended size: 1280 × 400px (a short, wide banner — this keeps the carousel compact so provider logos stay visible on the first screen without scrolling).
           </div>
         </div>
         <div>
@@ -8283,8 +8283,8 @@ function DeviceUssdModule({ companies, admin, onPackagesChanged }) {
         {!canManageSuperOnly && (
           <Badge tone="amber">
             {canManage
-              ? "USSD Templates, SIM Routing, and Provider PINs are Super Admin only"
-              : 'View only — ask a Super Admin for the "devices.manage" permission to manage devices, or Super Admin access for templates/routing/PINs'}
+              ? "USSD Templates, SIM Routing, and Provider PINs are Owner only"
+              : 'View only — ask the Owner for the "devices.manage" permission to manage devices, or Owner access for templates/routing/PINs'}
           </Badge>
         )}
       </div>
@@ -8687,7 +8687,7 @@ function UssdTemplatesPanel({ companies, canManage, onPackagesChanged }) {
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 12, flexWrap: "wrap" }}>
-        {!canManage && <Badge tone="amber">View only — USSD templates can only be changed by a Super Admin</Badge>}
+        {!canManage && <Badge tone="amber">View only — USSD templates can only be changed by the Owner</Badge>}
         <div style={{ display: "flex", gap: 10, marginLeft: "auto" }}>
           <Button
             variant="ghost"
@@ -9457,7 +9457,7 @@ function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged
 
       {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
       {message && <div style={{ color: GREEN, fontSize: 12.5, marginBottom: 14 }}>{message}</div>}
-      {!canManageSecrets && <Badge tone="amber">View only — Payment Number, Provider Number, USSD PIN, Sender Number/SIM Slot, and USSD Templates are Super Admin only</Badge>}
+      {!canManageSecrets && <Badge tone="amber">View only — Payment Number, Provider Number, USSD PIN, Sender Number/SIM Slot, and USSD Templates are Owner only</Badge>}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 14 }}>
         {companies.map((c) => {
@@ -11587,7 +11587,7 @@ function MoneyExchangePanel({ admin }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
         <div>
           <div style={{ fontWeight: 800, fontSize: 15, color: INK }}>Payout Wallets</div>
-          <div style={{ fontSize: 12, color: MUTE, marginTop: 2 }}>Which SIM pays out for each wallet type, and its PIN. Super Admin only.</div>
+          <div style={{ fontSize: 12, color: MUTE, marginTop: 2 }}>Which SIM pays out for each wallet type, and its PIN. Owner only.</div>
         </div>
         {isSuperAdmin && <Button icon={Plus} onClick={openNewPayoutWallet}>Add Payout Wallet</Button>}
       </div>
@@ -12674,7 +12674,7 @@ function ResellerPaymentTab({ canManage, isSuperAdmin, companies }) {
                       </div>
                     ) : (
                       <span style={{ fontSize: 12, color: MUTE }}>
-                        {existing?.pinIsSet ? "Set" : "Not set"} — Super Admin only
+                        {existing?.pinIsSet ? "Set" : "Not set"} — Owner only
                       </span>
                     )}
                   </td>
@@ -15594,7 +15594,7 @@ function RolesPermissions({ admin }) {
 
   const changeRole = async (u) => {
     const nextRole = u.role === "super_admin" ? "admin" : "super_admin";
-    if (!window.confirm(`Change ${u.email} to ${nextRole === "super_admin" ? "Super Admin" : "Admin"}?`)) return;
+    if (!window.confirm(`Change ${u.email} to ${nextRole === "super_admin" ? "Owner" : "Admin"}?`)) return;
     try {
       await DalabAdminApi.updateAdminUserRole(u.id, nextRole);
       fetchUsers();
@@ -15629,7 +15629,7 @@ function RolesPermissions({ admin }) {
   };
 
   if (admin?.role !== "super_admin") {
-    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Only the Super Admin can manage roles and permissions.</div>;
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Only the Owner can manage roles and permissions.</div>;
   }
   if (!DALAB_API_ENABLED) {
     return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage roles and permissions.</div>;
@@ -15640,7 +15640,7 @@ function RolesPermissions({ admin }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
         <div>
           <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Roles & Permissions</div>
-          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Super Admin has unrestricted access always. A regular Admin can only do what's checked below — changes apply immediately, no re-login needed.</div>
+          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Owner has unrestricted access always. A regular Admin can only do what's checked below — changes apply immediately, no re-login needed.</div>
         </div>
         <Button icon={Plus} onClick={openNew}>Add admin</Button>
       </div>
@@ -15660,7 +15660,7 @@ function RolesPermissions({ admin }) {
             {users.map((u) => (
               <tr key={u.id} style={{ borderTop: `1px solid ${BORDER}` }}>
                 <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{u.email}</td>
-                <td style={{ padding: "10px 14px" }}><Badge tone={u.role === "super_admin" ? "green" : "neutral"}>{u.role === "super_admin" ? "Super Admin" : "Admin"}</Badge></td>
+                <td style={{ padding: "10px 14px" }}><Badge tone={u.role === "super_admin" ? "green" : "neutral"}>{u.role === "super_admin" ? "Owner" : "Admin"}</Badge></td>
                 <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE }}>
                   {u.role === "super_admin" ? "All (unrestricted)" : `${(permissionsByUser[u.id] || []).length} of ${PERMISSION_OPTIONS.length} granted`}
                 </td>
@@ -15694,7 +15694,7 @@ function RolesPermissions({ admin }) {
           <Field label="Role">
             <select style={inputStyle} value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
               <option value="admin">Admin (limited, permissions below)</option>
-              <option value="super_admin">Super Admin (unrestricted)</option>
+              <option value="super_admin">Owner (unrestricted)</option>
             </select>
           </Field>
           <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
@@ -17249,7 +17249,7 @@ function MenuUssdServicesSection({ admin }) {
         <Card style={{ padding: 18 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 6 }}>
             <div style={{ fontWeight: 800, fontSize: 14, color: INK }}>USSD menu settings</div>
-            {!isSuper && <Badge tone="gray">Super Admin only</Badge>}
+            {!isSuper && <Badge tone="gray">Owner only</Badge>}
           </div>
           <div style={{ fontSize: 12, color: MUTE, marginBottom: 14 }}>
             Changes apply to new orders only — orders already placed keep the menu they were created with.
@@ -17913,7 +17913,7 @@ function AdminLoginScreen({ onLoggedIn, onBack }) {
         <Card style={{ padding: 30 }}>
           {view === "login" ? (
             <>
-              <div style={{ fontWeight: 800, fontSize: 20, color: INK, textAlign: "center" }}>Super Admin Login</div>
+              <div style={{ fontWeight: 800, fontSize: 20, color: INK, textAlign: "center" }}>Owner & Admin Login</div>
               <div style={{ fontSize: 12.5, color: MUTE, textAlign: "center", marginTop: 4, marginBottom: 24 }}>
                 Dalab Internet Management Console
               </div>
@@ -18435,7 +18435,7 @@ function AdminDashboardShell({ admin, onLogout }) {
             <PrefsControls />
             <div style={{ textAlign: "right", display: isMobile ? "none" : "block" }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: INK }}>{admin?.email}</div>
-              <div style={{ fontSize: 10.5, color: MUTE }}>{admin?.role === "super_admin" ? "Super Admin" : "Admin"}</div>
+              <div style={{ fontSize: 10.5, color: MUTE }}>{admin?.role === "super_admin" ? "Owner" : "Admin"}</div>
             </div>
             <div className="dl-hide-xs" title={admin?.email} style={{ width: 34, height: 34, borderRadius: 17, background: INDIGO_SOFT, display: "flex", alignItems: "center", justifyContent: "center", color: INDIGO, fontWeight: 800, fontSize: 13, flexShrink: 0 }}>
               {admin?.role === "super_admin" ? "SA" : "AD"}
