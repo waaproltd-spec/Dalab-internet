@@ -17,6 +17,7 @@ import { HUB_URL, takeHubAssertion, goToHub, openHub, signOutToHub, hubNav, watc
 import HubPaymentBanner, { usePaymentStatus } from "./HubPaymentBanner.jsx";
 import AgentNotices, { AgentNoticesIcon } from "./AgentNotices.jsx";
 import AgentRegistrations, { AgentRegistrationsIcon } from "./AgentRegistrations.jsx";
+import OwnerPermissions from "./OwnerPermissions.jsx";
 import AgentDirectorySetting from "./AgentDirectorySetting.jsx";
 
 // ---- DALAB INTERNET / Admin design tokens ----
@@ -4789,6 +4790,8 @@ function AgentsSection({ companies, admin }) {
   const [pinError, setPinError] = useState("");
   const [pinSaving, setPinSaving] = useState(false);
   const canManage = hasPermission(admin, "agents.manage");
+  // Operations is an agent service: only the Owner switches it.
+  const isOwner = admin?.role === "super_admin";
 
   const fetchAgents = async () => {
     if (!DALAB_API_ENABLED) return;
@@ -4928,7 +4931,7 @@ function AgentsSection({ companies, admin }) {
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE, fontFamily: "monospace" }}>{a.phone}</td>
                 <td style={{ padding: "10px 14px" }}><Badge tone={a.status === "active" ? "green" : "red"}>{a.status === "active" ? "Active" : "Suspended"}</Badge></td>
                 <td style={{ padding: "10px 14px" }}>
-                  {canManage ? (
+                  {isOwner ? (
                     <button
                       onClick={() => toggleOperations(a)}
                       disabled={opsTogglingId === a.id}
@@ -5280,7 +5283,7 @@ const FOOTBALL_WINNER_META = {
   revoked: { label: "Revoked", tone: "gray" },
 };
 
-function CiyaarahaAdmin() {
+function CiyaarahaAdmin({ admin }) {
   const [tab, setTab] = useState("contests");
   const tabs = [["contests", "Contests"], ["rewards", "Rewards"], ["agents", "Agent access"], ["cleanup", "Cleanup"]];
   return (
@@ -5296,7 +5299,7 @@ function CiyaarahaAdmin() {
       </div>
       {tab === "contests" && <CiyaarahaContests />}
       {tab === "rewards" && <CiyaarahaRewards />}
-      {tab === "agents" && <CiyaarahaAgents />}
+      {tab === "agents" && <CiyaarahaAgents admin={admin} />}
       {tab === "cleanup" && <CiyaarahaCleanup />}
     </div>
   );
@@ -5467,7 +5470,9 @@ function CiyaarahaRewards() {
   );
 }
 
-function CiyaarahaAgents() {
+function CiyaarahaAgents({ admin }) {
+  // Who may use Ciyaaraha is an agent service: only the Owner switches it.
+  const isOwner = admin?.role === "super_admin";
   const [state, reload] = useAdminFetch(() => DalabAdminApi.getFootballAgents(), []);
   const [err, setErr] = useState("");
   const toggle = async (a) => {
@@ -5477,12 +5482,16 @@ function CiyaarahaAgents() {
   return (
     <Card style={{ padding: 16 }}>
       <div style={{ fontWeight: 700, color: INK }}>Who can run Ciyaaraha</div>
-      <div style={{ fontSize: 12.5, color: MUTE, margin: "2px 0 10px" }}>Only these agents can create contests, enter official results, confirm winners and record rewards in the Agent App.</div>
+      <div style={{ fontSize: 12.5, color: MUTE, margin: "2px 0 10px" }}>Only these agents can create contests, enter official results, confirm winners and record rewards in the Agent App.{isOwner ? "" : " Only the Owner can change who has access."}</div>
       {err && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 8 }}>{err}</div>}
       {(state.data || []).map((a) => (
         <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderTop: `1px solid ${BORDER}`, flexWrap: "wrap" }}>
           <div><div style={{ fontWeight: 700, color: INK, fontSize: 13 }}>{a.name}</div><div style={{ fontSize: 12, color: MUTE }}>{a.phone}{a.status !== "active" ? ` · ${a.status}` : ""}</div></div>
-          <Button variant={a.ciyaarahaEnabled ? "primary" : "ghost"} onClick={() => toggle(a)}>{a.ciyaarahaEnabled ? "Enabled" : "Off"}</Button>
+          {isOwner ? (
+            <Button variant={a.ciyaarahaEnabled ? "primary" : "ghost"} onClick={() => toggle(a)}>{a.ciyaarahaEnabled ? "Enabled" : "Off"}</Button>
+          ) : (
+            <Badge tone={a.ciyaarahaEnabled ? "green" : "red"}>{a.ciyaarahaEnabled ? "Enabled" : "Off"}</Badge>
+          )}
         </div>
       ))}
     </Card>
@@ -18465,7 +18474,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "agent-registrations" && <AgentRegistrations request={dalabAdminApiRequest} />}
           {active === "promo-images" && <PromoImages />}
           {active === "nala-soco" && <NalaSoco />}
-          {active === "ciyaaraha" && <CiyaarahaAdmin />}
+          {active === "ciyaaraha" && <CiyaarahaAdmin admin={admin} />}
           {active === "devices" && <DeviceUssdModule companies={companies} admin={admin} onPackagesChanged={refreshMissingTemplateCount} />}
           {active === "sms-logs" && <SmsLogs companies={companies} />}
           {active === "payment-transactions" && <PaymentTransactionsPanel companies={companies} />}
@@ -18482,7 +18491,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "pending-recovery" && <PendingRecoveryPanel />}
           {active === "execution-logs" && <ExecutionLogs companies={companies} />}
           {active === "reports" && <Reports />}
-          {active === "roles" && <RolesPermissions admin={admin} />}
+          {active === "roles" && <><RolesPermissions admin={admin} /><OwnerPermissions request={dalabAdminApiRequest} /></>}
           {active === "activity-log" && <ActivityLogPanel />}
           {active === "settings" && <SettingsPanel />}
         </main>

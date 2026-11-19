@@ -11,6 +11,8 @@ import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
 import { authRouter, seedSuperAdmin } from "./routes/auth.routes.js";
 import { usersRouter } from "./routes/users.routes.js";
+import { permissionsRouter } from "./routes/permissions.routes.js";
+import { adminPermissionGate, agentServiceGate } from "./auth/access.js";
 import { companiesRouter, packagesRouter } from "./routes/companies.routes.js";
 import { companyPaymentMethodsRouter } from "./routes/companyPaymentMethods.routes.js";
 import { categoriesRouter } from "./routes/categories.routes.js";
@@ -284,12 +286,17 @@ app.use(agentPresenceMiddleware);
 // System Control (Admin Hub): a suspended system refuses every request but the hub's own.
 app.use(systemSuspensionMiddleware);
 app.use(staffStatusMiddleware);
+// Owner / Admin / Agent: each Admin only the sections, each Agent only the
+// services, the Owner granted (src/auth/access.ts).
+app.use(adminPermissionGate);
+app.use(agentServiceGate);
 app.use(authRouter);
 app.use(hubRouter);
 app.use(hubAgentsRouter);
 app.use(deviceActivationRouter);
 app.use(smsFormatsRouter);
 app.use(usersRouter);
+app.use(permissionsRouter);
 app.use(companiesRouter);
 app.use(companyPaymentMethodsRouter);
 app.use(packagesRouter);

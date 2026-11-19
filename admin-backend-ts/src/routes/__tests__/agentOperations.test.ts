@@ -1,3 +1,4 @@
+// Agents here are granted their services by the Owner (agents.services).
 // Run against a real local Postgres test database:
 //   DATABASE_URL=postgres://... PGSSL=false npx tsx --test --test-force-exit src/routes/__tests__/agentOperations.test.ts
 //
@@ -59,7 +60,7 @@ const logsFor = (id: string) => query<{ action: string; agent_id: string; new_va
 
 before(async () => {
   await query(`INSERT INTO admin_users (id, email, password_hash, role) VALUES ($1,'ops-test-admin@example.com','x','super_admin')`, [ADMIN]);
-  await query(`INSERT INTO agents (id, phone, name, password_hash) VALUES ($1,'615550501','Ops Agent','x')`, [AGENT]);
+  await query(`INSERT INTO agents (id, phone, name, password_hash, operations_enabled, services) VALUES ($1,'615550501','Ops Agent','x', true, ARRAY['operations','sales','customers','schedule','transactions'])`, [AGENT]);
   await query(`INSERT INTO customers (id, phone, name) VALUES ($1,'615550500','Ops Customer')`, [CUSTOMER]);
   await query(`INSERT INTO packages (id, company_id, category_id, name, price) VALUES ($1,'hormuud','internet','Ops Test 1GB',1.5)`, [PACKAGE]);
   agentToken = signAccessToken(AGENT, "agent");

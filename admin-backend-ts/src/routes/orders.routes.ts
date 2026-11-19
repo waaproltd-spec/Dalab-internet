@@ -1464,7 +1464,7 @@ async function agentOperationsAllowed(req: any, res: any): Promise<boolean> {
   );
   if (!agent || agent.status !== "active" || !agent.operations_enabled) {
     sendJson(res, 403, {
-      error: "Your operational access is switched off. Ask your admin to turn it on.",
+      error: "Your operational access is switched off. Ask the owner to turn it on.",
       code: "AGENT_OPERATIONS_DISABLED",
     });
     return false;

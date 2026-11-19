@@ -1,3 +1,4 @@
+// Agents here are granted their services by the Owner (agents.services).
 // Run against a real local Postgres test database:
 //   DATABASE_URL=postgres://... PGSSL=false npx tsx --test --test-force-exit src/routes/__tests__/agentSchedule.test.ts
 //
@@ -68,7 +69,7 @@ async function customerPays(phone: string, amount: number) {
 const due = (id: string) => query(`UPDATE orders SET scheduled_at = now() - interval '1 second' WHERE id=$1`, [id]);
 
 before(async () => {
-  await query(`INSERT INTO agents (id, phone, name, password_hash) VALUES ($1,'615550601','Schedule Agent','x')`, [AGENT]);
+  await query(`INSERT INTO agents (id, phone, name, password_hash, operations_enabled, services) VALUES ($1,'615550601','Schedule Agent','x', true, ARRAY['operations','sales','customers','schedule','transactions'])`, [AGENT]);
   await query(`INSERT INTO packages (id, company_id, category_id, name, price) VALUES ($1,'hormuud','internet','Anfac',0.09)`, [PACKAGE]);
   // Payments for this network are processed automatically (on systems where a company can require manual approval).
   const auto = await queryOne(`SELECT 1 FROM information_schema.columns WHERE table_name='companies' AND column_name='auto_process_enabled'`);

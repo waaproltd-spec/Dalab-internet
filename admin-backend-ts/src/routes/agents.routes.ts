@@ -6,11 +6,14 @@ import { requirePermission } from "../auth/permissions.js";
 import { hashPassword } from "../auth/crypto.js";
 import { sendJson } from "../utils/camelCase.js";
 import { recordActivity } from "../utils/activityLog.js";
+import { requireAuth } from "../auth/middleware.js";
+import { agentServices } from "../auth/access.js";
+import { setAgentServices } from "./permissions.routes.js";
 
 export const agentsRouter = Router();
 
 agentsRouter.get("/admin/agents", requireStaff(), async (_req, res) => {
-  sendJson(res, 200, await query(`SELECT id, phone, name, status, device_id, last_login_at, created_at, operations_enabled FROM agents ORDER BY created_at DESC`));
+  sendJson(res, 200, await query(`SELECT id, phone, name, status, device_id, last_login_at, created_at, operations_enabled, services FROM agents ORDER BY created_at DESC`));
 });
 
 agentsRouter.post("/admin/agents", requirePermission("agents.manage"), async (req, res) => {
@@ -40,11 +43,17 @@ agentsRouter.put("/admin/agents/:id", requirePermission("agents.manage"), async 
 // cancel, retry and reverse orders. On by default; switching it off leaves
 // the agent signed in and the automatic SMS -> USSD processing running, but
 // refuses those manual actions. Recorded in the Activity Log.
-agentsRouter.put("/admin/agents/:id/operations", requirePermission("agents.manage"), async (req, res) => {
+// It is the agent's "operations" service: only the Owner switches it.
+agentsRouter.put("/admin/agents/:id/operations", requireAuth("super_admin"), async (req, res) => {
   if (typeof req.body?.enabled !== "boolean") return sendJson(res, 400, { error: "enabled must be true or false" });
   const before = await queryOne<{ operations_enabled: boolean }>(`SELECT operations_enabled FROM agents WHERE id=$1`, [req.params.id]);
   if (!before) return sendJson(res, 404, { error: "Agent not found" });
-  await query(`UPDATE agents SET operations_enabled=$1 WHERE id=$2`, [req.body.enabled, req.params.id]);
+  const current = await agentServices(req.params.id);
+  await setAgentServices(
+    req.params.id,
+    req.body.enabled ? [...current, "operations"] : current.filter((s) => s !== "operations"),
+    req.auth!.sub
+  );
   await recordActivity({
     adminId: req.auth!.sub,
     action: req.body.enabled ? "agent_operations_enabled" : "agent_operations_disabled",

@@ -6,6 +6,7 @@ import { requireAuth } from "../auth/middleware.js";
 import { PERMISSIONS, isPermission } from "../auth/permissions.js";
 import { hashPassword, isValidEmail, isStrongPassword } from "../auth/crypto.js";
 import { sendJson } from "../utils/camelCase.js";
+import { recordPermissionChange } from "./permissions.routes.js";
 
 export const usersRouter = Router();
 
@@ -45,6 +46,7 @@ usersRouter.post("/admin/users", requireAuth("super_admin"), async (req, res) =>
     `INSERT INTO admin_users (id, email, password_hash, role) VALUES ($1,$2,$3,$4)`,
     [id, normalizedEmail, await hashPassword(password), role]
   );
+  await recordPermissionChange({ actorId: req.auth!.sub, source: "dashboard", targetType: "admin", targetId: id, before: [], after: [], roleBefore: null, roleAfter: role });
   sendJson(res, 201, { id, email: normalizedEmail, role });
 });
 
@@ -52,8 +54,13 @@ usersRouter.put("/admin/users/:id/role", requireAuth("super_admin"), async (req,
   if (await hubManaged(req.params.id)) return sendJson(res, 409, { error: HUB_MANAGED });
   const { role } = req.body;
   if (!["admin", "super_admin"].includes(role)) return sendJson(res, 400, { error: "role must be 'admin' or 'super_admin'" });
-  const result = await query(`UPDATE admin_users SET role=$1 WHERE id=$2 RETURNING id`, [role, req.params.id]);
-  if (result.length === 0) return sendJson(res, 404, { error: "User not found" });
+  const before = await queryOne<{ role: string; permissions: string[] }>(`SELECT role, permissions FROM admin_users WHERE id=$1`, [req.params.id]);
+  if (!before) return sendJson(res, 404, { error: "User not found" });
+  await query(`UPDATE admin_users SET role=$1 WHERE id=$2`, [role, req.params.id]);
+  await recordPermissionChange({
+    actorId: req.auth!.sub, source: "dashboard", targetType: "admin", targetId: req.params.id,
+    before: before.permissions ?? [], after: before.permissions ?? [], roleBefore: before.role, roleAfter: role,
+  });
   sendJson(res, 200, { id: req.params.id, role });
 });
 
@@ -61,7 +68,7 @@ usersRouter.put("/admin/users/:id/role", requireAuth("super_admin"), async (req,
 // against that rather than let it happen silently.
 usersRouter.delete("/admin/users/:id", requireAuth("super_admin"), async (req, res) => {
   if (await hubManaged(req.params.id)) return sendJson(res, 409, { error: HUB_MANAGED });
-  const target = await queryOne(`SELECT role FROM admin_users WHERE id=$1`, [req.params.id]);
+  const target = await queryOne(`SELECT role, permissions FROM admin_users WHERE id=$1`, [req.params.id]);
   if (!target) return sendJson(res, 404, { error: "User not found" });
 
   if (target.role === "super_admin") {
@@ -70,6 +77,11 @@ usersRouter.delete("/admin/users/:id", requireAuth("super_admin"), async (req, r
       return sendJson(res, 409, { error: "Cannot delete the last remaining Super Admin account" });
     }
   }
+  // Logged first: the audit row keeps the email even after the account is gone.
+  await recordPermissionChange({
+    actorId: req.auth!.sub, source: "dashboard", targetType: "admin", targetId: req.params.id,
+    before: target.permissions ?? [], after: [], roleBefore: target.role, roleAfter: "deleted",
+  });
   await query(`DELETE FROM admin_users WHERE id=$1`, [req.params.id]);
   sendJson(res, 200, { deleted: true });
 });
@@ -88,7 +100,12 @@ usersRouter.put("/admin/users/:id/permissions", requireAuth("super_admin"), asyn
   if (!Array.isArray(permissions) || !permissions.every(isPermission)) {
     return sendJson(res, 400, { error: `permissions must be an array drawn from: ${PERMISSIONS.join(", ")}` });
   }
-  const result = await query(`UPDATE admin_users SET permissions=$1 WHERE id=$2 RETURNING id`, [permissions, req.params.id]);
-  if (result.length === 0) return sendJson(res, 404, { error: "User not found" });
+  const before = await queryOne<{ permissions: string[] }>(`SELECT permissions FROM admin_users WHERE id=$1`, [req.params.id]);
+  if (!before) return sendJson(res, 404, { error: "User not found" });
+  await query(`UPDATE admin_users SET permissions=$1 WHERE id=$2`, [permissions, req.params.id]);
+  await recordPermissionChange({
+    actorId: req.auth!.sub, source: "dashboard", targetType: "admin", targetId: req.params.id,
+    before: before.permissions ?? [], after: permissions,
+  });
   sendJson(res, 200, { id: req.params.id, permissions });
 });
