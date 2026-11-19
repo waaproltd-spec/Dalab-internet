@@ -58,6 +58,7 @@ function campaignJson(row: any) {
     id: row.id,
     status: row.status,
     scheduledAt: row.scheduled_at ?? null,
+    repeat: row.repeat ?? "none",
     recipientCount: row.recipient_count,
     sentCount: row.sent_count,
     deliveredCount: row.delivered_count,
@@ -113,6 +114,27 @@ export async function sendCampaign(campaignId: string): Promise<void> {
     if (++n % 10 === 0) await refreshCampaignCounts(campaignId, false);
   }
   await refreshCampaignCounts(campaignId, true);
+  await scheduleNextDaily(campaignId);
+}
+
+/**
+ * A daily message: once today's copy is sent, tomorrow's is scheduled at
+ * the same time (days the server was down are skipped, never sent late in
+ * a burst). Cancelling the waiting copy stops the series.
+ */
+async function scheduleNextDaily(campaignId: string): Promise<void> {
+  await query(
+    `INSERT INTO notification_campaigns
+       (id, title, body, target_type, service_filter, recipient_count, created_by_id, created_by_role, status, scheduled_at, customer_ids, repeat, series_id)
+     SELECT $2, title, body, target_type, service_filter, recipient_count, created_by_id, created_by_role, 'scheduled',
+            scheduled_at + (GREATEST(1, CEIL(EXTRACT(EPOCH FROM (now() - scheduled_at)) / 86400.0))::int * interval '1 day'),
+            customer_ids, 'daily', COALESCE(series_id, id)
+       FROM notification_campaigns c
+      WHERE c.id = $1 AND c.repeat = 'daily' AND c.scheduled_at IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM notification_campaigns n
+                         WHERE n.series_id = COALESCE(c.series_id, c.id) AND n.status = 'scheduled')`,
+    [campaignId, randomUUID()]
+  );
 }
 
 let sendingDue = false;
@@ -183,6 +205,11 @@ notificationsRouter.post("/notifications/broadcast", requireAuth("super_admin", 
     if (d.getTime() > Date.now() + 90 * 24 * 3600_000) return sendJson(res, 400, { error: "Choose a time within the next 90 days.", code: "schedule_too_far" });
     scheduledAt = d;
   }
+  // "daily": sent at the chosen time every day until cancelled.
+  const repeat = req.body.repeat === "daily" ? "daily" : "none";
+  if (repeat === "daily" && !scheduledAt) {
+    return sendJson(res, 400, { error: "Choose the time of day for a daily message.", code: "repeat_needs_time" });
+  }
   const requestId = typeof req.body.requestId === "string" && req.body.requestId.trim() ? req.body.requestId.trim().slice(0, 100) : null;
   if (requestId) {
     const existing = await findCampaignByRequestId(req.auth!.sub, requestId);
@@ -193,13 +220,13 @@ notificationsRouter.post("/notifications/broadcast", requireAuth("super_admin", 
   const campaignId = randomUUID();
   const inserted = await query(
     `INSERT INTO notification_campaigns
-       (id, title, body, target_type, service_filter, recipient_count, created_by_id, created_by_role, request_id, status, scheduled_at, customer_ids, claimed_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       (id, title, body, target_type, service_filter, recipient_count, created_by_id, created_by_role, request_id, status, scheduled_at, customer_ids, claimed_at, repeat)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
      ON CONFLICT (created_by_id, request_id) WHERE request_id IS NOT NULL DO NOTHING
      RETURNING *`,
     [
       campaignId, title, body, targetType, svc, recipientIds.length, req.auth!.sub, req.auth!.role, requestId,
-      scheduledAt ? "scheduled" : "sending", scheduledAt, ids.length ? ids : null, scheduledAt ? null : new Date(),
+      scheduledAt ? "scheduled" : "sending", scheduledAt, ids.length ? ids : null, scheduledAt ? null : new Date(), repeat,
     ]
   );
   if (inserted.length === 0 && requestId) {

@@ -149,3 +149,44 @@ test("a send a restart interrupted resumes without notifying anyone twice", asyn
   assert.deepEqual([c.status, c.sent_count], ["sent", 5]);
   assert.equal(await recipients(id), 5, "the 2 already notified were not notified again");
 });
+
+test("a daily message is sent every day at its time until cancelled", async () => {
+  assert.equal((await broadcast({ targetType: "multiple", customerIds: CUSTOMERS.slice(0, 2), repeat: "daily" })).body.code, "repeat_needs_time");
+  const r = await broadcast({ targetType: "multiple", customerIds: CUSTOMERS.slice(0, 2), scheduledAt: inMinutes(5), repeat: "daily" });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  assert.deepEqual([r.body.status, r.body.repeat], ["scheduled", "daily"]);
+  const firstAt = new Date(r.body.scheduledAt).getTime();
+
+  // Day 1 is due: it is sent, and day 2 is scheduled 24 hours later.
+  await query(`UPDATE notification_campaigns SET scheduled_at = scheduled_at - interval '5 minutes' WHERE id=$1`, [r.body.id]);
+  assert.equal(await runDueCampaigns(), 1);
+  assert.equal((await campaign(r.body.id)).status, "sent");
+  const next = await queryOne<any>(`SELECT * FROM notification_campaigns WHERE series_id=$1 AND status='scheduled'`, [r.body.id]);
+  assert.ok(next, "tomorrow's copy is waiting");
+  assert.equal(new Date(next.scheduled_at).getTime() - (firstAt - 5 * 60_000), 24 * 3600_000);
+  assert.equal(next.repeat, "daily");
+  assert.equal(await recipients(next.id), 0, "not sent before its day");
+
+  // Day 2 is due: sent once, day 3 waiting -- never two waiting copies.
+  await query(`UPDATE notification_campaigns SET scheduled_at = now() - interval '1 second' WHERE id=$1`, [next.id]);
+  assert.equal(await runDueCampaigns(), 1);
+  assert.equal(await recipients(next.id), 2);
+  const waiting = await query<any>(`SELECT id FROM notification_campaigns WHERE series_id=$1 AND status='scheduled'`, [r.body.id]);
+  assert.equal(waiting.length, 1);
+
+  // Cancelling the waiting copy stops the series.
+  assert.equal((await call("POST", `/notifications/campaigns/${waiting[0].id}/cancel`, {})).status, 200);
+  await query(`UPDATE notification_campaigns SET scheduled_at = now() - interval '1 second' WHERE id=$1`, [waiting[0].id]);
+  assert.equal(await runDueCampaigns(), 0);
+  assert.equal((await query(`SELECT 1 FROM notification_campaigns WHERE series_id=$1 AND status='scheduled'`, [r.body.id])).length, 0, "no more days");
+});
+
+test("days the server missed are skipped, not sent late in a burst", async () => {
+  const r = await broadcast({ targetType: "multiple", customerIds: CUSTOMERS.slice(0, 1), scheduledAt: inMinutes(5), repeat: "daily" });
+  // Its time passed 3 days and 1 hour ago (the server was down).
+  await query(`UPDATE notification_campaigns SET scheduled_at = now() - interval '3 days 1 hour' WHERE id=$1`, [r.body.id]);
+  assert.equal(await runDueCampaigns(), 1);
+  const next = await queryOne<any>(`SELECT scheduled_at FROM notification_campaigns WHERE series_id=$1 AND status='scheduled'`, [r.body.id]);
+  const inMs = new Date(next.scheduled_at).getTime() - Date.now();
+  assert.ok(inMs > 0 && inMs <= 24 * 3600_000, "the next copy is within the coming day, at the same time of day");
+});
