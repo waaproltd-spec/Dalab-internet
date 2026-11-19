@@ -3,6 +3,9 @@ package com.dalab.internet.ui
 import com.dalab.internet.ui.i18n.Text
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.clickable
@@ -324,27 +327,36 @@ private fun AddCustomerDialog(onDismiss: () -> Unit, onSaved: () -> Unit) {
     var saving by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    Dialog(onDismissRequest = onDismiss) {
-        Surface(shape = RoundedCornerShape(16.dp), color = DalabWhite) {
-            Column(modifier = Modifier.padding(20.dp)) {
-                Text("New customer", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = DalabIndigo)
-                Spacer(Modifier.height(16.dp))
+    Dialog(onDismissRequest = { if (!saving) onDismiss() }) {
+        Surface(shape = RoundedCornerShape(26.dp), color = DalabWhite) {
+            Column(modifier = Modifier.padding(22.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(Modifier.size(60.dp).background(WaaproHeaderBrush, CircleShape), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Filled.PersonAdd, contentDescription = null, tint = Color.White, modifier = Modifier.size(30.dp))
+                }
+                Spacer(Modifier.height(12.dp))
+                Text("New customer", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = DalabIndigo)
+                Spacer(Modifier.height(18.dp))
                 val phoneError = if (phone.isNotBlank()) validateMobileNumber(phone.trim()).error else null
                 OutlinedTextField(
                     value = phone,
-                    onValueChange = { phone = it },
+                    onValueChange = { v -> phone = v.filter { it.isDigit() || it == '+' }.take(15) },
                     label = { Text("Phone number") },
+                    leadingIcon = { Icon(Icons.Filled.Phone, contentDescription = null) },
                     singleLine = true,
                     isError = phoneError != null,
                     supportingText = phoneError?.let { { Text(it) } },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                    shape = RoundedCornerShape(16.dp),
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(10.dp))
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
                     label = { Text("Name (optional)") },
+                    leadingIcon = { Icon(Icons.Filled.Person, contentDescription = null) },
                     singleLine = true,
+                    shape = RoundedCornerShape(16.dp),
                     modifier = Modifier.fillMaxWidth(),
                 )
                 if (error != null) {
@@ -352,32 +364,33 @@ private fun AddCustomerDialog(onDismiss: () -> Unit, onSaved: () -> Unit) {
                     Text(error!!, color = DalabDangerRed, style = MaterialTheme.typography.bodySmall)
                 }
                 Spacer(Modifier.height(20.dp))
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(onClick = onDismiss) { Text("Cancel") }
-                    Spacer(Modifier.width(8.dp))
-                    Button(
-                        onClick = {
-                            error = null
-                            saving = true
-                            scope.launch {
-                                try {
-                                    val response = ApiClient.service.createCustomer(
-                                        CreateCustomerRequest(phone.trim(), name.trim().ifBlank { null })
-                                    )
-                                    if (response.isSuccessful) onSaved()
-                                    else error = "Couldn't add this customer — check the phone number."
-                                } catch (_: Exception) {
-                                    error = "Network error while saving."
-                                }
-                                saving = false
+                Button(
+                    onClick = {
+                        error = null
+                        saving = true
+                        scope.launch {
+                            try {
+                                val response = ApiClient.service.createCustomer(
+                                    CreateCustomerRequest(phone.trim(), name.trim().ifBlank { null })
+                                )
+                                if (response.isSuccessful) onSaved()
+                                else error = "Couldn't add this customer — check the phone number."
+                            } catch (_: Exception) {
+                                error = "Network error while saving."
                             }
-                        },
-                        enabled = phone.isNotBlank() && phoneError == null && !saving,
-                    ) {
-                        Text(if (saving) "Saving..." else "Save")
-                    }
+                            saving = false
+                        }
+                    },
+                    enabled = phone.isNotBlank() && phoneError == null && !saving,
+                    colors = ButtonDefaults.buttonColors(containerColor = WaaproNavy),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                ) {
+                    Text(if (saving) "Saving..." else "Add customer", fontWeight = FontWeight.Bold)
                 }
+                TextButton(onClick = onDismiss, enabled = !saving, modifier = Modifier.fillMaxWidth()) { Text("Cancel") }
             }
         }
     }
 }
+
