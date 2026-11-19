@@ -53,75 +53,18 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.dalab.internet.data.RegisterCustomerRequest
+import com.dalab.internet.data.RegisteredCustomer
+import com.dalab.internet.data.RegisteredCustomerDetail
+import com.dalab.internet.data.RegistrationIssue
+import com.dalab.internet.data.RegistrationNetwork
+import com.dalab.internet.data.RegistrationOrder
+import com.dalab.internet.data.RegistrationPayTo
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.ui.i18n.Text
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import retrofit2.Response
-
-// ---------------- Data (server JSON, camelCase) ----------------
-
-data class RegistrationNetwork(val id: String = "", val name: String = "", val status: String? = null, val colorHex: String? = null)
-data class RegistrationOptions(val networks: List<RegistrationNetwork>? = null)
-data class RegisterCustomerRequest(val name: String, val senderPhone: String, val receiverPhone: String, val companyId: String)
-data class RegistrationPayTo(val label: String? = null, val paymentNumber: String? = null, val ussdTemplate: String? = null)
-
-data class RegisteredCustomer(
-    val id: String = "",
-    val name: String? = null,
-    val senderNumber: String? = null,
-    val receiverNumber: String? = null,
-    val companyId: String? = null,
-    val companyName: String? = null,
-    val companyColor: String? = null,
-    val registeredByAgentAt: String? = null,
-    val orders: Int? = null,
-    val delivered: Int? = null,
-    val failed: Int? = null,
-    val totalPaid: Double? = null,
-    val lastOrderAt: String? = null,
-    val openPaymentIssues: Int? = null,
-    val created: Boolean? = null,
-    val paymentMethod: RegistrationPayTo? = null,
-)
-
-data class RegistrationOrder(
-    val id: String = "",
-    val customerName: String? = null,
-    val amount: Double? = null,
-    val createdAt: String? = null,
-    val receiverPhone: String? = null,
-    val companyName: String? = null,
-    val packageName: String? = null,
-    val transactionRef: String? = null,
-    val paymentState: String? = null,
-    val deliveryState: String? = null,
-)
-
-data class RegistrationIssue(
-    val id: String = "",
-    val customerId: String? = null,
-    val customerName: String? = null,
-    val senderPhone: String? = null,
-    val amount: Double? = null,
-    val transactionRef: String? = null,
-    val reason: String? = null,
-    val createdAt: String? = null,
-    val resolvedAt: String? = null,
-)
-
-data class RegisteredCustomerDetail(
-    val id: String = "",
-    val name: String? = null,
-    val senderNumber: String? = null,
-    val receiverNumber: String? = null,
-    val companyName: String? = null,
-    val registeredByAgentAt: String? = null,
-    val totalPaid: Double? = null,
-    val paymentMethod: RegistrationPayTo? = null,
-    val orders: List<RegistrationOrder>? = null,
-    val paymentIssues: List<RegistrationIssue>? = null,
-)
 
 // ---------------- Helpers ----------------
 

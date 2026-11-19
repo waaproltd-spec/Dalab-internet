@@ -5,8 +5,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.dalab.internet.network.ApiClient
 
-data class MyServicesResponse(val services: List<String>? = null, val all: List<String>? = null)
-
 /**
  * The services the Owner allowed this agent (GET /agent/me/services). The
  * app shows only those; the server refuses the rest anyway, at once. Until

@@ -821,26 +821,26 @@ interface ApiService {
     // number, internet number, network); the system verifies each payment
     // and only then sends the internet. 404 on a system not updated yet.
     @GET("agent/registered-customers/options")
-    suspend fun getRegistrationOptions(): Response<com.dalab.internet.ui.RegistrationOptions>
+    suspend fun getRegistrationOptions(): Response<com.dalab.internet.data.RegistrationOptions>
 
     @POST("agent/registered-customers")
-    suspend fun registerCustomer(@Body body: com.dalab.internet.ui.RegisterCustomerRequest): Response<com.dalab.internet.ui.RegisteredCustomer>
+    suspend fun registerCustomer(@Body body: com.dalab.internet.data.RegisterCustomerRequest): Response<com.dalab.internet.data.RegisteredCustomer>
 
     @GET("agent/registered-customers")
-    suspend fun getRegisteredCustomers(@Query("search") search: String? = null): Response<List<com.dalab.internet.ui.RegisteredCustomer>>
+    suspend fun getRegisteredCustomers(@Query("search") search: String? = null): Response<List<com.dalab.internet.data.RegisteredCustomer>>
 
     @GET("agent/registered-customers/{id}")
-    suspend fun getRegisteredCustomer(@Path("id") id: String): Response<com.dalab.internet.ui.RegisteredCustomerDetail>
+    suspend fun getRegisteredCustomer(@Path("id") id: String): Response<com.dalab.internet.data.RegisteredCustomerDetail>
 
     @GET("agent/registered-transactions")
-    suspend fun getRegisteredTransactions(): Response<List<com.dalab.internet.ui.RegistrationOrder>>
+    suspend fun getRegisteredTransactions(): Response<List<com.dalab.internet.data.RegistrationOrder>>
 
     @GET("agent/registered-payment-issues")
-    suspend fun getRegisteredPaymentIssues(): Response<List<com.dalab.internet.ui.RegistrationIssue>>
+    suspend fun getRegisteredPaymentIssues(): Response<List<com.dalab.internet.data.RegistrationIssue>>
 
     // The services the Owner allowed this agent. 404 on a system without them.
     @GET("agent/me/services")
-    suspend fun getMyServices(): Response<com.dalab.internet.auth.MyServicesResponse>
+    suspend fun getMyServices(): Response<com.dalab.internet.data.MyServicesResponse>
 
     // Other Agents: this system's other agents with ONLINE/OFFLINE status.
     @GET("agent/agents")
