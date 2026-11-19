@@ -8,7 +8,6 @@ package com.dalab.internet.data
 data class RegistrationNetwork(val id: String = "", val name: String = "", val status: String? = null, val colorHex: String? = null)
 data class RegistrationOptions(val networks: List<RegistrationNetwork>? = null)
 data class RegisterCustomerRequest(val name: String, val senderPhone: String, val receiverPhone: String, val companyId: String)
-data class RegistrationPayTo(val label: String? = null, val paymentNumber: String? = null, val ussdTemplate: String? = null)
 
 data class RegisteredCustomer(
     val id: String = "",
@@ -26,7 +25,6 @@ data class RegisteredCustomer(
     val lastOrderAt: String? = null,
     val openPaymentIssues: Int? = null,
     val created: Boolean? = null,
-    val paymentMethod: RegistrationPayTo? = null,
 )
 
 data class RegistrationOrder(
@@ -62,7 +60,6 @@ data class RegisteredCustomerDetail(
     val companyName: String? = null,
     val registeredByAgentAt: String? = null,
     val totalPaid: Double? = null,
-    val paymentMethod: RegistrationPayTo? = null,
     val orders: List<RegistrationOrder>? = null,
     val paymentIssues: List<RegistrationIssue>? = null,
 )

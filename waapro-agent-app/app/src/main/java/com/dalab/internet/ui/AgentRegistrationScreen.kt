@@ -59,7 +59,6 @@ import com.dalab.internet.data.RegisteredCustomerDetail
 import com.dalab.internet.data.RegistrationIssue
 import com.dalab.internet.data.RegistrationNetwork
 import com.dalab.internet.data.RegistrationOrder
-import com.dalab.internet.data.RegistrationPayTo
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.ui.i18n.Text
 import kotlinx.coroutines.delay
@@ -110,21 +109,6 @@ private fun RegCard(onClick: (() -> Unit)? = null, content: @Composable () -> Un
             .border(1.dp, WaaproBorder, RoundedCornerShape(14.dp))
             .let { if (onClick != null) it.clickable(onClick = onClick) else it },
     ) { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) { content() } }
-}
-
-/** Where the customer sends the money, and the pay code. */
-@Composable
-private fun PayToCard(payTo: RegistrationPayTo?) {
-    val p = payTo ?: return
-    if (p.paymentNumber == null && p.ussdTemplate == null) return
-    Surface(shape = RoundedCornerShape(14.dp), color = Color(0xFFE6F6EC), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("The customer pays to", fontWeight = FontWeight.Bold, color = Color(0xFF137A3A))
-            p.paymentNumber?.let { Text("${p.label ?: ""} $it".trim(), fontWeight = FontWeight.ExtraBold, fontSize = 18.sp) }
-            p.ussdTemplate?.let { Text("Pay code: $it", fontFamily = FontFamily.Monospace, fontSize = 13.sp) }
-            Text("After the payment is verified, the internet is sent to the internet number automatically.", fontSize = 12.sp, color = WaaproMuted)
-        }
-    }
 }
 
 @Composable
@@ -452,7 +436,6 @@ private fun RegisteredCustomerDetailScreen(id: String, onBack: () -> Unit) {
                     Text("Registered ${scheduleTimeText(d.registeredByAgentAt)} · ${regMoney(d.totalPaid)} paid", fontSize = 12.sp, color = WaaproMuted)
                 }
             }
-            item { PayToCard(d.paymentMethod) }
             val issues = d.paymentIssues.orEmpty()
             if (issues.isNotEmpty()) {
                 item { Text("Payment problems", fontWeight = FontWeight.Bold, fontSize = 16.sp) }
