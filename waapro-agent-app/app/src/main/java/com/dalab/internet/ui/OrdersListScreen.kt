@@ -11,6 +11,8 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -574,15 +576,17 @@ private fun PaymentMethodCard(card: BalanceCardData, loading: Boolean, onClick: 
                     .background(accent.copy(alpha = 0.14f)),
             )
             Column(modifier = Modifier.align(Alignment.CenterStart).padding(horizontal = 12.dp, vertical = 7.dp)) {
+                // The logo artwork has wide empty margins: crop it to fill a bigger tile.
                 Box(
-                    modifier = Modifier.height(26.dp).width(52.dp).clip(RoundedCornerShape(8.dp)).background(Color.White),
+                    modifier = Modifier.height(34.dp).width(84.dp).clip(RoundedCornerShape(10.dp)).background(Color.White)
+                        .border(1.dp, accent.copy(alpha = 0.35f), RoundedCornerShape(10.dp)),
                     contentAlignment = Alignment.Center,
                 ) {
                     Image(
                         painter = painterResource(logoResFor(card.providerKey)),
                         contentDescription = card.providerName,
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 3.dp).fillMaxSize(),
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize().graphicsLayer(scaleX = 1.6f, scaleY = 1.6f),
                     )
                 }
                 Spacer(Modifier.height(3.dp))
