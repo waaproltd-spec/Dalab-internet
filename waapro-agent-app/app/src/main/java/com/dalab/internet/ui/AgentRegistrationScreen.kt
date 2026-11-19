@@ -76,6 +76,9 @@ import com.dalab.internet.data.RegistrationOrder
 import com.dalab.internet.network.ApiClient
 import com.dalab.internet.ui.i18n.Text
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import retrofit2.Response
 
@@ -315,26 +318,31 @@ fun AgentRegistrationScreen(onBack: () -> Unit) {
     var info by remember { mutableStateOf<String?>(null) }
     var reload by remember { mutableIntStateOf(0) }
 
+    // The three lists load at the same time; the customers show as soon as
+    // they arrive, and no request may keep the screen waiting for more than
+    // 20 seconds (a slow or dropped connection shows an error with Retry).
     LaunchedEffect(reload) {
         while (true) {
-            try {
-                val c = ApiClient.service.getRegisteredCustomers()
-                val h = ApiClient.service.getRegisteredTransactions()
-                val i = ApiClient.service.getRegisteredPaymentIssues()
+            coroutineScope {
+                val h = async { withTimeoutOrNull(20_000L) { runCatching { ApiClient.service.getRegisteredTransactions() }.getOrNull() } }
+                val i = async { withTimeoutOrNull(20_000L) { runCatching { ApiClient.service.getRegisteredPaymentIssues() }.getOrNull() } }
+                val c = withTimeoutOrNull(20_000L) { runCatching { ApiClient.service.getRegisteredCustomers() } }
                 when {
-                    c.code() == 404 -> error = "This system is not updated for customer registration yet."
-                    c.isSuccessful -> {
-                        customers = c.body().orEmpty()
-                        if (h.isSuccessful) history = h.body().orEmpty()
-                        if (i.isSuccessful) issues = i.body().orEmpty()
-                        error = null
+                    c == null -> error = "The server is taking too long to answer."
+                    c.isFailure -> error = "No connection — could not refresh the list."
+                    else -> {
+                        val r = c.getOrThrow()
+                        when {
+                            r.code() == 404 -> error = "This system is not updated for customer registration yet."
+                            r.isSuccessful -> { customers = r.body().orEmpty(); error = null }
+                            else -> error = regServerError(r) ?: "Could not load your customers (${r.code()})."
+                        }
                     }
-                    else -> error = regServerError(c) ?: "Could not load your customers (${c.code()})."
                 }
-            } catch (_: Exception) {
-                error = "No connection — showing the last list."
+                loaded = true
+                h.await()?.let { if (it.isSuccessful) history = it.body().orEmpty() }
+                i.await()?.let { if (it.isSuccessful) issues = it.body().orEmpty() }
             }
-            loaded = true
             delay(20_000L)
         }
     }
@@ -403,7 +411,12 @@ fun AgentRegistrationScreen(onBack: () -> Unit) {
                 Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text(if (openIssues > 0) "Problems ($openIssues)" else "Problems", fontWeight = FontWeight.Bold) })
             }
             info?.let { Text(it, color = Color(0xFF137A3A), fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) }
-            error?.let { Text(it, color = Color(0xFFDC2626), fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
+            error?.let {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 16.dp, end = 8.dp, top = 4.dp)) {
+                    Text(it, color = Color(0xFFDC2626), fontSize = 13.sp, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { error = null; reload++ }) { Text("Retry", fontWeight = FontWeight.Bold) }
+                }
+            }
             val pad = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp)
             when {
                 !loaded -> Text("Loading…", color = WaaproMuted, modifier = Modifier.padding(16.dp))
