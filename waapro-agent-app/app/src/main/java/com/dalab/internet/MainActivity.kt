@@ -786,6 +786,9 @@ private fun AgentHome(
         try {
             val status = ApiClient.service.getSupportStatus().body()
             if (status?.activeConversationId != null) SupportUnreadState.markUnread()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // The screen was left before the check finished: normal, not an error.
+            throw e
         } catch (e: Exception) {
             DiagnosticsLog.record("support_unread_check", "Failed: ${e.message}")
         }
