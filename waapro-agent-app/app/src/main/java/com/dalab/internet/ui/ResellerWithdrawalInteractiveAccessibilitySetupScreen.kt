@@ -5,6 +5,20 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Payments
+import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccessibilityNew
@@ -56,74 +70,101 @@ fun ResellerWithdrawalInteractiveAccessibilitySetupScreen(onBack: () -> Unit) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    val openSettings = {
+        try {
+            context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (_: ActivityNotFoundException) {
+            // No handler on this ROM -- nothing more to do here.
+        }
+    }
+    val ink = if (enabled) StatusGreen else StatusRed
+
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Reseller Withdraw Setup") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back") }
-                },
-            )
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(WaaproHeaderBrush, RoundedCornerShape(bottomStart = 26.dp, bottomEnd = 26.dp))
+                    .padding(start = 8.dp, end = 16.dp, top = 10.dp, bottom = 18.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White) }
+                    Text("Reseller Withdraw Setup", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 22.sp, maxLines = 1)
+                }
+                Spacer(Modifier.height(10.dp))
+                Box(Modifier.padding(start = 8.dp)) {
+                    StatusBanner(if (enabled) "Automatic payouts: ON" else "Automatic payouts: OFF", ok = enabled)
+                }
+            }
         }
     ) { padding ->
-        Column(modifier = Modifier.padding(padding).padding(20.dp).fillMaxSize()) {
-            Icon(Icons.Filled.AccessibilityNew, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(48.dp))
-            Spacer(Modifier.height(12.dp))
-            Text(
-                "Some Reseller Withdraw payout providers (like eDahab) use a multi-step USSD " +
-                    "menu instead of a single combined code: select Transfer, enter the number, " +
-                    "enter the amount, then enter the reseller PIN once the carrier asks for it. " +
-                    "To complete that automatically instead of typing each step by hand, WAAPRO LTD " +
-                    "Agent needs the Accessibility permission — it's the only way Android lets an " +
-                    "app read and reply to that on-screen carrier prompt.",
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            Spacer(Modifier.height(20.dp))
-
-            if (enabled) {
-                Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
-                    Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
-                        Spacer(Modifier.width(10.dp))
-                        Text("Enabled — automated multi-step Reseller Withdraw payouts are available.", color = MaterialTheme.colorScheme.onPrimaryContainer)
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            // Status card.
+            Surface(
+                shape = RoundedCornerShape(22.dp),
+                color = MaterialTheme.colorScheme.surface,
+                shadowElevation = 2.dp,
+                modifier = Modifier.fillMaxWidth().border(1.dp, ink.copy(alpha = 0.45f), RoundedCornerShape(22.dp)),
+            ) {
+                Column(Modifier.padding(18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Box(Modifier.size(64.dp).clip(CircleShape).background(ink.copy(alpha = 0.12f)), contentAlignment = Alignment.Center) {
+                        Icon(if (enabled) Icons.Filled.CheckCircle else Icons.Filled.AccessibilityNew, contentDescription = null, tint = ink, modifier = Modifier.size(36.dp))
                     }
-                }
-            } else {
-                Surface(color = MaterialTheme.colorScheme.errorContainer, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("Not enabled", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onErrorContainer)
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "Tap below, find \"WAAPRO LTD AGENT\" in the list, and turn it on. Some phones show " +
-                                "a \"Restricted setting\" warning first for sideloaded apps — tap it, then " +
-                                "follow the prompt to allow this setting.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                        )
-                        Spacer(Modifier.height(10.dp))
+                    Spacer(Modifier.height(10.dp))
+                    Text(if (enabled) "Enabled" else "Not enabled", fontWeight = FontWeight.ExtraBold, fontSize = 20.sp, color = ink)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        if (enabled) "eDahab-style withdrawals are paid out automatically."
+                        else "Turn on WAAPRO LTD AGENT in Accessibility to pay them out automatically.",
+                        color = WaaproMuted, fontSize = 13.5.sp, textAlign = TextAlign.Center,
+                    )
+                    if (!enabled) {
+                        Spacer(Modifier.height(14.dp))
                         Button(
-                            onClick = {
-                                try {
-                                    context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                                } catch (_: ActivityNotFoundException) {
-                                    // No handler on this ROM — nothing more to do here.
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text("Open Accessibility Settings")
-                        }
+                            onClick = openSettings,
+                            colors = ButtonDefaults.buttonColors(containerColor = WaaproNavy),
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier.fillMaxWidth().height(52.dp),
+                        ) { Text("Open Accessibility Settings", fontWeight = FontWeight.Bold) }
+                        Spacer(Modifier.height(6.dp))
+                        Text("\"Restricted setting\"? Tap it and allow, then turn it on.", color = WaaproMuted, fontSize = 12.sp, textAlign = TextAlign.Center)
                     }
                 }
             }
 
-            Spacer(Modifier.height(16.dp))
-            Text(
-                "Without this, a withdrawal on an interactive-payout provider like eDahab stays " +
-                    "reserved until an admin marks it Complete/Failed by hand — Hormuud-style " +
-                    "one-shot payouts are unaffected either way.",
-                style = MaterialTheme.typography.labelSmall,
-            )
+            // What the app does for each withdrawal, step by step.
+            StatusSection("Each payout, automatically") {
+                listOf(
+                    Icons.Filled.SwapHoriz to "Choose Transfer",
+                    Icons.Filled.Phone to "Enter the number",
+                    Icons.Filled.Payments to "Enter the amount",
+                    Icons.Filled.Lock to "Enter the reseller PIN",
+                ).forEachIndexed { i, (icon, label) ->
+                    if (i > 0) Spacer(Modifier.height(10.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(32.dp).clip(CircleShape).background(WaaproNavy), contentAlignment = Alignment.Center) {
+                            Text("${i + 1}", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp)
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Icon(icon, contentDescription = null, tint = WaaproNavy, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(label, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    }
+                }
+            }
+
+            Row(verticalAlignment = Alignment.Top, modifier = Modifier.padding(horizontal = 4.dp)) {
+                Icon(Icons.Filled.Info, contentDescription = null, tint = WaaproMuted, modifier = Modifier.size(16.dp).padding(top = 2.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Hormuud one-code payouts don't need this.", color = WaaproMuted, fontSize = 12.5.sp)
+            }
         }
     }
 }
