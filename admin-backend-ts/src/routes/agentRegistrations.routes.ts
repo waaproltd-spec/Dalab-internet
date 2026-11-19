@@ -144,6 +144,100 @@ agentRegistrationsRouter.post("/agent/registered-customers", requireAuth("agent"
   sendJson(res, created ? 201 : 200, { ...registration, created });
 });
 
+/** The four details, checked exactly as on register. */
+async function readRegistrationInput(body: any): Promise<
+  | { error: [number, Record<string, unknown>] }
+  | { name: string; sender: string; receiver: string; company: { id: string; name: string } }
+> {
+  const name = String(body?.name ?? "").trim();
+  const sender = String(body?.senderPhone ?? "").trim();
+  const receiver = String(body?.receiverPhone ?? "").trim();
+  const companyId = String(body?.companyId ?? "").trim();
+  if (name.length < 2) return { error: [400, { error: "Enter the customer's full name.", code: "name_required" }] };
+  const company = await queryOne<{ id: string; name: string; status: string }>(
+    `SELECT id, name, status FROM companies WHERE id=$1 AND deleted_at IS NULL`,
+    [companyId]
+  );
+  const networkKey = company ? companyKeyFromLabel(company.name) ?? company.id : null;
+  if (!company || !REGISTRATION_NETWORKS.includes(String(networkKey))) {
+    return { error: [400, { error: "Choose Hormuud, Somnet, Somtel or Amtel.", code: "network_not_allowed" }] };
+  }
+  if (company.status === "offline") return { error: [409, { error: `${company.name} is currently offline`, code: "network_offline" }] };
+  const senderCheck = validateMobileNumber(sender);
+  if (!senderCheck.valid) return { error: [400, { error: senderCheck.error, code: "invalid_sender" }] };
+  const receiverCheck = validateMobileNumber(receiver, String(networkKey));
+  if (!receiverCheck.valid) return { error: [400, { error: receiverCheck.error, code: "invalid_receiver" }] };
+  return { name, sender, receiver, company };
+}
+
+/**
+ * Edit one of the agent's own registered customers: name, payment number,
+ * internet number, network -- checked as on register. A payment number
+ * another customer already pays from is refused (it would make that
+ * customer's payments ambiguous).
+ */
+agentRegistrationsRouter.put("/agent/registered-customers/:id", requireAuth("agent"), async (req, res) => {
+  const before = await queryOne<{ id: string; name: string | null; offline_sender_number: string | null; offline_destination_number: string | null; offline_company_id: string | null }>(
+    `SELECT id, name, offline_sender_number, offline_destination_number, offline_company_id FROM customers
+      WHERE id=$1 AND registered_by_agent_id=$2`,
+    [req.params.id, req.auth!.sub]
+  );
+  if (!before) return sendJson(res, 404, { error: "Not one of your registered customers" });
+  const input = await readRegistrationInput(req.body);
+  if ("error" in input) return sendJson(res, input.error[0], input.error[1]);
+  const sender9 = digits(input.sender).slice(-9);
+  const taken = await queryOne(
+    `SELECT 1 FROM customers WHERE id<>$1 AND offline_sender_number IS NOT NULL
+        AND RIGHT(regexp_replace(offline_sender_number, '\\D', '', 'g'), 9) = $2`,
+    [before.id, sender9]
+  );
+  if (taken) return sendJson(res, 409, { error: `${sender9} is already the payment number of another customer.`, code: "sender_taken" });
+  await query(
+    `UPDATE customers
+        SET name = $2, offline_sender_number = $3, offline_destination_number = $4, offline_company_id = $5,
+            offline_package_id = NULL, offline_payment_method_id = NULL, offline_profile_updated_at = now()
+      WHERE id = $1`,
+    [before.id, input.name, `252${sender9}`, `252${digits(input.receiver).slice(-9)}`, input.company.id]
+  );
+  await recordActivity({
+    adminId: undefined,
+    action: "agent_registration_edited",
+    entityType: "customer",
+    entityId: before.id,
+    oldValue: { name: before.name, senderPhone: before.offline_sender_number, receiverPhone: before.offline_destination_number, companyId: before.offline_company_id },
+    newValue: { agentId: req.auth!.sub, name: input.name, senderPhone: input.sender, receiverPhone: input.receiver, companyId: input.company.id },
+  });
+  sendJson(res, 200, await queryOne(`${REGISTRATION_SELECT} AND c.id = $1`, [before.id]));
+});
+
+/**
+ * Remove one of the agent's own registered customers: the customer leaves
+ * the agent's list and payments from that number no longer send internet
+ * automatically. The customer, their orders and payments are kept.
+ */
+agentRegistrationsRouter.delete("/agent/registered-customers/:id", requireAuth("agent"), async (req, res) => {
+  const before = await queryOne<{ id: string; name: string | null; offline_sender_number: string | null; offline_destination_number: string | null; offline_company_id: string | null }>(
+    `UPDATE customers c
+        SET registered_by_agent_id = NULL, registered_by_agent_at = NULL,
+            offline_sender_number = NULL, offline_destination_number = NULL, offline_company_id = NULL,
+            offline_package_id = NULL, offline_payment_method_id = NULL, offline_profile_updated_at = now()
+       FROM customers old
+      WHERE c.id = old.id AND c.id = $1 AND old.registered_by_agent_id = $2
+      RETURNING old.id, old.name, old.offline_sender_number, old.offline_destination_number, old.offline_company_id`,
+    [req.params.id, req.auth!.sub]
+  );
+  if (!before) return sendJson(res, 404, { error: "Not one of your registered customers" });
+  await recordActivity({
+    adminId: undefined,
+    action: "agent_registration_removed",
+    entityType: "customer",
+    entityId: before.id,
+    oldValue: { agentId: req.auth!.sub, name: before.name, senderPhone: before.offline_sender_number, receiverPhone: before.offline_destination_number, companyId: before.offline_company_id },
+    newValue: null,
+  });
+  sendJson(res, 200, { removed: true, id: before.id });
+});
+
 /** The networks and the pay-to numbers, for the registration form. */
 agentRegistrationsRouter.get("/agent/registered-customers/options", requireAuth("agent"), async (_req, res) => {
   const companies = await query<{ id: string; name: string; status: string; color_hex: string }>(

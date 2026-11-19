@@ -192,3 +192,32 @@ test("only agents register; only staff see the admin view", async () => {
   assert.equal((await register({ name: "A B", senderPhone: "615552501", receiverPhone: "615552502", companyId: HORMUUD }, customer)).status, 403);
   assert.equal((await call("GET", "/admin/agent-registrations", undefined, agentToken)).status, 403);
 });
+
+test("an agent edits and removes their own registered customer; the customer and orders stay", async () => {
+  const reg = (await register({ name: "Edit Me", senderPhone: "615552601", receiverPhone: "615552602", companyId: HORMUUD })).body;
+  const edit = (b: Record<string, unknown>, token = agentToken) => call("PUT", `/agent/registered-customers/${reg.id}`, b, token);
+  const ok = await edit({ name: "Edited Name", senderPhone: "615552611", receiverPhone: "615552612", companyId: HORMUUD });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.deepEqual([ok.body.name, ok.body.senderNumber, ok.body.receiverNumber, ok.body.companyId], ["Edited Name", "252615552611", "252615552612", HORMUUD]);
+  // Checked like register; another customer's payment number is refused; only the agent's own customers.
+  assert.equal((await edit({ name: "Edited Name", senderPhone: "615552611", receiverPhone: "615552612", companyId: AMTEL })).body.code, "invalid_receiver");
+  assert.equal((await edit({ name: "Edited Name", senderPhone: "615552101", receiverPhone: "615552612", companyId: HORMUUD })).body.code, "sender_taken");
+  assert.equal((await edit({ name: "X Y", senderPhone: "615552621", receiverPhone: "615552622", companyId: HORMUUD }, otherToken)).status, 404);
+  assert.ok(await queryOne(`SELECT 1 FROM admin_activity_log WHERE action='agent_registration_edited' AND entity_id=$1`, [reg.id]));
+
+  // The new payment number now buys the internet for the new receiver.
+  await pay("615552611", 0.5);
+  assert.equal((await query(`SELECT 1 FROM orders WHERE customer_id=$1`, [reg.id])).length, 1);
+
+  assert.equal((await call("DELETE", `/agent/registered-customers/${reg.id}`, undefined, otherToken)).status, 404, "not the other agent's");
+  const del = await call("DELETE", `/agent/registered-customers/${reg.id}`);
+  assert.equal(del.status, 200, JSON.stringify(del.body));
+  assert.equal((await call("GET", `/agent/registered-customers/${reg.id}`)).status, 404);
+  assert.ok(!(await call("GET", "/agent/registered-customers")).body.some((c: any) => c.id === reg.id));
+  assert.ok(await queryOne(`SELECT 1 FROM customers WHERE id=$1`, [reg.id]), "the customer is kept");
+  assert.equal((await query(`SELECT 1 FROM orders WHERE customer_id=$1`, [reg.id])).length, 1, "orders are kept");
+  assert.ok(await queryOne(`SELECT 1 FROM admin_activity_log WHERE action='agent_registration_removed' AND entity_id=$1`, [reg.id]));
+  // Removed: a new payment from that number sends nothing.
+  await pay("615552611", 0.5);
+  assert.equal((await query(`SELECT 1 FROM orders WHERE customer_id=$1`, [reg.id])).length, 1, "no internet after removal");
+});
