@@ -140,31 +140,31 @@ fun CustomersScreen(onBack: () -> Unit, onOpenCustomer: (String) -> Unit) {
 
     Scaffold(containerColor = DalabWhite) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
-            CustomersHeader(onBack = onBack, onAddCustomer = { showAddDialog = true })
+            CustomersHeader(
+                onBack = onBack,
+                onAddCustomer = { showAddDialog = true },
+                total = allCustomers.size,
+                newThisMonth = newThisMonthCount,
+                suspended = allCustomers.count { it.status == "blocked" },
+            )
 
             Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-                Spacer(Modifier.height(14.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                    CustomerStatCard(label = "Total Customers", value = "${allCustomers.size}", color = DalabIndigo, modifier = Modifier.weight(1f))
-                    CustomerStatCard(label = "New This Month", value = "$newThisMonthCount", color = DalabGreen, modifier = Modifier.weight(1f))
-                }
-
                 Spacer(Modifier.height(14.dp))
 
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
                         value = query,
                         onValueChange = { query = it },
-                        placeholder = { Text("Search by name or phone number") },
+                        placeholder = { Text("Search name or number", maxLines = 1) },
                         leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                         singleLine = true,
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(18.dp),
                         modifier = Modifier.weight(1f),
                     )
                     Surface(
                         color = DalabSoftBlue.copy(alpha = 0.25f),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.size(52.dp).clickable { sortAscending = !sortAscending },
+                        shape = RoundedCornerShape(18.dp),
+                        modifier = Modifier.size(56.dp).clickable { sortAscending = !sortAscending },
                     ) {
                         Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
                             Icon(Icons.Filled.SwapVert, contentDescription = "Reverse sort order", tint = DalabIndigo)
@@ -218,29 +218,38 @@ fun CustomersScreen(onBack: () -> Unit, onOpenCustomer: (String) -> Unit) {
 }
 
 @Composable
-private fun CustomersHeader(onBack: () -> Unit, onAddCustomer: () -> Unit) {
-    Row(
+private fun CustomersHeader(onBack: () -> Unit, onAddCustomer: () -> Unit, total: Int, newThisMonth: Int, suspended: Int) {
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(
-                Brush.linearGradient(listOf(DalabBrandFill, DalabBrandFillLight)),
-                shape = RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp),
-            )
-            .padding(horizontal = 8.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .background(WaaproHeaderBrush, RoundedCornerShape(bottomStart = 26.dp, bottomEnd = 26.dp))
+            .padding(start = 8.dp, end = 16.dp, top = 10.dp, bottom = 18.dp),
     ) {
-        IconButton(onClick = onBack) {
-            Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
-        }
-        Column(modifier = Modifier.weight(1f)) {
-            Text("Customers", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = Color.White)
-        }
-        Surface(color = Color.White, shape = CircleShape, modifier = Modifier.clickable(onClick = onAddCustomer)) {
-            Box(modifier = Modifier.size(44.dp), contentAlignment = Alignment.Center) {
-                Icon(Icons.Filled.PersonAdd, contentDescription = "Add customer", tint = DalabBrandFill, modifier = Modifier.size(20.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White) }
+            Text("Customers", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 22.sp, modifier = Modifier.weight(1f))
+            Surface(color = WaaproGold, shape = CircleShape, modifier = Modifier.clickable(onClick = onAddCustomer)) {
+                Box(modifier = Modifier.size(44.dp), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Filled.PersonAdd, contentDescription = "Add customer", tint = WaaproNavy, modifier = Modifier.size(22.dp))
+                }
             }
         }
-        Spacer(Modifier.width(4.dp))
+        Spacer(Modifier.height(12.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(start = 8.dp)) {
+            HeaderFigure("Customers", "$total", Modifier.weight(1f))
+            HeaderFigure("New this month", "$newThisMonth", Modifier.weight(1f))
+            HeaderFigure("Suspended", "$suspended", Modifier.weight(1f), alert = suspended > 0)
+        }
+    }
+}
+
+@Composable
+private fun HeaderFigure(label: String, value: String, modifier: Modifier, alert: Boolean = false) {
+    Surface(shape = RoundedCornerShape(16.dp), color = if (alert) Color(0xFFDC2626).copy(alpha = 0.85f) else Color.White.copy(alpha = 0.14f), modifier = modifier) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Text(value, color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp, maxLines = 1)
+            Text(label, color = Color.White.copy(alpha = 0.85f), fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+        }
     }
 }
 
@@ -275,15 +284,21 @@ private fun FilterPill(label: String, selected: Boolean, onClick: () -> Unit) {
 
 @Composable
 private fun CustomerRow(customer: CustomerSummary, onClick: () -> Unit) {
-    Surface(color = DalabWhite, shape = RoundedCornerShape(14.dp), shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(18.dp),
+        shadowElevation = 2.dp,
+        border = BorderStroke(1.dp, WaaproBorder.copy(alpha = 0.5f)),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+    ) {
         Row(
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp).fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            CustomerAvatar(name = customer.name, phone = customer.phone)
+            CustomerAvatar(name = customer.name, phone = customer.phone, size = 44)
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(customer.name?.takeIf { it.isNotBlank() } ?: "Unnamed customer", fontWeight = FontWeight.SemiBold, color = DalabIndigo, style = MaterialTheme.typography.bodyLarge)
+                Text(customer.name?.takeIf { it.isNotBlank() } ?: "Unnamed customer", fontWeight = FontWeight.ExtraBold, color = DalabIndigo, fontSize = 16.sp, maxLines = 1)
                 Text(formatSomaliPhone(customer.phone), style = MaterialTheme.typography.bodySmall, color = DalabMuted)
             }
             if (customer.status == "blocked") {
