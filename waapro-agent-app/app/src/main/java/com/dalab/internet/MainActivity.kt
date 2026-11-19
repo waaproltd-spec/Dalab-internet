@@ -57,7 +57,6 @@ import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Sell
 import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -1185,17 +1184,8 @@ private fun MoreScreen(
                 icon = Icons.Filled.AccountBalanceWallet,
                 onClick = onOpenResellerWithdrawalSetup,
             )
-            // Log in with a Reseller ID + PIN to see that reseller's own
-            // balance, orders, deposits, and withdrawals -- the exact same
-            // Admin Reseller system (see MainActivity's ResellerScreen /
-            // ui/ResellerScreens.kt), just reachable from here instead of
-            // only from the Admin Dashboard.
-            MoreItem(
-                title = "Reseller",
-                subtitle = "Log in as a Reseller: balance, orders, deposits, withdrawals",
-                icon = Icons.Filled.Storefront,
-                onClick = onOpenReseller,
-            )
+            // The "Reseller" log-in entry was removed from the Agent App at
+            // the owner's request; resellers use the Admin Dashboard.
         }
         MoreSection(title = "Catalog & Sales") {
             MoreItem(
