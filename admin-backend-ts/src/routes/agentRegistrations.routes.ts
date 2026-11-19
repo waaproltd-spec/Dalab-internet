@@ -7,7 +7,6 @@ import { recordActivity } from "../utils/activityLog.js";
 import { validateMobileNumber, companyKeyFromLabel, normalizeMobileDigits } from "../lib/phoneValidation.js";
 import { findOrCreateCustomerByPhone } from "../lib/customerPhone.js";
 import { sendPushToAgent } from "../services/push.js";
-import { serializeOfflineProfile } from "./customers.routes.js";
 
 /**
  * Agent Customer Registration.
@@ -42,7 +41,11 @@ const ORDER_COLUMNS = `
   o.id, o.customer_id, o.status, o.amount, o.created_at, o.completed_at, o.updated_at,
   o.sender_phone, o.receiver_phone, o.channel, o.company_id, co.name AS company_name,
   COALESCE(o.package_name_snapshot, p.name) AS package_name,
-  pt.transaction_ref, pt.status AS payment_status, pt.payment_timestamp AS paid_at,
+  -- The transaction ID from the payment ledger, else from the payment SMS
+  -- that was matched to this order.
+  COALESCE(pt.transaction_ref, (SELECT s.transaction_ref FROM sms_logs s
+             WHERE s.matched_order_id = o.id AND s.transaction_ref IS NOT NULL LIMIT 1)) AS transaction_ref,
+  pt.status AS payment_status, pt.payment_timestamp AS paid_at,
   CASE WHEN pt.id IS NULL AND o.channel <> 'offline_auto' THEN 'awaiting_payment'
        WHEN pt.status = 'failed' THEN 'payment_failed'
        ELSE 'paid' END AS payment_state,
@@ -53,8 +56,10 @@ const ORDER_JOINS = `
   JOIN companies co ON co.id = o.company_id
   LEFT JOIN packages p ON p.id = o.package_id
   LEFT JOIN LATERAL (
+    -- The payment itself (it carries the transaction ID), not the
+    -- bookkeeping row added when the internet is sent (no transaction ID).
     SELECT id, transaction_ref, status, payment_timestamp FROM payment_transactions
-     WHERE order_id = o.id ORDER BY created_at DESC LIMIT 1
+     WHERE order_id = o.id ORDER BY (transaction_ref IS NULL), created_at DESC LIMIT 1
   ) pt ON true`;
 
 /** One registration row: the customer, their setup and order totals. */
@@ -136,10 +141,7 @@ agentRegistrationsRouter.post("/agent/registered-customers", requireAuth("agent"
   });
 
   const registration = await queryOne(`${REGISTRATION_SELECT} AND c.id = $1`, [customer.id]);
-  // Where the customer pays: the company's payment number/pay code for the
-  // customer's own wallet (same as the Customer App's Rukumo shows).
-  const setup = await serializeOfflineProfile(customer.id);
-  sendJson(res, created ? 201 : 200, { ...registration, created, paymentMethod: setup?.paymentMethod ?? null });
+  sendJson(res, created ? 201 : 200, { ...registration, created });
 });
 
 /** The networks and the pay-to numbers, for the registration form. */
@@ -166,14 +168,13 @@ agentRegistrationsRouter.get("/agent/registered-customers", requireAuth("agent")
 agentRegistrationsRouter.get("/agent/registered-customers/:id", requireAuth("agent"), async (req, res) => {
   const registration = await queryOne(`${REGISTRATION_SELECT} AND c.registered_by_agent_id = $1 AND c.id = $2`, [req.auth!.sub, req.params.id]);
   if (!registration) return sendJson(res, 404, { error: "Not one of your registered customers" });
-  const setup = await serializeOfflineProfile(req.params.id);
   const orders = await query(`SELECT ${ORDER_COLUMNS} FROM orders o ${ORDER_JOINS} WHERE o.customer_id=$1 ORDER BY o.created_at DESC LIMIT 100`, [req.params.id]);
   const issues = await query(
     `SELECT id, sender_phone, amount, transaction_ref, reason, created_at, resolved_at FROM agent_registration_payment_issues
       WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 50`,
     [req.params.id]
   );
-  sendJson(res, 200, { ...registration, paymentMethod: setup?.paymentMethod ?? null, orders, paymentIssues: issues });
+  sendJson(res, 200, { ...registration, orders, paymentIssues: issues });
 });
 
 /** The agent's transaction history: every order of the customers they registered. */

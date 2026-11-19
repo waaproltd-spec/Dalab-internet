@@ -113,9 +113,14 @@ test("the customer pays: the payment is verified and only then the order is crea
   await pay("615552101", 1.75, ref);
   assert.equal((await query(`SELECT 1 FROM orders WHERE customer_id=$1`, [reg.id])).length, 1, "no duplicate");
 
+  // A payment row without the transaction ID (e.g. one created when sending
+  // started): the order still shows the ID from its matched payment SMS.
+  await query(`UPDATE payment_transactions SET transaction_ref=NULL WHERE order_id=$1`, [orders[0].id]);
   const mine = await call("GET", `/agent/registered-customers/${reg.id}`);
   assert.equal(mine.status, 200);
   assert.equal(mine.body.orders.length, 1);
+  assert.equal(mine.body.orders[0].transactionRef, ref, "the payment's transaction ID");
+  assert.equal(mine.body.paymentMethod, undefined, "no pay-to card");
   assert.equal(mine.body.orders[0].paymentState, "paid");
   assert.ok(["waiting", "sending"].includes(mine.body.orders[0].deliveryState), "paid, not yet delivered");
 });
