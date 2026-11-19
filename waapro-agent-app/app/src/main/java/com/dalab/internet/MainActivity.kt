@@ -104,6 +104,7 @@ import com.dalab.internet.ui.ExchangeOrdersListScreen
 import com.dalab.internet.ui.CiyaarahaScreen
 import com.dalab.internet.ui.NalaSocoManagementScreen
 import com.dalab.internet.ui.PromoAdManagementScreen
+import com.dalab.internet.ui.CompanyProfitScreen
 import com.dalab.internet.ui.NewSaleScreen
 import com.dalab.internet.ui.NotificationsScreen
 import com.dalab.internet.ui.OrderDetailScreen
