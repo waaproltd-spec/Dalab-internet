@@ -4,6 +4,7 @@ import { query, queryOne } from "../db/pool.js";
 import { requireAuth } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
 import { parseDataUri } from "../utils/dataUri.js";
+import { sendImage } from "../utils/sendImage.js";
 
 export const nalaSocoRouter = Router();
 
@@ -46,8 +47,7 @@ nalaSocoRouter.get("/nala-soco/:id/image", async (req, res) => {
   );
   if (!row || !row.image_data || !row.image_mime_type) return sendJson(res, 404, { error: "Image not found" });
   res.setHeader("Content-Type", row.image_mime_type);
-  res.setHeader("Cache-Control", "public, max-age=3600");
-  res.send(row.image_data);
+  sendImage(req, res, row.image_data);
 });
 
 nalaSocoRouter.get("/admin/nala-soco", requireNalaSocoManager(), async (_req, res) => {

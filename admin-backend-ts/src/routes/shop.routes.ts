@@ -11,6 +11,7 @@ import { sendPushToAllAgents } from "../services/push.js";
 import { recordActivity } from "../utils/activityLog.js";
 import { formatEvcDahabUssdAmount } from "../utils/ussdFormatting.js";
 import { validateMobileNumber } from "../lib/phoneValidation.js";
+import { sendImage } from "../utils/sendImage.js";
 
 // Shop: DALAB's 4th independent customer-facing service (Internet | eBadal
 // | Reseller | Shop) — see migration 074's header comment for the full
@@ -101,8 +102,7 @@ shopRouter.get("/shop/categories/:id/image", async (req, res) => {
   );
   if (!row?.image_data) return sendJson(res, 404, { error: "No image set for this category" });
   res.setHeader("Content-Type", row.mime_type);
-  res.setHeader("Cache-Control", "public, max-age=3600");
-  res.send(row.image_data);
+  sendImage(req, res, row.image_data);
 });
 
 // Generic subcategory support (migration 077) -- Electronics is the one
@@ -226,8 +226,7 @@ shopRouter.get("/shop/products/:productId/images/:imageId", async (req, res) => 
   );
   if (!row) return sendJson(res, 404, { error: "Image not found" });
   res.setHeader("Content-Type", row.mime_type);
-  res.setHeader("Cache-Control", "public, max-age=3600");
-  res.send(row.image_data);
+  sendImage(req, res, row.image_data);
 });
 
 // Upserted (viewed_at bumped), not appended -- only "did they view this,
@@ -937,8 +936,7 @@ shopRouter.get("/shop/reviews/:id/photo", async (req, res) => {
   );
   if (!row || !row.photo_data) return sendJson(res, 404, { error: "Photo not found" });
   res.setHeader("Content-Type", row.photo_mime_type ?? "application/octet-stream");
-  res.setHeader("Cache-Control", "public, max-age=3600");
-  res.send(row.photo_data);
+  sendImage(req, res, row.photo_data);
 });
 
 // Purchase-gated per spec: orderItemId must belong to one of this

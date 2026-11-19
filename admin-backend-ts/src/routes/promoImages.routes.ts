@@ -5,6 +5,7 @@ import { requireAuth } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
 import { parseDataUri } from "../utils/dataUri.js";
 import { smallPromoImage } from "../utils/smallPromoImage.js";
+import { sendImage } from "../utils/sendImage.js";
 
 export const promoImagesRouter = Router();
 
@@ -46,8 +47,7 @@ promoImagesRouter.get("/promo-images/:id/image", async (req, res) => {
     ? { data: row.image_data, mime: row.mime_type }
     : await smallPromoImage(`${req.params.id}:${row.version}`, row.image_data, row.mime_type);
   res.setHeader("Content-Type", out.mime);
-  res.setHeader("Cache-Control", "public, max-age=3600");
-  res.send(out.data);
+  sendImage(req, res, out.data);
 });
 
 promoImagesRouter.get("/admin/promo-images", requireSuperAdmin(), async (_req, res) => {

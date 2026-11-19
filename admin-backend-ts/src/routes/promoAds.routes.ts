@@ -5,6 +5,7 @@ import { requireAuth } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
 import { parseDataUri } from "../utils/dataUri.js";
 import { readImageDimensions } from "../utils/imageDimensions.js";
+import { sendImage } from "../utils/sendImage.js";
 
 export const promoAdsRouter = Router();
 
@@ -112,8 +113,7 @@ promoAdsRouter.get("/promo-ads/:id/image", async (req, res) => {
   );
   if (!row) return sendJson(res, 404, { error: "Image not found" });
   res.setHeader("Content-Type", row.mime_type);
-  res.setHeader("Cache-Control", "public, max-age=3600");
-  res.send(row.image_data);
+  sendImage(req, res, row.image_data);
 });
 
 // ---------------- Agent App (management) ----------------

@@ -4,6 +4,7 @@ import { requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { parseDataUri } from "../utils/dataUri.js";
+import { sendImage } from "../utils/sendImage.js";
 
 export const categoriesRouter = Router();
 
@@ -78,8 +79,7 @@ categoriesRouter.get("/categories/:id/icon", async (req, res) => {
   );
   if (!row || !row.icon_data) return sendJson(res, 404, { error: "Icon not found" });
   res.setHeader("Content-Type", row.icon_mime_type || "image/png");
-  res.setHeader("Cache-Control", "public, max-age=3600");
-  res.send(row.icon_data);
+  sendImage(req, res, row.icon_data);
 });
 
 categoriesRouter.get("/admin/categories", requireStaff(), async (req, res) => {

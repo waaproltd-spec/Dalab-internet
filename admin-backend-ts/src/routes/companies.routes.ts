@@ -10,6 +10,7 @@ import { recordActivity } from "../utils/activityLog.js";
 import { parseDataUri } from "../utils/dataUri.js";
 import { matchTemplateByName, selfHealStuckOrders } from "./ussd.routes.js";
 import { broadcast } from "../realtime/orderEvents.js";
+import { sendImage } from "../utils/sendImage.js";
 
 export const companiesRouter = Router();
 export const packagesRouter = Router();
@@ -52,8 +53,7 @@ companiesRouter.get("/companies/:id/logo", async (req, res) => {
   );
   if (!row || !row.logo_data) return sendJson(res, 404, { error: "Logo not found" });
   res.setHeader("Content-Type", row.logo_mime_type || "image/png");
-  res.setHeader("Cache-Control", "public, max-age=3600");
-  res.send(row.logo_data);
+  sendImage(req, res, row.logo_data);
 });
 
 companiesRouter.get("/companies/:id/packages", async (req, res) => {
@@ -673,8 +673,7 @@ packagesRouter.get("/packages/:id/image", async (req, res) => {
   );
   if (!row || !row.image_data) return sendJson(res, 404, { error: "Image not found" });
   res.setHeader("Content-Type", row.image_mime_type || "image/png");
-  res.setHeader("Cache-Control", "public, max-age=3600");
-  res.send(row.image_data);
+  sendImage(req, res, row.image_data);
 });
 
 packagesRouter.put("/admin/packages/:id/image", requirePermission("packages.manage"), async (req, res) => {

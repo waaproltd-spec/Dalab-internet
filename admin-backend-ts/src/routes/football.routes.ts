@@ -11,6 +11,7 @@ import { sendJson } from "../utils/camelCase.js";
 import { sendPushToCustomer } from "../services/push.js";
 import { randomUUID } from "node:crypto";
 import { MediaError, deleteImageFile, imageInUse, mediaDir, readImage, saveImage } from "../utils/mediaStorage.js";
+import { sendImage } from "../utils/sendImage.js";
 
 /**
  * Ciyaaraha -- football exact-score prediction contests.
@@ -155,9 +156,8 @@ footballRouter.get("/football/images/:id", async (req, res) => {
   const img = await readImage(req.params.id);
   if (!img) return sendJson(res, 404, { error: "Image not found" });
   res.setHeader("Content-Type", img.mimeType);
-  res.setHeader("Cache-Control", "public, max-age=3600");
   res.setHeader("X-Content-Type-Options", "nosniff");
-  res.send(img.data);
+  sendImage(req, res, img.data);
 });
 
 // ---------- customer ----------
