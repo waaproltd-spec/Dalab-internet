@@ -112,7 +112,12 @@ class ResellerWithdrawalInteractiveUssdAccessibilityService : AccessibilityServi
                 return
             }
             val inputNode = findEditableNode(root)
-            val looksLikeUssdDialog = inputNode != null || isTransientLoadingDialog(messageText) || findPositiveButton(root) != null
+            // Never the keyboard, an overlay, this app, the launcher or a
+            // chat app -- see CarrierWindowFilter (UssdSafety.kt).
+            val looksLikeUssdDialog = CarrierWindowFilter.accept(
+                windowPackage, windowType, packageName,
+                looksLikeDialog = inputNode != null || isTransientLoadingDialog(messageText) || findPositiveButton(root) != null,
+            )
             if (!bridge.isWindowAllowed(windowPackage, windowId, looksLikeUssdDialog, ownPackageName = packageName)) {
                 if (bridge.shouldLogWindowMismatch(windowPackage)) {
                     val reason = if (bridge.lockedWindowPackageOrNull() == null) {

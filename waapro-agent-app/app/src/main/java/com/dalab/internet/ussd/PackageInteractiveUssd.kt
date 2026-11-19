@@ -164,8 +164,15 @@ class PackageInteractiveUssdRunner(private val context: Context) {
                 PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
                 "DalabAgent:PackageMenuUssdDial",
             )
+        // The PIN is fetched BEFORE dialing (with retries): on a slow or
+        // dropping connection, fetching it at the PIN step could stall
+        // while the carrier's menu times out. No PIN, no dial -- nothing
+        // is paid. It lives only in memory for this one attempt.
+        val pin = fetchPinWithRetry(fetchPin)
+            ?: return DialResult(DialOutcome.FAILED, "Couldn't get the provider PIN from the server — nothing was dialed, nothing was paid.", moneyNotSent = true)
+
         bridge.acquireSession()
-        wakeLock?.acquire(150_000)
+        wakeLock?.acquire(240_000)
         bridge.activeWakeLock = wakeLock
         bridge.arm(plan.steps.size)
         try {
@@ -175,65 +182,11 @@ class PackageInteractiveUssdRunner(private val context: Context) {
                 DiagnosticsLog.record("package_menu_dial", "Dial threw (order $orderId): ${e.message}", isError = true)
                 return DialResult(DialOutcome.FAILED, "Could not start the dial: ${e.message}")
             }
-
-            for ((index, step) in plan.steps.withIndex()) {
-                val label = "step ${index + 1} of ${plan.steps.size}"
-                var screen = awaitScreen(if (index == 0) 30_000L else 20_000L)
-                    ?: return DialResult(DialOutcome.TIMEOUT, "No response from the carrier at $label — nothing was paid.", moneyNotSent = true)
-                // The carrier may draw its menu in parts, or the first read
-                // can come a moment early: before giving up, look again for
-                // up to 4 seconds. Nothing is typed until the screen matches.
-                val settleUntil = System.currentTimeMillis() + SCREEN_SETTLE_MS
-                while ((!screen.hasInput || screenMismatch(step, screen.text) != null) && System.currentTimeMillis() < settleUntil) {
-                    screen = awaitScreen(settleUntil - System.currentTimeMillis(), drain = false) ?: break
-                }
-                if (!screen.hasInput) {
-                    // An error or notice instead of the expected menu (e.g.
-                    // "service not available"). Nothing has been paid yet.
-                    return DialResult(DialOutcome.FAILED, "Carrier at $label: \"${screen.text}\" — nothing was paid.")
-                }
-                screenMismatch(step, screen.text)?.let { reason ->
-                    cancelDialog()
-                    DiagnosticsLog.record("package_menu_mismatch", "Order $orderId, $label: $reason. Screen: \"${screen.text}\"", isError = true)
-                    return DialResult(
-                        DialOutcome.FAILED,
-                        "Stopped at $label: $reason. Cancelled before the PIN — nothing was paid. Check this USSD service's settings in the dashboard.",
-                        noRetry = true,
-                    )
-                }
-
-                val reply = if (step.secret) {
-                    fetchPin() ?: run {
-                        cancelDialog()
-                        return DialResult(DialOutcome.FAILED, "Couldn't get the provider PIN from the server — cancelled before paying, nothing was paid.")
-                    }
-                } else {
-                    step.reply
-                }
-                bridge.armReplyInjection(reply)
-                val submitted = awaitSubmitted(15_000L)
-                if (!submitted) {
-                    return if (step.secret) {
-                        DialResult(
-                            DialOutcome.AMBIGUOUS,
-                            "Couldn't confirm the PIN was submitted — check the phone and the Somtel SMS before retrying.",
-                            noRetry = true,
-                        )
-                    } else {
-                        DialResult(DialOutcome.FAILED, "Couldn't submit $label — nothing was paid.")
-                    }
-                }
+            val result = InteractiveMenuDriver.run(plan, pin, BridgePort(), now = { System.currentTimeMillis() })
+            if (result.outcome != DialOutcome.SUCCESS) {
+                DiagnosticsLog.record("package_menu_result", "Order $orderId: ${result.outcome} — ${result.responseMessage}", isError = true)
             }
-
-            // After the PIN: the carrier's own receipt decides.
-            val receipt = awaitFinalText(30_000L)
-                ?: return DialResult(
-                    DialOutcome.AMBIGUOUS,
-                    "The PIN was sent but no confirmation came back — check the Somtel SMS before retrying.",
-                    noRetry = true,
-                )
-            val outcome = classifyPackageMenuResponse(receipt, plan.successKeywords.orEmpty())
-            return DialResult(outcome, receipt, noRetry = outcome != DialOutcome.SUCCESS)
+            return result
         } finally {
             bridge.disarm()
             bridge.releaseSession()
@@ -242,11 +195,36 @@ class PackageInteractiveUssdRunner(private val context: Context) {
         }
     }
 
+    private suspend fun fetchPinWithRetry(fetchPin: suspend () -> String?): String? {
+        repeat(PIN_FETCH_TRIES) { attempt ->
+            fetchPin()?.let { return it }
+            if (attempt < PIN_FETCH_TRIES - 1) kotlinx.coroutines.delay(2_000L * (attempt + 1))
+        }
+        return null
+    }
+
+    /** The real phone behind [InteractiveMenuDriver]: the accessibility service's events. */
+    private inner class BridgePort : CarrierScreenPort {
+        override suspend fun nextScreen(timeoutMs: Long, drain: Boolean): CarrierScreen? {
+            val screen = awaitScreen(timeoutMs, drain) ?: return null
+            return CarrierScreen(screen.text, screen.hasInput)
+        }
+
+        override suspend fun reply(text: String, timeoutMs: Long): Boolean {
+            bridge.armReplyInjection(text)
+            return awaitSubmitted(timeoutMs)
+        }
+
+        override suspend fun cancel() = cancelDialog()
+
+        override suspend fun finalText(timeoutMs: Long): String? = awaitFinalText(timeoutMs)
+    }
+
     private data class Screen(val text: String, val hasInput: Boolean)
 
     private companion object {
-        /** How long a screen that doesn't match yet may still change before the step gives up. */
-        const val SCREEN_SETTLE_MS = 4_000L
+        /** Tries to get the provider PIN before dialing. */
+        const val PIN_FETCH_TRIES = 3
     }
 
     /** Next real carrier screen; auto-tapped confirmations are skipped. */

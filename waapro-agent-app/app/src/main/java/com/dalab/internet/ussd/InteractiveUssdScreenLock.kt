@@ -47,12 +47,25 @@ import kotlinx.coroutines.sync.Mutex
 object InteractiveUssdScreenLock {
     private val mutex = Mutex()
 
-    suspend fun acquire() = mutex.lock()
+    private val _active = kotlinx.coroutines.flow.MutableStateFlow(false)
+
+    /** True while an on-screen USSD session runs: the Agent App then covers
+     * its own screens, blocks Back and keeps the screen on (MainActivity),
+     * so nobody types into the app while the carrier dialog is filled in. */
+    val active: kotlinx.coroutines.flow.StateFlow<Boolean> = _active
+
+    suspend fun acquire() {
+        mutex.lock()
+        _active.value = true
+    }
 
     /** Pairs with [acquire] -- tolerates being called when not held so a
      * caller that failed before ever acquiring can still safely no-op this
      * in a shared cleanup path. */
     fun release() {
-        if (mutex.isLocked) mutex.unlock()
+        if (mutex.isLocked) {
+            _active.value = false
+            mutex.unlock()
+        }
     }
 }

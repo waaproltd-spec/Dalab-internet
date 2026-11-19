@@ -83,7 +83,20 @@ class ResellerWithdrawalInteractiveUssdOrchestrator(private val context: Context
             payout.pin,
         )
         val auditString = auditUssdString(payout)
-        val attemptId = startDialAttemptLog(withdrawal.id, route.simSlot, auditString)
+        // Dial only on a dial record the server created just now: offline,
+        // or a record that already existed (dialed before, maybe while the
+        // phone was offline), means nothing is dialed -- a dropped
+        // connection can never lead to paying this withdrawal twice.
+        val start = startDialAttemptLog(withdrawal.id, route.simSlot, auditString)
+        if (!payoutStartAllowsDial(start.httpCode)) {
+            return when (start.httpCode) {
+                200 -> DialResult(DialOutcome.DUPLICATE_SKIPPED, "This withdrawal was already dialed — not dialing it again.")
+                null -> DialResult(DialOutcome.NETWORK_UNAVAILABLE, "Couldn't reach the server before paying — nothing was dialed; it will be tried again.")
+                else -> DialResult(DialOutcome.FAILED, "The server refused this payout (HTTP ${start.httpCode}) — nothing was dialed.", moneyNotSent = true)
+            }
+        }
+        val attemptId = start.id
+        val pinIndex = resellerPinIndex(payout.replySteps, replies.size)
 
         // Same reasoning as ExchangeUssdOrchestrator: the carrier's reply
         // dialog must actually be drawn on screen for the accessibility
@@ -137,9 +150,32 @@ class ResellerWithdrawalInteractiveUssdOrchestrator(private val context: Context
             }
 
             for ((index, reply) in replies.withIndex()) {
-                val dialogEvent = awaitEventSkippingConfirmations(if (index == 0) 30_000L else 15_000L)
-                if (dialogEvent !is UssdDialogEvent.DialogSeen) {
-                    val result = DialResult(DialOutcome.TIMEOUT, "No response from the carrier at step ${index + 1} of ${replies.size} — check the phone or complete manually.")
+                val pinSent = index > pinIndex
+                // Waits for the screen to stop changing (slow networks draw
+                // menus late and in parts) before reading it.
+                val settled = awaitSettledScreen(if (index == 0) 45_000L else 35_000L, 900L, { System.currentTimeMillis() }) { t, drain ->
+                    (awaitEventSkippingConfirmations(t, drain) as? UssdDialogEvent.DialogSeen)?.let { CarrierScreen(it.text, it.hasInput) }
+                }
+                if (settled == null) {
+                    val result = if (pinSent) {
+                        DialResult(DialOutcome.TIMEOUT, "No response from the carrier at step ${index + 1} of ${replies.size} — check the phone or complete manually.")
+                    } else {
+                        cancelDialog()
+                        DialResult(DialOutcome.FAILED, "No response from the carrier at step ${index + 1} of ${replies.size} before the PIN — nothing was paid.", moneyNotSent = true)
+                    }
+                    reportDialResult(withdrawal.id, route.simSlot, auditString, attemptId, result)
+                    return result
+                }
+                val dialogEvent = UssdDialogEvent.DialogSeen(settled.text, settled.hasInput)
+                // The carrier's error words: never type the next reply (above
+                // all the PIN) into an error screen.
+                resellerScreenProblem(dialogEvent.text)?.let { reason ->
+                    val result = if (pinSent) {
+                        DialResult(DialOutcome.AMBIGUOUS, "Stopped at step ${index + 1} of ${replies.size}: $reason — \"${dialogEvent.text}\". Check the phone before retrying.")
+                    } else {
+                        cancelDialog()
+                        DialResult(DialOutcome.FAILED, "Stopped at step ${index + 1} of ${replies.size}: $reason — \"${dialogEvent.text}\". Cancelled before the PIN — nothing was paid.", moneyNotSent = true)
+                    }
                     reportDialResult(withdrawal.id, route.simSlot, auditString, attemptId, result)
                     return result
                 }
@@ -154,7 +190,7 @@ class ResellerWithdrawalInteractiveUssdOrchestrator(private val context: Context
                 }
 
                 ResellerWithdrawalInteractiveUssdBridge.armReplyInjection(reply)
-                val submittedEvent = awaitEventSkippingConfirmations(15_000L)
+                val submittedEvent = awaitEventSkippingConfirmations(20_000L)
                 if (submittedEvent !is UssdDialogEvent.PinSubmitted) {
                     val result = DialResult(DialOutcome.AMBIGUOUS, "Could not confirm step ${index + 1} of ${replies.size} was submitted — check the phone; the withdrawal may still be pending on the carrier's side.")
                     reportDialResult(withdrawal.id, route.simSlot, auditString, attemptId, result)
@@ -162,7 +198,7 @@ class ResellerWithdrawalInteractiveUssdOrchestrator(private val context: Context
                 }
             }
 
-            val finalEvent = awaitEventSkippingConfirmations(25_000L)
+            val finalEvent = awaitEventSkippingConfirmations(45_000L)
             if (finalEvent !is UssdDialogEvent.DialogSeen) {
                 val result = DialResult(DialOutcome.AMBIGUOUS, "No final confirmation from the carrier after the last reply — check the phone before retrying.")
                 reportDialResult(withdrawal.id, route.simSlot, auditString, attemptId, result)
@@ -188,8 +224,8 @@ class ResellerWithdrawalInteractiveUssdOrchestrator(private val context: Context
      * exactly — see its own doc comment for why confirmation-advanced
      * events must be transparently skipped and stale buffered events
      * drained before each wait. */
-    private suspend fun awaitEventSkippingConfirmations(timeoutMs: Long): UssdDialogEvent? {
-        ResellerWithdrawalInteractiveUssdBridge.drainStaleEvents()
+    private suspend fun awaitEventSkippingConfirmations(timeoutMs: Long, drain: Boolean = true): UssdDialogEvent? {
+        if (drain) ResellerWithdrawalInteractiveUssdBridge.drainStaleEvents()
         val deadline = System.currentTimeMillis() + timeoutMs
         while (true) {
             val remaining = deadline - System.currentTimeMillis()
@@ -207,16 +243,32 @@ class ResellerWithdrawalInteractiveUssdOrchestrator(private val context: Context
         }
     }
 
-    private suspend fun startDialAttemptLog(withdrawalId: String, simSlot: Int, ussdString: String): String? {
+    private data class StartLog(val httpCode: Int?, val id: String?)
+
+    private suspend fun startDialAttemptLog(withdrawalId: String, simSlot: Int, ussdString: String): StartLog {
         return try {
             val response = ApiClient.service.startResellerWithdrawalDialAttempt(
                 withdrawalId,
                 DialAttemptStartRequest(simSlot, ussdString, attemptNumber = 1),
             )
-            response.body()?.id
+            StartLog(response.code(), response.body()?.id)
         } catch (e: Exception) {
             DiagnosticsLog.record("reseller_withdrawal_interactive_dial_attempt_log", "Start-log failed (withdrawal $withdrawalId): ${e.message}", isError = false)
-            null
+            StartLog(null, null)
+        }
+    }
+
+    /** Best effort: back out of the carrier dialog (Cancel). Never presses Send. */
+    private suspend fun cancelDialog() {
+        ResellerWithdrawalInteractiveUssdBridge.armDialogCancellation()
+        val deadline = System.currentTimeMillis() + 5_000L
+        while (true) {
+            val remaining = deadline - System.currentTimeMillis()
+            if (remaining <= 0) return
+            when (ResellerWithdrawalInteractiveUssdBridge.awaitNextEvent(remaining)) {
+                UssdDialogEvent.DialogCancelled, null -> return
+                else -> continue
+            }
         }
     }
 

@@ -51,6 +51,29 @@ class ReflectionKeepRulesTest {
         assertTrue(rules().contains("-keepclassmembers enum com.dalab.internet.** { *; }"))
     }
 
+    /**
+     * Automatic, so a new screen can't repeat Agent App 1.0.46's bug: its
+     * Register Customer JSON classes lived in the ui package, R8 renamed
+     * their fields and every answer failed to parse ("No connection").
+     * Every class the API service sends or reads must be in a kept
+     * package (data / network) or kept by name.
+     */
+    @Test fun `every class the API sends or reads survives the release build`() {
+        val api = listOf(
+            File("src/main/java/com/dalab/internet/network/ApiService.kt"),
+            File("agent-app/app/src/main/java/com/dalab/internet/network/ApiService.kt"),
+        ).firstOrNull { it.exists() } ?: error("ApiService.kt not found")
+        val used = Regex("""com\.dalab\.internet\.([a-z]+)\.([A-Z][A-Za-z0-9]*)""").findAll(api.readText())
+            .map { it.groupValues[1] to it.groupValues[2] }.toSet()
+        for ((pkg, cls) in used) {
+            if (pkg == "data" || pkg == "network") continue
+            assertTrue(
+                "com.dalab.internet.$pkg.$cls is sent/read by the API but not kept: move it to the data package or keep it in proguard-rules.pro",
+                rules().contains("-keep class com.dalab.internet.$pkg.$cls { *; }"),
+            )
+        }
+    }
+
     @Test fun `every listed class really exists (no stale entries)`() {
         for (name in gsonClassesOutsideKeptPackages) Class.forName(name)
     }

@@ -186,7 +186,12 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             DalabTheme {
-                AgentApp()
+                Box(Modifier.fillMaxSize()) {
+                    AgentApp()
+                    // Covers the app, closes the keyboard and blocks Back
+                    // while an on-screen USSD session runs.
+                    com.dalab.internet.ui.TransactionInProgressGuard()
+                }
             }
         }
     }

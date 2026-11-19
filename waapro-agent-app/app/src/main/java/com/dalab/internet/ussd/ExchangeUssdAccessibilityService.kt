@@ -85,6 +85,7 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
             // foreground, even though the same window was still on screen).
             val windowInfo = root.window
             val windowId = windowInfo?.id
+            val windowType = windowInfo?.type
             @Suppress("DEPRECATION")
             windowInfo?.recycle()
             val inputNode = findEditableNode(root)
@@ -95,7 +96,12 @@ class ExchangeUssdAccessibilityService : AccessibilityService() {
             // the one later in this function when a confirm-tap is actually
             // attempted -- an accepted small cost on a small dialog tree,
             // not worth threading a cached node reference through for.
-            val looksLikeUssdDialog = inputNode != null || isTransientLoadingDialog(messageText) || findPositiveButton(root) != null
+            // Never the keyboard, an overlay, this app, the launcher or a
+            // chat app -- see CarrierWindowFilter (UssdSafety.kt).
+            val looksLikeUssdDialog = CarrierWindowFilter.accept(
+                windowPackage, windowType, packageName,
+                looksLikeDialog = inputNode != null || isTransientLoadingDialog(messageText) || findPositiveButton(root) != null,
+            )
             if (!ExchangeUssdBridge.isWindowAllowed(windowPackage, windowId, looksLikeUssdDialog, ownPackageName = packageName)) {
                 // Either the foreground drifted to a different app mid-attempt
                 // (e.g. Chrome) after a lock was already established --

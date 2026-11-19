@@ -89,7 +89,19 @@ class ResellerWithdrawalUssdOrchestrator(context: Context, private val maxAttemp
     private suspend fun dialWithRetry(withdrawalId: String, simSlot: Int, ussdString: String): DialResult {
         var lastResult: DialResult = DialResult(DialOutcome.FAILED, "Not attempted")
         for (attempt in 1..maxAttempts) {
-            val attemptId = startDialAttemptLog(withdrawalId, simSlot, ussdString, attempt)
+            // Dial only on a dial record the server created just now (see
+            // payoutStartAllowsDial): offline, or a record that already
+            // existed, means this attempt is not dialed -- a dropped
+            // connection can never pay this withdrawal twice.
+            val start = startDialAttemptLog(withdrawalId, simSlot, ussdString, attempt)
+            if (!payoutStartAllowsDial(start.httpCode)) {
+                return when (start.httpCode) {
+                    200 -> DialResult(DialOutcome.DUPLICATE_SKIPPED, "This withdrawal was already dialed — not dialing it again.")
+                    null -> DialResult(DialOutcome.NETWORK_UNAVAILABLE, "Couldn't reach the server before paying — nothing was dialed; it will be tried again.")
+                    else -> DialResult(DialOutcome.FAILED, "The server refused this payout (HTTP ${start.httpCode}) — nothing was dialed.", moneyNotSent = true)
+                }
+            }
+            val attemptId = start.id
 
             lastResult = when (val lookup = dialer.subscriptionIdForSlot(simSlot)) {
                 SubscriptionLookupResult.PermissionMissing -> DialResult(
@@ -136,16 +148,18 @@ class ResellerWithdrawalUssdOrchestrator(context: Context, private val maxAttemp
         return lastResult
     }
 
-    private suspend fun startDialAttemptLog(withdrawalId: String, simSlot: Int, ussdString: String, attemptNumber: Int): String? {
+    private data class StartLog(val httpCode: Int?, val id: String?)
+
+    private suspend fun startDialAttemptLog(withdrawalId: String, simSlot: Int, ussdString: String, attemptNumber: Int): StartLog {
         return try {
             val response = ApiClient.service.startResellerWithdrawalDialAttempt(
                 withdrawalId,
                 DialAttemptStartRequest(simSlot, ussdString, attemptNumber),
             )
-            response.body()?.id
+            StartLog(response.code(), response.body()?.id)
         } catch (e: Exception) {
             DiagnosticsLog.record("reseller_withdrawal_dial_attempt_log", "Start-log failed (withdrawal $withdrawalId, attempt $attemptNumber): ${e.message}", isError = false)
-            null
+            StartLog(null, null)
         }
     }
 
