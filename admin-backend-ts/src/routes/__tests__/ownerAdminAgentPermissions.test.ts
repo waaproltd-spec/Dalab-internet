@@ -16,7 +16,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import type { AddressInfo } from "node:net";
-import type { Server } from "node:http";
+import http, { type Server } from "node:http";
 import { query, queryOne, pool } from "../../db/pool.js";
 import { signAccessToken } from "../../auth/crypto.js";
 import app from "../../server.js";
@@ -52,7 +52,7 @@ before(async () => {
   ]);
   await query(`INSERT INTO agents (id, phone, name, password_hash, services) VALUES ($1,'252699000901','Perm Agent','x',$2)`, [AGENT, ["customers"]]);
   await query(`INSERT INTO agent_device_activations (agent_id, install_id, device_number, status) VALUES ($1,$2,$3,'approved')`, [AGENT, INSTALL, `P-${AGENT.slice(0, 6)}`]);
-  server = app.listen(0);
+  server = http.createServer(app as unknown as http.RequestListener).listen(0);
   await new Promise<void>((r) => server.once("listening", () => r()));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
