@@ -1,5 +1,13 @@
 package com.dalab.internet.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.filled.Campaign
 import com.dalab.internet.ui.i18n.Text
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -60,15 +68,24 @@ fun AlertsScreen(onBack: () -> Unit) {
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Notifications") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back") }
-                },
-                actions = {
-                    IconButton(onClick = ::load) { Icon(Icons.Filled.Refresh, contentDescription = "Refresh") }
-                },
-            )
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(WaaproHeaderBrush, RoundedCornerShape(bottomStart = 26.dp, bottomEnd = 26.dp))
+                    .padding(start = 8.dp, end = 8.dp, top = 10.dp, bottom = 16.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White) }
+                    Text("Notifications", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 22.sp, modifier = Modifier.weight(1f))
+                    IconButton(onClick = ::load) { Icon(Icons.Filled.Refresh, contentDescription = "Refresh", tint = Color.White) }
+                }
+                if (notifications.isNotEmpty()) {
+                    Text(
+                        "${notifications.size} message${if (notifications.size == 1) "" else "s"} from Admin",
+                        color = Color.White.copy(alpha = 0.85f), fontSize = 13.sp, modifier = Modifier.padding(start = 16.dp),
+                    )
+                }
+            }
         }
     ) { padding ->
         Box(modifier = Modifier.padding(padding).fillMaxSize()) {
@@ -81,10 +98,13 @@ fun AlertsScreen(onBack: () -> Unit) {
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 notifications.isEmpty() -> EmptyAlertsState()
-                else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
+                else -> LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
                     items(notifications, key = { it.id }) { notification ->
                         AlertRow(notification)
-                        Divider()
                     }
                     item { Spacer(Modifier.height(16.dp)) }
                 }
@@ -108,40 +128,33 @@ private fun EmptyAlertsState() {
         )
         Spacer(Modifier.height(12.dp))
         Text("No notifications yet", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(4.dp))
-        Text(
-            "Updates from Admin will show up here.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 
 @Composable
 private fun AlertRow(notification: AgentNotification) {
-    Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
-        Surface(
-            color = MaterialTheme.colorScheme.primaryContainer,
-            shape = RoundedCornerShape(10.dp),
-            modifier = Modifier.size(40.dp),
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(Icons.Filled.NotificationsNone, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = 2.dp,
+        modifier = Modifier.fillMaxWidth().border(1.dp, WaaproBorder.copy(alpha = 0.5f), RoundedCornerShape(20.dp)),
+    ) {
+        Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.Top) {
+            Box(Modifier.size(42.dp).clip(CircleShape).background(WaaproHeaderBrush), contentAlignment = Alignment.Center) {
+                Icon(Icons.Filled.Campaign, contentDescription = null, tint = Color.White, modifier = Modifier.size(22.dp))
             }
-        }
-        Spacer(Modifier.width(14.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(notification.title, fontWeight = FontWeight.Bold)
-            if (notification.body.isNotBlank()) {
-                Spacer(Modifier.height(2.dp))
-                Text(notification.body, style = MaterialTheme.typography.bodyMedium)
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(notification.title, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.width(8.dp))
+                    Text(formatApiDateTime(notification.sentAt), color = WaaproMuted, fontSize = 11.sp, maxLines = 1)
+                }
+                if (notification.body.isNotBlank()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(notification.body, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f))
+                }
             }
-            Spacer(Modifier.height(6.dp))
-            Text(
-                formatApiDateTime(notification.sentAt),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
     }
 }

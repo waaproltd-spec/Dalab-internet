@@ -559,7 +559,11 @@ private val ProviderNavy = Color(0xFF0A3B63)
 @Composable
 private fun PaymentMethodCard(card: BalanceCardData, loading: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val accent = providerBrandColor(card.providerKey)
-    Surface(onClick = onClick, color = DalabWhite, shape = RoundedCornerShape(18.dp), shadowElevation = 1.dp, modifier = modifier) {
+    Surface(
+        onClick = onClick, color = DalabWhite, shape = RoundedCornerShape(18.dp), shadowElevation = 1.dp,
+        border = androidx.compose.foundation.BorderStroke(1.5.dp, accent.copy(alpha = 0.55f)),
+        modifier = modifier,
+    ) {
         Box(Modifier.fillMaxSize()) {
             Box(
                 modifier = Modifier
@@ -570,13 +574,17 @@ private fun PaymentMethodCard(card: BalanceCardData, loading: Boolean, onClick: 
                     .background(accent.copy(alpha = 0.14f)),
             )
             Column(modifier = Modifier.align(Alignment.CenterStart).padding(horizontal = 12.dp, vertical = 7.dp)) {
-                Image(
-                    painter = painterResource(logoResFor(card.providerKey)),
-                    contentDescription = card.providerName,
-                    contentScale = ContentScale.Fit,
-                    alignment = Alignment.CenterStart,
-                    modifier = Modifier.height(18.dp).fillMaxWidth(0.72f),
-                )
+                Box(
+                    modifier = Modifier.height(26.dp).width(52.dp).clip(RoundedCornerShape(8.dp)).background(Color.White),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Image(
+                        painter = painterResource(logoResFor(card.providerKey)),
+                        contentDescription = card.providerName,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 3.dp).fillMaxSize(),
+                    )
+                }
                 Spacer(Modifier.height(3.dp))
                 Text(card.providerName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = DalabIndigo)
                 Spacer(Modifier.height(1.dp))
