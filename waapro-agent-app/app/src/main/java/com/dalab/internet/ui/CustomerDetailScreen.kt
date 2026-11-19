@@ -287,7 +287,7 @@ private fun CustomerDetailMain(
                     val suspended = detail.status == "blocked"
                     LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                         item {
-                            Surface(color = DalabWhite, shape = RoundedCornerShape(16.dp), shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+                            Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp), shadowElevation = 2.dp, border = androidx.compose.foundation.BorderStroke(1.dp, WaaproBorder.copy(alpha = 0.5f)), modifier = Modifier.fillMaxWidth()) {
                                 Column(modifier = Modifier.padding(18.dp)) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         CustomerAvatar(name = detail.name, phone = detail.phone, size = 52)
@@ -346,7 +346,7 @@ private fun CustomerDetailMain(
 
                         item { SectionLabel("Customer Information") }
                         item {
-                            Surface(color = DalabWhite, shape = RoundedCornerShape(14.dp), shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+                            Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp), shadowElevation = 2.dp, border = androidx.compose.foundation.BorderStroke(1.dp, WaaproBorder.copy(alpha = 0.5f)), modifier = Modifier.fillMaxWidth()) {
                                 Column(modifier = Modifier.padding(vertical = 4.dp)) {
                                     InfoRow(Icons.Filled.Person, "Name", detail.name?.takeIf { it.isNotBlank() } ?: "—")
                                     InfoRow(Icons.Filled.Phone, "Phone", detail.phone.filter { it.isDigit() }.takeLast(9))
@@ -443,14 +443,29 @@ private fun InfoRow(icon: androidx.compose.ui.graphics.vector.ImageVector, label
 
 @Composable
 private fun RecentOrderRow(order: CustomerOrderHistoryEntry) {
-    Surface(color = DalabWhite, shape = RoundedCornerShape(12.dp), shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+    val bad = order.status == "failed" || order.status == "cancelled"
+    val done = order.status == "completed"
+    val ink = when { done -> DalabGreen; bad -> DalabDangerRed; else -> Color(0xFFB45309) }
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(18.dp),
+        shadowElevation = 2.dp,
+        border = androidx.compose.foundation.BorderStroke(1.dp, WaaproBorder.copy(alpha = 0.5f)),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
         Row(modifier = Modifier.padding(14.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("${order.companyName} · ${order.packageName}", fontWeight = FontWeight.SemiBold, color = DalabIndigo, style = MaterialTheme.typography.bodyMedium)
-                Text(formatDate(order.createdAt), style = MaterialTheme.typography.labelSmall, color = DalabFaint)
+            Box(Modifier.size(42.dp).clip(CircleShape).background(ink.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
+                Text((order.companyName.firstOrNull() ?: '?').uppercase(), color = ink, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
             }
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(order.packageName, fontWeight = FontWeight.ExtraBold, color = DalabIndigo, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("${order.companyName} · ${formatDate(order.createdAt)}", style = MaterialTheme.typography.labelSmall, color = DalabMuted)
+            }
+            Spacer(Modifier.width(8.dp))
             Column(horizontalAlignment = Alignment.End) {
-                Text("$${"%.2f".format(order.amount)}", fontWeight = FontWeight.Bold, color = DalabGreen)
+                Text("$${"%.2f".format(order.amount)}", fontWeight = FontWeight.ExtraBold, fontSize = 16.sp, color = if (done) DalabGreen else DalabIndigo)
+                Spacer(Modifier.height(4.dp))
                 OrderStatusPill(order.status)
             }
         }
@@ -466,7 +481,11 @@ private fun OrderStatusPill(status: String) {
         "in_progress" -> "Processing"
         else -> "Pending"
     }
-    val color = if (status == "failed" || status == "cancelled") DalabDangerRed else DalabGreen
+    val color = when (status) {
+        "completed" -> DalabGreen
+        "failed", "cancelled" -> DalabDangerRed
+        else -> Color(0xFFB45309)
+    }
     Surface(color = color.copy(alpha = 0.12f), contentColor = color, shape = RoundedCornerShape(999.dp)) {
         Text(label, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp))
     }
@@ -673,7 +692,7 @@ private fun PinResetSuccessScreen(detail: CustomerDetail?, generatedPin: String?
 
             Spacer(Modifier.height(24.dp))
 
-            Surface(color = DalabWhite, shape = RoundedCornerShape(14.dp), shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+            Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp), shadowElevation = 2.dp, border = androidx.compose.foundation.BorderStroke(1.dp, WaaproBorder.copy(alpha = 0.5f)), modifier = Modifier.fillMaxWidth()) {
                 Row(modifier = Modifier.padding(14.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     CustomerAvatar(name = detail?.name, phone = detail?.phone ?: "")
                     Spacer(Modifier.width(12.dp))
@@ -762,7 +781,7 @@ private fun SuspendCustomerScreen(detail: CustomerDetail?, onCancel: () -> Unit,
 
             Spacer(Modifier.height(20.dp))
 
-            Surface(color = DalabWhite, shape = RoundedCornerShape(14.dp), shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+            Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp), shadowElevation = 2.dp, border = androidx.compose.foundation.BorderStroke(1.dp, WaaproBorder.copy(alpha = 0.5f)), modifier = Modifier.fillMaxWidth()) {
                 Row(modifier = Modifier.padding(14.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     CustomerAvatar(name = detail?.name, phone = detail?.phone ?: "")
                     Spacer(Modifier.width(12.dp))

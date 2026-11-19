@@ -281,28 +281,24 @@ fun NotificationsScreen(onBack: () -> Unit) {
                 }
                 Spacer(Modifier.height(12.dp))
 
-                Text("Title", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(6.dp))
                 OutlinedTextField(
                     value = title,
                     onValueChange = { title = it },
-                    placeholder = { Text("Title") },
+                    label = { Text("Title") },
                     leadingIcon = { Icon(Icons.Filled.Description, contentDescription = null) },
                     singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
+                    shape = RoundedCornerShape(18.dp),
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(12.dp))
 
-                Text("Message", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(6.dp))
                 OutlinedTextField(
                     value = body,
                     onValueChange = { if (it.length <= 500) body = it },
-                    placeholder = { Text("Message") },
+                    label = { Text("Message") },
                     leadingIcon = { Icon(Icons.Filled.Message, contentDescription = null) },
-                    minLines = 2,
-                    shape = RoundedCornerShape(14.dp),
+                    minLines = 3,
+                    shape = RoundedCornerShape(18.dp),
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text(
