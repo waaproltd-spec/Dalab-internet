@@ -178,8 +178,15 @@ class PackageInteractiveUssdRunner(private val context: Context) {
 
             for ((index, step) in plan.steps.withIndex()) {
                 val label = "step ${index + 1} of ${plan.steps.size}"
-                val screen = awaitScreen(if (index == 0) 30_000L else 20_000L)
+                var screen = awaitScreen(if (index == 0) 30_000L else 20_000L)
                     ?: return DialResult(DialOutcome.TIMEOUT, "No response from the carrier at $label — nothing was paid.", moneyNotSent = true)
+                // The carrier may draw its menu in parts, or the first read
+                // can come a moment early: before giving up, look again for
+                // up to 4 seconds. Nothing is typed until the screen matches.
+                val settleUntil = System.currentTimeMillis() + SCREEN_SETTLE_MS
+                while ((!screen.hasInput || screenMismatch(step, screen.text) != null) && System.currentTimeMillis() < settleUntil) {
+                    screen = awaitScreen(settleUntil - System.currentTimeMillis(), drain = false) ?: break
+                }
                 if (!screen.hasInput) {
                     // An error or notice instead of the expected menu (e.g.
                     // "service not available"). Nothing has been paid yet.
@@ -237,9 +244,14 @@ class PackageInteractiveUssdRunner(private val context: Context) {
 
     private data class Screen(val text: String, val hasInput: Boolean)
 
+    private companion object {
+        /** How long a screen that doesn't match yet may still change before the step gives up. */
+        const val SCREEN_SETTLE_MS = 4_000L
+    }
+
     /** Next real carrier screen; auto-tapped confirmations are skipped. */
-    private suspend fun awaitScreen(timeoutMs: Long): Screen? {
-        bridge.drainStaleEvents()
+    private suspend fun awaitScreen(timeoutMs: Long, drain: Boolean = true): Screen? {
+        if (drain) bridge.drainStaleEvents()
         val deadline = System.currentTimeMillis() + timeoutMs
         while (true) {
             val remaining = deadline - System.currentTimeMillis()

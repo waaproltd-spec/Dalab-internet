@@ -12,6 +12,7 @@ import android.os.PowerManager
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.dalab.internet.MainActivity
@@ -100,8 +101,16 @@ class ResellerWithdrawalInteractiveUssdAccessibilityService : AccessibilityServi
             val windowPackage = root.packageName?.toString()
             val windowInfo = root.window
             val windowId = windowInfo?.id
+            val windowType = windowInfo?.type
             @Suppress("DEPRECATION")
             windowInfo?.recycle()
+            // The keyboard or an overlay (chat heads, screen recorders) is
+            // never the carrier's dialog: don't read it, don't lock onto it.
+            if (windowType == AccessibilityWindowInfo.TYPE_INPUT_METHOD ||
+                windowType == AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY
+            ) {
+                return
+            }
             val inputNode = findEditableNode(root)
             val looksLikeUssdDialog = inputNode != null || isTransientLoadingDialog(messageText) || findPositiveButton(root) != null
             if (!bridge.isWindowAllowed(windowPackage, windowId, looksLikeUssdDialog, ownPackageName = packageName)) {
@@ -263,8 +272,8 @@ class ResellerWithdrawalInteractiveUssdAccessibilityService : AccessibilityServi
         )
         val notification = NotificationCompat.Builder(this, "payment_channel")
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("Action needed: return to Reseller Withdraw")
-            .setContentText("The USSD screen left the foreground -- return to it now to finish this payout.")
+            .setContentTitle("Action needed: return to the USSD screen")
+            .setContentText("The USSD screen left the foreground -- return to it now so the agent app can finish.")
             .setContentIntent(openApp)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
