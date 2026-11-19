@@ -393,6 +393,32 @@ data class AgentReportDashboard(
     val status: ReportStatusSplit,
     val profitBreakdown: ReportProfitBreakdown,
     val companies: List<ReportCompanyCard>?,
+    // Commission by provider (missing on an older server: nothing shown).
+    val commissionByProvider: List<ReportCommissionRow>? = null,
+    val commissionTotals: ReportCommissionTotals? = null,
+)
+
+/** One network's Commission % / Discount % over the report's successful orders. */
+data class ReportCommissionRow(
+    val companyId: String = "",
+    val companyName: String = "",
+    val colorHex: String? = null,
+    val commissionPct: Double = 0.0,
+    val discountPct: Double = 0.0,
+    val profitPct: Double = 0.0,
+    val orders: Int = 0,
+    val sales: Double = 0.0,
+    val commission: Double = 0.0,
+    val discount: Double = 0.0,
+    val profit: Double = 0.0,
+)
+
+data class ReportCommissionTotals(
+    val orders: Int = 0,
+    val sales: Double = 0.0,
+    val commission: Double = 0.0,
+    val discount: Double = 0.0,
+    val profit: Double = 0.0,
 )
 
 data class ReportCompanyRef(
