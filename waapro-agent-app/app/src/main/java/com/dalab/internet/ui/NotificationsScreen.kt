@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Message
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.*
@@ -73,6 +74,7 @@ fun NotificationsScreen(onBack: () -> Unit) {
     var sendResult by remember { mutableStateOf<BroadcastResponse?>(null) }
     // When: now, or at a set date and time (Mogadishu).
     var scheduleOn by remember { mutableStateOf(false) }
+    var everyDay by remember { mutableStateOf(false) }
     val defaultAt = remember { java.time.ZonedDateTime.now(MOGADISHU).plusMinutes(30).withSecond(0).withNano(0) }
     var day by remember { mutableStateOf(defaultAt.toLocalDate()) }
     var time by remember { mutableStateOf(defaultAt.toLocalTime()) }
@@ -157,12 +159,14 @@ fun NotificationsScreen(onBack: () -> Unit) {
                         body = body.trim(),
                         scheduledAt = if (scheduleOn) java.time.ZonedDateTime.of(day, time, MOGADISHU).toInstant().toString() else null,
                         requestId = requestId,
+                        repeat = if (scheduleOn && everyDay) "daily" else null,
                     )
                 )
                 if (response.isSuccessful && response.body() != null) {
                     sendResult = response.body()
                     requestId = java.util.UUID.randomUUID().toString()
                     scheduleOn = false
+                    everyDay = false
                     title = ""
                     body = ""
                     selectedCustomers = emptyList()
@@ -346,8 +350,16 @@ fun NotificationsScreen(onBack: () -> Unit) {
                             Text(time.format(java.time.format.DateTimeFormatter.ofPattern("h:mm a")))
                         }
                     }
+                    Spacer(Modifier.height(8.dp))
+                    FilterChip(
+                        selected = everyDay,
+                        onClick = { everyDay = !everyDay },
+                        label = { Text("Every day") },
+                        leadingIcon = { Icon(Icons.Filled.Repeat, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    )
                     Text(
-                        "Mogadishu time. You can cancel it in Sent history until it goes out.",
+                        if (everyDay) "Sent every day at this time (Mogadishu), starting on the chosen day. Cancel it in Sent history to stop."
+                        else "Mogadishu time. You can cancel it in Sent history until it goes out.",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 4.dp),
@@ -363,7 +375,8 @@ fun NotificationsScreen(onBack: () -> Unit) {
                     val who = "${result.recipientCount} customer${if (result.recipientCount == 1) "" else "s"}"
                     Text(
                         when (result.status) {
-                            "scheduled" -> "Scheduled for ${scheduleTimeText(result.scheduledAt)} — $who."
+                            "scheduled" -> if (result.repeat == "daily") "Scheduled every day from ${scheduleTimeText(result.scheduledAt)} — $who."
+                                else "Scheduled for ${scheduleTimeText(result.scheduledAt)} — $who."
                             "sending" -> "Sending to $who. Sent history shows the progress."
                             else -> "Sent to $who — ${result.deliveredCount} delivered, ${result.failedCount} failed."
                         },
@@ -456,7 +469,7 @@ fun NotificationsScreen(onBack: () -> Unit) {
         AlertDialog(
             onDismissRequest = { cancelling = null },
             title = { Text("Cancel this message?") },
-            text = { Text("\"${c.title}\" will not be sent.") },
+            text = { Text(if (c.repeat == "daily") "\"${c.title}\" will stop: no more daily sends." else "\"${c.title}\" will not be sent.") },
             confirmButton = {
                 TextButton(onClick = {
                     cancelling = null
@@ -556,7 +569,7 @@ private fun CampaignRow(campaign: NotificationCampaign, onCancel: () -> Unit) {
         when (campaign.status) {
             "scheduled" -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    "Scheduled · ${scheduleTimeText(campaign.scheduledAt)}",
+                    (if (campaign.repeat == "daily") "Every day · next " else "Scheduled · ") + scheduleTimeText(campaign.scheduledAt),
                     color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.labelMedium,
@@ -565,7 +578,7 @@ private fun CampaignRow(campaign: NotificationCampaign, onCancel: () -> Unit) {
                 TextButton(onClick = onCancel) { Text("Cancel", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold) }
             }
             "sending" -> Text("Sending…", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
-            "cancelled" -> Text("Cancelled", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+            "cancelled" -> Text(if (campaign.repeat == "daily") "Daily message stopped" else "Cancelled", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
             else -> {}
         }
         Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {

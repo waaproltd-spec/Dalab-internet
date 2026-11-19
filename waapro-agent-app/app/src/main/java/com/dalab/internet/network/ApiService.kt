@@ -141,6 +141,8 @@ data class BroadcastRequest(
     val scheduledAt: String? = null,
     // One "Send" tap = one campaign, even if the request is retried.
     val requestId: String? = null,
+    // "daily" = sent at the scheduled time every day until cancelled.
+    val repeat: String? = null,
 )
 data class BroadcastResponse(
     val id: String,
@@ -151,6 +153,7 @@ data class BroadcastResponse(
     // "sending" | "sent" | "scheduled" | "cancelled" (null on an older server).
     val status: String? = null,
     val scheduledAt: String? = null,
+    val repeat: String? = null,
 )
 data class NotificationCampaign(
     val id: String,
@@ -167,6 +170,7 @@ data class NotificationCampaign(
     val createdAt: String,
     val status: String? = null,
     val scheduledAt: String? = null,
+    val repeat: String? = null,
 )
 
 // ---------------- Nala Soco ----------------
