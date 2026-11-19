@@ -139,19 +139,8 @@ fun ReportsScreen(onBack: () -> Unit) {
 
     Box(Modifier.fillMaxSize().background(RBg)) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 28.dp)) {
-            item { BrandHeader(onBack = onBack) }
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Reports", color = RText, fontSize = 30.sp, fontWeight = FontWeight.Black)
-                        Text("A summary of your order activity.", color = RMuted, fontSize = 14.sp)
-                    }
-                    RangeDropdown(range = range, onChange = { range = it })
-                }
-            }
+            item { BrandHeader(onBack = onBack, range = range, onRange = { range = it }) }
+            item { Spacer(Modifier.height(8.dp)) }
             if (error != null) item { ErrorLine(error) }
             val current = report
             if (current == null) {
@@ -258,24 +247,39 @@ private fun CompanyReportScreen(company: ReportCompanyCard, initialRange: String
 }
 
 @Composable
-private fun BrandHeader(onBack: () -> Unit) {
-    Box(
+private fun BrandHeader(onBack: () -> Unit, range: String, onRange: (String) -> Unit) {
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(bottomStart = 26.dp, bottomEnd = 26.dp))
-            .background(Brush.linearGradient(listOf(DalabBrandFill, DalabBrandFillLight)))
+            .background(WaaproHeaderBrush)
             .statusBarsPadding()
-            .padding(horizontal = 8.dp, vertical = 14.dp),
+            .padding(start = 8.dp, end = 16.dp, top = 10.dp, bottom = 18.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White) }
-            Image(
-                painter = painterResource(com.dalab.internet.auth.SystemBrand.logo()),
-                contentDescription = null,
-                modifier = Modifier.size(34.dp).clip(RoundedCornerShape(8.dp)).background(Color.White).padding(2.dp),
-            )
-            Spacer(Modifier.width(10.dp))
-            Text(com.dalab.internet.ui.WAAPRO_APP_NAME, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Black)
+            Text("Reports", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(start = 8.dp)) {
+            REPORT_RANGES.forEach { r ->
+                val on = r.value == range
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = if (on) WaaproGold else Color.White.copy(alpha = 0.14f),
+                    modifier = Modifier.weight(1f).clip(RoundedCornerShape(50)).clickable { onRange(r.value) },
+                ) {
+                    Text(
+                        r.label,
+                        color = if (on) WaaproNavy else Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.5.sp,
+                        maxLines = 1,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        modifier = Modifier.padding(vertical = 8.dp).fillMaxWidth(),
+                    )
+                }
+            }
         }
     }
 }
@@ -322,27 +326,25 @@ private fun SummaryGrid(totalOrders: Int, successfulValue: Double, totalProfit: 
     Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             StatTile(Icons.Filled.Description, RBlue, "$totalOrders", "Total Orders", Modifier.weight(1f))
-            StatTile(Icons.Filled.MonetizationOn, RGreen, usd(successfulValue), "Successful Value", Modifier.weight(1f))
+            StatTile(Icons.Filled.MonetizationOn, RGreen, usd(successfulValue), "Successful sales", Modifier.weight(1f))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            StatTile(Icons.Filled.BarChart, RAmber, usd(totalProfit), "Total Profit", Modifier.weight(1f))
+            StatTile(Icons.Filled.BarChart, RAmber, usd(totalProfit), "Total Profit", Modifier.weight(1f), valueColor = if (totalProfit < 0) RRed else null)
             StatTile(Icons.Filled.Percent, RRed, usd(totalDiscount), "Total Discount", Modifier.weight(1f))
         }
     }
 }
 
 @Composable
-private fun StatTile(icon: ImageVector, color: Color, value: String, label: String, modifier: Modifier) {
-    Surface(color = RCard, shape = RoundedCornerShape(18.dp), border = BorderStroke(1.dp, RCardBorder), modifier = modifier) {
-        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(44.dp).background(color, RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
-                Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(24.dp))
+private fun StatTile(icon: ImageVector, color: Color, value: String, label: String, modifier: Modifier, valueColor: Color? = null) {
+    Surface(color = RCard, shape = RoundedCornerShape(20.dp), border = BorderStroke(1.dp, RCardBorder), modifier = modifier) {
+        Column(Modifier.padding(14.dp)) {
+            Box(Modifier.size(38.dp).background(color.copy(alpha = 0.16f), CircleShape), contentAlignment = Alignment.Center) {
+                Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(20.dp))
             }
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text(value, color = RText, fontSize = 20.sp, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(label, color = RMuted, fontSize = 12.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
+            Spacer(Modifier.height(10.dp))
+            Text(value, color = valueColor ?: RText, fontSize = 22.sp, fontWeight = FontWeight.Black, maxLines = 1)
+            Text(label, color = RMuted, fontSize = 12.5.sp, maxLines = 2)
         }
     }
 }
@@ -374,7 +376,7 @@ private fun StatusCard(status: ReportStatusSplit, total: Int) {
             }
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                LegendRow(RGreen, "Sent successfully", status.sent, status.sentPercent)
+                LegendRow(RGreen, "Sent", status.sent, status.sentPercent)
                 LegendRow(RRed, "Failed", status.failed, status.failedPercent)
                 LegendRow(RAmber, "Cancelled", status.cancelled, status.cancelledPercent)
             }
@@ -449,7 +451,7 @@ private fun CompanyCard(c: ReportCompanyCard, onClick: () -> Unit) {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Metric("${c.totalOrders}", "Orders", Modifier.weight(1f))
                         Metric(usd(c.successfulValue), "Value", Modifier.weight(1.2f))
-                        Metric(usd(c.totalProfit), "Profit", Modifier.weight(1.2f))
+                        Metric(usd(c.totalProfit), "Profit", Modifier.weight(1.2f), if (c.totalProfit < 0) RRed else null)
                         Metric(usd(c.totalDiscount), "Discount", Modifier.weight(1.2f))
                     }
                 }
@@ -473,9 +475,9 @@ private fun CompanyCard(c: ReportCompanyCard, onClick: () -> Unit) {
 }
 
 @Composable
-private fun Metric(value: String, label: String, modifier: Modifier = Modifier) {
+private fun Metric(value: String, label: String, modifier: Modifier = Modifier, valueColor: Color? = null) {
     Column(modifier) {
-        Text(value, color = RText, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(value, color = valueColor ?: RText, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Text(label, color = RMuted, fontSize = 11.5.sp, maxLines = 1)
     }
 }
