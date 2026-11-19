@@ -1,6 +1,6 @@
 package com.dalab.internet.data
 
-/** GET /agent/company-profit: each network's Commission / Discount / Profit % and what completed orders earned. */
+/** GET /agent/company-profit: each network's Commission % and Discount % (Profit % = Commission - Discount) over its successful orders. */
 data class CompanyProfitOverview(
     val period: String = "month",
     val companies: List<CompanyProfitRow> = emptyList(),
@@ -16,26 +16,24 @@ data class CompanyProfitRow(
     val commissionPct: Double? = null,
     val discountPct: Double? = null,
     val profitPct: Double? = null,
-    val netCommissionPct: Double? = null,
     val orders: Int = 0,
     val sales: Double = 0.0,
-    val netCommission: Double = 0.0,
+    val commission: Double = 0.0,
+    val discount: Double = 0.0,
     val profit: Double = 0.0,
-    val total: Double = 0.0,
     val updatedAt: String? = null,
 )
 
 data class CompanyProfitTotals(
     val orders: Int = 0,
     val sales: Double = 0.0,
-    val netCommission: Double = 0.0,
+    val commission: Double = 0.0,
+    val discount: Double = 0.0,
     val profit: Double = 0.0,
-    val total: Double = 0.0,
 )
 
-/** PUT /agent/company-profit/{companyId}: an empty value clears that percentage. */
+/** PUT /agent/company-profit/{companyId}: Commission and Discount (Profit = Commission - Discount). An empty commission clears the network. */
 data class CompanyProfitUpdate(
     val commissionPct: String,
     val discountPct: String,
-    val profitPct: String,
 )

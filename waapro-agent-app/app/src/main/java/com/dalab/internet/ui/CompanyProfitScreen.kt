@@ -34,9 +34,10 @@ import kotlinx.coroutines.launch
 import org.json.JSONObject
 
 /**
- * Company Commission & Profit: each network's Commission %, Discount % and
- * Profit % (set here), and what completed orders earned with them:
- * net commission = sales x (commission - discount), profit = sales x profit.
+ * Company Commission & Profit (Agent App only): each network's Commission %
+ * and Discount %; Profit % is what remains (Commission - Discount). Over a
+ * network's SUCCESSFUL orders only: Commission = sales x Commission%,
+ * Discount = sales x Discount%, Profit = Commission - Discount.
  * Only agents the Owner gave the "Commission & profit" service see this.
  */
 @Composable
@@ -90,13 +91,13 @@ fun CompanyProfitScreen(onBack: () -> Unit) {
                 }
                 Spacer(Modifier.height(14.dp))
                 Column(Modifier.padding(horizontal = 8.dp)) {
-                    Text("Total earned", color = Color.White.copy(alpha = 0.8f), fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
-                    Text(usd(totals?.total ?: 0.0), color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 32.sp)
+                    Text("Total profit", color = Color.White.copy(alpha = 0.8f), fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+                    Text(usd(totals?.profit ?: 0.0), color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 32.sp)
                     Spacer(Modifier.height(10.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        HeaderFigure("Net commission", usd(totals?.netCommission ?: 0.0), Modifier.weight(1f))
-                        HeaderFigure("Profit", usd(totals?.profit ?: 0.0), Modifier.weight(1f))
-                        HeaderFigure("Orders", "${totals?.orders ?: 0}", Modifier.weight(1f))
+                        HeaderFigure("Successful", "${totals?.orders ?: 0}", Modifier.weight(1f))
+                        HeaderFigure("Commission", usd(totals?.commission ?: 0.0), Modifier.weight(1f))
+                        HeaderFigure("Discount", usd(totals?.discount ?: 0.0), Modifier.weight(1f))
                     }
                 }
             }
@@ -191,14 +192,14 @@ private fun NetworkProfitCard(row: CompanyProfitRow, onEdit: () -> Unit) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 PctBox("Commission", row.commissionPct, Modifier.weight(1f))
                 PctBox("Discount", row.discountPct, Modifier.weight(1f))
-                PctBox("Profit", row.profitPct, Modifier.weight(1f))
+                PctBox("Profit", row.profitPct, Modifier.weight(1f), StatusGreen)
             }
             if (row.configured) {
                 HorizontalDivider(Modifier.padding(vertical = 12.dp), color = WaaproBorder)
                 Row {
-                    EarnFigure("Net commission ${pctText(row.netCommissionPct)}", usd(row.netCommission), Modifier.weight(1f))
-                    EarnFigure("Profit ${pctText(row.profitPct)}", usd(row.profit), Modifier.weight(1f))
-                    EarnFigure("Total", usd(row.total), Modifier.weight(1f), StatusGreen)
+                    EarnFigure("Commission", usd(row.commission), Modifier.weight(1f))
+                    EarnFigure("Discount", usd(row.discount), Modifier.weight(1f))
+                    EarnFigure("Profit", usd(row.profit), Modifier.weight(1f), StatusGreen)
                 }
             }
         }
@@ -221,42 +222,50 @@ private fun plain(n: Double?): String = when {
 
 private fun parsePct(s: String): Double? = s.trim().replace(',', '.').toDoubleOrNull()
 
+/** Commission, Discount and Profit, kept in step: Discount + Profit = Commission. */
 @Composable
 private fun EditTermsDialog(row: CompanyProfitRow, onDismiss: () -> Unit, onSaved: () -> Unit) {
     var commission by remember { mutableStateOf(plain(row.commissionPct)) }
-    var discount by remember { mutableStateOf(plain(row.discountPct)) }
+    var discount by remember { mutableStateOf(plain(row.discountPct ?: if (row.commissionPct == null) 10.0 else null)) }
     var profit by remember { mutableStateOf(plain(row.profitPct)) }
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
-    // Live example: what a $1 order earns with these numbers.
-    val c = parsePct(commission) ?: 0.0
-    val d = parsePct(discount) ?: 0.0
-    val p = parsePct(profit) ?: 0.0
-    val netPct = c - d
+    fun fmt(n: Double): String = plain(Math.round(n * 100) / 100.0)
+    val c = parsePct(commission)
+    val d = parsePct(discount)
+    // Typing Discount works out Profit, and typing Profit works out Discount.
+    fun onCommission(v: String) { commission = v; parsePct(v)?.let { cv -> parsePct(discount)?.let { profit = fmt(cv - it) } } }
+    fun onDiscount(v: String) { discount = v; val cv = parsePct(commission); val dv = parsePct(v); if (cv != null && dv != null) profit = fmt(cv - dv) }
+    fun onProfit(v: String) { profit = v; val cv = parsePct(commission); val pv = parsePct(v); if (cv != null && pv != null) discount = fmt(cv - pv) }
+
     val badInput = listOf(commission, discount, profit).any { it.isNotBlank() && (parsePct(it) == null || parsePct(it)!! < 0 || parsePct(it)!! > 100) }
-    val discountTooBig = d > c
+    val missing = c == null || d == null
+    val discountTooBig = c != null && d != null && d > c
+    val cv = c ?: 0.0
+    val dv = d ?: 0.0
 
     Dialog(onDismissRequest = { if (!saving) onDismiss() }) {
         Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface) {
             Column(Modifier.padding(20.dp)) {
                 Text(row.name, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
                 Spacer(Modifier.height(14.dp))
-                PctField("Commission %", commission) { commission = it }
+                PctField("Company Commission %", commission, ::onCommission)
                 Spacer(Modifier.height(10.dp))
-                PctField("Discount %", discount) { discount = it }
+                PctField("Discount %", discount, ::onDiscount)
                 Spacer(Modifier.height(10.dp))
-                PctField("Profit %", profit) { profit = it }
+                PctField("Profit %", profit, ::onProfit)
                 Spacer(Modifier.height(14.dp))
                 Surface(shape = RoundedCornerShape(16.dp), color = WaaproNavy.copy(alpha = 0.06f), modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(12.dp)) {
-                        Text("A \$1 order earns", color = WaaproMuted, fontSize = 12.sp)
-                        Text(
-                            "${usd(netPct.coerceAtLeast(0.0) / 100)} + ${usd(p / 100)} = ${usd((netPct.coerceAtLeast(0.0) + p) / 100)}",
-                            fontWeight = FontWeight.ExtraBold, fontSize = 17.sp, color = WaaproNavy,
-                        )
-                        Text("Net commission ${pctText(netPct.coerceAtLeast(0.0))} + Profit ${pctText(p)}", color = WaaproMuted, fontSize = 11.5.sp)
+                        Text("A successful \$1 transaction", color = WaaproMuted, fontSize = 12.sp)
+                        Spacer(Modifier.height(4.dp))
+                        Row {
+                            EarnFigure("Commission", usd(cv / 100), Modifier.weight(1f))
+                            EarnFigure("Discount", usd(dv / 100), Modifier.weight(1f))
+                            EarnFigure("Profit", usd((cv - dv).coerceAtLeast(0.0) / 100), Modifier.weight(1f), StatusGreen)
+                        }
                     }
                 }
                 val problem = error ?: when {
@@ -273,7 +282,7 @@ private fun EditTermsDialog(row: CompanyProfitRow, onDismiss: () -> Unit, onSave
                     TextButton(onClick = onDismiss, enabled = !saving) { Text("Cancel") }
                     Spacer(Modifier.width(8.dp))
                     Button(
-                        enabled = !saving && !badInput && !discountTooBig,
+                        enabled = !saving && !badInput && !missing && !discountTooBig,
                         colors = ButtonDefaults.buttonColors(containerColor = WaaproNavy),
                         shape = RoundedCornerShape(14.dp),
                         onClick = {
@@ -283,7 +292,7 @@ private fun EditTermsDialog(row: CompanyProfitRow, onDismiss: () -> Unit, onSave
                                 try {
                                     val r = ApiClient.service.updateCompanyProfit(
                                         row.companyId,
-                                        CompanyProfitUpdate(commission.trim(), discount.trim(), profit.trim()),
+                                        CompanyProfitUpdate(commission.trim(), discount.trim()),
                                     )
                                     if (r.isSuccessful) onSaved()
                                     else error = serverMessage(r.errorBody()?.string()) ?: "Couldn't save (error ${r.code()})."
