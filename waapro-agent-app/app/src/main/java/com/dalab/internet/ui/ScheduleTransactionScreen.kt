@@ -1,6 +1,9 @@
 package com.dalab.internet.ui
 
 import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.filled.Person
@@ -190,18 +193,35 @@ fun ScheduleTransactionScreen(onBack: () -> Unit) {
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Schedule Transaction", fontWeight = FontWeight.Bold) },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back") } },
-            )
+            val waiting = orders.count { it.status == OrderStatus.PENDING || it.status == OrderStatus.IN_PROGRESS }
+            val sent = orders.count { it.status == OrderStatus.COMPLETED }
+            val failed = orders.count { it.status == OrderStatus.FAILED }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(WaaproHeaderBrush, RoundedCornerShape(bottomStart = 26.dp, bottomEnd = 26.dp))
+                    .padding(start = 8.dp, end = 16.dp, top = 10.dp, bottom = 18.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White) }
+                    Text("Schedule Transaction", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 22.sp)
+                }
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(start = 8.dp)) {
+                    SchedulePill("Waiting", waiting.toString(), Modifier.weight(1f))
+                    SchedulePill("Sent", sent.toString(), Modifier.weight(1f))
+                    SchedulePill("Failed", failed.toString(), Modifier.weight(1f), alert = failed > 0)
+                }
+            }
         },
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = { info = null; showForm = true },
                 icon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                text = { Text("New schedule") },
+                text = { Text("New schedule", fontWeight = FontWeight.Bold) },
                 containerColor = WaaproNavy,
                 contentColor = Color.White,
+                shape = RoundedCornerShape(18.dp),
             )
         },
     ) { padding ->
@@ -210,10 +230,19 @@ fun ScheduleTransactionScreen(onBack: () -> Unit) {
             error?.let { Text(it, color = Color(0xFFDC2626), fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
             when {
                 !loaded -> Text("Loading…", color = WaaproMuted, modifier = Modifier.padding(16.dp))
-                orders.isEmpty() -> Text("No scheduled transactions yet. Tap New schedule to register a customer.", color = WaaproMuted, modifier = Modifier.padding(16.dp))
+                orders.isEmpty() -> Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.fillMaxWidth().padding(top = 48.dp, start = 32.dp, end = 32.dp),
+                ) {
+                    BrandIconTile(Icons.Filled.Schedule, size = 64.dp)
+                    Spacer(Modifier.height(14.dp))
+                    Text("No scheduled transactions yet", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                    Spacer(Modifier.height(4.dp))
+                    Text("Tap New schedule to add the first one.", color = WaaproMuted, fontSize = 13.sp)
+                }
                 else -> LazyColumn(
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 96.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     items(orders, key = { it.id }) { o ->
                         ScheduledRow(
@@ -252,31 +281,70 @@ fun ScheduleTransactionScreen(onBack: () -> Unit) {
 }
 
 @Composable
+private fun SchedulePill(label: String, value: String, modifier: Modifier, alert: Boolean = false) {
+    Surface(shape = RoundedCornerShape(16.dp), color = if (alert) Color(0xFFDC2626).copy(alpha = 0.85f) else Color.White.copy(alpha = 0.14f), modifier = modifier) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Text(value, color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
+            Text(label, color = Color.White.copy(alpha = 0.85f), fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+@Composable
+private fun ScheduleNumberLine(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, number: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(28.dp).clip(CircleShape).background(WaaproNavy.copy(alpha = 0.10f)), contentAlignment = Alignment.Center) {
+            Icon(icon, contentDescription = null, tint = WaaproNavy, modifier = Modifier.size(16.dp))
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(label, color = WaaproMuted, fontSize = 13.sp, modifier = Modifier.width(78.dp))
+        Text(number, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** One scheduled order: who, price, package, the two numbers, when, its state, Send now / Cancel. */
+@Composable
 private fun ScheduledRow(o: Order, busy: Boolean, onSendNow: () -> Unit, onCancel: () -> Unit) {
     val state = scheduleState(o)
+    val local9 = { p: String? -> p?.filter { it.isDigit() }?.takeLast(9)?.ifEmpty { null } ?: "-" }
+    // A name, else the number it pays from (a "name" that is just a number shows as 9 digits).
+    val who = o.customerName?.takeIf { it.isNotBlank() && it.count { c -> c.isDigit() } < 7 } ?: local9(o.senderPhone)
     Surface(
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(20.dp),
         color = MaterialTheme.colorScheme.surface,
-        modifier = Modifier.fillMaxWidth().border(1.dp, WaaproBorder, RoundedCornerShape(14.dp)),
+        shadowElevation = 2.dp,
+        modifier = Modifier.fillMaxWidth().border(1.dp, WaaproBorder, RoundedCornerShape(20.dp)),
     ) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(o.customerName ?: o.senderPhone ?: o.id, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                Text("$${"%.2f".format(o.amount)}", fontWeight = FontWeight.ExtraBold, color = Color(0xFF137A3A))
+                Box(Modifier.size(44.dp).clip(CircleShape).background(WaaproNavy.copy(alpha = 0.10f)), contentAlignment = Alignment.Center) {
+                    Text((who.firstOrNull() ?: '?').uppercase(), color = WaaproNavy, fontWeight = FontWeight.ExtraBold, fontSize = 19.sp)
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(who, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("${o.packageName} · ${o.companyName}", color = WaaproMuted, fontSize = 12.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Text("$${"%.2f".format(o.amount)}", fontWeight = FontWeight.ExtraBold, color = Color(0xFF137A3A), fontSize = 18.sp)
             }
-            Text("${o.packageName} · ${o.companyName}", fontSize = 13.sp)
-            Text("Pays from ${o.senderPhone ?: "-"}  →  sends to ${o.receiverPhone ?: "-"}", fontSize = 12.sp, color = WaaproMuted)
-            Text("${scheduleTimeText(o.scheduledAt)} (Mogadishu) · ${o.id}", fontSize = 12.sp, color = WaaproMuted)
-            o.scheduleNote?.let { Text("Note: $it", fontSize = 12.sp, color = WaaproMuted, maxLines = 2, overflow = TextOverflow.Ellipsis) }
+            Spacer(Modifier.height(12.dp))
+            ScheduleNumberLine(Icons.Filled.Payments, "Pays from", local9(o.senderPhone))
+            Spacer(Modifier.height(6.dp))
+            ScheduleNumberLine(Icons.Filled.Wifi, "Internet to", local9(o.receiverPhone))
+            Spacer(Modifier.height(6.dp))
+            ScheduleNumberLine(Icons.Filled.Schedule, "When", scheduleTimeText(o.scheduledAt))
+            o.scheduleNote?.let { Text("Note: $it", fontSize = 12.sp, color = WaaproMuted, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp)) }
+            HorizontalDivider(Modifier.padding(vertical = 12.dp), color = WaaproBorder)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Surface(shape = RoundedCornerShape(50), color = state.bg) {
                     Text(state.label, color = state.ink, fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
                 }
-                Spacer(Modifier.weight(1f))
+                Spacer(Modifier.width(8.dp))
+                Text(o.id, color = WaaproMuted, fontSize = 11.sp, modifier = Modifier.weight(1f), maxLines = 1)
                 if (o.status == OrderStatus.PENDING) {
                     val future = try { o.scheduledAt?.let { Instant.parse(it).isAfter(Instant.now()) } ?: false } catch (_: Exception) { false }
-                    if (future) TextButton(enabled = !busy, onClick = onSendNow) { Text("Send now") }
-                    TextButton(enabled = !busy, onClick = onCancel) { Text("Cancel", color = Color(0xFFDC2626)) }
+                    if (future) TextButton(enabled = !busy, onClick = onSendNow) { Text("Send now", fontWeight = FontWeight.Bold) }
+                    TextButton(enabled = !busy, onClick = onCancel) { Text("Cancel", color = Color(0xFFDC2626), fontWeight = FontWeight.Bold) }
                 }
             }
         }
