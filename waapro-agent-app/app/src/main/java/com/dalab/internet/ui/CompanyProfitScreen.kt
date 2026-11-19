@@ -2,6 +2,8 @@ package com.dalab.internet.ui
 
 import com.dalab.internet.ui.i18n.Text
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -43,17 +45,19 @@ import org.json.JSONObject
 @Composable
 fun CompanyProfitScreen(onBack: () -> Unit) {
     var period by remember { mutableStateOf("month") }
+    // "all" = every agent's sends; "me" = only this agent's.
+    var scope by remember { mutableStateOf("all") }
     var data by remember { mutableStateOf<CompanyProfitOverview?>(null) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf<CompanyProfitRow?>(null) }
     var attempt by remember { mutableStateOf(0) }
 
-    LaunchedEffect(period, attempt) {
+    LaunchedEffect(period, scope, attempt) {
         loading = true
         error = null
         try {
-            val r = ApiClient.service.getCompanyProfit(period)
+            val r = ApiClient.service.getCompanyProfit(period, scope)
             if (r.isSuccessful) data = r.body()
             else error = serverMessage(r.errorBody()?.string()) ?: "Couldn't load (error ${r.code()})."
         } catch (_: Exception) {
@@ -77,8 +81,30 @@ fun CompanyProfitScreen(onBack: () -> Unit) {
                     IconButton(onClick = { attempt++ }) { Icon(Icons.Filled.Refresh, contentDescription = "Refresh", tint = Color.White) }
                 }
                 Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(horizontal = 8.dp)) {
-                    listOf("today" to "Today", "month" to "This month", "all" to "All time").forEach { (key, label) ->
+                // Whose sends: every agent's, or only mine.
+                Surface(shape = RoundedCornerShape(50), color = Color.White.copy(alpha = 0.14f), modifier = Modifier.padding(horizontal = 8.dp)) {
+                    Row(Modifier.padding(3.dp)) {
+                        listOf("all" to "All agents", "me" to "Me").forEach { (key, label) ->
+                            val on = scope == key
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                color = if (on) Color.White else Color.Transparent,
+                                modifier = Modifier.clip(RoundedCornerShape(50)).clickable { scope = key },
+                            ) {
+                                Text(label, color = if (on) WaaproNavy else Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp))
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp),
+                ) {
+                    listOf(
+                        "today" to "Today", "yesterday" to "Yesterday", "month" to "This month", "last_month" to "Last month",
+                        "3months" to "3 months", "6months" to "6 months", "year" to "1 year", "all" to "All time",
+                    ).forEach { (key, label) ->
                         val on = period == key
                         Surface(
                             shape = RoundedCornerShape(50),
@@ -178,7 +204,7 @@ private fun NetworkProfitCard(row: CompanyProfitRow, onEdit: () -> Unit) {
                 Column(Modifier.weight(1f)) {
                     Text(row.name, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(
-                        if (row.configured) "${row.orders} successful order${if (row.orders == 1) "" else "s"} · ${usd(row.sales)}" else "Not set",
+                        if (row.configured) "${row.orders} successful · ${usd(row.sentAmount)} sent" else "Not set",
                         color = if (row.configured) WaaproMuted else StatusAmber, fontSize = 12.5.sp,
                     )
                 }

@@ -18,6 +18,8 @@ data class CompanyProfitRow(
     val profitPct: Double? = null,
     val orders: Int = 0,
     val sales: Double = 0.0,
+    // What was actually sent to the network (the commission base).
+    val sentAmount: Double = 0.0,
     val commission: Double = 0.0,
     val discount: Double = 0.0,
     val profit: Double = 0.0,
@@ -27,6 +29,7 @@ data class CompanyProfitRow(
 data class CompanyProfitTotals(
     val orders: Int = 0,
     val sales: Double = 0.0,
+    val sentAmount: Double = 0.0,
     val commission: Double = 0.0,
     val discount: Double = 0.0,
     val profit: Double = 0.0,

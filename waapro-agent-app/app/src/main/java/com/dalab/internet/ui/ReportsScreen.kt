@@ -672,7 +672,7 @@ private fun CommissionProviderCard(r: com.dalab.internet.data.ReportCommissionRo
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
                     Text(r.companyName, color = RText, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                    Text("${r.orders} successful · ${usd(r.sales)}", color = RMuted, fontSize = 12.sp, maxLines = 1)
+                    Text("${r.orders} successful · ${usd(r.sentAmount)} sent", color = RMuted, fontSize = 12.sp, maxLines = 1)
                 }
                 Text(
                     "${pctText(r.commissionPct)} − ${pctText(r.discountPct)} = ${pctText(r.profitPct)}",

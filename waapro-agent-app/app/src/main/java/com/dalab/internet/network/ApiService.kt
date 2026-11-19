@@ -863,7 +863,7 @@ interface ApiService {
 
     // Company Commission & Profit (the Owner-granted "profit" service).
     @GET("agent/company-profit")
-    suspend fun getCompanyProfit(@Query("period") period: String): Response<com.dalab.internet.data.CompanyProfitOverview>
+    suspend fun getCompanyProfit(@Query("period") period: String, @Query("scope") scope: String? = null): Response<com.dalab.internet.data.CompanyProfitOverview>
 
     @PUT("agent/company-profit/{companyId}")
     suspend fun updateCompanyProfit(
