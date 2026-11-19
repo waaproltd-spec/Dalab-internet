@@ -547,7 +547,7 @@ private fun ResetCustomerPinScreen(
                 Text("Set a New PIN", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = DalabIndigo)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "Create a new PIN for ${detail?.name?.takeIf { it.isNotBlank() } ?: detail?.phone ?: "this customer"}",
+                    "For ${detail?.name?.takeIf { it.isNotBlank() } ?: detail?.phone?.filter { it.isDigit() }?.takeLast(9) ?: "this customer"}",
                     style = MaterialTheme.typography.bodyMedium,
                     color = DalabMuted,
                 )
@@ -557,7 +557,9 @@ private fun ResetCustomerPinScreen(
                 OutlinedTextField(
                     value = pin,
                     onValueChange = { if (it.length <= 8 && it.all { c -> c.isDigit() }) pin = it },
-                    label = { Text("Enter new PIN (4-8 digits)") },
+                    label = { Text("New PIN (4-8 digits)") },
+                    leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
+                    shape = RoundedCornerShape(16.dp),
                     singleLine = true,
                     visualTransformation = if (pinVisible) VisualTransformation.None else PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
@@ -572,7 +574,9 @@ private fun ResetCustomerPinScreen(
                 OutlinedTextField(
                     value = confirmPin,
                     onValueChange = { if (it.length <= 8 && it.all { c -> c.isDigit() }) confirmPin = it },
-                    label = { Text("Confirm new PIN") },
+                    label = { Text("Confirm PIN") },
+                    leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
+                    shape = RoundedCornerShape(16.dp),
                     singleLine = true,
                     isError = confirmPin.isNotEmpty() && !matches,
                     visualTransformation = if (pinVisible) VisualTransformation.None else PasswordVisualTransformation(),
@@ -585,14 +589,7 @@ private fun ResetCustomerPinScreen(
 
                 Spacer(Modifier.height(14.dp))
 
-                Surface(color = DalabSoftBlue.copy(alpha = 0.2f), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        "The customer will use this new PIN to log in to their account. The old PIN will no longer work.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = DalabIndigo,
-                        modifier = Modifier.padding(12.dp),
-                    )
-                }
+                Text("The old PIN stops working.", style = MaterialTheme.typography.bodySmall, color = DalabMuted)
 
                 if (error != null) {
                     Spacer(Modifier.height(10.dp))
@@ -611,15 +608,16 @@ private fun ResetCustomerPinScreen(
                         }
                     },
                     enabled = pinValid && matches && !saving,
-                    colors = ButtonDefaults.buttonColors(containerColor = DalabBrandFill),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = WaaproNavy),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth().height(54.dp),
                 ) {
-                    Text(if (saving) "Resetting…" else "Reset PIN")
+                    Text(if (saving) "Resetting…" else "Reset PIN", fontWeight = FontWeight.Bold)
                 }
 
                 Spacer(Modifier.height(10.dp))
 
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                 OutlinedButton(
                     onClick = {
                         error = null
@@ -630,14 +628,13 @@ private fun ResetCustomerPinScreen(
                         }
                     },
                     enabled = !saving,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.weight(1f).height(50.dp),
                 ) {
-                    Text("Generate a random PIN instead")
+                    Text("Random PIN", fontWeight = FontWeight.Bold)
                 }
 
                 if (detail?.pinSet == true) {
-                    Spacer(Modifier.height(10.dp))
                     OutlinedButton(
                         onClick = {
                             error = null
@@ -649,11 +646,13 @@ private fun ResetCustomerPinScreen(
                         },
                         enabled = !saving,
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = DalabDangerRed),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, DalabDangerRed.copy(alpha = 0.6f)),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.weight(1f).height(50.dp),
                     ) {
-                        Text("Clear PIN entirely")
+                        Text("Clear PIN", fontWeight = FontWeight.Bold)
                     }
+                }
                 }
 
                 Spacer(Modifier.height(8.dp))
@@ -930,50 +929,9 @@ private fun WalletNumbersScreen(
         Column(modifier = Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState())) {
             DetailTopBar("Wallet Numbers", onBack)
 
-            Column(modifier = Modifier.padding(horizontal = 20.dp)) {
-                Text("EVC Plus", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = DalabIndigo)
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = evcPlusName,
-                    onValueChange = { evcPlusName = it },
-                    label = { Text("Name on account") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = evcPlusNumber,
-                    onValueChange = { if (it.all { c -> c.isDigit() }) evcPlusNumber = it },
-                    label = { Text("Number") },
-                    singleLine = true,
-                    isError = !evcValid,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                    supportingText = if (!evcValid) { { Text("Provide both a name and a number, or clear both") } } else null,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-
-                Spacer(Modifier.height(18.dp))
-
-                Text("eDahab", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = DalabIndigo)
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = edahabName,
-                    onValueChange = { edahabName = it },
-                    label = { Text("Name on account") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = edahabNumber,
-                    onValueChange = { if (it.all { c -> c.isDigit() }) edahabNumber = it },
-                    label = { Text("Number") },
-                    singleLine = true,
-                    isError = !edahabValid,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                    supportingText = if (!edahabValid) { { Text("Provide both a name and a number, or clear both") } } else null,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+            Column(modifier = Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                WalletCard("evc_plus", "EVC Plus", evcPlusName, { evcPlusName = it }, evcPlusNumber, { if (it.all { c -> c.isDigit() }) evcPlusNumber = it }, evcValid)
+                WalletCard("edahab", "eDahab", edahabName, { edahabName = it }, edahabNumber, { if (it.all { c -> c.isDigit() }) edahabNumber = it }, edahabValid)
 
                 if (error != null) {
                     Spacer(Modifier.height(10.dp))
@@ -998,11 +956,11 @@ private fun WalletNumbersScreen(
                         }
                     },
                     enabled = evcValid && edahabValid && !saving,
-                    colors = ButtonDefaults.buttonColors(containerColor = DalabBrandFill),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = WaaproNavy),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth().height(54.dp),
                 ) {
-                    Text(if (saving) "Saving…" else "Save Wallet Numbers")
+                    Text(if (saving) "Saving…" else "Save", fontWeight = FontWeight.Bold)
                 }
                 Spacer(Modifier.height(8.dp))
                 TextButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
@@ -1010,6 +968,76 @@ private fun WalletNumbersScreen(
                 }
                 Spacer(Modifier.height(16.dp))
             }
+        }
+    }
+}
+
+/** One wallet (EVC Plus / eDahab): its logo, then the name and number, saved or cleared together. */
+@Composable
+private fun WalletCard(
+    key: String,
+    title: String,
+    name: String,
+    onName: (String) -> Unit,
+    number: String,
+    onNumber: (String) -> Unit,
+    valid: Boolean,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(20.dp),
+        shadowElevation = 2.dp,
+        border = androidx.compose.foundation.BorderStroke(1.dp, WaaproBorder.copy(alpha = 0.5f)),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier.height(30.dp).width(58.dp).clip(RoundedCornerShape(8.dp)).background(Color.White),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    androidx.compose.foundation.Image(
+                        painter = androidx.compose.ui.res.painterResource(logoResFor(key)),
+                        contentDescription = null,
+                        contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                        modifier = Modifier.padding(4.dp).fillMaxSize(),
+                    )
+                }
+                Spacer(Modifier.width(10.dp))
+                Text(title, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp, modifier = Modifier.weight(1f))
+                val set = name.isNotBlank() && number.isNotBlank()
+                Surface(shape = RoundedCornerShape(50), color = if (set) DalabGreen.copy(alpha = 0.14f) else DalabMuted.copy(alpha = 0.14f)) {
+                    Text(
+                        if (set) "Set" else "Not set",
+                        color = if (set) DalabGreen else DalabMuted,
+                        fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp),
+                    )
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = name,
+                onValueChange = onName,
+                label = { Text("Name on account") },
+                leadingIcon = { Icon(Icons.Filled.Person, contentDescription = null) },
+                singleLine = true,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = number,
+                onValueChange = onNumber,
+                label = { Text("Number") },
+                leadingIcon = { Icon(Icons.Filled.Phone, contentDescription = null) },
+                singleLine = true,
+                isError = !valid,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                supportingText = if (!valid) { { Text("Enter both the name and the number, or clear both") } } else null,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
     }
 }
