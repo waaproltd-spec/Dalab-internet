@@ -323,6 +323,10 @@ private fun AgentApp() {
     var selectedAgentVipPackageOrder by remember { mutableStateOf<VipPackageAgentOrder?>(null) }
     var selectedCustomerId by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    // The services the Owner allowed: loaded each time the agent lands on Home.
+    LaunchedEffect(screen) {
+        if (screen == Screen.HOME) com.dalab.internet.auth.AgentServices.refresh()
+    }
 
     // Back navigation for every normal in-app destination -- a real stack of
     // where `screen` has been, not a hardcoded "always return to Home".
@@ -564,6 +568,7 @@ private fun AgentApp() {
                     }
                     AgentBackgroundService.stop(context)
                     SessionManager.clear()
+                    com.dalab.internet.auth.AgentServices.clear()
                     ResellerSessionManager.clear()
                     com.dalab.internet.auth.DeviceActivationState.reset()
                     screen = Screen.AUTHENTICATING
@@ -1041,6 +1046,13 @@ private fun MoreScreen(
             runCatching { moreContext.packageManager.getPackageInfo(moreContext.packageName, 0).versionName }.getOrNull()
         }
         com.dalab.internet.ui.WaaproScreenHeader("More", "Settings, tools and your work", badge = appVersion?.let { "v$it" })
+        // Show only the services the Owner allowed (the server enforces them anyway).
+        androidx.compose.runtime.LaunchedEffect(Unit) {
+            while (true) {
+                com.dalab.internet.auth.AgentServices.refresh()
+                kotlinx.coroutines.delay(60_000L)
+            }
+        }
         MoreTabs()
         // Sales/Customers/Reports were their own bottom-nav tabs before the
         // bar was cut down to exactly 4 (Home/Support Agent/Broadcast/More)
@@ -1090,56 +1102,72 @@ private fun MoreScreen(
             NotificationHealthRows()
         }
         MoreSection(title = "My Work") {
-            MoreItem(
-                title = "Register Customer",
-                subtitle = "Customer pays, the system verifies it, then sends the internet",
-                icon = Icons.Filled.PersonAdd,
-                onClick = onOpenRegisterCustomer,
-            )
-            MoreItem(
-                title = "Schedule Transaction",
-                subtitle = "Register a customer and send a package at a set time",
-                icon = Icons.Filled.Schedule,
-                onClick = onOpenSchedule,
-            )
-            MoreItem(
-                title = "Other Agents",
-                subtitle = "Who is ONLINE or OFFLINE in this system",
-                icon = Icons.Filled.Groups,
-                onClick = onOpenOtherAgents,
-            )
-            MoreItem(
-                title = "Shop & VIP Orders",
-                subtitle = "Shop, VIP number and VIP package orders",
-                icon = Icons.Filled.ShoppingCart,
-                onClick = onOpenShopVipOrders,
-            )
-            MoreItem(
-                title = "Sales",
-                subtitle = "Start a new sale for a walk-in customer",
-                icon = Icons.Filled.Sell,
-                onClick = onOpenSales,
-            )
-            MoreItem(
-                title = "Customers",
-                subtitle = "Search or register customers",
-                icon = Icons.Filled.People,
-                onClick = onOpenCustomers,
-            )
-            MoreItem(
-                title = "Reports",
-                subtitle = "Your completed-sales totals and breakdown",
-                icon = Icons.Filled.Assessment,
-                onClick = onOpenReports,
-            )
+            if (com.dalab.internet.auth.AgentServices.allowed("registration")) {
+                MoreItem(
+                    title = "Register Customer",
+                    subtitle = "Customer pays, the system verifies it, then sends the internet",
+                    icon = Icons.Filled.PersonAdd,
+                    onClick = onOpenRegisterCustomer,
+                )
+            }
+            if (com.dalab.internet.auth.AgentServices.allowed("schedule")) {
+                MoreItem(
+                    title = "Schedule Transaction",
+                    subtitle = "Register a customer and send a package at a set time",
+                    icon = Icons.Filled.Schedule,
+                    onClick = onOpenSchedule,
+                )
+            }
+            if (com.dalab.internet.auth.AgentServices.allowed("other_agents")) {
+                MoreItem(
+                    title = "Other Agents",
+                    subtitle = "Who is ONLINE or OFFLINE in this system",
+                    icon = Icons.Filled.Groups,
+                    onClick = onOpenOtherAgents,
+                )
+            }
+            if (com.dalab.internet.auth.AgentServices.allowed("shop", "vip_numbers")) {
+                MoreItem(
+                    title = "Shop & VIP Orders",
+                    subtitle = "Shop, VIP number and VIP package orders",
+                    icon = Icons.Filled.ShoppingCart,
+                    onClick = onOpenShopVipOrders,
+                )
+            }
+            if (com.dalab.internet.auth.AgentServices.allowed("sales")) {
+                MoreItem(
+                    title = "Sales",
+                    subtitle = "Start a new sale for a walk-in customer",
+                    icon = Icons.Filled.Sell,
+                    onClick = onOpenSales,
+                )
+            }
+            if (com.dalab.internet.auth.AgentServices.allowed("customers")) {
+                MoreItem(
+                    title = "Customers",
+                    subtitle = "Search or register customers",
+                    icon = Icons.Filled.People,
+                    onClick = onOpenCustomers,
+                )
+            }
+            if (com.dalab.internet.auth.AgentServices.allowed("reports")) {
+                MoreItem(
+                    title = "Reports",
+                    subtitle = "Your completed-sales totals and breakdown",
+                    icon = Icons.Filled.Assessment,
+                    onClick = onOpenReports,
+                )
+            }
         }
         MoreSection(title = "Money") {
-            MoreItem(
-                title = "Wallet Balances",
-                subtitle = "Provider balances and live payment transactions",
-                icon = Icons.Filled.AccountBalanceWallet,
-                onClick = onOpenWallet,
-            )
+            if (com.dalab.internet.auth.AgentServices.allowed("balances")) {
+                MoreItem(
+                    title = "Wallet Balances",
+                    subtitle = "Provider balances and live payment transactions",
+                    icon = Icons.Filled.AccountBalanceWallet,
+                    onClick = onOpenWallet,
+                )
+            }
             MoreItem(
                 title = "Money Exchange",
                 subtitle = "Verified exchanges waiting for payout",
@@ -1171,12 +1199,14 @@ private fun MoreScreen(
                 icon = Icons.Filled.List,
                 onClick = onOpenPackages,
             )
-            MoreItem(
-                title = "Transaction History",
-                subtitle = "Orders you've completed",
-                icon = Icons.Filled.History,
-                onClick = onOpenTransactions,
-            )
+            if (com.dalab.internet.auth.AgentServices.allowed("transactions")) {
+                MoreItem(
+                    title = "Transaction History",
+                    subtitle = "Orders you've completed",
+                    icon = Icons.Filled.History,
+                    onClick = onOpenTransactions,
+                )
+            }
             // Same create/edit/publish/delete capability the Admin dashboard's
             // own Nala Soco section has -- see NalaSocoManagementScreen's own
             // doc comment.
@@ -1186,20 +1216,24 @@ private fun MoreScreen(
                 icon = Icons.Filled.Campaign,
                 onClick = onOpenNalaSoco,
             )
-            MoreItem(
-                title = "Promo Ads",
-                subtitle = "Manage the popup shown when the Customer App opens",
-                icon = Icons.Filled.LocalOffer,
-                onClick = onOpenPromoAds,
-            )
+            if (com.dalab.internet.auth.AgentServices.allowed("promo_ads")) {
+                MoreItem(
+                    title = "Promo Ads",
+                    subtitle = "Manage the popup shown when the Customer App opens",
+                    icon = Icons.Filled.LocalOffer,
+                    onClick = onOpenPromoAds,
+                )
+            }
             // Football score predictions -- the screen itself says so if an
             // Admin hasn't switched this agent on (agents.ciyaaraha_enabled).
-            MoreItem(
-                title = "Ciyaaraha",
-                subtitle = "Football predictions: contests, winners and rewards",
-                icon = Icons.Filled.SportsSoccer,
-                onClick = onOpenCiyaaraha,
-            )
+            if (com.dalab.internet.auth.AgentServices.allowed("ciyaaraha")) {
+                MoreItem(
+                    title = "Ciyaaraha",
+                    subtitle = "Football predictions: contests, winners and rewards",
+                    icon = Icons.Filled.SportsSoccer,
+                    onClick = onOpenCiyaaraha,
+                )
+            }
         }
         // Agent Support and Customer Broadcast moved to their own bottom-nav
         // tabs (Support Agent / Broadcast) -- no longer listed here.

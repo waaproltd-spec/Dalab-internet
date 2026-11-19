@@ -89,6 +89,8 @@ fun actionsFor(status: OrderStatus): List<AgentOrderAction> = when (status) {
  */
 @Composable
 fun AgentOrderActions(order: Order, onUpdated: (Order, String) -> Unit) {
+    // Only for agents the Owner allowed "Order operations" (the server refuses the rest).
+    if (!com.dalab.internet.auth.AgentServices.allowed("operations")) return
     val actions = if (order.reversedAt != null) emptyList() else actionsFor(order.status)
     if (actions.isEmpty()) return
     val scope = rememberCoroutineScope()

@@ -838,6 +838,10 @@ interface ApiService {
     @GET("agent/registered-payment-issues")
     suspend fun getRegisteredPaymentIssues(): Response<List<com.dalab.internet.ui.RegistrationIssue>>
 
+    // The services the Owner allowed this agent. 404 on a system without them.
+    @GET("agent/me/services")
+    suspend fun getMyServices(): Response<com.dalab.internet.auth.MyServicesResponse>
+
     // Other Agents: this system's other agents with ONLINE/OFFLINE status.
     @GET("agent/agents")
     suspend fun getOtherAgents(@Query("search") search: String? = null): Response<com.dalab.internet.data.OtherAgentsResponse>
