@@ -5,6 +5,10 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -105,51 +109,51 @@ fun ManageOrdersScreen(onOpenOrder: (Order) -> Unit, onBack: () -> Unit) {
     Scaffold(
         containerColor = WaaproBg,
         topBar = {
-            TopAppBar(
-                title = { Text("Manage Orders", fontWeight = FontWeight.Bold) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back") }
-                },
-                actions = {
-                    IconButton(onClick = ::refresh) { Icon(Icons.Filled.Refresh, contentDescription = "Refresh") }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = WaaproNavy,
-                    titleContentColor = Color.White,
-                    navigationIconContentColor = Color.White,
-                    actionIconContentColor = Color.White,
-                ),
-            )
-        }
-    ) { padding ->
-        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
-            Row(
-                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(WaaproHeaderBrush, RoundedCornerShape(bottomStart = 26.dp, bottomEnd = 26.dp))
+                    .padding(top = 10.dp, bottom = 16.dp),
             ) {
-                ManageOrdersFilter.values().forEach { f ->
-                    val selected = filter == f
-                    Surface(
-                        onClick = { filter = f; lastManageOrdersFilter = f },
-                        shape = RoundedCornerShape(14.dp),
-                        color = if (selected) WaaproBlue else Color.White,
-                        border = if (selected) null else BorderStroke(1.dp, WaaproBorder),
-                        shadowElevation = if (selected) 2.dp else 0.dp,
-                    ) {
-                        Text(
-                            f.label,
-                            color = if (selected) Color.White else WaaproNavy,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
-                        )
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp)) {
+                    IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White) }
+                    Text("Manage Orders", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 22.sp, modifier = Modifier.weight(1f))
+                    IconButton(onClick = ::refresh) { Icon(Icons.Filled.Refresh, contentDescription = "Refresh", tint = Color.White) }
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    ManageOrdersFilter.values().forEach { f ->
+                        val selected = filter == f
+                        Surface(
+                            onClick = { filter = f; lastManageOrdersFilter = f },
+                            shape = RoundedCornerShape(50),
+                            color = if (selected) WaaproGold else Color.White.copy(alpha = 0.14f),
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                                Text(f.label, color = if (selected) WaaproNavy else Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                if (selected && !loading) {
+                                    Spacer(Modifier.width(6.dp))
+                                    Surface(shape = RoundedCornerShape(50), color = WaaproNavy) {
+                                        Text("${orders.size}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 7.dp, vertical = 1.dp))
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
+        }
+    ) { padding ->
+        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+            Spacer(Modifier.height(10.dp))
             OutlinedTextField(
                 value = search,
                 onValueChange = { search = it },
                 singleLine = true,
-                shape = RoundedCornerShape(14.dp),
+                shape = RoundedCornerShape(18.dp),
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, tint = WaaproNavy) },
                 placeholder = { Text("Search number, reference or package", color = WaaproMuted) },
                 colors = OutlinedTextFieldDefaults.colors(
@@ -213,23 +217,22 @@ private fun ManageOrderCard(order: Order, onClick: () -> Unit) {
     val (pillBg, pillText) = orderStatusColors(order)
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(20.dp),
         color = Color.White,
+        shadowElevation = 2.dp,
         border = BorderStroke(1.dp, WaaproBorder),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Row(modifier = Modifier.padding(start = 16.dp, end = 8.dp, top = 14.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(44.dp).clip(CircleShape).background(WaaproNavy.copy(alpha = 0.10f)), contentAlignment = Alignment.Center) {
+                Text((order.companyName.firstOrNull() ?: '?').uppercase(), color = WaaproNavy, fontWeight = FontWeight.ExtraBold, fontSize = 19.sp)
+            }
+            Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(order.id, color = WaaproNavy, fontWeight = FontWeight.ExtraBold, style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "${order.companyName} · ${order.packageName}",
-                    color = WaaproInk,
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(Modifier.height(6.dp))
-                val who = order.receiverPhone ?: order.customerPhone
+                Text(order.packageName, color = WaaproInk, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("${order.companyName} · ${order.id}", color = WaaproMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.height(4.dp))
+                val who = (order.receiverPhone ?: order.customerPhone)?.filter { it.isDigit() }?.takeLast(9)
                 if (who != null || order.customerName != null) {
                     CardLine(Icons.Filled.Phone, listOfNotNull(order.customerName, who).joinToString(" · "))
                 }
@@ -237,20 +240,19 @@ private fun ManageOrderCard(order: Order, onClick: () -> Unit) {
             }
             Spacer(Modifier.width(8.dp))
             Column(horizontalAlignment = Alignment.End) {
-                Text("$${"%.2f".format(order.amount)}", color = WaaproNavy, fontWeight = FontWeight.ExtraBold, style = MaterialTheme.typography.titleLarge)
+                Text("$${"%.2f".format(order.amount)}", color = WaaproNavy, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
                 Spacer(Modifier.height(6.dp))
                 Surface(shape = RoundedCornerShape(50), color = pillBg) {
                     Text(
                         orderStatusLabel(order),
                         color = pillText,
-                        fontWeight = FontWeight.SemiBold,
-                        style = MaterialTheme.typography.labelLarge,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                     )
                 }
                 UssdJobPill("internet_store:${order.id}", Modifier.padding(top = 4.dp))
             }
-            Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = WaaproNavy, modifier = Modifier.padding(start = 4.dp))
         }
     }
 }
@@ -258,8 +260,8 @@ private fun ManageOrderCard(order: Order, onClick: () -> Unit) {
 @Composable
 private fun CardLine(icon: ImageVector, text: String) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
-        Icon(icon, contentDescription = null, tint = WaaproNavy, modifier = Modifier.size(16.dp))
-        Spacer(Modifier.width(8.dp))
-        Text(text, color = WaaproMuted, style = MaterialTheme.typography.bodySmall)
+        Icon(icon, contentDescription = null, tint = WaaproMuted, modifier = Modifier.size(14.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(text, color = WaaproMuted, fontSize = 12.sp, maxLines = 1)
     }
 }

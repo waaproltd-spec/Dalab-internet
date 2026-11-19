@@ -173,29 +173,39 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
     Scaffold(
         containerColor = WaaproBg,
         topBar = {
-            TopAppBar(
-                title = { Text("Order ${current.id}", fontWeight = FontWeight.Bold, maxLines = 1) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
+            // Brand header: the order, its package and network, the amount and its state.
+            val (pillBg, pillText) = orderStatusColors(current)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(WaaproHeaderBrush, RoundedCornerShape(bottomStart = 26.dp, bottomEnd = 26.dp))
+                    .padding(start = 8.dp, end = 8.dp, top = 10.dp, bottom = 18.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White) }
+                    Text(current.id, color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp, maxLines = 1, modifier = Modifier.weight(1f))
                     IconButton(onClick = {
                         val clipboard = context.getSystemService(ClipboardManager::class.java)
                         clipboard?.setPrimaryClip(ClipData.newPlainText("Order ID", current.id))
                         copied = true
                     }) {
-                        Icon(Icons.Filled.ContentCopy, contentDescription = "Copy order ID")
+                        Icon(Icons.Filled.ContentCopy, contentDescription = "Copy order ID", tint = Color.White)
                     }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = WaaproNavy,
-                    titleContentColor = Color.White,
-                    navigationIconContentColor = Color.White,
-                    actionIconContentColor = Color.White,
-                ),
-            )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 16.dp, end = 8.dp, top = 4.dp)) {
+                    Column(Modifier.weight(1f)) {
+                        Text(current.packageName, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                        Text(current.companyName, color = Color.White.copy(alpha = 0.8f), fontSize = 13.sp)
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text("$${"%.2f".format(current.amount)}", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 28.sp)
+                        Surface(shape = RoundedCornerShape(50), color = pillBg) {
+                            Text(orderStatusLabel(current), color = pillText, fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
+                        }
+                    }
+                }
+            }
         },
         bottomBar = {
             if (current.reversedAt == null && current.status == OrderStatus.IN_PROGRESS) {
@@ -228,20 +238,12 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
                 }
             }
 
-            DetailCard(Icons.Filled.Person, "Customer") {
-                DetailRow("Name", current.customerName ?: "Not provided")
-                // Both numbers: the one that paid (sent from) and the one
-                // that receives the package (sent to).
-                DetailRow("Sent from", current.senderPhone ?: current.customerPhone ?: "Not provided", Icons.Filled.Phone)
-                DetailRow("Sent to", current.receiverPhone ?: current.senderPhone ?: current.customerPhone ?: "Not provided", Icons.Filled.Phone)
-            }
-
-            DetailCard(Icons.Filled.Inventory2, "Package") {
-                DetailRow("Provider", current.companyName)
-                DetailRow("Package", current.packageName)
-                DetailRow("Amount", "$${"%.2f".format(current.amount)}", big = true)
-                Spacer(Modifier.height(6.dp))
-                StatusBar(current)
+            val local9 = { p: String? -> p?.filter { it.isDigit() }?.takeLast(9)?.ifEmpty { null } ?: "—" }
+            DetailCard(Icons.Filled.Person, current.customerName?.takeIf { it.isNotBlank() } ?: "Customer") {
+                // Both numbers: the one that paid and the one that gets the package.
+                DetailRow("Paid from", local9(current.senderPhone ?: current.customerPhone), Icons.Filled.Phone)
+                DetailRow("Internet to", local9(current.receiverPhone ?: current.senderPhone ?: current.customerPhone), Icons.Filled.Phone)
+                DetailRow("Created", formatApiDateTime(current.createdAt))
                 // App-wide USSD queue: Running now, or Waiting (position).
                 UssdJobStatusLine("internet_store:${current.id}", Modifier.padding(top = 6.dp))
             }
@@ -294,11 +296,7 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
                 // once approved, the order is dialed automatically or with
                 // the Dial buttons below.
                 Column {
-                    Text(
-                        "Approve the payment above first. The order is then dialed automatically on the SIM it is routed to, or you can dial it here.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = WaaproMuted,
-                    )
+                    Text("Approve the payment; the order then dials automatically.", style = MaterialTheme.typography.labelSmall, color = WaaproMuted)
                     AssignedSimNote(assigned)
                 }
             }
@@ -347,15 +345,16 @@ fun OrderDetailScreen(order: Order, onBack: () -> Unit, onOrderUpdated: (Order) 
 @Composable
 private fun DetailCard(icon: ImageVector, title: String, content: @Composable ColumnScope.() -> Unit) {
     Surface(
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(20.dp),
         color = Color.White,
+        shadowElevation = 2.dp,
         border = BorderStroke(1.dp, WaaproBorder),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth().background(WaaproSoft.copy(alpha = 0.55f)).padding(horizontal = 14.dp, vertical = 8.dp),
+                modifier = Modifier.fillMaxWidth().padding(start = 14.dp, end = 14.dp, top = 12.dp),
             ) {
                 Box(Modifier.size(30.dp).clip(CircleShape).background(WaaproNavy), contentAlignment = Alignment.Center) {
                     Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
