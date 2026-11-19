@@ -255,7 +255,46 @@ reportsRouter.get("/agent/reports/dashboard", requireAuth("agent"), async (req, 
     };
   });
 
-  sendJson(res, 200, { range, scope, ...summary, companies });
+  // Commission by provider: each network's Commission % and Discount %
+  // (company_profit_terms, set in the Agent App) over the same successful
+  // orders, period and agents as the rest of this report.
+  // Profit = Commission - Discount.
+  const termRows = await query<{ id: string; name: string; color_hex: string | null; commission_pct: string; discount_pct: string | null; sent: string; sales: string }>(
+    `SELECT c.id, c.name, c.color_hex, t.commission_pct, t.discount_pct,
+            COUNT(o.id) FILTER (WHERE ${SENT}) AS sent,
+            COALESCE(SUM(o.amount) FILTER (WHERE ${SENT}), 0) AS sales
+     FROM companies c
+     JOIN company_profit_terms t ON t.company_id = c.id AND t.commission_pct IS NOT NULL
+     LEFT JOIN orders o ON o.company_id = c.id AND ${who} ${dateFilter}
+     WHERE c.deleted_at IS NULL
+     GROUP BY c.id, c.name, c.color_hex, c.sort_order, t.commission_pct, t.discount_pct
+     ORDER BY c.sort_order, c.name`,
+    [agentId]
+  );
+  const commissionByProvider = termRows.map((r) => {
+    const commissionPct = Number(r.commission_pct);
+    const discountPct = Number(r.discount_pct ?? 0);
+    const sales = money(r.sales);
+    const commission = money((sales * commissionPct) / 100);
+    const discount = money((sales * discountPct) / 100);
+    return {
+      company_id: r.id,
+      company_name: r.name,
+      color_hex: r.color_hex,
+      commission_pct: commissionPct,
+      discount_pct: discountPct,
+      profit_pct: money(commissionPct - discountPct),
+      orders: Number(r.sent),
+      sales,
+      commission,
+      discount,
+      profit: money(commission - discount),
+    };
+  });
+  const sumOf = (k: "orders" | "sales" | "commission" | "discount" | "profit") => money(commissionByProvider.reduce((t, c) => t + c[k], 0));
+  const commissionTotals = { orders: sumOf("orders"), sales: sumOf("sales"), commission: sumOf("commission"), discount: sumOf("discount"), profit: sumOf("profit") };
+
+  sendJson(res, 200, { range, scope, ...summary, companies, commission_by_provider: commissionByProvider, commission_totals: commissionTotals });
 });
 
 // One company's own report: its summary, status split, every package's

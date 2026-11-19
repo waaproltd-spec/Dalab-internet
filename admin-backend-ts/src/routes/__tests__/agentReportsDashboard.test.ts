@@ -186,3 +186,24 @@ test("scope=all counts every agent's orders; the default stays this agent's own"
   assert.ok(hormuudAll.totalOrders > hormuudMine.totalOrders, "the other agent's Hormuud order is included");
   assert.equal(hormuudAll.scope, "all");
 });
+
+test("Commission by provider: Commission % and Discount % over the report's successful orders", async () => {
+  await query(
+    `INSERT INTO company_profit_terms (company_id, commission_pct, discount_pct, profit_pct) VALUES ('rpt-hormuud', 15, 10, 5)
+     ON CONFLICT (company_id) DO UPDATE SET commission_pct=15, discount_pct=10, profit_pct=5`
+  );
+  const mine = await get("/agent/reports/dashboard?range=all");
+  const all = await get("/agent/reports/dashboard?range=all&scope=all");
+  for (const rep of [mine, all]) {
+    const h = rep.commissionByProvider.find((c: any) => c.companyId === "rpt-hormuud");
+    assert.ok(h, "Hormuud has terms, so it is listed");
+    const company = rep.companies.find((c: any) => c.companyId === "rpt-hormuud");
+    assert.equal(h.sales, company.successfulValue, "same successful sales as the network card");
+    assert.equal(h.commission, Math.round(h.sales * 15) / 100);
+    assert.equal(h.discount, Math.round(h.sales * 10) / 100);
+    assert.equal(h.profit, Math.round((h.commission - h.discount) * 100) / 100);
+    assert.equal(rep.commissionByProvider.some((c: any) => c.companyId === "rpt-amtel"), false, "no terms, not listed");
+  }
+  const h = (r: any) => r.commissionByProvider.find((c: any) => c.companyId === "rpt-hormuud");
+  assert.ok(h(all).orders > h(mine).orders, "All agents includes the other agent's Hormuud order");
+});
