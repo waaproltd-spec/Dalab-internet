@@ -149,7 +149,7 @@ class UssdSafetyTest {
     @Test fun `the Register Customer form or any other screen is never answered - stop before the PIN`() {
         val clock = Clock()
         val form = CarrierScreen("Register customer\nCustomer name\nPayment sender number", hasInput = true)
-        val carrier = FakeCarrier(clock, mapOf(0 to listOf(1_000L to form)), receipt = null)
+        val carrier = FakeCarrier(clock, mapOf(0 to listOf(1_000L to form)), receiptAfterLast = null)
         val r = run(carrier, clock)
         assertEquals(DialOutcome.FAILED, r.outcome)
         assertTrue(r.noRetry)
