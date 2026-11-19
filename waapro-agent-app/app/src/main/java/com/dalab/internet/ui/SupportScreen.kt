@@ -13,6 +13,11 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.border
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -409,7 +414,56 @@ fun SupportScreen(onBack: () -> Unit) {
 
     Scaffold(
         topBar = {
-            TopAppBar(
+            if (conversation == null) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(WaaproHeaderBrush, RoundedCornerShape(bottomStart = 26.dp, bottomEnd = 26.dp))
+                        .padding(start = 8.dp, end = 16.dp, top = 10.dp, bottom = 18.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White) }
+                        Text("Agent Support", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 22.sp, modifier = Modifier.weight(1f))
+                        Surface(shape = RoundedCornerShape(50), color = Color.White.copy(alpha = 0.14f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 12.dp, end = 4.dp)) {
+                                Box(Modifier.size(8.dp).background(if (online) Color(0xFF22C55E) else Color(0xFF9CA3AF), CircleShape))
+                                Spacer(Modifier.width(6.dp))
+                                Text(if (online) "Online" else "Offline", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Switch(
+                                    checked = online,
+                                    onCheckedChange = { toggleOnline(it) },
+                                    enabled = !togglingOnline,
+                                    modifier = Modifier.scale(0.8f),
+                                    colors = SwitchDefaults.colors(checkedTrackColor = Color(0xFF22C55E), checkedThumbColor = Color.White),
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 16.dp)) {
+                        Column(Modifier.weight(1f)) {
+                            Text("${queue.size}", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 34.sp)
+                            Text(if (queue.size == 1) "customer waiting" else "customers waiting", color = Color.White.copy(alpha = 0.85f), fontSize = 13.sp)
+                        }
+                        Button(
+                            onClick = { claimNext() },
+                            enabled = online && queue.isNotEmpty() && claimingId == null,
+                            shape = RoundedCornerShape(16.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = WaaproGold, contentColor = WaaproNavy,
+                                disabledContainerColor = Color.White.copy(alpha = 0.14f), disabledContentColor = Color.White.copy(alpha = 0.6f),
+                            ),
+                            modifier = Modifier.height(48.dp),
+                        ) {
+                            Text(if (claimingId == "__next__") "Claiming…" else "Claim next", fontWeight = FontWeight.Bold)
+                            if (claimingId != "__next__") {
+                                Spacer(Modifier.width(6.dp))
+                                Icon(Icons.Filled.ArrowForward, contentDescription = null, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+                }
+            } else TopAppBar(
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (conversation == null) {
@@ -576,42 +630,6 @@ private fun SupportQueueView(
     onClaimSpecific: (String) -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
-        Surface(color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.fillMaxWidth()) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(20.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Filled.Groups,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(28.dp),
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    Column {
-                        Text(
-                            "${queue.size}",
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.Bold,
-                        )
-                        Text(
-                            if (queue.size == 1) "customer waiting" else "customers waiting",
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                    }
-                }
-                Button(onClick = onClaimNext, enabled = online && queue.isNotEmpty() && claimingId == null) {
-                    Text(if (claimingId == "__next__") "Claiming…" else "Claim Next")
-                    if (claimingId != "__next__") {
-                        Spacer(Modifier.width(6.dp))
-                        Icon(Icons.Filled.ArrowForward, contentDescription = null, modifier = Modifier.size(16.dp))
-                    }
-                }
-            }
-        }
-
         if (!online) {
             Surface(color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth()) {
                 Row(
@@ -630,18 +648,7 @@ private fun SupportQueueView(
                         )
                     }
                     Spacer(Modifier.width(12.dp))
-                    Column {
-                        Text(
-                            "Go online to claim a waiting customer.",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                        )
-                        Text(
-                            "Turn on your status to start receiving customers.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f),
-                        )
-                    }
+                    Text("You're offline. Go online to take customers.", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -675,53 +682,11 @@ private fun SupportQueueView(
                 }
                 Spacer(Modifier.height(20.dp))
                 Text(
-                    "No customers waiting right now.",
+                    "No one waiting",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     textAlign = TextAlign.Center,
                 )
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "When customers need help, they will appear here and you can claim them.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                )
-                Spacer(Modifier.height(24.dp))
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.Top) {
-                        Box(
-                            modifier = Modifier.size(32.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primaryContainer),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                Icons.Filled.Lightbulb,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(18.dp),
-                            )
-                        }
-                        Spacer(Modifier.width(12.dp))
-                        Column {
-                            Text(
-                                "Stay online to get customers faster",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Bold,
-                            )
-                            Text(
-                                "Turn on your status and keep the app open for real-time notifications.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
             }
         } else {
             LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
@@ -732,7 +697,6 @@ private fun SupportQueueView(
                         enabled = online && claimingId == null,
                         onClaim = { onClaimSpecific(item.id) },
                     )
-                    Divider()
                 }
             }
         }
@@ -746,27 +710,48 @@ private fun QueueConversationCard(
     enabled: Boolean,
     onClaim: () -> Unit,
 ) {
-    Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-        Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(item.customerName ?: item.customerPhone ?: "Customer", fontWeight = FontWeight.Bold)
-                Text(item.customerPhone ?: "", style = MaterialTheme.typography.bodySmall)
+    val waiting = item.status == SupportConversationStatus.QUEUED
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = 2.dp,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp).border(1.dp, WaaproBorder, RoundedCornerShape(20.dp)),
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val who = item.customerName?.takeIf { it.isNotBlank() }
+                Box(Modifier.size(42.dp).clip(CircleShape).background(WaaproNavy.copy(alpha = 0.12f)), contentAlignment = Alignment.Center) {
+                    if (who != null) Text(who.first().uppercase(), color = WaaproNavy, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
+                    else Icon(Icons.Filled.Person, contentDescription = null, tint = WaaproNavy, modifier = Modifier.size(22.dp))
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(who ?: item.customerPhone?.filter { it.isDigit() }?.takeLast(9) ?: "Customer", fontWeight = FontWeight.ExtraBold, fontSize = 15.sp, maxLines = 1)
+                    Text(formatApiDateTime(item.createdAt), color = WaaproMuted, fontSize = 12.sp)
+                }
+                Surface(shape = RoundedCornerShape(50), color = if (waiting) Color(0xFFFFF4D6) else Color(0xFFDBEAFE)) {
+                    Text(
+                        if (waiting) "Waiting" else "Left a message",
+                        color = if (waiting) Color(0xFF8A6200) else Color(0xFF1D4ED8),
+                        fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                    )
+                }
             }
-            AssistChip(
-                onClick = {},
-                label = { Text(if (item.status == SupportConversationStatus.QUEUED) "Waiting" else "Left a message") },
-            )
-        }
-        item.firstMessage?.let {
-            Spacer(Modifier.height(6.dp))
-            Text(it, style = MaterialTheme.typography.bodyMedium, maxLines = 2)
-        }
-        Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(formatApiDateTime(item.createdAt), style = MaterialTheme.typography.labelSmall)
-            OutlinedButton(onClick = onClaim, enabled = enabled) {
-                Text(if (claiming) "Claiming…" else "Claim")
+            item.firstMessage?.let {
+                Spacer(Modifier.height(10.dp))
+                Surface(shape = RoundedCornerShape(14.dp), color = WaaproNavy.copy(alpha = 0.06f), modifier = Modifier.fillMaxWidth()) {
+                    Text(it, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(10.dp))
+                }
             }
+            Spacer(Modifier.height(10.dp))
+            Button(
+                onClick = onClaim,
+                enabled = enabled,
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = WaaproNavy),
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(if (claiming) "Claiming…" else "Claim", fontWeight = FontWeight.Bold) }
         }
     }
 }
