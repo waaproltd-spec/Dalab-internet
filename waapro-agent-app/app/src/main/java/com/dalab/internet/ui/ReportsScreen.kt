@@ -16,6 +16,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Business
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -146,7 +147,7 @@ fun ReportsScreen(onBack: () -> Unit) {
             if (current == null) {
                 item { LoadingOrEmpty(loading) }
             } else {
-                item { SummaryGrid(current.totalOrders, current.successfulValue, current.totalProfit, current.totalDiscount) }
+                item { SummaryGrid(current.status.sent, current.successfulValue, current.totalProfit, current.totalDiscount) }
                 item { SectionTitle("Order Status") }
                 item { StatusCard(current.status, current.totalOrders) }
                 item { SectionTitle("By Network") }
@@ -218,7 +219,7 @@ private fun CompanyReportScreen(company: ReportCompanyCard, initialRange: String
                 item { LoadingOrEmpty(loading) }
             } else {
                 item { Spacer(Modifier.height(6.dp)) }
-                item { SummaryGrid(current.totalOrders, current.successfulValue, current.totalProfit, current.totalDiscount) }
+                item { SummaryGrid(current.status.sent, current.successfulValue, current.totalProfit, current.totalDiscount) }
                 item { SectionTitle("Order Status", "(${company.companyName})") }
                 item { StatusCard(current.status, current.totalOrders) }
                 item { SectionTitle("Package Performance") }
@@ -325,7 +326,7 @@ private fun DarkCard(modifier: Modifier = Modifier, content: @Composable ColumnS
 private fun SummaryGrid(totalOrders: Int, successfulValue: Double, totalProfit: Double, totalDiscount: Double) {
     Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            StatTile(Icons.Filled.Description, RBlue, "$totalOrders", "Total Orders", Modifier.weight(1f))
+            StatTile(Icons.Filled.CheckCircle, RGreen, "$totalOrders", "Successful orders", Modifier.weight(1f))
             StatTile(Icons.Filled.MonetizationOn, RGreen, usd(successfulValue), "Successful sales", Modifier.weight(1f))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
