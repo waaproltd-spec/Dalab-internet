@@ -6,14 +6,21 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.PowerManager
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.filled.BatteryChargingFull
+import androidx.compose.material.icons.filled.Sms
+import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -92,163 +99,99 @@ fun ReliabilityDashboardScreen(onBack: () -> Unit) {
         HeartbeatStats.failureCountsByCategory().entries.sortedByDescending { it.value }
     }
 
-    // Not a new low-level Android capability — a plain-language combination
-    // of the two things that actually keep this process alive through Doze/
-    // App Standby (the foreground service itself, and the battery-optimization
-    // exemption), so an agent doesn't have to mentally combine the two rows
-    // above themselves to know whether they're actually covered.
     val sleepProtection = when {
-        serviceRunning && batteryExempt -> Triple(
-            "Fully Protected", Color(0xFF16A34A),
-            "Foreground service active and battery optimization disabled — Android should not stop this app during sleep.",
-        )
-        serviceRunning || batteryExempt -> Triple(
-            "Partially Protected", Color(0xFFB8860B),
-            "Only one of the two protections is active — the app may still be paused during deep sleep.",
-        )
-        else -> Triple(
-            "At Risk", Color(0xFFDC2626),
-            "Neither protection is active — Android is likely to stop background processing.",
-        )
+        serviceRunning && batteryExempt -> "Fully protected" to 0
+        serviceRunning || batteryExempt -> "Partially protected" to 1
+        else -> "At risk" to 2
     }
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Reliability Dashboard") },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back") } },
-            )
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(WaaproHeaderBrush, RoundedCornerShape(bottomStart = 26.dp, bottomEnd = 26.dp))
+                    .padding(start = 8.dp, end = 16.dp, top = 10.dp, bottom = 18.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White) }
+                    Text("Reliability", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 22.sp)
+                }
+                Spacer(Modifier.height(10.dp))
+                Box(Modifier.padding(start = 8.dp)) {
+                    StatusBanner(sleepProtection.first, ok = sleepProtection.second == 0, warn = sleepProtection.second == 1)
+                }
+            }
         }
     ) { padding ->
         Column(
             modifier = Modifier
                 .padding(padding)
-                .padding(20.dp)
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState()),
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
         ) {
-            Text(
-                "Live status of everything that keeps payment processing running around the clock on this device.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(16.dp))
-
-            ReliabilityRow(
-                "Foreground Service", serviceRunning, "Running", "Not running",
-                "Keeps the SSE connection, heartbeat, and SMS pipeline alive in the background.",
-            )
-            Spacer(Modifier.height(10.dp))
-            ReliabilityRow(
-                "SMS Reader", smsListening, "Active", "Inactive",
-                "Detects incoming payment confirmation SMS the instant it arrives.",
-            )
-            Spacer(Modifier.height(10.dp))
-            ReliabilityRow(
-                "Internet Connection", networkOnline, "Online", "Offline",
-                "Required for heartbeats, SMS uploads, and order processing.",
-            )
-            Spacer(Modifier.height(10.dp))
-            ReliabilityRow(
-                "Battery Optimization", batteryExempt, "Disabled (exempt)", "Enabled (restricted)",
-                "Android may pause this app in the background if optimization is still enabled.",
-            )
-            Spacer(Modifier.height(14.dp))
-
-            Surface(color = sleepProtection.second.copy(alpha = 0.1f), shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.Warning, contentDescription = null, tint = sleepProtection.second, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Device Sleep Protection: ${sleepProtection.first}", fontWeight = FontWeight.Bold, color = sleepProtection.second)
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    Text(sleepProtection.third, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
+            StatusGrid(listOf<@Composable (Modifier) -> Unit>(
+                { m -> StatusTile(Icons.Filled.Sync, "Background service", serviceRunning, "Running", "Not running", m) },
+                { m -> StatusTile(Icons.Filled.Sms, "SMS reader", smsListening, "Active", "Inactive", m) },
+                { m -> StatusTile(Icons.Filled.Wifi, "Internet", networkOnline, "Online", "Offline", m) },
+                { m -> StatusTile(Icons.Filled.BatteryChargingFull, "Battery", batteryExempt, "Unrestricted", "Restricted", m) },
+            ))
 
             Spacer(Modifier.height(18.dp))
-            Text("Heartbeat", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
-            Spacer(Modifier.height(8.dp))
-            Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    StatLine(
-                        "Last successful heartbeat",
-                        if (lastHeartbeatAt != null) "${formatTimestamp(lastHeartbeatAt)} (${relativeAge(lastHeartbeatAt)})" else "Never",
+            StatusSection("Heartbeat") {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(10.dp).clip(CircleShape).background(if (lastHeartbeatAt != null) StatusGreen else StatusRed))
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        if (lastHeartbeatAt != null) "Last: ${relativeAge(lastHeartbeatAt)}" else "No heartbeat yet",
+                        fontWeight = FontWeight.Bold, fontSize = 15.sp,
                     )
-                    StatLine("Successful", "$heartbeatSuccess")
-                    StatLine("Failed", "$heartbeatFailure")
-                    if (heartbeatFailuresByCategory.isNotEmpty()) {
-                        Spacer(Modifier.height(4.dp))
-                        heartbeatFailuresByCategory.forEach { (category, count) ->
-                            StatLine("  $category", "$count")
-                        }
+                    Spacer(Modifier.weight(1f))
+                    Text(formatTimestamp(lastHeartbeatAt), color = WaaproMuted, fontSize = 12.sp)
+                }
+                Spacer(Modifier.height(14.dp))
+                Row {
+                    StatusFigure("$heartbeatSuccess", "Successful", Modifier.weight(1f), StatusGreen)
+                    StatusFigure("$heartbeatFailure", "Failed", Modifier.weight(1f), if (heartbeatFailure > 0) StatusRed else Color.Unspecified)
+                    val total = heartbeatSuccess + heartbeatFailure
+                    StatusFigure(if (total > 0) "${heartbeatSuccess * 100 / total}%" else "-", "Success rate", Modifier.weight(1f))
+                }
+                if (heartbeatFailuresByCategory.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                        heartbeatFailuresByCategory.forEach { (category, count) -> StatePill("$category · $count", WaaproMuted) }
                     }
-                    if (lastHeartbeatError != null) {
-                        Spacer(Modifier.height(6.dp))
-                        Text("Last error: $lastHeartbeatError", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                    }
+                }
+                if (lastHeartbeatError != null) {
+                    Spacer(Modifier.height(10.dp))
+                    Text("Last error: $lastHeartbeatError", fontSize = 12.sp, color = StatusRed, maxLines = 2)
                 }
             }
 
             Spacer(Modifier.height(18.dp))
-            Text("Offline Queue", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
-            Spacer(Modifier.height(8.dp))
-            Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    if (pendingActions.isEmpty()) {
-                        Text("Nothing queued — all work has been sent to the server.", style = MaterialTheme.typography.bodySmall)
-                    } else {
-                        StatLine("Pending items", "${pendingActions.size}")
-                        pendingActions.groupBy { it.type }.forEach { (type, items) ->
-                            StatLine(type.name.replace("_", " ").lowercase().replaceFirstChar { it.uppercase() }, "${items.size}")
-                        }
+            StatusSection("Offline queue") {
+                if (pendingActions.isEmpty()) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = StatusGreen, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Nothing waiting", fontWeight = FontWeight.Bold)
+                    }
+                } else {
+                    Row {
+                        StatusFigure("${pendingActions.size}", "Waiting", Modifier.weight(1f), StatusAmber)
                         val oldest = pendingActions.minByOrNull { it.createdAt }
-                        if (oldest != null) {
-                            Spacer(Modifier.height(6.dp))
-                            Text(
-                                "Oldest queued: ${relativeAge(oldest.createdAt)}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                        StatusFigure(relativeAge(oldest?.createdAt).ifEmpty { "-" }, "Oldest", Modifier.weight(1f))
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                        pendingActions.groupBy { it.type }.forEach { (type, items) ->
+                            StatePill("${type.name.replace("_", " ").lowercase().replaceFirstChar { it.uppercase() }} · ${items.size}", StatusAmber)
                         }
                     }
                 }
             }
-
             Spacer(Modifier.height(24.dp))
         }
-    }
-}
-
-@Composable
-private fun ReliabilityRow(label: String, ok: Boolean, okLabel: String, notOkLabel: String, description: String) {
-    val color = if (ok) Color(0xFF16A34A) else Color(0xFFDC2626)
-    Surface(color = color.copy(alpha = 0.08f), shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                if (ok) Icons.Filled.CheckCircle else Icons.Filled.Cancel,
-                contentDescription = null,
-                tint = color,
-                modifier = Modifier.size(22.dp),
-            )
-            Spacer(Modifier.width(14.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(label, fontWeight = FontWeight.SemiBold)
-                Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            Text(if (ok) okLabel else notOkLabel, color = color, fontWeight = FontWeight.Bold)
-        }
-    }
-}
-
-@Composable
-private fun StatLine(label: String, value: String) {
-    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, fontWeight = FontWeight.Medium)
     }
 }

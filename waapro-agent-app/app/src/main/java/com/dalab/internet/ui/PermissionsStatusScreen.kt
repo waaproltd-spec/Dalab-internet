@@ -11,12 +11,18 @@ import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.filled.BatteryChargingFull
+import androidx.compose.material.icons.filled.MarkEmailUnread
+import androidx.compose.material.icons.filled.Sms
+import androidx.compose.material.icons.filled.Sync
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.BatteryAlert
-import androidx.compose.material.icons.filled.Cancel
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -64,61 +70,44 @@ fun PermissionsStatusScreen(onBack: () -> Unit) {
         batteryExempt = batteryUnrestricted()
     }
 
+    val okCount = listOf(readSmsGranted, receiveSmsGranted, serviceActive, batteryExempt).count { it }
+
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Permissions") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back") }
-                },
-            )
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(WaaproHeaderBrush, RoundedCornerShape(bottomStart = 26.dp, bottomEnd = 26.dp))
+                    .padding(start = 8.dp, end = 8.dp, top = 10.dp, bottom = 18.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White) }
+                    Text("Permissions", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 22.sp, modifier = Modifier.weight(1f))
+                    IconButton(onClick = { refresh() }) { Icon(Icons.Filled.Refresh, contentDescription = "Re-check", tint = Color.White) }
+                }
+                Spacer(Modifier.height(10.dp))
+                Box(Modifier.padding(horizontal = 8.dp)) {
+                    StatusBanner(if (okCount == 4) "All set · 4 of 4" else "$okCount of 4 ready", ok = okCount == 4)
+                }
+            }
         }
     ) { padding ->
         Column(
             modifier = Modifier
                 .padding(padding)
-                .padding(20.dp)
-                .fillMaxSize(),
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
         ) {
-            Text(
-                "Real-time SMS reading and reliable background operation require these system " +
-                    "permissions, so the app can detect payment confirmation messages from 192, " +
-                    "Somtel, Somnet, and Amtel the instant they arrive — even when the app is " +
-                    "minimized or the screen is locked.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(20.dp))
+            StatusGrid(listOf<@Composable (Modifier) -> Unit>(
+                { m -> StatusTile(Icons.Filled.Sms, "Read SMS", readSmsGranted, "Granted", "Not granted", m) },
+                { m -> StatusTile(Icons.Filled.MarkEmailUnread, "Receive SMS", receiveSmsGranted, "Granted", "Not granted", m) },
+                { m -> StatusTile(Icons.Filled.Sync, "Background service", serviceActive, "Active", "Inactive", m) },
+                { m -> StatusTile(Icons.Filled.BatteryChargingFull, "Battery", batteryExempt, "Unrestricted", "Restricted", m) },
+            ))
 
-            PermissionStatusRow(
-                "READ_SMS Permission", readSmsGranted, "Granted", "Not Granted",
-                description = "Allows reading payment confirmation messages from 192, Somtel, Somnet, Amtel",
-            )
-            Spacer(Modifier.height(12.dp))
-            PermissionStatusRow(
-                "RECEIVE_SMS Permission", receiveSmsGranted, "Granted", "Not Granted",
-                description = "Triggers immediate processing as soon as SMS arrives",
-            )
-            Spacer(Modifier.height(12.dp))
-            PermissionStatusRow(
-                "Foreground Service", serviceActive, "Active", "Inactive",
-                description = "Keeps agent listener active in background even when app is minimized",
-            )
-            Spacer(Modifier.height(12.dp))
-            PermissionStatusRow(
-                "Battery Optimization", batteryExempt, "Unrestricted", "Restricted",
-                description = "Stops Android from killing the background listener to save power",
-            )
             if (!batteryExempt) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "Without this, Android may stop payment monitoring after a few minutes " +
-                        "in the background. Tap below to allow WAAPRO LTD AGENT to run unrestricted — " +
-                        "the system will ask you to confirm.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(14.dp))
                 Button(
                     onClick = {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -128,41 +117,27 @@ fun PermissionsStatusScreen(onBack: () -> Unit) {
                             context.startActivity(intent)
                         }
                     },
-                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = StatusRed),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
                 ) {
                     Icon(Icons.Filled.BatteryAlert, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text("Disable Battery Optimization")
+                    Text("Allow unrestricted battery", fontWeight = FontWeight.Bold)
                 }
             }
 
-            // Standard Android battery-optimization exemption above only covers
-            // Android's own Doze/App-Standby system. Several major manufacturers
-            // (Xiaomi/Redmi/POCO, Huawei/Honor, Oppo/Realme, Vivo, and Transsion's
-            // Tecno/Infinix/itel — all common in this market) ship a SEPARATE,
-            // more aggressive background-app killer on top of stock Android that
-            // the standard exemption does NOT disable. This is the most common
-            // real-world reason a background SMS listener works once (while the
-            // app was recently open/foregrounded) and then silently stops
-            // reacting to further incoming SMS once the OS decides to kill it —
-            // with no crash, no error, nothing in Diagnostics to explain it.
+            // Several manufacturers (Xiaomi, Huawei/Honor, Oppo/Realme, Vivo,
+            // Tecno/Infinix/itel, Samsung) have their own background-app
+            // killer on top of Android's battery optimization; the exemption
+            // above does not cover it. This opens that maker's own screen.
             if (oemAutostartIntent != null) {
                 Spacer(Modifier.height(12.dp))
-                Text(
-                    "${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} devices have their own separate battery/app manager " +
-                        "that can silently stop background SMS monitoring even with battery optimization above disabled. " +
-                        "Find WAAPRO LTD AGENT in the screen that opens and allow \"Auto-start\" / remove it from any \"Protected\"/restricted list.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(8.dp))
                 OutlinedButton(
                     onClick = {
                         try {
                             context.startActivity(oemAutostartIntent)
                         } catch (_: ActivityNotFoundException) {
-                            // Not present on this exact ROM/version — fall back to
-                            // general app settings rather than crashing the screen.
                             try {
                                 context.startActivity(
                                     Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
@@ -170,25 +145,19 @@ fun PermissionsStatusScreen(onBack: () -> Unit) {
                                     }
                                 )
                             } catch (_: ActivityNotFoundException) {
-                                // Nothing more we can do — avoid crashing either way.
+                                // Nothing more we can do.
                             }
                         }
                     },
-                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
                 ) {
                     Icon(Icons.Filled.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text("Allow Auto-start / Remove Background Restrictions")
+                    Text("${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} auto-start", fontWeight = FontWeight.Bold)
                 }
             }
 
-            Spacer(Modifier.weight(1f))
-
-            Button(onClick = { refresh() }, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("Re-check System Permissions")
-            }
             Spacer(Modifier.height(12.dp))
             OutlinedButton(
                 onClick = {
@@ -197,44 +166,13 @@ fun PermissionsStatusScreen(onBack: () -> Unit) {
                     }
                     context.startActivity(intent)
                 },
-                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth().height(52.dp),
             ) {
                 Icon(Icons.Filled.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
-                Text("Open App Settings")
+                Text("App settings", fontWeight = FontWeight.Bold)
             }
-        }
-    }
-}
-
-@Composable
-private fun PermissionStatusRow(label: String, ok: Boolean, okLabel: String, notOkLabel: String, description: String? = null) {
-    val color = if (ok) Color(0xFF16A34A) else Color(0xFFDC2626)
-    Surface(
-        color = color.copy(alpha = 0.08f),
-        shape = RoundedCornerShape(14.dp),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                if (ok) Icons.Filled.CheckCircle else Icons.Filled.Cancel,
-                contentDescription = null,
-                tint = color,
-                modifier = Modifier.size(22.dp),
-            )
-            Spacer(Modifier.width(14.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(label, fontWeight = FontWeight.SemiBold)
-                if (description != null) {
-                    Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-            Text(if (ok) okLabel else notOkLabel, color = color, fontWeight = FontWeight.Bold)
         }
     }
 }
