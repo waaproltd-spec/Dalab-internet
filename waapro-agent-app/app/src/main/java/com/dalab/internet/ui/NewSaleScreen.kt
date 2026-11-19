@@ -2,6 +2,14 @@ package com.dalab.internet.ui
 
 import com.dalab.internet.ui.i18n.Text
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -57,25 +65,37 @@ fun NewSaleScreen(onBack: () -> Unit) {
     val syncState by PendingSalesSyncStatus.state.collectAsState()
     val syncPendingCount by PendingSalesSyncStatus.pendingCount.collectAsState()
 
-    LaunchedEffect(Unit) {
+    // Providers: loading -> list, or a clear error with Retry (never a blank screen).
+    var companiesLoading by remember { mutableStateOf(true) }
+    var companiesError by remember { mutableStateOf<String?>(null) }
+    var companiesAttempt by remember { mutableStateOf(0) }
+    LaunchedEffect(companiesAttempt) {
+        companiesLoading = true
+        companiesError = null
         try {
-            companies = ApiClient.service.getCompanies().body().orEmpty()
+            val r = ApiClient.service.getCompanies()
+            if (r.isSuccessful) companies = r.body().orEmpty()
+            else companiesError = "Couldn't load providers (error ${r.code()})."
         } catch (_: Exception) {
-            error = "Couldn't load providers. Check your connection."
+            companiesError = "Couldn't load providers. Check your connection."
         }
+        companiesLoading = false
     }
+    var packagesLoading by remember { mutableStateOf(false) }
 
     LaunchedEffect(selectedCompany) {
         val company = selectedCompany
         selectedPackageIds = emptySet()
         paymentMethod = company?.gateway ?: ""
         if (company != null) {
+            packagesLoading = true
             try {
                 // Temporarily unavailable packages can't be sold (the server refuses them too).
                 packages = ApiClient.service.getPackages(company.id).body().orEmpty().filter { it.ordersEnabled }
             } catch (_: Exception) {
                 packages = emptyList()
             }
+            packagesLoading = false
         } else {
             packages = emptyList()
         }
@@ -97,49 +117,72 @@ fun NewSaleScreen(onBack: () -> Unit) {
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("New Sale") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
+            val step = when { successOrders != null -> 3; selectedPackageIds.isNotEmpty() -> 2; selectedCompany != null -> 1; else -> 0 }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(WaaproHeaderBrush, RoundedCornerShape(bottomStart = 26.dp, bottomEnd = 26.dp))
+                    .padding(start = 8.dp, end = 16.dp, top = 10.dp, bottom = 18.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White) }
+                    Text("New Sale", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 22.sp)
+                }
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(start = 8.dp)) {
+                    listOf("Provider", "Packages", "Customer").forEachIndexed { i, label ->
+                        SaleStep(i + 1, label, done = step > i, current = step == i, modifier = Modifier.weight(1f))
                     }
-                },
-            )
+                }
+            }
         },
     ) { padding ->
         val orders = successOrders
         if (orders != null) {
             SaleConfirmation(orders = orders, queuedPackages = queuedPackages, onNewSale = { reset() })
         } else {
-            LazyColumn(modifier = Modifier.padding(padding).fillMaxSize().padding(16.dp)) {
+            LazyColumn(
+                modifier = Modifier.padding(padding).fillMaxSize(),
+                contentPadding = PaddingValues(16.dp),
+            ) {
                 if (syncState != PendingSalesSyncStatus.State.IDLE) {
                     item {
                         SyncStatusBanner(state = syncState, pendingCount = syncPendingCount)
                         Spacer(Modifier.height(12.dp))
                     }
                 }
-                item {
-                    Text("1. Provider", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(8.dp))
-                }
-                items(companies, key = { it.id }) { company ->
-                    CompanyOption(
-                        company = company,
-                        selected = company.id == selectedCompany?.id,
-                        onClick = { selectedCompany = company },
-                    )
+                item { SaleSectionTitle("Provider") }
+                when {
+                    companiesLoading && companies.isEmpty() -> item {
+                        Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = WaaproNavy) }
+                    }
+                    companiesError != null && companies.isEmpty() -> item {
+                        SaleNotice(companiesError!!, actionLabel = "Retry") { companiesAttempt++ }
+                    }
+                    companies.isEmpty() -> item { SaleNotice("No providers yet.", actionLabel = "Retry") { companiesAttempt++ } }
+                    else -> items(companies.chunked(2), key = { row -> row.joinToString { it.id } }) { row ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
+                            row.forEach { company ->
+                                CompanyOption(
+                                    company = company,
+                                    selected = company.id == selectedCompany?.id,
+                                    onClick = { selectedCompany = company },
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                            if (row.size == 1) Spacer(Modifier.weight(1f))
+                        }
+                    }
                 }
 
                 if (selectedCompany != null) {
                     item {
-                        Spacer(Modifier.height(20.dp))
-                        Text("2. Packages (select one or more)", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.height(8.dp))
-                        if (packages.isEmpty()) {
-                            Text(
-                                "No packages available for this provider.",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
+                        Spacer(Modifier.height(10.dp))
+                        SaleSectionTitle("Packages")
+                        if (packagesLoading) {
+                            Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = WaaproNavy) }
+                        } else if (packages.isEmpty()) {
+                            SaleNotice("No packages for this provider.")
                         }
                     }
                     items(packages, key = { it.id }) { pkg ->
@@ -159,20 +202,22 @@ fun NewSaleScreen(onBack: () -> Unit) {
 
                 if (selectedPackageIds.isNotEmpty()) {
                     item {
-                        Spacer(Modifier.height(12.dp))
-                        Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = MaterialTheme.shapes.medium) {
+                        Spacer(Modifier.height(10.dp))
+                        Surface(shape = RoundedCornerShape(18.dp), color = WaaproNavy, modifier = Modifier.fillMaxWidth()) {
                             Row(
-                                modifier = Modifier.fillMaxWidth().padding(12.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Text("${selectedPackageIds.size} package${if (selectedPackageIds.size == 1) "" else "s"} selected")
-                                Text("$${"%.2f".format(totalAmount)} total", fontWeight = FontWeight.Bold)
+                                Text(
+                                    "${selectedPackageIds.size} package${if (selectedPackageIds.size == 1) "" else "s"}",
+                                    color = Color.White.copy(alpha = 0.85f), fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f),
+                                )
+                                Text("$${"%.2f".format(totalAmount)}", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
                             }
                         }
 
-                        Spacer(Modifier.height(20.dp))
-                        Text("3. Customer & payment", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.height(8.dp))
+                        Spacer(Modifier.height(18.dp))
+                        SaleSectionTitle("Customer")
                         // No company context for the customer's own number
                         // (any known carrier is accepted, same as
                         // registration) -- receiverPhone below is the SIM
@@ -186,6 +231,7 @@ fun NewSaleScreen(onBack: () -> Unit) {
                             value = customerPhone,
                             onValueChange = { customerPhone = it },
                             label = { Text("Customer phone number") },
+                            shape = RoundedCornerShape(14.dp),
                             singleLine = true,
                             isError = customerPhoneError != null,
                             supportingText = customerPhoneError?.let { { Text(it) } },
@@ -196,6 +242,7 @@ fun NewSaleScreen(onBack: () -> Unit) {
                             value = receiverPhone,
                             onValueChange = { receiverPhone = it },
                             label = { Text("Receiver number (if different)") },
+                            shape = RoundedCornerShape(14.dp),
                             singleLine = true,
                             isError = receiverPhoneError != null,
                             supportingText = receiverPhoneError?.let { { Text(it) } },
@@ -206,6 +253,7 @@ fun NewSaleScreen(onBack: () -> Unit) {
                             value = paymentMethod,
                             onValueChange = { paymentMethod = it },
                             label = { Text("Payment method") },
+                            shape = RoundedCornerShape(14.dp),
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
                         )
@@ -286,9 +334,13 @@ fun NewSaleScreen(onBack: () -> Unit) {
                                 }
                             },
                             enabled = customerPhone.isNotBlank() && customerPhoneError == null && receiverPhoneError == null && !submitting,
-                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = WaaproNavy),
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier.fillMaxWidth().height(54.dp),
                         ) {
                             Text(
+                                fontWeight = FontWeight.Bold,
+                                text = 
                                 if (submitting) "Submitting..."
                                 else if (selectedPackageIds.size > 1) "Create ${selectedPackageIds.size} Sales"
                                 else "Create Sale"
@@ -302,40 +354,98 @@ fun NewSaleScreen(onBack: () -> Unit) {
 }
 
 @Composable
-private fun CompanyOption(company: Company, selected: Boolean, onClick: () -> Unit) {
-    val offline = company.status == "offline"
-    OutlinedCard(
-        onClick = { if (!offline) onClick() },
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+private fun SaleStep(n: Int, label: String, done: Boolean, current: Boolean, modifier: Modifier) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = when { current -> WaaproGold; done -> Color.White.copy(alpha = 0.22f); else -> Color.White.copy(alpha = 0.10f) },
+        modifier = modifier,
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(company.name, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
-            if (offline) Text("Offline", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
-            else if (selected) Icon(Icons.Filled.Check, contentDescription = "Selected")
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp)) {
+            val ink = if (current) WaaproNavy else Color.White
+            if (done) Icon(Icons.Filled.Check, contentDescription = null, tint = ink, modifier = Modifier.size(16.dp))
+            else Text("$n", color = ink, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
+            Spacer(Modifier.width(6.dp))
+            Text(label, color = ink, fontWeight = FontWeight.Bold, fontSize = 12.5.sp, maxLines = 1)
         }
     }
 }
 
 @Composable
-private fun PackageOption(pkg: PackageItem, selected: Boolean, onClick: () -> Unit) {
-    OutlinedCard(onClick = onClick, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(checked = selected, onCheckedChange = { onClick() })
-                Column {
-                    Text(pkg.name, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
-                    Text(pkg.validity ?: "", style = MaterialTheme.typography.bodySmall)
-                }
+private fun SaleSectionTitle(title: String) {
+    Text(title, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp, modifier = Modifier.padding(start = 4.dp, bottom = 10.dp))
+}
+
+@Composable
+private fun SaleNotice(text: String, actionLabel: String? = null, onAction: () -> Unit = {}) {
+    Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth().border(1.dp, WaaproBorder, RoundedCornerShape(18.dp))) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Text(text, color = WaaproMuted, modifier = Modifier.weight(1f))
+            if (actionLabel != null) TextButton(onClick = onAction) { Text(actionLabel, fontWeight = FontWeight.Bold) }
+        }
+    }
+}
+
+private fun saleColor(hex: String?, fallback: Color): Color =
+    try { hex?.let { Color(android.graphics.Color.parseColor(it)) } ?: fallback } catch (_: Exception) { fallback }
+
+/** A provider tile: its colour, its name, a tick when chosen; greyed when offline. */
+@Composable
+private fun CompanyOption(company: Company, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val offline = company.status == "offline"
+    val brand = saleColor(company.colorHex, WaaproBlue)
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = if (selected) brand.copy(alpha = 0.10f) else MaterialTheme.colorScheme.surface,
+        shadowElevation = if (selected) 0.dp else 1.dp,
+        modifier = modifier
+            .height(72.dp)
+            .border(if (selected) 2.dp else 1.dp, if (selected) brand else WaaproBorder, RoundedCornerShape(18.dp))
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(enabled = !offline, onClick = onClick),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 12.dp)) {
+            Box(
+                Modifier.size(38.dp).clip(CircleShape).background(if (offline) WaaproBorder else brand),
+                contentAlignment = Alignment.Center,
+            ) { Text((company.name.firstOrNull() ?: '?').uppercase(), color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp) }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(company.name, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (offline) WaaproMuted else Color.Unspecified)
+                if (offline) Text("Offline", color = Color(0xFFDC2626), fontSize = 11.sp)
             }
-            Text("$${"%.2f".format(pkg.price)}", fontWeight = FontWeight.Bold)
+            if (selected) Icon(Icons.Filled.CheckCircle, contentDescription = "Selected", tint = brand, modifier = Modifier.size(20.dp))
+        }
+    }
+}
+
+/** A package to tick: name, validity, price. */
+@Composable
+private fun PackageOption(pkg: PackageItem, selected: Boolean, onClick: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = if (selected) WaaproNavy.copy(alpha = 0.06f) else MaterialTheme.colorScheme.surface,
+        shadowElevation = if (selected) 0.dp else 1.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 10.dp)
+            .border(if (selected) 2.dp else 1.dp, if (selected) WaaproNavy else WaaproBorder, RoundedCornerShape(18.dp))
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(onClick = onClick),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+            Box(
+                Modifier.size(26.dp).clip(CircleShape)
+                    .background(if (selected) WaaproNavy else Color.Transparent)
+                    .border(2.dp, if (selected) WaaproNavy else WaaproBorder, CircleShape),
+                contentAlignment = Alignment.Center,
+            ) { if (selected) Icon(Icons.Filled.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp)) }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(pkg.name, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                pkg.validity?.takeIf { it.isNotBlank() }?.let { Text(it, color = WaaproMuted, fontSize = 12.5.sp) }
+            }
+            Spacer(Modifier.width(8.dp))
+            Text("$${"%.2f".format(pkg.price)}", fontWeight = FontWeight.ExtraBold, color = Color(0xFF137A3A), fontSize = 17.sp)
         }
     }
 }
@@ -386,7 +496,7 @@ private fun SaleConfirmation(orders: List<Order>, queuedPackages: List<PackageIt
             }
         }
         Spacer(Modifier.height(20.dp))
-        Button(onClick = onNewSale) { Text("Start another sale") }
+        Button(onClick = onNewSale, colors = ButtonDefaults.buttonColors(containerColor = WaaproNavy), shape = RoundedCornerShape(16.dp)) { Text("Start another sale", fontWeight = FontWeight.Bold) }
     }
 }
 
