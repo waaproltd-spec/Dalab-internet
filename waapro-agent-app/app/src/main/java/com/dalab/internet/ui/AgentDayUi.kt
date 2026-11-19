@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -93,9 +94,9 @@ fun AgentTodaySection(modifier: Modifier = Modifier) {
     val updatedAt by AgentDayRepository.todayUpdatedAt.collectAsState()
     Column(modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Filled.CalendarToday, contentDescription = null, tint = WaaproNavy, modifier = Modifier.size(18.dp))
+            Icon(Icons.Filled.CalendarToday, contentDescription = null, tint = WaaproBlue, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(6.dp))
-            Text("Today", color = WaaproNavy, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp)
+            Text("Today", color = MaterialTheme.colorScheme.onBackground, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
             Spacer(Modifier.weight(1f))
             val time = updatedAt?.let { SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(it)) }
             if (stale && time != null) Text("Offline · updated $time", color = AmberInk, fontSize = 12.sp)
@@ -114,12 +115,19 @@ fun AgentTodaySection(modifier: Modifier = Modifier) {
 
 @Composable
 private fun DayCard(icon: ImageVector, title: String, content: @Composable () -> Unit) {
-    Surface(shape = RoundedCornerShape(16.dp), color = Color.White, modifier = Modifier.fillMaxWidth().border(1.dp, WaaproBorder, RoundedCornerShape(16.dp))) {
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = 2.dp,
+        modifier = Modifier.fillMaxWidth().border(1.dp, WaaproBorder.copy(alpha = 0.5f), RoundedCornerShape(20.dp)),
+    ) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(icon, contentDescription = null, tint = WaaproNavy, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(6.dp))
-                Text(title, color = WaaproNavy, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Box(Modifier.size(30.dp).background(WaaproBlue.copy(alpha = 0.14f), androidx.compose.foundation.shape.CircleShape), contentAlignment = Alignment.Center) {
+                    Icon(icon, contentDescription = null, tint = WaaproBlue, modifier = Modifier.size(17.dp))
+                }
+                Spacer(Modifier.width(8.dp))
+                Text(title, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp)
             }
             Spacer(Modifier.height(10.dp))
             content()
@@ -359,22 +367,25 @@ fun AgentInfoScreen(onOpenOtherAgents: () -> Unit) {
         }
     }
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
-        WaaproScreenHeader("Agent Info", "Today's work and the other agents")
+        WaaproScreenHeader("Agent Info")
         AgentTodaySection()
         Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = Color.White,
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surface,
+            shadowElevation = 2.dp,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 8.dp)
-                .border(1.dp, WaaproBorder, RoundedCornerShape(16.dp))
+                .border(1.dp, WaaproBorder.copy(alpha = 0.5f), RoundedCornerShape(20.dp))
                 .clickable(onClick = onOpenOtherAgents),
         ) {
             Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.Person, contentDescription = null, tint = WaaproNavy, modifier = Modifier.size(20.dp))
+                Box(Modifier.size(30.dp).background(WaaproBlue.copy(alpha = 0.14f), androidx.compose.foundation.shape.CircleShape), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Filled.Person, contentDescription = null, tint = WaaproBlue, modifier = Modifier.size(17.dp))
+                }
                 Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("Other Agents", color = WaaproNavy, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text("Other Agents", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp)
                     Text(
                         if (online != null && total != null) "$online online · $total agents" else "Who is ONLINE or OFFLINE in this system",
                         color = WaaproMuted, fontSize = 12.sp,

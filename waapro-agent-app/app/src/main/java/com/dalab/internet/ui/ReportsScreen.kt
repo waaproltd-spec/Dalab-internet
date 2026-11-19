@@ -543,12 +543,12 @@ private fun MoneyLines(lines: List<MoneyLine>) {
 }
 
 private fun moneyLines(companyCost: Double, markup: Double, selling: Double, discount: Double, final: Double, profit: Double) = listOf(
-    MoneyLine(Icons.Filled.Business, RBlue, "Company Cost", "What the company is paid", usd(companyCost)),
-    MoneyLine(Icons.Filled.TrendingUp, RGreen, "Markup", "Added on top of company cost", usd(markup)),
-    MoneyLine(Icons.Filled.Sell, DalabBlue, "Selling Price", "Company cost + markup", usd(selling)),
-    MoneyLine(Icons.Filled.Percent, RRed, "Discount Given", "Taken off the selling price", usd(discount)),
-    MoneyLine(Icons.Filled.Paid, RAmber, "Final Price", "Selling price - discount (what was paid)", usd(final)),
-    MoneyLine(Icons.Filled.BarChart, if (profit >= 0) RGreen else RRed, "Actual Profit", "Final price - company cost", usd(profit), strong = true),
+    MoneyLine(Icons.Filled.Business, RBlue, "Company Cost", "Paid to the network", usd(companyCost)),
+    MoneyLine(Icons.Filled.TrendingUp, RGreen, "Markup", "Added on top", usd(markup)),
+    MoneyLine(Icons.Filled.Sell, DalabBlue, "Selling Price", "Cost + markup", usd(selling)),
+    MoneyLine(Icons.Filled.Percent, RRed, "Discount Given", "Off the selling price", usd(discount)),
+    MoneyLine(Icons.Filled.Paid, RAmber, "Final Price", "What the customer paid", usd(final)),
+    MoneyLine(Icons.Filled.BarChart, if (profit >= 0) RGreen else RRed, "Actual Profit", "Final price - cost", usd(profit), strong = true),
 )
 
 @Composable

@@ -27,6 +27,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.ImageBitmap
@@ -335,28 +336,27 @@ private fun PackageDetailsScreen(pkg: PackageItem, company: Company?, onBack: ()
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .background(Brush.verticalGradient(listOf(DalabSoftBlue.copy(alpha = 0.45f), DalabSurfaceTint)))
+                    .background(WaaproHeaderBrush, androidx.compose.foundation.shape.RoundedCornerShape(bottomStart = 26.dp, bottomEnd = 26.dp))
                     .statusBarsPadding()
-                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                    .padding(horizontal = 8.dp, vertical = 12.dp),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    PkRoundButton(Icons.Filled.ArrowBack, "Back", onBack)
-                    Spacer(Modifier.width(12.dp))
-                    Text("Package Details", color = DalabBlue, fontSize = 22.sp, fontWeight = FontWeight.Black)
+                    IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White) }
+                    Text("Package Details", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
                 }
                 Spacer(Modifier.height(16.dp))
                 Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                     PackageArt(pkg, 96.dp)
                     Spacer(Modifier.height(12.dp))
-                    Text(pkg.name, color = DalabBlue, fontSize = 19.sp, fontWeight = FontWeight.Bold, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                    packageDescription(pkg)?.let { Text(it, color = PkMuted, fontSize = 14.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center) }
+                    Text(pkg.name, color = Color.White, fontSize = 19.sp, fontWeight = FontWeight.Bold, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.padding(horizontal = 12.dp))
+                    packageDescription(pkg)?.let { Text(it, color = Color.White.copy(alpha = 0.8f), fontSize = 14.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center) }
                     Spacer(Modifier.height(10.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(pkUsd(pkg.price), color = DalabSuccessGreen, fontSize = 32.sp, fontWeight = FontWeight.Black)
+                        Text(pkUsd(pkg.price), color = WaaproGold, fontSize = 32.sp, fontWeight = FontWeight.Black)
                         val old = pkg.oldPrice
                         if (old != null && old > pkg.price) {
                             Spacer(Modifier.width(10.dp))
-                            Text(pkUsd(old), color = PkMuted, fontSize = 17.sp, textDecoration = TextDecoration.LineThrough)
+                            Text(pkUsd(old), color = Color.White.copy(alpha = 0.6f), fontSize = 17.sp, textDecoration = TextDecoration.LineThrough)
                         }
                     }
                     validityLabel(pkg.validity)?.let {

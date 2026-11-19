@@ -1057,7 +1057,7 @@ private fun MoreScreen(
         val appVersion = remember {
             runCatching { moreContext.packageManager.getPackageInfo(moreContext.packageName, 0).versionName }.getOrNull()
         }
-        com.dalab.internet.ui.WaaproScreenHeader("More", "Settings, tools and your work", badge = appVersion?.let { "v$it" })
+        com.dalab.internet.ui.WaaproScreenHeader("More", null, badge = appVersion?.let { "v$it" })
         // Show only the services the Owner allowed (the server enforces them anyway).
         androidx.compose.runtime.LaunchedEffect(Unit) {
             while (true) {
