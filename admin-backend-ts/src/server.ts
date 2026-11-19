@@ -63,6 +63,7 @@ import { customerSuspensionMiddleware, staffStatusMiddleware } from "./auth/midd
 import { deviceActivationRouter, agentDeviceActivationMiddleware } from "./routes/deviceActivation.routes.js";
 import { smsFormatsRouter } from "./routes/smsFormats.routes.js";
 import { interactiveServicesRouter } from "./routes/interactiveServices.routes.js";
+import { agentRegistrationsRouter } from "./routes/agentRegistrations.routes.js";
 
 // Express 4 route handlers here are plain `async (req, res) => {...}` with no
 // wrapper — a promise rejection inside one (e.g. an uncaught DB error) never
@@ -296,6 +297,7 @@ app.use(interactiveServicesRouter);
 app.use(categoriesRouter);
 app.use(ordersRouter);
 app.use(customersRouter);
+app.use(agentRegistrationsRouter);
 app.use(offlineAdminRouter);
 app.use(offlinePaymentMethodsRouter);
 app.use(agentsRouter);

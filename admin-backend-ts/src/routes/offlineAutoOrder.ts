@@ -1,6 +1,7 @@
 import { packageUnavailableReason } from "../utils/packageAvailability.js";
 import { query, queryOne } from "../db/pool.js";
 import { broadcast } from "../realtime/orderEvents.js";
+import { recordRegistrationPaymentIssue } from "./agentRegistrations.routes.js";
 
 /**
  * Offline Auto-Order: a customer with no internet can't open the app to
@@ -251,7 +252,29 @@ export async function resolveOfflinePackage(
   };
 }
 
+/**
+ * Rukumo matching (see matchOfflineAutoOrderInner), plus: a payment from an
+ * agent-registered customer that could not become an order is reported to
+ * that agent and the admins (agentRegistrations.routes.ts). Nothing else
+ * changes -- no order is created or sent for it.
+ */
 export async function matchOrCreateOfflineAutoOrder(
+  parsedAmount: number | undefined,
+  parsedPhone: string | undefined,
+  parsedProvider: string | null | undefined,
+  transactionRef: string | null | undefined,
+  uploadingAgentId: string,
+  uploadingSimSlot: number | null | undefined,
+  body?: string | null
+): Promise<OfflineAutoOrderMatchResult> {
+  const result = await matchOfflineAutoOrderInner(parsedAmount, parsedPhone, parsedProvider, transactionRef, uploadingAgentId, uploadingSimSlot, body);
+  if (!result.order && result.reason && parsedPhone && !result.reason.startsWith("No Offline Profile")) {
+    await recordRegistrationPaymentIssue({ senderPhone: parsedPhone, amount: parsedAmount, transactionRef, reason: result.reason });
+  }
+  return result;
+}
+
+async function matchOfflineAutoOrderInner(
   parsedAmount: number | undefined,
   parsedPhone: string | undefined,
   parsedProvider: string | null | undefined,

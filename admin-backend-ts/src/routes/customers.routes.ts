@@ -754,7 +754,7 @@ customersRouter.put("/customer/wallet-numbers", requireAuth("customer"), async (
 const OFFLINE_PROFILE_COLUMNS =
   "offline_sender_number, offline_destination_number, offline_company_id, offline_package_id, offline_payment_method_id, offline_profile_updated_at";
 
-async function serializeOfflineProfile(customerId: string) {
+export async function serializeOfflineProfile(customerId: string) {
   const row = await queryOne<{
     offline_sender_number: string | null;
     offline_destination_number: string | null;

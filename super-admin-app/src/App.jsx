@@ -16,6 +16,7 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, 
 import { HUB_URL, takeHubAssertion, goToHub, openHub, signOutToHub, hubNav, watchSystemSuspension, loadHubPayment, acknowledgeHubPayment, payNowHubPayment } from "./hubSession.js";
 import HubPaymentBanner, { usePaymentStatus } from "./HubPaymentBanner.jsx";
 import AgentNotices, { AgentNoticesIcon } from "./AgentNotices.jsx";
+import AgentRegistrations, { AgentRegistrationsIcon } from "./AgentRegistrations.jsx";
 import AgentDirectorySetting from "./AgentDirectorySetting.jsx";
 
 // ---- DALAB INTERNET / Admin design tokens ----
@@ -988,6 +989,7 @@ const NAV = [
   { id: "offline", label: "Offline (Rukumo)", icon: WifiOff, permission: "orders.manage" },
   { id: "customers", label: "Customers", icon: Users, permission: "customers.manage" },
   { id: "agents", label: "Agents", icon: UserCog, permission: "agents.manage" },
+  { id: "agent-registrations", label: "Agent Registrations", icon: AgentRegistrationsIcon, permission: "customers.manage" },
   { id: "device-activation", label: "Device Activation", icon: Smartphone, permission: "agents.manage" },
   { id: "notifications", label: "Notifications", icon: Bell, permission: "settings.manage" },
   { id: "agent-notices", label: "Maintenance Notices", icon: AgentNoticesIcon, permission: "agents.manage" },
@@ -18460,6 +18462,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "device-activation" && <DeviceActivationSection admin={admin} />}
           {active === "notifications" && <Notifications />}
           {active === "agent-notices" && <AgentNotices request={dalabAdminApiRequest} />}
+          {active === "agent-registrations" && <AgentRegistrations request={dalabAdminApiRequest} />}
           {active === "promo-images" && <PromoImages />}
           {active === "nala-soco" && <NalaSoco />}
           {active === "ciyaaraha" && <CiyaarahaAdmin />}
