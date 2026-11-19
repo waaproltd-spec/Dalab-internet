@@ -19,7 +19,35 @@
 // follow for the in-app notifications table).
 
 import { cert, getApps, initializeApp } from "firebase-admin/app";
-import { getMessaging } from "firebase-admin/messaging";
+import { getMessaging, type Messaging } from "firebase-admin/messaging";
+
+// The AGENT APP (com.waaproltd.agent) lives in its own Firebase project
+// (waaproltd-fd9ee), shared by every WAAPRO LTD system, while each system's
+// Customer App keeps its own project. Pushes to agent devices therefore go
+// through a second Firebase app, set with AGENT_FIREBASE_SERVICE_ACCOUNT_PATH
+// (the waaproltd-fd9ee service-account JSON file) or
+// AGENT_FIREBASE_SERVICE_ACCOUNT_JSON (its contents). Unset = agent pushes
+// use the system's own project, exactly as before.
+let agentMessagingCache: Messaging | null | undefined;
+function agentMessaging(): Messaging | null {
+  if (agentMessagingCache !== undefined) return agentMessagingCache;
+  const path = process.env.AGENT_FIREBASE_SERVICE_ACCOUNT_PATH;
+  const json = process.env.AGENT_FIREBASE_SERVICE_ACCOUNT_JSON;
+  if (!path && !json) {
+    agentMessagingCache = ensureInitialized() ? getMessaging() : null;
+    return agentMessagingCache;
+  }
+  try {
+    const existing = getApps().find((a) => a.name === "agent-app");
+    const app = existing ?? initializeApp({ credential: cert(json ? JSON.parse(json) : path!) }, "agent-app");
+    agentMessagingCache = getMessaging(app);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("Agent App push disabled: AGENT_FIREBASE_SERVICE_ACCOUNT_* is not a valid service account:", (err as Error).message);
+    agentMessagingCache = null;
+  }
+  return agentMessagingCache;
+}
 import { query } from "../db/pool.js";
 
 let initAttempted = false;
@@ -105,9 +133,9 @@ const UNREGISTERED_ERROR_CODES = new Set([
  * (network error, bad credentials) comes back as failureCount === tokens.length
  * with an empty invalidTokens list, since that failure says nothing about
  * whether any individual token is actually bad. */
-export async function sendPushToTokens(tokens: string[], payload: PushPayload): Promise<SendResult> {
+async function sendWith(messaging: Messaging | null, tokens: string[], payload: PushPayload, mismatched: string[]): Promise<SendResult> {
   if (tokens.length === 0) return { invalidTokens: [], successCount: 0, failureCount: 0 };
-  if (!ensureInitialized()) return { invalidTokens: [], successCount: 0, failureCount: tokens.length };
+  if (!messaging) return { invalidTokens: [], successCount: 0, failureCount: tokens.length };
 
   const invalidTokens: string[] = [];
   let successCount = 0;
@@ -116,7 +144,7 @@ export async function sendPushToTokens(tokens: string[], payload: PushPayload): 
   try {
     for (let i = 0; i < tokens.length; i += 500) {
       const batch = tokens.slice(i, i + 500);
-      const response = await getMessaging().sendEachForMulticast({
+      const response = await messaging.sendEachForMulticast({
         tokens: batch,
         notification: { title: payload.title, body: payload.body },
         data: payload.data,
@@ -144,6 +172,7 @@ export async function sendPushToTokens(tokens: string[], payload: PushPayload): 
           console.error(
             `FCM send failed for token ...${batch[idx].slice(-10)}: ${r.error?.code ?? "unknown"} - ${r.error?.message ?? "no message"}`
           );
+          if (r.error?.code === "messaging/mismatched-credential") mismatched.push(batch[idx]);
           if (r.error && UNREGISTERED_ERROR_CODES.has(r.error.code)) {
             invalidTokens.push(batch[idx]);
           }
@@ -157,6 +186,29 @@ export async function sendPushToTokens(tokens: string[], payload: PushPayload): 
   }
 
   return { invalidTokens, successCount, failureCount };
+}
+
+/** Sends to raw FCM tokens. Agent devices are tried with the AGENT APP's
+ * project first; a token refused as belonging to another project (an agent
+ * still on a system's older agent app) is retried with the system's own
+ * project, so old and new agent apps both get the alert. */
+export async function sendPushToTokens(
+  tokens: string[],
+  payload: PushPayload,
+  audience: "customer" | "agent" = "customer"
+): Promise<SendResult> {
+  const own = ensureInitialized() ? getMessaging() : null;
+  if (audience !== "agent") return sendWith(own, tokens, payload, []);
+  const agent = agentMessaging();
+  const mismatched: string[] = [];
+  const first = await sendWith(agent, tokens, payload, mismatched);
+  if (mismatched.length === 0 || !own || own === agent) return first;
+  const retry = await sendWith(own, mismatched, payload, []);
+  return {
+    invalidTokens: [...first.invalidTokens, ...retry.invalidTokens],
+    successCount: first.successCount + retry.successCount,
+    failureCount: first.failureCount - mismatched.length + retry.failureCount,
+  };
 }
 
 /** Looks up every device token registered for a customer, sends to all of
@@ -207,7 +259,7 @@ export async function sendPushToAgent(
     if (rows.length === 0) return { attempted: false, delivered: false };
 
     const tokens = rows.map((r) => r.fcm_token);
-    const result = await sendPushToTokens(tokens, payload);
+    const result = await sendPushToTokens(tokens, payload, "agent");
 
     if (result.invalidTokens.length > 0) {
       await query(`DELETE FROM agent_device_tokens WHERE fcm_token = ANY($1)`, [result.invalidTokens]);
@@ -238,7 +290,7 @@ export async function sendPushToAllAgents(payload: PushPayload): Promise<{ attem
     if (rows.length === 0) return { attempted: false, delivered: false };
 
     const tokens = rows.map((r) => r.fcm_token);
-    const result = await sendPushToTokens(tokens, payload);
+    const result = await sendPushToTokens(tokens, payload, "agent");
 
     if (result.invalidTokens.length > 0) {
       await query(`DELETE FROM agent_device_tokens WHERE fcm_token = ANY($1)`, [result.invalidTokens]);

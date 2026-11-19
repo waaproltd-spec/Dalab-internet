@@ -12,11 +12,14 @@ async function seedCompaniesAndPackages() {
     if (await queryOne(`SELECT id FROM companies WHERE id=$1`, [c.id])) continue;
     await query(
       `INSERT INTO companies (id, name, group_number, color_hex, gateway, ussd_code, payment_number, payment_ussd_template, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'online')`,
-      [c.id, c.name, c.group_number, c.color_hex, c.gateway, c.ussd_code, c.payment_number, c.payment_ussd_template]
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      // Amtel starts offline only when it is first created here. The seed
+      // runs on every server start, so it must never change an existing
+      // company's status: an admin who switched Amtel on keeps it on
+      // across restarts and deploys.
+      [c.id, c.name, c.group_number, c.color_hex, c.gateway, c.ussd_code, c.payment_number, c.payment_ussd_template, c.id === "amtel" ? "offline" : "online"]
     );
   }
-  await query(`UPDATE companies SET status='offline' WHERE id='amtel'`);
 
   const existingPackages = await queryOne<{ n: string }>(`SELECT COUNT(*) AS n FROM packages`);
   if (Number(existingPackages?.n ?? 0) > 0) return;

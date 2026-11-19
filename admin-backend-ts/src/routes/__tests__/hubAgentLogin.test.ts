@@ -21,7 +21,8 @@ process.env.HUB_PUBLIC_KEY = keys.publicKey;
 process.env.HUB_SYSTEM_KEY = "dalab";
 
 const { query, queryOne, pool } = await import("../../db/pool.js");
-const { hashPassword, verifyToken } = await import("../../auth/crypto.js");
+const { hashPassword, verifyToken, signAccessToken } = await import("../../auth/crypto.js");
+const { agentsRouter } = await import("../agents.routes.js");
 const { hubAgentsRouter } = await import("../hubAgents.routes.js");
 
 const jwt = jwtLib as unknown as { sign: (p: object, k: string, o: Record<string, unknown>) => string };
@@ -42,12 +43,13 @@ const checkToken = (phone: string, pin: string, opts = {}) => hubToken("hub_agen
 const app = express();
 app.use(express.json());
 app.use(hubAgentsRouter);
+app.use(agentsRouter);
 let server: http.Server;
 let base: string;
 
-async function post(path: string, body: unknown, token?: string) {
+async function post(path: string, body: unknown, token?: string, method = "POST") {
   const res = await fetch(`${base}${path}`, {
-    method: "POST",
+    method,
     headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     body: JSON.stringify(body),
   });
@@ -119,4 +121,18 @@ test("the hub's pass starts this system's agent session once; expired, replayed 
   assert.equal((await post("/agent/auth/hub-login", { handoff: hubToken("hub_agent_sso", {}, { sub: AGENT, aud: "danwadaag" }) })).status, 401, "another system's pass");
   assert.equal((await post("/agent/auth/hub-login", { handoff: hubToken("hub_agent_check", {}, { sub: AGENT }) })).status, 401, "not a sign-in pass");
   assert.equal((await post("/agent/auth/hub-login", { handoff: hubToken("hub_agent_sso", {}, { sub: SUSPENDED }) })).status, 403, "suspended agent");
+});
+
+test("an admin sets an agent's PIN (4-8 digits); the hub's check then accepts the new PIN only", async () => {
+  const admin = signAccessToken(randomUUID(), "super_admin");
+  const put = (id: string, pin: unknown, token?: string) => post(`/admin/agents/${id}/pin`, { pin }, token, "PUT");
+  assert.equal((await put(AGENT, "1234")).status, 401, "signed-in staff only");
+  assert.equal((await put(AGENT, "12", admin)).status, 400, "too short");
+  assert.equal((await put(AGENT, "12a4", admin)).status, 400, "digits only");
+  assert.equal((await put(randomUUID(), "1234", admin)).status, 404);
+  assert.equal((await put(AGENT, "2580", admin)).status, 200);
+  const ok = await post("/admin/hub/agent-check", { phone: "615550101", pin: "2580" }, checkToken("615550101", "2580"));
+  assert.deepEqual(ok.body, { match: true, agentId: AGENT });
+  const old = await post("/admin/hub/agent-check", { phone: "615550101", pin: "4321" }, checkToken("615550101", "4321"));
+  assert.deepEqual(old.body, { match: false }, "the old PIN no longer works");
 });

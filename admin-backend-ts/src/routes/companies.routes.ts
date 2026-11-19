@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { uniquePackagePrice } from "../utils/uniquePackagePrice.js";
 import { randomUUID } from "node:crypto";
 import { query, queryOne } from "../db/pool.js";
 import { requireAuth, requireStaff } from "../auth/middleware.js";
@@ -9,6 +10,7 @@ import { recordActivity } from "../utils/activityLog.js";
 import { parseDataUri } from "../utils/dataUri.js";
 import { matchTemplateByName, selfHealStuckOrders } from "./ussd.routes.js";
 import { broadcast } from "../realtime/orderEvents.js";
+import { sendImage } from "../utils/sendImage.js";
 
 export const companiesRouter = Router();
 export const packagesRouter = Router();
@@ -51,8 +53,7 @@ companiesRouter.get("/companies/:id/logo", async (req, res) => {
   );
   if (!row || !row.logo_data) return sendJson(res, 404, { error: "Logo not found" });
   res.setHeader("Content-Type", row.logo_mime_type || "image/png");
-  res.setHeader("Cache-Control", "public, max-age=3600");
-  res.send(row.logo_data);
+  sendImage(req, res, row.logo_data);
 });
 
 companiesRouter.get("/companies/:id/packages", async (req, res) => {
@@ -92,7 +93,7 @@ companiesRouter.get("/companies/:id/packages", async (req, res) => {
      FROM packages p
      LEFT JOIN service_categories sc ON sc.company_id = p.company_id AND sc.slug = p.category_id
      WHERE p.company_id=$1 AND p.active=true AND (sc.status IS NULL OR sc.status='enabled') ${visibilityFilter}
-     ORDER BY p.category_id, p.sort_order, p.price`,
+     ORDER BY COALESCE(sc.sort_order, 2147483647), p.category_id, p.sort_order, p.price`,
     [req.params.id]
   );
   sendJson(res, 200, rows);
@@ -540,7 +541,11 @@ packagesRouter.post("/admin/packages", requirePermission("packages.manage"), asy
   // "" (an intentionally-cleared/never-filled-in form field) must become
   // NULL, not be sent to Postgres as an empty string literal for a NUMERIC
   // column — unlike price, this field is optional so "" is a valid input.
-  const providerAmountValue = providerAmount === "" || providerAmount == null ? null : providerAmount;
+  let providerAmountValue = providerAmount === "" || providerAmount == null ? null : providerAmount;
+  // Unique price within the company (see uniquePackagePrice). The carrier
+  // amount stays the price the admin entered.
+  const finalPrice = (createActive ?? true) ? await uniquePackagePrice(companyId, Number(price), null) : Number(price);
+  if (finalPrice !== Number(price) && providerAmountValue == null) providerAmountValue = price;
   const ussdTemplateIdValue = ussdTemplateId || null;
   const somlinkBundleIdValue = numOrDefault(somlinkBundleId, null);
   const [mbValue, minutesValue, smsValue] = [readCount(mb), readCount(minutes), readCount(sms)];
@@ -549,10 +554,11 @@ packagesRouter.post("/admin/packages", requirePermission("packages.manage"), asy
     `INSERT INTO packages (id, company_id, category_id, name, old_price, price, provider_amount, mb, minutes, sms, validity, code, ussd_template_id, somlink_bundle_id, send_count,
                            sort_order, visible_customer_app, visible_agent_app, orders_enabled, description, active)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
-    [id, companyId, categoryId, name.trim(), numOrDefault(oldPrice, price), price, providerAmountValue, mbValue, minutesValue, smsValue, validity ?? "", code == null || code === "" ? null : String(code).trim(), ussdTemplateIdValue, somlinkBundleIdValue, sendCount ?? 1,
+    [id, companyId, categoryId, name.trim(), numOrDefault(oldPrice, price), finalPrice, providerAmountValue, mbValue, minutesValue, smsValue, validity ?? "", code == null || code === "" ? null : String(code).trim(), ussdTemplateIdValue, somlinkBundleIdValue, sendCount ?? 1,
      sortOrder ?? 0, visibleCustomerApp ?? true, visibleAgentApp ?? true, ordersEnabled ?? true, description, createActive ?? true]
   );
-  const created = await queryOne(`SELECT ${PACKAGE_COLUMNS} FROM packages WHERE id=$1`, [id]);
+  const created: any = await queryOne(`SELECT ${PACKAGE_COLUMNS} FROM packages WHERE id=$1`, [id]);
+  if (created && finalPrice !== Number(price)) created.price_adjusted_from = Number(price);
   await recordActivity({
     adminId: req.auth!.sub,
     action: "create_package",
@@ -605,7 +611,7 @@ packagesRouter.put("/admin/packages/:id", requirePermission("packages.manage"), 
   const active = req.body.active !== undefined ? req.body.active : existing.active;
   const code = req.body.code !== undefined ? req.body.code : existing.code;
   const rawProviderAmount = req.body.providerAmount !== undefined ? req.body.providerAmount : existing.provider_amount;
-  const providerAmount = rawProviderAmount === "" || rawProviderAmount == null ? null : rawProviderAmount;
+  let providerAmount = rawProviderAmount === "" || rawProviderAmount == null ? null : rawProviderAmount;
   const ussdTemplateId = req.body.ussdTemplateId !== undefined ? (req.body.ussdTemplateId || null) : existing.ussd_template_id;
   const rawSomlinkBundleId = req.body.somlinkBundleId !== undefined ? req.body.somlinkBundleId : existing.somlink_bundle_id;
   const somlinkBundleId = numOrDefault(rawSomlinkBundleId, null);
@@ -625,13 +631,18 @@ packagesRouter.put("/admin/packages/:id", requirePermission("packages.manage"), 
   }
   const optionError = await packageOptionError(ussdTemplateId, code, req.params.id, Boolean(active));
   if (optionError) return sendJson(res, 400, { error: optionError });
+  // Unique price within the company (see uniquePackagePrice). The carrier
+  // amount stays the price as entered.
+  const finalPrice = Boolean(active) ? await uniquePackagePrice(existing.company_id, Number(price), req.params.id) : Number(price);
+  if (finalPrice !== Number(price) && providerAmount == null) providerAmount = price;
   await query(
     `UPDATE packages SET name=$1, category_id=$2, old_price=$3, price=$4, provider_amount=$5, mb=$6, minutes=$7, sms=$8, validity=$9, active=$10, code=$11, ussd_template_id=$12, somlink_bundle_id=$13, send_count=$14,
                          sort_order=$15, visible_customer_app=$16, visible_agent_app=$17, orders_enabled=$18, description=$19 WHERE id=$20`,
-    [name.trim(), categoryId, oldPrice, price, providerAmount, mb, minutes, sms, validity, Boolean(active), code == null || code === "" ? null : String(code).trim(), ussdTemplateId, somlinkBundleId, sendCount,
+    [name.trim(), categoryId, oldPrice, finalPrice, providerAmount, mb, minutes, sms, validity, Boolean(active), code == null || code === "" ? null : String(code).trim(), ussdTemplateId, somlinkBundleId, sendCount,
      sortOrder, visibleCustomerApp, visibleAgentApp, ordersEnabled, description, req.params.id]
   );
-  const updated = await queryOne(`SELECT ${PACKAGE_COLUMNS} FROM packages WHERE id=$1`, [req.params.id]);
+  const updated: any = await queryOne(`SELECT ${PACKAGE_COLUMNS} FROM packages WHERE id=$1`, [req.params.id]);
+  if (updated && finalPrice !== Number(price)) updated.price_adjusted_from = Number(price);
   await recordActivity({
     adminId: req.auth!.sub,
     action: "update_package",
@@ -662,8 +673,7 @@ packagesRouter.get("/packages/:id/image", async (req, res) => {
   );
   if (!row || !row.image_data) return sendJson(res, 404, { error: "Image not found" });
   res.setHeader("Content-Type", row.image_mime_type || "image/png");
-  res.setHeader("Cache-Control", "public, max-age=3600");
-  res.send(row.image_data);
+  sendImage(req, res, row.image_data);
 });
 
 packagesRouter.put("/admin/packages/:id/image", requirePermission("packages.manage"), async (req, res) => {

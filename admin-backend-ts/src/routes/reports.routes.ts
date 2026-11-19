@@ -201,6 +201,16 @@ function summarize(row: Partial<AggregateRow> | null | undefined) {
   };
 }
 
+/**
+ * Whose orders a report covers: this agent's own (default -- what older
+ * Agent App builds always get), or every agent's with ?scope=all. The
+ * agent condition always mentions $1 so the query's parameters stay typed.
+ */
+function dashboardScope(req: { query: Record<string, unknown> }) {
+  const all = req.query.scope === "all";
+  return { scope: all ? "all" : "me", who: all ? "(o.agent_id = $1 OR true)" : "o.agent_id = $1" };
+}
+
 function dashboardRange(req: { query: Record<string, unknown> }) {
   const requested = String(req.query.range ?? "all");
   const range = requested in DASHBOARD_RANGES ? requested : "all";
@@ -210,10 +220,11 @@ function dashboardRange(req: { query: Record<string, unknown> }) {
 
 reportsRouter.get("/agent/reports/dashboard", requireAuth("agent"), async (req, res) => {
   const { range, dateFilter } = dashboardRange(req);
+  const { scope, who } = dashboardScope(req);
   const agentId = req.auth!.sub;
 
   const overall = await queryOne<AggregateRow>(
-    `SELECT ${DASHBOARD_AGGREGATES} FROM orders o WHERE o.agent_id = $1 ${dateFilter}`,
+    `SELECT ${DASHBOARD_AGGREGATES} FROM orders o WHERE ${who} ${dateFilter}`,
     [agentId]
   );
   const summary = summarize(overall);
@@ -223,7 +234,7 @@ reportsRouter.get("/agent/reports/dashboard", requireAuth("agent"), async (req, 
   const companyRows = await query<AggregateRow & { id: string; name: string; color_hex: string | null; has_logo: boolean }>(
     `SELECT c.id, c.name, c.color_hex, (c.logo_data IS NOT NULL) AS has_logo, ${DASHBOARD_AGGREGATES}
      FROM companies c
-     LEFT JOIN orders o ON o.company_id = c.id AND o.agent_id = $1 ${dateFilter}
+     LEFT JOIN orders o ON o.company_id = c.id AND ${who} ${dateFilter}
      WHERE c.deleted_at IS NULL
      GROUP BY c.id, c.name, c.color_hex, c.logo_data IS NOT NULL, c.sort_order
      ORDER BY c.sort_order, c.name`,
@@ -244,13 +255,58 @@ reportsRouter.get("/agent/reports/dashboard", requireAuth("agent"), async (req, 
     };
   });
 
-  sendJson(res, 200, { range, ...summary, companies });
+  // Commission by provider: each network's Commission % and Discount %
+  // (company_profit_terms, set in the Agent App) on what the agents
+  // actually SENT to that network for the successful orders of this
+  // report (same period, same me / all agents) -- not what customers paid.
+  // Commission = sent x Commission%, Profit = Commission - Discount. The
+  // report's own provider-cost profit above is a separate figure.
+  const termRows = await query<{ id: string; name: string; color_hex: string | null; commission_pct: string; discount_pct: string | null; sent: string; sales: string; sent_amount: string }>(
+    `SELECT c.id, c.name, c.color_hex, t.commission_pct, t.discount_pct,
+            COUNT(o.id) FILTER (WHERE ${SENT}) AS sent,
+            COALESCE(SUM(o.amount) FILTER (WHERE ${SENT}), 0) AS sales,
+            COALESCE(SUM(${COST}) FILTER (WHERE ${SENT}), 0) AS sent_amount
+     FROM companies c
+     JOIN company_profit_terms t ON t.company_id = c.id AND t.commission_pct IS NOT NULL
+     LEFT JOIN orders o ON o.company_id = c.id AND ${who} ${dateFilter}
+     WHERE c.deleted_at IS NULL
+     GROUP BY c.id, c.name, c.color_hex, c.sort_order, t.commission_pct, t.discount_pct
+     ORDER BY c.sort_order, c.name`,
+    [agentId]
+  );
+  const commissionByProvider = termRows.map((r) => {
+    const commissionPct = Number(r.commission_pct);
+    const discountPct = Number(r.discount_pct ?? 0);
+    const sales = money(r.sales);
+    const sentAmount = money(r.sent_amount);
+    const commission = money((sentAmount * commissionPct) / 100);
+    const discount = money((sentAmount * discountPct) / 100);
+    return {
+      company_id: r.id,
+      company_name: r.name,
+      color_hex: r.color_hex,
+      commission_pct: commissionPct,
+      discount_pct: discountPct,
+      profit_pct: money(commissionPct - discountPct),
+      orders: Number(r.sent),
+      sales,
+      sent_amount: sentAmount,
+      commission,
+      discount,
+      profit: money(commission - discount),
+    };
+  });
+  const sumOf = (k: "orders" | "sales" | "sent_amount" | "commission" | "discount" | "profit") => money(commissionByProvider.reduce((t, c) => t + c[k], 0));
+  const commissionTotals = { orders: sumOf("orders"), sales: sumOf("sales"), sent_amount: sumOf("sent_amount"), commission: sumOf("commission"), discount: sumOf("discount"), profit: sumOf("profit") };
+
+  sendJson(res, 200, { range, scope, ...summary, companies, commission_by_provider: commissionByProvider, commission_totals: commissionTotals });
 });
 
 // One company's own report: its summary, status split, every package's
 // performance, and a worked price example from its most-ordered package.
 reportsRouter.get("/agent/reports/dashboard/companies/:companyId", requireAuth("agent"), async (req, res) => {
   const { range, dateFilter } = dashboardRange(req);
+  const { scope, who } = dashboardScope(req);
   const agentId = req.auth!.sub;
   const company = await queryOne<{ id: string; name: string; color_hex: string | null; has_logo: boolean }>(
     `SELECT id, name, color_hex, (logo_data IS NOT NULL) AS has_logo FROM companies WHERE id = $1`,
@@ -259,7 +315,7 @@ reportsRouter.get("/agent/reports/dashboard/companies/:companyId", requireAuth("
   if (!company) return sendJson(res, 404, { error: "Company not found" });
 
   const overall = await queryOne<AggregateRow>(
-    `SELECT ${DASHBOARD_AGGREGATES} FROM orders o WHERE o.agent_id = $1 AND o.company_id = $2 ${dateFilter}`,
+    `SELECT ${DASHBOARD_AGGREGATES} FROM orders o WHERE ${who} AND o.company_id = $2 ${dateFilter}`,
     [agentId, company.id]
   );
   const summary = summarize(overall);
@@ -267,7 +323,7 @@ reportsRouter.get("/agent/reports/dashboard/companies/:companyId", requireAuth("
   const packageRows = await query<AggregateRow & { id: string; name: string; validity: string | null; has_image: boolean }>(
     `SELECT p.id, p.name, p.validity, (p.image_data IS NOT NULL) AS has_image, ${DASHBOARD_AGGREGATES}
      FROM orders o JOIN packages p ON p.id = o.package_id
-     WHERE o.agent_id = $1 AND o.company_id = $2 ${dateFilter}
+     WHERE ${who} AND o.company_id = $2 ${dateFilter}
      GROUP BY p.id, p.name, p.validity, p.image_data IS NOT NULL
      ORDER BY COUNT(*) DESC, p.name`,
     [agentId, company.id]
@@ -313,6 +369,7 @@ reportsRouter.get("/agent/reports/dashboard/companies/:companyId", requireAuth("
 
   sendJson(res, 200, {
     range,
+    scope,
     company: { company_id: company.id, company_name: company.name, color_hex: company.color_hex, has_logo: company.has_logo },
     ...summary,
     packages,

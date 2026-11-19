@@ -5,11 +5,15 @@ import { requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { hashPassword } from "../auth/crypto.js";
 import { sendJson } from "../utils/camelCase.js";
+import { recordActivity } from "../utils/activityLog.js";
+import { requireAuth } from "../auth/middleware.js";
+import { agentServices } from "../auth/access.js";
+import { setAgentServices } from "./permissions.routes.js";
 
 export const agentsRouter = Router();
 
 agentsRouter.get("/admin/agents", requireStaff(), async (_req, res) => {
-  sendJson(res, 200, await query(`SELECT id, phone, name, status, device_id, last_login_at, created_at FROM agents ORDER BY created_at DESC`));
+  sendJson(res, 200, await query(`SELECT id, phone, name, status, device_id, last_login_at, created_at, operations_enabled, services FROM agents ORDER BY created_at DESC`));
 });
 
 agentsRouter.post("/admin/agents", requirePermission("agents.manage"), async (req, res) => {
@@ -33,6 +37,44 @@ agentsRouter.put("/admin/agents/:id", requirePermission("agents.manage"), async 
   }
   await query(`UPDATE agents SET name=$1, phone=$2 WHERE id=$3`, [name, phone, req.params.id]);
   sendJson(res, 200, await queryOne(`SELECT id, phone, name, status, device_id, last_login_at, created_at FROM agents WHERE id=$1`, [req.params.id]));
+});
+
+// Operational access (WAAPRO LTD AGENT app): approve/reject payments,
+// cancel, retry and reverse orders. On by default; switching it off leaves
+// the agent signed in and the automatic SMS -> USSD processing running, but
+// refuses those manual actions. Recorded in the Activity Log.
+// It is the agent's "operations" service: only the Owner switches it.
+agentsRouter.put("/admin/agents/:id/operations", requireAuth("super_admin"), async (req, res) => {
+  if (typeof req.body?.enabled !== "boolean") return sendJson(res, 400, { error: "enabled must be true or false" });
+  const before = await queryOne<{ operations_enabled: boolean }>(`SELECT operations_enabled FROM agents WHERE id=$1`, [req.params.id]);
+  if (!before) return sendJson(res, 404, { error: "Agent not found" });
+  const current = await agentServices(req.params.id);
+  await setAgentServices(
+    req.params.id,
+    req.body.enabled ? [...current, "operations"] : current.filter((s) => s !== "operations"),
+    req.auth!.sub
+  );
+  await recordActivity({
+    adminId: req.auth!.sub,
+    action: req.body.enabled ? "agent_operations_enabled" : "agent_operations_disabled",
+    entityType: "agent",
+    entityId: req.params.id,
+    oldValue: { operationsEnabled: before.operations_enabled },
+    newValue: { operationsEnabled: req.body.enabled },
+  });
+  sendJson(res, 200, { id: req.params.id, operationsEnabled: req.body.enabled });
+});
+
+// Set (or reset) the PIN an agent signs in to the Agent App with (phone
+// number + PIN, through the Admin Hub). It's the agent's password; 4 to 8
+// digits. The agent's current sessions keep working, so a phone that is
+// already signed in isn't interrupted.
+agentsRouter.put("/admin/agents/:id/pin", requirePermission("agents.manage"), async (req, res) => {
+  const pin = typeof req.body?.pin === "string" ? req.body.pin.trim() : "";
+  if (!/^\d{4,8}$/.test(pin)) return sendJson(res, 400, { error: "The PIN must be 4 to 8 digits." });
+  const updated = await queryOne<{ id: string }>(`UPDATE agents SET password_hash=$1 WHERE id=$2 RETURNING id`, [await hashPassword(pin), req.params.id]);
+  if (!updated) return sendJson(res, 404, { error: "Agent not found" });
+  sendJson(res, 200, { ok: true });
 });
 
 // A single atomic UPDATE, not a separate read-then-write -- see

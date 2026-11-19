@@ -15,6 +15,10 @@ import { useTheme, useLang, setTheme, setLang } from "./prefs.js";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 import { HUB_URL, takeHubAssertion, goToHub, openHub, signOutToHub, hubNav, watchSystemSuspension, loadHubPayment, acknowledgeHubPayment, payNowHubPayment } from "./hubSession.js";
 import HubPaymentBanner, { usePaymentStatus } from "./HubPaymentBanner.jsx";
+import AgentNotices, { AgentNoticesIcon } from "./AgentNotices.jsx";
+import AgentRegistrations, { AgentRegistrationsIcon } from "./AgentRegistrations.jsx";
+import OwnerPermissions from "./OwnerPermissions.jsx";
+import AgentDirectorySetting from "./AgentDirectorySetting.jsx";
 
 // ---- DALAB INTERNET / Admin design tokens ----
 // INDIGO is the shared brand color, kept under its old name (avoids a
@@ -190,6 +194,8 @@ const DalabAdminApi = {
   updateCategory: (id, body) => dalabAdminApiRequest(`/admin/categories/${id}`, { method: "PUT", body }),
   toggleCategoryStatus: (id, status) => dalabAdminApiRequest(`/admin/categories/${id}/status`, { method: "PUT", body: { status } }),
   deleteCategory: (id) => dalabAdminApiRequest(`/admin/categories/${id}`, { method: "DELETE" }),
+  // The Admin's category order for one company (first to last).
+  reorderCategories: (companyId, categoryIds) => dalabAdminApiRequest(`/admin/companies/${companyId}/categories/order`, { method: "PUT", body: { categoryIds } }),
   // The logo/icon shown on this category's card in the Customer/Agent apps —
   // a dedicated sub-resource (same shape as companyLogoUrl/packageImageUrl
   // above) so re-uploading it never touches the category's name/status.
@@ -317,6 +323,8 @@ const DalabAdminApi = {
   updateAgent: (id, body) => dalabAdminApiRequest(`/admin/agents/${id}`, { method: "PUT", body }),
   suspendAgent: (id) => dalabAdminApiRequest(`/admin/agents/${id}/suspend`, { method: "PUT" }),
   deleteAgent: (id) => dalabAdminApiRequest(`/admin/agents/${id}`, { method: "DELETE" }),
+  setAgentPin: (id, pin) => dalabAdminApiRequest(`/admin/agents/${id}/pin`, { method: "PUT", body: { pin } }),
+  setAgentOperations: (id, enabled) => dalabAdminApiRequest(`/admin/agents/${id}/operations`, { method: "PUT", body: { enabled } }),
   getAgentCompanies: (id) => dalabAdminApiRequest(`/admin/agents/${id}/companies`),
   setAgentCompanies: (id, companyIds) => dalabAdminApiRequest(`/admin/agents/${id}/companies`, { method: "PUT", body: { companyIds } }),
   assignAgentDevice: (agentId, deviceId) => dalabAdminApiRequest(`/admin/agents/${agentId}/device`, { method: "PUT", body: { deviceId } }),
@@ -340,6 +348,7 @@ const DalabAdminApi = {
     return dalabAdminApiRequest(`/admin/offline/payment-transactions${qs ? `?${qs}` : ""}`);
   },
   getOfflineStats: (companyId) => dalabAdminApiRequest(`/admin/offline/stats${companyId ? `?companyId=${companyId}` : ""}`),
+  getOfflinePriceConflicts: () => dalabAdminApiRequest(`/admin/offline/price-conflicts`),
   // Roles & Permissions (Super Admin only, enforced server-side too)
   getAdminUsers: () => dalabAdminApiRequest("/admin/users"),
   createAdminUser: (body) => dalabAdminApiRequest("/admin/users", { method: "POST", body }),
@@ -386,6 +395,9 @@ const DalabAdminApi = {
   // manual override for corrections and for providers (Amtel) that send no
   // payment SMS at all.
   getSimBalances: () => dalabAdminApiRequest("/admin/sim-balances"),
+  getSelectedSims: () => dalabAdminApiRequest("/admin/sim-balances/selected-sims"),
+  selectBalanceSim: (providerKey, body) => dalabAdminApiRequest(`/admin/sim-balances/selected-sims/${providerKey}`, { method: "PUT", body }),
+  clearBalanceSim: (providerKey) => dalabAdminApiRequest(`/admin/sim-balances/selected-sims/${providerKey}`, { method: "DELETE" }),
   getSimBalanceSummary: () => dalabAdminApiRequest("/admin/sim-balances/summary"),
   getSimBalanceHistory: (deviceId, simSlot, providerKey) =>
     dalabAdminApiRequest(`/admin/sim-balances/${deviceId}/${simSlot}/history${providerKey ? `?providerKey=${encodeURIComponent(providerKey)}` : ""}`),
@@ -978,14 +990,15 @@ const NAV = [
   { id: "offline", label: "Offline (Rukumo)", icon: WifiOff, permission: "orders.manage" },
   { id: "customers", label: "Customers", icon: Users, permission: "customers.manage" },
   { id: "agents", label: "Agents", icon: UserCog, permission: "agents.manage" },
+  { id: "agent-registrations", label: "Agent Registrations", icon: AgentRegistrationsIcon, permission: "customers.manage" },
   { id: "device-activation", label: "Device Activation", icon: Smartphone, permission: "agents.manage" },
   { id: "notifications", label: "Notifications", icon: Bell, permission: "settings.manage" },
+  { id: "agent-notices", label: "Maintenance Notices", icon: AgentNoticesIcon, permission: "agents.manage" },
   { id: "feedback", label: "Feedback & Suggestions", icon: Lightbulb, permission: "feedback.manage" },
   { id: "support", label: "Agent Support", icon: MessageCircle, permission: "support.manage" },
   { id: "promo-images", label: "Promo Images", icon: ImageIcon, superAdminOnly: true },
   { id: "nala-soco", label: "Nala Soco", icon: Share2, permission: "settings.manage" },
   { id: "ciyaaraha", label: "Ciyaaraha", icon: Trophy, permission: "football.manage" },
-  { id: "agent-app-release", label: "Agent App Release APK", icon: Download, permission: "devices.manage" },
   { id: "devices", label: "Device & USSD", icon: SmartphoneNfc, superAdminOnly: true },
   { id: "sms-logs", label: "SMS Monitor", icon: MessageSquare, permission: "devices.manage" },
   { id: "payment-transactions", label: "Payment Transactions", icon: Activity, permission: "orders.manage" },
@@ -1376,6 +1389,9 @@ const BALANCE_PROVIDER_LABELS = {
 const HIDDEN_PROVIDER_KEYS = new Set(["hormuud_evoucher"]);
 const VISIBLE_PROVIDER_ORDER = BALANCE_PROVIDER_ORDER.filter((id) => !HIDDEN_PROVIDER_KEYS.has(id));
 
+// The balances whose one SIM the admin chooses (the server's own six).
+const SINGLE_SIM_PROVIDER_KEYS = ["evc_plus", "edahab", "hormuud", "somtel", "somnet", "amtel"];
+
 function BalanceDashboard({ admin }) {
   const canManage = hasPermission(admin, "devices.manage");
 
@@ -1389,17 +1405,25 @@ function BalanceDashboard({ admin }) {
   const [historyFor, setHistoryFor] = useState(null); // row whose history modal is open
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  // The one SIM the admin chose per balance: only it is read and shown.
+  // { evc_plus: { deviceId, deviceName, simSlot }, ... }
+  const [selectedSims, setSelectedSims] = useState({});
+  const [choosing, setChoosing] = useState(null); // provider whose "Choose SIM" is open
+  const [chooseForm, setChooseForm] = useState({ deviceId: "", simSlot: "1" });
+  const [chooseError, setChooseError] = useState("");
 
   const fetchAll = async () => {
     if (!DALAB_API_ENABLED) return;
     setLoading(true);
     try {
-      const [balanceRows, summaryData] = await Promise.all([
+      const [balanceRows, summaryData, chosen] = await Promise.all([
         DalabAdminApi.getSimBalances(),
         DalabAdminApi.getSimBalanceSummary(),
+        DalabAdminApi.getSelectedSims().catch(() => []),
       ]);
       setRows(balanceRows);
       setSummary(summaryData);
+      setSelectedSims(Object.fromEntries((chosen || []).map((c) => [c.providerKey, c])));
     } catch (err) {
       console.error("Failed to load balance dashboard:", err.message);
     } finally {
@@ -1419,6 +1443,45 @@ function BalanceDashboard({ admin }) {
     const timer = setInterval(fetchAll, 15000);
     return () => clearInterval(timer);
   }, []);
+
+  // Every phone, for the "Choose SIM" picker.
+  const devices = useMemo(() => {
+    const m = new Map();
+    for (const r of rows) if (!m.has(r.deviceId)) m.set(r.deviceId, r.deviceName);
+    return [...m.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  }, [rows]);
+
+  const openChoose = (key) => {
+    const cur = selectedSims[key];
+    setChooseForm({ deviceId: cur?.deviceId ?? "", simSlot: String(cur?.simSlot ?? 1) });
+    setChooseError("");
+    setChoosing(key);
+  };
+  const saveChoose = async () => {
+    if (!chooseForm.deviceId) return setChooseError("Choose the phone (Mobile Agent).");
+    setSaving(true);
+    try {
+      await DalabAdminApi.selectBalanceSim(choosing, { deviceId: chooseForm.deviceId, simSlot: Number(chooseForm.simSlot) });
+      setChoosing(null);
+      fetchAll();
+    } catch (err) {
+      setChooseError(err.message || "Couldn't save the SIM.");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const clearChoose = async () => {
+    setSaving(true);
+    try {
+      await DalabAdminApi.clearBalanceSim(choosing);
+      setChoosing(null);
+      fetchAll();
+    } catch (err) {
+      setChooseError(err.message || "Couldn't clear the SIM.");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const grouped = useMemo(() => {
     const byProvider = new Map(VISIBLE_PROVIDER_ORDER.map((id) => [id, []]));
@@ -1533,7 +1596,23 @@ function BalanceDashboard({ admin }) {
         const label = { ...BALANCE_PROVIDER_LABELS, unassigned: "Not yet assigned to a provider" }[id];
         return (
           <Card key={id} style={{ padding: 18, marginTop: 14 }}>
-            <div style={{ fontWeight: 800, color: INK, fontSize: 14, marginBottom: 10 }}>{label}</div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+              <div style={{ fontWeight: 800, color: INK, fontSize: 14 }}>{label}</div>
+              {SINGLE_SIM_PROVIDER_KEYS.includes(id) && (
+                <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12 }}>
+                  {selectedSims[id] ? (
+                    <Badge tone="green">Only {selectedSims[id].deviceName} · SIM {selectedSims[id].simSlot}</Badge>
+                  ) : (
+                    <span style={{ color: MUTE }}>Every SIM is read — choose one SIM</span>
+                  )}
+                  {canManage && (
+                    <button onClick={() => openChoose(id)} style={{ background: "none", border: "none", color: INDIGO, fontWeight: 700, cursor: "pointer", fontSize: 12 }}>
+                      {selectedSims[id] ? "Change SIM" : "Choose SIM"}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
                 <thead>
@@ -1585,6 +1664,37 @@ function BalanceDashboard({ admin }) {
           </Card>
         );
       })}
+
+      {choosing && (
+        <Modal title={`Choose the SIM — ${BALANCE_PROVIDER_LABELS[choosing] ?? choosing}`} onClose={() => setChoosing(null)}>
+          <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 12, lineHeight: 1.5 }}>
+            Only this SIM's balance is read and shown — from its own phone (Mobile Agent). The other SIM in the
+            same phone, and every other phone or agent, are ignored for this balance.
+          </div>
+          <Field label="Phone (Mobile Agent)">
+            <select value={chooseForm.deviceId} onChange={(e) => setChooseForm((f) => ({ ...f, deviceId: e.target.value }))} style={inputStyle}>
+              <option value="">Choose the phone…</option>
+              {devices.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          </Field>
+          <Field label="SIM">
+            <select value={chooseForm.simSlot} onChange={(e) => setChooseForm((f) => ({ ...f, simSlot: e.target.value }))} style={inputStyle}>
+              <option value="1">SIM 1</option>
+              <option value="2">SIM 2</option>
+            </select>
+          </Field>
+          {chooseError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginTop: 8 }}>{chooseError}</div>}
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 16 }}>
+            {selectedSims[choosing] ? (
+              <Button variant="ghost" onClick={clearChoose} disabled={saving}>Read every SIM again</Button>
+            ) : <span />}
+            <div style={{ display: "flex", gap: 10 }}>
+              <Button variant="ghost" onClick={() => setChoosing(null)}>Cancel</Button>
+              <Button onClick={saveChoose} disabled={saving}>{saving ? "Saving…" : "Save"}</Button>
+            </div>
+          </div>
+        </Modal>
+      )}
 
       {editing && (
         <Modal title={`Edit Balance — ${editing.deviceName} · SIM ${editing.simSlot}`} onClose={() => setEditing(null)}>
@@ -2183,7 +2293,7 @@ function PaymentNumbers({ companies, setCompanies, refreshCompanies, admin }) {
       <div style={{ fontWeight: 800, fontSize: 17, color: INK, marginBottom: 4 }}>Agent Payment Gateway Numbers & USSD Format</div>
       <div style={{ fontSize: 12.5, color: MUTE, marginBottom: 14 }}>
         The Agent App stores the payment numbers used by customers to send funds. Customers dial these USSD templates. Changes apply instantly — no app update required.
-        {!canManage && " Only a Super Admin can add, edit, enable, or disable these settings — you can view them here."}
+        {!canManage && " Only the Owner can add, edit, enable, or disable these settings — you can view them here."}
       </div>
       {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
       <Card style={{ padding: 0, overflow: "hidden" }}>
@@ -2211,7 +2321,7 @@ function PaymentNumbers({ companies, setCompanies, refreshCompanies, admin }) {
                   <button
                     onClick={() => canManage && toggleStatus(c)}
                     disabled={!canManage || togglingId === c.id}
-                    title={canManage ? "Toggle Active/Inactive" : "Only a Super Admin can change this"}
+                    title={canManage ? "Toggle Active/Inactive" : "Only the Owner can change this"}
                     style={{
                       display: "flex", alignItems: "center", gap: 6, border: "none", background: "none",
                       cursor: canManage ? "pointer" : "default", fontSize: 12, fontWeight: 700,
@@ -2383,8 +2493,13 @@ function Packages({ packages, setPackages, companies, admin, onPackagesChanged }
       // Confirms the save landed instantly, since the modal closes right
       // after — visible on the list page itself, not just inside the modal
       // that's about to disappear.
-      setSuccessMessage(`Package "${form.name}" ${wasNew ? "created" : "updated"} successfully.`);
-      setTimeout(() => setSuccessMessage(""), 4000);
+      // Every active service of a company has its own price: when this one
+      // clashed, the server moved it one cent up and says so here.
+      const moved = result?.priceAdjustedFrom != null
+        ? ` Its price was set to $${Number(result.price).toFixed(2)} (another service already costs $${Number(result.priceAdjustedFrom).toFixed(2)}).`
+        : "";
+      setSuccessMessage(`Package "${form.name}" ${wasNew ? "created" : "updated"} successfully.${moved}`);
+      setTimeout(() => setSuccessMessage(""), moved ? 9000 : 4000);
     } else if (editing === "new") {
       const companyName = companies.find((c) => c.id === form.companyId)?.name;
       setPackages((prev) => [...prev, { ...form, company: companyName, old: form.oldPrice, min: form.minutes, id: "pkg-" + Date.now() }]);
@@ -2753,6 +2868,27 @@ function Categories({ companies, admin }) {
   useEffect(() => { fetchCategories(); }, [companyFilter]);
   useEffect(() => { if (!companyFilter && companies[0]) setCompanyFilter(companies[0].id); }, [companies]);
 
+  // Move a category one place up or down; the order is saved at once and
+  // is the order customers see (Home, offline Rukumo, category screen).
+  const [moving, setMoving] = useState(false);
+  const move = async (index, delta) => {
+    const to = index + delta;
+    if (moving || to < 0 || to >= categories.length) return;
+    const next = [...categories];
+    [next[index], next[to]] = [next[to], next[index]];
+    setCategories(next);
+    setMoving(true);
+    setError("");
+    try {
+      setCategories(await DalabAdminApi.reorderCategories(companyFilter, next.map((c) => c.id)));
+    } catch (err) {
+      setError(err.message || "Could not save the order.");
+      fetchCategories();
+    } finally {
+      setMoving(false);
+    }
+  };
+
   const openNew = () => { setForm({ name: "", companyId: companyFilter, serviceTypes: [] }); setEditing("new"); setError(""); };
   const openEdit = (c) => { setForm({ ...c, serviceTypes: serviceTypesOf(c), iconBase64: null }); setEditing(c.id); setError(""); };
   const toggleType = (value) =>
@@ -2863,14 +2999,27 @@ function Categories({ companies, admin }) {
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: "var(--c-fafbff)" }}>
-              {["Icon", "Name", "Type", "Slug", "Status", ""].map((h) => (
+              {["Order", "Icon", "Name", "Type", "Slug", "Status", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {categories.map((c) => (
+            {categories.map((c, i) => (
               <tr key={c.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 10px", whiteSpace: "nowrap" }}>
+                  <span style={{ display: "inline-block", minWidth: 18, fontWeight: 700, color: INK, fontSize: 13 }}>{i + 1}</span>
+                  {canManage && (
+                    <>
+                      <button onClick={() => move(i, -1)} disabled={moving || i === 0} title="Move up" style={{ background: "none", border: "none", cursor: i === 0 ? "default" : "pointer", opacity: i === 0 ? 0.3 : 1, padding: 2 }}>
+                        <ArrowUp size={15} color={INDIGO} />
+                      </button>
+                      <button onClick={() => move(i, 1)} disabled={moving || i === categories.length - 1} title="Move down" style={{ background: "none", border: "none", cursor: i === categories.length - 1 ? "default" : "pointer", opacity: i === categories.length - 1 ? 0.3 : 1, padding: 2 }}>
+                        <ArrowDown size={15} color={INDIGO} />
+                      </button>
+                    </>
+                  )}
+                </td>
                 <td style={{ padding: "10px 14px" }}>
                   <div style={{ width: 34, height: 34, borderRadius: 8, border: `1px solid ${BORDER}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", background: "var(--c-fafbff)" }}>
                     {c.hasIcon ? (
@@ -2902,7 +3051,7 @@ function Categories({ companies, admin }) {
               </tr>
             ))}
             {categories.length === 0 && (
-              <tr><td colSpan={6} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No categories for this company yet.</td></tr>
+              <tr><td colSpan={7} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No categories for this company yet.</td></tr>
             )}
           </tbody>
         </table>
@@ -4635,7 +4784,14 @@ function AgentsSection({ companies, admin }) {
   // also a pure toggle, so a double-click would flip status twice and
   // silently undo an intended suspend with no error shown.
   const [suspendTogglingId, setSuspendTogglingId] = useState(null);
+  // Set PIN: the PIN the agent signs in to the Agent App with (phone + PIN).
+  const [pinFor, setPinFor] = useState(null); // agent object | null
+  const [pinForm, setPinForm] = useState({ pin: "", confirm: "" });
+  const [pinError, setPinError] = useState("");
+  const [pinSaving, setPinSaving] = useState(false);
   const canManage = hasPermission(admin, "agents.manage");
+  // Operations is an agent service: only the Owner switches it.
+  const isOwner = admin?.role === "super_admin";
 
   const fetchAgents = async () => {
     if (!DALAB_API_ENABLED) return;
@@ -4656,6 +4812,7 @@ function AgentsSection({ companies, admin }) {
 
   const save = async () => {
     if (!form.phone || !form.name || (editing === "new" && !form.password)) return;
+    if (editing === "new" && !/^\d{4,8}$/.test(form.password)) { alert("The PIN must be 4 to 8 digits."); return; }
     try {
       if (editing === "new") await DalabAdminApi.createAgent({ phone: form.phone, name: form.name, password: form.password });
       else await DalabAdminApi.updateAgent(editing, { phone: form.phone, name: form.name });
@@ -4678,6 +4835,40 @@ function AgentsSection({ companies, admin }) {
       fetchAgents();
     }
     setSuspendTogglingId(null);
+  };
+
+  // Operational access (approve/reject payments, cancel, retry, reverse).
+  const [opsTogglingId, setOpsTogglingId] = useState(null);
+  const toggleOperations = async (a) => {
+    if (opsTogglingId) return;
+    const next = a.operationsEnabled === false;
+    if (!next && !window.confirm(`Switch off operational access for ${a.name}? They will no longer be able to approve or reject payments, cancel, retry or reverse orders. Automatic SMS processing keeps running.`)) return;
+    setOpsTogglingId(a.id);
+    try {
+      await DalabAdminApi.setAgentOperations(a.id, next);
+      setAgents((prev) => prev.map((x) => (x.id === a.id ? { ...x, operationsEnabled: next } : x)));
+    } catch (err) {
+      setError(err.message || "Could not change operational access.");
+    }
+    setOpsTogglingId(null);
+  };
+
+  const openPin = (a) => { setPinFor(a); setPinForm({ pin: "", confirm: "" }); setPinError(""); };
+  const savePin = async () => {
+    if (pinSaving) return;
+    if (!/^\d{4,8}$/.test(pinForm.pin)) { setPinError("The PIN must be 4 to 8 digits."); return; }
+    if (pinForm.pin !== pinForm.confirm) { setPinError("The two PINs don't match."); return; }
+    setPinSaving(true);
+    setPinError("");
+    try {
+      await DalabAdminApi.setAgentPin(pinFor.id, pinForm.pin);
+      setPinFor(null);
+      alert(`PIN saved. ${pinFor.name} signs in to the Agent App with ${pinFor.phone} and this PIN.`);
+    } catch (err) {
+      setPinError(err.message || "Could not save the PIN.");
+    } finally {
+      setPinSaving(false);
+    }
   };
 
   const remove = async (a) => {
@@ -4728,7 +4919,7 @@ function AgentsSection({ companies, admin }) {
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: "var(--c-fafbff)" }}>
-              {["Name", "Phone", "Status", "Last login", ""].map((h) => (
+              {["Name", "Phone", "Status", "Operations", "Last login", ""].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTE, fontWeight: 700 }}>{h}</th>
               ))}
             </tr>
@@ -4739,6 +4930,20 @@ function AgentsSection({ companies, admin }) {
                 <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{a.name}</td>
                 <td style={{ padding: "10px 14px", fontSize: 12.5, color: SLATE, fontFamily: "monospace" }}>{a.phone}</td>
                 <td style={{ padding: "10px 14px" }}><Badge tone={a.status === "active" ? "green" : "red"}>{a.status === "active" ? "Active" : "Suspended"}</Badge></td>
+                <td style={{ padding: "10px 14px" }}>
+                  {isOwner ? (
+                    <button
+                      onClick={() => toggleOperations(a)}
+                      disabled={opsTogglingId === a.id}
+                      title={a.operationsEnabled === false ? "Operational access is off: tap to switch on" : "Agent can approve/reject payments, cancel, retry and reverse orders: tap to switch off"}
+                      style={{ background: "none", border: "none", padding: 0, cursor: opsTogglingId === a.id ? "default" : "pointer", opacity: opsTogglingId === a.id ? 0.5 : 1 }}
+                    >
+                      <Badge tone={a.operationsEnabled === false ? "red" : "green"}>{a.operationsEnabled === false ? "Off" : "On"}</Badge>
+                    </button>
+                  ) : (
+                    <Badge tone={a.operationsEnabled === false ? "red" : "green"}>{a.operationsEnabled === false ? "Off" : "On"}</Badge>
+                  )}
+                </td>
                 <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE }}>{a.lastLoginAt ? formatDateTime(a.lastLoginAt) : "Never"}</td>
                 <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
                   {canManage && (
@@ -4746,6 +4951,9 @@ function AgentsSection({ companies, admin }) {
                       <Button variant="ghost" onClick={() => openAssign(a)}>Companies</Button>
                       <button onClick={() => toggleSuspend(a)} disabled={suspendTogglingId === a.id} title={a.status === "active" ? "Suspend" : "Activate"} style={{ background: "none", border: "none", cursor: suspendTogglingId === a.id ? "default" : "pointer", opacity: suspendTogglingId === a.id ? 0.5 : 1, marginLeft: 8 }}>
                         <Power size={14} color={a.status === "active" ? GREEN : "var(--c-c81e2c)"} />
+                      </button>
+                      <button onClick={() => openPin(a)} title="Set PIN (Agent App sign-in)" style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
+                        <KeyRound size={14} color={INDIGO} />
                       </button>
                       <button onClick={() => openEdit(a)} style={{ background: "none", border: "none", cursor: "pointer", marginLeft: 8 }}>
                         <Pencil size={14} color={INDIGO} />
@@ -4759,7 +4967,7 @@ function AgentsSection({ companies, admin }) {
               </tr>
             ))}
             {agents.length === 0 && !loading && (
-              <tr><td colSpan={5} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No agents yet.</td></tr>
+              <tr><td colSpan={6} style={{ padding: 20, textAlign: "center", fontSize: 12.5, color: MUTE }}>No agents yet.</td></tr>
             )}
           </tbody>
         </table>
@@ -4774,13 +4982,32 @@ function AgentsSection({ companies, admin }) {
             <input style={inputStyle} value={form.phone || ""} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="252..." />
           </Field>
           {editing === "new" && (
-            <Field label="Password">
-              <input type="password" style={inputStyle} value={form.password || ""} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+            <Field label="PIN (4–8 digits, for Agent App sign-in)">
+              <input type="password" inputMode="numeric" autoComplete="new-password" style={inputStyle} value={form.password || ""} onChange={(e) => setForm({ ...form, password: e.target.value.replace(/\D/g, "").slice(0, 8) })} />
             </Field>
           )}
           <div style={{ display: "flex", gap: 10 }}>
             <Button onClick={save} icon={Check}>Save</Button>
             <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
+          </div>
+        </Modal>
+      )}
+
+      {pinFor && (
+        <Modal title={`Set PIN — ${pinFor.name}`} onClose={() => setPinFor(null)} width={380}>
+          <div style={{ fontSize: 12, color: MUTE, marginBottom: 12 }}>
+            The agent signs in to the Agent App with their phone number ({pinFor.phone}) and this PIN. A phone that is already signed in stays signed in.
+          </div>
+          <Field label="New PIN (4–8 digits)">
+            <input type="password" inputMode="numeric" autoComplete="new-password" style={inputStyle} value={pinForm.pin} onChange={(e) => setPinForm({ ...pinForm, pin: e.target.value.replace(/\D/g, "").slice(0, 8) })} />
+          </Field>
+          <Field label="Repeat the PIN">
+            <input type="password" inputMode="numeric" autoComplete="new-password" style={inputStyle} value={pinForm.confirm} onChange={(e) => setPinForm({ ...pinForm, confirm: e.target.value.replace(/\D/g, "").slice(0, 8) })} />
+          </Field>
+          {pinError && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 10 }}>{pinError}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            <Button onClick={savePin} icon={Check} disabled={pinSaving}>{pinSaving ? "Saving…" : "Save PIN"}</Button>
+            <Button variant="ghost" onClick={() => setPinFor(null)}>Cancel</Button>
           </div>
         </Modal>
       )}
@@ -4901,7 +5128,7 @@ function PromoImages() {
         <div>
           <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Promo Images</div>
           <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>
-            Up to {MAX_PROMO_IMAGES} promotional images shown as a swipeable carousel on the Customer App Home screen. Customers can only view these — uploading is Super Admin-only. Recommended size: 1280 × 400px (a short, wide banner — this keeps the carousel compact so provider logos stay visible on the first screen without scrolling).
+            Up to {MAX_PROMO_IMAGES} promotional images shown as a swipeable carousel on the Customer App Home screen. Customers can only view these — uploading is Owner-only. Recommended size: 1280 × 400px (a short, wide banner — this keeps the carousel compact so provider logos stay visible on the first screen without scrolling).
           </div>
         </div>
         <div>
@@ -5056,7 +5283,7 @@ const FOOTBALL_WINNER_META = {
   revoked: { label: "Revoked", tone: "gray" },
 };
 
-function CiyaarahaAdmin() {
+function CiyaarahaAdmin({ admin }) {
   const [tab, setTab] = useState("contests");
   const tabs = [["contests", "Contests"], ["rewards", "Rewards"], ["agents", "Agent access"], ["cleanup", "Cleanup"]];
   return (
@@ -5072,7 +5299,7 @@ function CiyaarahaAdmin() {
       </div>
       {tab === "contests" && <CiyaarahaContests />}
       {tab === "rewards" && <CiyaarahaRewards />}
-      {tab === "agents" && <CiyaarahaAgents />}
+      {tab === "agents" && <CiyaarahaAgents admin={admin} />}
       {tab === "cleanup" && <CiyaarahaCleanup />}
     </div>
   );
@@ -5243,7 +5470,9 @@ function CiyaarahaRewards() {
   );
 }
 
-function CiyaarahaAgents() {
+function CiyaarahaAgents({ admin }) {
+  // Who may use Ciyaaraha is an agent service: only the Owner switches it.
+  const isOwner = admin?.role === "super_admin";
   const [state, reload] = useAdminFetch(() => DalabAdminApi.getFootballAgents(), []);
   const [err, setErr] = useState("");
   const toggle = async (a) => {
@@ -5253,12 +5482,16 @@ function CiyaarahaAgents() {
   return (
     <Card style={{ padding: 16 }}>
       <div style={{ fontWeight: 700, color: INK }}>Who can run Ciyaaraha</div>
-      <div style={{ fontSize: 12.5, color: MUTE, margin: "2px 0 10px" }}>Only these agents can create contests, enter official results, confirm winners and record rewards in the Agent App.</div>
+      <div style={{ fontSize: 12.5, color: MUTE, margin: "2px 0 10px" }}>Only these agents can create contests, enter official results, confirm winners and record rewards in the Agent App.{isOwner ? "" : " Only the Owner can change who has access."}</div>
       {err && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 8 }}>{err}</div>}
       {(state.data || []).map((a) => (
         <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderTop: `1px solid ${BORDER}`, flexWrap: "wrap" }}>
           <div><div style={{ fontWeight: 700, color: INK, fontSize: 13 }}>{a.name}</div><div style={{ fontSize: 12, color: MUTE }}>{a.phone}{a.status !== "active" ? ` · ${a.status}` : ""}</div></div>
-          <Button variant={a.ciyaarahaEnabled ? "primary" : "ghost"} onClick={() => toggle(a)}>{a.ciyaarahaEnabled ? "Enabled" : "Off"}</Button>
+          {isOwner ? (
+            <Button variant={a.ciyaarahaEnabled ? "primary" : "ghost"} onClick={() => toggle(a)}>{a.ciyaarahaEnabled ? "Enabled" : "Off"}</Button>
+          ) : (
+            <Badge tone={a.ciyaarahaEnabled ? "green" : "red"}>{a.ciyaarahaEnabled ? "Enabled" : "Off"}</Badge>
+          )}
         </div>
       ))}
     </Card>
@@ -8050,8 +8283,8 @@ function DeviceUssdModule({ companies, admin, onPackagesChanged }) {
         {!canManageSuperOnly && (
           <Badge tone="amber">
             {canManage
-              ? "USSD Templates, SIM Routing, and Provider PINs are Super Admin only"
-              : 'View only — ask a Super Admin for the "devices.manage" permission to manage devices, or Super Admin access for templates/routing/PINs'}
+              ? "USSD Templates, SIM Routing, and Provider PINs are Owner only"
+              : 'View only — ask the Owner for the "devices.manage" permission to manage devices, or Owner access for templates/routing/PINs'}
           </Badge>
         )}
       </div>
@@ -8454,7 +8687,7 @@ function UssdTemplatesPanel({ companies, canManage, onPackagesChanged }) {
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 12, flexWrap: "wrap" }}>
-        {!canManage && <Badge tone="amber">View only — USSD templates can only be changed by a Super Admin</Badge>}
+        {!canManage && <Badge tone="amber">View only — USSD templates can only be changed by the Owner</Badge>}
         <div style={{ display: "flex", gap: 10, marginLeft: "auto" }}>
           <Button
             variant="ghost"
@@ -9224,7 +9457,7 @@ function ProviderNumbers({ companies, refreshCompanies, admin, onPackagesChanged
 
       {error && <div style={{ color: "var(--c-c81e2c)", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
       {message && <div style={{ color: GREEN, fontSize: 12.5, marginBottom: 14 }}>{message}</div>}
-      {!canManageSecrets && <Badge tone="amber">View only — Payment Number, Provider Number, USSD PIN, Sender Number/SIM Slot, and USSD Templates are Super Admin only</Badge>}
+      {!canManageSecrets && <Badge tone="amber">View only — Payment Number, Provider Number, USSD PIN, Sender Number/SIM Slot, and USSD Templates are Owner only</Badge>}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 14 }}>
         {companies.map((c) => {
@@ -10049,6 +10282,9 @@ function OfflineOrdersTab({ companies, initialSearch, onOpenOrder }) {
   const [dateTo, setDateTo] = useState("");
   const [search, setSearch] = useState(initialSearch || "");
   const [devices, setDevices] = useState([]);
+  // Rukumo: services of one company with the same price (a payment for
+  // them can't pick the service by itself -- it waits for an agent).
+  const [priceConflicts, setPriceConflicts] = useState([]);
 
   // A handoff from another tab (e.g. "View Orders" for a specific
   // customer) should immediately take effect even if this tab was already
@@ -10060,6 +10296,7 @@ function OfflineOrdersTab({ companies, initialSearch, onOpenOrder }) {
   useEffect(() => {
     if (!DALAB_API_ENABLED) return;
     DalabAdminApi.getAgentDevices().then(setDevices).catch(() => {});
+    DalabAdminApi.getOfflinePriceConflicts().then(setPriceConflicts).catch(() => {});
   }, []);
 
   const fetchRows = async () => {
@@ -10102,6 +10339,19 @@ function OfflineOrdersTab({ companies, initialSearch, onOpenOrder }) {
 
   return (
     <div>
+      {priceConflicts.length > 0 && (
+        <div style={{ fontSize: 12.5, color: "#8A6200", background: "#FFF4D6", border: "1px solid #F2C94C", borderRadius: 8, padding: "10px 12px", marginBottom: 14 }}>
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>Rukumo: services with the same price</div>
+          <div style={{ marginBottom: 6 }}>
+            Rukumo knows which service a customer bought by its price. A payment for one of these prices waits for an agent to choose the service. Give each service its own price to send them automatically.
+          </div>
+          {priceConflicts.map((c) => (
+            <div key={`${c.companyId}-${c.price}`}>
+              <b>{c.companyName}</b> ${Number(c.price).toFixed(2)}: {c.services.join(", ")}
+            </div>
+          ))}
+        </div>
+      )}
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
         <StatusCountTile label="All" count={stats?.all ?? "—"} tone="neutral" active={statusFilter === "all"} onClick={() => setStatusFilter("all")} />
         {["SUCCESS", "FAILED", "RETRY", "USSD_PROCESSING", "WAITING_FOR_AGENT", "DUPLICATE"].map((s) => (
@@ -11337,7 +11587,7 @@ function MoneyExchangePanel({ admin }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
         <div>
           <div style={{ fontWeight: 800, fontSize: 15, color: INK }}>Payout Wallets</div>
-          <div style={{ fontSize: 12, color: MUTE, marginTop: 2 }}>Which SIM pays out for each wallet type, and its PIN. Super Admin only.</div>
+          <div style={{ fontSize: 12, color: MUTE, marginTop: 2 }}>Which SIM pays out for each wallet type, and its PIN. Owner only.</div>
         </div>
         {isSuperAdmin && <Button icon={Plus} onClick={openNewPayoutWallet}>Add Payout Wallet</Button>}
       </div>
@@ -12424,7 +12674,7 @@ function ResellerPaymentTab({ canManage, isSuperAdmin, companies }) {
                       </div>
                     ) : (
                       <span style={{ fontSize: 12, color: MUTE }}>
-                        {existing?.pinIsSet ? "Set" : "Not set"} — Super Admin only
+                        {existing?.pinIsSet ? "Set" : "Not set"} — Owner only
                       </span>
                     )}
                   </td>
@@ -15344,7 +15594,7 @@ function RolesPermissions({ admin }) {
 
   const changeRole = async (u) => {
     const nextRole = u.role === "super_admin" ? "admin" : "super_admin";
-    if (!window.confirm(`Change ${u.email} to ${nextRole === "super_admin" ? "Super Admin" : "Admin"}?`)) return;
+    if (!window.confirm(`Change ${u.email} to ${nextRole === "super_admin" ? "Owner" : "Admin"}?`)) return;
     try {
       await DalabAdminApi.updateAdminUserRole(u.id, nextRole);
       fetchUsers();
@@ -15379,7 +15629,7 @@ function RolesPermissions({ admin }) {
   };
 
   if (admin?.role !== "super_admin") {
-    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Only the Super Admin can manage roles and permissions.</div>;
+    return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Only the Owner can manage roles and permissions.</div>;
   }
   if (!DALAB_API_ENABLED) {
     return <div style={{ fontSize: 12.5, color: MUTE, padding: 20 }}>Connect DALAB_API_BASE_URL to a deployed backend to manage roles and permissions.</div>;
@@ -15390,7 +15640,7 @@ function RolesPermissions({ admin }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
         <div>
           <div style={{ fontWeight: 800, fontSize: 17, color: INK }}>Roles & Permissions</div>
-          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Super Admin has unrestricted access always. A regular Admin can only do what's checked below — changes apply immediately, no re-login needed.</div>
+          <div style={{ fontSize: 12.5, color: MUTE, marginTop: 2 }}>Owner has unrestricted access always. A regular Admin can only do what's checked below — changes apply immediately, no re-login needed.</div>
         </div>
         <Button icon={Plus} onClick={openNew}>Add admin</Button>
       </div>
@@ -15410,7 +15660,7 @@ function RolesPermissions({ admin }) {
             {users.map((u) => (
               <tr key={u.id} style={{ borderTop: `1px solid ${BORDER}` }}>
                 <td style={{ padding: "10px 14px", fontWeight: 700, color: INK, fontSize: 13 }}>{u.email}</td>
-                <td style={{ padding: "10px 14px" }}><Badge tone={u.role === "super_admin" ? "green" : "neutral"}>{u.role === "super_admin" ? "Super Admin" : "Admin"}</Badge></td>
+                <td style={{ padding: "10px 14px" }}><Badge tone={u.role === "super_admin" ? "green" : "neutral"}>{u.role === "super_admin" ? "Owner" : "Admin"}</Badge></td>
                 <td style={{ padding: "10px 14px", fontSize: 12, color: MUTE }}>
                   {u.role === "super_admin" ? "All (unrestricted)" : `${(permissionsByUser[u.id] || []).length} of ${PERMISSION_OPTIONS.length} granted`}
                 </td>
@@ -15444,7 +15694,7 @@ function RolesPermissions({ admin }) {
           <Field label="Role">
             <select style={inputStyle} value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
               <option value="admin">Admin (limited, permissions below)</option>
-              <option value="super_admin">Super Admin (unrestricted)</option>
+              <option value="super_admin">Owner (unrestricted)</option>
             </select>
           </Field>
           <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
@@ -15511,6 +15761,9 @@ function ActivityLogPanel() {
   }, [entityFilter]);
 
   const actionLabel = (action) => ({
+    package_price_made_unique: "Price made unique (+$0.01, same price as another service)",
+    create_package: "Created service",
+    update_package: "Updated service",
     create_ussd_template: "Created USSD template",
     update_ussd_template: "Updated USSD template",
     update_ussd_template_status: "Changed USSD template status",
@@ -15526,6 +15779,14 @@ function ActivityLogPanel() {
     payment_completed: "Payment completed — order fulfilled",
     payment_already_processed: "Duplicate payment rejected",
     setting_updated: "Updated a system setting",
+    agent_payment_approved: "Agent approved a payment",
+    agent_payment_approved_without_sms: "Agent approved a payment WITHOUT a matched SMS",
+    agent_payment_rejected: "Agent rejected a payment",
+    agent_order_cancelled: "Agent cancelled an order",
+    agent_order_retried: "Agent retried an order",
+    agent_order_reversed: "Agent reversed a completed order",
+    agent_operations_enabled: "Agent operational access switched on",
+    agent_operations_disabled: "Agent operational access switched off",
   }[action] || action);
 
   const paymentStatusTone = (status) => ({
@@ -15556,6 +15817,7 @@ function ActivityLogPanel() {
           { id: "payment_wallet", label: "Payment Wallets" },
           { id: "payment_transaction", label: "Payment Transactions" },
           { id: "system_setting", label: "Support & Social Media" },
+          { id: "package", label: "Services & Prices" },
         ].map((f) => (
           <button key={f.id} onClick={() => setEntityFilter(f.id)} style={{
             padding: "7px 14px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
@@ -15582,9 +15844,15 @@ function ActivityLogPanel() {
                 <React.Fragment key={r.id}>
                   <tr style={{ borderTop: `1px solid ${BORDER}`, cursor: "pointer" }} onClick={() => setExpanded((prev) => ({ ...prev, [r.id]: !prev[r.id] }))}>
                     <td style={{ padding: "10px 14px", fontSize: 11.5, color: MUTE, whiteSpace: "nowrap", verticalAlign: "top" }}>{formatDateTime(r.createdAt)}</td>
-                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, verticalAlign: "top" }}>{r.entityType === "payment_transaction" ? "Agent App" : (r.adminEmail || "Unknown admin")}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12.5, color: INK, verticalAlign: "top" }}>{r.agentName ? `Agent: ${r.agentName}${r.agentPhone ? ` (${r.agentPhone})` : ""}` : r.entityType === "payment_transaction" ? "Agent App" : (r.adminEmail || (r.action === "package_price_made_unique" ? "System (automatic)" : "Unknown admin"))}</td>
                     <td style={{ padding: "10px 14px", verticalAlign: "top" }}>
                       <div style={{ fontSize: 12.5, color: INK, fontWeight: 600 }}>{actionLabel(r.action)}</div>
+                      {r.action === "package_price_made_unique" && r.oldValue && r.newValue && (
+                        <div style={{ marginTop: 6, fontSize: 11.5, color: SLATE }}>
+                          <b>Price:</b> ${Number(r.oldValue.price).toFixed(2)} → <b>${Number(r.newValue.price).toFixed(2)}</b>
+                          {"  ·  "}<b>Carrier amount:</b> ${Number(r.newValue.providerAmount).toFixed(2)}
+                        </div>
+                      )}
                       {r.entityType === "payment_transaction" && r.newValue && (
                         <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 12, fontSize: 11.5, color: SLATE }}>
                           <span><b>Order:</b> {r.newValue.orderId || "—"}</span>
@@ -16662,15 +16930,21 @@ function MenuUssdServicesSection({ admin }) {
     };
     setSaving(true);
     try {
+      let saved;
       if (editing.id) {
-        await DalabAdminApi.updatePackage(editing.id, body);
+        saved = await DalabAdminApi.updatePackage(editing.id, body);
       } else {
-        await DalabAdminApi.createPackage({
+        saved = await DalabAdminApi.createPackage({
           ...body, companyId: service.companyId, categoryId: service.category?.slug, ussdTemplateId: service.id, mb: 0, minutes: 0, sms: 0,
         });
       }
       setEditing(null);
-      flash(editing.id ? "Package saved." : "Package added.");
+      flash(
+        (editing.id ? "Package saved." : "Package added.") +
+          (saved?.priceAdjustedFrom != null
+            ? ` Its price was set to $${Number(saved.price).toFixed(2)} (another service already costs $${Number(saved.priceAdjustedFrom).toFixed(2)}).`
+            : "")
+      );
       loadService();
     } catch (err) {
       setFormError(err.message || "Could not save the package.");
@@ -16975,7 +17249,7 @@ function MenuUssdServicesSection({ admin }) {
         <Card style={{ padding: 18 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 6 }}>
             <div style={{ fontWeight: 800, fontSize: 14, color: INK }}>USSD menu settings</div>
-            {!isSuper && <Badge tone="gray">Super Admin only</Badge>}
+            {!isSuper && <Badge tone="gray">Owner only</Badge>}
           </div>
           <div style={{ fontSize: 12, color: MUTE, marginBottom: 14 }}>
             Changes apply to new orders only — orders already placed keep the menu they were created with.
@@ -17557,7 +17831,16 @@ function isValidEmailClient(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
 }
 
-function AdminLoginScreen({ onLoggedIn }) {
+/** The wrong-password answer, in plain words (the server says the same for an unknown email, on purpose). */
+function friendlyLoginError(err) {
+  const msg = err?.message || "";
+  if (/invalid (email|credentials)|incorrect password|wrong (email|password)|invalid email or password/i.test(msg) || err?.status === 401) {
+    return "Incorrect password. Please try again.";
+  }
+  return msg || "Incorrect password. Please try again.";
+}
+
+function AdminLoginScreen({ onLoggedIn, onBack }) {
   const [view, setView] = useState("login"); // 'login' | 'forgot'
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -17582,7 +17865,7 @@ function AdminLoginScreen({ onLoggedIn }) {
       dalabAdminRefreshToken = result.refreshToken;
       onLoggedIn(result.admin);
     } catch (err) {
-      setError(err.message || "Invalid email or password.");
+      setError(friendlyLoginError(err));
     } finally {
       setLoading(false);
     }
@@ -17610,6 +17893,15 @@ function AdminLoginScreen({ onLoggedIn }) {
     <div style={{ minHeight: "100vh", background: "var(--sidebar-bg)", position: "relative", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter','Segoe UI',system-ui,-apple-system,sans-serif", padding: "72px 20px 20px" }}>
       <div style={{ position: "absolute", top: 12, right: 12 }}><PrefsControls onDark /></div>
       <div style={{ width: "100%", maxWidth: 400 }}>
+        {onBack && (
+          <button
+            type="button"
+            onClick={onBack}
+            style={{ display: "inline-flex", alignItems: "center", gap: 8, minHeight: 44, padding: "8px 16px", marginBottom: 14, borderRadius: 999, border: "1px solid rgba(255,255,255,0.3)", background: "rgba(255,255,255,0.08)", color: "#FFFFFF", fontSize: 15, fontWeight: 700, cursor: "pointer" }}
+          >
+            <span aria-hidden="true">←</span> Back
+          </button>
+        )}
         <div style={{ textAlign: "center", marginBottom: 22 }}>
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,0.06)", padding: "6px 14px", borderRadius: 20, marginBottom: 18 }}>
             <Lock size={13} color="var(--c-7c86c4)" />
@@ -17621,7 +17913,7 @@ function AdminLoginScreen({ onLoggedIn }) {
         <Card style={{ padding: 30 }}>
           {view === "login" ? (
             <>
-              <div style={{ fontWeight: 800, fontSize: 20, color: INK, textAlign: "center" }}>Super Admin Login</div>
+              <div style={{ fontWeight: 800, fontSize: 20, color: INK, textAlign: "center" }}>Owner & Admin Login</div>
               <div style={{ fontSize: 12.5, color: MUTE, textAlign: "center", marginTop: 4, marginBottom: 24 }}>
                 Dalab Internet Management Console
               </div>
@@ -18139,10 +18431,11 @@ function AdminDashboardShell({ admin, onLogout }) {
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 12, flexShrink: 0 }}>
+            <AgentAppDownloadButton admin={admin} compact={isMobile} />
             <PrefsControls />
             <div style={{ textAlign: "right", display: isMobile ? "none" : "block" }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: INK }}>{admin?.email}</div>
-              <div style={{ fontSize: 10.5, color: MUTE }}>{admin?.role === "super_admin" ? "Super Admin" : "Admin"}</div>
+              <div style={{ fontSize: 10.5, color: MUTE }}>{admin?.role === "super_admin" ? "Owner" : "Admin"}</div>
             </div>
             <div className="dl-hide-xs" title={admin?.email} style={{ width: 34, height: 34, borderRadius: 17, background: INDIGO_SOFT, display: "flex", alignItems: "center", justifyContent: "center", color: INDIGO, fontWeight: 800, fontSize: 13, flexShrink: 0 }}>
               {admin?.role === "super_admin" ? "SA" : "AD"}
@@ -18174,13 +18467,14 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "orders" && <Orders orders={orders} setOrders={setOrders} companies={companies} admin={admin} />}
           {active === "offline" && <OfflinePanel companies={companies} />}
           {active === "customers" && <Customers customers={customers} setCustomers={setCustomers} refreshCustomers={refreshCustomers} admin={admin} />}
-          {active === "agents" && <AgentsSection companies={companies} admin={admin} />}
+          {active === "agents" && <><AgentDirectorySetting request={dalabAdminApiRequest} /><AgentsSection companies={companies} admin={admin} /></>}
           {active === "device-activation" && <DeviceActivationSection admin={admin} />}
           {active === "notifications" && <Notifications />}
+          {active === "agent-notices" && <AgentNotices request={dalabAdminApiRequest} />}
+          {active === "agent-registrations" && <AgentRegistrations request={dalabAdminApiRequest} />}
           {active === "promo-images" && <PromoImages />}
           {active === "nala-soco" && <NalaSoco />}
-          {active === "ciyaaraha" && <CiyaarahaAdmin />}
-          {active === "agent-app-release" && <AgentAppReleasePanel />}
+          {active === "ciyaaraha" && <CiyaarahaAdmin admin={admin} />}
           {active === "devices" && <DeviceUssdModule companies={companies} admin={admin} onPackagesChanged={refreshMissingTemplateCount} />}
           {active === "sms-logs" && <SmsLogs companies={companies} />}
           {active === "payment-transactions" && <PaymentTransactionsPanel companies={companies} />}
@@ -18197,7 +18491,7 @@ function AdminDashboardShell({ admin, onLogout }) {
           {active === "pending-recovery" && <PendingRecoveryPanel />}
           {active === "execution-logs" && <ExecutionLogs companies={companies} />}
           {active === "reports" && <Reports />}
-          {active === "roles" && <RolesPermissions admin={admin} />}
+          {active === "roles" && <><RolesPermissions admin={admin} /><OwnerPermissions request={dalabAdminApiRequest} /></>}
           {active === "activity-log" && <ActivityLogPanel />}
           {active === "settings" && <SettingsPanel />}
         </main>
@@ -18217,7 +18511,24 @@ export default function AdminDashboard() {
   const [hubAssertion] = useState(takeHubAssertion);
   const [hubStatus, setHubStatus] = useState(hubAssertion ? "signing-in" : null);
   const [hubError, setHubError] = useState("");
-  const [showLocalLogin, setShowLocalLogin] = useState(!HUB_URL);
+  const [showLocalLogin, setShowLocalLogin] = useState(!HUB_URL || WANTS_LOCAL_LOGIN);
+  // "Use a local account instead" is its own step in the browser history:
+  // the Back button on the form, and Android's / the browser's Back, return
+  // to the "Sign in through the Admin Hub" screen instead of leaving.
+  const openLocalLogin = () => {
+    try { window.history.pushState({ ...(window.history.state || {}), localLogin: true }, ""); } catch { /* ignore */ }
+    setShowLocalLogin(true);
+  };
+  const closeLocalLogin = () => {
+    if (window.history.state?.localLogin) window.history.back();
+    else setShowLocalLogin(false);
+  };
+  useEffect(() => {
+    if (!HUB_URL) return undefined;
+    const onPop = () => { if (!window.history.state?.localLogin) setShowLocalLogin(false); };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
   // Super Admins opened from the hub: their annual payment, shown above everything.
   const { data: payment, refresh: refreshPayment } = usePaymentStatus(loadHubPayment);
   // Set when this system's API says the Platform Owner has suspended it.
@@ -18261,22 +18572,32 @@ export default function AdminDashboard() {
   }
 
   if (!admin && hubStatus === "signing-in") {
-    return <HubNotice title="Signing you in…" message="Opening this dashboard from the Admin Hub." />;
+    // No card while the hub's sign-in completes: just the dashboard's colour and a small spinner.
+    return (
+      <div style={{ minHeight: "100vh", background: "var(--sidebar-bg, #0B1240)", display: "flex", alignItems: "center", justifyContent: "center" }} aria-busy="true" aria-label="Signing you in">
+        <span style={{ width: 30, height: 30, border: "3px solid rgba(255,255,255,0.25)", borderTopColor: "#FFFFFF", borderRadius: "50%", animation: "hubSignInSpin 0.8s linear infinite" }} />
+        <style>{"@keyframes hubSignInSpin{to{transform:rotate(360deg)}}"}</style>
+      </div>
+    );
   }
 
   if (!admin && !showLocalLogin) {
+    // No in-between screen: someone who isn't signed in goes straight to the
+    // Admin Hub's sign-in. The notice below shows only when signing in from
+    // the hub failed, so a problem never turns into an endless redirect.
+    if (!hubError) return <HubRedirect />;
     return (
       <HubNotice
         title="Sign in through the Admin Hub"
         message={hubError || "Admins open this dashboard from the Admin Hub with their own account."}
         isError={Boolean(hubError)}
-        onLocalLogin={() => setShowLocalLogin(true)}
+        onLocalLogin={openLocalLogin}
       />
     );
   }
 
   if (!admin) {
-    return <AdminLoginScreen onLoggedIn={setAdmin} />;
+    return <AdminLoginScreen onLoggedIn={setAdmin} onBack={HUB_URL ? closeLocalLogin : undefined} />;
   }
 
   return (
@@ -18289,8 +18610,13 @@ export default function AdminDashboard() {
         onLogout={() => {
           dalabAdminAccessToken = null;
           dalabAdminRefreshToken = null;
+          if (admin.viaHub && HUB_URL) {
+            // Straight to the hub's sign-out. Clearing the admin first would
+            // redirect to the hub's front door, which reopens this system.
+            signOutToHub();
+            return;
+          }
           setAdmin(null);
-          if (admin.viaHub && HUB_URL) signOutToHub();
         }}
       />
       {admin.viaHub && HUB_URL && hubNav() && <HubSwitchButton label={hubNav() === "switch" ? "Switch system" : "Admin Hub"} />}
@@ -18301,6 +18627,7 @@ export default function AdminDashboard() {
 /** Small way back to the Admin Hub for people who have something to do there. */
 function HubSwitchButton({ label }) {
   return (
+    <>
     <button
       onClick={openHub}
       title="Back to the WAAPRO Admin Hub"
@@ -18308,7 +18635,72 @@ function HubSwitchButton({ label }) {
     >
       <span aria-hidden="true">⇄</span> {label}
     </button>
+    {/* Room under the side menu so this button never covers its last item. */}
+    <style>{'nav[aria-label="Main menu"]{padding-bottom:64px !important;box-sizing:border-box}'}</style>
+    </>
   );
+}
+
+// The AGENT APP (one app for every WAAPRO LTD system). This permanent link
+// is answered by the Admin Hub, which redirects to the newest RELEASE-signed
+// APK (app-release.apk of the newest build) -- never a debug build.
+const AGENT_APP_LATEST_URL = "https://admin.waaproltd.com/api/agent-app/latest";
+
+/** "Download Agent App" in the top bar, for Super Admins and Admins. */
+/** The newest release's version (e.g. "1.0.30"), asked from the Admin Hub. */
+function useAgentAppVersion() {
+  const [version, setVersion] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    fetch(`${AGENT_APP_LATEST_URL}?format=json`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (alive && d?.version) setVersion(d.version); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  return version;
+}
+
+function AgentAppDownloadButton({ admin, compact = false }) {
+  const version = useAgentAppVersion();
+  if (!admin || (admin.role !== "super_admin" && admin.role !== "admin")) return null;
+  return (
+    <a
+      href={AGENT_APP_LATEST_URL}
+      download
+      target="_blank"
+      rel="noopener noreferrer"
+      title={version ? `Download Agent App ${version} (release APK)` : "Download the latest Agent App (release APK)"}
+      aria-label="Download Agent App"
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0,
+        minHeight: compact ? 44 : 38, padding: compact ? "0 12px" : "0 14px", borderRadius: 12,
+        background: "linear-gradient(135deg, #0B2A6B, #1565D8)", color: "#FFFFFF",
+        fontSize: 12.5, fontWeight: 700, textDecoration: "none", whiteSpace: "nowrap",
+        boxShadow: "0 4px 12px rgba(11,42,107,0.25)",
+      }}
+    >
+      <Download size={16} color="#F5B800" />
+      <span>{compact ? (version ? `v${version}` : "Agent App") : `Download Agent App${version ? ` ${version}` : ""}`}</span>
+    </a>
+  );
+}
+
+/** ?local=1 opens this system's own admin sign-in instead of the Admin Hub. */
+const WANTS_LOCAL_LOGIN = (() => {
+  try { return new URLSearchParams(window.location.search).has("local"); } catch { return false; }
+})();
+
+/**
+ * Sends someone who isn't signed in straight to the Admin Hub's sign-in.
+ * location.replace keeps this page out of the Back history, so Back on the
+ * hub's sign-in returns to wherever the admin was before, with no bouncing.
+ */
+function HubRedirect() {
+  useEffect(() => {
+    if (HUB_URL) window.location.replace(`${HUB_URL}/`);
+  }, []);
+  return <div style={{ minHeight: "100vh", background: "var(--sidebar-bg, #0B1240)" }} aria-busy="true" />;
 }
 
 function HubNotice({ title, message, isError = false, onLocalLogin }) {
@@ -18316,7 +18708,14 @@ function HubNotice({ title, message, isError = false, onLocalLogin }) {
   // dashboard, whatever theme constants or CSS variables that app defines.
   return (
     <div style={{ minHeight: "100vh", background: "var(--sidebar-bg, #0B1240)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "'Inter','Segoe UI',system-ui,-apple-system,sans-serif" }}>
-      <div style={{ width: "100%", maxWidth: 400, background: "#FFFFFF", borderRadius: 16, padding: 28, textAlign: "center", boxShadow: "0 12px 40px rgba(0,0,0,0.25)" }}>
+      <div style={{ width: "100%", maxWidth: 400, background: "#FFFFFF", borderRadius: 16, padding: 28, textAlign: "center", boxShadow: "0 12px 40px rgba(0,0,0,0.25)", position: "relative" }}>
+        <button
+          type="button"
+          onClick={() => { if (HUB_URL) window.location.assign(`${HUB_URL}/?back=1`); else window.history.back(); }}
+          style={{ position: "absolute", top: 12, left: 12, display: "inline-flex", alignItems: "center", gap: 6, minHeight: 40, padding: "6px 12px", borderRadius: 999, border: "1px solid #CBD5E1", background: "#F8FAFC", color: "#0F172A", fontSize: 14, fontWeight: 700, cursor: "pointer" }}
+        >
+          <span aria-hidden="true">←</span> Back
+        </button>
         <img src={`${import.meta.env.BASE_URL}logo.png`} alt="" width={56} height={56} style={{ borderRadius: 14, marginBottom: 14 }} onError={(e) => { e.currentTarget.style.display = "none"; }} />
         <h1 style={{ fontSize: 20, margin: "0 0 8px", color: "#0F172A" }}>{title}</h1>
         <p style={{ fontSize: 14, margin: "0 0 18px", color: isError ? "#B91C1C" : "#475569" }}>{message}</p>

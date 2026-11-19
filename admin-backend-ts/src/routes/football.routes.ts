@@ -1,4 +1,5 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
+import { setAgentServices } from "./permissions.routes.js";
 import type { PoolClient } from "pg";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -10,6 +11,7 @@ import { sendJson } from "../utils/camelCase.js";
 import { sendPushToCustomer } from "../services/push.js";
 import { randomUUID } from "node:crypto";
 import { MediaError, deleteImageFile, imageInUse, mediaDir, readImage, saveImage } from "../utils/mediaStorage.js";
+import { sendImage } from "../utils/sendImage.js";
 
 /**
  * Ciyaaraha -- football exact-score prediction contests.
@@ -154,9 +156,8 @@ footballRouter.get("/football/images/:id", async (req, res) => {
   const img = await readImage(req.params.id);
   if (!img) return sendJson(res, 404, { error: "Image not found" });
   res.setHeader("Content-Type", img.mimeType);
-  res.setHeader("Cache-Control", "public, max-age=3600");
   res.setHeader("X-Content-Type-Options", "nosniff");
-  res.send(img.data);
+  sendImage(req, res, img.data);
 });
 
 // ---------- customer ----------
@@ -274,7 +275,7 @@ footballRouter.get("/football/my-predictions", requireAuth("customer"), async (r
 async function requireFootballAgent(req: Request, res: Response, next: NextFunction) {
   const a = await queryOne<{ status: string; ciyaaraha_enabled: boolean }>(`SELECT status, ciyaaraha_enabled FROM agents WHERE id=$1`, [req.auth!.sub]);
   if (!a || a.status !== "active" || !a.ciyaaraha_enabled) {
-    return sendJson(res, 403, { code: "FOOTBALL_NOT_ENABLED", error: "Ciyaaraha isn't enabled for this agent account. Ask an Admin to turn it on." });
+    return sendJson(res, 403, { code: "FOOTBALL_NOT_ENABLED", error: "Ciyaaraha isn't enabled for this agent account. Ask the owner to turn it on." });
   }
   next();
 }
@@ -1114,11 +1115,14 @@ footballRouter.get("/admin/football/agents", requirePermission("football.manage"
   sendJson(res, 200, rows.map((a) => ({ id: a.id, name: a.name, phone: a.phone, status: a.status, ciyaarahaEnabled: a.ciyaaraha_enabled })));
 });
 
-footballRouter.put("/admin/football/agents/:id", requirePermission("football.manage"), async (req, res) => {
+// An agent's Ciyaaraha access is their "ciyaaraha" service: Owner only.
+footballRouter.put("/admin/football/agents/:id", requireAuth("super_admin"), async (req, res) => {
   if (!UUID_RE.test(req.params.id)) return sendJson(res, 404, { error: "Agent not found" });
   const enabled = req.body?.enabled === true;
-  const r = await query(`UPDATE agents SET ciyaaraha_enabled=$2 WHERE id=$1 RETURNING id`, [req.params.id, enabled]);
-  if (r.length === 0) return sendJson(res, 404, { error: "Agent not found" });
+  const current = await queryOne<{ services: string[] }>(`SELECT services FROM agents WHERE id=$1`, [req.params.id]);
+  if (!current) return sendJson(res, 404, { error: "Agent not found" });
+  const services = current.services ?? [];
+  await setAgentServices(req.params.id, enabled ? [...services, "ciyaaraha"] : services.filter((s) => s !== "ciyaaraha"), req.auth!.sub);
   await query(
     `INSERT INTO admin_activity_log (id, admin_id, action, entity_type, entity_id, old_value, new_value) VALUES (gen_random_uuid(), $1, 'football_agent_access', 'agent', $2, NULL, $3)`,
     [req.auth!.sub, req.params.id, JSON.stringify({ enabled })]

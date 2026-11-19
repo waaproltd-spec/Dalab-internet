@@ -11,6 +11,8 @@ import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
 import { authRouter, seedSuperAdmin } from "./routes/auth.routes.js";
 import { usersRouter } from "./routes/users.routes.js";
+import { permissionsRouter } from "./routes/permissions.routes.js";
+import { adminPermissionGate, agentServiceGate } from "./auth/access.js";
 import { companiesRouter, packagesRouter } from "./routes/companies.routes.js";
 import { companyPaymentMethodsRouter } from "./routes/companyPaymentMethods.routes.js";
 import { categoriesRouter } from "./routes/categories.routes.js";
@@ -21,6 +23,9 @@ import { offlinePaymentMethodsRouter } from "./routes/offlinePaymentMethods.rout
 import { agentsRouter } from "./routes/agents.routes.js";
 import { smsLogsRouter } from "./routes/smsLogs.routes.js";
 import { reportsRouter } from "./routes/reports.routes.js";
+import { agentDailyRouter } from "./routes/agentDaily.routes.js";
+import { agentDirectoryRouter, agentPresenceMiddleware } from "./routes/agentDirectory.routes.js";
+import { agentSimBalancesRouter } from "./routes/agentSimBalances.routes.js";
 import { settingsRouter } from "./routes/settings.routes.js";
 import { ussdRouter } from "./routes/ussd.routes.js";
 import { macaashRouter } from "./routes/macaash.routes.js";
@@ -28,7 +33,8 @@ import { bannersRouter } from "./routes/banners.routes.js";
 import { promoImagesRouter } from "./routes/promoImages.routes.js";
 import { promoAdsRouter } from "./routes/promoAds.routes.js";
 import { whatsappAutoReplyRouter } from "./routes/whatsappAutoReply.routes.js";
-import { notificationsRouter } from "./routes/notifications.routes.js";
+import { notificationsRouter, startCampaignScheduler } from "./routes/notifications.routes.js";
+import { companyProfitRouter } from "./routes/companyProfit.routes.js";
 import { executionLogsRouter } from "./routes/executionLogs.routes.js";
 import { activityLogRouter } from "./routes/activityLog.routes.js";
 import { paymentWalletsRouter } from "./routes/paymentWallets.routes.js";
@@ -60,6 +66,7 @@ import { customerSuspensionMiddleware, staffStatusMiddleware } from "./auth/midd
 import { deviceActivationRouter, agentDeviceActivationMiddleware } from "./routes/deviceActivation.routes.js";
 import { smsFormatsRouter } from "./routes/smsFormats.routes.js";
 import { interactiveServicesRouter } from "./routes/interactiveServices.routes.js";
+import { agentRegistrationsRouter } from "./routes/agentRegistrations.routes.js";
 
 // Express 4 route handlers here are plain `async (req, res) => {...}` with no
 // wrapper — a promise rejection inside one (e.g. an uncaught DB error) never
@@ -274,16 +281,23 @@ app.use(async (req: Request, res: Response, next: NextFunction) => {
 app.use(customerSuspensionMiddleware);
 // Device Activation: every agent API call must come from an approved app install.
 app.use(agentDeviceActivationMiddleware);
+// Other Agents: any request with an agent token marks that agent as seen.
+app.use(agentPresenceMiddleware);
 
 // System Control (Admin Hub): a suspended system refuses every request but the hub's own.
 app.use(systemSuspensionMiddleware);
 app.use(staffStatusMiddleware);
+// Owner / Admin / Agent: each Admin only the sections, each Agent only the
+// services, the Owner granted (src/auth/access.ts).
+app.use(adminPermissionGate);
+app.use(agentServiceGate);
 app.use(authRouter);
 app.use(hubRouter);
 app.use(hubAgentsRouter);
 app.use(deviceActivationRouter);
 app.use(smsFormatsRouter);
 app.use(usersRouter);
+app.use(permissionsRouter);
 app.use(companiesRouter);
 app.use(companyPaymentMethodsRouter);
 app.use(packagesRouter);
@@ -291,11 +305,15 @@ app.use(interactiveServicesRouter);
 app.use(categoriesRouter);
 app.use(ordersRouter);
 app.use(customersRouter);
+app.use(agentRegistrationsRouter);
 app.use(offlineAdminRouter);
 app.use(offlinePaymentMethodsRouter);
 app.use(agentsRouter);
 app.use(smsLogsRouter);
 app.use(reportsRouter);
+app.use(agentDailyRouter);
+app.use(agentDirectoryRouter);
+app.use(agentSimBalancesRouter);
 app.use(settingsRouter);
 app.use(ussdRouter);
 app.use(macaashRouter);
@@ -303,6 +321,7 @@ app.use(bannersRouter);
 app.use(promoImagesRouter);
 app.use(promoAdsRouter);
 app.use(notificationsRouter);
+app.use(companyProfitRouter);
 app.use(executionLogsRouter);
 app.use(activityLogRouter);
 app.use(paymentWalletsRouter);
@@ -352,6 +371,8 @@ async function start() {
     // eslint-disable-next-line no-console
     console.error("Seeding failed (has `npm run migrate` been run?):", err);
   }
+  // Scheduled customer broadcasts go out when due (and interrupted sends resume).
+  startCampaignScheduler();
   setInterval(() => {
     cleanupHubTokens().catch(() => undefined);
   }, 10 * 60 * 1000);

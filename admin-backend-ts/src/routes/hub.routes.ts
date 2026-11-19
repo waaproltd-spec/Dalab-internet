@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { query, queryOne } from "../db/pool.js";
 import { bearer, hubEnabled, verifyHubToken } from "../auth/hub.js";
 import { PERMISSIONS, isPermission } from "../auth/permissions.js";
+import { recordPermissionChange } from "./permissions.routes.js";
 import { hashPassword } from "../auth/crypto.js";
 import { rateLimit } from "../auth/rateLimit.js";
 import { sendJson } from "../utils/camelCase.js";
@@ -56,15 +57,22 @@ export async function applyHubEntry(entry: HubEntry, create: boolean): Promise<L
     const clash = await queryOne(`SELECT id FROM admin_users WHERE lower(email)=$1`, [email]);
     if (clash) throw new Error("Another admin in this system already uses this email and is linked to a different hub account.");
     const unusable = await hashPassword(randomBytes(32).toString("hex"));
-    return queryOne<LocalAdmin>(
+    const created = await queryOne<LocalAdmin>(
       `INSERT INTO admin_users (id, email, password_hash, role, permissions, hub_user_id, display_name)
        VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
       [randomUUID(), email, unusable, role, permissions, entry.hubUserId, name]
     );
+    if (created) {
+      await recordPermissionChange({ actorId: null, source: "admin_hub", targetType: "admin", targetId: created.id, before: [], after: permissions, roleBefore: null, roleAfter: role });
+    }
+    return created;
   }
 
   if (disabled) {
     await query(`UPDATE admin_users SET disabled_at=coalesce(disabled_at, now()), hub_user_id=$2 WHERE id=$1`, [local.id, entry.hubUserId]);
+    if (!local.disabled_at) {
+      await recordPermissionChange({ actorId: null, source: "admin_hub", targetType: "admin", targetId: local.id, before: local.permissions ?? [], after: [], roleBefore: local.role, roleAfter: "disabled" });
+    }
     await revokeSessions(local.id);
     return queryOne<LocalAdmin>(`SELECT * FROM admin_users WHERE id=$1`, [local.id]);
   }
@@ -80,6 +88,13 @@ export async function applyHubEntry(entry: HubEntry, create: boolean): Promise<L
       WHERE id=$1 RETURNING *`,
     [local.id, email, role, permissions, entry.hubUserId, name]
   );
+  if (rightsChanged) {
+    await recordPermissionChange({
+      actorId: null, source: "admin_hub", targetType: "admin", targetId: local.id,
+      before: local.disabled_at ? [] : local.permissions ?? [], after: permissions,
+      roleBefore: local.disabled_at ? "disabled" : local.role, roleAfter: role,
+    });
+  }
   if (rightsChanged && !create) await revokeSessions(local.id);
   return updated;
 }

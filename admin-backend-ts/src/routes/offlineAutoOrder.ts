@@ -1,6 +1,7 @@
 import { packageUnavailableReason } from "../utils/packageAvailability.js";
 import { query, queryOne } from "../db/pool.js";
 import { broadcast } from "../realtime/orderEvents.js";
+import { recordRegistrationPaymentIssue } from "./agentRegistrations.routes.js";
 
 /**
  * Offline Auto-Order: a customer with no internet can't open the app to
@@ -215,7 +216,65 @@ async function verifyOfflinePaymentMethod(
  * and returns the order the winner just created, rather than either
  * reporting "unmatched" or creating a second order.
  */
+type OfflinePackage = { id: string; name: string; price: string; provider_amount: string | null; company_id: string; category_id: string; orders_enabled: boolean; visible_customer_app: boolean };
+
+/**
+ * The company's service the payment is for, by its amount. The profile's
+ * own saved package (older apps) wins when its price matches; otherwise the
+ * one available service with that price. Two or more services sharing the
+ * price can't be told apart from an SMS, so none is guessed: the payment is
+ * left for an agent to handle (the reason names the services).
+ */
+export async function resolveOfflinePackage(
+  companyId: string,
+  savedPackageId: string | null,
+  amount: number
+): Promise<{ pkg: OfflinePackage | null; reason: string | null }> {
+  const sameCompanyAt = await query<OfflinePackage>(
+    `SELECT id, name, price, provider_amount, company_id, category_id, orders_enabled, visible_customer_app
+       FROM packages WHERE company_id=$1 AND active=true AND ABS(price - $2) < 0.01
+      ORDER BY name ASC`,
+    [companyId, amount]
+  );
+  const available: OfflinePackage[] = [];
+  for (const p of sameCompanyAt) {
+    if (!(await packageUnavailableReason(p, "customer"))) available.push(p);
+  }
+  const saved = savedPackageId ? available.find((p) => p.id === savedPackageId) : undefined;
+  if (saved) return { pkg: saved, reason: null };
+  if (available.length === 1) return { pkg: available[0], reason: null };
+  if (available.length === 0) {
+    return { pkg: null, reason: `No available service of this company costs $${Number(amount).toFixed(2)} (Offline Profile)` };
+  }
+  return {
+    pkg: null,
+    reason: `${available.length} services cost $${Number(amount).toFixed(2)} (${available.map((p) => p.name).join(", ")}) -- an agent must choose which one`,
+  };
+}
+
+/**
+ * Rukumo matching (see matchOfflineAutoOrderInner), plus: a payment from an
+ * agent-registered customer that could not become an order is reported to
+ * that agent and the admins (agentRegistrations.routes.ts). Nothing else
+ * changes -- no order is created or sent for it.
+ */
 export async function matchOrCreateOfflineAutoOrder(
+  parsedAmount: number | undefined,
+  parsedPhone: string | undefined,
+  parsedProvider: string | null | undefined,
+  transactionRef: string | null | undefined,
+  uploadingAgentId: string,
+  uploadingSimSlot: number | null | undefined,
+  body?: string | null
+): Promise<OfflineAutoOrderMatchResult> {
+  const result = await matchOfflineAutoOrderInner(parsedAmount, parsedPhone, parsedProvider, transactionRef, uploadingAgentId, uploadingSimSlot, body);
+  if (!result.order && result.reason && parsedPhone && !result.reason.startsWith("No Offline Profile")) {
+    await recordRegistrationPaymentIssue({ senderPhone: parsedPhone, amount: parsedAmount, transactionRef, reason: result.reason });
+  }
+  return result;
+}
+
+async function matchOfflineAutoOrderInner(
   parsedAmount: number | undefined,
   parsedPhone: string | undefined,
   parsedProvider: string | null | undefined,
@@ -254,15 +313,17 @@ export async function matchOrCreateOfflineAutoOrder(
     offline_sender_number: string;
     offline_destination_number: string;
     offline_company_id: string;
-    offline_package_id: string;
+    offline_package_id: string | null;
     offline_payment_method_id: string | null;
   }>(
     `SELECT id, offline_sender_number, offline_destination_number, offline_company_id, offline_package_id, offline_payment_method_id
      FROM customers
      WHERE offline_sender_number IS NOT NULL AND offline_destination_number IS NOT NULL
-       AND offline_company_id IS NOT NULL AND offline_package_id IS NOT NULL
+       AND offline_company_id IS NOT NULL
        AND status='active'
-       AND RIGHT(regexp_replace(offline_sender_number, '\\D', '', 'g'), 9) = $1`,
+       AND RIGHT(regexp_replace(offline_sender_number, '\\D', '', 'g'), 9) = $1
+     -- The newest saved setup first (see below).
+     ORDER BY offline_profile_updated_at DESC NULLS LAST, id ASC`,
     [target]
   );
   // No Offline Profile registered for this sender -- always logged (never
@@ -270,9 +331,10 @@ export async function matchOrCreateOfflineAutoOrder(
   // simply hasn't set up Offline Auto-Order" apart from every other failure
   // reason, rather than seeing a blank Offline Auto-Order segment.
   if (candidates.length === 0) return { order: null, reason: `No Offline Profile registered for phone ...${target}` };
-  if (candidates.length > 1) {
-    return { order: null, reason: `${candidates.length} Offline Profiles are registered for phone ...${target} — ambiguous, refusing to auto-order` };
-  }
+  // One payment number, one Rukumo setup: when several accounts saved the
+  // same payment number (e.g. the customer re-registered, or test accounts),
+  // the most recently saved setup is the customer's current choice. Before,
+  // every such payment was refused as ambiguous and left unpaid-for.
   const profile = candidates[0];
 
   const company = await queryOne<{ id: string; name: string; status: string; payment_number: string | null; payment_ussd_template: string | null }>(
@@ -282,24 +344,14 @@ export async function matchOrCreateOfflineAutoOrder(
   if (!company) return { order: null, reason: "Offline Profile's saved company no longer exists" };
   if (company.status === "offline") return { order: null, reason: `${company.name} is currently offline` };
 
-  const pkg = await queryOne<{ id: string; price: string; provider_amount: string | null; company_id: string; category_id: string; orders_enabled: boolean; visible_customer_app: boolean }>(
-    `SELECT id, price, provider_amount, company_id, category_id, orders_enabled, visible_customer_app FROM packages WHERE id=$1 AND active=true`,
-    [profile.offline_package_id]
-  );
-  if (!pkg || pkg.company_id !== company.id) {
-    return { order: null, reason: "Offline Profile's saved package is no longer valid for its company" };
-  }
-  {
-    const unavailable = await packageUnavailableReason(pkg, "customer");
-    if (unavailable) return { order: null, reason: unavailable };
-  }
-
-  // Package + amount matching (spec requirement 10) — the package is
-  // already fixed by the profile, never chosen by amount; this only
-  // confirms the payment actually matches what that specific package costs.
-  if (Math.abs(parsedAmount - Number(pkg.price)) >= 0.01) {
-    return { order: null, reason: `Offline Profile expects $${pkg.price} for its package but the payment was $${parsedAmount}` };
-  }
+  // Which service: the one whose price the customer paid. The registration
+  // names only the company (sender, receiver, company); the customer picks
+  // a service on the phone -- even offline -- and pays its price. A profile
+  // saved by an older app with one package keeps that package when its
+  // price is what was paid.
+  const resolved = await resolveOfflinePackage(company.id, profile.offline_package_id, parsedAmount);
+  if (!resolved.pkg) return { order: null, reason: resolved.reason };
+  const pkg = resolved.pkg;
 
   const methodCheck = await verifyOfflinePaymentMethod(profile.offline_payment_method_id, uploadingAgentId, uploadingSimSlot);
   if (!methodCheck.ok) return { order: null, reason: methodCheck.reason };

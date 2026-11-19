@@ -16,9 +16,11 @@ activityLogRouter.get("/admin/activity-log", requireAuth("super_admin"), async (
   const args: unknown[] = [];
   let sql = `
     SELECT l.id, l.action, l.entity_type, l.entity_id, l.old_value, l.new_value, l.created_at,
-           a.email AS admin_email
+           a.email AS admin_email,
+           l.agent_id, ag.name AS agent_name, ag.phone AS agent_phone
     FROM admin_activity_log l
     LEFT JOIN admin_users a ON a.id = l.admin_id
+    LEFT JOIN agents ag ON ag.id = l.agent_id
     WHERE 1=1`;
   if (entityType) {
     args.push(entityType);

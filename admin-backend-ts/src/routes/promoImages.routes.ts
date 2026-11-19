@@ -4,6 +4,8 @@ import { query, queryOne } from "../db/pool.js";
 import { requireAuth } from "../auth/middleware.js";
 import { sendJson } from "../utils/camelCase.js";
 import { parseDataUri } from "../utils/dataUri.js";
+import { smallPromoImage } from "../utils/smallPromoImage.js";
+import { sendImage } from "../utils/sendImage.js";
 
 export const promoImagesRouter = Router();
 
@@ -34,14 +36,18 @@ promoImagesRouter.get("/promo-images", async (_req, res) => {
 // inactive image, so its thumbnail still renders while toggled off) without
 // needing an Authorization header, which <img src> can't send anyway.
 promoImagesRouter.get("/promo-images/:id/image", async (req, res) => {
-  const row = await queryOne<{ image_data: Buffer; mime_type: string }>(
-    `SELECT image_data, mime_type FROM promo_images WHERE id=$1`,
+  const row = await queryOne<{ image_data: Buffer; mime_type: string; version: string }>(
+    `SELECT image_data, mime_type, md5(image_data) AS version FROM promo_images WHERE id=$1`,
     [req.params.id]
   );
   if (!row) return sendJson(res, 404, { error: "Image not found" });
-  res.setHeader("Content-Type", row.mime_type);
-  res.setHeader("Cache-Control", "public, max-age=3600");
-  res.send(row.image_data);
+  // A large banner is sent as a smaller copy (see smallPromoImage); ?full=1
+  // returns the original as uploaded.
+  const out = req.query.full === "1"
+    ? { data: row.image_data, mime: row.mime_type }
+    : await smallPromoImage(`${req.params.id}:${row.version}`, row.image_data, row.mime_type);
+  res.setHeader("Content-Type", out.mime);
+  sendImage(req, res, out.data);
 });
 
 promoImagesRouter.get("/admin/promo-images", requireSuperAdmin(), async (_req, res) => {

@@ -162,3 +162,57 @@ test("a company report lists its packages and a worked price example", async () 
     actualProfit: 7,
   });
 });
+
+test("scope=all counts every agent's orders; the default stays this agent's own", async () => {
+  const count = async (agentOnly: boolean) =>
+    (await queryOne<any>(
+      `SELECT count(*) FILTER (WHERE status='completed' AND reversed_at IS NULL)::int AS sent,
+              (count(*) FILTER (WHERE status='completed' AND reversed_at IS NULL) + count(*) FILTER (WHERE status IN ('failed','cancelled')))::int AS total
+         FROM orders WHERE ($1::uuid IS NULL OR agent_id = $1)`,
+      [agentOnly ? AGENT_ID : null]
+    ))!;
+  const mine = await get("/agent/reports/dashboard?range=all");
+  const all = await get("/agent/reports/dashboard?range=all&scope=all");
+  const [m, a] = [await count(true), await count(false)];
+  assert.equal(mine.scope, "me");
+  assert.equal(all.scope, "all");
+  assert.equal(mine.status.sent, m.sent);
+  assert.equal(all.status.sent, a.sent);
+  assert.ok(all.status.sent > mine.status.sent, "the other agent's successful orders are included");
+  assert.equal(all.totalOrders, a.total);
+
+  const hormuudMine = await get("/agent/reports/dashboard/companies/rpt-hormuud?range=all");
+  const hormuudAll = await get("/agent/reports/dashboard/companies/rpt-hormuud?range=all&scope=all");
+  assert.ok(hormuudAll.totalOrders > hormuudMine.totalOrders, "the other agent's Hormuud order is included");
+  assert.equal(hormuudAll.scope, "all");
+});
+
+test("Commission by provider: Commission % and Discount % over the report's successful orders", async () => {
+  await query(
+    `INSERT INTO company_profit_terms (company_id, commission_pct, discount_pct, profit_pct) VALUES ('rpt-hormuud', 15, 10, 5)
+     ON CONFLICT (company_id) DO UPDATE SET commission_pct=15, discount_pct=10, profit_pct=5`
+  );
+  const mine = await get("/agent/reports/dashboard?range=all");
+  const all = await get("/agent/reports/dashboard?range=all&scope=all");
+  for (const rep of [mine, all]) {
+    const h = rep.commissionByProvider.find((c: any) => c.companyId === "rpt-hormuud");
+    assert.ok(h, "Hormuud has terms, so it is listed");
+    const company = rep.companies.find((c: any) => c.companyId === "rpt-hormuud");
+    assert.equal(h.sales, company.successfulValue, "same successful sales as the network card");
+    // The base is what was SENT to Hormuud (provider amount x sends), not what customers paid.
+    const sent = await queryOne<any>(
+      `SELECT COALESCE(SUM(COALESCE(provider_amount, amount) * COALESCE(send_count, 1)), 0)::float AS s
+         FROM orders WHERE company_id='rpt-hormuud' AND status='completed' AND reversed_at IS NULL
+          AND ($1::boolean OR agent_id = $2)`,
+      [rep.scope === "all", AGENT_ID]
+    );
+    assert.equal(h.sentAmount, Math.round(sent!.s * 100) / 100);
+    assert.notEqual(h.sentAmount, h.sales, "this data's sends differ from what customers paid");
+    assert.equal(h.commission, Math.round(h.sentAmount * 15) / 100);
+    assert.equal(h.discount, Math.round(h.sentAmount * 10) / 100);
+    assert.equal(h.profit, Math.round((h.commission - h.discount) * 100) / 100);
+    assert.equal(rep.commissionByProvider.some((c: any) => c.companyId === "rpt-amtel"), false, "no terms, not listed");
+  }
+  const h = (r: any) => r.commissionByProvider.find((c: any) => c.companyId === "rpt-hormuud");
+  assert.ok(h(all).orders > h(mine).orders, "All agents includes the other agent's Hormuud order");
+});

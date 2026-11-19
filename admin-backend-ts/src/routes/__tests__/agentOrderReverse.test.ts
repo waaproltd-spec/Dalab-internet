@@ -1,3 +1,4 @@
+// Agents here are granted their services by the Owner (agents.services).
 // Run against a real local Postgres test database (see verifyPaymentLedgerGap.test.ts
 // header for the exact command). Covers Customer-management parity: an Agent
 // gets the same order-reversal power Admin has (POST /admin/orders/:id/reverse)
@@ -49,9 +50,11 @@ async function insertCompletedOrderWithPoints(points: number): Promise<string> {
 }
 
 function reverseAsAgent(orderId: string) {
+  // A reason is required (agent operations: every reversal is logged with one).
   return fetch(`${baseUrl}/agent/orders/${orderId}/reverse`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${agentToken}` },
+    headers: { Authorization: `Bearer ${agentToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ reason: "customer asked" }),
   });
 }
 
@@ -73,7 +76,7 @@ before(async () => {
     )
   )!.id;
   await query(`INSERT INTO customers (id, phone, macaash_points) VALUES ($1,'252619999129',0)`, [CUSTOMER_ID]);
-  await query(`INSERT INTO agents (id, phone, name, password_hash) VALUES ($1,'252699002299','Test Reverse Agent','x')`, [AGENT_ID]);
+  await query(`INSERT INTO agents (id, phone, name, password_hash, operations_enabled, services) VALUES ($1,'252699002299','Test Reverse Agent','x', true, ARRAY['operations','sales','customers','schedule','transactions'])`, [AGENT_ID]);
   agentToken = signAccessToken(AGENT_ID, "agent");
 
   server = http.createServer(app as unknown as http.RequestListener);

@@ -4,6 +4,7 @@ import { requireStaff } from "../auth/middleware.js";
 import { requirePermission } from "../auth/permissions.js";
 import { sendJson } from "../utils/camelCase.js";
 import { parseDataUri } from "../utils/dataUri.js";
+import { sendImage } from "../utils/sendImage.js";
 
 export const categoriesRouter = Router();
 
@@ -18,7 +19,7 @@ function slugify(name: string): string {
 // icon_data must never reach any client on the list routes below — same
 // "has_X boolean, raw bytes only through their own dedicated route" pattern
 // as companies.logo_data/has_logo and packages.image_data/has_image.
-const CATEGORY_COLUMNS = `id, company_id, slug, name, status, service_type, service_types, (icon_data IS NOT NULL) AS has_icon, created_at, updated_at`;
+const CATEGORY_COLUMNS = `id, company_id, slug, name, status, service_type, service_types, (icon_data IS NOT NULL) AS has_icon, created_at, updated_at, sort_order`;
 
 // Admin-only Service Types (migrations 111-113): which icons the Customer
 // App draws on the service -- one or more. Customers never
@@ -62,7 +63,7 @@ categoriesRouter.get("/companies/:id/categories", async (req, res) => {
     res,
     200,
     await query(
-      `SELECT ${CATEGORY_COLUMNS} FROM service_categories WHERE company_id=$1 AND status='enabled' ORDER BY name`,
+      `SELECT ${CATEGORY_COLUMNS} FROM service_categories WHERE company_id=$1 AND status='enabled' ORDER BY sort_order, name`,
       [req.params.id]
     )
   );
@@ -78,16 +79,41 @@ categoriesRouter.get("/categories/:id/icon", async (req, res) => {
   );
   if (!row || !row.icon_data) return sendJson(res, 404, { error: "Icon not found" });
   res.setHeader("Content-Type", row.icon_mime_type || "image/png");
-  res.setHeader("Cache-Control", "public, max-age=3600");
-  res.send(row.icon_data);
+  sendImage(req, res, row.icon_data);
 });
 
 categoriesRouter.get("/admin/categories", requireStaff(), async (req, res) => {
   const { companyId } = req.query;
   const rows = companyId
-    ? await query(`SELECT ${CATEGORY_COLUMNS} FROM service_categories WHERE company_id=$1 ORDER BY name`, [companyId])
-    : await query(`SELECT ${CATEGORY_COLUMNS} FROM service_categories ORDER BY company_id, name`);
+    ? await query(`SELECT ${CATEGORY_COLUMNS} FROM service_categories WHERE company_id=$1 ORDER BY sort_order, name`, [companyId])
+    : await query(`SELECT ${CATEGORY_COLUMNS} FROM service_categories ORDER BY company_id, sort_order, name`);
   sendJson(res, 200, rows);
+});
+
+/**
+ * The Admin's category order for one company: the full list of its
+ * category ids, first to last. Saved as sort_order 1..n; the Customer App
+ * shows categories in this order (online Home, offline Rukumo, category
+ * screen) -- never sorted by price or name.
+ */
+categoriesRouter.put("/admin/companies/:id/categories/order", requirePermission("categories.manage"), async (req, res) => {
+  const ids = req.body?.categoryIds;
+  if (!Array.isArray(ids) || ids.length === 0 || !ids.every((x) => typeof x === "string")) {
+    return sendJson(res, 400, { error: "categoryIds must be the list of this company's category ids, in order" });
+  }
+  if (new Set(ids).size !== ids.length) return sendJson(res, 400, { error: "categoryIds has duplicates" });
+  const own = await query<{ id: string }>(`SELECT id FROM service_categories WHERE company_id=$1`, [req.params.id]);
+  const ownIds = new Set(own.map((r) => r.id));
+  if (ids.length !== ownIds.size || !ids.every((x: string) => ownIds.has(x))) {
+    return sendJson(res, 400, { error: "categoryIds must list every category of this company exactly once" });
+  }
+  await query(
+    `UPDATE service_categories sc SET sort_order = o.n, updated_at = now()
+       FROM UNNEST($2::uuid[]) WITH ORDINALITY AS o(id, n)
+      WHERE sc.id = o.id AND sc.company_id = $1`,
+    [req.params.id, ids]
+  );
+  sendJson(res, 200, await query(`SELECT ${CATEGORY_COLUMNS} FROM service_categories WHERE company_id=$1 ORDER BY sort_order, name`, [req.params.id]));
 });
 
 categoriesRouter.post("/admin/categories", requirePermission("categories.manage"), async (req, res) => {
@@ -111,7 +137,8 @@ categoriesRouter.post("/admin/categories", requirePermission("categories.manage"
 
   const id = (
     await queryOne<{ id: string }>(
-      `INSERT INTO service_categories (company_id, slug, name, service_types, service_type) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+      `INSERT INTO service_categories (company_id, slug, name, service_types, service_type, sort_order)
+       VALUES ($1,$2,$3,$4,$5, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM service_categories WHERE company_id=$1)) RETURNING id`,
       [companyId, slug, name, serviceTypes, serviceTypes[0]]
     )
   )!.id;
