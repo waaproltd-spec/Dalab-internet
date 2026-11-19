@@ -817,6 +817,27 @@ interface ApiService {
     @POST("agent/scheduled-orders/{id}/run-now")
     suspend fun runScheduledOrderNow(@Path("id") id: String, @Body body: Map<String, String> = emptyMap()): Response<Order>
 
+    // Register Customer: the agent registers a customer (name, payment
+    // number, internet number, network); the system verifies each payment
+    // and only then sends the internet. 404 on a system not updated yet.
+    @GET("agent/registered-customers/options")
+    suspend fun getRegistrationOptions(): Response<com.dalab.internet.ui.RegistrationOptions>
+
+    @POST("agent/registered-customers")
+    suspend fun registerCustomer(@Body body: com.dalab.internet.ui.RegisterCustomerRequest): Response<com.dalab.internet.ui.RegisteredCustomer>
+
+    @GET("agent/registered-customers")
+    suspend fun getRegisteredCustomers(@Query("search") search: String? = null): Response<List<com.dalab.internet.ui.RegisteredCustomer>>
+
+    @GET("agent/registered-customers/{id}")
+    suspend fun getRegisteredCustomer(@Path("id") id: String): Response<com.dalab.internet.ui.RegisteredCustomerDetail>
+
+    @GET("agent/registered-transactions")
+    suspend fun getRegisteredTransactions(): Response<List<com.dalab.internet.ui.RegistrationOrder>>
+
+    @GET("agent/registered-payment-issues")
+    suspend fun getRegisteredPaymentIssues(): Response<List<com.dalab.internet.ui.RegistrationIssue>>
+
     // Other Agents: this system's other agents with ONLINE/OFFLINE status.
     @GET("agent/agents")
     suspend fun getOtherAgents(@Query("search") search: String? = null): Response<com.dalab.internet.data.OtherAgentsResponse>

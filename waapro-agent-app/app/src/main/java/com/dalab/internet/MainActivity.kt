@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Campaign
@@ -260,7 +261,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP, SALES, CUSTOMERS, CUSTOMER_DETAIL, REPORTS, RESELLER, AGENT_SHOP_ORDER_DETAIL, AGENT_VIP_ORDER_DETAIL, AGENT_VIP_PACKAGE_ORDER_DETAIL, MANAGE_ORDERS, OTHER_AGENTS, SCHEDULE_TRANSACTION, NALA_SOCO, PROMO_ADS, CIYAARAHA }
+private enum class Screen { PERMISSIONS, DEVICE_SETUP, AUTHENTICATING, RELIABILITY_SETUP, HOME, ORDER_DETAIL, PACKAGES, TRANSACTIONS, WALLET, DIAGNOSTICS, PERMISSIONS_STATUS, RELIABILITY_DASHBOARD, EXCHANGE_LIST, EXCHANGE_DETAIL, EXCHANGE_SETUP, ALERTS, RESELLER_WITHDRAWAL_INTERACTIVE_SETUP, SALES, CUSTOMERS, CUSTOMER_DETAIL, REPORTS, RESELLER, AGENT_SHOP_ORDER_DETAIL, AGENT_VIP_ORDER_DETAIL, AGENT_VIP_PACKAGE_ORDER_DETAIL, MANAGE_ORDERS, OTHER_AGENTS, SCHEDULE_TRANSACTION, REGISTER_CUSTOMER, NALA_SOCO, PROMO_ADS, CIYAARAHA }
 // Bottom nav is exactly 5 tabs: Home, Orders, Support Agent, Broadcast, More --
 // Sales/Customers/Reports (formerly their own tabs) moved under More as
 // ordinary Screen.X destinations instead (see MoreScreen's "My Work"
@@ -584,6 +585,7 @@ private fun AgentApp() {
             onOpenManageOrders = { navigate(Screen.MANAGE_ORDERS) },
             onOpenOtherAgents = { navigate(Screen.OTHER_AGENTS) },
             onOpenSchedule = { navigate(Screen.SCHEDULE_TRANSACTION) },
+            onOpenRegisterCustomer = { navigate(Screen.REGISTER_CUSTOMER) },
         )
 
         Screen.ORDER_DETAIL -> selectedOrder?.let { order ->
@@ -597,6 +599,8 @@ private fun AgentApp() {
         Screen.OTHER_AGENTS -> com.dalab.internet.ui.OtherAgentsScreen(onBack = { goBack() })
 
         Screen.SCHEDULE_TRANSACTION -> com.dalab.internet.ui.ScheduleTransactionScreen(onBack = { goBack() })
+
+        Screen.REGISTER_CUSTOMER -> com.dalab.internet.ui.AgentRegistrationScreen(onBack = { goBack() })
 
         Screen.MANAGE_ORDERS -> ManageOrdersScreen(
             onOpenOrder = { order -> selectedOrder = order; navigate(Screen.ORDER_DETAIL) },
@@ -723,6 +727,7 @@ private fun AgentHome(
     onOpenManageOrders: () -> Unit,
     onOpenOtherAgents: () -> Unit = {},
     onOpenSchedule: () -> Unit = {},
+    onOpenRegisterCustomer: () -> Unit = {},
 ) {
 
     // A support push tapped while this composable already exists (warm
@@ -856,6 +861,7 @@ private fun AgentHome(
                     onOpenManageOrders = onOpenManageOrders,
                     onOpenOtherAgents = onOpenOtherAgents,
                     onOpenSchedule = onOpenSchedule,
+                    onOpenRegisterCustomer = onOpenRegisterCustomer,
                     onOpenShopVipOrders = { onTabChange(HomeTab.ORDERS) },
                 )
             }
@@ -1026,6 +1032,7 @@ private fun MoreScreen(
     onOpenManageOrders: () -> Unit,
     onOpenOtherAgents: () -> Unit = {},
     onOpenSchedule: () -> Unit = {},
+    onOpenRegisterCustomer: () -> Unit = {},
     onOpenShopVipOrders: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
@@ -1083,6 +1090,12 @@ private fun MoreScreen(
             NotificationHealthRows()
         }
         MoreSection(title = "My Work") {
+            MoreItem(
+                title = "Register Customer",
+                subtitle = "Customer pays, the system verifies it, then sends the internet",
+                icon = Icons.Filled.PersonAdd,
+                onClick = onOpenRegisterCustomer,
+            )
             MoreItem(
                 title = "Schedule Transaction",
                 subtitle = "Register a customer and send a package at a set time",
