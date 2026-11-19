@@ -43,7 +43,7 @@ export const AGENT_SERVICES = [
   { key: "ciyaaraha", label: "Ciyaaraha", description: "Football contests" },
   { key: "promo_ads", label: "Promo ads", description: "Manage promo ads" },
   { key: "other_agents", label: "Other agents", description: "See which agents are online" },
-  { key: "profit", label: "Commission & profit", description: "See and set each network's Commission %, Discount % and Profit %" },
+  { key: "profit", label: "Commission & profit", description: "Agent App: each network's Commission %, Discount % and Profit %" },
 ] as const;
 
 export type AgentService = (typeof AGENT_SERVICES)[number]["key"];
@@ -122,7 +122,7 @@ const ADMIN_RULES: { re: RegExp; any: Permission[] }[] = [
   { re: /^\/admin\/packages\/missing-template$/, any: ["packages.manage"] },
   { re: /^\/admin\/interactive-services(\/|$)/, any: ["packages.manage"] },
   { re: /^\/admin\/companies\/[^/]+\/pin-status$/, any: ["companies.manage"] },
-  { re: /^\/admin\/(commissions|commission-rules|company-profit)(\/|$)/, any: ["commissions.manage"] },
+  { re: /^\/admin\/(commissions|commission-rules)(\/|$)/, any: ["commissions.manage"] },
   { re: /^\/admin\/exchange\//, any: ["exchange.manage"] },
   { re: /^\/admin\/feedback(\/|$)/, any: ["feedback.manage"] },
   { re: /^\/admin\/finance\//, any: ["finance.manage"] },
