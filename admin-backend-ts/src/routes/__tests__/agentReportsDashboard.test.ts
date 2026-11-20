@@ -216,3 +216,26 @@ test("Commission by provider: Commission % and Discount % over the report's succ
   const h = (r: any) => r.commissionByProvider.find((c: any) => c.companyId === "rpt-hormuud");
   assert.ok(h(all).orders > h(mine).orders, "All agents includes the other agent's Hormuud order");
 });
+
+test("Profit: company cost is what was sent minus the network's commission", async () => {
+  await query(
+    `INSERT INTO company_profit_terms (company_id, commission_pct, discount_pct, profit_pct) VALUES ('rpt-hormuud', 15, 10, 5)
+     ON CONFLICT (company_id) DO UPDATE SET commission_pct=15, discount_pct=10, profit_pct=5`
+  );
+  const r = await get("/agent/reports/dashboard?range=all");
+  const sums = await queryOne<any>(
+    `SELECT COALESCE(SUM(COALESCE(provider_amount, amount) * COALESCE(send_count, 1)), 0)::float AS gross,
+            COALESCE(SUM(COALESCE(provider_amount, amount) * COALESCE(send_count, 1)) FILTER (WHERE company_id='rpt-hormuud'), 0)::float AS hormuud
+       FROM orders WHERE status='completed' AND reversed_at IS NULL AND agent_id = $1`,
+    [AGENT_ID]
+  );
+  const expectedCost = Math.round((sums!.gross - sums!.hormuud * 0.15) * 100) / 100;
+  assert.ok(sums!.hormuud > 0, "this data has Hormuud sends");
+  assert.equal(r.profitBreakdown.companyCost, expectedCost);
+  assert.equal(r.profitBreakdown.actualProfit, Math.round((r.profitBreakdown.finalPrice - expectedCost) * 100) / 100);
+  assert.equal(r.totalProfit, r.profitBreakdown.actualProfit);
+  const hormuud = r.companies.find((c: any) => c.companyId === "rpt-hormuud");
+  const amtel = r.companies.find((c: any) => c.companyId === "rpt-amtel");
+  assert.ok(hormuud.totalProfit > Math.round((hormuud.successfulValue - sums!.hormuud) * 100) / 100, "Hormuud's profit includes its commission");
+  assert.ok(amtel, "Amtel has no terms: its cost stays the full amount sent");
+});

@@ -150,13 +150,16 @@ const DASHBOARD_RANGES: Record<string, string | null> = {
 const SENT = `o.status = 'completed' AND o.reversed_at IS NULL`;
 const COST = `COALESCE(o.provider_amount, o.amount) * COALESCE(o.send_count, 1)`;
 const SELLING = `GREATEST(COALESCE(o.list_price, o.amount), o.amount)`;
+// What the network really costs: the amount sent minus the commission the
+// network pays back (its Commission % in company_profit_terms; none set = 0).
+const NET_COST = `${COST} * (1 - COALESCE((SELECT t.commission_pct FROM company_profit_terms t WHERE t.company_id = o.company_id), 0) / 100.0)`;
 // Per-group money/status aggregates over orders aliased "o".
 const DASHBOARD_AGGREGATES = `
   COUNT(*) FILTER (WHERE ${SENT}) AS sent,
   COUNT(*) FILTER (WHERE o.status = 'failed') AS failed,
   COUNT(*) FILTER (WHERE o.status = 'cancelled') AS cancelled,
   COALESCE(SUM(o.amount) FILTER (WHERE ${SENT}), 0) AS successful_value,
-  COALESCE(SUM(${COST}) FILTER (WHERE ${SENT}), 0) AS company_cost,
+  COALESCE(SUM(${NET_COST}) FILTER (WHERE ${SENT}), 0) AS company_cost,
   COALESCE(SUM(${SELLING}) FILTER (WHERE ${SENT}), 0) AS selling_value,
   COALESCE(SUM(${SELLING} - o.amount) FILTER (WHERE ${SENT}), 0) AS discount`;
 
@@ -260,7 +263,7 @@ reportsRouter.get("/agent/reports/dashboard", requireAuth("agent"), async (req, 
   // actually SENT to that network for the successful orders of this
   // report (same period, same me / all agents) -- not what customers paid.
   // Commission = sent x Commission%, Profit = Commission - Discount. The
-  // report's own provider-cost profit above is a separate figure.
+  // report's company cost above is already net of this commission.
   const termRows = await query<{ id: string; name: string; color_hex: string | null; commission_pct: string; discount_pct: string | null; sent: string; sales: string; sent_amount: string }>(
     `SELECT c.id, c.name, c.color_hex, t.commission_pct, t.discount_pct,
             COUNT(o.id) FILTER (WHERE ${SENT}) AS sent,
