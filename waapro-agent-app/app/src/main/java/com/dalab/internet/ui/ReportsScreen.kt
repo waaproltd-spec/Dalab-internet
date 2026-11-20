@@ -156,12 +156,6 @@ fun ReportsScreen(onBack: () -> Unit) {
                 val companies = current.companies.orEmpty()
                 if (companies.isEmpty()) item { Muted("No companies yet.") }
                 items(companies.size) { i -> CompanyCard(companies[i], onClick = { openCompany = companies[i] }) }
-                val commissionRows = current.commissionByProvider.orEmpty()
-                if (commissionRows.isNotEmpty()) {
-                    item { SectionTitle("Commission by Provider") }
-                    current.commissionTotals?.let { t -> item { CommissionTotalsCard(t) } }
-                    items(commissionRows.size) { i -> CommissionProviderCard(commissionRows[i]) }
-                }
                 item { SectionTitle("Profit") }
                 item { ProfitCard(current.profitBreakdown) }
             }
@@ -630,61 +624,3 @@ private fun LoadingOrEmpty(loading: Boolean) {
     }
 }
 
-private fun pctText(v: Double): String = if (v % 1.0 == 0.0) "${v.toInt()}%" else String.format(Locale.US, "%.2f", v).trimEnd('0').trimEnd('.') + "%"
-
-/** Totals over every provider: successful orders, Commission, Discount, Profit. */
-@Composable
-private fun CommissionTotalsCard(t: com.dalab.internet.data.ReportCommissionTotals) {
-    Surface(
-        shape = RoundedCornerShape(20.dp),
-        color = Color.Transparent,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 5.dp).clip(RoundedCornerShape(20.dp)).background(WaaproHeaderBrush),
-    ) {
-        Column(Modifier.padding(16.dp)) {
-            Text("Total profit", color = Color.White.copy(alpha = 0.8f), fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
-            Text(usd(t.profit), color = Color.White, fontWeight = FontWeight.Black, fontSize = 28.sp)
-            Spacer(Modifier.height(8.dp))
-            Row {
-                listOf("${t.orders}" to "Successful", usd(t.commission) to "Commission", usd(t.discount) to "Discount").forEach { (v, l) ->
-                    Column(Modifier.weight(1f)) {
-                        Text(v, color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp, maxLines = 1)
-                        Text(l, color = Color.White.copy(alpha = 0.8f), fontSize = 11.5.sp, maxLines = 1)
-                    }
-                }
-            }
-        }
-    }
-}
-
-/** One provider: its percentages and what its successful orders gave. */
-@Composable
-private fun CommissionProviderCard(r: com.dalab.internet.data.ReportCommissionRow) {
-    val brand = parseColor(r.colorHex, DalabBlue)
-    Surface(
-        color = RCard,
-        shape = RoundedCornerShape(18.dp),
-        border = BorderStroke(1.dp, RCardBorder),
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 5.dp),
-    ) {
-        Column(Modifier.padding(14.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                CompanyLogo(r.companyId, brand, 40.dp)
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(r.companyName, color = RText, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                    Text("${r.orders} successful · ${usd(r.sentAmount)} sent", color = RMuted, fontSize = 12.sp, maxLines = 1)
-                }
-                Text(
-                    "${pctText(r.commissionPct)} − ${pctText(r.discountPct)} = ${pctText(r.profitPct)}",
-                    color = RMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold,
-                )
-            }
-            Spacer(Modifier.height(10.dp))
-            Row {
-                Metric(usd(r.commission), "Commission", Modifier.weight(1f))
-                Metric(usd(r.discount), "Discount", Modifier.weight(1f))
-                Metric(usd(r.profit), "Profit", Modifier.weight(1f), RGreen)
-            }
-        }
-    }
-}
