@@ -1,0 +1,140 @@
+package com.dalab.internet.ussd
+
+/** Mirrors GET /agent/sim-routing (parsed manually in SimRoutingRepository,
+ * not via automatic Retrofit/Gson conversion -- see that class). */
+data class SimRoutingEntry(
+    val companyId: String,
+    val deviceId: String?,
+    val simSlot: Int, // 1 or 2, matching the Super Admin's SIM Routing Setup page
+    val companyName: String,
+)
+
+/**
+ * A physical SIM subscription actually present on the device, resolved via
+ * SubscriptionManager. simSlotIndex is 0-based (Android's native indexing);
+ * the Super Admin's "SIM 1 / SIM 2" language is 1-based, so callers add 1
+ * when comparing — see UssdDialer.slotIndexForCompany().
+ */
+data class DeviceSimSlot(
+    val subscriptionId: Int,
+    val simSlotIndex: Int, // 0-based
+    val carrierName: String,
+)
+
+// DUPLICATE_SKIPPED: another in-flight call on this device is already
+// processing this exact order (see UssdOrchestrator's per-order dial lock) --
+// distinct from SUCCESS/FAILED since no dial decision was made here at all.
+//
+// AMBIGUOUS: Android's TelephonyManager.UssdResponseCallback.onReceiveUssdResponse()
+// fired — meaning the OS received SOME text back from the carrier — but the
+// text itself reads like a failure/error/timeout, not a top-up confirmation
+// (see UssdDialer.looksLikeFailureResponse). The OS callback alone can't
+// distinguish "the carrier confirmed the top-up" from "the carrier sent back
+// an error message"; both look identical at the Android API level. Treated
+// like FAILED/TIMEOUT for retry purposes, but kept as its own outcome so the
+// backend never silently completes an order on it (see reportDialResult).
+//
+// HANDED_OFF: the order is assigned to a different Mobile (orders.assigned_device_id),
+// or this Mobile is receive-only -- the other Mobile sends the data, so this
+// one made no dial at all. Terminal for this device, not a failure.
+// INSUFFICIENT_SIM_BALANCE / SIM_BALANCE_UNVERIFIED: the backend refused to
+// start the dial because the company SIM doesn't have enough balance (or its
+// balance is unknown/outdated and the agent hasn't confirmed) -- nothing was
+// dialed; see SimBalanceCheck. Not retried: the SIM has to be recharged.
+// ASSIGNED_TO_OTHER_SIM: the Admin assigned this order to another phone (or
+// another SIM): nothing was dialed here, and that phone dials it.
+enum class DialOutcome { SUCCESS, AMBIGUOUS, FAILED, TIMEOUT, NO_SIM_CONFIGURED, NO_SIM_PRESENT, PERMISSION_DENIED, NETWORK_UNAVAILABLE, DUPLICATE_SKIPPED, HANDED_OFF, INSUFFICIENT_SIM_BALANCE, SIM_BALANCE_UNVERIFIED, ASSIGNED_TO_OTHER_SIM }
+
+data class DialResult(
+    val outcome: DialOutcome,
+    val responseMessage: String? = null,
+    // Set by a menu (interactive) package dial when another automatic try
+    // must NOT happen even though the outcome is normally retryable: the
+    // PIN was already sent and the result is unclear (a retry could charge
+    // twice), or the menu didn't match the plan (retrying can't help).
+    val noRetry: Boolean = false,
+    // A TIMEOUT that provably sent nothing (a menu step before the PIN).
+    // Any other timeout is reported to the server as "result unknown":
+    // the carrier may have sent the money and only the reply was lost.
+    val moneyNotSent: Boolean = false,
+)
+
+/**
+ * Which SIM on THIS phone dials an order -- the same rule as the server's
+ * utils/orderRouting.ts. The order's template pin (device + SIM) wins;
+ * otherwise this phone's SIM Routing entry, which the server only sends
+ * when this phone is the company's primary. Never another phone's order,
+ * never the other SIM, never a backup: an order whose SIM is offline,
+ * out of balance or erroring waits for that SIM.
+ */
+sealed class AssignedSim {
+    data class ThisPhone(val slot: Int) : AssignedSim()
+    data class OtherPhone(val deviceId: String?, val slot: Int?) : AssignedSim()
+    object NotConfigured : AssignedSim()
+    object LoadFailed : AssignedSim()
+}
+
+fun resolveAssignedSim(
+    pinnedDeviceId: String?,
+    pinnedSlot: Int?,
+    thisDeviceId: String?,
+    routedHere: SimSlotResult,
+): AssignedSim {
+    if (pinnedDeviceId != null && pinnedSlot != null) {
+        return if (thisDeviceId != null && pinnedDeviceId == thisDeviceId) AssignedSim.ThisPhone(pinnedSlot)
+        else AssignedSim.OtherPhone(pinnedDeviceId, pinnedSlot)
+    }
+    return when (routedHere) {
+        is SimSlotResult.Slot -> AssignedSim.ThisPhone(routedHere.slot)
+        // Not this phone's company (another phone is primary), or none at all.
+        SimSlotResult.NotConfigured -> AssignedSim.NotConfigured
+        SimSlotResult.LoadFailed -> AssignedSim.LoadFailed
+    }
+}
+
+/**
+ * Mobile roles (Danwadaag): which Mobile dials an order is decided by its assigned sending
+ * Mobile (orders.assigned_device_id, Mobile roles). The template's device +
+ * SIM pin applies only when it names that same Mobile (or the order has no
+ * assigned Mobile yet); an order assigned to a Mobile its template doesn't
+ * name is dialed on that Mobile's own SIM Routing slot -- the same SIM the
+ * server expects (admin-backend-ts utils/orderRouting.ts).
+ */
+fun effectivePin(ussdDeviceId: String?, ussdSimSlot: Int?, assignedDeviceId: String?): Pair<String?, Int?> =
+    if (assignedDeviceId != null && ussdDeviceId != null && ussdDeviceId != assignedDeviceId) Pair(null, null)
+    else Pair(ussdDeviceId, ussdSimSlot)
+
+/** How a dial outcome is reported to the server. */
+fun reportedDialStatus(result: DialResult): String = when (result.outcome) {
+    DialOutcome.SUCCESS -> "success"
+    DialOutcome.AMBIGUOUS -> "ambiguous"
+    DialOutcome.TIMEOUT -> if (result.moneyNotSent) "failed" else "ambiguous"
+    else -> "failed"
+}
+
+/**
+ * Distinguishes "this company genuinely has no SIM routing configured" from
+ * "the very first refresh call failed on a transient network blip" — both
+ * previously collapsed to a bare null, which UssdOrchestrator treated as the
+ * terminal NO_SIM_CONFIGURED outcome even for a cold-start connectivity hiccup,
+ * dropping the durable retry-queue entry for what was really just a network
+ * problem (only NETWORK_UNAVAILABLE keeps that entry alive).
+ */
+sealed class SimSlotResult {
+    data class Slot(val slot: Int) : SimSlotResult()
+    object NotConfigured : SimSlotResult()
+    object LoadFailed : SimSlotResult()
+}
+
+/**
+ * Distinguishes "this slot genuinely has no SIM inserted right now" from
+ * "we can't tell, because CALL_PHONE/READ_PHONE_STATE isn't granted" — both
+ * previously collapsed to the same null from UssdDialer.subscriptionIdForSlot,
+ * producing the identical "SIM isn't physically inserted" message for a lost
+ * permission as for a truly missing SIM.
+ */
+sealed class SubscriptionLookupResult {
+    data class Found(val subscriptionId: Int) : SubscriptionLookupResult()
+    object PermissionMissing : SubscriptionLookupResult()
+    object NotPresent : SubscriptionLookupResult()
+}

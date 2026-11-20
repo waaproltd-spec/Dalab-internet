@@ -1,0 +1,221 @@
+name: Build Waapro Agent App APK
+
+# The one AGENT APP for every system (waapro-agent-app/): phone number + PIN,
+# system found by the Admin Hub. Builds on every push that touches it (any
+# branch) and on demand. GitHub-hosted runner (server1's runner runs out of
+# memory on Android builds). Release signing uses the AGENT_KEYSTORE_* secrets
+# when set, otherwise the committed waapro-agent-app/app/release.keystore.
+on:
+  push:
+    paths:
+      - "waapro-agent-app/**"
+      - ".github/workflows/waapro-agent-app-build-apk.yml"
+  workflow_dispatch: {}
+
+defaults:
+  run:
+    working-directory: waapro-agent-app
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # packages explicitly pinned to platform-tools only -- this action's
+      # own default package list still includes the legacy standalone
+      # "tools" package, which Google has removed from the SDK repository
+      # entirely (confirmed failure: "Warning: Failed to find package
+      # 'tools'", sdkmanager exits 1, the whole step fails before Gradle
+      # ever runs). Nothing else needs to be listed here: the Android
+      # Gradle Plugin downloads whatever specific platform/build-tools
+      # version this project's own build.gradle.kts requires on its own,
+      # the moment `gradle` below actually runs, using the licenses this
+      # same action already accepts regardless of the packages list.
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Run unit tests
+        run: gradle testDebugUnitTest --no-daemon
+
+      - name: Upload unit test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: waapro-agent-unit-test-results
+          path: waapro-agent-app/app/build/reports/tests/testDebugUnitTest
+          if-no-files-found: ignore
+
+      - name: Build debug APK
+        # APKs are built only on the release branch (owner's policy: no APK
+        # without approval); other branches compile and run the unit tests.
+        if: github.ref_name == 'claude/unified-agent-app'
+        run: gradle assembleDebug --no-daemon
+
+      - name: Upload debug APK
+        # APKs are built only on the release branch (owner's policy: no APK
+        # without approval); other branches compile and run the unit tests.
+        if: github.ref_name == 'claude/unified-agent-app'
+        uses: actions/upload-artifact@v4
+        with:
+          name: waapro-agent-debug-apk
+          path: waapro-agent-app/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Decode release keystore
+        # APKs are built only on the release branch (owner's policy: no APK
+        # without approval); other branches compile and run the unit tests.
+        if: github.ref_name == 'claude/unified-agent-app'
+        id: keystore
+        env:
+          AGENT_KEYSTORE_BASE64: ${{ secrets.AGENT_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$AGENT_KEYSTORE_BASE64" ]; then
+            echo "No AGENT_KEYSTORE_BASE64 secret set — skipping release signing."
+            exit 0
+          fi
+          echo "$AGENT_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/agent-release.jks"
+          echo "path=$RUNNER_TEMP/agent-release.jks" >> "$GITHUB_OUTPUT"
+
+      # bundleRelease alongside assembleRelease in one Gradle invocation --
+      # same signingConfig (defined once per buildType in build.gradle.kts,
+      # not per output format), so no separate signing setup needed. The
+      # .apk stays what agents install directly; the .aab is the format
+      # Play Console requires for a Play Store upload/update -- Google no
+      # longer accepts a raw APK for a new upload.
+      - name: Build release APK and AAB
+        # APKs are built only on the release branch (owner's policy: no APK
+        # without approval); other branches compile and run the unit tests.
+        if: github.ref_name == 'claude/unified-agent-app'
+        env:
+          AGENT_KEYSTORE_PATH: ${{ steps.keystore.outputs.path }}
+          AGENT_KEYSTORE_PASSWORD: ${{ secrets.AGENT_KEYSTORE_PASSWORD }}
+          AGENT_KEY_ALIAS: ${{ secrets.AGENT_KEY_ALIAS }}
+          AGENT_KEY_PASSWORD: ${{ secrets.AGENT_KEY_PASSWORD }}
+        run: gradle assembleRelease bundleRelease --no-daemon
+
+      - name: Upload release APK
+        # APKs are built only on the release branch (owner's policy: no APK
+        # without approval); other branches compile and run the unit tests.
+        if: github.ref_name == 'claude/unified-agent-app'
+        uses: actions/upload-artifact@v4
+        with:
+          name: waapro-agent-release-apk
+          path: waapro-agent-app/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+
+      - name: Upload release AAB
+        # APKs are built only on the release branch (owner's policy: no APK
+        # without approval); other branches compile and run the unit tests.
+        if: github.ref_name == 'claude/unified-agent-app'
+        uses: actions/upload-artifact@v4
+        with:
+          name: waapro-agent-release-aab
+          path: waapro-agent-app/app/build/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
+
+      # Proves the release APK is installable before anything is published:
+      # a valid signature (apksigner -- what Android checks on install), and
+      # its real package/version read from the APK itself (aapt2), not from
+      # source. The facts go into agent-app-release.json next to the APK;
+      # the Admin Dashboard's "Agent App Release APK" page only offers
+      # releases that carry it. Any failure here stops the run, so no
+      # release is created for an APK that wouldn't install.
+      - name: Verify release APK
+        # APKs are built only on the release branch (owner's policy: no APK
+        # without approval); other branches compile and run the unit tests.
+        if: github.ref_name == 'claude/unified-agent-app'
+        id: verify
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          BT="$(ls -d "$SDK"/build-tools/* | sort -V | tail -1)"
+          APK=app/build/outputs/apk/release/app-release.apk
+          "$BT/apksigner" verify --verbose --print-certs "$APK" | tee "$RUNNER_TEMP/apksigner.txt"
+          BADGING="$("$BT/aapt2" dump badging "$APK" | head -1)"
+          echo "$BADGING"
+          PKG="$(echo "$BADGING" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")"
+          VC="$(echo "$BADGING" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p")"
+          VN="$(echo "$BADGING" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")"
+          # apksigner prints "Signer #1 certificate SHA-256 digest: ..." or,
+          # for a v2-signed APK, "V2 Signer: certificate SHA-256 digest: ...".
+          CERT="$(sed -n 's/^.*[Ss]igner.*certificate SHA-256 digest: //p' "$RUNNER_TEMP/apksigner.txt" | head -1)"
+          test -n "$PKG" && test -n "$VC" && test -n "$VN" && test -n "$CERT"
+          SHA="$(sha256sum "$APK" | cut -d' ' -f1)"
+          SIZE="$(stat -c %s "$APK")"
+          cat > "$RUNNER_TEMP/agent-app-release.json" <<JSON
+          {"packageName":"$PKG","versionName":"$VN","versionCode":$VC,"apkSha256":"$SHA","apkSizeBytes":$SIZE,"signatureVerified":true,"signerCertSha256":"$CERT","runNumber":${{ github.run_number }},"commit":"${{ github.sha }}","branch":"${{ github.ref_name }}","builtAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+          JSON
+          cat "$RUNNER_TEMP/agent-app-release.json"
+          echo "version_name=$VN" >> "$GITHUB_OUTPUT"
+          echo "version_code=$VC" >> "$GITHUB_OUTPUT"
+
+      # actions/upload-artifact always produces a .zip, and it can only be
+      # downloaded through an authenticated GitHub session — both a
+      # dealbreaker for tapping "install" straight from a phone browser. A
+      # Release asset is the one place GitHub serves a raw, directly
+      # downloadable file, and it's uploaded here by the runner itself
+      # rather than fetched by a client, so it works even from networks
+      # that can't reach GitHub's artifact blob storage host.
+      - name: Publish direct-download release
+        # Only the release branch publishes an APK for agents; any other
+        # branch only builds and tests it (artifacts stay in the run).
+        if: github.ref_name == 'claude/unified-agent-app'
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="waapro-agent-app-run-${{ github.run_number }}"
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          gh release create "$TAG" \
+            waapro-agent-app/app/build/outputs/apk/debug/app-debug.apk \
+            waapro-agent-app/app/build/outputs/apk/release/app-release.apk \
+            waapro-agent-app/app/build/outputs/bundle/release/app-release.aab \
+            "$RUNNER_TEMP/agent-app-release.json" \
+            --repo "${{ github.repository }}" \
+            --title "Waapro Agent App ${{ steps.verify.outputs.version_name }} (${{ steps.verify.outputs.version_code }}) -- build #${{ github.run_number }} ($SHORT_SHA)" \
+            --notes "Automated build from commit $SHORT_SHA on ${{ github.ref_name }}. Direct-installable APKs — no zip, no GitHub login needed. app-debug.apk is unminified (larger, matches the historically-installed build); app-release.apk is R8-shrunk (smaller) and signed with the release keystore — the two are NOT interchangeable updates for each other since they're signed with different keys. app-release.aab is the Android App Bundle for Play Console — Google Play requires this format (not a raw APK) for a Play Store upload/update; it's built from the exact same release-signed source as app-release.apk." \
+            --target "${{ github.sha }}"
+
+      # A fixed download link that always holds the newest RELEASE APK (never
+      # the debug one) -- the dashboards' "Download Agent App" button points
+      # here: releases/download/waapro-agent-app-latest/AGENT-APP.apk.
+      # Best effort: releases are immutable in this repository, so this
+      # fixed release can't be re-filled once published. The dashboards use
+      # the Admin Hub's /api/agent-app/latest instead, which always redirects
+      # to the newest run's app-release.apk. Never fails the build.
+      - name: Update the fixed "latest release APK" link
+        # Only the release branch publishes an APK for agents; any other
+        # branch only builds and tests it (artifacts stay in the run).
+        if: github.ref_name == 'claude/unified-agent-app'
+        continue-on-error: true
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          LATEST="waapro-agent-app-latest"
+          cp waapro-agent-app/app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/AGENT-APP.apk"
+          TITLE="AGENT APP -- latest release ${{ steps.verify.outputs.version_name }} (${{ steps.verify.outputs.version_code }})"
+          if gh release view "$LATEST" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$LATEST" "$RUNNER_TEMP/AGENT-APP.apk" "$RUNNER_TEMP/agent-app-release.json" --clobber --repo "${{ github.repository }}"
+            gh release edit "$LATEST" --title "$TITLE" --repo "${{ github.repository }}"
+          else
+            gh release create "$LATEST" "$RUNNER_TEMP/AGENT-APP.apk" "$RUNNER_TEMP/agent-app-release.json" \
+              --repo "${{ github.repository }}" --title "$TITLE" --latest=false \
+              --notes "Always the newest release-signed AGENT APP. Download: AGENT-APP.apk" \
+              --target "${{ github.sha }}"
+          fi
