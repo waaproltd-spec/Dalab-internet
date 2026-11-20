@@ -2,7 +2,11 @@ package com.dalab.internet.ussd
 
 import android.content.Context
 import android.telephony.TelephonyManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * Is the phone's owner using it for USSD or a call right now? The Agent App
@@ -20,23 +24,68 @@ import kotlinx.coroutines.delay
  * or USSD window left open counts for at most [MAX_DIALER_MS]/[MAX_USSD_MS]
  * so a forgotten screen can't hold payments forever; a call always counts.
  * Without the accessibility service on, only calls can be seen.
+ *
+ * Many phones show the app's OWN USSD session as a call (the green call
+ * timer) and keep the call state off-hook for a while after it. A call
+ * that started while the Agent App itself was dialing is therefore its own,
+ * not the owner's, and doesn't hold the next request -- for at most
+ * [MAX_OWN_CALL_MS], so a real call can never be hidden for long.
  */
 object PhoneBusyMonitor {
     const val QUIET_MS = 10_000L
     const val MAX_DIALER_MS = 2 * 60_000L
     const val MAX_USSD_MS = 3 * 60_000L
+    const val MAX_OWN_CALL_MS = 3 * 60_000L
 
     enum class WindowKind { USSD_DIALOG, DIALER, NEUTRAL, OTHER }
 
     @Volatile private var manualUssdSince: Long? = null
     @Volatile private var dialerSince: Long? = null
     @Volatile private var lastBusyEndedAt: Long = 0L
+    /** When the current call started, if it started during our own session. */
+    @Volatile private var ownCallSince: Long? = null
+    @Volatile private var callSeen = false
+    private val watchScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var appContext: Context? = null
 
     fun init(context: Context) {
         appContext = context.applicationContext
         UssdSimLock.phoneFreeGate = { onWaiting -> awaitFree(onWaiting) }
+        // Watch the call state so a call our own USSD started is recognised.
+        watchScope.launch {
+            while (true) {
+                onCallState(inCall(), ownSessionActive())
+                delay(1_000L)
+            }
+        }
     }
+
+    /** True while the Agent App itself holds the phone (dialing, not waiting). */
+    private fun ownSessionActive(): Boolean {
+        val s = UssdSimLock.status.value
+        return s.running != null && s.phoneBusy == null
+    }
+
+    /**
+     * Fed with the call state (every second, and on each free-check). A call
+     * that begins while our own session runs is marked as ours; when any
+     * call ends the mark is cleared. Only the owner's call ending starts the
+     * quiet pause.
+     */
+    @Synchronized
+    internal fun onCallState(call: Boolean, ownSession: Boolean, now: Long = System.currentTimeMillis()) {
+        if (call && !callSeen) {
+            ownCallSince = if (ownSession) now else null
+        } else if (!call && callSeen) {
+            if (ownCallSince == null) lastBusyEndedAt = now
+            ownCallSince = null
+        }
+        callSeen = call
+    }
+
+    /** Whether an active call should hold the queue. Pure; unit-tested. */
+    fun callBlocks(call: Boolean, ownCallSince: Long?, now: Long): Boolean =
+        call && (ownCallSince == null || now - ownCallSince >= MAX_OWN_CALL_MS)
 
     /** Which kind of window just came to the front. Pure; unit-tested. */
     fun classify(packageName: String?, className: String?, ownPackage: String): WindowKind {
@@ -90,16 +139,13 @@ object PhoneBusyMonitor {
         false // no permission to read call state: can't tell, don't block
     }
 
-    private var callWasActive = false
-
     /** Suspends until the phone is free, reporting the reason while it waits. */
     suspend fun awaitFree(onWaiting: suspend (String?) -> Unit) {
         while (true) {
             val now = System.currentTimeMillis()
             val call = inCall()
-            if (callWasActive && !call) lastBusyEndedAt = now // call just ended: quiet period
-            callWasActive = call
-            val reason = busyReason(manualUssdSince, dialerSince, call, lastBusyEndedAt, now)
+            onCallState(call, ownSession = false, now = now)
+            val reason = busyReason(manualUssdSince, dialerSince, callBlocks(call, ownCallSince, now), lastBusyEndedAt, now)
             onWaiting(reason)
             if (reason == null) return
             delay(1_000L)
@@ -108,12 +154,13 @@ object PhoneBusyMonitor {
 
     /** The current reason from window events alone (tests). */
     internal fun reasonNow(now: Long, inCall: Boolean = false): String? =
-        busyReason(manualUssdSince, dialerSince, inCall, lastBusyEndedAt, now)
+        busyReason(manualUssdSince, dialerSince, callBlocks(inCall, ownCallSince, now), lastBusyEndedAt, now)
 
     internal fun resetForTest() {
         manualUssdSince = null
         dialerSince = null
         lastBusyEndedAt = 0L
-        callWasActive = false
+        ownCallSince = null
+        callSeen = false
     }
 }
