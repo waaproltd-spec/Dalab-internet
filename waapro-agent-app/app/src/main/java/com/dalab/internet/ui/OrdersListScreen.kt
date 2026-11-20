@@ -578,7 +578,7 @@ private fun PaymentMethodCard(card: BalanceCardData, loading: Boolean, onClick: 
             Column(modifier = Modifier.align(Alignment.CenterStart).padding(horizontal = 12.dp, vertical = 7.dp)) {
                 // A bigger white tile so the whole logo is readable.
                 Box(
-                    modifier = Modifier.height(34.dp).width(84.dp).clip(RoundedCornerShape(10.dp)).background(Color.White)
+                    modifier = Modifier.height(26.dp).width(72.dp).clip(RoundedCornerShape(8.dp)).background(Color.White)
                         .border(1.dp, accent.copy(alpha = 0.35f), RoundedCornerShape(10.dp)),
                     contentAlignment = Alignment.Center,
                 ) {
@@ -587,7 +587,7 @@ private fun PaymentMethodCard(card: BalanceCardData, loading: Boolean, onClick: 
                         contentDescription = card.providerName,
                         // Fit: the whole logo always shows, never cropped.
                         contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp, vertical = 3.dp),
+                        modifier = Modifier.fillMaxSize().padding(horizontal = 4.dp, vertical = 2.dp),
                     )
                 }
                 Spacer(Modifier.height(3.dp))

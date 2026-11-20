@@ -73,14 +73,21 @@ fun UssdQueueBanner(modifier: Modifier = Modifier) {
                     // Our turn, but the phone's owner is using it: not dialed yet.
                     QueuePill("Waiting", WaitingBg, WaitingInk)
                     Spacer(Modifier.width(8.dp))
-                    Text(
-                        "Phone in use (${status.phoneBusy}) — ${running.label} starts when it's free",
-                        color = Color.White,
-                        fontSize = 13.sp,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            when (status.phoneBusy) {
+                                "a phone call" -> "On a phone call"
+                                "a USSD session" -> "Another USSD is open"
+                                "the phone dialer" -> "The dialer is open"
+                                else -> "The phone was just used"
+                            },
+                            color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1,
+                        )
+                        Text(
+                            "${running.label} dials when it's free",
+                            color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 } else if (running != null) {
                     QueuePill("Running", RunningBg, RunningInk)
                     Spacer(Modifier.width(8.dp))
