@@ -1519,10 +1519,10 @@ private fun <T> SettingChoiceRow(
 }
 
 @Composable
+@Suppress("UNUSED_PARAMETER") // subtitles are no longer shown: title only
 private fun MoreItem(title: String, subtitle: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
     ListItem(
-        headlineContent = { Text(title) },
-        supportingContent = { Text(subtitle) },
+        headlineContent = { Text(title, fontWeight = FontWeight.SemiBold) },
         leadingContent = { com.dalab.internet.ui.BrandIconTile(icon) },
         colors = ListItemDefaults.colors(containerColor = Color.Transparent),
         modifier = Modifier.clickable(onClick = onClick),
