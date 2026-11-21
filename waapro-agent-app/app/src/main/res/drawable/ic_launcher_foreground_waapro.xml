@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- App icon: the official WAAPRO LTD logo (waapro_ltd_logo.png, unchanged),
+     kept inside the adaptive icon's safe zone so no launcher mask cuts it. -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/waapro_ltd_logo"
+    android:inset="18dp" />
